@@ -11,6 +11,7 @@ let
     ./security
     ./services
     ./monitoring
+    ./hardware
     ./image
     ./profiles
     ./systemd

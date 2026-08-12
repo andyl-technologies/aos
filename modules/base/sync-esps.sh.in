@@ -1,0 +1,57 @@
+#!@bash@
+set -euo pipefail
+
+PATH=@coreutils@/bin:@jq@/bin:@rsync@/bin:@util_linux@/bin:@util_linux@/sbin
+export PATH
+
+metadata=/aos-toplevel/meta/boot-storage.json
+[ -r "$metadata" ] || {
+  echo "aos-sync-esps: boot-storage metadata is unavailable" >&2
+  exit 1
+}
+
+mapfile -t devices < <(jq -er '.espDevices[]' "$metadata")
+[ "${#devices[@]}" -gt 0 ] || {
+  echo "aos-sync-esps: no EFI System Partition devices are configured" >&2
+  exit 1
+}
+
+primary=$(readlink -f "${devices[0]}")
+mounted=$(findmnt -n -o SOURCE --target /boot)
+mounted=$(readlink -f "$mounted")
+[ -b "$primary" ] && [ "$mounted" = "$primary" ] || {
+  echo "aos-sync-esps: /boot is not mounted from the configured primary ESP" >&2
+  exit 1
+}
+
+work=$(mktemp -d /run/aos-esp-replica.XXXXXX)
+mounted_replica=false
+cleanup() {
+  if [ "$mounted_replica" = true ]; then umount "$work" || true; fi
+  rmdir "$work" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+for device in "${devices[@]:1}"; do
+  [ -b "$device" ] || {
+    echo "aos-sync-esps: configured replica is not a block device: $device" >&2
+    exit 1
+  }
+  [ "$(readlink -f "$device")" != "$primary" ] || {
+    echo "aos-sync-esps: primary ESP is listed more than once" >&2
+    exit 1
+  }
+  mount -t vfat -o rw,noatime,fmask=0077,dmask=0077 "$device" "$work"
+  mounted_replica=true
+  for tree in EFI/BOOT EFI/systemd EFI/Linux loader aos; do
+    if [ -d "/boot/$tree" ]; then
+      mkdir -p "$work/$tree"
+      rsync -a --delete "/boot/$tree/" "$work/$tree/"
+    elif [ -e "$work/$tree" ]; then
+      rm -rf "$work/$tree"
+    fi
+  done
+  sync -f "$work"
+  umount "$work"
+  mounted_replica=false
+done

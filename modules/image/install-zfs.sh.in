@@ -1,0 +1,137 @@
+#!@bash@
+set -euo pipefail
+
+PATH=@coreutils@/bin:@dosfstools@/sbin:@gptfdisk@/sbin:@mtools@/bin:@systemd@/bin:@systemd@/sbin:@util_linux@/bin:@util_linux@/sbin:@zfs@/bin:@zfs@/sbin
+export PATH
+
+usage() {
+  echo "usage: aos-install-zfs --recovery-key-output PATH --confirm ERASE-AND-INSTALL --disk /dev/disk/by-id/ID [--disk ...]" >&2
+  exit 2
+}
+
+recovery=
+confirm=
+disks=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --disk) [ "$#" -ge 2 ] || usage; disks+=("$2"); shift 2 ;;
+    --recovery-key-output) [ "$#" -ge 2 ] || usage; recovery=$2; shift 2 ;;
+    --confirm) [ "$#" -ge 2 ] || usage; confirm=$2; shift 2 ;;
+    *) usage ;;
+  esac
+done
+
+[ "$confirm" = ERASE-AND-INSTALL ] || usage
+[ -n "$recovery" ] && [ ! -e "$recovery" ] || {
+  echo "recovery output must be a new path" >&2
+  exit 1
+}
+[ "${#disks[@]}" -ge 2 ] && [ $(( ${#disks[@]} % 2 )) -eq 0 ] || {
+  echo "supply an even number of at least two disks; adjacent disks form mirrors" >&2
+  exit 1
+}
+
+resolved_disks=()
+for disk in "${disks[@]}"; do
+  case "$disk" in /dev/disk/by-id/*) ;; *) echo "unsafe disk identity: $disk" >&2; exit 1 ;; esac
+  [ -b "$disk" ] || { echo "not a block device: $disk" >&2; exit 1; }
+  resolved=$(readlink -f "$disk")
+  for previous in "${resolved_disks[@]}"; do
+    [ "$resolved" != "$previous" ] || {
+      echo "disk was supplied more than once: $disk" >&2
+      exit 1
+    }
+  done
+  resolved_disks+=("$resolved")
+  [ -z "$(lsblk -nrpo MOUNTPOINTS "$disk" | tr -d '[:space:]')" ] || {
+    echo "refusing disk with a mounted filesystem: $disk" >&2
+    exit 1
+  }
+  [ "$(lsblk -nrpo NAME "$disk" | wc -l)" -eq 1 ] || {
+    echo "refusing disk with an existing partition table: $disk" >&2
+    exit 1
+  }
+  [ ! -e "${disk}-part1" ] && [ ! -e "${disk}-part2" ] || {
+    echo "refusing disk with existing partitions: $disk" >&2
+    exit 1
+  }
+done
+
+bundle=$(cd "$(dirname "$0")/.." && pwd -P)
+key=$(mktemp /run/aos-zfs-key.XXXXXX)
+cleanup() { shred -u "$key" 2>/dev/null || rm -f "$key"; }
+trap cleanup EXIT INT TERM
+dd if=/dev/urandom of="$key" bs=32 count=1 status=none
+install -m 0600 "$key" "$recovery"
+
+index=0
+for disk in "${disks[@]}"; do
+  index=$((index + 1))
+  sgdisk --clear \
+    --new=1:1MiB:+1GiB --typecode=1:EF00 --change-name=1:"aos-esp-$index" \
+    --new=2:0:0 --typecode=2:BF01 --change-name=2:"aos-zfs-$index" \
+    "$disk"
+done
+udevadm settle
+
+vdevs=()
+index=0
+for disk in "${disks[@]}"; do
+  index=$((index + 1))
+  [ -b "${disk}-part1" ] && [ -b "${disk}-part2" ] || {
+    echo "partition nodes did not appear for $disk" >&2
+    exit 1
+  }
+  mkfs.vfat -F 32 -n "AOS-ESP-$index" "${disk}-part1"
+  if [ $((index % 2)) -eq 1 ]; then vdevs+=(mirror); fi
+  vdevs+=("${disk}-part2")
+done
+
+zpool create -f -o ashift=12 -o autotrim=on \
+  -O encryption=aes-256-gcm -O keyformat=raw -O keylocation="file://$key" \
+  -O compression=zstd-3 -O atime=off -O mountpoint=none \
+  @pool@ "${vdevs[@]}"
+zfs create -o mountpoint=none @pool@/aos
+zfs create -o mountpoint=none @pool@/@dataset@
+zfs create -o mountpoint=legacy -o canmount=noauto @pool@/var
+
+root_bytes=$(stat -c %s "$bundle/payload/root.img")
+verity_bytes=$(stat -c %s "$bundle/payload/root.verity")
+root_size=$(( (root_bytes + 67108863) / 67108864 * 67108864 ))
+verity_size=$(( (verity_bytes + 16777215) / 16777216 * 16777216 ))
+for slot in a b; do
+  zfs create -V "$root_size" -o volblocksize=16K -o compression=off @pool@/@dataset@/root-$slot
+  zfs create -V "$verity_size" -o volblocksize=16K -o compression=off @pool@/@dataset@/root-$slot-hash
+  dd if="$bundle/payload/root.img" of="/dev/zvol/@pool@/@dataset@/root-$slot" bs=4M conv=fsync status=progress
+  dd if="$bundle/payload/root.verity" of="/dev/zvol/@pool@/@dataset@/root-$slot-hash" bs=4M conv=fsync status=progress
+done
+zpool sync @pool@
+
+sealed=$(mktemp /run/aos-zfs-credential.XXXXXX)
+systemd-creds encrypt --name=aos-zfs-key --with-key=tpm2 \
+  --tpm2-public-key="$bundle/payload/pcr-public.pem" \
+  --tpm2-public-key-pcrs=@signed_pcrs@ \
+  --tpm2-pcrs=@pinned_pcrs@ "$key" "$sealed"
+
+index=0
+for disk in "${disks[@]}"; do
+  index=$((index + 1))
+  esp=$(mktemp -d /run/aos-esp.XXXXXX)
+  mount -t vfat "${disk}-part1" "$esp"
+  cp -aL "$bundle/payload/esp/." "$esp/"
+  mkdir -p "$esp/$(dirname '@sealed_key_path@')"
+  install -m 0600 "$sealed" "$esp/@sealed_key_path@"
+  sync -f "$esp"
+  umount "$esp"
+  rmdir "$esp"
+done
+rm -f "$sealed"
+
+for expected in @esp_devices@; do
+  [ -b "$expected" ] || {
+    echo "configured ESP path did not resolve after installation: $expected" >&2
+    exit 1
+  }
+done
+zpool export @pool@
+echo "installation complete; escrow the recovery key at $recovery before rebooting"

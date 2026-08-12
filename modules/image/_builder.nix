@@ -589,4 +589,4 @@ in
   # passthru attribute so callers can publish or measure it directly
   # (RFC-0006 phase 4: `apr publish --image <uki>` derives Secure Boot
   # facts from this signed binary).
-  imageDrv // {inherit uki ukiA ukiB;}
+  imageDrv // {inherit rootfs uki ukiA ukiB;}
