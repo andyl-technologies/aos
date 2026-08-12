@@ -47,6 +47,17 @@ pub struct ResolvedVolatileCacheLoss {
     pub durable_frontier_after: u64,
 }
 
+/// Effective shared foreground-service limits applied to array rebuild work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResolvedStorageRebuildService {
+    /// Minimum active byte rate whose policy opts rebuild into shared service.
+    pub bytes_per_second: u64,
+    /// Minimum active operation rate, when any contributor constrains IOPS.
+    pub operations_per_second: Option<u64>,
+    /// Minimum active queue depth whose policy opts rebuild into shared service.
+    pub queue_depth: u32,
+}
+
 /// One resolved member of a live storage array.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedStorageArrayMember {
@@ -574,6 +585,234 @@ pub fn block_request_persistence_fault_opportunity(
         coordinate,
         persistence.request_sequence,
     )
+}
+
+/// Builds one canonical array-rebuild opportunity over a physical member range.
+///
+/// # Errors
+///
+/// Returns [`FaultContractError`] when `target` is not a storage target or the
+/// physical range is empty or overflows.
+pub fn storage_array_rebuild_fault_opportunity(
+    target: ResolvedFaultTarget,
+    rebuild: &crucible_device::block::BlockArrayRebuildOpportunity,
+) -> Result<FaultOpportunity, FaultContractError> {
+    FaultOpportunity::new(
+        target,
+        FaultOperation::StorageRebuild,
+        FaultPhase::Persist,
+        FaultCoordinate {
+            virtual_nanos: rebuild.ready_nanos,
+            retired_instructions: None,
+        },
+        rebuild.sequence,
+        None,
+        OpportunityPayload::StorageRequest {
+            request_sequence: rebuild.sequence,
+            start_byte: Some(rebuild.start_byte),
+            length_bytes: Some(u64::try_from(rebuild.bytes.len()).unwrap_or(u64::MAX)),
+            request_digest: ContentHash::from_bytes(&rebuild.bytes),
+        },
+    )
+}
+
+/// Resolves an optional typed failure for one exact array rebuild chunk.
+///
+/// Only active `storage.operation_failure` actions whose operation set contains
+/// `storage_rebuild` are accepted. Probability selection uses the ordinary
+/// deterministic storage action key over the exact physical bytes.
+///
+/// # Errors
+///
+/// Returns [`StorageFaultResolutionError`] for mismatched action identity,
+/// unsupported effects, conflicting failures, or invalid typed results.
+pub fn resolve_storage_array_rebuild_failure<'a>(
+    world: &World,
+    opportunity: &FaultOpportunity,
+    context: StorageFaultResolutionContext,
+    rebuild: &crucible_device::block::BlockArrayRebuildOpportunity,
+    actions: impl IntoIterator<Item = &'a ResolvedBindingAction>,
+) -> Result<Option<BlockFaultResult>, StorageFaultResolutionError> {
+    if opportunity.operation() != FaultOperation::StorageRebuild
+        || opportunity.phase() != FaultPhase::Persist
+        || opportunity.sequence() != rebuild.sequence
+    {
+        return Err(StorageFaultResolutionError::OpportunityMismatch);
+    }
+    let request = BlockRequest::write(
+        u32::try_from(rebuild.sequence).unwrap_or(u32::MAX),
+        rebuild.start_byte,
+        rebuild.bytes.clone(),
+    );
+    let mut selected = None;
+    for action in actions {
+        validate_action_identity(action, opportunity)?;
+        if action.target != *opportunity.target() {
+            return Err(StorageFaultResolutionError::TargetMismatch {
+                binding: action.binding.clone(),
+            });
+        }
+        if action.kind == BindingActionKind::RemovePersistent
+            || matches!(
+                action.mapping_output.as_ref(),
+                ResolvedMappingOutput::Activation { active: false }
+            )
+        {
+            continue;
+        }
+        let EffectSpecification::Storage(StorageEffectSpecification::OperationFailure {
+            operations,
+            probability,
+            status,
+        }) = action.effect.specification()
+        else {
+            return Err(unsupported(action, "array rebuild operation failure"));
+        };
+        if operations
+            .as_slice()
+            .binary_search(&FaultOperation::StorageRebuild)
+            .is_err()
+            || !probability_applies(context, action, &request, probability.get())?
+        {
+            continue;
+        }
+        require_block_result(world, status, false, &action.binding)?;
+        let result = resolve_block_failure(world, status).ok_or_else(|| {
+            StorageFaultResolutionError::PolicyReference {
+                binding: action.binding.clone(),
+                reference: status.clone(),
+                expected: "non-success block typed_result",
+            }
+        })?;
+        if selected.replace(result).is_some() {
+            return Err(StorageFaultResolutionError::InvalidDirective {
+                binding: action.binding.clone(),
+                reason: String::from("multiple array rebuild failures are active"),
+            });
+        }
+    }
+    Ok(selected)
+}
+
+/// Resolves the active storage-service constraints shared by array rebuild.
+///
+/// Non-service actions are ignored so a caller may pass the complete active
+/// action set for the array member. Service policies with
+/// `rebuild_shares_service = false` remain foreground-only.
+///
+/// # Errors
+///
+/// Returns [`StorageFaultResolutionError`] for mismatched target/action
+/// identity, missing or wrongly typed service policy references, invalid
+/// mapping outputs, or zero/out-of-range mapped limits.
+pub fn resolve_storage_array_rebuild_service<'a>(
+    world: &World,
+    actions: impl IntoIterator<Item = &'a ResolvedBindingAction>,
+) -> Result<Option<ResolvedStorageRebuildService>, StorageFaultResolutionError> {
+    let mut resolved: Option<ResolvedStorageRebuildService> = None;
+    for action in actions {
+        let EffectSpecification::Storage(StorageEffectSpecification::Service {
+            bytes_per_second,
+            iops,
+            queue_depth,
+            service_policy,
+        }) = action.effect.specification()
+        else {
+            continue;
+        };
+        if action.kind == BindingActionKind::RemovePersistent
+            || action.phase != FaultPhase::Queue
+            || action.effect.lifetime() == EffectLifetime::Opportunity
+        {
+            return Err(StorageFaultResolutionError::ActionIdentity {
+                binding: action.binding.clone(),
+            });
+        }
+        if matches!(
+            action.mapping_output.as_ref(),
+            ResolvedMappingOutput::Activation { active: false }
+        ) {
+            continue;
+        }
+        let policy = storage_policy(
+            world,
+            service_policy,
+            &action.binding,
+            "service",
+            |artifact| match artifact {
+                StoragePolicyArtifactKind::Service(policy) => Some(policy.clone()),
+                _ => None,
+            },
+        )?;
+        if !policy.rebuild_shares_service {
+            continue;
+        }
+        let mapped = match action.mapping_output.as_ref() {
+            ResolvedMappingOutput::Parameter { parameter, .. } => Some(*parameter),
+            _ => None,
+        };
+        let rate = |parameter: MappedEffectParameter, default: u64| {
+            if mapped == Some(parameter) {
+                mapped_u64(action, parameter)?.ok_or_else(|| {
+                    StorageFaultResolutionError::MappingOutput {
+                        binding: action.binding.clone(),
+                        expected: parameter,
+                    }
+                })
+            } else {
+                Ok(default)
+            }
+        };
+        let bytes_per_second = rate(
+            MappedEffectParameter::BytesPerSecond,
+            bytes_per_second.get(),
+        )?;
+        let operations_per_second = match iops {
+            Some(value) => Some(rate(
+                MappedEffectParameter::OperationsPerSecond,
+                value.get(),
+            )?),
+            None if mapped == Some(MappedEffectParameter::OperationsPerSecond) => {
+                Some(rate(MappedEffectParameter::OperationsPerSecond, u64::MAX)?)
+            }
+            None => None,
+        };
+        let queue_depth = u32::try_from(rate(
+            MappedEffectParameter::UnsignedCount,
+            u64::from(queue_depth.get()),
+        )?)
+        .map_err(|_| StorageFaultResolutionError::InvalidDirective {
+            binding: action.binding.clone(),
+            reason: String::from("shared rebuild service queue depth exceeds u32"),
+        })?;
+        if bytes_per_second == 0 || operations_per_second == Some(0) || queue_depth == 0 {
+            return Err(StorageFaultResolutionError::InvalidDirective {
+                binding: action.binding.clone(),
+                reason: String::from("shared rebuild service limit is zero"),
+            });
+        }
+        let next = ResolvedStorageRebuildService {
+            bytes_per_second,
+            operations_per_second,
+            queue_depth,
+        };
+        resolved = Some(match resolved {
+            None => next,
+            Some(current) => ResolvedStorageRebuildService {
+                bytes_per_second: current.bytes_per_second.min(next.bytes_per_second),
+                operations_per_second: match (
+                    current.operations_per_second,
+                    next.operations_per_second,
+                ) {
+                    (Some(left), Some(right)) => Some(left.min(right)),
+                    (Some(value), None) | (None, Some(value)) => Some(value),
+                    (None, None) => None,
+                },
+                queue_depth: current.queue_depth.min(next.queue_depth),
+            },
+        });
+    }
+    Ok(resolved)
 }
 
 /// Builds the canonical deliver-phase opportunity for one computed completion.

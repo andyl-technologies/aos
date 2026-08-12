@@ -29,8 +29,8 @@ pub struct StorageArrayMemberWrite {
 pub struct StorageArrayWritePlan {
     /// Canonically device/offset-ordered physical writes to online members.
     pub writes: Vec<StorageArrayMemberWrite>,
-    /// Canonically ordered offline member ordinals that require repair.
-    pub dirty_members: Vec<u16>,
+    /// Canonically member/offset-ordered physical writes owed to offline members.
+    pub dirty_writes: Vec<StorageArrayMemberWrite>,
 }
 
 /// A storage-array mapping, quorum, or reconstruction failure.
@@ -147,8 +147,8 @@ pub fn read_storage_array(
 /// Parity layouts reconstruct complete touched stripes first, apply the logical
 /// byte changes, and then recompute P and Q from the resulting data. This avoids
 /// read-modify-write ambiguity when an old data or parity fragment is offline.
-/// Offline fragments are returned in `dirty_members`; callers persist this set
-/// until bounded rebuild repairs the exact ranges.
+/// Offline fragments are returned as exact `dirty_writes`; callers persist
+/// those physical member mutations until bounded rebuild repairs them.
 ///
 /// # Errors
 ///
@@ -178,21 +178,22 @@ pub fn plan_storage_array_write(
     let end = offset
         .checked_add(u64::try_from(bytes.len()).map_err(|_| StorageArrayError::RangeOverflow)?)
         .ok_or(StorageArrayError::RangeOverflow)?;
-    let dirty_members = members
-        .iter()
-        .filter(|member| !member.online)
-        .map(|member| member.ordinal)
-        .collect::<Vec<_>>();
     let mut writes = Vec::new();
+    let mut dirty_writes = Vec::new();
     match policy.layout {
         WorldStorageArrayLayout::Mirror => {
-            for member in members.iter().filter(|member| member.online) {
-                writes.push(StorageArrayMemberWrite {
+            for member in &members {
+                let write = StorageArrayMemberWrite {
                     device: member.device,
                     ordinal: member.ordinal,
                     offset,
                     bytes: bytes.to_vec(),
-                });
+                };
+                if member.online {
+                    writes.push(write);
+                } else {
+                    dirty_writes.push(write);
+                }
             }
         }
         WorldStorageArrayLayout::Stripe => {
@@ -264,13 +265,16 @@ pub fn plan_storage_array_write(
                     .checked_mul(policy.chunk_bytes)
                     .ok_or(StorageArrayError::RangeOverflow)?;
                 for (ordinal, member) in members.iter().enumerate() {
+                    let write = StorageArrayMemberWrite {
+                        device: member.device,
+                        ordinal: member.ordinal,
+                        offset: physical,
+                        bytes: chunks[ordinal].clone(),
+                    };
                     if member.online {
-                        writes.push(StorageArrayMemberWrite {
-                            device: member.device,
-                            ordinal: member.ordinal,
-                            offset: physical,
-                            bytes: chunks[ordinal].clone(),
-                        });
+                        writes.push(write);
+                    } else {
+                        dirty_writes.push(write);
                     }
                 }
             }
@@ -281,9 +285,14 @@ pub fn plan_storage_array_write(
             .cmp(&right.device)
             .then(left.offset.cmp(&right.offset))
     });
+    dirty_writes.sort_by(|left, right| {
+        left.ordinal
+            .cmp(&right.ordinal)
+            .then(left.offset.cmp(&right.offset))
+    });
     Ok(StorageArrayWritePlan {
         writes,
-        dirty_members,
+        dirty_writes,
     })
 }
 

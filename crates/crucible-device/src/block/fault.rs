@@ -55,6 +55,59 @@ pub const HARD_BLOCK_PERSISTENCE_MEDIA_EVENTS: usize = 1_048_576;
 pub const HARD_BLOCK_RETIRED_TRANSPORT_EPOCHS: usize = 65_536;
 /// Hard maximum old-epoch request identities authorized for one preserved retry.
 pub const HARD_BLOCK_RETRY_PRESERVE_AUTHORIZATIONS: usize = 1_048_576;
+/// Hard maximum canonical dirty ranges awaiting array-member rebuild.
+pub const HARD_BLOCK_ARRAY_DIRTY_RANGES: usize = 4_194_304;
+/// Hard aggregate exact bytes retained for array-member rebuild.
+pub const HARD_BLOCK_ARRAY_DIRTY_BYTES: u64 = 137_438_953_472;
+
+/// One checkpointed logical range absent from an array member.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockArrayDirtyRange {
+    /// Stable array member ordinal.
+    pub member_ordinal: u16,
+    /// First physical member byte requiring repair.
+    pub start_byte: u64,
+    /// Exact replacement bytes required on the member.
+    pub bytes: Vec<u8>,
+    /// Monotone logical mutation generation carried through rebuild races.
+    pub generation: u64,
+    /// Coordinate at which this range first became dirty.
+    pub dirty_nanos: u64,
+}
+
+/// Checkpointed array rebuild scheduling continuation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BlockArrayRebuildCursor {
+    /// Next stable rebuild-opportunity sequence.
+    pub next_sequence: u64,
+    /// Completion coordinate of the last charged rebuild chunk.
+    pub available_nanos: Option<u64>,
+    /// Earliest coordinate at which another rebuild chunk can complete.
+    pub next_ready_nanos: Option<u64>,
+    /// Member bound to the scheduled deadline.
+    pub scheduled_member: Option<u16>,
+    /// Physical range start bound to the scheduled deadline.
+    pub scheduled_start_byte: Option<u64>,
+    /// Dirty generation bound to the scheduled deadline.
+    pub scheduled_generation: Option<u64>,
+}
+
+/// One authenticated array rebuild chunk ready for host evaluation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockArrayRebuildOpportunity {
+    /// Stable rebuild sequence.
+    pub sequence: u64,
+    /// Target member ordinal.
+    pub member_ordinal: u16,
+    /// Physical member offset.
+    pub start_byte: u64,
+    /// Exact replacement bytes.
+    pub bytes: Vec<u8>,
+    /// Dirty generation used to reject a stale repair racing a newer write.
+    pub generation: u64,
+    /// Modeled completion coordinate.
+    pub ready_nanos: u64,
+}
 
 /// Reset policy retained for requests already published under an older epoch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -479,17 +532,16 @@ impl ResolvedBlockControllerTransition {
     ///
     /// Returns [`DeviceError::InvalidBlockFaultDirective`] when advancing to a
     /// new transport epoch would overflow `u64`.
-    pub fn transport_reset(
-        &self,
-        current_epoch: u64,
-    ) -> Result<BlockTransportReset, DeviceError> {
+    pub fn transport_reset(&self, current_epoch: u64) -> Result<BlockTransportReset, DeviceError> {
         let next_epoch = match self.request_ids {
             BlockTransportRequestIds::PreserveMonotonic => current_epoch,
-            BlockTransportRequestIds::NewEpochFromZero => current_epoch.checked_add(1).ok_or(
-                DeviceError::InvalidBlockFaultDirective {
-                    reason: "block transport epoch overflow",
-                },
-            )?,
+            BlockTransportRequestIds::NewEpochFromZero => {
+                current_epoch
+                    .checked_add(1)
+                    .ok_or(DeviceError::InvalidBlockFaultDirective {
+                        reason: "block transport epoch overflow",
+                    })?
+            }
         };
         Ok(BlockTransportReset {
             next_epoch,
@@ -515,9 +567,7 @@ impl ResolvedBlockControllerTransition {
             resolved: match self.resolved {
                 BlockTransitionResolved::Complete => BlockTransportResolved::Complete,
                 BlockTransitionResolved::Fail => BlockTransportResolved::Fail,
-                BlockTransitionResolved::RetryPreserveId => {
-                    BlockTransportResolved::RetryPreserveId
-                }
+                BlockTransitionResolved::RetryPreserveId => BlockTransportResolved::RetryPreserveId,
                 BlockTransitionResolved::RetryNewId => BlockTransportResolved::RetryNewId,
             },
             completed_undelivered: match self.completed_undelivered {
@@ -526,9 +576,7 @@ impl ResolvedBlockControllerTransition {
                 BlockTransitionUndelivered::RetryPreserveId => {
                     BlockTransportUndelivered::RetryPreserveId
                 }
-                BlockTransitionUndelivered::RetryNewId => {
-                    BlockTransportUndelivered::RetryNewId
-                }
+                BlockTransitionUndelivered::RetryNewId => BlockTransportUndelivered::RetryNewId,
                 BlockTransitionUndelivered::DropCompletion => {
                     BlockTransportUndelivered::DropCompletion
                 }
@@ -943,11 +991,25 @@ impl ResolvedBlockFaultDirective {
             });
         }
         if !self.external_durability_dependencies.is_empty()
-            && (self.operation != BlockOp::Write
-                || self.write_disposition != BlockFaultWriteDisposition::Lost)
+            && !matches!(
+                (
+                    self.operation,
+                    &self.write_disposition,
+                    self.flush_disposition
+                ),
+                (
+                    BlockOp::Write | BlockOp::Discard,
+                    &BlockFaultWriteDisposition::Lost,
+                    BlockFaultFlushDisposition::Honest
+                ) | (
+                    BlockOp::Flush,
+                    &BlockFaultWriteDisposition::Apply,
+                    BlockFaultFlushDisposition::Lie
+                )
+            )
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
-                reason: "external durability dependency requires a committed external write",
+                reason: "external durability dependency requires an externally committed mutation",
             });
         }
         if self
@@ -957,13 +1019,6 @@ impl ResolvedBlockFaultDirective {
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "external durability dependencies are not in unique device order",
-            });
-        }
-        if self.operation == BlockOp::Discard
-            && self.write_disposition != BlockFaultWriteDisposition::Apply
-        {
-            return Err(DeviceError::InvalidBlockFaultDirective {
-                reason: "discard does not accept write-disposition transformations",
             });
         }
         if !matches!(self.operation, BlockOp::Write | BlockOp::Discard)
@@ -1330,6 +1385,8 @@ pub struct BlockFaultState {
     actual_durable_frontier: u64,
     reported_durable_frontier: u64,
     retained_completions: BTreeMap<BlockRequestIdentity, BlockRetainedCompletion>,
+    array_dirty_ranges: BTreeMap<(u16, u64), BlockArrayDirtyRange>,
+    array_rebuild: BlockArrayRebuildCursor,
 }
 
 fn transport_pending_response(
@@ -1404,7 +1461,7 @@ const fn transport_pending(policy: BlockTransitionPending) -> BlockTransportPend
     }
 }
 
-fn request_in_capacity(request: &BlockRequest, capacity: u64) -> bool {
+pub(in crate::block) fn request_in_capacity(request: &BlockRequest, capacity: u64) -> bool {
     match request.op {
         BlockOp::Read | BlockOp::Write | BlockOp::Discard => request
             .offset
@@ -1848,7 +1905,11 @@ fn request_digest(request: &BlockRequest) -> [u8; 32] {
     }
 }
 
-fn keyed_discard_bytes(base_hash: [u8; 32], request: &BlockRequest, count: usize) -> Vec<u8> {
+pub(in crate::block) fn keyed_discard_bytes(
+    base_hash: [u8; 32],
+    request: &BlockRequest,
+    count: usize,
+) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(count);
     let mut block = 0_u64;
     while bytes.len() < count {

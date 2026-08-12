@@ -40,7 +40,9 @@ use crucible_qemu::{
     block_request_persistence_fault_opportunity, merge_block_fault_phase_directive,
     plan_storage_array_write, read_storage_array, resolve_block_controller_transition,
     resolve_block_fault_directive, resolve_block_persistence_media_directive,
-    resolve_storage_array_baseline, resolve_storage_array_policy, resolve_volatile_cache_loss,
+    resolve_storage_array_baseline, resolve_storage_array_policy,
+    resolve_storage_array_rebuild_failure, resolve_storage_array_rebuild_service,
+    resolve_volatile_cache_loss, storage_array_rebuild_fault_opportunity,
     storage_recovery_event_key,
 };
 
@@ -430,6 +432,58 @@ impl ProductionBlockFaultCoordinator {
             .transpose()
     }
 
+    fn current_array_policy(
+        &self,
+    ) -> Result<Option<crucible_qemu::ResolvedStorageArrayPolicy>, QemuAsyncDriverRuntimeError>
+    {
+        let runtime = self.runtime.lock().map_err(|_| {
+            storage_error(
+                "resolve active storage array policy",
+                "production fault runtime lock is poisoned",
+            )
+        })?;
+        let mut actions = Vec::new();
+        for target in &self.array_targets {
+            actions.extend(
+                runtime
+                    .host_state()
+                    .matching(target, FaultPhase::Persist)
+                    .cloned(),
+            );
+        }
+        drop(runtime);
+        self.active_array_policy(&actions)
+            .map_err(|error| storage_error("resolve active storage array policy", error))
+    }
+
+    fn current_array_rebuild_service(
+        &self,
+    ) -> Result<Option<crucible_qemu::ResolvedStorageRebuildService>, QemuAsyncDriverRuntimeError>
+    {
+        let runtime = self.runtime.lock().map_err(|_| {
+            storage_error(
+                "resolve shared array rebuild service",
+                "production fault runtime lock is poisoned",
+            )
+        })?;
+        let mut actions = Vec::new();
+        for target in self
+            .opportunity_targets
+            .iter()
+            .chain(self.array_targets.iter())
+        {
+            actions.extend(
+                runtime
+                    .host_state()
+                    .matching(target, FaultPhase::Queue)
+                    .cloned(),
+            );
+        }
+        drop(runtime);
+        resolve_storage_array_rebuild_service(&self.world, &actions)
+            .map_err(|error| storage_error("resolve shared array rebuild service", error))
+    }
+
     fn evaluate_array_phase(
         &mut self,
         request: &BlockRequest,
@@ -454,6 +508,127 @@ impl ProductionBlockFaultCoordinator {
         }
         self.active_array_policy(&actions)
             .map_err(|error| storage_error("resolve storage array policy", error))
+    }
+
+    fn service_array_rebuild(
+        &mut self,
+        servicer: &QemuLiveBlockIoServicer,
+        now_nanos: u64,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let policy = self.current_array_policy()?;
+        let Some(policy) = policy else {
+            return Ok(());
+        };
+        let source = servicer.shared_device();
+        let shared_service = self.current_array_rebuild_service()?;
+        let rebuild_rate =
+            shared_service
+                .as_ref()
+                .map_or(policy.rebuild.bytes_per_second.get(), |service| {
+                    policy
+                        .rebuild
+                        .bytes_per_second
+                        .get()
+                        .min(service.bytes_per_second)
+                });
+        let rebuild_iops = shared_service
+            .as_ref()
+            .and_then(|service| service.operations_per_second);
+        let rebuild_queue_depth = shared_service
+            .as_ref()
+            .map_or(policy.rebuild.queue_depth.get(), |service| {
+                policy.rebuild.queue_depth.get().min(service.queue_depth)
+            });
+        for _ in 0..rebuild_queue_depth {
+            let Some(rebuild) = source
+                .next_storage_array_rebuild_opportunity(
+                    now_nanos,
+                    policy.rebuild.chunk_bytes.get(),
+                    rebuild_rate,
+                    rebuild_iops,
+                )
+                .map_err(|error| storage_error("schedule storage array rebuild", error))?
+            else {
+                break;
+            };
+            let member = policy
+                .members
+                .iter()
+                .find(|member| member.ordinal == rebuild.member_ordinal)
+                .ok_or_else(|| {
+                    storage_error(
+                        "resolve storage array rebuild member",
+                        "dirty range names no declared array member",
+                    )
+                })?;
+            if !member.online || policy.online_paths == 0 {
+                source
+                    .pause_storage_array_rebuild(now_nanos, &rebuild)
+                    .map_err(|error| storage_error("pause storage array rebuild", error))?;
+                break;
+            }
+            let target = ResolvedFaultTarget::StorageArray {
+                array: policy.array.clone(),
+                member_or_path: member.member.clone(),
+            };
+            let opportunity =
+                storage_array_rebuild_fault_opportunity(target, &rebuild).map_err(|error| {
+                    storage_error("construct storage array rebuild opportunity", error)
+                })?;
+            let evaluation = self.evaluate_phase(&opportunity)?;
+            let failure_actions = evaluation.actions.iter().filter(|action| {
+                matches!(
+                    action.effect.specification(),
+                    EffectSpecification::Storage(
+                        StorageEffectSpecification::OperationFailure { .. }
+                    )
+                )
+            });
+            if resolve_storage_array_rebuild_failure(
+                &self.world,
+                &opportunity,
+                self.context,
+                &rebuild,
+                failure_actions,
+            )
+            .map_err(|error| storage_error("resolve storage array rebuild failure", error))?
+            .is_some()
+            {
+                source
+                    .defer_storage_array_rebuild(&rebuild)
+                    .map_err(|error| storage_error("defer failed storage array rebuild", error))?;
+                continue;
+            }
+            let destination = self
+                .devices
+                .lock()
+                .map_err(|_| {
+                    storage_error(
+                        "resolve storage array rebuild member",
+                        "authoritative block-device registry is poisoned",
+                    )
+                })?
+                .get(&member.device)
+                .cloned()
+                .ok_or_else(|| {
+                    storage_error(
+                        "resolve storage array rebuild member",
+                        format!(
+                            "World block device {} has no live runtime",
+                            member.device.to_hex()
+                        ),
+                    )
+                })?;
+            source
+                .install_storage_array_rebuild(
+                    self.attached_device_hash()?,
+                    &destination,
+                    member.device,
+                    &rebuild,
+                )
+                .map_err(|error| storage_error("commit storage array rebuild", error))?;
+        }
+        Ok(())
     }
 
     fn compose_array_phase(
@@ -485,6 +660,9 @@ impl ProductionBlockFaultCoordinator {
         policy: &crucible_qemu::ResolvedStorageArrayPolicy,
         request: &BlockRequest,
     ) -> Result<Vec<u8>, StorageArrayError> {
+        if policy.online_paths == 0 {
+            return Err(StorageArrayError::QuorumUnavailable);
+        }
         let devices = self
             .devices
             .lock()
@@ -520,8 +698,16 @@ impl ProductionBlockFaultCoordinator {
         &self,
         policy: &crucible_qemu::ResolvedStorageArrayPolicy,
         request: &BlockRequest,
-    ) -> Result<Vec<(ContentHash, QemuSharedBlockDevice, Vec<(u64, Vec<u8>)>)>, StorageArrayError>
-    {
+    ) -> Result<
+        (
+            Vec<(ContentHash, QemuSharedBlockDevice, Vec<BlockRequest>)>,
+            Vec<crucible_device::block::BlockArrayDirtyRange>,
+        ),
+        StorageArrayError,
+    > {
+        if policy.online_paths == 0 {
+            return Err(StorageArrayError::QuorumUnavailable);
+        }
         let devices = self
             .devices
             .lock()
@@ -544,30 +730,108 @@ impl ProductionBlockFaultCoordinator {
                     .map_err(|error| error.to_string())
             },
         )?;
-        let mut grouped = BTreeMap::<ContentHash, Vec<(u64, Vec<u8>)>>::new();
+        let mut grouped = BTreeMap::<ContentHash, Vec<BlockRequest>>::new();
         for write in plan.writes {
             grouped
                 .entry(write.device)
                 .or_default()
-                .push((write.offset, write.bytes));
+                .push(BlockRequest::write(
+                    request.request_id,
+                    write.offset,
+                    write.bytes,
+                ));
         }
-        grouped
+        let dirty_writes = plan
+            .dirty_writes
             .into_iter()
-            .map(|(device, writes)| {
-                let handle =
-                    devices
-                        .get(&device)
-                        .cloned()
-                        .ok_or_else(|| StorageArrayError::MemberRead {
+            .map(|write| crucible_device::block::BlockArrayDirtyRange {
+                member_ordinal: write.ordinal,
+                start_byte: write.offset,
+                bytes: write.bytes,
+                generation: 0,
+                dirty_nanos: 0,
+            })
+            .collect();
+        let destinations =
+            grouped
+                .into_iter()
+                .map(|(device, writes)| {
+                    let handle = devices.get(&device).cloned().ok_or_else(|| {
+                        StorageArrayError::MemberRead {
                             ordinal: 0,
                             message: format!(
                                 "World block device {} has no live runtime",
                                 device.to_hex()
                             ),
-                        })?;
-                Ok((device, handle, writes))
+                        }
+                    })?;
+                    Ok((device, handle, writes))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+        Ok((destinations, dirty_writes))
+    }
+
+    fn array_flush_destinations(
+        &self,
+        policy: &crucible_qemu::ResolvedStorageArrayPolicy,
+        request_id: u32,
+    ) -> Result<Vec<(ContentHash, QemuSharedBlockDevice, Vec<BlockRequest>)>, StorageArrayError>
+    {
+        if policy.online_paths == 0
+            || policy.members.iter().filter(|member| member.online).count()
+                < usize::from(policy.write_quorum)
+        {
+            return Err(StorageArrayError::QuorumUnavailable);
+        }
+        let devices = self
+            .devices
+            .lock()
+            .map_err(|_| StorageArrayError::MemberRead {
+                ordinal: 0,
+                message: String::from("authoritative block-device registry is poisoned"),
+            })?;
+        policy
+            .members
+            .iter()
+            .filter(|member| member.online)
+            .map(|member| {
+                let handle = devices.get(&member.device).cloned().ok_or_else(|| {
+                    StorageArrayError::MemberRead {
+                        ordinal: member.ordinal,
+                        message: format!(
+                            "World block device {} has no live runtime",
+                            member.device.to_hex()
+                        ),
+                    }
+                })?;
+                Ok((member.device, handle, vec![BlockRequest::flush(request_id)]))
             })
             .collect()
+    }
+
+    fn array_discard_destinations(
+        &self,
+        policy: &crucible_qemu::ResolvedStorageArrayPolicy,
+        request: &BlockRequest,
+        logical: &QemuSharedBlockDevice,
+    ) -> Result<
+        (
+            Vec<(ContentHash, QemuSharedBlockDevice, Vec<BlockRequest>)>,
+            Vec<crucible_device::block::BlockArrayDirtyRange>,
+        ),
+        StorageArrayError,
+    > {
+        let bytes = logical
+            .storage_array_discard_replacement(request)
+            .map_err(|error| StorageArrayError::MemberRead {
+                ordinal: 0,
+                message: error.to_string(),
+            })?
+            .map_or_else(|| self.array_read_transform(policy, request), Ok)?;
+        let mut write = request.clone();
+        write.op = BlockOp::Write;
+        write.data = bytes;
+        self.array_write_destinations(policy, &write)
     }
 
     fn request_targets(&self, request: &BlockRequest) -> Vec<ResolvedFaultTarget> {
@@ -1155,17 +1419,39 @@ impl ProductionBlockFaultCoordinator {
                     opportunity,
                     directive,
                 };
-                if resolved.opportunity.request.op == BlockOp::Write
-                    && let Some(policy) = array_policy
+                let source = servicer.shared_device();
+                if matches!(
+                    resolved.opportunity.request.op,
+                    BlockOp::Write | BlockOp::Discard | BlockOp::Flush
+                ) && let Some(policy) = array_policy
                 {
-                    let destinations = match self
-                        .array_write_destinations(&policy, &resolved.opportunity.request)
-                    {
+                    let planned = match resolved.opportunity.request.op {
+                        BlockOp::Write => {
+                            self.array_write_destinations(&policy, &resolved.opportunity.request)
+                        }
+                        BlockOp::Discard => self.array_discard_destinations(
+                            &policy,
+                            &resolved.opportunity.request,
+                            &source,
+                        ),
+                        BlockOp::Flush => self
+                            .array_flush_destinations(
+                                &policy,
+                                resolved.opportunity.request.request_id,
+                            )
+                            .map(|destinations| (destinations, Vec::new())),
+                        BlockOp::Read | BlockOp::GetLength => {
+                            return Err(storage_error(
+                                "plan storage array persistence",
+                                "non-mutating operation entered array persistence",
+                            ));
+                        }
+                    };
+                    let (destinations, dirty_writes) = match planned {
                         Ok(destinations) => destinations,
                         Err(StorageArrayError::QuorumUnavailable) => {
                             let mut failed = resolved;
                             failed.directive.error_result = Some(policy.failure_result);
-                            failed.directive.write_disposition = BlockFaultWriteDisposition::Lost;
                             self.after_evaluation(
                                 "install failed storage array persistence",
                                 servicer.install_storage_request_persistence_directive(failed),
@@ -1177,11 +1463,15 @@ impl ProductionBlockFaultCoordinator {
                             return Err(storage_error("plan storage array persistence", error));
                         }
                     };
-                    let source = servicer.shared_device();
                     let source_id = self.attached_device_hash()?;
                     self.after_evaluation(
                         "install storage array persistence",
-                        source.install_multi_device_persistence(source_id, &destinations, resolved),
+                        source.install_multi_device_mutation(
+                            source_id,
+                            &destinations,
+                            &dirty_writes,
+                            resolved,
+                        ),
                     )?;
                 } else if let BlockFaultWriteDisposition::Misdirected {
                     destination: BlockFaultMisdirectionDestination::ExternalDevice(bytes),
@@ -1633,6 +1923,7 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
             *journal = staged_journal;
         }
         self.record_device_outcomes(servicer, guest_icount)?;
+        self.service_array_rebuild(servicer, now_nanos)?;
         self.admit_head_request(servicer)?;
         let intake = servicer
             .process_one_storage_request()

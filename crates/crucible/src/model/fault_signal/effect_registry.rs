@@ -568,7 +568,7 @@ effect_registry! {
     /// Bounded byte, IOPS, queue, and token service state.
     StorageService => { key: "storage.service", adapter: Storage, targets: STORAGE_TARGETS, phases: [Queue], lifetimes: [Persistent, StateMachine], composition: Minimum, capability: "storage.service.v1", evidence: ["service_ledger", "queue_ledger"] },
     /// Typed per-operation storage error outcome.
-    StorageOperationFailure => { key: "storage.operation_failure", adapter: Storage, targets: STORAGE_TARGETS, phases: [Resolve], lifetimes: [Opportunity], composition: Severity, capability: "storage.failure.v1", evidence: ["decision", "status"] },
+    StorageOperationFailure => { key: "storage.operation_failure", adapter: Storage, targets: STORAGE_TARGETS, phases: [Resolve, Persist], lifetimes: [Opportunity], composition: Severity, capability: "storage.failure.v1", evidence: ["decision", "status"] },
     /// Storage stall, recovery, and modeled timeout.
     StorageStallTimeout => { key: "storage.stall_timeout", adapter: Storage, targets: STORAGE_TARGETS, phases: [Resolve], lifetimes: [Opportunity, StateMachine], composition: Composite, capability: "storage.stall.v1", evidence: ["wait_coordinate", "recovery_coordinate", "timeout_coordinate"] },
     /// Keyed storage-completion reordering.
