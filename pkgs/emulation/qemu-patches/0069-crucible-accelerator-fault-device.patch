@@ -1,4 +1,4 @@
-From 0e7d682e9944b2eb267a485ce5bd98469a1cdc62 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Tue, 11 Aug 2026 19:29:49 -0700
 Subject: [PATCH] crucible: add deterministic accelerator device
@@ -7,15 +7,15 @@ Signed-off-by: Dylan Plecki <dylan@andyl.com>
 ---
  hw/virtio/Kconfig                             |   5 +
  hw/virtio/meson.build                         |   2 +
- hw/virtio/virtio-crucible-accelerator-pci.c   |  77 +++
+ hw/virtio/virtio-crucible-accelerator-pci.c   |  77 ++
  hw/virtio/virtio-crucible-accelerator.c       | 415 +++++++++++
  .../hw/virtio/virtio-crucible-accelerator.h   |  57 ++
  include/qemu/crucible-fault.h                 |  29 +
- include/qemu/qemu-plugin.h                    |  40 ++
- plugins/crucible-fault-accelerator.c          | 647 ++++++++++++++++++
+ include/qemu/qemu-plugin.h                    |  64 ++
+ plugins/crucible-fault-accelerator.c          | 676 ++++++++++++++++++
  plugins/crucible-fault-node.c                 |  21 +
  plugins/meson.build                           |   1 +
- 10 files changed, 1294 insertions(+)
+ 10 files changed, 1347 insertions(+)
  create mode 100644 hw/virtio/virtio-crucible-accelerator-pci.c
  create mode 100644 hw/virtio/virtio-crucible-accelerator.c
  create mode 100644 include/hw/virtio/virtio-crucible-accelerator.h
@@ -679,7 +679,7 @@ index 0f0fee9..d59b6e4 100644
  bool qemu_crucible_fault_register_ensure_registered(void);
  bool qemu_crucible_fault_register_rules_active(void);
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 3584c8d..9131e3b 100644
+index 3584c8d..70b8203 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -324,6 +324,29 @@ typedef int (*qemu_plugin_blk_transport_restore_cb_t)(
@@ -736,12 +736,43 @@ index 3584c8d..9131e3b 100644
  /**
   * qemu_plugin_register_9p_cb() - register shmem 9p callbacks
   * @burst_start_cb: burst-start callback, or NULL to disable shmem forwarding
+@@ -1920,6 +1960,30 @@ size_t qemu_plugin_crucible_fault_clock_manifest(
+     struct qemu_plugin_crucible_fault_clock_capability *out,
+     size_t capacity, uint16_t *architecture);
+ 
++/** One immutable realized accelerator-device capability row. */
++struct qemu_plugin_crucible_fault_accelerator_capability {
++    uint16_t class_mask;
++    uint16_t fault_family_mask;
++    uint16_t queue_start;
++    uint16_t queue_end;
++    uint32_t queue_depth;
++    uint32_t maximum_input_bytes;
++    uint32_t maximum_output_bytes;
++    uint64_t device_memory_bytes;
++    uint32_t ecc_mode_mask;
++    uint32_t job_kind_count;
++    uint8_t vmstate;
++    uint8_t reserved[7];
++    const char *id;
++    const char *implementation;
++};
++
++/** Copies the complete immutable accelerator-device manifest. */
++QEMU_PLUGIN_API
++size_t qemu_plugin_crucible_fault_accelerator_manifest(
++    struct qemu_plugin_crucible_fault_accelerator_capability *out,
++    size_t capacity);
++
+ /** Binds one manifest row to the canonical public object identity. */
+ QEMU_PLUGIN_API
+ int qemu_plugin_crucible_fault_clock_bind(
 diff --git a/plugins/crucible-fault-accelerator.c b/plugins/crucible-fault-accelerator.c
 new file mode 100644
-index 0000000..75f0460
+index 0000000..d340ff0
 --- /dev/null
 +++ b/plugins/crucible-fault-accelerator.c
-@@ -0,0 +1,647 @@
+@@ -0,0 +1,676 @@
 +/*
 + * Crucible deterministic accelerator fault device integration
 + *
@@ -798,6 +829,35 @@ index 0000000..75f0460
 +static bool accelerator_capabilities_registered;
 +
 +static void accelerator_fault_register(void);
++
++size_t qemu_plugin_crucible_fault_accelerator_manifest(
++    struct qemu_plugin_crucible_fault_accelerator_capability *out,
++    size_t capacity)
++{
++    struct qemu_plugin_crucible_fault_accelerator_capability row = {
++        .class_mask = 0x7,
++        .fault_family_mask = 0xf,
++        .queue_start = 0,
++        .queue_end = 0,
++        .queue_depth = 64,
++        .maximum_input_bytes = 4608,
++        .maximum_output_bytes = 4608,
++        .device_memory_bytes = 65536,
++        .ecc_mode_mask = 0x3,
++        .job_kind_count = 3,
++        .vmstate = 1,
++        .id = "accelerator-0",
++        .implementation = "virtio-crucible-accelerator-v1",
++    };
++
++    if (!accelerator_capabilities_registered) {
++        return 0;
++    }
++    if (out && capacity >= 1) {
++        *out = row;
++    }
++    return 1;
++}
 +
 +void qemu_crucible_fault_accelerator_device_register(
 +    const uint8_t device_id[32], QemuCrucibleAcceleratorLifecycleFn callback,
@@ -1453,6 +1513,3 @@ index a100e60..a9448a7 100644
 +system_ss.add(files('crucible-fault-accelerator.c'))
  
  common_ss.add(files('loader.c', 'api.c', 'core.c'))
--- 
-2.54.0
-

@@ -111,7 +111,10 @@ impl QemuLiveAcceleratorServicer {
             }
             let (due_icount, completion) = match guest_icount.checked_add(request.service_units()) {
                 Some(due_icount) => (due_icount, execute_request(request)?),
-                None => (guest_icount, completion_for(request, STATUS_MALFORMED_JOB, &[])?),
+                None => (
+                    guest_icount,
+                    completion_for(request, STATUS_MALFORMED_JOB, &[])?,
+                ),
             };
             self.pending.insert(
                 identity,
@@ -208,9 +211,7 @@ fn execute_request(
         (class, 1) if class == AcceleratorClass::Tpu as u16 => {
             execute_tpu_i8_matmul(input, capacity)
         }
-        (class, 1) if class == AcceleratorClass::Fpga as u16 => {
-            execute_fpga_lut(input, capacity)
-        }
+        (class, 1) if class == AcceleratorClass::Fpga as u16 => execute_fpga_lut(input, capacity),
         _ => (STATUS_UNSUPPORTED_JOB, Vec::new()),
     };
     completion_for(request, status, &output)
