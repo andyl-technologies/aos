@@ -71,6 +71,7 @@ struct ClosureObjects {
 #[serde(deny_unknown_fields)]
 struct LifecycleWire {
     terminal: Option<TerminalWire>,
+    terminal_cause: Option<TerminalCauseWire>,
     initial_lifecycle_observations_pending: bool,
     branch: Option<BranchWire>,
     recorded_controls: Vec<RecordedControlWire>,
@@ -81,6 +82,16 @@ struct LifecycleWire {
 enum TerminalWire {
     Passed,
     Failed(Vec<String>),
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TerminalCauseWire {
+    Passed,
+    Failed(Vec<String>),
+    BudgetExhausted,
+    BackendCrash(String),
+    OperatorStop,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -486,6 +497,7 @@ pub(super) fn load_exact_checkpoint_set(
         trigger_state,
         assertion_state,
         terminal_verdict: lifecycle.terminal,
+        terminal_cause: lifecycle.terminal_cause,
         initial_lifecycle_observations_pending: lifecycle.initial_lifecycle_observations_pending,
         branch: lifecycle.branch,
         recorded_controls: lifecycle.recorded_controls,
@@ -514,6 +526,14 @@ fn validate_checkpoint_set(
     {
         return Err(store_error(
             "exact checkpoint scheduler configuration does not match its scenario",
+        ));
+    }
+    if !terminal_cause_matches_verdict(
+        checkpoint.terminal_cause.as_ref(),
+        checkpoint.terminal_verdict.as_ref(),
+    ) {
+        return Err(store_error(
+            "exact checkpoint terminal cause disagrees with its trigger verdict",
         ));
     }
     if checkpoint.scheduler.event_log_segment_dependencies().len()
@@ -917,6 +937,17 @@ fn encode_lifecycle(
                 QuantumTerminalVerdict::Passed => TerminalWire::Passed,
                 QuantumTerminalVerdict::Failed(failures) => TerminalWire::Failed(failures.clone()),
             }),
+        terminal_cause: checkpoint.terminal_cause.as_ref().map(|cause| match cause {
+            CheckpointTerminalCause::Passed => TerminalCauseWire::Passed,
+            CheckpointTerminalCause::Failed(failures) => {
+                TerminalCauseWire::Failed(failures.clone())
+            }
+            CheckpointTerminalCause::BudgetExhausted => TerminalCauseWire::BudgetExhausted,
+            CheckpointTerminalCause::BackendCrash(detail) => {
+                TerminalCauseWire::BackendCrash(detail.clone())
+            }
+            CheckpointTerminalCause::OperatorStop => TerminalCauseWire::OperatorStop,
+        }),
         initial_lifecycle_observations_pending: checkpoint.initial_lifecycle_observations_pending,
         branch: checkpoint.branch.as_ref().map(|branch| BranchWire {
             base_schedule: branch.base.schedule.to_compact_binary(),
@@ -946,6 +977,7 @@ fn encode_lifecycle(
 
 struct DecodedLifecycle {
     terminal: Option<QuantumTerminalVerdict>,
+    terminal_cause: Option<CheckpointTerminalCause>,
     initial_lifecycle_observations_pending: bool,
     branch: Option<ProductionVmBranchConfig>,
     recorded_controls: Vec<ProductionVmRecordedControl>,
@@ -972,6 +1004,18 @@ fn decode_lifecycle(
         TerminalWire::Passed => QuantumTerminalVerdict::Passed,
         TerminalWire::Failed(failures) => QuantumTerminalVerdict::Failed(failures),
     });
+    let terminal_cause = wire.terminal_cause.map(|cause| match cause {
+        TerminalCauseWire::Passed => CheckpointTerminalCause::Passed,
+        TerminalCauseWire::Failed(failures) => CheckpointTerminalCause::Failed(failures),
+        TerminalCauseWire::BudgetExhausted => CheckpointTerminalCause::BudgetExhausted,
+        TerminalCauseWire::BackendCrash(detail) => CheckpointTerminalCause::BackendCrash(detail),
+        TerminalCauseWire::OperatorStop => CheckpointTerminalCause::OperatorStop,
+    });
+    if !terminal_cause_matches_verdict(terminal_cause.as_ref(), terminal.as_ref()) {
+        return Err(loop_factory_error(
+            "exact lifecycle terminal cause disagrees with its trigger verdict",
+        ));
+    }
     let branch = wire
         .branch
         .map(
@@ -1024,10 +1068,29 @@ fn decode_lifecycle(
     }
     Ok(DecodedLifecycle {
         terminal,
+        terminal_cause,
         initial_lifecycle_observations_pending: wire.initial_lifecycle_observations_pending,
         branch,
         recorded_controls,
     })
+}
+
+fn terminal_cause_matches_verdict(
+    cause: Option<&CheckpointTerminalCause>,
+    verdict: Option<&QuantumTerminalVerdict>,
+) -> bool {
+    match (cause, verdict) {
+        (Some(CheckpointTerminalCause::Passed), Some(QuantumTerminalVerdict::Passed)) => true,
+        (
+            Some(CheckpointTerminalCause::Failed(cause)),
+            Some(QuantumTerminalVerdict::Failed(verdict)),
+        ) => cause == verdict,
+        (Some(CheckpointTerminalCause::BudgetExhausted), None)
+        | (Some(CheckpointTerminalCause::BackendCrash(_)), None)
+        | (Some(CheckpointTerminalCause::OperatorStop), None)
+        | (None, None) => true,
+        _ => false,
+    }
 }
 
 fn manifest_and_objects(
@@ -1991,6 +2054,7 @@ mod tests {
         let schedule = Schedule::empty().to_compact_binary();
         let wire = LifecycleWire {
             terminal: Some(TerminalWire::Failed(vec![String::from("failed")])),
+            terminal_cause: Some(TerminalCauseWire::Failed(vec![String::from("failed")])),
             initial_lifecycle_observations_pending: false,
             branch: Some(BranchWire {
                 base_schedule: schedule.clone(),
@@ -2017,6 +2081,12 @@ mod tests {
             Some(QuantumTerminalVerdict::Failed(vec![String::from("failed")]))
         );
         assert!(!decoded.initial_lifecycle_observations_pending);
+        assert_eq!(
+            decoded.terminal_cause,
+            Some(CheckpointTerminalCause::Failed(vec![String::from(
+                "failed"
+            )]))
+        );
         let branch = decoded.branch.expect("branch should restore");
         assert_eq!(branch.frontier, VirtualTime { ticks: 7 });
         assert_eq!(branch.seed, Some(Seed::from_u64(9)));

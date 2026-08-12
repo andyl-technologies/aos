@@ -1,8 +1,10 @@
 //! Engine-owned terminal outcomes and terminal checkpoint capture.
 
 use super::*;
+use crucible::CheckpointTerminalCause;
 
 /// Engine-owned reason for entering the terminal state.
+#[derive(Clone)]
 pub(super) enum TerminalCause {
     /// The assertion/trigger layer produced one or more property violations.
     Failed(Vec<String>),
@@ -14,6 +16,18 @@ pub(super) enum TerminalCause {
     BackendCrash(String),
     /// The operator explicitly stopped the session.
     OperatorStop,
+}
+
+impl TerminalCause {
+    fn checkpoint_cause(&self) -> CheckpointTerminalCause {
+        match self {
+            Self::Failed(violations) => CheckpointTerminalCause::Failed(violations.clone()),
+            Self::Passed => CheckpointTerminalCause::Passed,
+            Self::BudgetExhausted => CheckpointTerminalCause::BudgetExhausted,
+            Self::BackendCrash(detail) => CheckpointTerminalCause::BackendCrash(detail.clone()),
+            Self::OperatorStop => CheckpointTerminalCause::OperatorStop,
+        }
+    }
 }
 
 impl<L> Engine<L> {
@@ -43,7 +57,13 @@ impl<L> Engine<L> {
         self.pending_control.clear();
         self.active_step = None;
         self.resolve_guest_introspection_for_terminal();
-        match self.save_current_checkpoint() {
+        let prepared = self
+            .quantum_loop
+            .prepare_terminal_checkpoint(CheckpointTerminalCause::BackendCrash(detail.clone()));
+        match prepared
+            .map_err(SessionError::from)
+            .and_then(|()| self.save_current_checkpoint())
+        {
             Ok(checkpoint) => self.terminal_savepoint = Some(checkpoint),
             Err(error) => {
                 detail.push_str("; terminal checkpoint failed: ");
@@ -64,6 +84,8 @@ impl<L> Engine<L> {
         L: QuantumLoop,
     {
         self.resolve_guest_introspection_for_terminal();
+        self.quantum_loop
+            .prepare_terminal_checkpoint(cause.checkpoint_cause())?;
         let outcome = match cause {
             TerminalCause::Failed(violations) => Outcome::Failed { violations },
             TerminalCause::Passed => Outcome::Passed,

@@ -19,6 +19,21 @@ pub enum QuantumTerminalVerdict {
     Failed(Vec<String>),
 }
 
+/// Engine-owned terminal cause retained in an exact production checkpoint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CheckpointTerminalCause {
+    /// The scenario reached its passing condition.
+    Passed,
+    /// The scenario produced deterministic property violations.
+    Failed(Vec<String>),
+    /// The configured execution budget was exhausted.
+    BudgetExhausted,
+    /// A live backend failed while driving a scheduler boundary.
+    BackendCrash(String),
+    /// The operator explicitly stopped the session.
+    OperatorStop,
+}
+
 /// Advances the system by one scheduler quantum.
 ///
 /// Implementations own the PICK/RUN/RESOLVE/EMIT/STEP boundary: callers may ask
@@ -547,6 +562,24 @@ pub trait QuantumLoop {
     /// hook to retain the verdict until the terminal checkpoint is captured.
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
         self.take_terminal_verdict()
+    }
+
+    /// Retains the engine-owned terminal cause before concrete checkpoint capture.
+    ///
+    /// Pure loops do not own out-of-graph terminal state. Production loops
+    /// override this hook so timeout, crash, and operator-stop savepoints carry
+    /// the same terminal evidence as pass/fail savepoints.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the cause conflicts with already
+    /// retained terminal state.
+    fn prepare_terminal_checkpoint(
+        &mut self,
+        cause: CheckpointTerminalCause,
+    ) -> Result<(), SchedulerError> {
+        let _ = cause;
+        Ok(())
     }
 
     /// Shuts down scheduler/backend resources and returns final log entries.

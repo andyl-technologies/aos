@@ -480,6 +480,25 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         self.terminal_verdict.clone()
     }
 
+    fn prepare_terminal_checkpoint(
+        &mut self,
+        cause: CheckpointTerminalCause,
+    ) -> Result<(), SchedulerError> {
+        if self
+            .checkpoint_terminal_cause
+            .as_ref()
+            .is_some_and(|retained| retained != &cause)
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "production lifecycle already retained a different terminal cause",
+                ),
+            });
+        }
+        self.checkpoint_terminal_cause = Some(cause);
+        Ok(())
+    }
+
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         self.reconcile_indeterminate_debug_ownership()?;
         let pending = self.inner.loop_impl().pending_branch_effect_choice_count();
@@ -1711,6 +1730,7 @@ impl ProductionVmLifecycleLoop {
                     trigger_state: self.trigger_state.clone(),
                     assertion_state: self.assertion_evaluator.checkpoint(),
                     terminal_verdict: self.terminal_verdict.clone(),
+                    terminal_cause: self.checkpoint_terminal_cause.clone(),
                     initial_lifecycle_observations_pending: self
                         .initial_lifecycle_observations_pending,
                     branch: self.branch.clone(),
