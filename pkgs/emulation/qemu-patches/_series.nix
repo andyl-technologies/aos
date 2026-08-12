@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "93abda9ed4a4bb1b7d854ac34c4647269d0277f435c99cf9f1b60d8649310b80";
+  patchBranchBundleSha256 = "d9cde09ef5eee58a9ac10b5a43665519044aced36d23dae57f4d0402a4d537bb";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "9d0024c30c15f6642b1eea50911d8673ed8ab23c";
+  patchBranchHeadCommit = "103e202b6e038782e5db8250f5848dc00e741283";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -599,8 +599,8 @@ let
     {
       file = "0067-crucible-serialize-and-harden-core-fault-state.patch";
       branchSubject = "crucible: serialize and harden core fault state";
-      branchCommit = "22bfde54132d5f1951d3882072f1cad2b83670db";
-      branchTree = "828ad0276c555e31c05c9693405396fdfca45457";
+      branchCommit = "6acb2b12718635bf1cfaee34e9438fff22b8e0fa";
+      branchTree = "1908feebda4f33583621da2afb9c7d4888e61daa";
       catalogName = "crucible-core-fault-vmstate";
       class = "D";
       enforces = "QFP-STATE-1,QFP-STATE-2,FAULT-ORDER";
@@ -609,8 +609,8 @@ let
     {
       file = "0068-crucible-guest-clock-faults.patch";
       branchSubject = "crucible: guest clock faults";
-      branchCommit = "9d0024c30c15f6642b1eea50911d8673ed8ab23c";
-      branchTree = "4e303aa33db94ca1a8382ceb31ae6d1ca1699740";
+      branchCommit = "103e202b6e038782e5db8250f5848dc00e741283";
+      branchTree = "da4a13012276c20344e0947e52b6757f24d65a70";
       catalogName = "crucible-guest-clock-faults";
       class = "D";
       enforces = "QFP-CLOCK-1,QFP-CLOCK-2,FAULT-ORDER";

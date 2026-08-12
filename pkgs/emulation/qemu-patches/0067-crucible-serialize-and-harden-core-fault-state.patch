@@ -110,7 +110,7 @@ index 5e3be23..a706e82 100644
      CPUState *cpu, const uint8_t register_identity[32],
      const QObject *mutation, uint16_t model_phase);
 diff --git a/plugins/crucible-fault-hardware-error.c b/plugins/crucible-fault-hardware-error.c
-index 3a8523d..f63e228 100644
+index 3a8523d..963b672 100644
 --- a/plugins/crucible-fault-hardware-error.c
 +++ b/plugins/crucible-fault-hardware-error.c
 @@ -89,8 +89,14 @@ typedef struct CrucibleHardwarePending {
@@ -137,7 +137,7 @@ index 3a8523d..f63e228 100644
          .id = id,
          .bank = bank,
          .channel = channel,
-@@ -1182,6 +1188,627 @@ void qemu_crucible_fault_hardware_error_event_terminal(void)
+@@ -1182,6 +1188,622 @@ void qemu_crucible_fault_hardware_error_event_terminal(void)
      }
  }
  
@@ -705,6 +705,13 @@ index 3a8523d..f63e228 100644
 +        }
 +        qemu_crucible_fault_vmstate_count_reservations(
 +            item->vmstate_reservation_remaining);
++        item->reservation = qemu_crucible_fault_event_reservation_restore(
++            item->vmstate_reservation_remaining);
++        if (!item->reservation) {
++            crucible_hardware_pending_free(item);
++            goto fail;
++        }
++        item->vmstate_reservation_remaining = 0;
 +        g_ptr_array_add(pending, item);
 +    }
 +    if (!qemu_crucible_fault_vmstate_reader_finished(&reader)) {
@@ -727,19 +734,7 @@ index 3a8523d..f63e228 100644
 +    CrucibleHardwareVmstate *state = opaque;
 +
 +    g_clear_pointer(&crucible_hardware_pending, g_ptr_array_unref);
-+    crucible_hardware_pending = g_ptr_array_new_with_free_func(
-+        crucible_hardware_pending_free);
-+    while (state->pending->len != 0) {
-+        CrucibleHardwarePending *pending = g_ptr_array_steal_index(
-+            state->pending, 0);
-+
-+        pending->reservation =
-+            qemu_crucible_fault_event_reservation_restore(
-+                pending->vmstate_reservation_remaining);
-+        g_assert(pending->reservation);
-+        pending->vmstate_reservation_remaining = 0;
-+        g_ptr_array_add(crucible_hardware_pending, pending);
-+    }
++    crucible_hardware_pending = g_steal_pointer(&state->pending);
 +    crucible_hardware_terminal = state->terminal;
 +    crucible_hardware_vmstate_free(state);
 +}
@@ -766,7 +761,7 @@ index 3a8523d..f63e228 100644
  {
      CPUState *cpu = qemu_get_cpu(0);
 diff --git a/plugins/crucible-fault-instruction.c b/plugins/crucible-fault-instruction.c
-index c8bfb5a..d61bee5 100644
+index c8bfb5a..061b6e0 100644
 --- a/plugins/crucible-fault-instruction.c
 +++ b/plugins/crucible-fault-instruction.c
 @@ -14,6 +14,7 @@
@@ -777,7 +772,7 @@ index c8bfb5a..d61bee5 100644
  #include "qemu/qemu-plugin.h"
  #include "qobject/qdict.h"
  #include "qobject/qnum.h"
-@@ -187,6 +188,18 @@ typedef struct CrucibleInstructionImpulse {
+@@ -187,6 +188,21 @@ typedef struct CrucibleInstructionImpulse {
      QemuCrucibleFaultEventReservation *event_reservation;
  } CrucibleInstructionImpulse;
  
@@ -786,17 +781,20 @@ index c8bfb5a..d61bee5 100644
 +    uint64_t command_icount;
 +    uint8_t before_hash[32];
 +    uint32_t reservation_remaining;
++    QemuCrucibleFaultEventReservation *reservation;
 +} CrucibleInstructionVmstateImpulse;
 +
 +typedef struct CrucibleCpuVmstate {
 +    GPtrArray *impulses;
++    GPtrArray *restored_impulses;
++    GArray *restored_index;
 +    bool event_terminal;
 +} CrucibleCpuVmstate;
 +
  static GHashTable *crucible_instruction_contexts;
  static GArray *crucible_instruction_index;
  static GPtrArray *crucible_instruction_impulses;
-@@ -194,6 +207,7 @@ static IntervalTreeRoot crucible_instruction_root;
+@@ -194,6 +210,7 @@ static IntervalTreeRoot crucible_instruction_root;
  static bool crucible_instruction_registered;
  static bool crucible_instruction_event_terminal_latched;
  static bool crucible_instruction_rule_registry_active(void);
@@ -804,7 +802,7 @@ index c8bfb5a..d61bee5 100644
  static void crucible_instruction_hardware_recorded(CPUState *cpu,
                                                     bool delivered,
                                                     uint32_t vector,
-@@ -2654,6 +2668,190 @@ static void crucible_instruction_impulse_free(gpointer opaque)
+@@ -2654,6 +2671,222 @@ static void crucible_instruction_impulse_free(gpointer opaque)
      g_free(impulse);
  }
  
@@ -812,6 +810,7 @@ index c8bfb5a..d61bee5 100644
 +{
 +    CrucibleInstructionVmstateImpulse *impulse = opaque;
 +
++    g_free(impulse->reservation);
 +    qemu_crucible_fault_rule_unref(impulse->rule);
 +    g_free(impulse);
 +}
@@ -824,6 +823,8 @@ index c8bfb5a..d61bee5 100644
 +        return;
 +    }
 +    g_clear_pointer(&state->impulses, g_ptr_array_unref);
++    g_clear_pointer(&state->restored_impulses, g_ptr_array_unref);
++    g_clear_pointer(&state->restored_index, g_array_unref);
 +    g_free(state);
 +}
 +
@@ -937,6 +938,42 @@ index c8bfb5a..d61bee5 100644
 +
 +        qemu_crucible_fault_vmstate_count_reservations(
 +            impulse->reservation_remaining);
++        impulse->reservation =
++            qemu_crucible_fault_event_reservation_restore(
++                impulse->reservation_remaining);
++        if (!impulse->reservation) {
++            goto fail;
++        }
++    }
++    state->restored_impulses = g_ptr_array_new_with_free_func(
++        crucible_instruction_impulse_free);
++    for (guint i = 0; i < state->impulses->len; i++) {
++        CrucibleInstructionVmstateImpulse *source = g_ptr_array_index(
++            state->impulses, i);
++        CrucibleInstructionImpulse *impulse = g_new0(
++            CrucibleInstructionImpulse, 1);
++
++        impulse->rule = source->rule;
++        source->rule = NULL;
++        impulse->command_icount = source->command_icount;
++        memcpy(impulse->before_hash, source->before_hash, 32);
++        impulse->event_reservation = source->reservation;
++        source->reservation = NULL;
++        g_ptr_array_add(state->restored_impulses, impulse);
++    }
++    state->restored_index = g_array_new(
++        false, false, sizeof(CrucibleInstructionIndexEntry));
++    if (!qemu_crucible_fault_rule_foreach_staged(
++            CRUCIBLE_FAULT_COMMAND_CPU_INSTRUCTION_TRANSFORM,
++            crucible_instruction_index_visit, state->restored_index)) {
++        goto fail;
++    }
++    for (guint i = 0; i < state->restored_impulses->len; i++) {
++        CrucibleInstructionImpulse *impulse = g_ptr_array_index(
++            state->restored_impulses, i);
++
++        crucible_instruction_index_visit(
++            impulse->rule, state->restored_index);
 +    }
 +    qemu_crucible_fault_vmstate_count_deferred(state->impulses->len);
 +    *staged_out = state;
@@ -952,25 +989,18 @@ index c8bfb5a..d61bee5 100644
 +    CrucibleCpuVmstate *state = opaque;
 +
 +    g_clear_pointer(&crucible_instruction_impulses, g_ptr_array_unref);
-+    crucible_instruction_impulses = g_ptr_array_new_with_free_func(
-+        crucible_instruction_impulse_free);
-+    for (guint i = 0; i < state->impulses->len; i++) {
-+        CrucibleInstructionVmstateImpulse *source = g_ptr_array_index(
-+            state->impulses, i);
-+        CrucibleInstructionImpulse *impulse = g_new0(
-+            CrucibleInstructionImpulse, 1);
++    crucible_instruction_impulses =
++        g_steal_pointer(&state->restored_impulses);
++    memset(&crucible_instruction_root, 0, sizeof(crucible_instruction_root));
++    g_clear_pointer(&crucible_instruction_index, g_array_unref);
++    crucible_instruction_index = g_steal_pointer(&state->restored_index);
++    for (guint i = 0; i < crucible_instruction_index->len; i++) {
++        CrucibleInstructionIndexEntry *entry = &g_array_index(
++            crucible_instruction_index, CrucibleInstructionIndexEntry, i);
 +
-+        impulse->rule = qemu_crucible_fault_rule_ref(source->rule);
-+        impulse->command_icount = source->command_icount;
-+        memcpy(impulse->before_hash, source->before_hash, 32);
-+        impulse->event_reservation =
-+            qemu_crucible_fault_event_reservation_restore(
-+                source->reservation_remaining);
-+        g_assert(impulse->event_reservation);
-+        g_ptr_array_add(crucible_instruction_impulses, impulse);
++        interval_tree_insert(&entry->interval, &crucible_instruction_root);
 +    }
 +    crucible_instruction_event_terminal_latched = state->event_terminal;
-+    crucible_instruction_index_rebuild(false);
 +    crucible_instruction_vmstate_free(state);
 +}
 +
@@ -996,10 +1026,10 @@ index c8bfb5a..d61bee5 100644
      const QemuCrucibleFaultRule *rule, uint64_t observed_icount,
      uint8_t before_hash[32], uint8_t after_hash[32], GByteArray *evidence,
 diff --git a/plugins/crucible-fault-interrupt.c b/plugins/crucible-fault-interrupt.c
-index c376c92..3a8d47c 100644
+index c376c92..cd1a116 100644
 --- a/plugins/crucible-fault-interrupt.c
 +++ b/plugins/crucible-fault-interrupt.c
-@@ -240,6 +240,54 @@ typedef struct CrucibleInterruptProvenanceKey {
+@@ -240,6 +240,59 @@ typedef struct CrucibleInterruptProvenanceKey {
      uint32_t vector;
  } CrucibleInterruptProvenanceKey;
  
@@ -1016,6 +1046,7 @@ index c376c92..3a8d47c 100644
 +    uint64_t command_icount;
 +    uint8_t before_hash[32];
 +    uint32_t reservation_remaining;
++    QemuCrucibleFaultEventReservation *reservation;
 +} CrucibleInterruptVmstateImpulse;
 +
 +typedef struct CrucibleInterruptVmstateStorm {
@@ -1045,6 +1076,10 @@ index c376c92..3a8d47c 100644
 +    GPtrArray *impulses;
 +    GPtrArray *storms;
 +    GArray *provenance;
++    GPtrArray *restored_deferred;
++    GPtrArray *restored_impulses;
++    GPtrArray *restored_storms;
++    GHashTable *restored_provenance;
 +    uint64_t next_source_sequence;
 +    uint64_t next_route_generation;
 +    uint32_t deferred_reserved;
@@ -1054,7 +1089,7 @@ index c376c92..3a8d47c 100644
  static GHashTable *crucible_interrupt_provenance;
  
  static guint crucible_interrupt_provenance_hash(gconstpointer opaque)
-@@ -983,9 +1031,13 @@ int qemu_crucible_fault_interrupt_validate(const QemuCrucibleFaultRule *rule)
+@@ -983,9 +1036,13 @@ int qemu_crucible_fault_interrupt_validate(const QemuCrucibleFaultRule *rule)
          }
          if (qemu_crucible_fault_rule_command_kind(rule) ==
              CRUCIBLE_FAULT_COMMAND_INTERRUPT_DISPOSITION) {
@@ -1071,7 +1106,7 @@ index c376c92..3a8d47c 100644
              if (conflict.conflict) {
                  return -EEXIST;
              }
-@@ -1822,6 +1874,772 @@ void qemu_crucible_fault_interrupt_event_terminal(void)
+@@ -1822,6 +1879,824 @@ void qemu_crucible_fault_interrupt_event_terminal(void)
      }
  }
  
@@ -1258,6 +1293,27 @@ index c376c92..3a8d47c 100644
 +    g_free(storm);
 +}
 +
++static void crucible_interrupt_restored_deferred_free(gpointer opaque)
++{
++    CrucibleInterruptDeferred *deferred = opaque;
++
++    if (deferred->timer) {
++        timer_del(deferred->timer);
++        timer_free(deferred->timer);
++    }
++    qemu_crucible_fault_rule_unref(deferred->rule);
++    g_free(deferred);
++}
++
++static void crucible_interrupt_restored_impulse_free(gpointer opaque)
++{
++    CrucibleInterruptImpulse *impulse = opaque;
++
++    g_free(impulse->event_reservation);
++    qemu_crucible_fault_rule_unref(impulse->rule);
++    g_free(impulse);
++}
++
 +static void crucible_interrupt_vmstate_free(void *opaque)
 +{
 +    CrucibleInterruptVmstate *state = opaque;
@@ -1269,6 +1325,10 @@ index c376c92..3a8d47c 100644
 +    g_clear_pointer(&state->impulses, g_ptr_array_unref);
 +    g_clear_pointer(&state->storms, g_ptr_array_unref);
 +    g_clear_pointer(&state->provenance, g_array_unref);
++    g_clear_pointer(&state->restored_deferred, g_ptr_array_unref);
++    g_clear_pointer(&state->restored_impulses, g_ptr_array_unref);
++    g_clear_pointer(&state->restored_storms, g_ptr_array_unref);
++    g_clear_pointer(&state->restored_provenance, g_hash_table_unref);
 +    g_free(state);
 +}
 +
@@ -1678,6 +1738,94 @@ index c376c92..3a8d47c 100644
 +
 +        qemu_crucible_fault_vmstate_count_reservations(
 +            impulse->reservation_remaining);
++        impulse->reservation =
++            qemu_crucible_fault_event_reservation_restore(
++                impulse->reservation_remaining);
++        if (!impulse->reservation) {
++            goto fail;
++        }
++    }
++    state->restored_deferred = g_ptr_array_new_with_free_func(
++        crucible_interrupt_restored_deferred_free);
++    state->restored_impulses = g_ptr_array_new_with_free_func(
++        crucible_interrupt_restored_impulse_free);
++    state->restored_storms = g_ptr_array_new_with_free_func(
++        (GDestroyNotify)crucible_interrupt_storm_free);
++    for (guint i = 0; i < state->deferred->len; i++) {
++        CrucibleInterruptVmstateDeferred *source = g_ptr_array_index(
++            state->deferred, i);
++        CrucibleInterruptDeferred *deferred = g_new0(
++            CrucibleInterruptDeferred, 1);
++        CrucibleInterruptInjector *injector =
++            &crucible_interrupt_injectors[source->event.family];
++
++        deferred->event = source->event;
++        deferred->inject = injector->inject;
++        deferred->opaque = injector->opaque;
++        deferred->rule = source->rule;
++        source->rule = NULL;
++        deferred->delay_ns = source->delay_ns;
++        memcpy(deferred->before_hash, source->before_hash, 32);
++        deferred->timer = timer_new_ns(
++            QEMU_CLOCK_VIRTUAL, crucible_interrupt_deferred_cb, deferred);
++        g_ptr_array_add(state->restored_deferred, deferred);
++    }
++    for (guint i = 0; i < state->impulses->len; i++) {
++        CrucibleInterruptVmstateImpulse *source = g_ptr_array_index(
++            state->impulses, i);
++        CrucibleInterruptImpulse *impulse = g_new0(
++            CrucibleInterruptImpulse, 1);
++
++        impulse->rule = source->rule;
++        source->rule = NULL;
++        impulse->command_icount = source->command_icount;
++        memcpy(impulse->before_hash, source->before_hash, 32);
++        impulse->event_reservation = source->reservation;
++        source->reservation = NULL;
++        g_ptr_array_add(state->restored_impulses, impulse);
++    }
++    for (guint i = 0; i < state->storms->len; i++) {
++        CrucibleInterruptVmstateStorm *source = g_ptr_array_index(
++            state->storms, i);
++        CrucibleInterruptStorm *storm = g_new0(CrucibleInterruptStorm, 1);
++
++        storm->rule = source->rule;
++        source->rule = NULL;
++        storm->row = &g_array_index(
++            crucible_interrupt_manifest, CrucibleInterruptCapability,
++            source->row_index);
++        storm->target_vcpus = g_steal_pointer(&source->target_vcpus);
++        storm->target_vcpu_count = source->target_vcpu_count;
++        storm->vector = source->vector;
++        storm->period_ns = source->period_ns;
++        storm->next_deadline_ns = source->next_deadline_ns;
++        storm->burst = source->burst;
++        storm->total = source->total;
++        storm->emitted = source->emitted;
++        storm->priority = source->priority;
++        storm->retain_pending = source->retain_pending;
++        storm->seen = source->seen;
++        storm->completed = source->completed;
++        if (!storm->completed) {
++            storm->timer = timer_new_ns(
++                QEMU_CLOCK_VIRTUAL, crucible_interrupt_storm_cb, storm);
++        }
++        g_ptr_array_add(state->restored_storms, storm);
++    }
++    state->restored_provenance = g_hash_table_new_full(
++        crucible_interrupt_provenance_hash,
++        crucible_interrupt_provenance_equal, g_free, g_free);
++    for (guint i = 0; i < state->provenance->len; i++) {
++        CrucibleInterruptVmstateProvenance *source = &g_array_index(
++            state->provenance, CrucibleInterruptVmstateProvenance, i);
++        CrucibleInterruptProvenanceKey *key = g_new(
++            CrucibleInterruptProvenanceKey, 1);
++        QemuCrucibleInterruptEvent *event = g_new(
++            QemuCrucibleInterruptEvent, 1);
++
++        *key = source->key;
++        *event = source->event;
++        g_hash_table_insert(state->restored_provenance, key, event);
 +    }
 +    qemu_crucible_fault_vmstate_count_deferred(state->impulses->len);
 +    *staged_out = state;
@@ -1723,98 +1871,37 @@ index c376c92..3a8d47c 100644
 +        g_ptr_array_remove_index(crucible_interrupt_storms, 0);
 +        crucible_interrupt_storm_free(storm);
 +    }
-+    if (!crucible_interrupt_deferred) {
-+        crucible_interrupt_deferred = g_ptr_array_new();
-+    }
-+    if (!crucible_interrupt_impulses) {
-+        crucible_interrupt_impulses = g_ptr_array_new();
-+    }
-+    if (!crucible_interrupt_storms) {
-+        crucible_interrupt_storms = g_ptr_array_new();
-+    }
-+    for (guint i = 0; i < state->deferred->len; i++) {
++    g_clear_pointer(&crucible_interrupt_deferred, g_ptr_array_unref);
++    g_clear_pointer(&crucible_interrupt_impulses, g_ptr_array_unref);
++    g_clear_pointer(&crucible_interrupt_storms, g_ptr_array_unref);
++    crucible_interrupt_deferred =
++        g_steal_pointer(&state->restored_deferred);
++    crucible_interrupt_impulses =
++        g_steal_pointer(&state->restored_impulses);
++    crucible_interrupt_storms = g_steal_pointer(&state->restored_storms);
++    g_ptr_array_set_free_func(crucible_interrupt_deferred, NULL);
++    g_ptr_array_set_free_func(crucible_interrupt_impulses, NULL);
++    g_ptr_array_set_free_func(crucible_interrupt_storms, NULL);
++    for (guint i = 0; i < crucible_interrupt_deferred->len; i++) {
++        CrucibleInterruptDeferred *deferred = g_ptr_array_index(
++            crucible_interrupt_deferred, i);
 +        CrucibleInterruptVmstateDeferred *source = g_ptr_array_index(
 +            state->deferred, i);
-+        CrucibleInterruptDeferred *deferred = g_new0(
-+            CrucibleInterruptDeferred, 1);
-+        CrucibleInterruptInjector *injector =
-+            &crucible_interrupt_injectors[source->event.family];
 +
-+        deferred->event = source->event;
-+        deferred->inject = injector->inject;
-+        deferred->opaque = injector->opaque;
-+        deferred->rule = qemu_crucible_fault_rule_ref(source->rule);
-+        deferred->delay_ns = source->delay_ns;
-+        memcpy(deferred->before_hash, source->before_hash, 32);
-+        deferred->timer = timer_new_ns(
-+            QEMU_CLOCK_VIRTUAL, crucible_interrupt_deferred_cb, deferred);
-+        g_ptr_array_add(crucible_interrupt_deferred, deferred);
 +        timer_mod_ns(deferred->timer, source->deadline_ns);
 +    }
 +    qatomic_set(&crucible_interrupt_deferred_reserved,
 +                state->deferred_reserved);
-+    for (guint i = 0; i < state->impulses->len; i++) {
-+        CrucibleInterruptVmstateImpulse *source = g_ptr_array_index(
-+            state->impulses, i);
-+        CrucibleInterruptImpulse *impulse = g_new0(
-+            CrucibleInterruptImpulse, 1);
-+
-+        impulse->rule = qemu_crucible_fault_rule_ref(source->rule);
-+        impulse->command_icount = source->command_icount;
-+        memcpy(impulse->before_hash, source->before_hash, 32);
-+        impulse->event_reservation =
-+            qemu_crucible_fault_event_reservation_restore(
-+                source->reservation_remaining);
-+        g_assert(impulse->event_reservation);
-+        g_ptr_array_add(crucible_interrupt_impulses, impulse);
-+    }
-+    for (guint i = 0; i < state->storms->len; i++) {
-+        CrucibleInterruptVmstateStorm *source = g_ptr_array_index(
-+            state->storms, i);
-+        CrucibleInterruptStorm *storm = g_new0(
-+            CrucibleInterruptStorm, 1);
-+
-+        storm->rule = qemu_crucible_fault_rule_ref(source->rule);
-+        storm->row = &g_array_index(
-+            crucible_interrupt_manifest, CrucibleInterruptCapability,
-+            source->row_index);
-+        storm->target_vcpus = g_memdup2(
-+            source->target_vcpus,
-+            source->target_vcpu_count * sizeof(*source->target_vcpus));
-+        storm->target_vcpu_count = source->target_vcpu_count;
-+        storm->vector = source->vector;
-+        storm->period_ns = source->period_ns;
-+        storm->next_deadline_ns = source->next_deadline_ns;
-+        storm->burst = source->burst;
-+        storm->total = source->total;
-+        storm->emitted = source->emitted;
-+        storm->priority = source->priority;
-+        storm->retain_pending = source->retain_pending;
-+        storm->seen = source->seen;
-+        storm->completed = source->completed;
++    for (guint i = 0; i < crucible_interrupt_storms->len; i++) {
++        CrucibleInterruptStorm *storm = g_ptr_array_index(
++            crucible_interrupt_storms, i);
 +        if (!storm->completed) {
-+            storm->timer = timer_new_ns(
-+                QEMU_CLOCK_VIRTUAL, crucible_interrupt_storm_cb, storm);
 +            timer_mod_ns(storm->timer, storm->next_deadline_ns);
 +        }
-+        g_ptr_array_add(crucible_interrupt_storms, storm);
 +    }
 +    g_clear_pointer(&crucible_interrupt_provenance, g_hash_table_unref);
-+    if (state->provenance->len != 0) {
-+        crucible_interrupt_provenance_ensure();
-+    }
-+    for (guint i = 0; i < state->provenance->len; i++) {
-+        CrucibleInterruptVmstateProvenance *source = &g_array_index(
-+            state->provenance, CrucibleInterruptVmstateProvenance, i);
-+        CrucibleInterruptProvenanceKey *key = g_new(
-+            CrucibleInterruptProvenanceKey, 1);
-+        QemuCrucibleInterruptEvent *event = g_new(
-+            QemuCrucibleInterruptEvent, 1);
-+
-+        *key = source->key;
-+        *event = source->event;
-+        g_hash_table_insert(crucible_interrupt_provenance, key, event);
-+    }
++    crucible_interrupt_provenance =
++        g_steal_pointer(&state->restored_provenance);
 +    qatomic_set(&crucible_interrupt_next_source_sequence,
 +                state->next_source_sequence);
 +    qatomic_set(&crucible_interrupt_next_route_generation,
@@ -1845,7 +1932,7 @@ index c376c92..3a8d47c 100644
  {
      uint32_t boundary = 1U << (CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY - 1);
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
-index 1ecf099..a14128e 100644
+index 1ecf099..73cffb6 100644
 --- a/plugins/crucible-fault-lifecycle.c
 +++ b/plugins/crucible-fault-lifecycle.c
 @@ -21,6 +21,7 @@
@@ -1882,7 +1969,7 @@ index 1ecf099..a14128e 100644
  } CrucibleHangState;
  
  typedef struct CrucibleHangApply {
-@@ -108,6 +114,19 @@ typedef struct CrucibleHangApply {
+@@ -108,6 +114,20 @@ typedef struct CrucibleHangApply {
      GArray *vcpu_hung;
  } CrucibleHangApply;
  
@@ -1895,6 +1982,7 @@ index 1ecf099..a14128e 100644
 +    uint32_t terminal_transition;
 +    bool node_hung;
 +    bool terminal_exit_requested;
++    bool replacement_handoff;
 +    uint8_t terminal_action_sha256[32];
 +    uint8_t terminal_evidence_sha256[32];
 +} CrucibleLifecycleVmstate;
@@ -1902,7 +1990,7 @@ index 1ecf099..a14128e 100644
  static CrucibleLifecyclePendingReset crucible_lifecycle_pending_reset;
  static bool crucible_lifecycle_node_hung;
  static GArray *crucible_lifecycle_vcpu_hung;
-@@ -119,6 +138,11 @@ static uint8_t crucible_lifecycle_terminal_action_sha256[32];
+@@ -119,6 +139,11 @@ static uint8_t crucible_lifecycle_terminal_action_sha256[32];
  static uint8_t crucible_lifecycle_terminal_evidence_sha256[32];
  static uint64_t crucible_lifecycle_process_generation;
  
@@ -1914,7 +2002,7 @@ index 1ecf099..a14128e 100644
  static void crucible_lifecycle_sha256(const uint8_t *data, size_t length,
                                        uint8_t digest[32]);
  
-@@ -202,6 +226,10 @@ int qemu_plugin_crucible_lifecycle_set_process_generation(
+@@ -202,6 +227,10 @@ int qemu_plugin_crucible_lifecycle_set_process_generation(
          return -EALREADY;
      }
      crucible_lifecycle_process_generation = process_generation;
@@ -1925,7 +2013,7 @@ index 1ecf099..a14128e 100644
      return 0;
  }
  
-@@ -1684,6 +1712,493 @@ static uint64_t crucible_lifecycle_watchdog_deadline(uint16_t phase)
+@@ -1684,6 +1713,512 @@ static uint64_t crucible_lifecycle_watchdog_deadline(uint16_t phase)
      return deadline;
  }
  
@@ -2121,7 +2209,6 @@ index 1ecf099..a14128e 100644
 +        !qemu_crucible_fault_vmstate_get_bytes(
 +            &reader, state->terminal_evidence_sha256, 32) ||
 +        state->process_generation == 0 ||
-+        state->process_generation != crucible_lifecycle_process_generation ||
 +        hang_count > 4096 ||
 +        vcpu_count > 4096 || node_hung > 1 || exit_requested > 1 ||
 +        has_pending > 1 || reserved8 != 0 ||
@@ -2135,6 +2222,15 @@ index 1ecf099..a14128e 100644
 +          !crucible_lifecycle_vmstate_hash_zero(
 +              state->terminal_evidence_sha256)))) {
 +        goto fail;
++    }
++    if (state->process_generation != crucible_lifecycle_process_generation) {
++        if (state->process_generation == UINT64_MAX ||
++            state->process_generation + 1 !=
++                crucible_lifecycle_process_generation ||
++            state->terminal_transition == 0) {
++            goto fail;
++        }
++        state->replacement_handoff = true;
 +    }
 +    state->node_hung = node_hung;
 +    state->terminal_exit_requested = exit_requested;
@@ -2235,6 +2331,13 @@ index 1ecf099..a14128e 100644
 +        }
 +        qemu_crucible_fault_vmstate_count_reservations(
 +            pending->vmstate_reservation_remaining);
++        pending->reservation =
++            qemu_crucible_fault_event_reservation_restore(
++                pending->vmstate_reservation_remaining);
++        if (!pending->reservation) {
++            goto fail;
++        }
++        pending->vmstate_reservation_remaining = 0;
 +        if (pending->complete_deferred) {
 +            qemu_crucible_fault_vmstate_count_deferred(1);
 +        }
@@ -2303,6 +2406,33 @@ index 1ecf099..a14128e 100644
 +            hang->vmstate_activation_remaining +
 +            hang->vmstate_watchdog_remaining +
 +            hang->vmstate_recovery_remaining);
++        if (hang->vmstate_activation_remaining) {
++            hang->activation_reservation =
++                qemu_crucible_fault_event_reservation_restore(
++                    hang->vmstate_activation_remaining);
++        }
++        if (hang->vmstate_watchdog_remaining) {
++            hang->watchdog_reservation =
++                qemu_crucible_fault_event_reservation_restore(
++                    hang->vmstate_watchdog_remaining);
++        }
++        if (hang->vmstate_recovery_remaining) {
++            hang->recovery_reservation =
++                qemu_crucible_fault_event_reservation_restore(
++                    hang->vmstate_recovery_remaining);
++        }
++        if ((hang->vmstate_activation_remaining &&
++             !hang->activation_reservation) ||
++            (hang->vmstate_watchdog_remaining &&
++             !hang->watchdog_reservation) ||
++            (hang->vmstate_recovery_remaining &&
++             !hang->recovery_reservation)) {
++            crucible_hang_state_free(hang);
++            goto fail;
++        }
++        hang->vmstate_activation_remaining = 0;
++        hang->vmstate_watchdog_remaining = 0;
++        hang->vmstate_recovery_remaining = 0;
 +        g_ptr_array_add(state->hangs, hang);
 +    }
 +    if (!qemu_crucible_fault_vmstate_reader_finished(&reader)) {
@@ -2354,11 +2484,6 @@ index 1ecf099..a14128e 100644
 +            &crucible_lifecycle_pending_reset);
 +    }
 +    if (state->pending_reset.rule) {
-+        state->pending_reset.reservation =
-+            qemu_crucible_fault_event_reservation_restore(
-+                state->pending_reset.vmstate_reservation_remaining);
-+        g_assert(state->pending_reset.reservation);
-+        state->pending_reset.vmstate_reservation_remaining = 0;
 +        crucible_lifecycle_pending_reset = state->pending_reset;
 +        memset(&state->pending_reset, 0, sizeof(state->pending_reset));
 +    } else {
@@ -2366,43 +2491,25 @@ index 1ecf099..a14128e 100644
 +               sizeof(crucible_lifecycle_pending_reset));
 +    }
 +    g_clear_pointer(&crucible_lifecycle_hangs, g_ptr_array_unref);
-+    for (guint i = 0; i < state->hangs->len; i++) {
-+        CrucibleHangState *hang = g_ptr_array_index(state->hangs, i);
-+
-+        if (hang->vmstate_activation_remaining) {
-+            hang->activation_reservation =
-+                qemu_crucible_fault_event_reservation_restore(
-+                    hang->vmstate_activation_remaining);
-+            g_assert(hang->activation_reservation);
-+        }
-+        if (hang->vmstate_watchdog_remaining) {
-+            hang->watchdog_reservation =
-+                qemu_crucible_fault_event_reservation_restore(
-+                    hang->vmstate_watchdog_remaining);
-+            g_assert(hang->watchdog_reservation);
-+        }
-+        if (hang->vmstate_recovery_remaining) {
-+            hang->recovery_reservation =
-+                qemu_crucible_fault_event_reservation_restore(
-+                    hang->vmstate_recovery_remaining);
-+            g_assert(hang->recovery_reservation);
-+        }
-+        hang->vmstate_activation_remaining = 0;
-+        hang->vmstate_watchdog_remaining = 0;
-+        hang->vmstate_recovery_remaining = 0;
-+    }
 +    crucible_lifecycle_hangs = g_steal_pointer(&state->hangs);
 +    g_clear_pointer(&crucible_lifecycle_vcpu_hung, g_array_unref);
 +    crucible_lifecycle_vcpu_hung = g_steal_pointer(&state->vcpu_hung);
 +    crucible_lifecycle_node_hung = state->node_hung;
 +    crucible_lifecycle_next_watchdog_ns = state->next_watchdog_ns;
-+    crucible_lifecycle_terminal_transition = state->terminal_transition;
-+    crucible_lifecycle_terminal_exit_requested =
-+        state->terminal_exit_requested;
-+    memcpy(crucible_lifecycle_terminal_action_sha256,
-+           state->terminal_action_sha256, 32);
-+    memcpy(crucible_lifecycle_terminal_evidence_sha256,
-+           state->terminal_evidence_sha256, 32);
++    if (state->replacement_handoff) {
++        crucible_lifecycle_terminal_transition = 0;
++        crucible_lifecycle_terminal_exit_requested = false;
++        memset(crucible_lifecycle_terminal_action_sha256, 0, 32);
++        memset(crucible_lifecycle_terminal_evidence_sha256, 0, 32);
++    } else {
++        crucible_lifecycle_terminal_transition = state->terminal_transition;
++        crucible_lifecycle_terminal_exit_requested =
++            state->terminal_exit_requested;
++        memcpy(crucible_lifecycle_terminal_action_sha256,
++               state->terminal_action_sha256, 32);
++        memcpy(crucible_lifecycle_terminal_evidence_sha256,
++               state->terminal_evidence_sha256, 32);
++    }
 +    crucible_lifecycle_vmstate_free(state);
 +}
 +
@@ -2419,7 +2526,7 @@ index 1ecf099..a14128e 100644
  static void crucible_lifecycle_register(void)
  {
      const uint32_t boundary =
-@@ -1701,6 +2216,8 @@ static void crucible_lifecycle_register(void)
+@@ -1701,6 +2236,8 @@ static void crucible_lifecycle_register(void)
          crucible_lifecycle_watchdog_boundary);
      qemu_crucible_fault_boundary_deadline_register(
          crucible_lifecycle_watchdog_deadline);
@@ -3934,7 +4041,7 @@ index 1eaae5e..8f82e57 100644
                                      uint16_t tag, uint16_t type,
                                      const uint8_t **data, uint32_t *length)
 diff --git a/plugins/crucible-fault-vcpu-service.c b/plugins/crucible-fault-vcpu-service.c
-index 1327286..cee1a53 100644
+index 1327286..ca55e1a 100644
 --- a/plugins/crucible-fault-vcpu-service.c
 +++ b/plugins/crucible-fault-vcpu-service.c
 @@ -67,6 +67,12 @@ typedef struct CrucibleVcpuRuleApply {
@@ -3960,7 +4067,7 @@ index 1327286..cee1a53 100644
              return 0;
          }
          count++;
-@@ -937,6 +944,508 @@ void qemu_crucible_fault_vcpu_service_event_terminal(void)
+@@ -937,6 +944,507 @@ void qemu_crucible_fault_vcpu_service_event_terminal(void)
      }
  }
  
@@ -4416,8 +4523,20 @@ index 1327286..cee1a53 100644
 +        goto fail;
 +    }
 +    for (guint i = 0; i < state->reservation_remaining->len; i++) {
-+        qemu_crucible_fault_vmstate_count_reservations(
-+            g_array_index(state->reservation_remaining, uint32_t, i));
++        uint32_t remaining = g_array_index(
++            state->reservation_remaining, uint32_t, i);
++
++        qemu_crucible_fault_vmstate_count_reservations(remaining);
++        if (remaining != 0) {
++            CrucibleVcpuService *service = &g_array_index(
++                state->services, CrucibleVcpuService, i);
++
++            service->window_reservation =
++                qemu_crucible_fault_event_reservation_restore(remaining);
++            if (!service->window_reservation) {
++                goto fail;
++            }
++        }
 +    }
 +    *staged_out = state;
 +    return 0;
@@ -4439,19 +4558,6 @@ index 1327286..cee1a53 100644
 +        g_array_unref(crucible_vcpu_services);
 +    }
 +    crucible_vcpu_services = g_steal_pointer(&state->services);
-+    for (guint i = 0; i < crucible_vcpu_services->len; i++) {
-+        uint32_t remaining = g_array_index(
-+            state->reservation_remaining, uint32_t, i);
-+
-+        if (remaining != 0) {
-+            g_array_index(crucible_vcpu_services,
-+                          CrucibleVcpuService, i).window_reservation =
-+                qemu_crucible_fault_event_reservation_restore(remaining);
-+            g_assert(g_array_index(crucible_vcpu_services,
-+                                   CrucibleVcpuService,
-+                                   i).window_reservation);
-+        }
-+    }
 +    crucible_vcpu_service_terminal = state->terminal;
 +    crucible_vcpu_vmstate_free(state);
 +}
@@ -4469,7 +4575,7 @@ index 1327286..cee1a53 100644
  static void crucible_vcpu_service_register(void)
  {
      const uint32_t boundary =
-@@ -950,6 +1459,7 @@ static void crucible_vcpu_service_register(void)
+@@ -950,6 +1458,7 @@ static void crucible_vcpu_service_register(void)
          CRUCIBLE_FAULT_COMMAND_CPU_VCPU_STATE,
          QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_ALL, boundary,
          "qemu.cpu.vcpu-state.v1", NULL);
