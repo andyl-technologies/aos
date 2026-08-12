@@ -283,9 +283,7 @@ impl QemuLiveAcceleratorCheckpoint {
     ///
     /// Returns [`QemuLiveAcceleratorServicerError`] for unsupported, malformed,
     /// over-capacity, duplicate, noncanonical, or trailing state.
-    pub fn from_canonical_bytes(
-        bytes: &[u8],
-    ) -> Result<Self, QemuLiveAcceleratorServicerError> {
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, QemuLiveAcceleratorServicerError> {
         let payload = bytes
             .strip_prefix(ACCELERATOR_CHECKPOINT_MAGIC)
             .ok_or(QemuLiveAcceleratorServicerError::InvalidCheckpoint)?;
