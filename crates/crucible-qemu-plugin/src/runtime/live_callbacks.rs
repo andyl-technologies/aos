@@ -981,6 +981,7 @@ impl LiveVcpuTimeCallbackState {
                 observed: plugin_id,
             });
         }
+        self.initialize_fault_commands()?;
         let initialized = self.vcpu_flag(vcpu_index)?;
         initialized.store(true, Ordering::Release);
         Ok(())
@@ -1858,8 +1859,30 @@ impl LiveVcpuTimeCallbackState {
             .map_err(|source| LiveVcpuTimeCallbackError::FaultCommands { source })
     }
 
+    fn initialize_fault_commands(&self) -> Result<(), LiveVcpuTimeCallbackError> {
+        let mut bridge = match self.fault_commands.try_lock() {
+            Ok(bridge) => bridge,
+            Err(TryLockError::WouldBlock) => {
+                return Err(LiveVcpuTimeCallbackError::FaultCommandStateBorrowed);
+            }
+            Err(TryLockError::Poisoned(_error)) => {
+                return Err(LiveVcpuTimeCallbackError::CallbackStatePoisoned);
+            }
+        };
+        #[cfg(not(test))]
+        let bridge = &mut *bridge;
+        #[cfg(test)]
+        let Some(bridge) = bridge.as_mut() else {
+            return Ok(());
+        };
+        bridge
+            .initialize()
+            .map_err(|source| LiveVcpuTimeCallbackError::FaultCommands { source })
+    }
+
     /// Processes setup-time capability admission before the ready ACK.
     pub(crate) fn admit_fault_capabilities(&self) -> Result<(), LiveVcpuTimeCallbackError> {
+        self.initialize_fault_commands()?;
         self.pump_fault_commands((self.icount_raw)())
     }
 
