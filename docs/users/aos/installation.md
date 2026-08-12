@@ -121,6 +121,86 @@ The repository intentionally does not wrap this destructive step in an AOS
 command. Use the deployment system's normal image-import or disk-imaging
 workflow, with its audit and confirmation controls.
 
+## Install redundant encrypted ZFS storage
+
+The reusable `aos.profiles.bareMetalZfs` profile provides a different
+bare-metal layout. Every selected disk receives an independently bootable
+1 GiB ESP and a ZFS member. Adjacent members form mirrors, and the mirrors are
+striped by the pool, so two disks produce a mirror and four or more disks
+produce RAID10-style storage. The encrypted pool contains mutable datasets and
+fixed-size zvols for both immutable EROFS roots and both dm-verity hash trees.
+There is no LUKS layer below ZFS.
+
+Create a deployment system module that imports an immutable, measured-boot
+server system, enables the profile, lists one ESP identity per target disk,
+and supplies deployment-owned Secure Boot and PCR-policy keys. For example:
+
+```nix
+{
+  imports = [./systems/server-verity.nix];
+
+  aos.profiles.bareMetalZfs = {
+    enable = true;
+    espDevices = [
+      "/dev/disk/by-partlabel/aos-esp-1"
+      "/dev/disk/by-partlabel/aos-esp-2"
+      "/dev/disk/by-partlabel/aos-esp-3"
+      "/dev/disk/by-partlabel/aos-esp-4"
+    ];
+    nvidiaOpen = true;
+    serverManagement = true;
+  };
+
+  aos.boot.secureBoot = {
+    dbKey = "/deployment/keys/db.key";
+    dbCert = "/deployment/keys/db.crt";
+    enrollAuthDir = "/deployment/keys/enrollment";
+    measuredBoot = {
+      pcrPrivateKey = "/deployment/keys/pcr.key";
+      pcrPublicKey = "/deployment/keys/pcr.pem";
+    };
+  };
+}
+```
+
+The paths above are placeholders. Private keys must come from the deployment
+build environment and must never be committed, published, or copied into the
+installed root. The repository's measured-boot systems are test fixtures with
+public keys; do not install them on a real machine.
+
+Build the module's `system.build.installBundle` output on x86 Linux. Run the
+bundle's `bin/aos-install-zfs` from a trusted AOS recovery environment that has the exact ZFS
+kernel module loaded, the deployment Secure Boot keys enrolled, Secure Boot
+enforcing, and a working TPM2. The command is intentionally destructive and
+accepts only stable whole-disk identities with no existing partition table:
+
+```sh
+/path/to/install-bundle/bin/aos-install-zfs \
+  --confirm ERASE-AND-INSTALL \
+  --recovery-key-output /recovery-media/zfs-recovery.key \
+  --disk /dev/disk/by-id/REPLACE_WITH_DISK_1 \
+  --disk /dev/disk/by-id/REPLACE_WITH_DISK_2 \
+  --disk /dev/disk/by-id/REPLACE_WITH_DISK_3 \
+  --disk /dev/disk/by-id/REPLACE_WITH_DISK_4
+```
+
+The number of `--disk` arguments must equal the configured ESP count and must
+be even. Before the first destructive write, the installer rejects duplicate,
+mounted, partitioned, or kernel-name-only disks; an existing or relative
+recovery output; a topology mismatch; and a non-enforcing Secure Boot state.
+It creates native AES-256-GCM encryption, verifies the root payloads fit their
+zvol capacities, seals the pool key to the configured PCR policy, copies the
+sealed credential and boot artifacts to every ESP, and exports the pool.
+
+Move the recovery key off the installation environment before rebooting. Test
+both unattended TPM unlock and recovery-key import, then test booting through
+each firmware-visible ESP and surviving one failed mirror member before
+placing data on the system.
+
+Kernel lockdown is a separate opt-in policy. If enabled, the deployment must
+also sign both the ZFS and NVIDIA external modules with a key trusted by the
+kernel; the bare-metal profile does not generate or retain that private key.
+
 ## Supply first-boot metadata
 
 AOS accepts a literal `host.nix` through the following transports:
@@ -213,6 +293,12 @@ If first boot stops before the target, inspect the units and state in
   out-of-band recovery path when moving network and access policy to runtime.
 - Secure-boot and measured-boot variants in this repository use test keys.
   They are validation fixtures, not production enrollment artifacts.
+- The ZFS installer supports mirrored pairs striped into RAID10-style pools.
+  RAID0-only topology is intentionally not exposed because it cannot satisfy
+  the redundant-storage contract.
+- NVIDIA support in this repository stops at open kernel modules and matching
+  GSP firmware. CUDA, OpenGL, Vulkan, management utilities, and other matching
+  proprietary userspace components must be supplied separately.
 - `apm install PACKAGE --system --image raw --output FILE` downloads an image
   published in a system registry. It does not write a disk or provision a
   machine.
