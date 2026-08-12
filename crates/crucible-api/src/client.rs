@@ -1625,6 +1625,7 @@ fn query_kind_request_wire(kind: &QueryKind) -> String {
         QueryKind::State => String::from("state"),
         QueryKind::EventLogLength => String::from("event-log-length"),
         QueryKind::SearchFrontier => String::from("search-frontier"),
+        QueryKind::ResolvedEffectTrace => String::from("resolved-effect-trace"),
         QueryKind::ExecutionFingerprint { node } => {
             format!("execution-fingerprint|{}", hex_encode(node.name.as_bytes()))
         }

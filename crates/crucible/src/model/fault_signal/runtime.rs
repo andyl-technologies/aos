@@ -586,6 +586,34 @@ pub struct ResolvedEffectTrace {
 }
 
 impl ResolvedEffectTrace {
+    /// Encodes this trace as deterministic CBOR for artifact and RPC transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultRuntimeError::CheckpointEncoding`] when serialization fails.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, FaultRuntimeError> {
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(self, &mut bytes)
+            .map_err(|_| FaultRuntimeError::CheckpointEncoding)?;
+        Ok(bytes)
+    }
+
+    /// Decodes and validates a deterministic CBOR trace.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultRuntimeError`] when decoding fails or the trace violates
+    /// the supplied scenario resource contract.
+    pub fn from_canonical_bytes(
+        bytes: &[u8],
+        resource_limits: FaultResourceLimits,
+    ) -> Result<Self, FaultRuntimeError> {
+        let trace: Self =
+            ciborium::de::from_reader(bytes).map_err(|_| FaultRuntimeError::CheckpointEncoding)?;
+        trace.validate(resource_limits)?;
+        Ok(trace)
+    }
+
     /// Validates trace bounds and every replay work item.
     ///
     /// # Errors

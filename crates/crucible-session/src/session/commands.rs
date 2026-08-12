@@ -261,6 +261,8 @@ pub enum QueryKind {
     EventLogLength,
     /// Return scheduler-derived choices available at the current boundary.
     SearchFrontier,
+    /// Return the exact production resolved-effect trace, when present.
+    ResolvedEffectTrace,
     /// Return one deterministic execution-fingerprint sample for a node.
     ExecutionFingerprint {
         /// Node whose backend fingerprint should be sampled.
@@ -288,6 +290,8 @@ pub enum QueryResult {
         /// Explorer-forced choices that have not reached their RESOLVE point.
         pending_branch_choices: usize,
     },
+    /// Exact production resolved-effect trace, or none for an inert plan.
+    ResolvedEffectTrace(Option<Vec<u8>>),
     /// Deterministic execution-fingerprint sample for one node.
     ExecutionFingerprint(FingerprintSample),
     /// Attached node and stable operator-facing GDB endpoint, or none before attach.

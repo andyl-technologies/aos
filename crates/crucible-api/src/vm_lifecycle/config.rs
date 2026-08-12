@@ -66,6 +66,7 @@ impl ProductionVmLifecycleConfig {
             branch: None,
             branch_network_choices: Vec::new(),
             signal_artifacts: None,
+            fault_replay: None,
             world_artifacts: None,
             validate_guest_asset_references: false,
         }
@@ -256,6 +257,17 @@ impl ProductionVmLifecycleConfig {
     #[must_use]
     pub fn with_branch_network_choices(mut self, choices: Vec<crucible::OverrideDecision>) -> Self {
         self.branch_network_choices = choices;
+        self
+    }
+
+    /// Returns this configuration with an authoritative resolved-effect replay.
+    ///
+    /// The lifecycle validates and installs the trace before the first QEMU
+    /// quantum and rejects a successful shutdown unless every work item was
+    /// consumed.
+    #[must_use]
+    pub fn with_fault_replay(mut self, trace: ResolvedEffectTrace) -> Self {
+        self.fault_replay = Some(trace);
         self
     }
 

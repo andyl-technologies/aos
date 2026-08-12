@@ -501,6 +501,18 @@ pub trait QuantumLoop {
         0
     }
 
+    /// Returns the exact resolved-effect trace retained by a live fault runtime.
+    ///
+    /// Loops without a signal-driven fault runtime return `None`. Production
+    /// loops return an unconsumed trace suitable for a reproduction artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the runtime cannot encode a valid trace.
+    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+        Ok(None)
+    }
+
     /// Takes a terminal verdict emitted while driving the previous quantum.
     ///
     /// Live scenario loops override this when trigger evaluation can complete

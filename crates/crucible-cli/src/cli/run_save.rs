@@ -27,6 +27,7 @@ pub(super) struct RunWorkflowReport {
     pub(super) streamed_event_frames: Vec<Vec<u8>>,
     pub(super) coverage_feedback: crucible::EventLogCoverageFeedback,
     pub(super) execution_fingerprints: Vec<crucible::FingerprintSample>,
+    pub(super) resolved_effect_trace: Option<Vec<u8>>,
     pub(super) acknowledged_commands: Vec<SessionCommandKind>,
     pub(super) watch_statuses: Vec<String>,
 }
@@ -917,6 +918,7 @@ where
             streamed_event_frames,
             coverage_feedback: coverage_feedback_from_streamed_events(coverage_events)?,
             execution_fingerprints,
+            resolved_effect_trace: None,
             acknowledged_commands,
             watch_statuses,
         },

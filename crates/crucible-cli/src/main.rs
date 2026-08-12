@@ -74,6 +74,8 @@ const LIVE_QEMU_EVENT_STREAM_MEDIA_TYPE: &str =
     "application/vnd.crucible.live-qemu-event-stream.v1+bytes";
 const LIVE_QEMU_FINGERPRINT_STREAM_MEDIA_TYPE: &str =
     "application/vnd.crucible.live-qemu-fingerprint-stream.v1+bytes";
+const LIVE_QEMU_RESOLVED_EFFECT_TRACE_MEDIA_TYPE: &str =
+    "application/vnd.crucible.resolved-effect-trace.v1+cbor";
 const REPLAY_SCHEDULE_PREFIX_PROOF_SCHEMA: &str = "crucible.replay.schedule-prefix-proof.v1";
 const SEARCH_SCHEDULE_NAMED_TRUTHS_SCHEMA: &str = "crucible.search-schedule-named-truths.v1";
 const SEARCH_SCHEDULE_NAMED_TRUTHS_MEDIA_TYPE: &str =

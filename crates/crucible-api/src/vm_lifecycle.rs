@@ -22,7 +22,9 @@ use crate::vm_resume::{
     launch_production_live_node, launch_production_live_node_exact_snapshot,
     launch_production_live_node_exact_snapshot_paused,
 };
-use crucible::model::{FaultCoordinate, SignalArtifactProvider, SignalBoundarySnapshot};
+use crucible::model::{
+    FaultCoordinate, ResolvedEffectTrace, SignalArtifactProvider, SignalBoundarySnapshot,
+};
 use crucible::{
     Action, AssertionPhase, BackendQuantumLoop, BlackBoxHostOracle, Checkpoint, CheckpointKind,
     ConditionEvaluationPass, ConditionLeaf, Configuration, ContentHash, ControlOperation, DagStore,
@@ -78,6 +80,7 @@ pub struct ProductionVmLifecycleConfig {
     branch: Option<ProductionVmBranchConfig>,
     branch_network_choices: Vec<crucible::OverrideDecision>,
     signal_artifacts: Option<Arc<dyn SignalArtifactProvider>>,
+    fault_replay: Option<ResolvedEffectTrace>,
     world_artifacts: Option<Arc<dyn DagStore>>,
     validate_guest_asset_references: bool,
 }
@@ -104,6 +107,7 @@ impl std::fmt::Debug for ProductionVmLifecycleConfig {
                 "signal_artifacts_configured",
                 &self.signal_artifacts.is_some(),
             )
+            .field("fault_replay_configured", &self.fault_replay.is_some())
             .field(
                 "world_artifacts_configured",
                 &self.world_artifacts.is_some(),
@@ -279,6 +283,7 @@ pub struct ProductionVmLifecycleLoop {
     block_devices: storage_faults::ProductionBlockDevices,
     storage_fault_observations: storage_faults::ProductionStorageObservations,
     fault_runtime: Arc<std::sync::Mutex<ProductionFaultRuntime>>,
+    fault_replay_installed: bool,
     fault_evaluation_cursor: network_faults::SharedProductionFaultEvaluationCursor,
     icount_shift: u8,
     node_indexes: BTreeMap<NodeId, usize>,
@@ -839,7 +844,7 @@ pub fn build_production_vm_lifecycle_loop(
             )
         })?)
     };
-    let fault_runtime = ProductionFaultRuntime::new(
+    let mut fault_runtime = ProductionFaultRuntime::new(
         signal_plan,
         signal_artifacts,
         SignalBoundarySnapshot::default(),
@@ -847,6 +852,12 @@ pub fn build_production_vm_lifecycle_loop(
         &backends,
     )
     .map_err(|error| loop_factory_error(format!("admit signal fault runtime: {error}")))?;
+    let fault_replay_installed = config.fault_replay.is_some();
+    if let Some(trace) = config.fault_replay.clone() {
+        fault_runtime
+            .install_replay(trace)
+            .map_err(|error| loop_factory_error(format!("install signal fault replay: {error}")))?;
+    }
     let fault_runtime = Arc::new(std::sync::Mutex::new(fault_runtime));
     let fault_evaluation_cursor: SharedProductionFaultEvaluationCursor = Arc::new(
         std::sync::Mutex::new(ProductionFaultEvaluationCursor::default()),
@@ -944,6 +955,7 @@ pub fn build_production_vm_lifecycle_loop(
         block_devices,
         storage_fault_observations,
         fault_runtime,
+        fault_replay_installed,
         fault_evaluation_cursor,
         icount_shift: first.icount_shift,
         node_indexes,

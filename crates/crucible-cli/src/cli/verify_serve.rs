@@ -1413,6 +1413,7 @@ where
             streamed_event_frames: Vec::new(),
             coverage_feedback: crucible::EventLogCoverageFeedback::from_event_log(&[]),
             execution_fingerprints: Vec::new(),
+            resolved_effect_trace: None,
             acknowledged_commands,
             watch_statuses: Vec::new(),
         },

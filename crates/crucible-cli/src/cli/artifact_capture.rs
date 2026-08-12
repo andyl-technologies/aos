@@ -21,6 +21,8 @@ pub(crate) struct LiveQemuArtifactEvidence {
     pub(crate) event_stream: Vec<u8>,
     /// Canonical producer fingerprint stream compared with the replay.
     pub(crate) fingerprint_stream: Vec<u8>,
+    /// Exact resolved-effect work items, including pass outcomes.
+    pub(crate) resolved_effect_trace: Option<Vec<u8>>,
     /// Typed samples encoded into both the component and top-level artifact.
     pub(crate) fingerprint_samples: Vec<VerifyFingerprintSample>,
 }
@@ -131,6 +133,7 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
         event_stream: canonical_verify_log_stream_bytes(&[], &report.streamed_event_frames),
         fingerprint_stream,
         fingerprint_samples,
+        resolved_effect_trace: report.resolved_effect_trace.clone(),
     })
 }
 
@@ -173,7 +176,7 @@ fn select_live_qemu_artifact_fingerprints(
 pub(crate) fn live_qemu_artifact_payloads(
     evidence: &LiveQemuArtifactEvidence,
 ) -> Vec<ReproductionArtifactComponentPayload> {
-    vec![
+    let mut payloads = vec![
         ReproductionArtifactComponentPayload {
             kind: String::from("live_qemu_replay_contract"),
             name: String::from("live-qemu-replay-contract.txt"),
@@ -192,7 +195,16 @@ pub(crate) fn live_qemu_artifact_payloads(
             media_type: String::from(LIVE_QEMU_FINGERPRINT_STREAM_MEDIA_TYPE),
             bytes: evidence.fingerprint_stream.clone(),
         },
-    ]
+    ];
+    if let Some(trace) = &evidence.resolved_effect_trace {
+        payloads.push(ReproductionArtifactComponentPayload {
+            kind: String::from("live_qemu_resolved_effect_trace"),
+            name: String::from("resolved-effect-trace.cbor"),
+            media_type: String::from(LIVE_QEMU_RESOLVED_EFFECT_TRACE_MEDIA_TYPE),
+            bytes: trace.clone(),
+        });
+    }
+    payloads
 }
 
 /// Returns the typed schedule indices that must be forced during live replay.
