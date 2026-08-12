@@ -1590,4 +1590,46 @@ mod tests {
             .expect("materialize chunked artifact");
         assert_eq!(fs::read(restored).expect("read restored artifact"), bytes);
     }
+
+    #[test]
+    fn lifecycle_wire_restores_terminal_branch_and_controls() {
+        let scenario = crucible::happy_path_scenario()
+            .expect("build lifecycle wire scenario")
+            .scenario
+            .scenario_def();
+        let schedule = Schedule::empty().to_compact_binary();
+        let wire = LifecycleWire {
+            terminal: Some(TerminalWire::Failed(vec![String::from("failed")])),
+            initial_lifecycle_observations_pending: false,
+            branch: Some(BranchWire {
+                base_schedule: schedule.clone(),
+                frontier: 7,
+                decisions: Vec::new(),
+                seed: Some(Seed::from_u64(9).bytes()),
+            }),
+            recorded_controls: vec![RecordedControlWire {
+                configuration_schedule: schedule,
+                node_times: Vec::new(),
+                control: vec![ControlOperation {
+                    sequence: 1,
+                    kind: crucible::ControlOperationKind::Snapshot,
+                }],
+            }],
+        };
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&wire, &mut bytes).expect("encode lifecycle fixture");
+
+        let decoded = decode_lifecycle(&bytes, &scenario).expect("decode lifecycle fixture");
+
+        assert_eq!(
+            decoded.terminal,
+            Some(QuantumTerminalVerdict::Failed(vec![String::from("failed")]))
+        );
+        assert!(!decoded.initial_lifecycle_observations_pending);
+        let branch = decoded.branch.expect("branch should restore");
+        assert_eq!(branch.frontier, VirtualTime { ticks: 7 });
+        assert_eq!(branch.seed, Some(Seed::from_u64(9)));
+        assert_eq!(decoded.recorded_controls.len(), 1);
+        assert_eq!(decoded.recorded_controls[0].control[0].sequence, 1);
+    }
 }
