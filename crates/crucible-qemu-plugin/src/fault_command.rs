@@ -580,12 +580,22 @@ impl QemuFaultCommandApis {
                 .map(register_capability_row)
                 .collect::<Result<Vec<_>, _>>()?,
         };
-        FaultRegisterCapabilityManifestV1::decode(
-            &manifest
-                .encode()
-                .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?,
-        )
-        .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })
+        let encoded = manifest.encode().map_err(|source| {
+            let keys = manifest
+                .rows
+                .iter()
+                .map(|row| format!("{}:{}", row.numeric_id, row.name))
+                .collect::<Vec<_>>()
+                .join(",");
+            FaultCommandBridgeError::RegisterManifestAbi {
+                architecture,
+                cpu_model: manifest.cpu_model.clone(),
+                keys,
+                source,
+            }
+        })?;
+        FaultRegisterCapabilityManifestV1::decode(&encoded)
+            .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })
     }
 
     fn instruction_manifest(self) -> Result<InstructionEvidenceIdentity, FaultCommandBridgeError> {
@@ -1458,7 +1468,7 @@ fn register_capability_row(
         // and null pointers were checked above before this synchronous copy.
         unsafe { std::slice::from_raw_parts(pointer, raw.mask_bytes) }.to_vec()
     };
-    Ok(FaultRegisterCapabilityRowV1 {
+    let row = FaultRegisterCapabilityRowV1 {
         numeric_id: raw.numeric_id,
         name: capability_text(raw.name, "register_name")?.to_owned(),
         width_bits: raw.width_bits,
@@ -1471,7 +1481,20 @@ fn register_capability_row(
         reserved_mask: copy_mask(raw.reserved_mask),
         ignored_mask: copy_mask(raw.ignored_mask),
         read_only_mask: copy_mask(raw.read_only_mask),
-    })
+    };
+    row.validate()
+        .map_err(|source| FaultCommandBridgeError::RegisterManifestRowAbi {
+            numeric_id: raw.numeric_id,
+            name: row.name.clone(),
+            width_bits: raw.width_bits,
+            group: raw.group,
+            model_phase_mask: raw.model_phase_mask,
+            side_effects: raw.side_effects,
+            capabilities: raw.capabilities,
+            mask_bytes: raw.mask_bytes,
+            source,
+        })?;
+    Ok(row)
 }
 
 fn interrupt_capability_row(
@@ -2031,6 +2054,44 @@ pub enum FaultCommandBridgeError {
     /// A raw register row contained invalid reserved, pointer, or mask state.
     #[error("QEMU register manifest row has invalid raw framing")]
     RegisterManifestRow,
+    /// A framed register row violated the public semantic contract.
+    #[error(
+        "QEMU register manifest row `{name}` is invalid: id={numeric_id} width={width_bits} group={group} phases={model_phase_mask:#x} side_effects={side_effects:#x} capabilities={capabilities:#x} mask_bytes={mask_bytes}: {source}"
+    )]
+    RegisterManifestRowAbi {
+        /// QEMU-private numeric register ID.
+        numeric_id: u32,
+        /// Stable public register name.
+        name: String,
+        /// Register width in bits.
+        width_bits: u32,
+        /// Raw register-group tag.
+        group: u16,
+        /// Raw supported model-phase mask.
+        model_phase_mask: u64,
+        /// Raw derived-state side-effect flags.
+        side_effects: u32,
+        /// Raw mutation and VMState flags.
+        capabilities: u32,
+        /// Redundant mask byte count returned by QEMU.
+        mask_bytes: usize,
+        /// Public ABI validation failure.
+        source: FaultAbiError,
+    },
+    /// The assembled register manifest violated its global canonical contract.
+    #[error(
+        "QEMU register manifest is invalid: architecture={architecture} cpu_model=`{cpu_model}` rows=[{keys}]: {source}"
+    )]
+    RegisterManifestAbi {
+        /// Raw architecture scope returned by QEMU.
+        architecture: u16,
+        /// Realized QEMU CPU model identity.
+        cpu_model: String,
+        /// Ordered numeric-ID and public-name keys.
+        keys: String,
+        /// Public ABI validation failure.
+        source: FaultAbiError,
+    },
     /// QEMU rejected a sealed public identity-to-register binding.
     #[error("QEMU rejected register binding for numeric ID {numeric_id}: status {status}")]
     RegisterManifestBind {

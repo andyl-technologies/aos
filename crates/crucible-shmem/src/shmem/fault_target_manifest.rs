@@ -513,7 +513,14 @@ pub struct FaultRegisterCapabilityRowV1 {
 }
 
 impl FaultRegisterCapabilityRowV1 {
-    fn validate(&self) -> Result<(), FaultAbiError> {
+    /// Validates this row's identity, masks, phases, and mutation contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultAbiError::CapabilityInvariant`] when a field is outside
+    /// the closed version-1 vocabulary, masks do not partition every register
+    /// bit exactly once, or mutation flags contradict writability and VMState.
+    pub fn validate(&self) -> Result<(), FaultAbiError> {
         if self.numeric_id == 0
             || !valid_identity(&self.name)
             || self.width_bits == 0
