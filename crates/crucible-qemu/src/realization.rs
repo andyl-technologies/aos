@@ -66,7 +66,11 @@ impl QemuVmSnapshot {
             });
         }
         let identity =
-            exact_snapshot_identity(&checkpoint, &host_io, &node, replay_oracle_validation, true);
+            exact_snapshot_identity(&checkpoint, &host_io, &node, replay_oracle_validation, true)
+                .map_err(|error| QemuVmRealizationError::InvalidCheckpoint {
+                role: "paired exact snapshot",
+                message: format!("cannot authenticate complete snapshot state: {error}"),
+            })?;
         Ok(Self {
             checkpoint,
             host_io,
@@ -106,14 +110,14 @@ impl QemuVmSnapshot {
     }
 
     pub(crate) fn has_valid_identity(&self) -> bool {
-        self.identity
-            == exact_snapshot_identity(
-                &self.checkpoint,
-                &self.host_io,
-                &self.node,
-                self.replay_oracle_validation,
-                self.live_capture,
-            )
+        exact_snapshot_identity(
+            &self.checkpoint,
+            &self.host_io,
+            &self.node,
+            self.replay_oracle_validation,
+            self.live_capture,
+        )
+        .is_ok_and(|identity| self.identity == identity)
     }
 
     /// Returns replay-oracle evidence associated with this snapshot.
@@ -123,11 +127,14 @@ impl QemuVmSnapshot {
     }
 
     /// Builds a paired snapshot for a runtime with no host-serviced block device.
-    #[must_use]
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError::InvalidCheckpoint`] if the generated
+    /// owner continuations cannot be canonically authenticated.
     pub fn diskless(
         checkpoint: Checkpoint,
         replay_oracle_validation: QemuReplayOracleValidation,
-    ) -> Self {
+    ) -> Result<Self, QemuVmRealizationError> {
         let host_io = crate::QemuHostIoCheckpoint::without_devices(checkpoint.id);
         let node = crate::QemuNodeContinuationCheckpoint {
             execution_binding: checkpoint.id,
@@ -148,15 +155,19 @@ impl QemuVmSnapshot {
             &node,
             replay_oracle_validation,
             false,
-        );
-        Self {
+        )
+        .map_err(|error| QemuVmRealizationError::InvalidCheckpoint {
+            role: "diskless exact snapshot",
+            message: format!("cannot authenticate generated snapshot state: {error}"),
+        })?;
+        Ok(Self {
             checkpoint,
             host_io,
             node,
             replay_oracle_validation,
             live_capture: false,
             identity,
-        }
+        })
     }
 }
 
@@ -166,12 +177,13 @@ fn exact_snapshot_identity(
     node: &crate::QemuNodeContinuationCheckpoint,
     replay_oracle_validation: QemuReplayOracleValidation,
     live_capture: bool,
-) -> ContentHash {
-    ContentHash::from_canonical_material(
-        "crucible.qemu.exact-snapshot.v3",
-        &format!(
-            "checkpoint={checkpoint:?}\nhost_io={host_io:?}\nnode={node:?}\nreplay_oracle={replay_oracle_validation:?}\nlive_capture={live_capture}"
-        ),
+) -> Result<ContentHash, QemuVmSnapshotCodecError> {
+    snapshot_codec::canonical_snapshot_identity(
+        checkpoint,
+        host_io,
+        node,
+        replay_oracle_validation,
+        live_capture,
     )
 }
 
@@ -1207,6 +1219,14 @@ mod tests {
 
     type SharedLog = Rc<RefCell<Vec<RealizationCall>>>;
 
+    fn diskless_snapshot(
+        checkpoint: Checkpoint,
+        validation: QemuReplayOracleValidation,
+    ) -> QemuVmSnapshot {
+        QemuVmSnapshot::diskless(checkpoint, validation)
+            .unwrap_or_else(|error| panic!("build diskless snapshot: {error}"))
+    }
+
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum RealizationCall {
         ExactSnapshot(ContentHash),
@@ -1262,7 +1282,7 @@ mod tests {
             qemu_materialized_node_blobs(&configuration),
         )
         .unwrap_or_else(|error| panic!("build checkpoint: {error}"));
-        let snapshot = QemuVmSnapshot::diskless(
+        let snapshot = diskless_snapshot(
             checkpoint,
             QemuReplayOracleValidation::Match {
                 runtime_hash: hash("runtime", "snapshot-codec"),
@@ -1723,7 +1743,7 @@ mod tests {
         let mut store = scripted_store(Rc::clone(&log), &world, &def);
         store.exact_snapshots.push((
             target.id(),
-            QemuVmSnapshot::diskless(
+            diskless_snapshot(
                 checkpoint_for_config("exact-fat", &target, CheckpointKind::Fat),
                 QemuReplayOracleValidation::Match {
                     runtime_hash: hash("runtime", "exact-fat"),
@@ -1767,7 +1787,7 @@ mod tests {
         let checkpoint = checkpoint_for_config("exact-fat", &target, CheckpointKind::Fat);
         store.exact_snapshots.push((
             target.id(),
-            QemuVmSnapshot::diskless(
+            diskless_snapshot(
                 checkpoint.clone(),
                 QemuReplayOracleValidation::Match { runtime_hash },
             ),
@@ -1810,7 +1830,7 @@ mod tests {
         let mut store = scripted_store(Rc::clone(&log), &world, &def);
         store.exact_snapshots.push((
             target.id(),
-            QemuVmSnapshot::diskless(
+            diskless_snapshot(
                 checkpoint_for_config("oracle-exact", &target, CheckpointKind::Fat),
                 QemuReplayOracleValidation::NotRun,
             ),
@@ -1860,7 +1880,7 @@ mod tests {
         let mut store = scripted_store(Rc::clone(&log), &world, &def);
         store.exact_snapshots.push((
             target.id(),
-            QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun),
+            diskless_snapshot(checkpoint, QemuReplayOracleValidation::NotRun),
         ));
         let mut executor = scripted_executor(Rc::clone(&log));
 
@@ -1895,7 +1915,7 @@ mod tests {
         let mut store = scripted_store(Rc::clone(&log), &world, &def);
         store.exact_snapshots.push((
             target.id(),
-            QemuVmSnapshot::diskless(
+            diskless_snapshot(
                 checkpoint_for_config("oracle-exact", &target, CheckpointKind::Fat),
                 QemuReplayOracleValidation::NotRun,
             ),
@@ -1933,7 +1953,7 @@ mod tests {
         let mut store = scripted_store(Rc::clone(&log), &world, &def);
         store.exact_snapshots.push((
             target.id(),
-            QemuVmSnapshot::diskless(
+            diskless_snapshot(
                 checkpoint_for_config("exact-fat", &target, CheckpointKind::Fat),
                 QemuReplayOracleValidation::NotRun,
             ),
@@ -1971,7 +1991,7 @@ mod tests {
         let mut store = scripted_store(Rc::clone(&log), &world, &def);
         store.exact_snapshots.push((
             target.id(),
-            QemuVmSnapshot::diskless(
+            diskless_snapshot(
                 checkpoint,
                 QemuReplayOracleValidation::Match {
                     runtime_hash: target.id(),
@@ -2012,7 +2032,7 @@ mod tests {
         let mut store = scripted_store(Rc::clone(&log), &world, &def);
         store.exact_snapshots.push((
             target.id(),
-            QemuVmSnapshot::diskless(
+            diskless_snapshot(
                 checkpoint_for_config("exact-fat", &target, CheckpointKind::Fat),
                 QemuReplayOracleValidation::Mismatch {
                     fat_hash,
@@ -2055,7 +2075,7 @@ mod tests {
         let mut store = scripted_store(Rc::clone(&log), &world, &def);
         store.exact_snapshots.push((
             target.id(),
-            QemuVmSnapshot::diskless(
+            diskless_snapshot(
                 checkpoint_for_config("wrong-exact", &wrong, CheckpointKind::Fat),
                 QemuReplayOracleValidation::Match {
                     runtime_hash: hash("runtime", "wrong-exact"),
@@ -2091,7 +2111,7 @@ mod tests {
         let mut store = scripted_store(Rc::clone(&log), &world, &def);
         store.exact_snapshots.push((
             target.id(),
-            QemuVmSnapshot::diskless(
+            diskless_snapshot(
                 checkpoint_for_config("exact-fat", &target, CheckpointKind::Fat),
                 QemuReplayOracleValidation::Match {
                     runtime_hash: admitted,

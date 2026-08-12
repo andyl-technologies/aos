@@ -192,9 +192,52 @@ fn validate_snapshot(snapshot: &QemuVmSnapshot) -> Result<(), QemuVmSnapshotCode
         &snapshot.node,
         snapshot.replay_oracle_validation,
         snapshot.live_capture,
-    );
+    )?;
     if identity != snapshot.identity {
         return Err(QemuVmSnapshotCodecError::Identity);
     }
+    Ok(())
+}
+
+pub(super) fn canonical_snapshot_identity(
+    checkpoint: &Checkpoint,
+    host_io: &QemuHostIoCheckpoint,
+    node: &QemuNodeContinuationCheckpoint,
+    replay_oracle_validation: QemuReplayOracleValidation,
+    live_capture: bool,
+) -> Result<ContentHash, QemuVmSnapshotCodecError> {
+    let checkpoint = checkpoint.to_compact_binary();
+    let host_io = host_io
+        .to_canonical_bytes()
+        .map_err(|_| QemuVmSnapshotCodecError::HostIo)?;
+    let node = node.to_compact_binary();
+    let mut material = Vec::new();
+    material.extend_from_slice(b"crucible.qemu.exact-snapshot.v4\0");
+    append_blob(&mut material, &checkpoint)?;
+    append_blob(&mut material, &host_io)?;
+    append_blob(&mut material, &node)?;
+    match replay_oracle_validation {
+        QemuReplayOracleValidation::NotRun => material.push(0),
+        QemuReplayOracleValidation::Mismatch {
+            fat_hash,
+            thin_hash,
+        } => {
+            material.push(1);
+            material.extend_from_slice(&fat_hash.bytes);
+            material.extend_from_slice(&thin_hash.bytes);
+        }
+        QemuReplayOracleValidation::Match { runtime_hash } => {
+            material.push(2);
+            material.extend_from_slice(&runtime_hash.bytes);
+        }
+    }
+    material.push(u8::from(live_capture));
+    Ok(ContentHash::from_bytes(&material))
+}
+
+fn append_blob(material: &mut Vec<u8>, bytes: &[u8]) -> Result<(), QemuVmSnapshotCodecError> {
+    let length = u64::try_from(bytes.len()).map_err(|_| QemuVmSnapshotCodecError::Limit)?;
+    material.extend_from_slice(&length.to_le_bytes());
+    material.extend_from_slice(bytes);
     Ok(())
 }
