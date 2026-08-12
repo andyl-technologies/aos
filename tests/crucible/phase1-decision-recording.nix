@@ -117,10 +117,6 @@
         needle = "Decision::RngDraw(RngDecision { stream, value })";
       }
       {
-        label = "probabilistic fault is recorded";
-        needle = "Decision::FaultFires";
-      }
-      {
         label = "app-random draw is recorded";
         needle = "Decision::AppRandom";
       }

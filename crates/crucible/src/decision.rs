@@ -371,6 +371,23 @@ mod tests {
     };
 
     #[test]
+    fn decision_recorder_records_rng_draws_and_app_random_outcomes() {
+        assert_decision_rng_branch_coverage();
+    }
+
+    fn assert_decision_rng_branch_coverage() {
+        let config = Configuration::genesis(scenario_from_seed(Seed::from_u64(0xdec1_5100)));
+        let stream = rng_stream("node-a/fault-signal");
+        let mut recorder = DecisionRecorder::new(config);
+        let raw = recorder.draw_u64(stream.clone());
+        assert!(matches!(
+            recorder.schedule().decisions(),
+            [Decision::RngDraw(RngDecision { stream: recorded, value })]
+                if recorded == &stream && *value == raw
+        ));
+    }
+
+    #[test]
     fn decision_recorder_keeps_per_entity_streams_stable() {
         assert_per_entity_rng_forking_coverage();
     }
