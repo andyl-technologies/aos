@@ -27,9 +27,10 @@ use crucible::model::{
     SignalBoundarySnapshot,
 };
 use crucible::{
-    Action, AssertionPhase, BackendQuantumLoop, BlackBoxHostOracle, Checkpoint, CheckpointKind,
-    ConditionEvaluationPass, ConditionLeaf, Configuration, ContentHash, ControlOperation, DagStore,
-    DebugGdbEndpoint, DebugRetiredWorldCleanup, DebugRuntimeRepositionReport,
+    Action, AssertionPhase, BackendQuantumLoop, BlackBoxHostOracle, Checkpoint,
+    CheckpointKind, CheckpointTerminalCause, ConditionEvaluationPass, ConditionLeaf,
+    Configuration, ContentHash, ControlOperation, DagStore, DebugGdbEndpoint,
+    DebugRetiredWorldCleanup, DebugRuntimeRepositionReport,
     DebugRuntimeRepositionRequest, Decision, EventFirings, EventGraph, EventGraphState,
     EventLogOffset, FingerprintSample, GdbAttachInfo, GdbListen, HostAssertionEvaluator,
     HostAssertionEvaluatorCheckpoint, HostAssertionOutcome, HostAssertionOutcomeKind, Icount,
