@@ -4491,6 +4491,20 @@ mod tests {
         .unwrap();
         std::fs::write(toplevel.join("meta/package-name"), "server").unwrap();
         std::fs::write(toplevel.join("meta/version"), "1").unwrap();
+        std::fs::write(
+            toplevel.join("meta/boot-storage.json"),
+            br#"{
+              "backend": "gpt-partitions",
+              "espDevices": ["/dev/disk/by-partlabel/esp"],
+              "devices": {
+                "rootA": "/dev/disk/by-partlabel/root-a",
+                "rootAHash": "/dev/disk/by-partlabel/root-a-hash",
+                "rootB": "/dev/disk/by-partlabel/root-b",
+                "rootBHash": "/dev/disk/by-partlabel/root-b-hash"
+              }
+            }"#,
+        )
+        .unwrap();
         std::os::unix::fs::symlink("/nix/store/base-lib", toplevel.join("base-lib")).unwrap();
         std::fs::write(
             toplevel.join("os-release"),
