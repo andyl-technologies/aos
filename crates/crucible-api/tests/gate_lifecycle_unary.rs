@@ -5,9 +5,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    Checkpoint, CheckpointKind, Configuration, Decision, DeliveryOrderDecision, GdbAttachInfo,
-    GdbListen, Icount, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef,
-    ScenarioDefForm, Schedule, SchedulerError, Seed, VirtualTime,
+    Checkpoint, CheckpointKind, Configuration, ContentHash, Decision, DeliveryOrderDecision,
+    GdbAttachInfo, GdbListen, Icount, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest,
+    ScenarioDef, ScenarioDefForm, Schedule, SchedulerError, Seed, VirtualTime,
 };
 use crucible_api::{
     ControlClient, CreateSessionRequest, CreateSessionSource, DebugAuthorizationPolicy,
