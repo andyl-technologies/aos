@@ -1,0 +1,15 @@
+[package]
+name = "ratchet-cache"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+blake3 = { workspace = true }
+libc = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+xxhash-rust = { workspace = true }

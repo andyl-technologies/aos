@@ -34,15 +34,15 @@ only from trusted inputs by the trusted function," established by:
 
 ```text
 TRUSTED INPUTS                               DETERMINISTIC TRANSFORM      OUTPUT
-base lib       (in the measured UKI)        ─┐
+base lib       (verity root bound by UKI)   ─┐
 config modules (signed-tag-blessed NARs)    ─┼─► pure evalModules ──►   MANIFEST
 host.nix       (policy-authenticated data) ─┘   (no I/O, no builds)     (content-addressed gen)
 ```
 
 1. **Input authenticity.** config modules ∈ NARs that re-root to the signed
    realization graph; the **base lib and the evaluator live on the erofs root**
-   (not in the UKI — see the boundary section below for how that root's
-   integrity must be anchored, decision F1 in [`known-issues.md`](known-issues.md));
+   (not in the UKI — see the boundary section below for the implemented F1
+   dm-verity binding in [`decisions.md`](decisions.md));
    `host.nix` is the one operator-authored input not pre-trusted (host.nix
    section); **instance facts are a second host-varying input** that must be
    recorded (facts section).
@@ -64,41 +64,38 @@ hash(manifest) is the integrity primitive.
 
 ## Measured vs derived boundary
 
-> **Correction (review C1).** An earlier draft claimed the evaluator + base lib
-> are "in the measured UKI." They are **not** — they are large store paths on the
-> **erofs root**, consumed by the stage-2 `aos-eval.service`. Today that root has
-> **no dm-verity/roothash**, and the `/var` seal binds only PCR-11 (UKI) + PCR-7
-> (SB state), neither of which covers the root partition. So an offline attacker
-> who rewrites the erofs root (swapping the evaluator or base lib) leaves the PCRs
-> unchanged and `/var` still unseals — defeating "measure the producer." This is a
-> **required hardening, decision F1** in [`known-issues.md`](known-issues.md).
+> **Resolved correction (review C1).** An earlier draft claimed the evaluator +
+> base lib were "in the measured UKI." They are large store paths on the erofs
+> root, consumed by `aos-eval.service`. The implemented `server-verity` variant
+> protects those bytes with dm-verity and places the root hash in the
+> PCR-11-measured UKI command line, closing the offline-replacement gap through
+> decision F1-A in [`decisions.md`](decisions.md).
 
-- **Measured today (trust root):** the UKI = kernel + initrd + cmdline + baked
+- **Measured trust root:** the UKI = kernel + initrd + cmdline + baked
   trust anchors (PCR-11 signed policy); SB state pinned in PCR-7.
 - **The producer the eval depends on (base lib + evaluator)** lives on the erofs
-  root and **must be anchored to that measured boot to be trustworthy** — F1:
-  dm-verity on the root with the roothash on the measured kernel cmdline (so root
-  tampering moves PCR-11), or embed the evaluator+base-lib closure in the UKI
-  initrd. Until F1 lands, the on-host-eval integrity guarantee is **only as
-  strong as the `/var` seal + signed eval inputs**, not the producer's integrity.
+  root and is anchored to measured boot by dm-verity: the root hash is on the
+  measured kernel command line, so root tampering either fails verification or
+  moves PCR-11.
 - **Derived, not measured:** the manifest, the `/etc` composefs overlay, the
   downloaded config NARs, and the materialized generation in `/nix` (upper on
   `/var`). This is the config-generation.
 
 The `/var` seal gives confidentiality + offline-tamper protection for everything
-derived (LUKS2-sealed to the measured UKI). The *producer's* integrity, however,
-requires F1 — it is not free today. **Measure the producer (UKI **and**, via F1,
-the root carrying base-lib+evaluator); seal-protect the product (`/var`).**
+derived (LUKS2-sealed to the measured UKI). F1 supplies the producer's integrity:
+**measure the producer (UKI **and**, via its measured dm-verity root hash, the
+root carrying base-lib+evaluator); seal-protect the product (`/var`).**
 
-### The one real gap
+### Attesting the input set
 
-PCR-11 measures the *evaluator and base lib*, but **nothing measures which
-config-module inputs / host.nix the evaluator consumed.** A box that booted a
+PCR-11 transitively covers the *evaluator and base lib*, but does not identify
+which config-module inputs / host.nix the evaluator consumed.** A box that booted a
 good UKI and then evaluated a *different but validly-signed* config set, or a
 malicious host.nix, produces a different generation the seal happily protects
 and a naive PCR-11 quote cannot distinguish. The seal answers "did a good UKI
-run?", not "did it derive config only from the inputs I expect?" Closing this is
-the attestation record below.
+run?", not "did it derive config only from the inputs I expect?" The generation
+attestation record below closes that observability gap by binding the complete
+evaluated input set to the activation and quote evidence.
 
 ## Provisioning and host.nix authenticity
 
@@ -164,6 +161,11 @@ argument **fails unless it is recorded**. Therefore:
 The operator-authored input and the platform-facts input are distinct recorded
 inputs. In `platform` mode both rely on the platform binding; in `signed` mode
 `host.nix` has an independent signer while facts remain platform-supplied.
+When no operator input has ever been committed, the measured image may instead
+select its exact image-authored empty module. That narrow no-input arm is
+recorded as `trust_mode = "image"`, `platform = "image"`; it never authorizes
+arbitrary host bytes, and a verifier MUST perform full re-derivation before
+accepting it.
 
 ## Generation-attestation record
 
@@ -172,9 +174,11 @@ TPM-quoted evidence bundle letting a remote verifier confirm "this generation
 was derived only from trusted inputs":
 
 ```text
-generation-attestation (extended into / quoted alongside PCR 7 + 11, e.g. app PCR 15):
+generation-attestation (appended to the shared AOS CEL and extended into the
+cumulative PCR 15; quote covers PCR 7, 11, 12, 15):
 
   schema          = "aos.gen-attestation/v1"
+  activation_id   = <fresh sha256 identity for this completed activation>
   generation_id   = <content hash of the materialized config-generation>
   manifest_hash   = <sha256 of the canonicalized manifest>
   inputs:
@@ -184,32 +188,43 @@ generation-attestation (extended into / quoted alongside PCR 7 + 11, e.g. app PC
     evaluator:
       store_path     = <store path of the eval binary>               # ⊂ measured UKI
     config_modules:
-      registry       = <name>
+      origins        = [<registry|image>, ...]  # aligned with module inputs
+      registry       = <name>                   # when any origin is registry
       release_tag    = <semver>                  # verify_tag_chain target
       tag_signer_key = <trusted-keys.d fingerprint>
       realization    = <hash of the signed store/ graph subset consumed>
     host_nix:
       content_hash   = <sha256 of the operator config>
-      trust_mode     = <platform|signed>
-      platform       = <aws|gcp|...>             # required for platform mode
+      trust_mode     = <platform|signed|image>
+      platform       = <aws|gcp|...|image>       # required for platform/image mode
       signer_key     = <config-key fingerprint>  # present only in signed mode
     instance_facts:
       facts_hash     = <sha256 of the canonical host.facts.* tree>   # M-facts: the 2nd host-varying input
       platform       = <aws|gcp|...>                                 # facts are platform-supplied, not signed
   eval_mode         = "pure-eval"                # asserts the determinism precondition
-  quote             = <TPM2 quote over PCR 7,11(,15) + this record's hash>
+  quote             = <TPM2 quote over PCR 7,11,12,15 + this record's hash>
 ```
 
-A verifier confirms (a) PCR-7/11 match the registry's recorded `expected_pcr11`
+A verifier confirms (a) PCR-7 and ready-phase PCR-11 plus the dm-verity root match the image
+catalog, and every `image`-origin module exactly matches the independently
+recovered immutable package seed catalog carried by that image; mutable profile
+metadata is not an authority. PCR-11 also matches the registry's recorded `expected_pcr11`
 (`registry-catalog.md:42-52`, reused — not a parallel value), (b) `release_tag`
-is signed by a roster key and not revoked, (c) the recorded configuration trust
+is signed by a roster key and not revoked for the registry-origin subset, (c) the recorded configuration trust
 evidence satisfies the named policy (platform binding or trusted signed-mode
-key), then optionally (d) **re-runs the pure eval on those
+key; the `image` mode is accepted only for the measured evaluator's exact empty
+fallback), then (d) optionally for operator input, but mandatorily for `image`
+mode, **re-runs the pure eval on those
 exact inputs and checks `manifest_hash`** — turning attestation into full
 re-derivation. This extends RFC-0006's UKI-only "inputs" attestation
 (`measured-boot.md:169-176`) to the config-eval inputs. `base_lib.abi_hash`
 matters because the same host.nix against a different base-lib API yields a
 different manifest; pinning it makes the input set complete.
+
+`generation_id` may recur when rollback reactivates retained output.
+`activation_id` may not: each completed activation appends a distinct CEL event
+and refreshes the quote. Only recovery of the same durable, incomplete
+transaction reuses an activation identity.
 
 ## Threat model of on-host eval
 
@@ -314,7 +329,10 @@ reshaping the manifest:
 2. **A resolution contract at activation:** given a `secretRef`, before the
    consuming unit starts, place the bytes at `source` in the credstore (mode
    0600) or hand systemd an equivalent `LoadCredential*`/`ImportCredential`
-   directive, then mark dependent `units` for restart. This is exactly what
+   directive, remove an obsolete managed source when its handle disappears,
+   then mark dependent `units` that were active before publication for restart
+   in systemd dependency order. A failed consumer does not prevent the later
+   consumers from being attempted. This is exactly what
    `credential_artifact.rs::reconcile_desired_credentials` already implements for
    the `desired.toml` resolver. **systemd credentials are the universal delivery
    interface**, so no package depends on which backend produced the bytes.

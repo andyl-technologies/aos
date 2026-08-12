@@ -139,7 +139,7 @@ in {
     ##
     ## Set to "accept" on Kubernetes nodes for pod-to-pod traffic.
     forwardPolicy = lib.mkOption {
-      type = lib.types.str;
+      type = lib.types.uniqEnum ["accept" "drop"];
       default = "drop";
       description = ''
         Default policy for the forward chain. Set to "accept" on Kubernetes

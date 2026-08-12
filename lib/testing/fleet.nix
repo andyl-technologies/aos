@@ -55,14 +55,13 @@
   # interpolation only) and keeping it as a stable per-machine field
   # avoids parameterising downstream helpers on the mode.
   #
-  # The guest agent reaches every fleet machine one of two ways: baked
-  # into the /var seed (kernel boot + `varProvisioning = "baked"`, the
-  # default), or delivered through the bundled `aos-test-agent` package
-  # for image/repart boots that ship no seed. The driver waits on every
-  # machine's agent, so a
-  # machine that bakes no seed always needs that package. Inject it here
-  # rather than making each test name it: agent delivery is a harness
-  # concern, not a property of the machine under test.
+  # The guest agent reaches every fleet machine one of two ways: baked into
+  # the /var seed (kernel boot + `varProvisioning = "baked"`, the default), or
+  # through a test-only unit baked into the effective system for image/repart
+  # boots that ship no seed. The latter references the bundled agent payload
+  # directly; it is intentionally not placed in the runtime package seed,
+  # because host evaluation would otherwise need a registry entry for test
+  # infrastructure before the harness could establish its control channel.
   mkMachinesWithIndex = machines: let
     machineNames = builtins.attrNames machines;
   in
@@ -71,28 +70,26 @@
       bootMode = m.bootMode or "kernel";
       varProvisioning = m.varProvisioning or "baked";
       packages = m.packages or [];
-      # `baked` /var seeds the agent at build time; every other shape
-      # relies on a baked `systemd.services.aos-test-agent` unit.
+      # `baked` /var seeds the agent at build time; every other shape uses
+      # the test-only unit added by `mkNewpathModule` below.
       bakesAgent = bootMode == "kernel" && varProvisioning == "baked";
       agentBundled = m.system.config.aos.packages.aos-test-agent.bundle or false;
-      packagesWithAgent =
-        if bakesAgent || builtins.elem "aos-test-agent" packages
-        then packages
-        else if agentBundled
-        then packages ++ ["aos-test-agent"]
+      seedPackages = builtins.filter (package: package != "aos-test-agent") packages;
+      checkedPackages =
+        if bakesAgent || agentBundled
+        then seedPackages
         else
           throw ''
             fleet: machine "${mname}" boots without a baked /var seed
             (bootMode = "${bootMode}", varProvisioning = "${varProvisioning}"),
-            so the test guest agent must arrive via the aos-test-agent package
-            — but that package is not bundled on its system. Set
+            so the test guest agent payload must be bundled on its system. Set
             `aos.packages.aos-test-agent.bundle = true` on the machine's system
-            (the server profile already does).
+            (the fleet test system profiles already do).
           '';
     in {
       inherit (m) system;
       inherit bootMode varProvisioning bakesAgent;
-      packages = packagesWithAgent;
+      packages = checkedPackages;
       # `extraClosures` / `varSizeMiB` / `imageDiskMiB` default on the
       # fleet machine type, so the `or` fallbacks only matter for callers
       # bypassing fleet-spec validation.
@@ -130,12 +127,10 @@
   # so all of `/etc` comes from this baked EROFS — exactly what these entries
   # populate. The same module uses the production systemd-repart substrate.
   #
-  #   `bakeAgentUnit` — emit `systemd.services.aos-test-agent` here. False for
-  #   `baked`-var kernel machines, whose /var seed already carries the unit
-  #   (avoids a duplicate unit definition); true for image / repart machines
-  #   that ship no baked seed.
   #   `sshAuthorizedKey` — non-null only in the interactive launcher; adds the
   #   root pubkey (mode 0600) and a DHCP .network for the debug NIC.
+  #   `bakeAgentUnit` — emit the test-only unit for image/repart machines. The
+  #   direct-kernel baked-/var path already carries the same agent.
   mkNewpathModule = {
     m,
     hostsEntries,
@@ -149,6 +144,22 @@
   }: let
     agentPackage = config.aos.packages.aos-test-agent.package or pkgs.aos-test-agent;
     agentPath = "${agentPackage}/share/aos-test-agent/aos-test-agent";
+    runtimeAgentUnit = pkgs.writeTextFile {
+      name = "aos-fleet-test-agent-runtime-unit";
+      destination = "/aos-test-agent.service";
+      text = ''
+        [Unit]
+        Description=AOS VM Test Guest Agent
+        RefuseManualStop=true
+
+        [Service]
+        Type=simple
+        ExecStart=${agentPath}
+        Restart=on-failure
+        RestartSec=1
+        Environment=PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin
+      '';
+    };
   in {
     # Fleet machines are driven through the guest agent (virtio-serial), never
     # an interactive serial console. The debug profile's initrd serial debug
@@ -201,16 +212,25 @@
       };
 
     systemd.services = lib.optionalAttrs bakeAgentUnit {
-      "aos-test-agent" = {
-        description = "AOS VM Test Guest Agent";
+      "aos-test-agent-bootstrap" = {
+        description = "Install the AOS VM test control channel";
         wantedBy = ["multi-user.target"];
+        before = ["aos-eval.service"];
+        stopOnRemoval = false;
+        unitConfig.RefuseManualStop = true;
         serviceConfig = {
-          Type = "simple";
-          ExecStart = agentPath;
-          Restart = "on-failure";
-          RestartSec = 1;
-          Environment = "PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin";
+          Type = "oneshot";
         };
+        # Configuration generations replace /etc, so the control channel used
+        # to drive and inspect that replacement must not live there. Install
+        # the long-running unit in systemd's runtime namespace instead.
+        script = ''
+          ${pkgs.coreutils}/bin/mkdir -p /run/systemd/system
+          ${pkgs.coreutils}/bin/ln -sfn ${runtimeAgentUnit}/aos-test-agent.service \
+            /run/systemd/system/aos-test-agent.service
+          ${pkgs.systemd}/bin/systemctl daemon-reload
+          ${pkgs.systemd}/bin/systemctl start aos-test-agent.service
+        '';
       };
     };
   };
@@ -227,10 +247,17 @@
         [
           (mkNewpathModule {
             inherit m hostsEntries sshAuthorizedKey;
-            bakeAgentUnit =
-              (!m.bakesAgent) && builtins.elem "aos-test-agent" m.packages;
+            bakeAgentUnit = !m.bakesAgent;
           })
         ]
+        # A baked-/var kernel machine already carries the fleet control agent
+        # as test infrastructure. Do not also activate the exposed
+        # aos-test-agent package: both own aos-test-agent.service, and starting
+        # the package target while multi-user.target is bringing up the baked
+        # harness creates an unresolvable ordering cycle.
+        ++ lib.optional (m.bakesAgent && m.system.config.aos.packages ? aos-test-agent) {
+          aos.packages.aos-test-agent.bundle = lib.mkForce false;
+        }
         ++ m.extraModules;
     };
 
@@ -324,6 +351,7 @@
     # — including the per-machine `packages` enum-against-`config.aos.packages`.
     inherit (spec) name testScript timeout machines;
     bootTimeout = spec.bootTimeout or null;
+    systemReadyTimeout = spec.systemReadyTimeout or null;
 
     machinesWithIndex = mkMachinesWithIndex machines;
     hostsEntries = mkHostsEntries machinesWithIndex;
@@ -340,6 +368,9 @@
         inherit name timeout;
       }
       // (lib.optionalAttrs (bootTimeout != null) {boot_timeout = bootTimeout;})
+      // (lib.optionalAttrs (systemReadyTimeout != null) {
+        system_ready_timeout = systemReadyTimeout;
+      })
       // {
         machines =
           builtins.map (

@@ -234,6 +234,7 @@ in {
         BUG_REPORT_URL="https://aos.dev/issues"
         AOS_STATE_VERSION=${cfg.stateVersion}
         AOS_MODULE_ABI=${toString cfg.moduleAbi}
+        AOS_BASELIB_DIGEST=sha256:${builtins.hashString "sha256" (toString config.aos.config.evalAtBoot.baseLib)}
       '';
     };
 

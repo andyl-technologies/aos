@@ -11,7 +11,7 @@
 //!
 //! 1. **Config-drive probe** — `blkid -L {aos-metadata,cidata,config-2}`; a hit
 //!    mounts RO and short-circuits with `METADATA_DIR` set and no network.
-//! 2. **Asset tag** — Azure and Oracle Cloud write a fixed chassis asset tag.
+//! 2. **Asset tag** — Azure writes a fixed chassis asset tag.
 //! 3. **`sys_vendor`** — the bulk of cloud platforms.
 //! 4. **`bios_vendor`** — AWS Nitro bare-metal.
 //! 5. **`product_name`** — GCP and generic QEMU.
@@ -24,19 +24,34 @@ use anyhow::Result;
 use super::mount::{CONFIG_DRIVE_LABELS, ConfigDriveProbe, platform_for_label};
 use super::stash::{PlatformEnv, Stash};
 
-/// Platforms that fetch their config over the network and therefore need the
-/// initrd DHCP gate raised (`NEED_NETWORK=1` + the `need-network` flag).
-pub const NETWORK_PLATFORMS: &[&str] = &[
-    "aws",
-    "gcp",
-    "azure",
-    "digitalocean",
-    "hetzner",
-    "vultr",
-    "scaleway",
-    "openstack",
-    "oraclecloud",
-];
+/// Metadata acquisition capability associated with a detected platform.
+///
+/// Detection only returns identifiers represented here. Vendors without a
+/// native, recorded fetch contract deliberately classify as `metal` rather
+/// than advertising a platform that will fail later in the initrd.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlatformCapability {
+    /// Metadata is available from a local config drive or firmware channel.
+    LocalMetadata,
+    /// Metadata requires stage-1 networking.
+    NetworkMetadata,
+    /// No standardized metadata channel is available.
+    NoMetadata,
+}
+
+/// Return the acquisition capability for a supported platform identifier.
+pub fn platform_capability(platform: &str) -> Option<PlatformCapability> {
+    match platform {
+        "aos-metadata" | "nocloud" | "config-drive" | "qemu" => {
+            Some(PlatformCapability::LocalMetadata)
+        }
+        "aws" | "gcp" | "azure" | "digitalocean" | "openstack" => {
+            Some(PlatformCapability::NetworkMetadata)
+        }
+        "metal" | "hyperv" | "vmware" | "virtualbox" => Some(PlatformCapability::NoMetadata),
+        _ => None,
+    }
+}
 
 /// Read a `/sys/class/dmi/id/<key>` value, trimmed, or `""` when absent.
 fn read_dmi(sysfs_root: &Path, key: &str) -> String {
@@ -52,10 +67,9 @@ fn read_dmi(sysfs_root: &Path, key: &str) -> String {
 /// Pure over its inputs (no I/O), so it is exhaustively table-tested. Returns
 /// the platform id; never empty (falls back to `"metal"`).
 pub fn classify_dmi(sys_vendor: &str, bios_vendor: &str, product: &str, asset_tag: &str) -> String {
-    // 2a. Asset tag — Azure / Oracle Cloud.
+    // 2a. Asset tag — Azure.
     let platform = match asset_tag {
         "7783-7084-3265-9085-8269-3286-77" => Some("azure"),
-        "OracleCloud.com" => Some("oraclecloud"),
         _ => None,
     };
 
@@ -65,9 +79,6 @@ pub fn classify_dmi(sys_vendor: &str, bios_vendor: &str, product: &str, asset_ta
         "Google" => Some("gcp"),
         "Microsoft Corporation" if product == "Virtual Machine" => Some("hyperv"),
         "DigitalOcean" => Some("digitalocean"),
-        "Hetzner" => Some("hetzner"),
-        "Vultr" => Some("vultr"),
-        "Scaleway" => Some("scaleway"),
         "OpenStack Foundation" => Some("openstack"),
         "VMware, Inc." => Some("vmware"),
         "innotek GmbH" => Some("virtualbox"),
@@ -98,7 +109,7 @@ pub fn classify_dmi(sys_vendor: &str, bios_vendor: &str, product: &str, asset_ta
 
 /// Whether `platform` needs the initrd network gate raised.
 pub fn needs_network(platform: &str) -> bool {
-    NETWORK_PLATFORMS.contains(&platform)
+    platform_capability(platform) == Some(PlatformCapability::NetworkMetadata)
 }
 
 /// Options for [`run_detect`].

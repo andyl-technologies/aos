@@ -31103,6 +31103,7 @@ mod cache_upload_tests {
             sb_signer_cert_sha256: None,
             sbat: Vec::new(),
             expected_pcr11: None,
+            ukis: Vec::new(),
             root_image: None,
             root_verity: None,
             root_hash: None,

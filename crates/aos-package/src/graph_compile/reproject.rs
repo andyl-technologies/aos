@@ -1,11 +1,12 @@
 //! The degraded re-projected-manifest commit (build-spec §5).
 //!
 //! When the pre-commit wing finishes with some packages dropped (a fetch
-//! exhausted its retry budget, or a render hit a config error), `aos-config.target`
-//! still reaches `active` and `aos-activate` runs. It MUST NOT commit `/etc` from
-//! "whatever happened to materialize" under the full manifest's identity — that
-//! would be a generation whose content depends on transient fetch outcomes,
-//! breaking content-addressing. Instead it commits a **re-projected manifest**:
+//! exhausted its retry budget, or a render hit a config error), `aos-activate`
+//! still runs and the compiler publishes `aos-config.target` after it commits.
+//! It MUST NOT commit `/etc` from "whatever happened to materialize" under the
+//! full manifest's identity — that would be a generation whose content depends
+//! on transient fetch outcomes, breaking content-addressing. Instead it commits
+//! a **re-projected manifest**:
 //! the full manifest restricted to the packages that materialized, re-hashed
 //! into a content-addressed generation id, with the dropped set recorded.
 //!
@@ -39,12 +40,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use super::ConfigGraph;
+use crate::config_eval::materialize::ConfigManifest;
 
 /// Why a package was dropped from the committed subset (build-spec §5.4).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +113,274 @@ impl Reprojection {
             "dropped": self.dropped,
         })
     }
+}
+
+/// Merges transaction-scoped rendered bytes and credential handles into a
+/// projection, then recomputes its generation identity.
+///
+/// # Errors
+///
+/// Returns an error if a kept package's stage is absent, mismatched, unsafe,
+/// tampered, conflicts with another owner, or makes the manifest invalid.
+pub fn merge_staged_projection(
+    source: &ConfigManifest,
+    staging_root: &Path,
+    projection: &mut Reprojection,
+) -> Result<()> {
+    let transaction = super::graph_transaction(source)?;
+    let object = projection
+        .manifest
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("re-projected manifest is not an object"))?;
+
+    for package in &projection.kept {
+        let expected_pin = transaction
+            .packages
+            .get(package)
+            .with_context(|| format!("graph transaction omitted kept package {package:?}"))?;
+        let directory = super::subverbs::staging_package_dir(staging_root, source, package)?;
+        let stage = super::subverbs::read_staged_package(&directory)
+            .with_context(|| format!("loading render stage for package {package:?}"))?;
+        if stage.schema != "aos.render-stage/v1"
+            || stage.manifest != transaction.manifest
+            || &stage.package_pin != expected_pin
+            || stage.package != *package
+        {
+            bail!("render stage identity disagrees for package {package:?}");
+        }
+
+        let package_pin = source
+            .package_outputs
+            .get(package)
+            .with_context(|| format!("manifest omitted runtime pin for {package:?}"))?;
+        let signed_credentials = package_pin
+            .config_projection
+            .as_ref()
+            .map(|pin| pin.config.credentials.as_slice())
+            .or_else(|| {
+                package_pin
+                    .legacy_config
+                    .as_ref()
+                    .map(|config| config.credentials.as_slice())
+            });
+        let expected_credentials = if let Some(signed_credentials) = signed_credentials {
+            super::subverbs::canonicalize_credential_handles(
+                package,
+                source.credentials.get(package),
+                signed_credentials,
+            )?
+        } else {
+            source
+                .credentials
+                .get(package)
+                .cloned()
+                .unwrap_or(Value::Null)
+        };
+        if stage.credentials != expected_credentials {
+            bail!("render stage credential handles disagree for package {package:?}");
+        }
+        if let Some(expected) = source.config_projections.get(package) {
+            let expected_artifacts = expected
+                .artifacts
+                .iter()
+                .map(|artifact| {
+                    let path = artifact
+                        .path
+                        .strip_prefix("/etc/")
+                        .with_context(|| {
+                            format!(
+                                "migrated projection for package {package:?} has path outside /etc"
+                            )
+                        })?
+                        .to_string();
+                    Ok((path, (&artifact.sha256, artifact.mode.as_str())))
+                })
+                .collect::<Result<BTreeMap<_, _>>>()?;
+            let staged_artifacts = stage
+                .artifacts
+                .iter()
+                .map(|artifact| {
+                    (
+                        artifact.path.clone(),
+                        (&artifact.sha256, artifact.mode.as_str()),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            if staged_artifacts != expected_artifacts || stage.units != expected.units {
+                bail!(
+                    "render stage bytes/actions disagree with authenticated migrated projection for package {package:?}"
+                );
+            }
+        }
+
+        let mut seen_paths = BTreeSet::new();
+        for artifact in stage.artifacts {
+            if !seen_paths.insert(artifact.path.clone()) {
+                bail!(
+                    "render stage for package {package:?} repeats /etc path {:?}",
+                    artifact.path
+                );
+            }
+            validate_staged_artifact(&artifact, package)?;
+            let bytes =
+                crate::config_eval::materialize::read_bytes_beneath(&directory, &artifact.payload)
+                    .with_context(|| {
+                        format!(
+                            "reading staged payload for package {package:?} path {:?}",
+                            artifact.path
+                        )
+                    })?;
+            let actual = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
+            if actual != artifact.sha256 {
+                bail!(
+                    "staged payload hash mismatch for package {package:?} path {:?}",
+                    artifact.path
+                );
+            }
+            let text = String::from_utf8(bytes).with_context(|| {
+                format!(
+                    "rendered config for package {package:?} path {:?} is not UTF-8",
+                    artifact.path
+                )
+            })?;
+            let entry = serde_json::json!({
+                "kind": "text",
+                "text": text,
+                "mode": artifact.mode,
+            });
+            let etc = object
+                .get_mut("etc")
+                .and_then(Value::as_object_mut)
+                .context("re-projected manifest has no etc object")?;
+            if let Some(existing) = etc.get(&artifact.path)
+                && existing != &entry
+            {
+                bail!(
+                    "rendered /etc path {:?} for package {package:?} conflicts with evaluated content",
+                    artifact.path
+                );
+            }
+            etc.insert(artifact.path.clone(), entry);
+
+            let owners = object
+                .get_mut("ownership")
+                .and_then(Value::as_object_mut)
+                .and_then(|ownership| ownership.get_mut("etc"))
+                .and_then(Value::as_object_mut)
+                .context("re-projected manifest has no ownership.etc object")?;
+            if let Some(owner) = owners.get(&artifact.path).and_then(Value::as_str)
+                && owner != package
+            {
+                bail!(
+                    "rendered /etc path {:?} is owned by {owner:?}, not {package:?}",
+                    artifact.path
+                );
+            }
+            owners.insert(artifact.path, Value::String(package.clone()));
+        }
+
+        for (unit, action) in stage.units {
+            let entry = serde_json::json!({
+                "action": action,
+                "credentials": [],
+                "enable": false,
+            });
+            {
+                let units = object
+                    .get_mut("units")
+                    .and_then(Value::as_object_mut)
+                    .context("re-projected manifest has no units object")?;
+                if let Some(existing) = units.get(&unit)
+                    && existing != &entry
+                {
+                    bail!(
+                        "config reconcile action for unit {unit:?} conflicts with evaluated content"
+                    );
+                }
+                units.insert(unit.clone(), entry);
+            }
+            {
+                let unit_owners = object
+                    .get_mut("ownership")
+                    .and_then(Value::as_object_mut)
+                    .and_then(|ownership| ownership.get_mut("units"))
+                    .and_then(Value::as_object_mut)
+                    .context("re-projected manifest has no ownership.units object")?;
+                if let Some(owner) = unit_owners.get(&unit).and_then(Value::as_str)
+                    && owner != package
+                {
+                    bail!("config reconcile unit {unit:?} is owned by {owner:?}, not {package:?}");
+                }
+                unit_owners.insert(unit, Value::String(package.clone()));
+            }
+        }
+
+        let credentials = object
+            .get_mut("credentials")
+            .and_then(Value::as_object_mut)
+            .context("re-projected manifest has no credentials object")?;
+        if stage.credentials.is_null() {
+            credentials.remove(package);
+        } else {
+            credentials.insert(package.clone(), stage.credentials);
+        }
+    }
+
+    let merged: ConfigManifest = serde_json::from_value(projection.manifest.clone())
+        .context("parsing staged re-projected manifest")?;
+    merged
+        .validate()
+        .context("validating staged re-projected manifest")?;
+    projection.generation_id = hash_cjson(&projection.manifest);
+    Ok(())
+}
+
+fn validate_staged_artifact(
+    artifact: &super::subverbs::StagedArtifact,
+    package: &str,
+) -> Result<()> {
+    if artifact.path.is_empty()
+        || artifact.path.starts_with('/')
+        || artifact.path == "aos-job-scripts"
+        || artifact.path.starts_with("aos-job-scripts/")
+        || artifact
+            .path
+            .split('/')
+            .any(|component| component.is_empty() || component == "." || component == "..")
+    {
+        bail!(
+            "render stage for package {package:?} has unsafe /etc path {:?}",
+            artifact.path
+        );
+    }
+    let digest = artifact
+        .sha256
+        .strip_prefix("sha256:")
+        .filter(|digest| {
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+        .with_context(|| {
+            format!(
+                "render stage for package {package:?} has invalid hash {:?}",
+                artifact.sha256
+            )
+        })?;
+    if artifact.payload != format!("payload/{digest}") {
+        bail!(
+            "render stage for package {package:?} has unbound payload path {:?}",
+            artifact.payload
+        );
+    }
+    if artifact.mode != "0644" {
+        bail!(
+            "render stage for package {package:?} has unsupported mode {:?}",
+            artifact.mode
+        );
+    }
+    Ok(())
 }
 
 /// Re-project `full` onto the packages that materialized, given the on-disk
@@ -186,7 +456,7 @@ pub fn reproject_manifest(
     dropped.sort_by(|a, b| a.package.cmp(&b.package));
 
     // §5.3 — restrict the manifest (and the graph projection) to `kept`.
-    let manifest = project_manifest(full, &kept);
+    let manifest = project_manifest(full, &kept)?;
 
     let generation_id = hash_cjson(&manifest);
     let source_manifest_hash = hash_cjson(full);
@@ -202,8 +472,8 @@ pub fn reproject_manifest(
 }
 
 /// Compute the materialized subsets `(fetched, rendered)` from the marker root
-/// (build-spec §5.1): a package is in `fetched` iff `<root>/fetch/<p>.ok` exists,
-/// and in `rendered` iff `<root>/render/<p>.ok` exists.
+/// (build-spec §5.1): a package is included only when its marker payload
+/// matches the graph compiler's current manifest and package pin identity.
 ///
 /// Markers are the authoritative "fully present + rendered" signal (they survive
 /// a unit going inactive), so the subset is read from disk, not from systemd
@@ -214,12 +484,12 @@ pub fn materialized_subset(
 ) -> (BTreeSet<String>, BTreeSet<String>) {
     let fetched = packages
         .iter()
-        .filter(|p| marker_root.join("fetch").join(format!("{p}.ok")).exists())
+        .filter(|p| super::subverbs::marker_is_current(marker_root, "fetch", p))
         .cloned()
         .collect();
     let rendered = packages
         .iter()
-        .filter(|p| marker_root.join("render").join(format!("{p}.ok")).exists())
+        .filter(|p| super::subverbs::marker_is_current(marker_root, "render", p))
         .cloned()
         .collect();
     (fetched, rendered)
@@ -250,11 +520,88 @@ pub fn manifest_packages(manifest: &Value) -> BTreeSet<String> {
 /// other field is passed through verbatim, since fields like `etc`/`units`/
 /// `storePaths` are not package-keyed and cannot be projected by package alone
 /// (build-spec §5.3).
-fn project_manifest(full: &Value, kept: &BTreeSet<String>) -> Value {
+fn project_manifest(full: &Value, kept: &BTreeSet<String>) -> Result<Value> {
+    if kept == &manifest_packages(full) {
+        return Ok(full.clone());
+    }
     let mut out = full.clone();
     let Some(obj) = out.as_object_mut() else {
-        return out;
+        return Ok(out);
     };
+
+    let ownership = obj
+        .get("ownership")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+
+    let retained = |field: &str, keys: Vec<String>| -> Result<BTreeSet<String>> {
+        let owners = ownership
+            .get(field)
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        let mut result = BTreeSet::new();
+        for key in keys {
+            let owner = owners
+                .get(&key)
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "cannot degraded-project manifest: ownership.{field} does not name artifact {key:?}"
+                    )
+                })?;
+            if owner == "@base" || owner == "@host" || kept.contains(owner) {
+                result.insert(key);
+            }
+        }
+        Ok(result)
+    };
+
+    let map_keys = |field: &str| -> Vec<String> {
+        obj.get(field)
+            .and_then(Value::as_object)
+            .map(|map| map.keys().cloned().collect())
+            .unwrap_or_default()
+    };
+    let etc = retained("etc", map_keys("etc"))?;
+    let units = retained("units", map_keys("units"))?;
+    let job_scripts = retained("jobScripts", map_keys("jobScripts"))?;
+    let users = retained(
+        "users",
+        obj.get("users")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|user| user.get("name").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect(),
+    )?;
+    let presets = retained(
+        "presets",
+        obj.get("presets")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|preset| {
+                Some(format!(
+                    "{}:{}",
+                    preset.get("unit")?.as_str()?,
+                    preset.get("source")?.as_str()?
+                ))
+            })
+            .collect(),
+    )?;
+    let store_paths = retained(
+        "storePaths",
+        obj.get("storePaths")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+    )?;
 
     if let Some(packages) = obj.get_mut("packages").and_then(Value::as_array_mut) {
         packages.retain(|item| {
@@ -268,9 +615,65 @@ fn project_manifest(full: &Value, kept: &BTreeSet<String>) -> Value {
         });
     }
 
-    for field in ["config", "credentials"] {
+    for field in [
+        "packageOutputs",
+        "config",
+        "credentials",
+        "configProjections",
+    ] {
         if let Some(map) = obj.get_mut(field).and_then(Value::as_object_mut) {
             map.retain(|key, _| kept.contains(key));
+        }
+    }
+
+    for (field, keys) in [
+        ("etc", &etc),
+        ("units", &units),
+        ("jobScripts", &job_scripts),
+    ] {
+        if let Some(map) = obj.get_mut(field).and_then(Value::as_object_mut) {
+            map.retain(|key, _| keys.contains(key));
+        }
+    }
+    if let Some(records) = obj.get_mut("users").and_then(Value::as_array_mut) {
+        records.retain(|record| {
+            record
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| users.contains(name))
+        });
+    }
+    if let Some(records) = obj.get_mut("presets").and_then(Value::as_array_mut) {
+        records.retain(|record| {
+            let Some(unit) = record.get("unit").and_then(Value::as_str) else {
+                return false;
+            };
+            let Some(source) = record.get("source").and_then(Value::as_str) else {
+                return false;
+            };
+            presets.contains(&format!("{unit}:{source}"))
+        });
+    }
+    if let Some(paths) = obj.get_mut("storePaths").and_then(Value::as_array_mut) {
+        paths.retain(|path| path.as_str().is_some_and(|path| store_paths.contains(path)));
+    }
+
+    if let Some(index) = obj.get_mut("ownership").and_then(Value::as_object_mut) {
+        for (field, keys) in [
+            ("etc", &etc),
+            ("units", &units),
+            ("jobScripts", &job_scripts),
+            ("users", &users),
+            ("presets", &presets),
+            ("storePaths", &store_paths),
+        ] {
+            let Some(map) = index.get_mut(field).and_then(Value::as_object_mut) else {
+                if !keys.is_empty() {
+                    bail!("cannot degraded-project manifest: ownership.{field} is absent");
+                }
+                continue;
+            };
+            map.retain(|key, _| keys.contains(key));
         }
     }
 
@@ -286,7 +689,7 @@ fn project_manifest(full: &Value, kept: &BTreeSet<String>) -> Value {
         }
     }
 
-    out
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -295,10 +698,20 @@ fn project_manifest(full: &Value, kept: &BTreeSet<String>) -> Value {
 
 /// `"sha256:" + hex(sha256(canonical_json(v)))` (build-spec §0).
 pub fn hash_cjson(v: &Value) -> String {
-    let mut buf = String::new();
-    write_canonical(v, &mut buf);
+    let buf = canonical_json(v);
     let digest = Sha256::digest(buf.as_bytes());
     format!("sha256:{}", hex::encode(digest))
+}
+
+/// Serializes a JSON value using the manifest's canonical byte encoding.
+///
+/// Object members are sorted recursively and no insignificant whitespace is
+/// emitted. Attestation uses these exact bytes so PCR 15 identifies the same
+/// value as [`hash_cjson`].
+pub(crate) fn canonical_json(v: &Value) -> String {
+    let mut buf = String::new();
+    write_canonical(v, &mut buf);
+    buf
 }
 
 /// Serialize `v` to canonical JSON: object members sorted by key, arrays in

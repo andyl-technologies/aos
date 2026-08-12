@@ -63,6 +63,10 @@
   packageMetaFile = name: package: let
     packageHash = storePathHash package.package;
     packageVersion = package.package.version or "0";
+    configOutput =
+      if package.package ? config
+      then builtins.toString package.package.config
+      else "";
   in
     pkgs.runCommand "aos-package-${name}-meta.json" {
       buildDeps = [pkgs.coreutils pkgs.jq];
@@ -75,6 +79,12 @@
       package_store_path=${lib.escapeShellArg (builtins.toString package.package)}
       package_name=${lib.escapeShellArg name}
       package_version=${lib.escapeShellArg packageVersion}
+      config_output=${lib.escapeShellArg configOutput}
+      if [ -n "$config_output" ]; then
+        config_meta="$config_output/config-meta.json"
+      else
+        config_meta=/dev/null
+      fi
       jq -n \
         --slurpfile manifest "$manifest" \
         --arg store_path "$package_store_path" \
@@ -105,6 +115,8 @@
         --arg name "$package_name" \
         --arg version "$package_version" \
         --arg expose_path ${lib.escapeShellArg (builtins.toString package.package.expose)} \
+        --arg config_output "$config_output" \
+        --slurpfile config_meta "$config_meta" \
         --arg root_hash "$root_hash" \
         --arg root_hash_sig "$root_hash_sig" \
         --arg root_digest "$root_digest" \
@@ -132,6 +144,26 @@
               nar_hash: "sha256:aos-image",
               nar_size: 1
             },
+            config_module: (
+              if $config_output == "" then null
+              else {
+                config_output: {
+                  store_path: $config_output,
+                  nar_hash: "sha256:aos-image",
+                  nar_size: 1,
+                  references: []
+                },
+                evaluation_base_lib: null,
+                module_abi_compat: $config_meta[0].module_abi_compat,
+                declares: $config_meta[0].declares,
+                declaration_schema: [],
+                requires: [],
+                owns_roots: $config_meta[0].owns_roots,
+                contributes: $config_meta[0].contributes,
+                provides_capabilities: $config_meta[0].provides_capabilities
+              }
+              end
+            ),
             permissions: $manifest[0].permissions,
             attestation: ({
               root_digest: $root_digest,
@@ -172,7 +204,7 @@
       allowSubstitutes = false;
     } ''
       set -eu
-      mkdir -p "$out/gen-1/usr" "$out/gen-1/expose" "$out/gen-1/meta" "$out/meta"
+      mkdir -p "$out/gen-1/usr" "$out/gen-1/expose" "$out/gen-1/cfgsrc" "$out/gen-1/meta" "$out/meta"
       cat > "$out/state.json" <<'JSON'
       {"current_generation":1,"next_generation":2}
       JSON
@@ -183,14 +215,18 @@
             packageHash = storePathHash package.package;
             exposeHash = storePathHash package.package.expose;
             metaFile = packageMetaFile name package;
+            configLink = lib.optionalString (package.package ? config) ''
+              ln -sfn ${package.package.config} "$out/gen-1/cfgsrc/${storePathHash package.package.config}"
+            '';
           in ''
             ln -sfn ${package.package} "$out/gen-1/usr/${packageHash}"
             ln -sfn ${package.package.expose} "$out/gen-1/expose/${exposeHash}"
+            ${configLink}
             cp ${metaFile}/${packageHash}.json "$out/meta/${packageHash}.json"
             cp ${metaFile}/${packageHash}.json "$out/gen-1/meta/${packageHash}.json"
           ''
         )
-        presetExposedPackages
+        exposedBundledPackages
       )}
     '';
 
@@ -234,10 +270,14 @@
           packageHash = storePathHash package.package;
           exposeHash = storePathHash package.package.expose;
           metaFile = packageMetaFile name package;
+          configLink = lib.optionalString (package.package ? config) ''
+            ${pkgs.coreutils}/bin/ln -sfn ${package.package.config} "$profile/gen-1/cfgsrc/${storePathHash package.package.config}"
+          '';
         in ''
           ${name})
             ${pkgs.coreutils}/bin/ln -sfn ${package.package} "$profile/gen-1/usr/${packageHash}"
             ${pkgs.coreutils}/bin/ln -sfn ${package.package.expose} "$profile/gen-1/expose/${exposeHash}"
+            ${configLink}
             ${pkgs.coreutils}/bin/cp ${metaFile}/${packageHash}.json "$profile/meta/${packageHash}.json"
             ${pkgs.coreutils}/bin/cp ${metaFile}/${packageHash}.json "$profile/gen-1/meta/${packageHash}.json"
             ;;
@@ -336,7 +376,7 @@ in {
           _: package: [
             package.package
             package.package.expose
-          ]
+          ] ++ lib.optional (package.package ? config) package.package.config
         )
         exposedBundledPackages);
 
@@ -364,7 +404,7 @@ in {
         profile=/var/lib/profiles/system-packages
         if [ ! -e "$profile/state.json" ]; then
           if [ -f /etc/aos/packages.d/fleet-seed ]; then
-            ${pkgs.coreutils}/bin/mkdir -p "$profile/gen-1/usr" "$profile/gen-1/expose" "$profile/gen-1/meta" "$profile/meta"
+            ${pkgs.coreutils}/bin/mkdir -p "$profile/gen-1/usr" "$profile/gen-1/expose" "$profile/gen-1/cfgsrc" "$profile/gen-1/meta" "$profile/meta"
             printf '%s\n' '{"current_generation":1,"next_generation":2}' > "$profile/state.json"
             ${pkgs.coreutils}/bin/ln -sfn gen-1 "$profile/current"
             seed_one() {

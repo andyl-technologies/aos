@@ -9,8 +9,8 @@
 //! guard, and the per-system integrity checks — without a real evaluator.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, VecDeque};
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
@@ -85,12 +85,16 @@ impl ConfigOutputFetcher for RecordingFetcher {
 /// standing in for the on-host registry by-name lookup.
 struct MockResolver {
     modules: BTreeMap<String, (String, String, ConfigModuleMeta)>,
+    installed: BTreeSet<String>,
+    known_shared: BTreeSet<String>,
 }
 
 impl MockResolver {
     fn new() -> Self {
         Self {
             modules: BTreeMap::new(),
+            installed: BTreeSet::new(),
+            known_shared: BTreeSet::new(),
         }
     }
 
@@ -103,17 +107,46 @@ impl MockResolver {
         );
         self
     }
+
+    fn with_installed(mut self, name: &str, module: ConfigModuleMeta) -> Self {
+        self.installed.insert(name.to_string());
+        self.modules.insert(
+            name.to_string(),
+            ("1.0.0".to_string(), "x86_64-linux".to_string(), module),
+        );
+        self
+    }
+
+    fn with_known_shared(mut self, root: &str) -> Self {
+        self.known_shared.insert(root.to_string());
+        self
+    }
 }
 
 impl ConfigModuleResolver for MockResolver {
     fn config_module(&self, package: &str) -> Option<ResolvedConfigModule<'_>> {
         let (key, (version, platform, module)) = self.modules.get_key_value(package)?;
         Some(ResolvedConfigModule {
+            registry: "test",
+            release_trust: None,
+            config_realization: None,
             package: key.as_str(),
             version,
             platform,
+            runtime_output: &module.config_output.store_path,
             module,
         })
+    }
+
+    fn installed_config_modules(&self) -> Vec<ResolvedConfigModule<'_>> {
+        self.installed
+            .iter()
+            .filter_map(|package| self.config_module(package))
+            .collect()
+    }
+
+    fn known_shared_roots(&self) -> BTreeSet<String> {
+        self.known_shared.clone()
     }
 }
 
@@ -145,8 +178,12 @@ fn owner_module(root: &str, contributable: &[&str], abi: ModuleAbiCompat) -> Con
             nar_size: 1,
             references: vec![],
         },
+        evaluation_base_lib: None,
+        dependency_outputs: BTreeMap::new(),
         module_abi_compat: abi,
         declares: vec![],
+        declaration_schema: vec![],
+        requires: vec![],
         owns_roots,
         contributes: vec![],
         provides_capabilities: vec![],
@@ -178,17 +215,57 @@ fn read_miss(root: &str) -> MissingOption {
 /// present) — i.e. it counts toward the no-progress guard.
 fn loaded(package: &str) -> WorkingSetMember {
     WorkingSetMember {
+        registry: None,
+        release_trust: None,
+        config_realization: None,
         package: package.to_string(),
         version: Some("1".to_string()),
         config_output: Some(format!("/nix/store/h-{package}-config")),
+        config_output_nar_hash: Some("sha256:test".to_string()),
         module_abi_compat: Some(compat(1, 2)),
+        authorization: PackageAuthorization::default(),
+        outputs: PackageOutputs::default(),
     }
+}
+
+#[test]
+fn signed_release_identity_flows_from_resolver_members_into_manifest_input() {
+    let receipt = crate::registry::ReleaseTrustReceipt {
+        schema: "aos.registry-release-trust/v1".to_string(),
+        registry: "aos-core".to_string(),
+        release_tag: "1.4.0".to_string(),
+        commit: "a".repeat(40),
+        tag_signer_key: "deadbeef".to_string(),
+    };
+    let members = vec![WorkingSetMember {
+        registry: Some("aos-core".to_string()),
+        release_trust: Some(receipt),
+        config_realization: Some(format!("sha256:{}", "aa".repeat(32))),
+        package: "web".to_string(),
+        version: Some("1.0.0".to_string()),
+        config_output: Some("/nix/store/cccccccccccccccccccccccccccccccc-web-config".to_string()),
+        config_output_nar_hash: Some(format!("sha256:{}", "bb".repeat(32))),
+        module_abi_compat: Some(compat(1, 2)),
+        authorization: PackageAuthorization::default(),
+        outputs: PackageOutputs::default(),
+    }];
+    let (registry, tag, signer, realization) =
+        super::config_module_release_identity(&members).unwrap();
+    assert_eq!(registry.as_deref(), Some("aos-core"));
+    assert_eq!(tag.as_deref(), Some("1.4.0"));
+    assert_eq!(signer.as_deref(), Some("deadbeef"));
+    assert!(
+        realization
+            .as_deref()
+            .is_some_and(|value| value.starts_with("sha256:") && value.len() == 71)
+    );
 }
 
 fn inputs(seed: Vec<WorkingSetMember>, abi: u32, cap: Option<u32>) -> FixpointInputs {
     FixpointInputs {
         host_nix: PathBuf::from("/run/aos-eval/host.nix"),
         base_lib: PathBuf::from("/nix/store/hash-aos-base-lib"),
+        facts_json: None,
         seed_set: seed,
         module_abi: abi,
         iter_cap: cap,
@@ -218,6 +295,350 @@ fn converges_with_zero_missing_rounds() {
     assert_eq!(outcome.working_set.len(), 1);
     assert!(outcome.trace.is_empty());
     assert!(fetcher.fetched.borrow().is_empty());
+}
+
+#[test]
+fn conservative_requires_preclose_structural_providers() {
+    let mut web = private_module(compat(1, 2));
+    web.requires = vec!["redis.port".to_string()];
+    let resolver = MockResolver::new()
+        .with("web", web)
+        .with("redis", private_module(compat(1, 2)));
+    let mut seeds = vec![WorkingSetMember::seed("web")];
+
+    preclose_config_requires(&mut seeds, &resolver);
+
+    assert_eq!(
+        seeds
+            .iter()
+            .map(|member| member.package.as_str())
+            .collect::<Vec<_>>(),
+        vec!["web", "redis"]
+    );
+}
+
+#[test]
+fn seed_modules_are_fetched_and_loaded_before_iteration_zero() {
+    let resolver =
+        MockResolver::new().with("web", private_module(ModuleAbiCompat { min: 1, max: 2 }));
+    let fetcher = RecordingFetcher::new();
+    let mut seeds = vec![WorkingSetMember::seed("web")];
+
+    hydrate_seed_config_modules(&mut seeds, &resolver, &fetcher, 1).unwrap();
+
+    assert_eq!(seeds[0].version.as_deref(), Some("1.0.0"));
+    assert_eq!(
+        seeds[0].config_output.as_deref(),
+        Some("/nix/store/hash-config")
+    );
+    assert_eq!(seeds[0].module_abi_compat, Some(compat(1, 2)));
+    assert_eq!(*fetcher.fetched.borrow(), vec!["web"]);
+}
+
+#[test]
+fn seed_module_abi_is_gated_before_fetch() {
+    let resolver =
+        MockResolver::new().with("web", private_module(ModuleAbiCompat { min: 2, max: 3 }));
+    let fetcher = RecordingFetcher::new();
+    let mut seeds = vec![WorkingSetMember::seed("web")];
+
+    let error = hydrate_seed_config_modules(&mut seeds, &resolver, &fetcher, 1).unwrap_err();
+
+    assert!(matches!(error, FixpointError::SeedAbiMismatch(_)));
+    assert!(fetcher.fetched.borrow().is_empty());
+    assert!(seeds[0].config_output.is_none());
+}
+
+#[test]
+fn config_module_paths_cannot_alias_distinct_package_identities() {
+    let output = "/nix/store/0000000000000000000000000000000a-shared-config";
+    let mut first = WorkingSetMember::seed("first");
+    first.config_output = Some(output.to_string());
+    first.config_output_nar_hash = Some(format!("sha256:{}", "0".repeat(52)));
+    first.module_abi_compat = Some(compat(1, 2));
+    let mut second = WorkingSetMember::seed("second");
+    second.config_output = Some(output.to_string());
+    second.config_output_nar_hash = Some(format!("sha256:{}", "1".repeat(52)));
+    second.module_abi_compat = Some(compat(1, 2));
+
+    let error = config_module_inputs(&[first, second]).expect_err("shared identity");
+
+    assert!(
+        error
+            .to_string()
+            .contains("shared config-output identity is forbidden")
+    );
+}
+
+#[test]
+fn runtime_enrichment_pins_outputs_graph_and_package_ownership() {
+    use super::runtime::{
+        RuntimeClosurePin, RuntimePackagePin, RuntimeRealisationPin, RuntimeResolution,
+    };
+
+    let output = "/nix/store/0000000000000000000000000000000a-web-1.0.0";
+    let runtime = RuntimeResolution {
+        packages: BTreeMap::from([(
+            "web".to_string(),
+            RuntimePackagePin {
+                version: "1.0.0".to_string(),
+                platform: "x86_64-linux".to_string(),
+                registry: "aos-core".to_string(),
+                origin: super::runtime::RuntimePackageOrigin::Registry,
+                store_path: output.to_string(),
+                config_dependency_outputs: BTreeMap::new(),
+                closure: vec![RuntimeClosurePin {
+                    store_path_hash: "0000000000000000000000000000000a".to_string(),
+                    store_path: Some(output.to_string()),
+                    realisations: vec![RuntimeRealisationPin {
+                        nar_hash: "sha256:0000000000000000000000000000000000000000000000000000"
+                            .to_string(),
+                        nar_size: 1,
+                    }],
+                }],
+                expose: None,
+                expose_artifact: None,
+                config_projection: None,
+                legacy_config: None,
+            },
+        )]),
+        edges: BTreeMap::from([("web".to_string(), Vec::new())]),
+    };
+    let mut missing_owner = serde_json::json!({
+        "etc": {},
+        "presets": [],
+        "storePaths": ["/nix/store/0000000000000000000000000000000b-base"],
+        "ownership": {"etc": {}, "presets": {}, "storePaths": {}}
+    });
+    let error = enrich_runtime_projection(missing_owner.as_object_mut().unwrap(), &runtime)
+        .expect_err("unknown pre-existing roots must not be synthesized as @base");
+    assert!(
+        error
+            .to_string()
+            .contains("has no authenticated artifact owner"),
+        "{error:#}"
+    );
+
+    let mut bundled_output = serde_json::json!({
+        "etc": {},
+        "presets": [],
+        "storePaths": [output],
+        "ownership": {"etc": {}, "presets": {}, "storePaths": {(output): "@base"}}
+    });
+    let error = enrich_runtime_projection(bundled_output.as_object_mut().unwrap(), &runtime)
+        .expect_err("an image-owned path must not be reclassified as a package output");
+    assert!(
+        error
+            .to_string()
+            .contains("base content cannot be reclassified as a package output")
+    );
+
+    let mut image_runtime = runtime.clone();
+    image_runtime.packages.get_mut("web").unwrap().origin =
+        super::runtime::RuntimePackageOrigin::Image;
+    enrich_runtime_projection(bundled_output.as_object_mut().unwrap(), &image_runtime)
+        .expect("an image-origin pin may reuse its identical image-owned output");
+    assert_eq!(bundled_output["ownership"]["storePaths"][output], "@base");
+
+    let referenced = "/nix/store/0000000000000000000000000000000c-web-data";
+    let mut manifest = serde_json::json!({
+        "etc": {
+            "web/data": {"kind": "store-symlink", "target": format!("{referenced}/data")}
+        },
+        "presets": [],
+        "storePaths": ["/nix/store/0000000000000000000000000000000b-base"],
+        "ownership": {
+            "etc": {"web/data": "web"},
+            "presets": {},
+            "storePaths": {
+                "/nix/store/0000000000000000000000000000000b-base": "@host"
+            }
+        }
+    });
+
+    enrich_runtime_projection(manifest.as_object_mut().unwrap(), &runtime).unwrap();
+
+    assert_eq!(manifest["packages"], serde_json::json!(["web"]));
+    assert_eq!(manifest["graph"], serde_json::json!({"edges":{"web":[]}}));
+    assert_eq!(manifest["packageOutputs"]["web"]["store_path"], output);
+    assert_eq!(manifest["ownership"]["storePaths"][output], "web");
+    assert_eq!(manifest["ownership"]["storePaths"][referenced], "web");
+    assert_eq!(
+        manifest["ownership"]["storePaths"]["/nix/store/0000000000000000000000000000000b-base"],
+        "@host"
+    );
+}
+
+#[test]
+fn runtime_enrichment_preserves_authorized_image_store_ownership() {
+    use super::runtime::{RuntimePackagePin, RuntimeResolution};
+
+    let output = "/nix/store/0000000000000000000000000000000a-web-1.0.0";
+    let image = "/nix/store/0000000000000000000000000000000b-image-data";
+    let runtime = RuntimeResolution {
+        packages: BTreeMap::from([(
+            "web".to_string(),
+            RuntimePackagePin {
+                version: "1.0.0".to_string(),
+                platform: "x86_64-linux".to_string(),
+                registry: "aos-core".to_string(),
+                origin: super::runtime::RuntimePackageOrigin::Registry,
+                store_path: output.to_string(),
+                config_dependency_outputs: BTreeMap::new(),
+                closure: Vec::new(),
+                expose: None,
+                expose_artifact: None,
+                config_projection: None,
+                legacy_config: None,
+            },
+        )]),
+        edges: BTreeMap::from([("web".to_string(), Vec::new())]),
+    };
+    let mut manifest = serde_json::json!({
+        "etc": {
+            "host-data": {"kind": "store-symlink", "target": format!("{image}/host")},
+            "package-data": {"kind": "store-symlink", "target": format!("{image}/package")}
+        },
+        "presets": [],
+        "storePaths": [image],
+        "ownership": {
+            "etc": {"host-data": "@host", "package-data": "web"},
+            "presets": {},
+            "storePaths": {(image): "@base"}
+        }
+    });
+
+    enrich_runtime_projection(manifest.as_object_mut().unwrap(), &runtime)
+        .expect("host and package artifacts may reference immutable image content");
+
+    assert_eq!(manifest["ownership"]["storePaths"][image], "@base");
+
+    let unrelated = "/nix/store/0000000000000000000000000000000c-other-data";
+    let mut unauthorized = serde_json::json!({
+        "etc": {
+            "package-data": {"kind": "store-symlink", "target": format!("{unrelated}/data")}
+        },
+        "presets": [],
+        "storePaths": [unrelated],
+        "ownership": {
+            "etc": {"package-data": "web"},
+            "presets": {},
+            "storePaths": {(unrelated): "other"}
+        }
+    });
+    let error = enrich_runtime_projection(unauthorized.as_object_mut().unwrap(), &runtime)
+        .expect_err("a package must not reference an unrelated package store root");
+    assert!(
+        error
+            .to_string()
+            .contains("is not authorized for referencing /etc owner"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn runtime_enrichment_projects_authenticated_units_and_enablement() {
+    use super::runtime::{
+        RuntimeClosurePin, RuntimePackagePin, RuntimeRealisationPin, RuntimeResolution,
+    };
+    use crate::types::{ExposeArtifactMeta, ExposeConfigMeta, ExposeMeta};
+
+    let output = "/nix/store/0000000000000000000000000000000a-web-1.0.0";
+    let artifact = "/nix/store/0000000000000000000000000000000b-expose-web";
+    let nar_hash = format!("sha256:{}", "0".repeat(52));
+    let runtime = RuntimeResolution {
+        packages: BTreeMap::from([(
+            "web".to_string(),
+            RuntimePackagePin {
+                version: "1.0.0".to_string(),
+                platform: "x86_64-linux".to_string(),
+                registry: "aos-core".to_string(),
+                origin: super::runtime::RuntimePackageOrigin::Registry,
+                store_path: output.to_string(),
+                config_dependency_outputs: BTreeMap::new(),
+                closure: vec![
+                    RuntimeClosurePin {
+                        store_path_hash: "0000000000000000000000000000000a".to_string(),
+                        store_path: Some(output.to_string()),
+                        realisations: vec![RuntimeRealisationPin {
+                            nar_hash: nar_hash.clone(),
+                            nar_size: 1,
+                        }],
+                    },
+                    RuntimeClosurePin {
+                        store_path_hash: "0000000000000000000000000000000b".to_string(),
+                        store_path: Some(artifact.to_string()),
+                        realisations: vec![RuntimeRealisationPin {
+                            nar_hash: nar_hash.clone(),
+                            nar_size: 1,
+                        }],
+                    },
+                ],
+                expose: Some(ExposeMeta {
+                    target: "aos-pkg-web.target".to_string(),
+                    units: vec!["aos-pkg-web.target".to_string(), "web.service".to_string()],
+                    images: Vec::new(),
+                    requires: Vec::new(),
+                    config: ExposeConfigMeta::default(),
+                    provides: Vec::new(),
+                    uses: Vec::new(),
+                }),
+                expose_artifact: Some(ExposeArtifactMeta {
+                    store_path: artifact.to_string(),
+                    nar_hash,
+                    nar_size: 1,
+                }),
+                config_projection: None,
+                legacy_config: Some(ExposeConfigMeta::default()),
+            },
+        )]),
+        edges: BTreeMap::from([("web".to_string(), Vec::new())]),
+    };
+    let mut manifest = serde_json::json!({
+        "etc": {
+            "systemd/system/web.service": {
+                "kind": "store-symlink",
+                "target": format!("{artifact}/units/web.service")
+            }
+        },
+        "presets": [],
+        "storePaths": [artifact],
+        "ownership": {
+            "etc": {"systemd/system/web.service": "@base"},
+            "presets": {},
+            "storePaths": {(artifact): "@base"}
+        }
+    });
+
+    enrich_runtime_projection(manifest.as_object_mut().unwrap(), &runtime).unwrap();
+
+    assert_eq!(
+        manifest["etc"]["systemd/system/aos-pkg-web.target"]["target"],
+        format!("{artifact}/units/aos-pkg-web.target")
+    );
+    assert_eq!(
+        manifest["etc"]["systemd/system/multi-user.target.wants/aos-pkg-web.target"],
+        serde_json::json!({"kind": "symlink", "target": "../aos-pkg-web.target"})
+    );
+    assert_eq!(
+        manifest["ownership"]["etc"]["systemd/system/multi-user.target.wants/aos-pkg-web.target"],
+        "web"
+    );
+    assert_eq!(manifest["ownership"]["storePaths"][artifact], "@base");
+    assert_eq!(
+        manifest["presets"],
+        serde_json::json!([{
+            "unit": "aos-pkg-web.target",
+            "policy": "enable",
+            "source": "web"
+        }])
+    );
+    assert!(
+        manifest["storePaths"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(artifact))
+    );
 }
 
 #[test]
@@ -390,10 +811,16 @@ fn seed_abi_gate_rejects_before_any_eval() {
     let eval = ScriptedEvaluator::new(vec![]);
     let fetcher = RecordingFetcher::new();
     let seed = vec![WorkingSetMember {
+        registry: None,
+        release_trust: None,
+        config_realization: None,
         package: "firewall".into(),
         version: Some("9.9.9".into()),
         config_output: Some("/nix/store/h-firewall-config".into()),
+        config_output_nar_hash: Some("sha256:test".into()),
         module_abi_compat: Some(compat(2, 4)),
+        authorization: PackageAuthorization::default(),
+        outputs: PackageOutputs::default(),
     }];
 
     let err = run_fixpoint(&inputs(seed, 1, None), &resolver, &eval, &fetcher)
@@ -484,6 +911,45 @@ fn two_owners_of_one_root_is_exclusivity_violation() {
 }
 
 #[test]
+fn exact_installed_profile_set_participates_in_root_conflicts() {
+    let resolver = MockResolver::new()
+        .with_installed("firewall-a", owner_module("firewall", &[], compat(1, 2)))
+        .with_installed("firewall-b", owner_module("firewall", &[], compat(1, 2)));
+    let eval = ScriptedEvaluator::new(vec![]);
+    let fetcher = RecordingFetcher::new();
+
+    let error = run_fixpoint(&inputs(Vec::new(), 1, None), &resolver, &eval, &fetcher)
+        .expect_err("installed profile owners must be folded even without desired seeds");
+    assert!(matches!(
+        error,
+        FixpointError::AmbiguousProvider { ref root, .. } if root == "firewall"
+    ));
+    assert!(eval.seen_sizes.borrow().is_empty());
+}
+
+#[test]
+fn ownerless_known_shared_root_never_uses_structural_fetch() {
+    let resolver = MockResolver::new()
+        .with("firewall", private_module(compat(1, 2)))
+        .with_known_shared("firewall");
+    let eval = ScriptedEvaluator::new(vec![EvalClass::Missing(vec![read_miss("firewall")])]);
+    let fetcher = RecordingFetcher::new();
+
+    let error = run_fixpoint(
+        &inputs(vec![WorkingSetMember::seed("web")], 1, None),
+        &resolver,
+        &eval,
+        &fetcher,
+    )
+    .expect_err("known shared root without a local owner is terminal");
+    assert!(
+        matches!(error, FixpointError::NoProvider { .. }),
+        "{error:?}"
+    );
+    assert!(fetcher.fetched.borrow().is_empty(), "must not auto-fetch");
+}
+
+#[test]
 fn owned_root_shadowing_a_package_name_is_terminal() {
     // `web-extras` owns root `nginx`, but a package literally named `nginx` is
     // also seeded: its private root would be silently shadowed ⇒ hard error.
@@ -513,6 +979,7 @@ fn out_of_scope_contribution_is_terminal_at_resolve_time() {
     let mut contributor = private_module(compat(1, 2));
     contributor.contributes = vec![RootContribution {
         root: "nginx".to_string(),
+        interface_abi: 1,
         paths: vec!["upstreams".to_string()],
     }];
     let resolver = MockResolver::new()
@@ -538,6 +1005,113 @@ fn out_of_scope_contribution_is_terminal_at_resolve_time() {
         "{err:?}"
     );
     assert!(eval.seen_sizes.borrow().is_empty());
+}
+
+#[test]
+fn contribution_surface_authorizes_dynamic_subtree_paths() {
+    let mut contributor = private_module(compat(1, 2));
+    contributor.contributes = vec![RootContribution {
+        root: "nginx".to_string(),
+        interface_abi: 1,
+        paths: vec!["virtualHosts.example.enable".to_string()],
+    }];
+    let resolver = MockResolver::new()
+        .with(
+            "nginx",
+            owner_module("nginx", &["virtualHosts"], compat(1, 2)),
+        )
+        .with("web", contributor);
+    let eval = ScriptedEvaluator::new(vec![EvalClass::Manifest("{}".to_string())]);
+    let fetcher = RecordingFetcher::new();
+
+    let outcome = run_fixpoint(
+        &inputs(
+            vec![
+                WorkingSetMember::seed("nginx"),
+                WorkingSetMember::seed("web"),
+            ],
+            1,
+            None,
+        ),
+        &resolver,
+        &eval,
+        &fetcher,
+    )
+    .expect("a dynamic child of an authenticated contribution surface must be allowed");
+
+    assert_eq!(outcome.manifest, "{}");
+    assert_eq!(eval.seen_sizes.borrow().as_slice(), &[2]);
+}
+
+#[test]
+fn contribution_surface_does_not_authorize_prefix_lookalikes() {
+    let mut contributor = private_module(compat(1, 2));
+    contributor.contributes = vec![RootContribution {
+        root: "nginx".to_string(),
+        interface_abi: 1,
+        paths: vec!["virtualHostsAdmin.enable".to_string()],
+    }];
+    let resolver = MockResolver::new()
+        .with(
+            "nginx",
+            owner_module("nginx", &["virtualHosts"], compat(1, 2)),
+        )
+        .with("web", contributor);
+    let eval = ScriptedEvaluator::new(vec![]);
+    let fetcher = RecordingFetcher::new();
+
+    let error = run_fixpoint(
+        &inputs(
+            vec![
+                WorkingSetMember::seed("nginx"),
+                WorkingSetMember::seed("web"),
+            ],
+            1,
+            None,
+        ),
+        &resolver,
+        &eval,
+        &fetcher,
+    )
+    .expect_err("a lexical prefix must not escape the dotted contribution subtree");
+
+    assert!(matches!(
+        error,
+        FixpointError::Contributable { ref path, .. }
+            if path == "virtualHostsAdmin.enable"
+    ));
+    assert!(eval.seen_sizes.borrow().is_empty());
+}
+
+#[test]
+fn discovered_provider_actual_authorization_is_checked_before_fetch() {
+    let mut contributor = private_module(compat(1, 2));
+    contributor.contributes = vec![RootContribution {
+        root: "nginx".to_string(),
+        interface_abi: 1,
+        paths: vec!["upstreams".to_string()],
+    }];
+    let resolver = MockResolver::new()
+        .with(
+            "nginx",
+            owner_module("nginx", &["virtualHosts"], compat(1, 2)),
+        )
+        .with("plugin", contributor);
+    let eval = ScriptedEvaluator::new(vec![EvalClass::Missing(vec![write_miss("plugin.enable")])]);
+    let fetcher = RecordingFetcher::new();
+
+    let error = run_fixpoint(
+        &inputs(vec![WorkingSetMember::seed("nginx")], 1, None),
+        &resolver,
+        &eval,
+        &fetcher,
+    )
+    .expect_err("a discovered provider must not bypass SystemRoots authorization");
+    assert!(matches!(
+        error,
+        FixpointError::Contributable { ref path, .. } if path == "upstreams"
+    ));
+    assert!(fetcher.fetched.borrow().is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -660,9 +1234,13 @@ fn signed_host_nix_policy_fails_closed_with_no_anchors() {
     let host_nix = tmp.path().join("host.nix");
     std::fs::write(&host_nix, b"{ }").unwrap();
     let out = tmp.path().join("manifest.json");
+    let graph = tmp.path().join("graph.json");
+    std::fs::write(&out, b"stale manifest").unwrap();
+    std::fs::write(&graph, b"stale graph").unwrap();
     let cmd = EvalCommand {
         host_nix,
         base_lib: tmp.path().join("base-lib"),
+        facts_json: None,
         desired: None,
         module_abi: 1,
         out: out.clone(),
@@ -670,6 +1248,7 @@ fn signed_host_nix_policy_fails_closed_with_no_anchors() {
         verbose: 0,
         trusted_config_keys_dirs: Vec::new(),
         require_signed_host_nix: true,
+        image_default_host: false,
     };
     let err = run_eval_command(&cmd).expect_err("gate must fail closed with no anchors");
     let msg = format!("{err:#}");
@@ -678,6 +1257,7 @@ fn signed_host_nix_policy_fails_closed_with_no_anchors() {
         !out.exists(),
         "no manifest may be written on a gate failure"
     );
+    assert!(!graph.exists(), "no stale graph may survive a gate failure");
 }
 
 #[test]
@@ -688,6 +1268,7 @@ fn platform_host_nix_policy_needs_no_image_baked_key() {
     let cmd = EvalCommand {
         host_nix,
         base_lib: tmp.path().join("base-lib"),
+        facts_json: None,
         desired: None,
         module_abi: 1,
         out: tmp.path().join("manifest.json"),
@@ -695,8 +1276,198 @@ fn platform_host_nix_policy_needs_no_image_baked_key() {
         verbose: 0,
         trusted_config_keys_dirs: Vec::new(),
         require_signed_host_nix: false,
+        image_default_host: false,
     };
 
     super::enforce_host_nix_trust_policy(&cmd)
         .expect("platform metadata is trusted without an image-specific key");
+}
+
+#[test]
+fn image_default_host_accepts_only_the_empty_module_without_operator_keys() {
+    let tmp = tempfile::tempdir().unwrap();
+    let host_nix = tmp.path().join("host.nix");
+    std::fs::write(&host_nix, b"{}\n").unwrap();
+    let mut cmd = EvalCommand {
+        host_nix: host_nix.clone(),
+        base_lib: tmp.path().join("base-lib"),
+        facts_json: None,
+        desired: None,
+        module_abi: 1,
+        out: tmp.path().join("manifest.json"),
+        eval_root: tmp.path().to_path_buf(),
+        verbose: 0,
+        trusted_config_keys_dirs: Vec::new(),
+        require_signed_host_nix: true,
+        image_default_host: true,
+    };
+
+    super::enforce_host_nix_trust_policy(&cmd)
+        .expect("the image-authored empty module needs no operator signature");
+
+    std::fs::write(&host_nix, b"{ services.sshd.enable = true; }\n").unwrap();
+    let error = super::enforce_host_nix_trust_policy(&cmd)
+        .expect_err("the image-default marker must not authorize configuration");
+    assert!(error.to_string().contains("must be the empty Nix module"));
+
+    cmd.image_default_host = false;
+    assert!(super::enforce_host_nix_trust_policy(&cmd).is_err());
+}
+
+#[test]
+fn retained_manifest_abi_bands_gate_cross_abi_rollback() {
+    let source: materialize::ConfigManifest = serde_json::from_str(include_str!(
+        "../../tests/fixtures/config_manifest/manifest.json"
+    ))
+    .unwrap();
+    let mut retained = crate::types::CrossAbiReEvalInputs {
+        config_module_paths: source.inputs.config_modules.store_paths.clone(),
+        config_module_packages: source.inputs.config_modules.package_names.clone(),
+        host_nix_ref: source.inputs.host_nix.store_path.clone(),
+        facts_hash: source.inputs.instance_facts.facts_hash.clone(),
+        facts_ref: source.inputs.instance_facts.store_path.clone(),
+        from_module_abi: 1,
+        to_module_abi: 2,
+    };
+
+    let error = super::validate_retained_manifest_inputs(&source, &retained).unwrap_err();
+    assert!(error.to_string().contains("does not admit"), "{error:#}");
+    assert!(error.to_string().contains("example"), "{error:#}");
+
+    retained.to_module_abi = 1;
+    super::validate_retained_manifest_inputs(&source, &retained).unwrap();
+
+    let working = super::retained_cross_abi_working_set(&source, &retained).unwrap();
+    assert_eq!(working.len(), 1);
+    assert_eq!(working[0].package, "example");
+    assert_eq!(
+        working[0].module_abi_compat,
+        Some(crate::types::ModuleAbiCompat { min: 1, max: 1 })
+    );
+    assert_eq!(
+        working[0].authorization,
+        super::PackageAuthorization::default()
+    );
+}
+
+fn retained_identity_inputs(
+    host_nix: &std::path::Path,
+) -> (
+    materialize::ConfigManifest,
+    crate::types::CrossAbiReEvalInputs,
+) {
+    let mut source: materialize::ConfigManifest = serde_json::from_str(include_str!(
+        "../../tests/fixtures/config_manifest/manifest.json"
+    ))
+    .unwrap();
+    let host_nix = host_nix.to_string_lossy().into_owned();
+    source.inputs.host_nix.store_path = host_nix.clone();
+    source.inputs.host_nix.content_hash = super::sha256_identity(b"{}\n");
+    let retained = crate::types::CrossAbiReEvalInputs {
+        config_module_paths: source.inputs.config_modules.store_paths.clone(),
+        config_module_packages: source.inputs.config_modules.package_names.clone(),
+        host_nix_ref: host_nix,
+        facts_hash: source.inputs.instance_facts.facts_hash.clone(),
+        facts_ref: source.inputs.instance_facts.store_path.clone(),
+        from_module_abi: 1,
+        to_module_abi: 1,
+    };
+    (source, retained)
+}
+
+#[test]
+fn retained_identity_rejects_modified_host_module_bytes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let host_nix = tmp.path().join("host.nix");
+    std::fs::write(&host_nix, b"{ services.sshd.enable = true; }\n").unwrap();
+    let (source, retained) = retained_identity_inputs(&host_nix);
+    let expected_nar = source.inputs.config_modules.nar_hashes[0].clone();
+
+    let error = super::validate_retained_content_identities(&source, &retained, |_| {
+        Ok(expected_nar.clone())
+    })
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("retained host.nix bytes"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn retained_identity_rejects_modified_config_module_nar() {
+    let tmp = tempfile::tempdir().unwrap();
+    let host_nix = tmp.path().join("host.nix");
+    std::fs::write(&host_nix, b"{}\n").unwrap();
+    let (source, retained) = retained_identity_inputs(&host_nix);
+
+    let error = super::validate_retained_content_identities(&source, &retained, |_| {
+        Ok(format!("sha256:{}", "f".repeat(64)))
+    })
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("does not match authenticated NAR hash"),
+        "{error:#}"
+    );
+    assert!(error.to_string().contains("example"), "{error:#}");
+}
+
+#[test]
+fn evaluator_identity_uses_decoded_store_path_hash() {
+    let path = PathBuf::from(format!("/nix/store/{}-aos/bin/apm", "0".repeat(32)));
+    assert_eq!(
+        evaluator_store_root(&path).expect("valid store root"),
+        Path::new(&format!("/nix/store/{}-aos", "0".repeat(32)))
+    );
+    assert_eq!(
+        evaluator_store_hash(&path).expect("valid store identity"),
+        format!("sha256:{}", "0".repeat(40))
+    );
+    assert!(evaluator_store_root(Path::new("/tmp/apm")).is_err());
+    assert!(evaluator_store_hash(Path::new("/tmp/apm")).is_err());
+}
+
+#[test]
+fn config_closure_identity_is_a_path_sorted_nar_set() {
+    let left_paths = vec![
+        "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-b".to_string(),
+        "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a".to_string(),
+    ];
+    let left_hashes = vec![
+        format!("sha256:{}", "1".repeat(52)),
+        format!("sha256:{}", "0".repeat(52)),
+    ];
+    let right_paths = vec![left_paths[1].clone(), left_paths[0].clone()];
+    let right_hashes = vec![left_hashes[1].clone(), left_hashes[0].clone()];
+    assert_eq!(
+        config_module_closure_hash(&left_paths, &left_hashes).expect("left closure"),
+        config_module_closure_hash(&right_paths, &right_hashes).expect("right closure")
+    );
+    assert!(config_module_closure_hash(&left_paths, &right_hashes[..1]).is_err());
+}
+
+#[test]
+fn base_lib_identity_cross_checks_schema_and_module_abi() {
+    let root = tempfile::tempdir().expect("temporary base lib");
+    let schema = serde_json::json!([["aos.example.enable", "boolean"]]);
+    std::fs::write(root.path().join("module-abi"), "7\n").expect("module ABI");
+    std::fs::write(
+        root.path().join("option-schema.json"),
+        serde_json::to_vec(&schema).expect("schema JSON"),
+    )
+    .expect("schema");
+    let hash = crate::graph_compile::reproject::hash_cjson(&serde_json::json!({
+        "abi": 7,
+        "schema": schema,
+    }));
+    std::fs::write(root.path().join("abi-hash"), format!("{hash}\n")).expect("ABI hash");
+
+    assert_eq!(
+        read_base_lib_abi_hash(root.path(), 7).expect("valid identity"),
+        hash
+    );
+    assert!(read_base_lib_abi_hash(root.path(), 8).is_err());
+    std::fs::write(root.path().join("option-schema.json"), "[]").expect("tampered schema");
+    assert!(read_base_lib_abi_hash(root.path(), 7).is_err());
 }
