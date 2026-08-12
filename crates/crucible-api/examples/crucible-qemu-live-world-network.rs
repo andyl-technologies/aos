@@ -16,6 +16,7 @@
 use std::error::Error;
 use std::time::Duration;
 
+use crucible::model::{FaultObservationKind, FaultTargetKind};
 use crucible::{
     Icount, LinkDef, LinkLossProbability, NodeId, NodeTemplate, Plan, Properties, QuantumLoop,
     QuantumRequest, ReadyPoint, ScenarioDefForm, Seed, SimDuration, WhiteBoxPolicy, World,
@@ -132,18 +133,18 @@ fn main() -> Result<(), Box<dyn Error>> {
                     else {
                         return false;
                     };
-                    observation.kind == crucible::FaultObservationKind::EffectChoice
+                    observation.kind == FaultObservationKind::EffectChoice
                         && observation.target.as_ref().is_some_and(|target| {
                             matches!(
                                 target.kind(),
-                                crucible::FaultTargetKind::NetworkInterface
-                                    | crucible::FaultTargetKind::NetworkSegment
-                                    | crucible::FaultTargetKind::NetworkMedium
-                                    | crucible::FaultTargetKind::NetworkQueue
-                                    | crucible::FaultTargetKind::NetworkForwarder
-                                    | crucible::FaultTargetKind::NetworkPath
-                                    | crucible::FaultTargetKind::NetworkAttachment
-                                    | crucible::FaultTargetKind::NetworkContact
+                                FaultTargetKind::NetworkInterface
+                                    | FaultTargetKind::NetworkSegment
+                                    | FaultTargetKind::NetworkMedium
+                                    | FaultTargetKind::NetworkQueue
+                                    | FaultTargetKind::NetworkForwarder
+                                    | FaultTargetKind::NetworkPath
+                                    | FaultTargetKind::NetworkAttachment
+                                    | FaultTargetKind::NetworkContact
                             )
                         })
                 })
