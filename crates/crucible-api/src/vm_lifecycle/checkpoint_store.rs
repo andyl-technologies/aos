@@ -5,7 +5,7 @@ use crucible::model::FaultResourceLimits;
 use std::collections::BTreeSet;
 use std::io::Read as _;
 
-const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v2\0";
+const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v3\0";
 const MANIFEST_FILE: &str = "manifest.cbor";
 const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 const MAX_MANIFEST_BYTES_U64: u64 = 64 * 1024 * 1024;
@@ -22,6 +22,7 @@ struct ClosureManifest {
     scheduler: ContentHash,
     trigger_state: ContentHash,
     assertion_state: ContentHash,
+    lifecycle_state: ContentHash,
     fault_checkpoint: ContentHash,
     targets: Vec<TargetManifest>,
     node_generations: Vec<(String, u64)>,
@@ -54,8 +55,42 @@ struct ClosureObjects {
     scheduler: Vec<u8>,
     trigger_state: Vec<u8>,
     assertion_state: Vec<u8>,
+    lifecycle_state: Vec<u8>,
     fault_checkpoint: Vec<u8>,
     snapshots: BTreeMap<NodeId, Vec<u8>>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LifecycleWire {
+    terminal: Option<TerminalWire>,
+    initial_lifecycle_observations_pending: bool,
+    branch: Option<BranchWire>,
+    recorded_controls: Vec<RecordedControlWire>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TerminalWire {
+    Passed,
+    Failed(Vec<String>),
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BranchWire {
+    base_schedule: Vec<u8>,
+    frontier: u64,
+    decisions: Vec<Decision>,
+    seed: Option<Seed>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecordedControlWire {
+    configuration_schedule: Vec<u8>,
+    node_times: Vec<(String, u64)>,
+    control: Vec<ControlOperation>,
 }
 
 pub(super) fn persist_exact_checkpoint_set(
@@ -124,6 +159,11 @@ pub(super) fn persist_exact_checkpoint_set(
         &object_directory,
         manifest.assertion_state,
         &objects.assertion_state,
+    )?;
+    persist_object(
+        &object_directory,
+        manifest.lifecycle_state,
+        &objects.lifecycle_state,
     )?;
     persist_object(
         &object_directory,
@@ -238,6 +278,10 @@ pub(super) fn load_exact_checkpoint_set(
         &mut budget,
     )?)
     .map_err(|error| loop_factory_error(format!("decode assertion continuation: {error}")))?;
+    let lifecycle = decode_lifecycle(
+        &read_object(&object_directory, manifest.lifecycle_state, &mut budget)?,
+        scenario,
+    )?;
     let signal_plan = source.plan().fault_signals();
     let fault_checkpoint = ProductionFaultRuntimeCheckpoint::from_canonical_bytes(
         &read_object(&object_directory, manifest.fault_checkpoint, &mut budget)?,
@@ -302,17 +346,24 @@ pub(super) fn load_exact_checkpoint_set(
     let node_generations = decode_generations(&manifest.node_generations)?;
     let node_service_states = decode_service_states(&manifest.node_service_states)?;
     validate_restored_node_sets(source, &targets, &node_generations, &node_service_states)?;
-    Ok(ProductionVmExactCheckpointSet {
+    let restored = ProductionVmExactCheckpointSet {
         identity,
         configuration,
         scheduler,
         trigger_state,
         assertion_state,
+        terminal_verdict: lifecycle.terminal,
+        initial_lifecycle_observations_pending: lifecycle.initial_lifecycle_observations_pending,
+        branch: lifecycle.branch,
+        recorded_controls: lifecycle.recorded_controls,
         fault_checkpoint,
         targets,
         node_generations,
         node_service_states,
-    })
+    };
+    validate_checkpoint_set(scenario.id(), &restored)
+        .map_err(|error| loop_factory_error(error.to_string()))?;
+    Ok(restored)
 }
 
 fn validate_checkpoint_set(
@@ -331,6 +382,19 @@ fn validate_checkpoint_set(
         return Err(store_error(
             "exact checkpoint scheduler configuration does not match its scenario",
         ));
+    }
+    match (
+        checkpoint.scheduler.branch_frontier_cap(),
+        checkpoint.branch.as_ref(),
+    ) {
+        (None, None) => {}
+        (Some(cap), Some(branch)) if cap == branch.frontier && branch.base.def.id() == scenario => {
+        }
+        _ => {
+            return Err(store_error(
+                "exact checkpoint active branch disagrees with scheduler continuation",
+            ));
+        }
     }
     if checkpoint
         .node_generations
@@ -451,6 +515,7 @@ fn enforce_persist_limits(
         (manifest.scheduler, objects.scheduler.len()),
         (manifest.trigger_state, objects.trigger_state.len()),
         (manifest.assertion_state, objects.assertion_state.len()),
+        (manifest.lifecycle_state, objects.lifecycle_state.len()),
         (manifest.fault_checkpoint, objects.fault_checkpoint.len()),
     ] {
         if identities.insert(identity) {
@@ -520,6 +585,7 @@ fn authenticate_existing_publication(
         (expected.scheduler, objects.scheduler.as_slice()),
         (expected.trigger_state, objects.trigger_state.as_slice()),
         (expected.assertion_state, objects.assertion_state.as_slice()),
+        (expected.lifecycle_state, objects.lifecycle_state.as_slice()),
         (
             expected.fault_checkpoint,
             objects.fault_checkpoint.as_slice(),
@@ -588,6 +654,128 @@ fn install_published_artifact_paths(
     Ok(())
 }
 
+fn encode_lifecycle(
+    checkpoint: &ProductionVmExactCheckpointSet,
+) -> Result<Vec<u8>, SchedulerError> {
+    let wire = LifecycleWire {
+        terminal: checkpoint
+            .terminal_verdict
+            .as_ref()
+            .map(|terminal| match terminal {
+                QuantumTerminalVerdict::Passed => TerminalWire::Passed,
+                QuantumTerminalVerdict::Failed(failures) => TerminalWire::Failed(failures.clone()),
+            }),
+        initial_lifecycle_observations_pending: checkpoint.initial_lifecycle_observations_pending,
+        branch: checkpoint.branch.as_ref().map(|branch| BranchWire {
+            base_schedule: branch.base.schedule.to_compact_binary(),
+            frontier: branch.frontier.ticks,
+            decisions: branch.decisions.clone(),
+            seed: branch.seed,
+        }),
+        recorded_controls: checkpoint
+            .recorded_controls
+            .iter()
+            .map(|record| RecordedControlWire {
+                configuration_schedule: record.configuration.schedule.to_compact_binary(),
+                node_times: record
+                    .node_times
+                    .iter()
+                    .map(|(node, time)| (node.name.clone(), time.ticks))
+                    .collect(),
+                control: record.control.clone(),
+            })
+            .collect(),
+    };
+    let mut bytes = Vec::new();
+    ciborium::ser::into_writer(&wire, &mut bytes)
+        .map_err(|_| store_error("encode exact lifecycle continuation"))?;
+    Ok(bytes)
+}
+
+struct DecodedLifecycle {
+    terminal: Option<QuantumTerminalVerdict>,
+    initial_lifecycle_observations_pending: bool,
+    branch: Option<ProductionVmBranchConfig>,
+    recorded_controls: Vec<ProductionVmRecordedControl>,
+}
+
+fn decode_lifecycle(
+    bytes: &[u8],
+    scenario: &ScenarioDef,
+) -> Result<DecodedLifecycle, LifecycleApiError> {
+    let wire: LifecycleWire = ciborium::de::from_reader(bytes)
+        .map_err(|_| loop_factory_error("decode exact lifecycle continuation"))?;
+    let canonical = {
+        let mut encoded = Vec::new();
+        ciborium::ser::into_writer(&wire, &mut encoded)
+            .map_err(|_| loop_factory_error("re-encode exact lifecycle continuation"))?;
+        encoded
+    };
+    if canonical != bytes {
+        return Err(loop_factory_error(
+            "exact lifecycle continuation is not canonical",
+        ));
+    }
+    let terminal = wire.terminal.map(|terminal| match terminal {
+        TerminalWire::Passed => QuantumTerminalVerdict::Passed,
+        TerminalWire::Failed(failures) => QuantumTerminalVerdict::Failed(failures),
+    });
+    let branch = wire
+        .branch
+        .map(|branch| {
+            let schedule =
+                Schedule::from_compact_binary(&branch.base_schedule).map_err(|error| {
+                    loop_factory_error(format!("decode checkpoint branch schedule: {error}"))
+                })?;
+            Ok(ProductionVmBranchConfig {
+                base: Configuration {
+                    def: scenario.clone(),
+                    schedule,
+                },
+                frontier: VirtualTime {
+                    ticks: branch.frontier,
+                },
+                decisions: branch.decisions,
+                seed: branch.seed,
+            })
+        })
+        .transpose()?;
+    let mut recorded_controls = Vec::with_capacity(wire.recorded_controls.len());
+    for record in wire.recorded_controls {
+        if !record
+            .node_times
+            .windows(2)
+            .all(|pair| pair[0].0 < pair[1].0)
+        {
+            return Err(loop_factory_error(
+                "checkpoint recorded-control nodes are not strictly sorted",
+            ));
+        }
+        let schedule =
+            Schedule::from_compact_binary(&record.configuration_schedule).map_err(|error| {
+                loop_factory_error(format!("decode recorded control schedule: {error}"))
+            })?;
+        recorded_controls.push(ProductionVmRecordedControl {
+            configuration: Configuration {
+                def: scenario.clone(),
+                schedule,
+            },
+            node_times: record
+                .node_times
+                .into_iter()
+                .map(|(name, ticks)| (NodeId { name }, VirtualTime { ticks }))
+                .collect(),
+            control: record.control,
+        });
+    }
+    Ok(DecodedLifecycle {
+        terminal,
+        initial_lifecycle_observations_pending: wire.initial_lifecycle_observations_pending,
+        branch,
+        recorded_controls,
+    })
+}
+
 fn manifest_and_objects(
     scenario: ContentHash,
     checkpoint: &ProductionVmExactCheckpointSet,
@@ -602,6 +790,7 @@ fn manifest_and_objects(
         .assertion_state
         .canonical_bytes()
         .map_err(|error| store_error(format!("encode assertion continuation: {error}")))?;
+    let lifecycle_state = encode_lifecycle(checkpoint)?;
     let fault_checkpoint = checkpoint
         .fault_checkpoint
         .to_canonical_bytes()
@@ -635,6 +824,7 @@ fn manifest_and_objects(
         scheduler: ContentHash::from_bytes(&scheduler),
         trigger_state: ContentHash::from_bytes(&trigger_state),
         assertion_state: ContentHash::from_bytes(&assertion_state),
+        lifecycle_state: ContentHash::from_bytes(&lifecycle_state),
         fault_checkpoint: ContentHash::from_bytes(&fault_checkpoint),
         targets,
         node_generations: checkpoint
@@ -656,6 +846,7 @@ fn manifest_and_objects(
             scheduler,
             trigger_state,
             assertion_state,
+            lifecycle_state,
             fault_checkpoint,
             snapshots,
         },
@@ -671,6 +862,7 @@ fn closure_identity(manifest: &ClosureManifest) -> Result<ContentHash, Scheduler
         scheduler: manifest.scheduler,
         trigger_state: manifest.trigger_state,
         assertion_state: manifest.assertion_state,
+        lifecycle_state: manifest.lifecycle_state,
         fault_checkpoint: manifest.fault_checkpoint,
         targets: manifest
             .targets
@@ -691,7 +883,7 @@ fn closure_identity(manifest: &ClosureManifest) -> Result<ContentHash, Scheduler
     };
     let bytes = encode_manifest(&material)?;
     Ok(ContentHash::from_canonical_material(
-        "crucible.production-exact-closure.v2",
+        "crucible.production-exact-closure.v3",
         &hex_bytes(&bytes),
     ))
 }
@@ -1279,6 +1471,7 @@ mod tests {
             scheduler: ContentHash::default(),
             trigger_state: ContentHash::default(),
             assertion_state: ContentHash::default(),
+            lifecycle_state: ContentHash::default(),
             fault_checkpoint: ContentHash::default(),
             targets: Vec::new(),
             node_generations: Vec::new(),

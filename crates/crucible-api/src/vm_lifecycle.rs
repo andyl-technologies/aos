@@ -184,6 +184,10 @@ struct ProductionVmExactCheckpointSet {
     scheduler: SingleSchedulerCheckpoint,
     trigger_state: EventGraphState,
     assertion_state: HostAssertionEvaluatorCheckpoint,
+    terminal_verdict: Option<QuantumTerminalVerdict>,
+    initial_lifecycle_observations_pending: bool,
+    branch: Option<ProductionVmBranchConfig>,
+    recorded_controls: Vec<ProductionVmRecordedControl>,
     fault_checkpoint: ProductionFaultRuntimeCheckpoint,
     targets: BTreeMap<NodeId, ProductionVmExactCheckpointTarget>,
     node_generations: BTreeMap<NodeId, u64>,
@@ -1272,14 +1276,10 @@ pub fn build_production_vm_lifecycle_loop(
     }
 
     let committed_frontier = scheduler.frontier();
-    let active_branch = if restore_checkpoint
-        .as_ref()
-        .is_some_and(|checkpoint| checkpoint.scheduler.branch_frontier_cap().is_none())
-    {
-        None
-    } else {
-        config.branch.clone()
-    };
+    let active_branch = restore_checkpoint.as_ref().map_or_else(
+        || config.branch.clone(),
+        |checkpoint| checkpoint.branch.clone(),
+    );
     let inner = if restore_checkpoint.is_some() {
         BackendQuantumLoop::from_restored_network_state(
             scheduler,
@@ -1307,8 +1307,14 @@ pub fn build_production_vm_lifecycle_loop(
         assertion_evaluator: HostAssertionEvaluator::new(source.properties())
             .with_world_white_box_policies(source.world()),
         assertion_oracle: BlackBoxHostOracle,
-        terminal_verdict: None,
-        initial_lifecycle_observations_pending: restore_checkpoint.is_none(),
+        terminal_verdict: restore_checkpoint
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.terminal_verdict.clone()),
+        initial_lifecycle_observations_pending: restore_checkpoint
+            .as_ref()
+            .map_or(true, |checkpoint| {
+                checkpoint.initial_lifecycle_observations_pending
+            }),
         branch: active_branch,
         launch_configs,
         block_bindings,
@@ -1329,7 +1335,9 @@ pub fn build_production_vm_lifecycle_loop(
         source: source.clone(),
         config: config.clone(),
         checkpoint_targets: BTreeMap::new(),
-        recorded_controls: Vec::new(),
+        recorded_controls: restore_checkpoint
+            .as_ref()
+            .map_or_else(Vec::new, |checkpoint| checkpoint.recorded_controls.clone()),
         debug_backend_paths,
         debug_gateway: None,
         debug_attach: None,
