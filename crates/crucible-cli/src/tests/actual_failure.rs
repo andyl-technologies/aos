@@ -63,6 +63,7 @@ fn cli_non_passing_run_artifact_captures_actual_run_evidence() -> Result<(), Box
             at: crucible::VirtualTime { ticks: 17 },
             fingerprint: crucible::ExecutionFingerprint { hash: fingerprint },
         }],
+        resolved_effect_trace: None,
         acknowledged_commands: vec![SessionCommandKind::Start, SessionCommandKind::Continue],
         watch_statuses: Vec::new(),
     };
