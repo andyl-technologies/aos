@@ -203,7 +203,7 @@
     ) [
       "release manifest SSH component is incomplete"
     ]
-    ++ lib.optionals (manifest.components.qemu.licenses != ["GPL-2.0-only" "GPL-2.0-or-later" "MIT"]) [
+    ++ lib.optionals (manifest.components.qemu.licenses != ["GPL-2.0-only" "GPL-2.0-or-later" "MIT" "BSD-2-Clause" "BSD-3-Clause"]) [
       "release manifest QEMU component license inventory is incomplete"
     ]
     ++ lib.optionals (manifest.components.qemu.combinedWorkLicense != "GPL-2.0-only") [
@@ -221,10 +221,10 @@
     ++ lib.optionals (manifest.components.qemu.releaseVia != "crucible") [
       "release manifest must route patched QEMU through the suite"
     ]
-    ++ lib.optionals (manifest.components.correspondingSource.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later"]) [
+    ++ lib.optionals (manifest.components.correspondingSource.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "BSD-2-Clause" "BSD-3-Clause"]) [
       "release manifest corresponding-source license inventory is incomplete"
     ]
-    ++ lib.optionals (manifest.licensing.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later" "BSD-2-Clause"]) [
+    ++ lib.optionals (manifest.licensing.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later" "BSD-2-Clause" "BSD-3-Clause"]) [
       "release manifest aggregate project license inventory is incomplete"
     ]
     ++ lib.optionals (manifest.licensing.licenseSetScope != "primary-project-components") [
@@ -468,7 +468,7 @@
       }
       {
         label = "aggregate project licenses include packaged operator clients";
-        needle = "aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause";
+        needle = "aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause,BSD-3-Clause";
       }
       {
         label = "debug gateway component";
@@ -576,7 +576,7 @@ in
           grep -q "^rpc_abi=$RPC_ABI$" "$manifest_env"
           grep -q '^reproducibility_timestamp_policy=no-wall-clock-timestamps$' "$manifest_env"
           grep -q '^boundary_crates_license=MIT$' "$manifest_env"
-          grep -q '^qemu_component_licenses=GPL-2.0-only,GPL-2.0-or-later,MIT$' "$manifest_env"
+          grep -q '^qemu_component_licenses=GPL-2.0-only,GPL-2.0-or-later,MIT,BSD-2-Clause,BSD-3-Clause$' "$manifest_env"
           grep -q '^qemu_combined_work_license=GPL-2.0-only$' "$manifest_env"
           grep -q '^qemu_created_source_license=GPL-2.0-or-later$' "$manifest_env"
           grep -q '^qemu_generated_boundary_header_license_option=MIT$' "$manifest_env"
@@ -588,7 +588,7 @@ in
           grep -q '^ssh_package=openssh$' "$manifest_env"
           grep -q '^ssh_license=BSD-2-Clause$' "$manifest_env"
           grep -q '^ssh_boundary=operator-guest-bridge-client$' "$manifest_env"
-          grep -q '^aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause$' "$manifest_env"
+          grep -q '^aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause,BSD-3-Clause$' "$manifest_env"
           grep -q '^aggregate_license_scope=primary-project-components$' "$manifest_env"
           grep -q '^third_party_license_metadata=vendored-source-manifests$' "$manifest_env"
           grep -q '^publication_root_package=crucible$' "$manifest_env"
