@@ -2074,7 +2074,7 @@ pub(super) async fn cli_run_workflow_acknowledges_interactive_reader_commands()
         &control,
         &mut command_id,
         &mut acknowledged,
-        io::Cursor::new("query\ninject-fault\nquery\n# ignored\n\nstop\nquery\n"),
+        io::Cursor::new("query\nquery\n# ignored\n\nstop\nquery\n"),
         &mut output,
     )
     .await?;
@@ -2097,7 +2097,6 @@ pub(super) async fn cli_run_workflow_acknowledges_interactive_reader_commands()
         concat!(
             "interactive-ack\tcommand=query\tstatus=accepted\n",
             "interactive-query\tstate=paused\n",
-            "interactive-ack\tcommand=inject-fault\tstatus=rejected\treason=unsupported\tdetail=payload-required\n",
             "interactive-ack\tcommand=query\tstatus=accepted\n",
             "interactive-query\tstate=paused\n",
             "interactive-ack\tcommand=stop\tstatus=accepted\n",
@@ -2108,17 +2107,18 @@ pub(super) async fn cli_run_workflow_acknowledges_interactive_reader_commands()
 }
 
 #[test]
-pub(super) fn interactive_fault_commands_never_use_representative_fixture_payloads() {
-    for command in [
-        SessionCommandKind::InjectFault,
-        SessionCommandKind::HealFault,
-    ] {
-        let error = match cli_stream_command(command) {
-            Ok(_) => panic!("payload-less fault command must be rejected"),
+pub(super) fn retired_fault_commands_are_unknown() {
+    for command in ["inject-fault", "heal-fault"] {
+        let error = match parse_interactive_session_command(command) {
+            Ok(_) => panic!("retired fault command must be unknown"),
             Err(error) => error,
         };
         assert!(matches!(error, CliError::Usage(_)));
-        assert!(error.to_string().contains("requires a typed fault payload"));
+        assert!(
+            error
+                .to_string()
+                .contains("unknown interactive session command")
+        );
     }
 }
 

@@ -314,10 +314,6 @@
         needle = "observed_state_materializes_only_checked_event_log_prefix";
       }
       {
-        label = "fault fact materialization test";
-        needle = "observed_state_materializes_fault_activation_and_heal_facts";
-      }
-      {
         label = "invalid prefix rejection test";
         needle = "observed_state_rejects_future_invalid_or_non_dense_prefixes";
       }

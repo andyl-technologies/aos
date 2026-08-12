@@ -378,7 +378,7 @@ mod summary_tests {
     }
 
     #[test]
-    fn fault_summary_preserves_coordinate_source_and_fault_fields() {
+    fn effect_summary_preserves_coordinate_source_and_effect_fields() {
         let frame = crucible_api::StreamingEventFrame {
             generation: 0,
             cursor: crucible_api::EventLogCursor::new(7),
@@ -396,7 +396,7 @@ mod summary_tests {
                 level: crucible::EventLevel::Info,
                 observational: false,
                 payload: crucible_api::OpenSetPayload::new(
-                    "crucible.event.fault_activated",
+                    "crucible.event.effect_applied",
                     [
                         (
                             String::from("description"),
@@ -429,7 +429,7 @@ mod summary_tests {
 
         assert_eq!(
             streaming_event_summary(&frame),
-            "crucible.event.fault_activated sequence=7 virtual_time=91 icount=27 icount_node=server source=scenario:partition-server class=causal description=partition\\sclient\\sto\\sserver kind=partition tag=network-cut targets=client,server"
+            "crucible.event.effect_applied sequence=7 virtual_time=91 icount=27 icount_node=server source=scenario:partition-server class=causal description=partition\\sclient\\sto\\sserver kind=partition tag=network-cut targets=client,server"
         );
     }
 

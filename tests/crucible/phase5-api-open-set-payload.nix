@@ -123,8 +123,8 @@
         needle = "crucible.cmd.continue";
       }
       {
-        label = "golden event kind uses catalog namespace";
-        needle = "crucible.event.fault_activated";
+        label = "golden signal-effect event kind uses catalog namespace";
+        needle = "crucible.event.effect_applied";
       }
     ]
     ++ failuresFor "crates/crucible-api/tests/gate_abi_conformance.rs" abiTest [
@@ -133,8 +133,8 @@
         needle = "crucible.fault.*";
       }
       {
-        label = "ABI test expects catalog event kind";
-        needle = "event-fault-activated";
+        label = "ABI test expects signal-effect catalog event kind";
+        needle = "event-effect-applied";
       }
     ]
     ++ failuresFor "crates/crucible-api/tests/gate_open_set_payload.rs" openSetTest [

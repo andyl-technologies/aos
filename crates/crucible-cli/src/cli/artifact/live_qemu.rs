@@ -491,8 +491,6 @@ fn known_control_command(command: &str) -> bool {
             | "step-timer"
             | "step-duration"
             | "inject"
-            | "inject-fault"
-            | "heal-fault"
             | "set-breakpoint"
             | "remove-breakpoint"
             | "create-savepoint"

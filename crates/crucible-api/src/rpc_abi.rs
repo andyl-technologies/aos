@@ -445,14 +445,14 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 14] = [
         bytes: b"crucible.rpc/error\nstatus=invalid-state\nreason=streaming-epoch-mismatch\nexpected=8\nactual=7\n",
     },
     RpcGoldenVector {
-        name: "event-fault-activated",
+        name: "event-effect-applied",
         protocol_version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
         message: RpcGoldenVectorMessage::Event {
             seq: 1234,
             class: RpcEventClass::Fault,
-            payload_kind: "crucible.event.fault_activated",
+            payload_kind: "crucible.event.effect_applied",
         },
-        bytes: b"crucible.rpc/event\nseq=1234\nclass=fault\npayload-kind=crucible.event.fault_activated\n",
+        bytes: b"crucible.rpc/event\nseq=1234\nclass=fault\npayload-kind=crucible.event.effect_applied\n",
     },
 ];
 

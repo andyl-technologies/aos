@@ -77,10 +77,6 @@
         needle = "exact_local_event_from_scheduled_event(event.key.consumer(), event, shift)?";
       }
       {
-        label = "fault activation class";
-        needle = "ScheduledEventPayload::FaultActivation(_)";
-      }
-      {
         label = "quantum uses due resolver";
         needle = "resolve_due_scheduled_events(\n            &mut self.pending_events";
       }
@@ -106,7 +102,7 @@
     ++ failuresFor "crates/crucible/tests/scheduler_resolve.rs" resolveTest [
       {
         label = "mixed class quantum test";
-        needle = "resolve_quantum_processes_frame_io_and_fault_at_exact_delivery_icount_in_total_order";
+        needle = "resolve_quantum_processes_frame_and_io_at_exact_delivery_icount_in_total_order";
       }
       {
         label = "transport order test";
@@ -131,10 +127,6 @@
       {
         label = "I/O completion assertion";
         needle = "ScheduledEventResolveClass::IoCompletion";
-      }
-      {
-        label = "fault activation assertion";
-        needle = "ScheduledEventResolveClass::FaultActivation";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

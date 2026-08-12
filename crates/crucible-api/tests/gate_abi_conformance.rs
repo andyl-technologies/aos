@@ -233,8 +233,8 @@ fn assert_structure_aware_fuzz_corpus() {
         b"crucible.rpc/error\nstatus=invalid-state\nreason=streaming-epoch-mismatch\nexpected=8\nactual=7\n",
     );
     assert_vector_bytes(
-        "event-fault-activated",
-        b"crucible.rpc/event\nseq=1234\nclass=fault\npayload-kind=crucible.event.fault_activated\n",
+        "event-effect-applied",
+        b"crucible.rpc/event\nseq=1234\nclass=fault\npayload-kind=crucible.event.effect_applied\n",
     );
 
     for vector in regression_corpus() {
