@@ -219,10 +219,49 @@ pub(super) fn persist_exact_checkpoint_set(
             destination.display()
         ))
     })?;
+    if let Err(error) = enforce_published_checkpoint_count(&closure_parent, resource_limits) {
+        let cleanup = fs::remove_dir_all(&destination).map_err(|cleanup| {
+            store_error(format!(
+                "roll back over-limit checkpoint publication {}: {cleanup}",
+                destination.display()
+            ))
+        });
+        cleanup?;
+        sync_directory(&closure_parent)?;
+        return Err(error);
+    }
     sync_directory(&closure_parent)?;
 
     install_published_artifact_paths(&object_directory, &manifest, checkpoint)?;
     Ok(())
+}
+
+fn enforce_published_checkpoint_count(
+    parent: &Path,
+    limits: FaultResourceLimits,
+) -> Result<(), SchedulerError> {
+    let count = fs::read_dir(parent)
+        .map_err(|error| store_error(format!("count published checkpoint closures: {error}")))?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry.file_type().is_ok_and(|kind| kind.is_dir())
+                && entry.file_name().to_str().is_some_and(|name| {
+                    name.len() == 64
+                        && name
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+                })
+        })
+        .count();
+    let count = u64::try_from(count)
+        .map_err(|_| store_error("published checkpoint count is not representable"))?;
+    limits
+        .reserve(
+            "checkpoint_count",
+            count.saturating_sub(1),
+            u64::from(count != 0),
+        )
+        .map_err(|error| store_error(error.to_string()))
 }
 
 pub(super) fn load_exact_checkpoint_set(
@@ -508,8 +547,10 @@ fn validate_checkpoint_set(
         checkpoint.branch.as_ref(),
     ) {
         (None, None) => {}
-        (Some(cap), Some(branch)) if cap == branch.frontier && branch.base.def.id() == scenario => {
-        }
+        (Some(cap), Some(branch))
+            if cap == branch.frontier
+                && branch.base.def.id() == scenario
+                && branch.base == checkpoint.configuration => {}
         _ => {
             return Err(store_error(
                 "exact checkpoint active branch disagrees with scheduler continuation",
@@ -553,6 +594,45 @@ fn validate_checkpoint_set(
             validate_exact_checkpoint_target(node, target)
                 .map_err(|error| store_error(error.to_string()))?;
         }
+    }
+    validate_recorded_controls(checkpoint)?;
+    Ok(())
+}
+
+fn validate_recorded_controls(
+    checkpoint: &ProductionVmExactCheckpointSet,
+) -> Result<(), SchedulerError> {
+    let current = checkpoint.configuration.schedule.decisions();
+    let mut prior_schedule_len = 0_usize;
+    let mut prior_sequence = None;
+    for record in &checkpoint.recorded_controls {
+        let recorded = record.configuration.schedule.decisions();
+        if record.configuration.def.id() != checkpoint.configuration.def.id()
+            || recorded.len() < prior_schedule_len
+            || !current.starts_with(recorded)
+            || record.control.is_empty()
+            || record
+                .node_times
+                .keys()
+                .any(|node| !checkpoint.node_service_states.contains_key(node))
+            || record
+                .node_times
+                .values()
+                .any(|time| *time > checkpoint.scheduler.frontier())
+        {
+            return Err(store_error(
+                "exact checkpoint recorded-control history is inconsistent with its frontier",
+            ));
+        }
+        for control in &record.control {
+            if prior_sequence.is_some_and(|sequence| control.sequence <= sequence) {
+                return Err(store_error(
+                    "exact checkpoint control sequences are not strictly increasing",
+                ));
+            }
+            prior_sequence = Some(control.sequence);
+        }
+        prior_schedule_len = recorded.len();
     }
     Ok(())
 }
@@ -615,7 +695,15 @@ fn enforce_persist_limits(
         let count = fs::read_dir(&parent)
             .map_err(|error| store_error(format!("count exact checkpoint closures: {error}")))?
             .filter_map(Result::ok)
-            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .filter(|entry| {
+                entry.file_type().is_ok_and(|kind| kind.is_dir())
+                    && entry.file_name().to_str().is_some_and(|name| {
+                        name.len() == 64
+                            && name
+                                .bytes()
+                                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+                    })
+            })
             .count();
         limits
             .reserve(
@@ -1868,14 +1956,30 @@ mod tests {
         assert_eq!(stored_count, 2);
 
         let chunked = ProductionCheckpointArtifact {
-            source: ProductionCheckpointArtifactSource::ChunkStore(object_directory),
+            source: ProductionCheckpointArtifactSource::ChunkStore(object_directory.clone()),
             identity: manifest.identity,
             length: manifest.length,
-            chunks: manifest.chunks,
+            chunks: manifest.chunks.clone(),
         };
         materialize_checkpoint_artifact(&chunked, &restored, "test")
             .expect("materialize chunked artifact");
-        assert_eq!(fs::read(restored).expect("read restored artifact"), bytes);
+        assert_eq!(fs::read(&restored).expect("read restored artifact"), bytes);
+
+        let first_chunk = object_path(&object_directory, manifest.chunks[0]);
+        fs::write(&first_chunk, vec![0; ARTIFACT_CHUNK_BYTES])
+            .expect("corrupt first checkpoint chunk");
+        fs::remove_file(&restored).expect("remove prior materialization");
+        assert!(materialize_checkpoint_artifact(&chunked, &restored, "test").is_err());
+        fs::write(&first_chunk, &bytes[..ARTIFACT_CHUNK_BYTES])
+            .expect("restore first checkpoint chunk");
+
+        let last_chunk = object_path(
+            &object_directory,
+            *manifest.chunks.last().expect("fixture has a tail chunk"),
+        );
+        fs::remove_file(last_chunk).expect("remove tail checkpoint chunk");
+        assert!(!restored.exists());
+        assert!(materialize_checkpoint_artifact(&chunked, &restored, "test").is_err());
     }
 
     #[test]
@@ -1918,5 +2022,24 @@ mod tests {
         assert_eq!(branch.seed, Some(Seed::from_u64(9)));
         assert_eq!(decoded.recorded_controls.len(), 1);
         assert_eq!(decoded.recorded_controls[0].control[0].sequence, 1);
+    }
+
+    #[test]
+    fn published_checkpoint_count_ignores_transaction_staging_directories() {
+        let root = tempfile::tempdir().expect("create checkpoint count fixture");
+        fs::create_dir(root.path().join(".closure-incomplete"))
+            .expect("create transaction staging directory");
+        fs::create_dir(root.path().join("not-a-checkpoint")).expect("create unrelated directory");
+        fs::create_dir(root.path().join("0".repeat(64)))
+            .expect("create one published checkpoint directory");
+        let mut limits = FaultResourceLimits::default();
+        limits.checkpoint_count = 1;
+
+        enforce_published_checkpoint_count(root.path(), limits)
+            .expect("only the published identity counts against the limit");
+
+        fs::create_dir(root.path().join("1".repeat(64)))
+            .expect("create a second published checkpoint directory");
+        assert!(enforce_published_checkpoint_count(root.path(), limits).is_err());
     }
 }
