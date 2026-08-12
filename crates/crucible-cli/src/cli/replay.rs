@@ -183,7 +183,7 @@ fn replay_live_qemu_evidence(
     .map_err(|error| artifact_error(format!("decode live-QEMU replay scenario: {error}")))?;
     let resolved_effect_trace = resolved_effect_trace_bytes
         .map(|bytes| {
-            crucible::model::ResolvedEffectTrace::from_canonical_bytes(
+            crucible::ResolvedEffectTrace::from_canonical_bytes(
                 bytes,
                 scenario.plan().fault_signals().resource_limits(),
             )

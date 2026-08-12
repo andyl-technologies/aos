@@ -241,10 +241,10 @@ async fn query_resolved_effect_trace(
     .await?;
     match response.query_result {
         Some(QueryResult::ResolvedEffectTrace(trace)) => Ok(trace),
-        Some(other) => Err(control_error(format!(
+        Some(other) => Err(backend_error(format!(
             "resolved-effect trace query returned {other:?}"
         ))),
-        None => Err(control_error(
+        None => Err(backend_error(
             "resolved-effect trace query returned no result",
         )),
     }

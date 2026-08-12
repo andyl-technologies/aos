@@ -13,7 +13,7 @@ pub(crate) fn run_live_qemu_artifact_replay(
     scenario: crucible::ScenarioDefForm,
     schedule: &crucible::Schedule,
     contract: &LiveQemuReplayContract,
-    resolved_effect_trace: Option<crucible::model::ResolvedEffectTrace>,
+    resolved_effect_trace: Option<crucible::ResolvedEffectTrace>,
 ) -> Result<(RunInvocationPlan, RunWorkflowReport), CliError> {
     let terminal_condition = match contract.terminal_condition.as_str() {
         "quiescence" => RunTerminalCondition::Quiescence,
