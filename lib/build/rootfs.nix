@@ -297,6 +297,7 @@ in
                 cp -a "$KERNEL/lib/modules/." rootfs/usr/lib/modules/
                 chmod -R u+w rootfs/usr/lib/modules
                 ${lib.concatMapStringsSep "\n" (package: ''
+                  chmod u+w rootfs/usr/lib/modules rootfs/usr/lib/modules/*
                   cp -a ${package}/lib/modules/. rootfs/usr/lib/modules/
                 '') kernelModulePackages}
                 for module_dir in rootfs/usr/lib/modules/*; do
