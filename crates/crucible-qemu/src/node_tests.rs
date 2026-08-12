@@ -554,6 +554,7 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
             outcomes: VecDeque::new(),
             fault_results: VecDeque::from([result.clone()]),
         },
+        2,
     )
     .with_fault_capabilities(vec![FaultCapabilityRowV1 {
         command_kind: FaultCommandKind::MemoryMutation,
@@ -1048,6 +1049,7 @@ fn scripted_node_with_fault_events(
             outcomes: VecDeque::new(),
             fault_results: VecDeque::new(),
         },
+        2,
     ))
 }
 
@@ -1121,6 +1123,7 @@ fn scripted_node_with_coverage(
             outcomes: runtime_outcomes.into_iter().collect(),
             fault_results: VecDeque::new(),
         },
+        2,
     ))
 }
 

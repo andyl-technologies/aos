@@ -44,6 +44,7 @@ pub struct QemuHostPluginSetup {
     negotiated: NegotiatedHandshake,
     setup_ack: SchedulableNodeSetup,
     region: ValidatedSetupRegion,
+    next_fault_command_sequence: u64,
     fault_capabilities: Vec<FaultCapabilityRowV1>,
     fault_capability_digest: [u8; 32],
     register_manifest: Option<FaultRegisterCapabilityManifestV1>,
@@ -78,6 +79,12 @@ impl QemuHostPluginSetup {
     #[must_use]
     pub const fn region(&self) -> ValidatedSetupRegion {
         self.region
+    }
+
+    /// Returns the first command sequence not consumed by setup admission.
+    #[must_use]
+    pub const fn next_fault_command_sequence(&self) -> u64 {
+        self.next_fault_command_sequence
     }
 
     /// Returns the immutable QEMU fault capabilities admitted before guest start.
@@ -417,6 +424,7 @@ pub fn complete_qemu_host_plugin_setup(
         .and_then(crate::QemuTargetManifestRequirement::exact_accelerator_manifest)
         .map(|required| accept_accelerator_manifest(&mut admission_region, slot_index, required))
         .transpose()?;
+    let next_fault_command_sequence = if accelerator_manifest.is_some() { 8 } else { 7 };
     let expected_capabilities = required_capabilities
         .rows_for_manifests(
             register_manifest.as_ref(),
@@ -457,6 +465,7 @@ pub fn complete_qemu_host_plugin_setup(
         negotiated,
         setup_ack,
         region,
+        next_fault_command_sequence,
         fault_capabilities,
         fault_capability_digest: admitted_capability_digest,
         register_manifest,

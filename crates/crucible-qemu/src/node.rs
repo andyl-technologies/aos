@@ -792,6 +792,7 @@ pub struct QemuNode {
     fault_capabilities: Vec<FaultCapabilityRowV1>,
     ready_markers: std::collections::BTreeSet<crucible::model::FaultObjectId>,
     next_fault_command_sequence: u64,
+    setup_fault_command_sequence_floor: u64,
     next_fault_event_sequence: u64,
     fault_event_terminal_failure: Option<String>,
 }
@@ -947,6 +948,7 @@ impl QemuNode {
         async_policy: QemuAsyncDriverPolicy,
         crash_detector: QemuCrashDetector,
         host_io_runtime: impl QemuHostIoRuntime + 'static,
+        initial_fault_command_sequence: u64,
     ) -> Self {
         Self {
             child,
@@ -965,9 +967,8 @@ impl QemuNode {
             console_observation: None,
             fault_capabilities: Vec::new(),
             ready_markers: std::collections::BTreeSet::new(),
-            // Sequence 1 is consumed by the mandatory setup-time capability
-            // query before a live node can be constructed.
-            next_fault_command_sequence: 2,
+            next_fault_command_sequence: initial_fault_command_sequence,
+            setup_fault_command_sequence_floor: initial_fault_command_sequence,
             next_fault_event_sequence: 1,
             fault_event_terminal_failure: None,
         }
@@ -1040,9 +1041,9 @@ impl QemuNode {
     /// Returns [`QemuNodeError`] when `sequence` would reuse setup-time or
     /// already-reserved command identities.
     pub fn restore_fault_command_sequence(&mut self, sequence: u64) -> Result<(), QemuNodeError> {
-        if sequence < 2 {
+        if sequence < self.setup_fault_command_sequence_floor {
             return Err(QemuNodeError::fault_command(
-                "restored fault command sequence precedes capability admission",
+                "restored fault command sequence reuses setup admission identity",
             ));
         }
         self.next_fault_command_sequence = sequence;
