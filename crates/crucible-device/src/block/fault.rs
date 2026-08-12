@@ -472,6 +472,76 @@ pub struct ResolvedBlockControllerTransition {
     pub recovery_nanos: u64,
 }
 
+impl ResolvedBlockControllerTransition {
+    /// Converts this policy into the exact guest transport reset for `current_epoch`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError::InvalidBlockFaultDirective`] when advancing to a
+    /// new transport epoch would overflow `u64`.
+    pub fn transport_reset(
+        &self,
+        current_epoch: u64,
+    ) -> Result<BlockTransportReset, DeviceError> {
+        let next_epoch = match self.request_ids {
+            BlockTransportRequestIds::PreserveMonotonic => current_epoch,
+            BlockTransportRequestIds::NewEpochFromZero => current_epoch.checked_add(1).ok_or(
+                DeviceError::InvalidBlockFaultDirective {
+                    reason: "block transport epoch overflow",
+                },
+            )?,
+        };
+        Ok(BlockTransportReset {
+            next_epoch,
+            recovery_nanos: self.recovery_nanos,
+            request_ids: self.request_ids,
+            reenumerate_declared: matches!(
+                self.topology,
+                BlockTransitionTopology::ReenumerateDeclared
+            ),
+            preserve_duplicate_history: matches!(
+                self.duplicate_history,
+                BlockTransitionState::Preserve
+            ),
+            failure_result: self.failure_result,
+            unadmitted: match self.unadmitted {
+                BlockTransitionUnadmitted::Reject => BlockTransportUnadmitted::Reject,
+                BlockTransitionUnadmitted::WaitForRecovery => {
+                    BlockTransportUnadmitted::WaitForRecovery
+                }
+            },
+            queued: transport_pending(self.queued),
+            executing: transport_pending(self.executing),
+            resolved: match self.resolved {
+                BlockTransitionResolved::Complete => BlockTransportResolved::Complete,
+                BlockTransitionResolved::Fail => BlockTransportResolved::Fail,
+                BlockTransitionResolved::RetryPreserveId => {
+                    BlockTransportResolved::RetryPreserveId
+                }
+                BlockTransitionResolved::RetryNewId => BlockTransportResolved::RetryNewId,
+            },
+            completed_undelivered: match self.completed_undelivered {
+                BlockTransitionUndelivered::Complete => BlockTransportUndelivered::Complete,
+                BlockTransitionUndelivered::Fail => BlockTransportUndelivered::Fail,
+                BlockTransitionUndelivered::RetryPreserveId => {
+                    BlockTransportUndelivered::RetryPreserveId
+                }
+                BlockTransitionUndelivered::RetryNewId => {
+                    BlockTransportUndelivered::RetryNewId
+                }
+                BlockTransitionUndelivered::DropCompletion => {
+                    BlockTransportUndelivered::DropCompletion
+                }
+            },
+            preserve_controller_buffer: matches!(
+                self.controller_buffer,
+                BlockTransitionState::Preserve
+            ),
+            preserve_volatile_cache: matches!(self.volatile_cache, BlockTransitionState::Preserve),
+        })
+    }
+}
+
 impl ResolvedBlockDuplicateCompletion {
     const fn gap_nanos(&self) -> u64 {
         match self {

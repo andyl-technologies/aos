@@ -39,7 +39,8 @@ use crucible_qemu::{
     block_persistence_fault_opportunity, block_request_fault_opportunity,
     block_request_persistence_fault_opportunity, merge_block_fault_phase_directive,
     resolve_block_fault_directive, resolve_block_persistence_media_directive,
-    resolve_volatile_cache_loss, storage_recovery_event_key,
+    resolve_block_controller_transition, resolve_volatile_cache_loss,
+    storage_recovery_event_key,
 };
 
 /// Maximum phase/device settle transitions performed during one host poll.
@@ -569,7 +570,41 @@ impl ProductionBlockFaultCoordinator {
             ResolvedFaultTarget::BlockDevice { device }
                 | ResolvedFaultTarget::BlockRange { device, .. }
                 if device == attached
-        )
+        ) || self.controller_target_attaches_device(target, *attached)
+    }
+
+    fn controller_target_attaches_device(
+        &self,
+        target: &ResolvedFaultTarget,
+        attached: ContentHash,
+    ) -> bool {
+        let ResolvedFaultTarget::StorageController {
+            controller,
+            namespace_or_path,
+        } = target
+        else {
+            return false;
+        };
+        let Some(controller) = self
+            .world
+            .fault_topology()
+            .storage_controllers
+            .iter()
+            .find(|candidate| candidate.id.as_str() == controller.as_str())
+        else {
+            return false;
+        };
+        let selected_is_path = controller
+            .paths
+            .iter()
+            .any(|path| path.id.as_str() == namespace_or_path.as_str());
+        controller.namespaces.iter().any(|namespace| {
+            (selected_is_path || namespace.id.as_str() == namespace_or_path.as_str())
+                && self.world.io_nodes().any(|node| {
+                    node.id.name == namespace.device.as_str()
+                        && node.fault_target_hash() == attached
+                })
+        })
     }
 
     fn attached_device_hash(&self) -> Result<ContentHash, QemuAsyncDriverRuntimeError> {
@@ -1088,6 +1123,7 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
             .storage_fault_state()
             .map_err(|error| storage_error("inspect block boundary state", error))?;
         let mut selected = Vec::new();
+        let mut controller_transitions = Vec::new();
         let mut observations = Vec::new();
         for action in matching {
             match action.effect.specification() {
@@ -1118,6 +1154,37 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
                         evidence: volatile_cache_loss_evidence(&resolved),
                     });
                 }
+                EffectSpecification::Storage(
+                    StorageEffectSpecification::ControllerLifecycle { .. },
+                ) => {
+                    let transition = resolve_block_controller_transition(&self.world, action)
+                        .map_err(|error| {
+                            storage_error("resolve controller lifecycle boundary", error)
+                        })?;
+                    let boundary_nanos = action.coordinate.virtual_nanos;
+                    let _staged_responses = staged
+                        .apply_transport_reset(
+                            transition
+                                .transport_reset(staged.transport_epoch().unwrap_or(0))
+                                .map_err(|error| {
+                                    storage_error("stage controller lifecycle boundary", error)
+                                })?,
+                            boundary_nanos,
+                        )
+                        .map_err(|error| {
+                            storage_error("stage controller lifecycle boundary", error)
+                        })?;
+                    controller_transitions.push((transition.clone(), boundary_nanos));
+                    observations.push(FaultObservation {
+                        semantic_version: FAULT_RUNTIME_STATE_VERSION,
+                        kind: FaultObservationKind::EffectApplied,
+                        coordinate: action.coordinate,
+                        binding: Some(action.binding.clone()),
+                        target: Some(action.target.clone()),
+                        opportunity: action.opportunity,
+                        evidence: controller_transition_evidence(&transition),
+                    });
+                }
                 EffectSpecification::Storage(_) => {
                     return Err(storage_error(
                         "apply storage boundary action",
@@ -1146,8 +1213,9 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
         })?;
         queued.ensure_capacity(observations.len())?;
         servicer
-            .lose_storage_volatile(&selected)
-            .map_err(|error| storage_error("apply volatile-cache loss boundary", error))?;
+            .shared_device()
+            .apply_storage_boundary_mutations(&selected, &controller_transitions)
+            .map_err(|error| storage_error("apply storage boundary mutations", error))?;
         queued.append(evaluation_sequence, observations)
     }
 
@@ -2270,6 +2338,29 @@ fn volatile_cache_loss_evidence(resolved: &ResolvedVolatileCacheLoss) -> Content
             list(&resolved.selected_sequences),
             resolved.durable_frontier_before,
             resolved.durable_frontier_after,
+        ),
+    )
+}
+
+fn controller_transition_evidence(
+    transition: &crucible_device::block::ResolvedBlockControllerTransition,
+) -> ContentHash {
+    ContentHash::from_canonical_material(
+        "crucible.storage-controller-transition-evidence.v1",
+        &format!(
+            "failure_result={:?}\nunadmitted={:?}\nqueued={:?}\nexecuting={:?}\nresolved={:?}\ncompleted_undelivered={:?}\ncontroller_buffer={:?}\nvolatile_cache={:?}\nrequest_ids={:?}\nduplicate_history={:?}\ntopology={:?}\nrecovery_nanos={}",
+            transition.failure_result,
+            transition.unadmitted,
+            transition.queued,
+            transition.executing,
+            transition.resolved,
+            transition.completed_undelivered,
+            transition.controller_buffer,
+            transition.volatile_cache,
+            transition.request_ids,
+            transition.duplicate_history,
+            transition.topology,
+            transition.recovery_nanos,
         ),
     )
 }

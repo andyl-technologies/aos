@@ -593,82 +593,11 @@ impl BlockFaultState {
                         gap_nanos,
                         transition,
                     } => {
-                        let next_epoch = match transition.request_ids {
-                            BlockTransportRequestIds::PreserveMonotonic => request.epoch,
-                            BlockTransportRequestIds::NewEpochFromZero => request
-                                .epoch
-                                .checked_add(1)
-                                .ok_or(DeviceError::InvalidBlockFaultDirective {
-                                    reason: "block transport epoch overflow",
-                                })?,
-                        };
                         (
                             *gap_nanos,
                             block_response_to_uniform(&BlockResponse::transport_reset(
                                 request.identity(),
-                                BlockTransportReset {
-                                    next_epoch,
-                                    recovery_nanos: transition.recovery_nanos,
-                                    request_ids: transition.request_ids,
-                                    reenumerate_declared: matches!(
-                                        transition.topology,
-                                        BlockTransitionTopology::ReenumerateDeclared
-                                    ),
-                                    preserve_duplicate_history: matches!(
-                                        transition.duplicate_history,
-                                        BlockTransitionState::Preserve
-                                    ),
-                                    failure_result: transition.failure_result,
-                                    unadmitted: match transition.unadmitted {
-                                        BlockTransitionUnadmitted::Reject => {
-                                            BlockTransportUnadmitted::Reject
-                                        }
-                                        BlockTransitionUnadmitted::WaitForRecovery => {
-                                            BlockTransportUnadmitted::WaitForRecovery
-                                        }
-                                    },
-                                    queued: transport_pending(transition.queued),
-                                    executing: transport_pending(transition.executing),
-                                    resolved: match transition.resolved {
-                                        BlockTransitionResolved::Complete => {
-                                            BlockTransportResolved::Complete
-                                        }
-                                        BlockTransitionResolved::Fail => {
-                                            BlockTransportResolved::Fail
-                                        }
-                                        BlockTransitionResolved::RetryPreserveId => {
-                                            BlockTransportResolved::RetryPreserveId
-                                        }
-                                        BlockTransitionResolved::RetryNewId => {
-                                            BlockTransportResolved::RetryNewId
-                                        }
-                                    },
-                                    completed_undelivered: match transition.completed_undelivered {
-                                        BlockTransitionUndelivered::Complete => {
-                                            BlockTransportUndelivered::Complete
-                                        }
-                                        BlockTransitionUndelivered::Fail => {
-                                            BlockTransportUndelivered::Fail
-                                        }
-                                        BlockTransitionUndelivered::RetryPreserveId => {
-                                            BlockTransportUndelivered::RetryPreserveId
-                                        }
-                                        BlockTransitionUndelivered::RetryNewId => {
-                                            BlockTransportUndelivered::RetryNewId
-                                        }
-                                        BlockTransitionUndelivered::DropCompletion => {
-                                            BlockTransportUndelivered::DropCompletion
-                                        }
-                                    },
-                                    preserve_controller_buffer: matches!(
-                                        transition.controller_buffer,
-                                        BlockTransitionState::Preserve
-                                    ),
-                                    preserve_volatile_cache: matches!(
-                                        transition.volatile_cache,
-                                        BlockTransitionState::Preserve
-                                    ),
-                                },
+                                transition.transport_reset(request.epoch)?,
                             ))?,
                         )
                     }

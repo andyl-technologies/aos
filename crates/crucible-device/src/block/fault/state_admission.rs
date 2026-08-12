@@ -1506,19 +1506,20 @@ impl BlockFaultState {
         Ok(())
     }
 
-    /// Applies the host-side portion of a delivered controller reset.
+    /// Applies the host-side portion of a controller reset.
     ///
-    /// The caller must invoke this only after the corresponding reset response
-    /// has crossed the delivery boundary. Requests removed from a host-owned
-    /// lifecycle stage receive one explicit terminal or retry disposition; the
-    /// returned responses are ordered by request sequence within each lifecycle
-    /// stage and by the stage order queued, executing, resolved, then completed.
+    /// For a response-triggered reset, the caller invokes this after the reset
+    /// response crosses the delivery boundary. An asynchronous controller effect
+    /// invokes it directly at its scheduler-authorized boundary. Requests removed
+    /// from a host-owned lifecycle stage receive one explicit terminal or retry
+    /// disposition; returned responses are ordered by request sequence within
+    /// each stage and by queued, executing, resolved, then completed stage order.
     ///
     /// # Errors
     ///
     /// Returns [`DeviceError`] if a generated response cannot be encoded or if
     /// losing controller/cache state violates persistence accounting.
-    pub(in crate::block) fn apply_transport_reset(
+    pub fn apply_transport_reset(
         &mut self,
         reset: BlockTransportReset,
         delivered_nanos: u64,
@@ -1526,7 +1527,7 @@ impl BlockFaultState {
         let mut next = self.clone();
         let mut responses = Vec::new();
 
-        let current_epoch = next.transport_epoch.unwrap_or(reset.next_epoch);
+        let current_epoch = next.transport_epoch.unwrap_or(0);
         match reset.request_ids {
             BlockTransportRequestIds::PreserveMonotonic if reset.next_epoch != current_epoch => {
                 return Err(DeviceError::InvalidBlockFaultDirective {
@@ -1654,6 +1655,7 @@ impl BlockFaultState {
         *self = next;
         Ok(responses)
     }
+
 
     /// Returns the earliest exact integrated-service release coordinate.
     #[must_use]
