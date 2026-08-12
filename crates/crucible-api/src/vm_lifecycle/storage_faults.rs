@@ -374,6 +374,7 @@ impl ProductionBlockFaultCoordinator {
             })
             .cloned()
             .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
             .collect();
         Self {
             runtime,
@@ -415,7 +416,7 @@ impl ProductionBlockFaultCoordinator {
         &mut self,
         request: &BlockRequest,
         request_sequence: u64,
-        wire_digest: ContentHash,
+        wire_digest: [u8; 32],
         phase: FaultPhase,
         coordinate: FaultCoordinate,
     ) -> Result<Option<crucible_qemu::ResolvedStorageArrayPolicy>, QemuAsyncDriverRuntimeError>
