@@ -100,7 +100,7 @@
       }
       {
         label = "non-search decisions excluded";
-        needle = "Decision::Preemption(_) | Decision::AppRandom(_) | Decision::ControlFault(_) => false";
+        needle = "Decision::Preemption(_) | Decision::AppRandom(_) => false";
       }
       {
         label = "search result reports realized frontier";
@@ -201,20 +201,12 @@
         needle = "SearchFrontierChoices::from_decisions";
       }
       {
-        label = "invalid control fault candidate";
-        needle = "fn control_fault_decision";
-      }
-      {
         label = "non-genuine delivery candidate";
         needle = "fn non_genuine_delivery_decision";
       }
       {
         label = "delivery-order candidate rejected";
         needle = "Decision::DeliveryOrder";
-      }
-      {
-        label = "fault-fires frontier decision";
-        needle = "Decision::FaultFires";
       }
       {
         label = "decision-rng frontier decision";

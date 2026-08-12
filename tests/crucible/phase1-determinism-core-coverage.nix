@@ -191,7 +191,7 @@
           require_covered_function temporal_graph_rejects_mismatched_or_thin_cached_snapshots
           require_covered_function temporal_graph_rejects_plain_cached_genesis_snapshot
           require_covered_function temporal_graph_rejects_mismatched_or_thin_baked_genesis
-          require_covered_function decision_recorder_records_rng_draws_and_fault_outcomes
+          require_covered_function decision_recorder_records_rng_draws_and_app_random_outcomes
           require_covered_function decision_recorder_keeps_per_entity_streams_stable
           require_covered_function decision_recorder_records_app_random_after_rng_draw
           require_covered_function decision_recorder_records_app_random_guest_request_id
@@ -389,13 +389,6 @@
             "pub fn draw_u64" \
             "Decision::RngDraw" \
             "decision recorder raw draw decision"
-          require_line_marker_after \
-            "crucible/src/decision.rs" \
-            "crucible/src/decision.rs" \
-            1 \
-            "pub fn decide_fault" \
-            "Decision::FaultFires" \
-            "decision recorder fault decision"
           require_line_marker_after \
             "crucible/src/decision.rs" \
             "crucible/src/decision.rs" \
@@ -620,7 +613,7 @@
       activationMarkers = [];
       activationSourceRoots = [];
       requiredMarkers = [
-        "decision_recorder_records_rng_draws_and_fault_outcomes"
+        "decision_recorder_records_rng_draws_and_app_random_outcomes"
         "decision_recorder_keeps_per_entity_streams_stable"
         "decision_recorder_records_app_random_after_rng_draw"
         "decision_recorder_records_app_random_guest_request_id"
@@ -857,7 +850,7 @@
       "sim_backend_rejects_unknown_checkpoint_deterministically"
       "stable_hasher_covers_chunk_remainder_and_bool_inputs"
       "replay_oracle_reports_first_mismatch"
-      "decision_recorder_records_rng_draws_and_fault_outcomes"
+      "decision_recorder_records_rng_draws_and_app_random_outcomes"
       "decision_recorder_keeps_per_entity_streams_stable"
       "decision_recorder_records_app_random_after_rng_draw"
       "decision_recorder_records_app_random_guest_request_id"

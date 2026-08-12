@@ -252,14 +252,6 @@
         needle = "Decision::DeliveryOrder(order)";
       }
       {
-        label = "probabilistic fault outcome fold";
-        needle = "Decision::FaultFires(fault)";
-      }
-      {
-        label = "control fault fold";
-        needle = "Decision::ControlFault(control)";
-      }
-      {
         label = "trigger fault fold";
         needle = "SchedulerEventLogPayload::TriggerActionApplied(application)";
       }

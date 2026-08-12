@@ -140,10 +140,6 @@
         label = "observational diagnostic emitted";
         needle = "SchedulerEventLogPayload::Diagnostic";
       }
-      {
-        label = "command control fault entry emitted";
-        needle = "Decision::ControlFault(ControlFaultDecision";
-      }
     ]
     ++ failuresFor "crates/crucible-api/src/lib.rs" apiLib [
       {

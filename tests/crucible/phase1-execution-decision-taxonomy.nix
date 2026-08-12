@@ -26,10 +26,6 @@
         needle = "DeliveryOrder(DeliveryOrderDecision)";
       }
       {
-        label = "fault decision variant";
-        needle = "FaultFires(FaultDecision)";
-      }
-      {
         label = "RNG draw decision variant";
         needle = "RngDraw(RngDecision)";
       }
@@ -74,10 +70,6 @@
       {
         label = "delivery-order canonical arm";
         needle = "Decision::DeliveryOrder(order)";
-      }
-      {
-        label = "fault canonical arm";
-        needle = "Decision::FaultFires(fault)";
       }
       {
         label = "RNG draw canonical arm";
@@ -223,7 +215,8 @@ in
             PASS
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
-            decisions=DeliveryOrder,FaultFires,RngDraw,Override,Preemption,AppRandom
+            decisions=DeliveryOrder,RngDraw,Override,Preemption,AppRandom
+            fault_outcomes=ResolvedEffectTrace
             schedule_api=prefix,appended
             rng_stream_isolation=unrelated-world-edits
             RESULT
