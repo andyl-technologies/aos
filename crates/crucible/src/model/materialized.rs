@@ -104,6 +104,39 @@ pub struct PreemptionDecision {
     pub kind: PreemptionKind,
 }
 
+impl PreemptionDecision {
+    /// Serializes this preemption decision canonically.
+    #[must_use]
+    pub fn to_compact_binary(&self) -> Vec<u8> {
+        let mut writer = ScenarioBinaryWriter::new(PREEMPTION_DECISION_BINARY_MAGIC);
+        writer.write_string(&self.node.name);
+        writer.write_u64(self.at.retired);
+        write_preemption_kind_binary(&self.kind, &mut writer);
+        writer.finish()
+    }
+
+    /// Parses one complete preemption decision.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] for unsupported,
+    /// malformed, truncated, or trailing data.
+    pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
+        let mut reader = ScenarioBinaryReader::new(bytes, PREEMPTION_DECISION_BINARY_MAGIC)?;
+        let decision = Self {
+            node: NodeId {
+                name: reader.read_string()?,
+            },
+            at: Icount {
+                retired: reader.read_u64()?,
+            },
+            kind: read_preemption_kind_binary(&mut reader)?,
+        };
+        reader.finish()?;
+        Ok(decision)
+    }
+}
+
 /// The kind of a preemption decision.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum PreemptionKind {
