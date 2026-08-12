@@ -5,7 +5,7 @@ use crucible::model::FaultResourceLimits;
 use std::collections::BTreeSet;
 use std::io::Read as _;
 
-const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v3\0";
+const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v4\0";
 const MANIFEST_FILE: &str = "manifest.cbor";
 const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 const MAX_MANIFEST_BYTES_U64: u64 = 64 * 1024 * 1024;
@@ -22,6 +22,7 @@ struct ClosureManifest {
     schedule: ContentHash,
     frontier: u64,
     scheduler: ContentHash,
+    event_log_segments: Vec<ContentHash>,
     trigger_state: ContentHash,
     assertion_state: ContentHash,
     lifecycle_state: ContentHash,
@@ -55,6 +56,7 @@ struct ArtifactManifest {
 struct ClosureObjects {
     schedule: Vec<u8>,
     scheduler: Vec<u8>,
+    event_log_segments: BTreeMap<ContentHash, Vec<u8>>,
     trigger_state: Vec<u8>,
     assertion_state: Vec<u8>,
     lifecycle_state: Vec<u8>,
@@ -152,6 +154,13 @@ pub(super) fn persist_exact_checkpoint_set(
         })?;
     persist_object(&object_directory, manifest.schedule, &objects.schedule)?;
     persist_object(&object_directory, manifest.scheduler, &objects.scheduler)?;
+    for identity in &manifest.event_log_segments {
+        let bytes = objects
+            .event_log_segments
+            .get(identity)
+            .ok_or_else(|| store_error("event-log closure object disappeared"))?;
+        persist_object(&object_directory, *identity, bytes)?;
+    }
     persist_object(
         &object_directory,
         manifest.trigger_state,
@@ -270,6 +279,25 @@ pub(super) fn load_exact_checkpoint_set(
             "exact checkpoint scheduler continuation does not match its manifest",
         ));
     }
+    if scheduler.event_log_segment_dependencies() != manifest.event_log_segments {
+        return Err(loop_factory_error(
+            "exact checkpoint event-log dependencies do not match the scheduler continuation",
+        ));
+    }
+    let mut event_log_objects = BTreeMap::new();
+    for identity in &manifest.event_log_segments {
+        let bytes = read_object(
+            &object_directory,
+            *identity,
+            &mut budget,
+            LARGE_CONTINUATION_MAX_BYTES,
+        )?;
+        if event_log_objects.insert(*identity, bytes).is_some() {
+            return Err(loop_factory_error(
+                "exact checkpoint contains duplicate event-log segment identities",
+            ));
+        }
+    }
     let trigger_state = EventGraphState::from_compact_binary(&read_object(
         &object_directory,
         manifest.trigger_state,
@@ -367,6 +395,7 @@ pub(super) fn load_exact_checkpoint_set(
         identity,
         configuration,
         scheduler,
+        event_log_objects,
         trigger_state,
         assertion_state,
         terminal_verdict: lifecycle.terminal,
@@ -399,6 +428,25 @@ fn validate_checkpoint_set(
         return Err(store_error(
             "exact checkpoint scheduler configuration does not match its scenario",
         ));
+    }
+    if checkpoint.scheduler.event_log_segment_dependencies().len()
+        != checkpoint.event_log_objects.len()
+        || checkpoint
+            .scheduler
+            .event_log_segment_dependencies()
+            .iter()
+            .any(|identity| !checkpoint.event_log_objects.contains_key(identity))
+    {
+        return Err(store_error(
+            "exact checkpoint event-log closure is incomplete or out of order",
+        ));
+    }
+    for (identity, bytes) in &checkpoint.event_log_objects {
+        if ContentHash::from_bytes(bytes) != *identity {
+            return Err(store_error(
+                "exact checkpoint event-log object failed content authentication",
+            ));
+        }
     }
     match (
         checkpoint.scheduler.branch_frontier_cap(),
@@ -543,6 +591,16 @@ fn enforce_persist_limits(
             )?;
         }
     }
+    for (identity, object) in &objects.event_log_segments {
+        if identities.insert(*identity) {
+            bytes = add_checkpoint_bytes(
+                bytes,
+                u64::try_from(object.len()).map_err(|_| {
+                    store_error("event-log checkpoint object size is not representable")
+                })?,
+            )?;
+        }
+    }
     for target in &manifest.targets {
         let node = NodeId {
             name: target.node.clone(),
@@ -612,6 +670,18 @@ fn authenticate_existing_publication(
             return Err(store_error("checkpoint object changed before retry"));
         }
         validate_file_hash(&object_path(object_directory, identity), identity)?;
+    }
+    for identity in &expected.event_log_segments {
+        let bytes = objects
+            .event_log_segments
+            .get(identity)
+            .ok_or_else(|| store_error("event-log closure object disappeared"))?;
+        if ContentHash::from_bytes(bytes) != *identity {
+            return Err(store_error(
+                "event-log checkpoint object changed before retry",
+            ));
+        }
+        validate_file_hash(&object_path(object_directory, *identity), *identity)?;
     }
     for target in &expected.targets {
         let node = NodeId {
@@ -841,6 +911,10 @@ fn manifest_and_objects(
         schedule: ContentHash::from_bytes(&schedule),
         frontier: checkpoint.scheduler.frontier().ticks,
         scheduler: ContentHash::from_bytes(&scheduler),
+        event_log_segments: checkpoint
+            .scheduler
+            .event_log_segment_dependencies()
+            .to_vec(),
         trigger_state: ContentHash::from_bytes(&trigger_state),
         assertion_state: ContentHash::from_bytes(&assertion_state),
         lifecycle_state: ContentHash::from_bytes(&lifecycle_state),
@@ -863,6 +937,7 @@ fn manifest_and_objects(
         ClosureObjects {
             schedule,
             scheduler,
+            event_log_segments: checkpoint.event_log_objects.clone(),
             trigger_state,
             assertion_state,
             lifecycle_state,
@@ -879,6 +954,7 @@ fn closure_identity(manifest: &ClosureManifest) -> Result<ContentHash, Scheduler
         schedule: manifest.schedule,
         frontier: manifest.frontier,
         scheduler: manifest.scheduler,
+        event_log_segments: manifest.event_log_segments.clone(),
         trigger_state: manifest.trigger_state,
         assertion_state: manifest.assertion_state,
         lifecycle_state: manifest.lifecycle_state,
@@ -902,7 +978,7 @@ fn closure_identity(manifest: &ClosureManifest) -> Result<ContentHash, Scheduler
     };
     let bytes = encode_manifest(&material)?;
     Ok(ContentHash::from_canonical_material(
-        "crucible.production-exact-closure.v3",
+        "crucible.production-exact-closure.v4",
         &hex_bytes(&bytes),
     ))
 }
@@ -1560,6 +1636,7 @@ mod tests {
             schedule: ContentHash::default(),
             frontier: 0,
             scheduler: ContentHash::default(),
+            event_log_segments: Vec::new(),
             trigger_state: ContentHash::default(),
             assertion_state: ContentHash::default(),
             lifecycle_state: ContentHash::default(),

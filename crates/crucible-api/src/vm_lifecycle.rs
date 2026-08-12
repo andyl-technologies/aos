@@ -182,6 +182,7 @@ struct ProductionVmExactCheckpointSet {
     identity: ContentHash,
     configuration: Configuration,
     scheduler: SingleSchedulerCheckpoint,
+    event_log_objects: BTreeMap<ContentHash, Vec<u8>>,
     trigger_state: EventGraphState,
     assertion_state: HostAssertionEvaluatorCheckpoint,
     terminal_verdict: Option<QuantumTerminalVerdict>,
