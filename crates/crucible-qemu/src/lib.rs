@@ -98,7 +98,7 @@ pub use block_realization_gate::{
 };
 pub use checkpoint::{
     QemuHostIoCheckpoint, QemuLive9pIoServicerCheckpoint, QemuLiveBlockIoServicerCheckpoint,
-    QemuNodeContinuationCheckpoint,
+    QemuNodeCheckpointCodecError, QemuNodeContinuationCheckpoint,
 };
 pub use coverage::{
     QemuBasicBlockCoverageBridge, QemuCoverageError, QemuCoverageFingerprintReport,
