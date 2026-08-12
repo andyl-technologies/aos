@@ -1403,29 +1403,37 @@ fn capability_row(
     hasher.update(&[0]);
     hasher.update(schema.as_bytes());
     let row = FaultCapabilityRowV1 {
-        command_kind: command_kind(raw.command_kind)?,
+        command_kind: FaultCommandKind::from_u16(raw.command_kind)
+            .map_err(|source| invalid_capability_row(raw, name, source))?,
         semantic_version: raw.semantic_version,
         scope: FaultCapabilityScope::from_u16(raw.scope)
-            .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?,
+            .map_err(|source| invalid_capability_row(raw, name, source))?,
         phase_mask: raw.phase_mask,
         maximum_payload_bytes: raw.maximum_payload_bytes,
         maximum_pending_commands: raw.maximum_pending_commands,
         required_feature_bits: raw.required_feature_bits,
         capability_hash: *hasher.finalize().as_bytes(),
     };
-    FaultCapabilityRowV1::decode(&row.encode()).map_err(|source| {
-        FaultCommandBridgeError::CapabilityRowAbi {
-            name: name.to_owned(),
-            command_kind: raw.command_kind,
-            scope: raw.scope,
-            semantic_version: raw.semantic_version,
-            phase_mask: raw.phase_mask,
-            maximum_payload_bytes: raw.maximum_payload_bytes,
-            maximum_pending_commands: raw.maximum_pending_commands,
-            required_feature_bits: raw.required_feature_bits,
-            source,
-        }
-    })
+    FaultCapabilityRowV1::decode(&row.encode())
+        .map_err(|source| invalid_capability_row(raw, name, source))
+}
+
+fn invalid_capability_row(
+    raw: QemuFaultCapability,
+    name: &str,
+    source: FaultAbiError,
+) -> FaultCommandBridgeError {
+    FaultCommandBridgeError::CapabilityRowAbi {
+        name: name.to_owned(),
+        command_kind: raw.command_kind,
+        scope: raw.scope,
+        semantic_version: raw.semantic_version,
+        phase_mask: raw.phase_mask,
+        maximum_payload_bytes: raw.maximum_payload_bytes,
+        maximum_pending_commands: raw.maximum_pending_commands,
+        required_feature_bits: raw.required_feature_bits,
+        source,
+    }
 }
 
 fn register_capability_row(
