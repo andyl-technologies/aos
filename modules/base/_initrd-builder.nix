@@ -463,7 +463,12 @@ in
             cp -a ${package}/lib/modules/. root/lib/modules/
           '') kernelModulePackages}
           for module_dir in root/lib/modules/*; do
-            chmod -R u+w "$module_dir"
+            # External module packages may restore the copied release
+            # directory's read-only store mode after the kernel tree was
+            # made writable. Only the parent directory needs write access
+            # to unlink the build/source symlinks; recursively chmodding does
+            # not follow those symlinks and therefore cannot repair it.
+            chmod u+w root/lib/modules "$module_dir"
             rm -f "$module_dir/build" "$module_dir/source"
             ${kmod}/sbin/depmod -b root "$(basename "$module_dir")"
           done
