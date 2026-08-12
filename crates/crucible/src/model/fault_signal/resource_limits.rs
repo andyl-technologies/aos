@@ -51,6 +51,14 @@ macro_rules! define_fault_resource_limits {
         ];
 
         impl FaultResourceLimits {
+            /// Returns the compiled ceiling for every resource field.
+            #[must_use]
+            pub const fn compiled_maximum() -> Self {
+                Self {
+                    $($field: $hard,)+
+                }
+            }
+
             /// Validates every configured value against its compiled ceiling.
             ///
             /// # Errors

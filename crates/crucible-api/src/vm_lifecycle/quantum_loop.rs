@@ -436,6 +436,28 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         self.inner.loop_impl().pending_branch_effect_choice_count()
     }
 
+    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+        let runtime = self
+            .fault_runtime
+            .lock()
+            .map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("production fault runtime lock is poisoned"),
+            })?;
+        match runtime.recorded_trace(crucible::model::FaultReplayMode::RecomputedCause) {
+            Ok(trace) => trace.canonical_bytes().map(Some).map_err(|error| {
+                SchedulerError::BoundaryViolation {
+                    message: format!("encode production resolved-effect trace: {error}"),
+                }
+            }),
+            Err(crucible_qemu::ProductionFaultRuntimeError::Execution(
+                crucible::model::FaultExecutionError::CheckpointPresence,
+            )) => Ok(None),
+            Err(error) => Err(SchedulerError::BoundaryViolation {
+                message: format!("capture production resolved-effect trace: {error}"),
+            }),
+        }
+    }
+
     fn take_terminal_verdict(&mut self) -> Option<QuantumTerminalVerdict> {
         self.terminal_verdict.take()
     }
@@ -448,6 +470,22 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                 "production lifecycle stopped with {pending} unconsumed branch effect choices"
             ),
         });
+        let replay_error = if self.fault_replay_installed {
+            let runtime =
+                self.fault_runtime
+                    .lock()
+                    .map_err(|_| SchedulerError::BoundaryViolation {
+                        message: String::from("production fault runtime lock is poisoned"),
+                    })?;
+            runtime
+                .verify_replay_exhausted()
+                .err()
+                .map(|error| SchedulerError::BoundaryViolation {
+                    message: format!("production fault replay was not exhausted: {error}"),
+                })
+        } else {
+            None
+        };
         let gateway_shutdown = self.debug_gateway.take().map(|gateway| {
             gateway
                 .shutdown()
@@ -464,6 +502,9 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         self.run_manifest.clean_shutdown = true;
         self.persist_run_manifest()?;
         if let Some(error) = pending_error {
+            return Err(error);
+        }
+        if let Some(error) = replay_error {
             return Err(error);
         }
         Ok(events)

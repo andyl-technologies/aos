@@ -124,6 +124,26 @@ pub(super) fn parse_query_result_line(
                 pending_branch_choices,
             }))
         }
+        "resolved-effect-trace" => {
+            let value = fields
+                .next()
+                .ok_or_else(|| rpc_decode("missing resolved-effect trace"))?;
+            let trace = if value == "none" {
+                None
+            } else {
+                let bytes = parse_hex_bytes(value).map_err(|error| {
+                    rpc_decode(format!("invalid resolved-effect trace bytes: {error}"))
+                })?;
+                let _ = crucible::model::ResolvedEffectTrace::from_canonical_bytes(
+                    &bytes,
+                    crucible::model::FaultResourceLimits::compiled_maximum(),
+                )
+                .map_err(|error| rpc_decode(format!("invalid resolved-effect trace: {error}")))?;
+                Some(bytes)
+            };
+            reject_extra_query_result_fields(fields.next())?;
+            Ok(Some(QueryResult::ResolvedEffectTrace(trace)))
+        }
         "breakpoint-firings" => {
             let firings = parse_breakpoint_firings_fields(&mut fields)?;
             reject_extra_query_result_fields(fields.next())?;

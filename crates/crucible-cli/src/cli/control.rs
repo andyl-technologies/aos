@@ -196,6 +196,8 @@ where
         )
         .await?;
     }
+    let resolved_effect_trace =
+        query_resolved_effect_trace(&control, &mut command_id, &mut acknowledged_commands).await?;
     if state_updates.last() != Some(&observation.final_state) {
         state_updates.push(observation.final_state.clone());
     }
@@ -216,9 +218,36 @@ where
         streamed_event_frames,
         coverage_feedback: coverage_feedback_from_streamed_events(coverage_events)?,
         execution_fingerprints,
+        resolved_effect_trace,
         acknowledged_commands,
         watch_statuses: observation.watch_statuses,
     })
+}
+
+async fn query_resolved_effect_trace(
+    control: &crucible_api::ClientControlStream,
+    command_id: &mut u64,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+) -> Result<Option<Vec<u8>>, CliError> {
+    let response = acknowledge_stream_command_payload(
+        control,
+        command_id,
+        SessionCommand::Query {
+            kind: QueryKind::ResolvedEffectTrace,
+            reply: CommandReply::discard(),
+        },
+        acknowledged_commands,
+    )
+    .await?;
+    match response.query_result {
+        Some(QueryResult::ResolvedEffectTrace(trace)) => Ok(trace),
+        Some(other) => Err(control_error(format!(
+            "resolved-effect trace query returned {other:?}"
+        ))),
+        None => Err(control_error(
+            "resolved-effect trace query returned no result",
+        )),
+    }
 }
 
 async fn reject_unconsumed_run_branch_choices<C>(

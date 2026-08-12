@@ -158,6 +158,11 @@ fn replay_live_qemu_evidence(
         LIVE_QEMU_FINGERPRINT_STREAM_MEDIA_TYPE,
         "live QEMU fingerprint stream",
     )?;
+    let resolved_effect_trace_bytes = optional_single_component_payload(
+        artifact,
+        LIVE_QEMU_RESOLVED_EFFECT_TRACE_MEDIA_TYPE,
+        "live QEMU resolved-effect trace",
+    )?;
     let contract = LiveQemuReplayContract::decode(contract_bytes)?;
     let top_level_fingerprints =
         verify_fingerprint_stream_bytes(&artifact_fingerprint_samples(artifact));
@@ -176,6 +181,15 @@ fn replay_live_qemu_evidence(
         &artifact.scenario,
     )?)
     .map_err(|error| artifact_error(format!("decode live-QEMU replay scenario: {error}")))?;
+    let resolved_effect_trace = resolved_effect_trace_bytes
+        .map(|bytes| {
+            crucible::model::ResolvedEffectTrace::from_canonical_bytes(
+                bytes,
+                scenario.plan().fault_signals().resource_limits(),
+            )
+            .map_err(|error| artifact_error(format!("decode resolved-effect trace: {error}")))
+        })
+        .transpose()?;
     let model_bytes = required_single_component_payload(
         artifact,
         MODEL_REPRODUCTION_ARTIFACT_MEDIA_TYPE,
@@ -224,8 +238,13 @@ fn replay_live_qemu_evidence(
         .iter()
         .map(|node| node.id.name.clone())
         .collect::<std::collections::BTreeSet<_>>();
-    let (_run_plan, report) =
-        run_live_qemu_artifact_replay(backend, scenario, model.schedule(), &contract)?;
+    let (_run_plan, report) = run_live_qemu_artifact_replay(
+        backend,
+        scenario,
+        model.schedule(),
+        &contract,
+        resolved_effect_trace,
+    )?;
     let replay_events = canonical_verify_log_stream_bytes(&[], &report.streamed_event_frames);
     let replay_samples = match contract.fingerprint_scope {
         LiveQemuFingerprintScope::FullExecution => run_fingerprint_samples(&report),
@@ -335,6 +354,26 @@ fn required_single_component_payload<'a>(
         )));
     }
     resolved_component_payload(artifact, components[0])
+}
+
+fn optional_single_component_payload<'a>(
+    artifact: &'a CliReproductionArtifact,
+    media_type: &str,
+    label: &str,
+) -> Result<Option<&'a [u8]>, CliError> {
+    let components = artifact
+        .components
+        .iter()
+        .filter(|component| component.media_type == media_type)
+        .collect::<Vec<_>>();
+    match components.as_slice() {
+        [] => Ok(None),
+        [component] => resolved_component_payload(artifact, component).map(Some),
+        _ => Err(artifact_error(format!(
+            "v3 replay accepts at most one {label} component, found {}",
+            components.len()
+        ))),
+    }
 }
 
 fn validate_live_qemu_terminal(

@@ -1486,6 +1486,9 @@ impl<L: QuantumLoop> Engine<L> {
                         frontiers: self.quantum_loop.search_frontiers()?,
                         pending_branch_choices: self.quantum_loop.pending_search_branch_choices(),
                     },
+                    QueryKind::ResolvedEffectTrace => {
+                        QueryResult::ResolvedEffectTrace(self.quantum_loop.resolved_effect_trace()?)
+                    }
                     QueryKind::ExecutionFingerprint { node } => QueryResult::ExecutionFingerprint(
                         self.quantum_loop.sample_fingerprint(node.clone())?,
                     ),

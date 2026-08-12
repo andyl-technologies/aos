@@ -13,6 +13,7 @@ pub(crate) fn run_live_qemu_artifact_replay(
     scenario: crucible::ScenarioDefForm,
     schedule: &crucible::Schedule,
     contract: &LiveQemuReplayContract,
+    resolved_effect_trace: Option<crucible::model::ResolvedEffectTrace>,
 ) -> Result<(RunInvocationPlan, RunWorkflowReport), CliError> {
     let terminal_condition = match contract.terminal_condition.as_str() {
         "quiescence" => RunTerminalCondition::Quiescence,
@@ -172,6 +173,9 @@ pub(crate) fn run_live_qemu_artifact_replay(
     }
     if contract.coverage {
         config = config.with_coverage(production_api::ProductionPluginSwitch::On);
+    }
+    if let Some(trace) = resolved_effect_trace {
+        config = config.with_fault_replay(trace);
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
