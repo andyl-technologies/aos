@@ -295,6 +295,7 @@ in
                 rm rootfs/usr/lib/modules
                 mkdir -p rootfs/usr/lib/modules
                 cp -a "$KERNEL/lib/modules/." rootfs/usr/lib/modules/
+                chmod -R u+w rootfs/usr/lib/modules
                 ${lib.concatMapStringsSep "\n" (package: ''
                   cp -a ${package}/lib/modules/. rootfs/usr/lib/modules/
                 '') kernelModulePackages}

@@ -161,23 +161,79 @@ struct ImageTransitionIntent {
 }
 
 /// Filesystem locations used by the offline A/B writer.
-struct ImageSlotLayout<'a> {
-    boot_root: &'a Path,
-    root_a: &'a Path,
-    root_b: &'a Path,
-    root_a_hash: &'a Path,
-    root_b_hash: &'a Path,
+struct ImageSlotLayout {
+    boot_root: PathBuf,
+    esp_devices: Vec<PathBuf>,
+    root_a: PathBuf,
+    root_b: PathBuf,
+    root_a_hash: PathBuf,
+    root_b_hash: PathBuf,
 }
 
-impl Default for ImageSlotLayout<'static> {
+impl Default for ImageSlotLayout {
     fn default() -> Self {
         Self {
-            boot_root: Path::new(BOOT_ROOT),
-            root_a: Path::new(ROOT_A_DEVICE),
-            root_b: Path::new(ROOT_B_DEVICE),
-            root_a_hash: Path::new(ROOT_A_HASH_DEVICE),
-            root_b_hash: Path::new(ROOT_B_HASH_DEVICE),
+            boot_root: PathBuf::from(BOOT_ROOT),
+            esp_devices: vec![PathBuf::from("/dev/disk/by-partlabel/ESP")],
+            root_a: PathBuf::from(ROOT_A_DEVICE),
+            root_b: PathBuf::from(ROOT_B_DEVICE),
+            root_a_hash: PathBuf::from(ROOT_A_HASH_DEVICE),
+            root_b_hash: PathBuf::from(ROOT_B_HASH_DEVICE),
         }
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BootStorageMetadata {
+    esp_devices: Vec<PathBuf>,
+    devices: BootStorageDevices,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BootStorageDevices {
+    root_a: PathBuf,
+    root_b: PathBuf,
+    root_a_hash: PathBuf,
+    root_b_hash: PathBuf,
+}
+
+impl ImageSlotLayout {
+    fn from_running_toplevel() -> Result<Self> {
+        Self::from_toplevel(Path::new(RUNNING_TOPLEVEL_LINK))
+    }
+
+    fn from_toplevel(toplevel: &Path) -> Result<Self> {
+        let path = toplevel.join("meta/boot-storage.json");
+        let bytes = std::fs::read(&path)
+            .with_context(|| format!("reading boot-storage metadata {}", path.display()))?;
+        let metadata: BootStorageMetadata = serde_json::from_slice(&bytes)
+            .with_context(|| format!("parsing boot-storage metadata {}", path.display()))?;
+        if metadata.esp_devices.is_empty() {
+            bail!("boot-storage metadata has no EFI System Partition devices");
+        }
+        for device in metadata.esp_devices.iter().chain([
+            &metadata.devices.root_a,
+            &metadata.devices.root_b,
+            &metadata.devices.root_a_hash,
+            &metadata.devices.root_b_hash,
+        ]) {
+            if !device.is_absolute() || !device.starts_with("/dev") {
+                bail!(
+                    "boot-storage metadata contains unsafe device {}",
+                    device.display()
+                );
+            }
+        }
+        Ok(Self {
+            boot_root: PathBuf::from(BOOT_ROOT),
+            esp_devices: metadata.esp_devices,
+            root_a: metadata.devices.root_a,
+            root_b: metadata.devices.root_b,
+            root_a_hash: metadata.devices.root_a_hash,
+            root_b_hash: metadata.devices.root_b_hash,
+        })
     }
 }
 
@@ -574,12 +630,13 @@ pub async fn install_system(
             crate::config_eval::activation::ActivateConfigParams::default().switch_lock;
         let _switch_guard = crate::config_eval::activation::acquire_switch_lock_pub(&switch_lock)?;
         printer.step(8, 8, "Staging inactive A/B image slot...");
+        let layout = ImageSlotLayout::from_running_toplevel()?;
         let staged = with_writable_boot(|| {
             stage_pending_image_generation_with(
                 image_profile,
                 &ProfileScope::System.profile_path(),
                 Path::new(NIX_OVERLAY_UPPER_STORE),
-                &ImageSlotLayout::default(),
+                &layout,
                 toplevel_meta,
                 &closure.registry_name,
                 image,
@@ -1507,7 +1564,7 @@ fn read_toplevel_meta(toplevel: &Path, name: &str) -> Result<String> {
 }
 
 fn stage_slot_artifacts(
-    layout: &ImageSlotLayout<'_>,
+    layout: &ImageSlotLayout,
     target_slot: ImageSlot,
     image_store: &Path,
     image: &SysrootImageEntry,
@@ -1515,8 +1572,8 @@ fn stage_slot_artifacts(
     reusable_uki: Option<&Path>,
 ) -> Result<()> {
     let (root_device, hash_device, legacy_uki_name) = match target_slot {
-        ImageSlot::A => (layout.root_a, layout.root_a_hash, "uki-a.efi"),
-        ImageSlot::B => (layout.root_b, layout.root_b_hash, "uki-b.efi"),
+        ImageSlot::A => (&layout.root_a, &layout.root_a_hash, "uki-a.efi"),
+        ImageSlot::B => (&layout.root_b, &layout.root_b_hash, "uki-b.efi"),
     };
     let root = image_artifact_path(image_store, image.root_image.as_deref(), "root.img")?;
     let verity = image
@@ -1591,7 +1648,7 @@ fn stage_slot_artifacts(
 }
 
 fn reusable_slot_uki_path(
-    layout: &ImageSlotLayout<'_>,
+    layout: &ImageSlotLayout,
     state: &ImageGenerationState,
     slot: ImageSlot,
 ) -> Option<PathBuf> {
@@ -1601,7 +1658,7 @@ fn reusable_slot_uki_path(
         .rev()
         .find(|generation| generation.slot == slot)?;
     let entry = resolve_installed_uki_entry_with(
-        layout.boot_root,
+        &layout.boot_root,
         &previous.uki_path,
         ExhaustedEntry::Allow,
     )
@@ -1648,7 +1705,7 @@ fn image_uki_for_slot<'a>(
 }
 
 fn cleanup_replaced_slot_ukis(
-    layout: &ImageSlotLayout<'_>,
+    layout: &ImageSlotLayout,
     state: &ImageGenerationState,
     slot: ImageSlot,
     keep_recorded: &str,
@@ -1665,7 +1722,7 @@ fn cleanup_replaced_slot_ukis(
         .iter()
         .filter(|generation| generation.slot == slot)
     {
-        let Ok(entry) = resolve_installed_uki_entry(layout.boot_root, &previous.uki_path) else {
+        let Ok(entry) = resolve_installed_uki_entry(&layout.boot_root, &previous.uki_path) else {
             continue;
         };
         if stable_uki_entry_id(&entry)? == keep_entry {
@@ -1713,7 +1770,7 @@ fn stage_pending_image_generation_with<F>(
     profile: &Path,
     system_profile: &Path,
     upper_store: &Path,
-    layout: &ImageSlotLayout<'_>,
+    layout: &ImageSlotLayout,
     package: &PackageMeta,
     registry: &str,
     image: &SysrootImageEntry,
@@ -1760,9 +1817,10 @@ where
                 pending.number
             );
         }
-        let pending_entry = resolve_installed_uki_entry(layout.boot_root, &pending.uki_path)?;
+        let pending_entry = resolve_installed_uki_entry(&layout.boot_root, &pending.uki_path)?;
         select_image_default_with(profile, &mut state, pending.number, &pending_entry, select)?;
         cleanup_replaced_slot_ukis(layout, &state, pending.slot, &pending.uki_path)?;
+        replicate_boot_partitions(layout)?;
         return Ok(pending);
     }
 
@@ -1797,14 +1855,6 @@ where
     persist_store_closure_to_upper(&running.evaluator_ref, upper_store)?;
     persist_store_closure_to_upper(&evaluator_ref, upper_store)?;
     let reusable_uki = reusable_slot_uki_path(layout, &state, target_slot);
-    stage_slot_artifacts(
-        layout,
-        target_slot,
-        image_store,
-        image,
-        &installed_uki,
-        reusable_uki.as_deref(),
-    )?;
 
     // A failed counted-boot attempt leaves an authenticated generation record
     // behind after fallback. Re-arm that record instead of appending a second
@@ -1839,6 +1889,23 @@ where
     } else {
         state.generations.push(generation.clone());
     }
+    // Authenticate the generation before any firmware-discoverable UKI is
+    // published. A crash may leave this non-pending record without an entry,
+    // which is safe and retryable; the inverse would let firmware select an
+    // orphan that early boot must reject.
+    write_atomic_durable(
+        &profile.join(IMAGE_STATE_FILE),
+        &serde_json::to_vec_pretty(&state)?,
+    )?;
+    stage_slot_artifacts(
+        layout,
+        target_slot,
+        image_store,
+        image,
+        &installed_uki,
+        reusable_uki.as_deref(),
+    )?;
+    replicate_boot_partitions(layout)?;
     crate::store::create_baselib_gc_root(
         &profile.join(format!("image-gen-{number}")),
         module_abi,
@@ -1848,7 +1915,21 @@ where
     crate::store::reconcile_baselib_gc_roots(profile, &state, &configs)?;
     select_image_default_with(profile, &mut state, number, &entry_id, select)?;
     cleanup_replaced_slot_ukis(layout, &state, target_slot, &installed_uki)?;
+    replicate_boot_partitions(layout)?;
     Ok(generation)
+}
+
+fn replicate_boot_partitions(layout: &ImageSlotLayout) -> Result<()> {
+    if layout.esp_devices.len() <= 1 {
+        return Ok(());
+    }
+    let status = std::process::Command::new("aos-sync-esps")
+        .status()
+        .context("replicating EFI System Partitions")?;
+    if !status.success() {
+        bail!("EFI System Partition replication failed with {status}");
+    }
+    Ok(())
 }
 
 /// Selects an older A/B image generation durably with `bootctl set-default`.
@@ -4338,6 +4419,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn image_slot_layout_uses_declared_boot_storage_devices() {
+        let tmp = TempDir::new().unwrap();
+        let metadata_dir = tmp.path().join("meta");
+        std::fs::create_dir_all(&metadata_dir).unwrap();
+        std::fs::write(
+            metadata_dir.join("boot-storage.json"),
+            br#"{
+              "backend": "zfs-zvol",
+              "espDevices": ["/dev/disk/by-partlabel/aos-esp-1", "/dev/disk/by-partlabel/aos-esp-2"],
+              "devices": {
+                "rootA": "/dev/zvol/rpool/aos/slots/root-a",
+                "rootAHash": "/dev/zvol/rpool/aos/slots/root-a-hash",
+                "rootB": "/dev/zvol/rpool/aos/slots/root-b",
+                "rootBHash": "/dev/zvol/rpool/aos/slots/root-b-hash"
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let layout = ImageSlotLayout::from_toplevel(tmp.path()).unwrap();
+        assert_eq!(layout.esp_devices.len(), 2);
+        assert_eq!(layout.root_b, Path::new("/dev/zvol/rpool/aos/slots/root-b"));
+    }
+
     fn active_catalog() -> SbCertsToml {
         SbCertsToml {
             active: vec![SbCert {
@@ -4546,11 +4652,12 @@ mod tests {
         std::fs::write(image_store.join("uki-a.efi"), b"uki-a").unwrap();
         std::fs::write(image_store.join("uki-b.efi"), b"uki-b").unwrap();
         let layout = ImageSlotLayout {
-            boot_root: &boot,
-            root_a: &root_a,
-            root_b: &root_b,
-            root_a_hash: &hash_a,
-            root_b_hash: &hash_b,
+            boot_root: boot.clone(),
+            esp_devices: vec![tmp.path().join("esp")],
+            root_a: root_a.clone(),
+            root_b: root_b.clone(),
+            root_a_hash: hash_a.clone(),
+            root_b_hash: hash_b.clone(),
         };
         let mut image = signed_image(SIGNER_ACTIVE, &[("aos", 2)]);
         image.sb_signer_cert_sha256 = None;
@@ -4752,11 +4859,12 @@ mod tests {
         let hash_a = tmp.path().join("root-a-hash");
         let hash_b = tmp.path().join("root-b-hash");
         let layout = ImageSlotLayout {
-            boot_root: &boot,
-            root_a: &root_a,
-            root_b: &root_b,
-            root_a_hash: &hash_a,
-            root_b_hash: &hash_b,
+            boot_root: boot,
+            esp_devices: vec![tmp.path().join("esp")],
+            root_a,
+            root_b,
+            root_a_hash: hash_a,
+            root_b_hash: hash_b,
         };
 
         cleanup_replaced_slot_ukis(&layout, &state, ImageSlot::B, "EFI/Linux/aos-new+3.efi")
@@ -4785,11 +4893,12 @@ mod tests {
         std::fs::write(image_store.join("root.verity"), b"new-verity").unwrap();
         std::fs::write(image_store.join("uki-b.efi"), b"uki-b").unwrap();
         let layout = ImageSlotLayout {
-            boot_root: &boot,
-            root_a: &root_a,
-            root_b: &root_b,
-            root_a_hash: &hash_a,
-            root_b_hash: &hash_b,
+            boot_root: boot.clone(),
+            esp_devices: vec![tmp.path().join("esp")],
+            root_a,
+            root_b: root_b.clone(),
+            root_a_hash: hash_a,
+            root_b_hash: hash_b,
         };
         let mut image = signed_image(SIGNER_ACTIVE, &[("aos", 2)]);
         image.sb_signer_cert_sha256 = None;

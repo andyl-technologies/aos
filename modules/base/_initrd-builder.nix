@@ -450,6 +450,7 @@ in
           # ── 4. Kernel modules ──────────────────────────────────────────
           if [ -d ${kernel}/lib/modules ]; then
             cp -a ${kernel}/lib/modules/. root/lib/modules/
+            chmod -R u+w root/lib/modules
           else
             echo "initrd-builder: ${kernel}/lib/modules not found" >&2
             exit 1

@@ -34,6 +34,19 @@
       else cfg.devices.${name}
   ) defaultDevices;
   zfsPackage = pkgs.zfsForKernel config.system.build.kernel;
+  espSync = pkgs.runCommand "aos-sync-esps" {
+    buildDeps = [pkgs.coreutils pkgs.perl];
+  } ''
+    mkdir -p "$out/bin"
+    cp ${./sync-esps.sh.in} "$out/bin/aos-sync-esps"
+    substituteInPlace "$out/bin/aos-sync-esps" \
+      --replace-fail '@bash@' '${pkgs.bash}/bin/bash' \
+      --replace-fail '@coreutils@' '${pkgs.coreutils}' \
+      --replace-fail '@jq@' '${pkgs.jq}' \
+      --replace-fail '@rsync@' '${pkgs.rsync}' \
+      --replace-fail '@util_linux@' '${pkgs.util-linux}'
+    chmod 0755 "$out/bin/aos-sync-esps"
+  '';
   deviceOption = name:
     lib.mkOption {
       type = lib.types.nullOr lib.types.str;
@@ -117,6 +130,21 @@ in {
 
     aos.boot.storage.resolvedDevices = resolvedDevices;
     aos.filesystems.espDevice = lib.mkDefault (builtins.head cfg.espDevices);
+    environment.systemPackages = [espSync];
+    systemd.services.aos-sync-esps = {
+      description = "Replicate the primary EFI System Partition";
+      wantedBy = ["multi-user.target"];
+      after = ["aos-image-boot-commit.service"];
+      requires = ["aos-image-boot-commit.service"];
+      unitConfig.ConditionPathExists = "/sys/firmware/efi";
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = ''
+        ${espSync}/bin/aos-sync-esps
+      '';
+    };
   } (lib.mkIf (cfg.backend == "zfs-zvol") {
     aos.kernel.modulePackages = [zfsPackage];
     aos.boot.initrd.extraPackages = [zfsPackage];
