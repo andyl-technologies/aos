@@ -45,11 +45,11 @@
       }
       {
         label = "vendored cargo deps";
-        needle = "cargoDeps = fetchCargoDeps";
+        needle = "cargoDeps = fetchCargoVendor";
       }
       {
         label = "pinned vendored dependency hash binding";
-        needle = "cargoDepsHash = \"sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=\";";
+        needle = "cargoDepsHash = \"sha256-CHxtW0lBAN3Ux2p9SGkWlcc9iHhCUiWWDCEmrRWb76I=\";";
       }
       {
         label = "vendored dependency hash consumed by cargo deps";
@@ -182,7 +182,7 @@ in
             package=crucible
             package_passthru=pkgs.crucible
             build_system=mkCargoPackage
-            cargo_deps=fetchCargoDeps
+            cargo_deps=fetchCargoVendor
             cargo_workspace_flags=workspace-scoped
             RESULT
           '';

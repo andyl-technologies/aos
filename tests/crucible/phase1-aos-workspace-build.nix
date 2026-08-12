@@ -92,7 +92,7 @@ in
             test -f ${packages.crucible-controller}/nix-support/crucible-build-info
             grep -q '^build_system=mkCargoPackage$' \
               ${packages.crucible-controller}/nix-support/crucible-build-info
-            grep -q '^cargo_deps=fetchCargoDeps$' \
+            grep -q '^cargo_deps=fetchCargoVendor$' \
               ${packages.crucible-controller}/nix-support/crucible-build-info
             grep -q '^cargo_workspace_flags=--workspace' \
               ${packages.crucible-controller}/nix-support/crucible-build-info
@@ -163,7 +163,7 @@ in
             test -f ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
             grep -q '^build_system=mkCargoPackage$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
-            grep -q '^cargo_deps=fetchCargoDeps$' \
+            grep -q '^cargo_deps=fetchCargoVendor$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
             grep -q '^qemu_package=qemu-crucible$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
@@ -227,7 +227,7 @@ in
             check=checks.crucible.phase1.aosWorkspaceBuild
             tasks=T-CRATE-14
             packages=crucible-controller,crucible,crucible-qemu-plugin,qemu-crucible
-            cargo_deps=fetchCargoDeps
+            cargo_deps=fetchCargoVendor
             plugin_headers=qemu-crucible
             plugin_library=lib/libcrucible_qemu_plugin.so
             plugin_search_path=lib/qemu/plugins/crucible-qemu-plugin.so

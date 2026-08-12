@@ -5,11 +5,7 @@
   taskIds ? ["T-SHM-14" "T-SHM-19"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   # The `#[repr(C)]` structs and their static layout assertions live in the
   # `shmem/` submodules re-exported by lib.rs; concatenate them so the assertion
