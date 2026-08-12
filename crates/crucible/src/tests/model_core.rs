@@ -739,6 +739,21 @@ fn compact_checkpoint_decode_rejects_inconsistent_outer_shape() {
 }
 
 #[test]
+fn compact_checkpoint_round_trips_concrete_execution_closure() {
+    let config = Configuration::genesis(generated_scenario(88));
+    let closure = ContentHash::from_canonical_material(
+        "crucible.test.execution-closure",
+        "complete-production-state",
+    );
+    let checkpoint = fat_checkpoint_for(&config).with_execution_closure(closure);
+    let bytes = checkpoint.to_compact_binary();
+    let restored = Checkpoint::from_compact_binary(&bytes)
+        .unwrap_or_else(|error| panic!("checkpoint closure should decode: {error}"));
+    assert_eq!(restored, checkpoint);
+    assert_eq!(restored.execution_closure, Some(closure));
+}
+
+#[test]
 fn temporal_graph_materialized_cache_keeps_thin_checkpoint_source_of_truth() {
     let scenario = generated_scenario(76);
     let genesis = Configuration::genesis(scenario.clone());
