@@ -540,7 +540,8 @@ pub struct ServiceProfileInput {
 }
 
 /// One versioned exhaustive adapter state-transition table declaration.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StateTransitionTableDeclaration {
     /// Stable table identity.
     pub id: FaultObjectId,
@@ -551,10 +552,30 @@ pub struct StateTransitionTableDeclaration {
     /// Exact owning effect family.
     pub effect: EffectKind,
     /// Exhaustive finite request-to-adapter-transition table.
-    #[serde(serialize_with = "serialize_transition_map")]
+    #[serde(
+        serialize_with = "serialize_transition_map",
+        deserialize_with = "deserialize_transition_map"
+    )]
     pub transitions: BTreeMap<SignalValue, FaultObjectId>,
     /// Mandatory transition for every request not present in `transitions`.
     pub default_transition: FaultObjectId,
+}
+
+fn deserialize_transition_map<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<SignalValue, FaultObjectId>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let entries =
+        <Vec<(SignalValue, FaultObjectId)> as serde::Deserialize>::deserialize(deserializer)?;
+    let mut transitions = BTreeMap::new();
+    for (input, output) in entries {
+        if transitions.insert(input, output).is_some() {
+            return Err(serde::de::Error::custom("duplicate state transition input"));
+        }
+    }
+    Ok(transitions)
 }
 
 fn serialize_transition_map<S>(
@@ -982,7 +1003,8 @@ impl Default for BindingObservabilityPolicy {
 }
 
 /// One fully admitted signal-to-effect binding.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FaultBinding {
     id: FaultObjectId,
     program: ContentHash,

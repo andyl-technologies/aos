@@ -1422,6 +1422,21 @@ mod tests {
         let identity = checkpoint
             .content_id()
             .unwrap_or_else(|error| panic!("identity: {error}"));
+        let bytes = checkpoint
+            .canonical_bytes()
+            .unwrap_or_else(|error| panic!("checkpoint bytes: {error}"));
+        let restored = FaultRuntimeCheckpoint::from_canonical_bytes(&bytes, &plan, seed)
+            .unwrap_or_else(|error| panic!("checkpoint decode: {error}"));
+        assert_eq!(restored, checkpoint);
+        assert_eq!(
+            restored
+                .canonical_bytes()
+                .unwrap_or_else(|error| panic!("restored bytes: {error}")),
+            bytes
+        );
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert!(FaultRuntimeCheckpoint::from_canonical_bytes(&trailing, &plan, seed).is_err());
 
         let mut mutated = checkpoint.clone();
         mutated.poisoned = true;

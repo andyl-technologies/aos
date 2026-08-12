@@ -31,7 +31,8 @@ pub const HARD_SIGNAL_BOUNDARY_ITEMS: usize = 262_144;
 const EVALUATOR_CHECKPOINT_MAGIC: &[u8; 8] = b"CREVAL01";
 
 /// Immutable canonical evaluator checkpoint bytes and content identity.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SignalEvaluatorCheckpoint {
     bytes: Vec<u8>,
     content: ContentHash,
@@ -169,7 +170,8 @@ pub struct SignalBoundarySnapshot {
 }
 
 /// One side-band event emitted by a stateful node transition.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StatefulSignalEvent {
     /// Emitting node.
     pub node: SignalId,

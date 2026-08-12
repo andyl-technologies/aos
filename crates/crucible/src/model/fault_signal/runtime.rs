@@ -15,7 +15,8 @@ use super::*;
 pub const FAULT_RUNTIME_STATE_VERSION: u16 = 2;
 
 /// Mutable activation state for one binding.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BindingRuntimeState {
     /// Whether a persistent contribution is currently active.
     pub active: bool,
@@ -46,7 +47,10 @@ pub struct BindingRuntimeState {
 }
 
 /// Stable scope for monotone adapter opportunity delivery.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
 pub struct ConsumedOpportunityKey {
     /// Binding consuming the adapter opportunities.
     pub binding: FaultObjectId,
@@ -59,7 +63,8 @@ pub struct ConsumedOpportunityKey {
 }
 
 /// Last accepted opportunity identity in one stable scope.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConsumedOpportunityState {
     /// Monotone adapter-owned sequence.
     pub sequence: u64,
@@ -72,7 +77,10 @@ pub struct ConsumedOpportunityState {
 }
 
 /// Last committed global scheduler boundary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
 pub struct FaultSchedulerCursor {
     /// Global virtual time in nanoseconds.
     pub virtual_nanos: u64,
@@ -96,7 +104,8 @@ pub struct DynamicMembershipTransition {
 }
 
 /// Last accepted state of one dynamic selector.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DynamicMembershipState {
     /// Authored dynamic path identity.
     pub path: FaultObjectId,
@@ -111,7 +120,8 @@ pub struct DynamicMembershipState {
 }
 
 /// Complete mutable state owned by [`FaultBindingRuntime`].
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BindingRuntimeCheckpoint {
     /// Exact runtime codec semantic version.
     pub semantic_version: u16,
@@ -194,7 +204,8 @@ pub struct ActiveContributionKey {
 }
 
 /// One active typed effect contribution.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ActiveEffectContribution {
     /// Typed validated request.
     pub request: Arc<EffectRequest>,
@@ -207,7 +218,8 @@ pub struct ActiveEffectContribution {
 }
 
 /// Canonical active-contribution table.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ActiveContributionTable {
     entries: BTreeMap<ActiveContributionKey, ActiveEffectContribution>,
 }
@@ -399,7 +411,9 @@ impl FaultCapabilityManifest {
 }
 
 /// Identity of one finite search decision.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct SearchChoiceId(ContentHash);
 
 impl SearchChoiceId {
@@ -434,7 +448,8 @@ impl SearchChoiceId {
 }
 
 /// Concrete explorer result retained for ordinary locked replay.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SearchOverride {
     /// Chosen zero-based candidate index.
     pub candidate_index: u32,
@@ -756,7 +771,8 @@ impl ResolvedEffectTrace {
 }
 
 /// Canonical adapter-owned checkpoint payload.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AdapterCheckpointState {
     /// Exact adapter state semantic version.
     pub semantic_version: u16,
@@ -810,7 +826,8 @@ impl AdapterCheckpointState {
 }
 
 /// Complete mutable state required by a fat fault-runtime checkpoint.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FaultRuntimeCheckpoint {
     /// Exact runtime codec semantic version.
     pub semantic_version: u16,
@@ -855,6 +872,26 @@ impl FaultRuntimeCheckpoint {
             .reserve("fat_checkpoint_bytes", 0, byte_count)
             .map_err(FaultRuntimeError::ResourceLimit)?;
         Ok(bytes)
+    }
+
+    /// Decodes one canonical evaluator checkpoint and validates it against its plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultRuntimeError`] when CBOR is malformed or noncanonical, or
+    /// when versions, identities, nested state, or resource limits are invalid.
+    pub fn from_canonical_bytes(
+        bytes: &[u8],
+        plan: &FaultSignalPlan,
+        scenario_seed: ContentHash,
+    ) -> Result<Self, FaultRuntimeError> {
+        let checkpoint: Self =
+            ciborium::de::from_reader(bytes).map_err(|_| FaultRuntimeError::CheckpointEncoding)?;
+        checkpoint.validate(plan, scenario_seed)?;
+        if checkpoint.canonical_bytes()?.as_slice() != bytes {
+            return Err(FaultRuntimeError::CheckpointEncoding);
+        }
+        Ok(checkpoint)
     }
 
     /// Returns the content identity of the complete mutable continuation.
