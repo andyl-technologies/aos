@@ -49,7 +49,6 @@
 use std::fs;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -1209,7 +1208,6 @@ pub(super) fn build_live_node(
             source,
         }
     })?;
-    prepare_vmstate_container(config, run_directory)?;
     let debug_guest_activation_listener = (config.whitebox == QemuLaunchPluginSwitch::On)
         .then(|| {
             UnixListener::bind(
@@ -1500,44 +1498,6 @@ pub(super) fn build_live_node(
         QemuLiveNodeStepGateError::node_op("synchronize primed icount", source)
     })?;
     Ok(node)
-}
-
-fn prepare_vmstate_container(
-    config: &QemuLiveNodeStepGateConfig,
-    run_directory: &Path,
-) -> Result<(), QemuLiveNodeStepGateError> {
-    let path = run_directory.join(crate::DEFAULT_VMSTATE_FILE_NAME);
-    if path
-        .try_exists()
-        .map_err(|source| QemuLiveNodeStepGateError::PrepareRunDirectory {
-            path: path.clone(),
-            source,
-        })?
-    {
-        return Ok(());
-    }
-    let image_tool = config.qemu_executable.with_file_name("qemu-img");
-    let size_mib = u64::from(config.memory_mib).saturating_add(512);
-    let output = Command::new(&image_tool)
-        .arg("create")
-        .arg("-q")
-        .arg("-f")
-        .arg("qcow2")
-        .arg(&path)
-        .arg(format!("{size_mib}M"))
-        .output()
-        .map_err(|source| QemuLiveNodeStepGateError::PrepareVmState {
-            path: path.clone(),
-            source,
-        })?;
-    if output.status.success() {
-        return Ok(());
-    }
-    Err(QemuLiveNodeStepGateError::VmStateImageTool {
-        path,
-        status: output.status.to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-    })
 }
 
 #[path = "node_step_gate/support.rs"]

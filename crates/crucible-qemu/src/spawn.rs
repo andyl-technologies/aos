@@ -7,11 +7,12 @@
 //! `PR_SET_PDEATHSIG=SIGKILL` in the child.
 
 use std::ffi::CString;
+use std::fs::{self, File};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 use thiserror::Error;
@@ -160,59 +161,45 @@ pub enum QemuSpawnError {
         /// Underlying OS error.
         source: io::Error,
     },
-}
-
-/// Spawns a validated QEMU launch command with fixed child descriptors.
-///
-/// The child receives the plugin control socket at fd 3, the shared-memory memfd
-/// at fd 4, and the wake eventfd at fd 5. The host retains its own descriptor
-/// copies in the returned [`QemuSpawnHostResources`].
-///
-/// # Errors
-///
-/// Returns [`QemuSpawnError`] when descriptor creation, descriptor duplication,
-/// parent-death signal setup, or process spawning fails.
-pub fn spawn_qemu_child_with_fds(
-    command: &QemuLaunchCommand,
-    region_len: u64,
-) -> Result<QemuSpawnedChild, QemuSpawnError> {
-    spawn_qemu_child_with_fds_in_optional_directory(command, None, region_len)
+    /// The exact-VMState qcow2 container could not be created.
+    #[error("qemu-img could not create exact-VMState container {path}: {status}: {stderr}")]
+    VmStateImageTool {
+        /// Intended qcow2 container path.
+        path: PathBuf,
+        /// Process exit status rendered without host-specific structure.
+        status: String,
+        /// Trimmed qemu-img diagnostic output.
+        stderr: String,
+    },
 }
 
 /// Spawns a validated QEMU launch command in `run_directory`.
 ///
-/// Relative launch artifacts, including the QMP socket filename and root overlay
-/// image, are resolved by QEMU under this working directory without embedding
-/// volatile host paths in the launch hash material.
+/// The spawn path first creates the exact-VMState qcow2 container with the
+/// `qemu-img` adjacent to the selected QEMU executable. Relative launch
+/// artifacts, including that container, the QMP socket filename, and root
+/// overlay image, are then resolved by QEMU under this working directory
+/// without embedding volatile host paths in the launch hash material.
 ///
 /// # Errors
 ///
-/// Returns [`QemuSpawnError`] when descriptor creation, descriptor duplication,
-/// parent-death signal setup, changing the child working directory, or process
-/// spawning fails.
+/// Returns [`QemuSpawnError`] when run-directory or VMState-container
+/// preparation, descriptor creation, descriptor duplication, parent-death
+/// signal setup, changing the child working directory, or process spawning
+/// fails.
 pub fn spawn_qemu_child_with_fds_in_directory(
     command: &QemuLaunchCommand,
     run_directory: impl AsRef<Path>,
     region_len: u64,
 ) -> Result<QemuSpawnedChild, QemuSpawnError> {
-    spawn_qemu_child_with_fds_in_optional_directory(
-        command,
-        Some(run_directory.as_ref()),
-        region_len,
-    )
-}
-
-fn spawn_qemu_child_with_fds_in_optional_directory(
-    command: &QemuLaunchCommand,
-    run_directory: Option<&Path>,
-    region_len: u64,
-) -> Result<QemuSpawnedChild, QemuSpawnError> {
+    let run_directory = run_directory.as_ref();
+    prepare_vmstate_container(command, run_directory)?;
     let (mut resources, child_resources) = create_spawn_resources(region_len)?;
     resources.fault_node_hash = command.plugin_fault_node_hash();
     let child = spawn_process_with_resources(
         command.executable(),
         command.args(),
-        run_directory,
+        Some(run_directory),
         child_resources,
         &[],
         "spawn QEMU child",
@@ -221,6 +208,103 @@ fn spawn_qemu_child_with_fds_in_optional_directory(
         child: QemuNodeChild::new(child),
         resources,
     })
+}
+
+fn prepare_vmstate_container(
+    command: &QemuLaunchCommand,
+    run_directory: &Path,
+) -> Result<(), QemuSpawnError> {
+    fs::create_dir_all(run_directory).map_err(|source| QemuSpawnError::Io {
+        operation: "create QEMU run directory",
+        source,
+    })?;
+    let path = run_directory.join(crate::DEFAULT_VMSTATE_FILE_NAME);
+    match fs::metadata(&path) {
+        Ok(metadata) if metadata.is_file() => return Ok(()),
+        Ok(_) => {
+            return Err(QemuSpawnError::Io {
+                operation: "validate exact-VMState container path",
+                source: io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "exact-VMState container path is not a regular file",
+                ),
+            });
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(QemuSpawnError::Io {
+                operation: "inspect exact-VMState container",
+                source,
+            });
+        }
+    }
+
+    let staging = tempfile::Builder::new()
+        .prefix(".crucible-vmstate-")
+        .suffix(".qcow2")
+        .tempfile_in(run_directory)
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "stage exact-VMState container",
+            source,
+        })?;
+    let image_tool = Path::new(command.executable()).with_file_name("qemu-img");
+    let output = Command::new(&image_tool)
+        .arg("create")
+        .arg("-q")
+        .arg("-f")
+        .arg("qcow2")
+        .arg(staging.path())
+        .arg(format!("{}M", command.vmstate_size_mib()))
+        .output()
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "execute qemu-img for exact-VMState container",
+            source,
+        })?;
+    if !output.status.success() {
+        return Err(QemuSpawnError::VmStateImageTool {
+            path,
+            status: output.status.to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+
+    staging
+        .as_file()
+        .sync_all()
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "flush exact-VMState container",
+            source,
+        })?;
+    match staging.persist_noclobber(&path) {
+        Ok(_) => {}
+        Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => {
+            let metadata = fs::metadata(&path).map_err(|source| QemuSpawnError::Io {
+                operation: "inspect concurrently created exact-VMState container",
+                source,
+            })?;
+            if !metadata.is_file() {
+                return Err(QemuSpawnError::Io {
+                    operation: "validate concurrently created exact-VMState container",
+                    source: io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "exact-VMState container path is not a regular file",
+                    ),
+                });
+            }
+        }
+        Err(error) => {
+            return Err(QemuSpawnError::Io {
+                operation: "publish exact-VMState container",
+                source: error.error,
+            });
+        }
+    }
+    File::open(run_directory)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "flush QEMU run directory",
+            source,
+        })
 }
 
 #[derive(Debug)]

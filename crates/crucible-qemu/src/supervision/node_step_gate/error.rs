@@ -37,24 +37,6 @@ pub enum QemuLiveNodeStepGateError {
         /// Underlying copy error.
         source: std::io::Error,
     },
-    /// The dedicated VMState qcow2 container could not be created.
-    #[error("prepare VMState container {path} failed")]
-    PrepareVmState {
-        /// VMState container path.
-        path: PathBuf,
-        /// Underlying process-spawn error.
-        source: std::io::Error,
-    },
-    /// `qemu-img` rejected VMState container creation.
-    #[error("qemu-img rejected VMState container {path} creation with {status}: {stderr}")]
-    VmStateImageTool {
-        /// VMState container path.
-        path: PathBuf,
-        /// Child exit status.
-        status: String,
-        /// Bounded diagnostic emitted by `qemu-img`.
-        stderr: String,
-    },
     /// The deterministic launch profile could not be derived.
     #[error("derive deterministic launch profile failed")]
     LaunchProfile {
