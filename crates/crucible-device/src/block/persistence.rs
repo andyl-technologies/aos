@@ -16,7 +16,7 @@ pub const HARD_BLOCK_PERSISTENCE_EDGES: usize = 16_777_216;
 pub const HARD_BLOCK_PERSISTENCE_EVIDENCE: usize = 1_048_576;
 
 /// Stable identity of one atomic write fragment.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct BlockWriteFragmentId {
     /// Original guest request identity.
     pub request_id: u32,
@@ -29,7 +29,7 @@ pub struct BlockWriteFragmentId {
 }
 
 /// Closed persistence-priority transformation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockPersistenceOrdering {
     /// Uses the normal controller-sequence order.
     Preserve,
@@ -42,7 +42,7 @@ pub enum BlockPersistenceOrdering {
 }
 
 /// One resolved persistence transformation applied at fragment admission.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedBlockPersistenceTransform {
     /// Stable resolved binding-action identity.
     pub contributor: [u8; 32],
@@ -57,7 +57,7 @@ pub struct ResolvedBlockPersistenceTransform {
 }
 
 /// One checkpointed live persistence node.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockPersistenceNode {
     /// Global controller/write sequence.
     pub sequence: u64,
@@ -81,7 +81,7 @@ pub struct BlockPersistenceNode {
 }
 
 /// Before/after identity of the most recently admitted graph transformation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockPersistenceTransformationEvidence {
     /// Original guest request whose fragments were admitted.
     pub request_id: u32,
@@ -98,7 +98,7 @@ pub struct BlockPersistenceTransformationEvidence {
 }
 
 /// Complete bounded persistence DAG continuation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockPersistenceGraph {
     nodes: BTreeMap<u64, BlockPersistenceNode>,
     edge_count: usize,
@@ -696,7 +696,7 @@ impl BlockPersistenceGraph {
 }
 
 /// Canonical total-order key for one ready persistence node.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct BlockPersistenceReadyKey {
     dependency_depth: u32,
     transformed_primary: [u8; 32],

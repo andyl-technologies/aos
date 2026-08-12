@@ -17,7 +17,7 @@ pub const HARD_BLOCK_SERVICE_RULES: usize = 4_096;
 pub const HARD_BLOCK_SERVICE_JOBS: usize = 1_048_576;
 
 /// Queue selection discipline for one storage service contributor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockServiceDiscipline {
     /// Selects the earliest admitted request, then its stable sequence.
     Fifo,
@@ -28,7 +28,7 @@ pub enum BlockServiceDiscipline {
 }
 
 /// One operation class in a storage service policy.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedBlockServiceClass {
     /// Stable class identity used for canonical ordering.
     pub class: [u8; 32],
@@ -41,7 +41,7 @@ pub struct ResolvedBlockServiceClass {
 }
 
 /// Service rule sampled from one active binding at request admission.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedBlockServiceRule {
     /// Binding/action-derived contributor identity.
     pub contributor: [u8; 32],
@@ -110,7 +110,7 @@ impl ResolvedBlockServiceRule {
 }
 
 /// Stable identity and work size for one service-queued request.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockServiceJob {
     /// Adapter-owned monotone request sequence.
     pub sequence: u64,
@@ -123,7 +123,7 @@ pub struct BlockServiceJob {
 }
 
 /// Evidence emitted when one contributor finishes one request.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockServiceCompletion {
     /// Contributor whose server completed the work.
     pub contributor: [u8; 32],
@@ -139,13 +139,13 @@ pub struct BlockServiceCompletion {
     pub busy_epoch_operations: u128,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct QueuedJob {
     job: BlockServiceJob,
     class_index: Option<usize>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct ActiveJob {
     queued: QueuedJob,
     started_nanos: u64,
@@ -153,7 +153,7 @@ struct ActiveJob {
 }
 
 /// Checkpointed continuation for one service contributor.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockServiceContinuation {
     /// Immutable contributed rule.
     pub rule: ResolvedBlockServiceRule,
@@ -167,7 +167,7 @@ pub struct BlockServiceContinuation {
 }
 
 /// Canonical service state for one block device.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockServiceState {
     continuations: BTreeMap<[u8; 32], BlockServiceContinuation>,
 }

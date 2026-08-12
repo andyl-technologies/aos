@@ -61,7 +61,7 @@ pub const HARD_BLOCK_ARRAY_DIRTY_RANGES: usize = 4_194_304;
 pub const HARD_BLOCK_ARRAY_DIRTY_BYTES: u64 = 137_438_953_472;
 
 /// One checkpointed logical range absent from an array member.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockArrayDirtyRange {
     /// Stable array member ordinal.
     pub member_ordinal: u16,
@@ -76,7 +76,7 @@ pub struct BlockArrayDirtyRange {
 }
 
 /// Checkpointed array rebuild scheduling continuation.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockArrayRebuildCursor {
     /// Next stable rebuild-opportunity sequence.
     pub next_sequence: u64,
@@ -93,7 +93,7 @@ pub struct BlockArrayRebuildCursor {
 }
 
 /// One authenticated array rebuild chunk ready for host evaluation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockArrayRebuildOpportunity {
     /// Stable rebuild sequence.
     pub sequence: u64,
@@ -110,14 +110,14 @@ pub struct BlockArrayRebuildOpportunity {
 }
 
 /// Reset policy retained for requests already published under an older epoch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct BlockRetiredTransportEpoch {
     queued: BlockTransportPending,
     failure_result: BlockErrorCode,
 }
 
 /// Availability presented by the block controller.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockFaultAvailability {
     /// Reads and writes are admitted.
     Online,
@@ -130,7 +130,7 @@ pub enum BlockFaultAvailability {
 }
 
 /// Durability reached before an ordinary successful completion.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockCompletionDurability {
     /// The write may complete after controller acceptance.
     ControllerAccepted,
@@ -141,7 +141,7 @@ pub enum BlockCompletionDurability {
 }
 
 /// Guest-visible readback after a successful discard.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockDiscardSemantics {
     /// Discarded bytes deterministically read as zero.
     DeterministicZero,
@@ -152,7 +152,7 @@ pub enum BlockDiscardSemantics {
 }
 
 /// Immutable durability bounds for one block device.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockDurabilityConfig {
     /// Guest-visible device length without an active capacity effect.
     pub length_bytes: u64,
@@ -241,7 +241,7 @@ impl BlockDurabilityConfig {
 }
 
 /// One exact half-open request-relative byte span.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct BlockFaultByteSpan {
     /// First selected byte relative to the request.
     pub start: u64,
@@ -256,7 +256,7 @@ impl BlockFaultByteSpan {
 }
 
 /// Exact data returned instead of the ordinary read result.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockFaultReadTransform {
     /// XORs a nonempty mask over one request-relative range.
     Xor {
@@ -273,7 +273,7 @@ pub enum BlockFaultReadTransform {
 }
 
 /// Exact physical treatment of one admitted write.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockFaultWriteDisposition {
     /// Applies every byte at the addressed range.
     Apply,
@@ -299,7 +299,7 @@ pub enum BlockFaultWriteDisposition {
 }
 
 /// Resolved device destination for a misdirected write.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockFaultMisdirectionDestination {
     /// Redirects within the attached source device.
     AttachedDevice,
@@ -308,7 +308,7 @@ pub enum BlockFaultMisdirectionDestination {
 }
 
 /// Exact cross-device durability acknowledgement required before source delivery.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockExternalDurabilityDependency {
     /// Content identity of the authoritative destination block device.
     pub destination_device: [u8; 32],
@@ -319,7 +319,7 @@ pub struct BlockExternalDurabilityDependency {
 }
 
 /// Exact flush result and internal durability treatment.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockFaultFlushDisposition {
     /// Persists the captured cache frontier before completing.
     Honest,
@@ -332,7 +332,7 @@ pub enum BlockFaultFlushDisposition {
 }
 
 /// Deterministic volatile-cache victim order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockFaultCacheEviction {
     /// Selects the lowest admission sequence.
     Fifo,
@@ -343,7 +343,7 @@ pub enum BlockFaultCacheEviction {
 }
 
 /// Treatment of a dirty entry selected for cache eviction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockFaultDirtyEviction {
     /// Persists the selected entry before reclaiming it.
     Persist,
@@ -360,7 +360,7 @@ enum BlockWriteOutcome {
 }
 
 /// Fully resolved volatile-cache behavior for one admitted write.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedBlockCachePolicy {
     /// Effective byte capacity, bounded by the device contract.
     pub capacity_bytes: u64,
@@ -373,7 +373,7 @@ pub struct ResolvedBlockCachePolicy {
 }
 
 /// Event that resolves a retained completion.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockRetainedRelease {
     /// Modeled recovery occurred before timeout.
     Recovery {
@@ -387,7 +387,7 @@ pub enum BlockRetainedRelease {
 }
 
 /// Result of applying one eligible retained-completion release.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockRetainedReleaseOutcome {
     /// Recovery started required persistence and the completion remains retained.
     PendingPersistence,
@@ -396,7 +396,7 @@ pub enum BlockRetainedReleaseOutcome {
 }
 
 /// One fully resolved guest-transport treatment of an additional completion.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ResolvedBlockDuplicateCompletion {
     /// Sends the original response; the guest ignores it after the first.
     Ignore {
@@ -420,7 +420,7 @@ pub enum ResolvedBlockDuplicateCompletion {
 }
 
 /// Guest transport policy expanded into one or more duplicate completions.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockDuplicatePolicy {
     /// The guest transport ignores every completion after the primary.
     Ignore,
@@ -431,7 +431,7 @@ pub enum BlockDuplicatePolicy {
 }
 
 /// Treatment of requests arriving while a controller transition is active.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockTransitionUnadmitted {
     /// Rejects the request with the transition's typed failure.
     Reject,
@@ -440,7 +440,7 @@ pub enum BlockTransitionUnadmitted {
 }
 
 /// Treatment of queued or executing requests at the transition boundary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockTransitionPending {
     /// Completes the request with the transition's typed failure.
     Fail,
@@ -451,7 +451,7 @@ pub enum BlockTransitionPending {
 }
 
 /// Treatment of resolved requests at the transition boundary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockTransitionResolved {
     /// Preserves the resolved result.
     Complete,
@@ -464,7 +464,7 @@ pub enum BlockTransitionResolved {
 }
 
 /// Treatment of completed but guest-undelivered requests.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockTransitionUndelivered {
     /// Preserves and later delivers the completion.
     Complete,
@@ -479,7 +479,7 @@ pub enum BlockTransitionUndelivered {
 }
 
 /// Retention of volatile device state across a controller transition.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockTransitionState {
     /// Preserves the complete state.
     Preserve,
@@ -488,7 +488,7 @@ pub enum BlockTransitionState {
 }
 
 /// Namespace and path discovery behavior after recovery.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockTransitionTopology {
     /// Preserves the current topology generation.
     Preserve,
@@ -497,7 +497,7 @@ pub enum BlockTransitionTopology {
 }
 
 /// Fully resolved live block-controller reset policy.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedBlockControllerTransition {
     /// Typed result used by every stage configured to fail.
     pub failure_result: BlockFaultResult,
@@ -601,7 +601,7 @@ impl ResolvedBlockDuplicateCompletion {
 }
 
 /// One fully resolved directive consumed by exactly one block request.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedBlockFaultDirective {
     /// Transport generation containing the exact request.
     pub request_epoch: u64,
@@ -663,7 +663,7 @@ pub struct ResolvedBlockFaultDirective {
 }
 
 /// Stable identity of one write fragment ready to enter physical media.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockPersistenceOpportunity {
     /// Global durability sequence.
     pub sequence: u64,
@@ -686,7 +686,7 @@ pub struct BlockPersistenceOpportunity {
 }
 
 /// Exact physical-media policy resolved for one persistence opportunity.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedBlockPersistenceMediaDirective {
     /// Opportunity identity authenticated before mutation.
     pub opportunity: BlockPersistenceOpportunity,
@@ -695,7 +695,7 @@ pub struct ResolvedBlockPersistenceMediaDirective {
 }
 
 /// Replay evidence for one completed physical-media persistence opportunity.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockPersistenceMediaOutcome {
     /// Opportunity identity that was consumed.
     pub opportunity: BlockPersistenceOpportunity,
@@ -710,7 +710,7 @@ pub struct BlockPersistenceMediaOutcome {
 }
 
 /// One storage completion in the device's exact causal generation order.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockStorageOutcome {
     /// One contributor completed integrated service before subsequent effects.
     Service(BlockServiceCompletion),
@@ -718,7 +718,7 @@ pub enum BlockStorageOutcome {
     Persistence(BlockPersistenceMediaOutcome),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum BlockStorageOutcomeRef {
     Service(usize),
     Persistence(usize),
@@ -1128,7 +1128,7 @@ impl ResolvedBlockFaultDirective {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct BlockServicePendingRequest {
     request: BlockRequest,
     request_icount: u64,
@@ -1138,7 +1138,7 @@ struct BlockServicePendingRequest {
 }
 
 /// Exact request-stage opportunity exposed after integrated queue service.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockExecutionOpportunity {
     /// Adapter-owned request sequence shared by every request phase.
     pub request_sequence: u64,
@@ -1158,7 +1158,7 @@ pub struct BlockExecutionOpportunity {
 }
 
 /// Exact resolve/persist decision authenticated to one live request opportunity.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedBlockExecutionDirective {
     /// Complete opportunity identity observed before signal evaluation.
     pub opportunity: BlockExecutionOpportunity,
@@ -1166,14 +1166,14 @@ pub struct ResolvedBlockExecutionDirective {
     pub directive: ResolvedBlockFaultDirective,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct BlockExecutionPendingRequest {
     opportunity: BlockExecutionOpportunity,
     execution: Option<ResolvedBlockFaultDirective>,
 }
 
 /// Exact mutation-frontier opportunity for one resolved storage request.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockRequestPersistenceOpportunity {
     /// Adapter-owned request sequence shared by every request phase.
     pub request_sequence: u64,
@@ -1190,7 +1190,7 @@ pub struct BlockRequestPersistenceOpportunity {
 }
 
 /// Exact persist decision authenticated to one live mutation opportunity.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedBlockRequestPersistenceDirective {
     /// Complete opportunity identity observed before signal evaluation.
     pub opportunity: BlockRequestPersistenceOpportunity,
@@ -1198,7 +1198,7 @@ pub struct ResolvedBlockRequestPersistenceDirective {
     pub directive: ResolvedBlockFaultDirective,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct BlockRequestPersistencePending {
     opportunity: BlockRequestPersistenceOpportunity,
     persistence: Option<ResolvedBlockFaultDirective>,
@@ -1206,7 +1206,7 @@ struct BlockRequestPersistencePending {
 
 /// Exact guest-completion opportunity exposed only after request mutation and
 /// every mandatory durability frontier have completed.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockDeliveryOpportunity {
     /// Adapter-owned request sequence shared by every request phase.
     pub request_sequence: u64,
@@ -1227,7 +1227,7 @@ pub struct BlockDeliveryOpportunity {
 }
 
 /// Exact delivery decision authenticated to one computed completion.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedBlockDeliveryDirective {
     /// Complete opportunity identity observed before signal evaluation.
     pub opportunity: BlockDeliveryOpportunity,
@@ -1235,14 +1235,14 @@ pub struct ResolvedBlockDeliveryDirective {
     pub directive: ResolvedBlockFaultDirective,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct BlockDeliveryPending {
     opportunity: BlockDeliveryOpportunity,
     delivery: Option<ResolvedBlockFaultDirective>,
 }
 
 /// One request released by integrated storage service and ready for scheduling.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct BlockDeferredResponse {
     /// Exact coordinate at which all service contributors released the request.
     pub finished_nanos: u64,
@@ -1255,7 +1255,7 @@ pub(super) struct BlockDeferredResponse {
 }
 
 /// One admitted volatile write fragment.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockVolatileEntry {
     /// Monotone cache admission sequence.
     pub sequence: u64,
@@ -1274,7 +1274,7 @@ pub struct BlockVolatileEntry {
 }
 
 /// One write accepted by the controller but not yet admitted to media cache.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockControllerEntry {
     /// Monotone write sequence shared with cache and durable frontiers.
     pub sequence: u64,
@@ -1289,7 +1289,7 @@ pub struct BlockControllerEntry {
 }
 
 /// Immutable identity of one logical operation entering physical media.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockMediaOperationIdentity {
     /// Write or discard operation interpreted at persistence.
     pub operation: BlockOp,
@@ -1304,7 +1304,7 @@ pub struct BlockMediaOperationIdentity {
 }
 
 /// One retained prior range version.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockRetainedVersion {
     /// Monotone version identity.
     pub sequence: u64,
@@ -1315,7 +1315,7 @@ pub struct BlockRetainedVersion {
 }
 
 /// One protocol-valid completion retained by a stall until recovery or timeout.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockRetainedCompletion {
     /// Original epoch-scoped request identity.
     pub identity: BlockRequestIdentity,
@@ -1340,7 +1340,7 @@ pub struct BlockRetainedCompletion {
 }
 
 /// Checkpointed durability, cache, version, and directive state.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockFaultState {
     config: BlockDurabilityConfig,
     icount_shift: u8,
@@ -1387,6 +1387,79 @@ pub struct BlockFaultState {
     retained_completions: BTreeMap<BlockRequestIdentity, BlockRetainedCompletion>,
     array_dirty_ranges: BTreeMap<(u16, u64), BlockArrayDirtyRange>,
     array_rebuild: BlockArrayRebuildCursor,
+}
+
+/// Maximum canonical byte length of one persisted block-fault continuation.
+pub const MAX_BLOCK_FAULT_STATE_BYTES: usize = 536_870_912;
+
+const BLOCK_FAULT_STATE_MAGIC: &[u8] = b"crucible.block-fault-state.v1\0";
+
+impl BlockFaultState {
+    /// Encodes every storage-fault continuation field in its canonical envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlockFaultStateCodecError`] if serialization fails or the
+    /// resulting state exceeds the compiled checkpoint ceiling.
+    pub fn to_canonical_bytes(&self) -> Result<Vec<u8>, BlockFaultStateCodecError> {
+        let mut payload = Vec::new();
+        ciborium::ser::into_writer(self, &mut payload)
+            .map_err(|_| BlockFaultStateCodecError::Malformed)?;
+        if payload.len() > MAX_BLOCK_FAULT_STATE_BYTES {
+            return Err(BlockFaultStateCodecError::Limit);
+        }
+        let mut bytes = Vec::with_capacity(BLOCK_FAULT_STATE_MAGIC.len() + payload.len());
+        bytes.extend_from_slice(BLOCK_FAULT_STATE_MAGIC);
+        bytes.extend_from_slice(&payload);
+        Ok(bytes)
+    }
+
+    /// Decodes and deeply validates a complete block-fault continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlockFaultStateCodecError`] for unsupported, malformed,
+    /// over-limit, noncanonical, or restore-invalid state.
+    pub fn from_canonical_bytes(
+        bytes: &[u8],
+        device_length: u64,
+    ) -> Result<Self, BlockFaultStateCodecError> {
+        let payload = bytes
+            .strip_prefix(BLOCK_FAULT_STATE_MAGIC)
+            .ok_or(BlockFaultStateCodecError::Version)?;
+        if payload.len() > MAX_BLOCK_FAULT_STATE_BYTES {
+            return Err(BlockFaultStateCodecError::Limit);
+        }
+        let state: Self = ciborium::de::from_reader(payload)
+            .map_err(|_| BlockFaultStateCodecError::Malformed)?;
+        state
+            .validate_restore(device_length)
+            .map_err(|_| BlockFaultStateCodecError::Invalid)?;
+        if state.to_canonical_bytes()?.as_slice() != bytes {
+            return Err(BlockFaultStateCodecError::Noncanonical);
+        }
+        Ok(state)
+    }
+}
+
+/// Failure to encode or authenticate persisted block-fault state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum BlockFaultStateCodecError {
+    /// The envelope version is unsupported.
+    #[error("unsupported block-fault state version")]
+    Version,
+    /// The state could not be serialized or decoded.
+    #[error("malformed block-fault state")]
+    Malformed,
+    /// The state exceeds its compiled resource ceiling.
+    #[error("block-fault state exceeds its size limit")]
+    Limit,
+    /// The state violates live restore invariants.
+    #[error("block-fault state violates restore invariants")]
+    Invalid,
+    /// The accepted representation is not byte-canonical.
+    #[error("noncanonical block-fault state")]
+    Noncanonical,
 }
 
 fn transport_pending_response(

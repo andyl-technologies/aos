@@ -83,7 +83,8 @@ pub mod subnode;
 pub use backpressure::{BackpressureState, BoundedQueue, PushError};
 pub use block::{
     BLOCK_ABI_VERSION, BaseImage, BlockCodecError, BlockDevice, BlockErrorCode, BlockLatency,
-    BlockOp, BlockRequest, BlockRequestIdentity, BlockResponse, BlockSnapshot, BlockStatus,
+    BlockOp, BlockRequest, BlockRequestIdentity, BlockResponse, BlockSnapshot,
+    BlockSnapshotCodecError, BlockStatus,
     BlockTransportPending, BlockTransportRequestIds, BlockTransportReset, BlockTransportResolved,
     BlockTransportUnadmitted, BlockTransportUndelivered, CowOverlay, OverlayDelta, PAGE_SIZE,
     install_cross_device_misdirected_persistence,

@@ -2465,8 +2465,10 @@ name = "crucible-device"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "ciborium",
  "crucible-shmem",
  "crucible-sim",
+ "serde",
  "thiserror 2.0.18",
 ]
 
