@@ -61,6 +61,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crucible::ContentHash;
+use crucible_device::block::BlockFaultWriteDisposition;
 use crucible_device::block::{
     BlockDeliveryOpportunity, BlockDurabilityConfig, BlockExecutionOpportunity,
     BlockExternalDurabilityDependency, BlockFaultState, BlockPersistenceMediaOutcome,
@@ -71,7 +72,6 @@ use crucible_device::block::{
     ResolvedBlockPersistenceMediaDirective, ResolvedBlockRequestPersistenceDirective,
     install_cross_device_misdirected_persistence,
 };
-use crucible_device::block::BlockFaultWriteDisposition;
 use crucible_device::{
     BaseImage, BlockDevice, BlockLatency, BlockRequest, BlockRequestIdentity, DeviceError, IoCore,
     Request,
@@ -345,11 +345,14 @@ impl QemuSharedBlockDevice {
             || destinations
                 .iter()
                 .any(|(id, handle, _, _)| *id == source_id || self.ptr_eq(handle))
-            || destinations.iter().enumerate().any(|(index, (_, handle, _, _))| {
-                destinations[index + 1..]
-                    .iter()
-                    .any(|(_, other, _, _)| handle.ptr_eq(other))
-            })
+            || destinations
+                .iter()
+                .enumerate()
+                .any(|(index, (_, handle, _, _))| {
+                    destinations[index + 1..]
+                        .iter()
+                        .any(|(_, other, _, _)| handle.ptr_eq(other))
+                })
         {
             return Err(QemuLiveBlockIoServicerError::CrossDeviceIdentityMismatch);
         }
@@ -365,7 +368,10 @@ impl QemuSharedBlockDevice {
             .iter()
             .map(|(_, handle)| handle.lock())
             .collect::<Result<Vec<_>, _>>()?;
-        let prior = devices.iter().map(|device| (*device).clone()).collect::<Vec<_>>();
+        let prior = devices
+            .iter()
+            .map(|device| (*device).clone())
+            .collect::<Vec<_>>();
         let mut staged = prior.clone();
         let prior_deadlines = prior
             .iter()
@@ -2323,6 +2329,62 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn multi_device_write_commits_every_member_and_orders_dependencies() {
+        fn staged_persistence(
+            source: &QemuSharedBlockDevice,
+            now_nanos: u64,
+        ) -> ResolvedBlockRequestPersistenceDirective {
+            let request = BlockRequest::write(31, 0, vec![0xa5; 512]);
+            let mut device = source
+                .lock()
+                .unwrap_or_else(|error| panic!("lock source: {error}"));
+            let mut config = BlockDurabilityConfig::write_through(4096);
+            config.atomic_write_bytes = 512;
+            config.volatile_cache_bytes = 4096;
+            config.cache_entries = 16;
+            config.retained_versions = 16;
+            config.completion_durability =
+                crucible_device::block::BlockCompletionDurability::VolatileCacheAccepted;
+            device
+                .configure_storage_faults(config, true)
+                .unwrap_or_else(|error| panic!("configure source: {error}"));
+            device
+                .require_storage_execution_opportunities()
+                .unwrap_or_else(|error| panic!("require source opportunities: {error}"));
+            let mut admission = ResolvedBlockFaultDirective::fault_free(&request, 4096);
+            admission.execution_nanos = now_nanos;
+            admission.persistence_admitted_nanos = now_nanos;
+            device
+                .install_storage_fault_directive(request.identity(), admission)
+                .unwrap_or_else(|error| panic!("install admission: {error}"));
+            device
+                .submit(now_nanos, &request)
+                .unwrap_or_else(|error| panic!("submit source write: {error}"));
+            let opportunity = device
+                .next_storage_execution_opportunity(now_nanos)
+                .unwrap_or_else(|| panic!("execution opportunity is present"));
+            let mut execution = opportunity.admission.clone();
+            execution.execution_nanos = opportunity.ready_nanos;
+            execution.persistence_admitted_nanos = opportunity.ready_nanos;
+            device
+                .install_storage_execution_directive(ResolvedBlockExecutionDirective {
+                    opportunity,
+                    directive: execution,
+                })
+                .unwrap_or_else(|error| panic!("install execution: {error}"));
+            device
+                .advance_to(now_nanos)
+                .unwrap_or_else(|error| panic!("advance source: {error}"));
+            let opportunity = device
+                .next_storage_request_persistence_opportunity(now_nanos)
+                .unwrap_or_else(|| panic!("persistence opportunity is present"));
+            let mut directive = opportunity.resolved.clone();
+            directive.write_disposition = BlockFaultWriteDisposition::Apply;
+            ResolvedBlockRequestPersistenceDirective {
+                opportunity,
+                directive,
+            }
+        }
+
         let (_source_file, _source_region_len, source_servicer) = checkpoint_fixture();
         let (_first_file, _first_region_len, first_servicer) = checkpoint_fixture();
         let (_second_file, _second_region_len, second_servicer) = checkpoint_fixture();
@@ -2353,8 +2415,18 @@ mod tests {
             .install_multi_device_persistence(
                 ContentHash { bytes: [1; 32] },
                 &[
-                    (ContentHash { bytes: [2; 32] }, first.clone(), 0, vec![0xa5; 512]),
-                    (ContentHash { bytes: [3; 32] }, second.clone(), 512, vec![0x5a; 512]),
+                    (
+                        ContentHash { bytes: [2; 32] },
+                        first.clone(),
+                        0,
+                        vec![0xa5; 512],
+                    ),
+                    (
+                        ContentHash { bytes: [3; 32] },
+                        second.clone(),
+                        512,
+                        vec![0x5a; 512],
+                    ),
                 ],
                 directive,
             )

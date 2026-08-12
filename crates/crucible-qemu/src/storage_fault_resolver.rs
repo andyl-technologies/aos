@@ -12,16 +12,16 @@ use crucible::model::{
     FaultPhase, MappedEffectParameter, OpportunityPayload, ResolvedBindingAction,
     ResolvedFaultTarget, ResolvedMappingOutput, SignalValue, StorageAvailabilityState,
     StorageEffectSpecification, StorageFlushKind, StorageMediaState, StoragePolicyArrayConsistency,
-    StoragePolicyArraySelection, StoragePolicyArtifactKind,
-    StoragePolicyCacheEviction, StoragePolicyDirtyEviction, StoragePolicyDuplicateCompletion,
-    StoragePolicyPersistenceOrdering, StoragePolicyQueueDiscipline, StoragePolicyRebuild,
-    StoragePolicyServiceClass,
+    StoragePolicyArraySelection, StoragePolicyArtifactKind, StoragePolicyCacheEviction,
+    StoragePolicyDirtyEviction, StoragePolicyDuplicateCompletion, StoragePolicyPersistenceOrdering,
+    StoragePolicyQueueDiscipline, StoragePolicyRebuild, StoragePolicyServiceClass,
     StoragePolicyTransitionPendingOperation, StoragePolicyTransitionRequestIds,
     StoragePolicyTransitionResolvedOperation, StoragePolicyTransitionState,
     StoragePolicyTransitionTopology, StoragePolicyTransitionUnadmitted,
     StoragePolicyTransitionUndeliveredOperation, StoragePolicyTypedResult, StorageReadMutation,
     StorageSelection, StorageVolatileCacheLossKind, StorageVolatileCacheLossSelector,
     StorageWriteDispositionKind, World, WorldCompletionDurability, WorldDiscardSemantics,
+    WorldStorageArrayLayout,
 };
 
 /// Scenario-owned entropy used only for keyed storage adapter choices.
@@ -73,6 +73,8 @@ pub struct ResolvedStorageArrayPolicy {
     pub write_quorum: u16,
     /// Positive stripe chunk size.
     pub chunk_bytes: u64,
+    /// Closed logical layout family.
+    pub layout: WorldStorageArrayLayout,
     /// Canonically member-ID-ordered backing members.
     pub members: Vec<ResolvedStorageArrayMember>,
     /// Number of online access paths.
@@ -249,6 +251,7 @@ pub fn resolve_storage_array_policy(
         read_quorum: array.read_quorum,
         write_quorum: array.write_quorum,
         chunk_bytes: array.chunk_bytes,
+        layout: array.layout,
         members,
         online_paths,
         selection,
