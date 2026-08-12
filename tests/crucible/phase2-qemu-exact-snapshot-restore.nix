@@ -5,11 +5,7 @@
   taskIds ? ["T-QEMU-5"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   idleInitramfs = import ./phase2-qemu-live-plugin-quantum-guest.nix {inherit pkgs;};
   blockInitramfs = import ./phase2-qemu-live-block-io-guest.nix {inherit pkgs;};
   qemuCheckpoint = builtins.readFile ../../crates/crucible-qemu/src/checkpoint.rs;

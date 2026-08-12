@@ -139,8 +139,8 @@
     ++ lib.optionals (manifest.crucible.cargoDeps.hash != crucibleCargoDepsHash) [
       "release manifest cargo deps hash ${manifest.crucible.cargoDeps.hash} does not match package hash ${crucibleCargoDepsHash}"
     ]
-    ++ lib.optionals (manifest.crucible.cargoDeps.kind != "fetchCargoDeps") [
-      "release manifest cargo deps kind is not fetchCargoDeps"
+    ++ lib.optionals (manifest.crucible.cargoDeps.kind != "fetchCargoVendor") [
+      "release manifest cargo deps kind is not fetchCargoVendor"
     ]
     ++ lib.optionals (!manifest.crucible.cargoDeps.vendored) [
       "release manifest does not mark cargo deps as vendored"
@@ -396,7 +396,7 @@
     ++ failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginPackageNix [
       {
         label = "plugin cargo deps vendored";
-        needle = "cargoDeps = fetchCargoDeps";
+        needle = "cargoDeps = fetchCargoVendor";
       }
       {
         label = "plugin cargo deps source root";
@@ -611,7 +611,7 @@ in
             printf 'shmem_abi=%s\n' "$SHMEM_ABI"
             printf 'guest_host_protocol_abi=%s\n' "$GUEST_HOST_PROTOCOL_ABI"
             printf 'rpc_abi=%s\n' "$RPC_ABI"
-            printf '%s\n' 'cargo_deps=fetchCargoDeps'
+            printf '%s\n' 'cargo_deps=fetchCargoVendor'
             printf '%s\n' 'cargo_deps_vendored=true'
             printf '%s\n' 'timestamp_policy=no-wall-clock-timestamps'
             printf '%s\n' 'host_path_policy=no-host-paths'

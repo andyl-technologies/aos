@@ -5,11 +5,7 @@
   taskIds ? ["BOUND-1" "BOUND-2" "BOUND-3" "BOUND-4" "BOUND-5" "BOUND-6" "BOUND-7" "BOUND-8" "BOUND-9" "BOUND-10" "BOUND-11" "BOUND-12"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 in
   pkgs.mkDerivation {
     pname = "crucible-phase1-license-boundary";

@@ -5,11 +5,7 @@
   taskIds ? ["T-IO-2" "T-IO-5" "T-PAT-7"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   patternDoc = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
   ioDoc = builtins.readFile ../../docs/rfcs/0010-crucible/15-io-subnodes.md;

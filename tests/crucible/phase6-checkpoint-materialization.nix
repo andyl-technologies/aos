@@ -6,11 +6,7 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
-  };
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   graphSource = import ./_crucible-model-source.nix {inherit lib;};
   gateTest = builtins.readFile ../../crates/crucible/tests/gate_checkpoint_materialization.rs;
   defaultChecks = builtins.readFile ./default.nix;

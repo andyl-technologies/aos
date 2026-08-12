@@ -196,41 +196,41 @@
     failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginNix [
       {
         label = "vendored cargo dependencies";
-        needle = "cargoDeps = fetchCargoDeps";
+        needle = "cargoDeps = fetchCargoVendor";
       }
       {
         label = "inline cargo dependency hash";
-        needle = "hash = \"sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=\";";
+        needle = "hash = \"sha256-CHxtW0lBAN3Ux2p9SGkWlcc9iHhCUiWWDCEmrRWb76I=\";";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible/crucible.nix" crucibleNix [
       {
         label = "vendored cargo dependencies";
-        needle = "cargoDeps = fetchCargoDeps";
+        needle = "cargoDeps = fetchCargoVendor";
       }
       {
         label = "inline cargo dependency hash";
-        needle = "cargoDepsHash = \"sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=\";";
+        needle = "cargoDepsHash = \"sha256-CHxtW0lBAN3Ux2p9SGkWlcc9iHhCUiWWDCEmrRWb76I=\";";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible-guest.nix" guestNix [
       {
         label = "vendored cargo dependencies";
-        needle = "cargoDeps = fetchCargoDeps";
+        needle = "cargoDeps = fetchCargoVendor";
       }
       {
         label = "inline cargo dependency hash";
-        needle = "hash = \"sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=\";";
+        needle = "hash = \"sha256-CHxtW0lBAN3Ux2p9SGkWlcc9iHhCUiWWDCEmrRWb76I=\";";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible-fleet-store.nix" fleetStoreNix [
       {
         label = "vendored cargo dependencies";
-        needle = "cargoDeps = fetchCargoDeps";
+        needle = "cargoDeps = fetchCargoVendor";
       }
       {
         label = "inline cargo dependency hash";
-        needle = "cargoDepsHash = \"sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=\";";
+        needle = "cargoDepsHash = \"sha256-CHxtW0lBAN3Ux2p9SGkWlcc9iHhCUiWWDCEmrRWb76I=\";";
       }
     ];
 
@@ -326,7 +326,7 @@ in
             patched_qemu_sim_capability=qemu-crucible
             reference_qemu_patches_applied=false
             reference_qemu_sim_capability=none
-            cargo_deps=fetchCargoDeps
+            cargo_deps=fetchCargoVendor
             package_structure_checked=true
             dependency_classification_checked=true
             nixpkgs_dependency=false
