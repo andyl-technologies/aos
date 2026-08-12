@@ -381,7 +381,7 @@ pub struct ProductionVmLifecycleLoop {
     scenario: ScenarioDef,
     source: ScenarioDefForm,
     config: ProductionVmLifecycleConfig,
-    checkpoint_targets: BTreeMap<ContentHash, ProductionVmExactCheckpointSet>,
+    checkpoint_targets: BTreeMap<ContentHash, ContentHash>,
     recorded_controls: Vec<ProductionVmRecordedControl>,
     debug_backend_paths: BTreeMap<NodeId, PathBuf>,
     debug_gateway: Option<DebugGatewayProcess>,
@@ -832,6 +832,11 @@ pub fn build_production_vm_lifecycle_loop(
             _ => vm.cmdline.clone(),
         };
         let whitebox = production_whitebox_switch(vm.white_box);
+        let generation = restore_checkpoint
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.node_generations.get(&vm.id))
+            .copied()
+            .unwrap_or(1);
         let qemu_executable = production_qemu_executable(&config.executable, vm.arch);
         let mut launch = ProductionLiveNodeStepGateConfig::new_with_root_image(
             qemu_executable,
@@ -850,7 +855,8 @@ pub fn build_production_vm_lifecycle_loop(
         .with_queue_capacity(PRODUCTION_QUEUE_CAPACITY)
         .with_completion_timeout(config.completion_timeout)
         .with_console_capture()
-        .with_second_run_host_load(false);
+        .with_second_run_host_load(false)
+        .with_process_generation(generation);
         if let Some(capabilities) = source
             .world()
             .fault_topology()
@@ -939,11 +945,6 @@ pub fn build_production_vm_lifecycle_loop(
         launch_configs.insert(vm.id.clone(), launch.clone());
         node_indexes.insert(vm.id.clone(), index);
         node_run_directories.insert(vm.id.clone(), node_directory.clone());
-        let generation = restore_checkpoint
-            .as_ref()
-            .and_then(|checkpoint| checkpoint.node_generations.get(&vm.id))
-            .copied()
-            .unwrap_or(1);
         let service_state = restored_service_state.unwrap_or(ProductionNodeServiceState::Running);
         node_generations.insert(vm.id.clone(), generation);
         node_service_states.insert(vm.id.clone(), service_state);
@@ -1259,6 +1260,12 @@ pub fn build_production_vm_lifecycle_loop(
     }
 
     let committed_frontier = scheduler.frontier();
+    let active_branch = if restore_checkpoint.is_some() && scheduler.branch_frontier_cap().is_none()
+    {
+        None
+    } else {
+        config.branch.clone()
+    };
     let inner = if restore_checkpoint.is_some() {
         BackendQuantumLoop::from_restored_network_state(
             scheduler,
@@ -1288,7 +1295,7 @@ pub fn build_production_vm_lifecycle_loop(
         assertion_oracle: BlackBoxHostOracle,
         terminal_verdict: None,
         initial_lifecycle_observations_pending: restore_checkpoint.is_none(),
-        branch: config.branch.clone(),
+        branch: active_branch,
         launch_configs,
         block_bindings,
         ninep_bindings,

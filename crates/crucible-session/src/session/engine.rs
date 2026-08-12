@@ -1011,12 +1011,10 @@ impl<L> Engine<L> {
         }
         scheduler_controls.extend(planned_controls);
         if !violations.is_empty() {
-            self.shutdown_quantum_loop()?;
             self.pending_control.clear();
             self.active_step = None;
             self.enter_stopped(TerminalCause::Failed(violations))?;
         } else if passed {
-            self.shutdown_quantum_loop()?;
             self.pending_control.clear();
             self.active_step = None;
             self.enter_stopped(TerminalCause::Passed)?;
@@ -1308,7 +1306,6 @@ impl<L: QuantumLoop> Engine<L> {
                 };
             }
             SessionCommandKind::Stop => {
-                self.shutdown_quantum_loop()?;
                 self.pending_control.clear();
                 self.active_step = None;
                 self.enter_stopped(TerminalCause::OperatorStop)?;
@@ -1487,7 +1484,6 @@ impl<L: QuantumLoop> Engine<L> {
                 if matches!(self.state, EngineState::Stopped { .. }) {
                     Err(self.invalid_transition(command.clone()))
                 } else {
-                    self.shutdown_quantum_loop()?;
                     if matches!(self.state, EngineState::Running) {
                         self.record_boundary_control(&command, None);
                     }
@@ -1816,7 +1812,6 @@ impl<L: QuantumLoop> Engine<L> {
             self.active_step = None;
         }
         if let Some(verdict) = self.quantum_loop.take_terminal_verdict() {
-            self.shutdown_quantum_loop()?;
             self.pending_control.clear();
             self.active_step = None;
             match verdict {
@@ -1839,7 +1834,6 @@ impl<L: QuantumLoop> Engine<L> {
                 .as_ref()
                 .is_some_and(SchedulerQuiescence::is_quiescent)
         {
-            self.shutdown_quantum_loop()?;
             self.pending_control.clear();
             self.enter_stopped(TerminalCause::Passed)?;
         }

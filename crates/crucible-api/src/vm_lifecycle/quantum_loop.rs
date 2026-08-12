@@ -1694,7 +1694,7 @@ impl ProductionVmLifecycleLoop {
                 let checkpoint_set_identity = checkpoint_set.identity;
                 let replaced = self
                     .checkpoint_targets
-                    .insert(configuration.id(), checkpoint_set);
+                    .insert(configuration.id(), checkpoint_set_identity);
                 debug_assert!(replaced.is_none());
                 Ok(checkpoint_set_identity)
             }

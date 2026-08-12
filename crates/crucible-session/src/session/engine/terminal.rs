@@ -21,7 +21,6 @@ impl<L> Engine<L> {
     where
         L: QuantumLoop,
     {
-        self.shutdown_quantum_loop()?;
         self.pending_control.clear();
         self.active_step = None;
         self.enter_stopped(TerminalCause::BudgetExhausted)
@@ -72,7 +71,11 @@ impl<L> Engine<L> {
             TerminalCause::BackendCrash(detail) => Outcome::Crashed { detail },
             TerminalCause::OperatorStop => Outcome::Stopped,
         };
+        // A production checkpoint needs live, quiesced QEMU processes. Capture
+        // the resumable boundary before teardown; shutdown observations belong
+        // to the terminal session record, not to the resumable checkpoint.
         let checkpoint = self.save_current_checkpoint()?;
+        self.shutdown_quantum_loop()?;
         self.terminal_savepoint = Some(checkpoint);
         self.debug_attach = None;
         self.debug_branch_required = false;

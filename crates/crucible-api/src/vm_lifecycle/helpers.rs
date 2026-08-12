@@ -65,6 +65,11 @@ pub(super) fn production_app_random_checkpoint_config(
     branch: Option<&ProductionVmBranchConfig>,
     node: &NodeId,
 ) -> Result<ProductionAppRandomConfig, SchedulerError> {
+    let branch = if scheduler.branch_frontier_cap().is_some() {
+        branch
+    } else {
+        None
+    };
     let configuration = scheduler.configuration_for(scenario).map_err(|error| {
         SchedulerError::BoundaryViolation {
             message: format!("decode scheduler checkpoint configuration: {error}"),

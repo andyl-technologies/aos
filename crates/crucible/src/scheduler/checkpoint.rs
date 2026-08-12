@@ -229,6 +229,15 @@ impl SingleSchedulerCheckpoint {
         }
     }
 
+    /// Returns the active branch frontier cap, if branch admission is pending.
+    #[must_use]
+    pub const fn branch_frontier_cap(&self) -> Option<VirtualTime> {
+        match self.wire.branch_frontier_cap {
+            Some(ticks) => Some(VirtualTime { ticks }),
+            None => None,
+        }
+    }
+
     /// Returns the seed owning all future scheduler decision streams.
     #[must_use]
     pub fn future_decision_seed(&self) -> Seed {
