@@ -61,7 +61,9 @@ in {
       pname = "aos-${config.aos.system.name}-zfs-installer";
       version = config.aos.system.version;
       src = null;
-      buildDeps = [pkgs.coreutils pkgs.findutils] ++ lib.optional config.aos.boot.secureBoot.enable pkgs.sbsigntools;
+      buildDeps =
+        [pkgs.coreutils pkgs.findutils]
+        ++ lib.optionals config.aos.boot.secureBoot.enable [pkgs.perl pkgs.sbsigntools];
       phases = [{
         name = "install";
         script = ''
