@@ -1438,8 +1438,19 @@ impl ProductionVmLifecycleLoop {
         let mut node_icounts = BTreeMap::new();
         let mut boundaries = Vec::new();
         for vm in self.source.world().vm_nodes() {
-            let physical = self.inner.backend().node_now(&vm.id)?;
             let scheduler_time = self.inner.loop_impl().scheduler_time_for_node(&vm.id)?;
+            if self.node_service_states.get(&vm.id)
+                == Some(&ProductionNodeServiceState::PermanentlyFailed)
+            {
+                node_icounts.insert(
+                    vm.id.clone(),
+                    crucible::Icount {
+                        retired: scheduler_time.ticks >> u32::from(self.icount_shift),
+                    },
+                );
+                continue;
+            }
+            let physical = self.inner.backend().node_now(&vm.id)?;
             node_icounts.insert(
                 vm.id.clone(),
                 crucible::Icount {
@@ -1617,6 +1628,7 @@ impl ProductionVmLifecycleLoop {
                     configuration: configuration.clone(),
                     scheduler: self.inner.loop_impl().clone(),
                     trigger_state: self.trigger_state.clone(),
+                    fault_checkpoint,
                     targets,
                     node_generations: self.node_generations.clone(),
                     node_service_states: self.node_service_states.clone(),
@@ -1640,16 +1652,7 @@ impl ProductionVmLifecycleLoop {
                     }
                 })?;
                 let key = (self.scenario.id(), configuration.id());
-                if registry.insert(key, checkpoint_set).is_some() {
-                    self.checkpoint_targets.remove(&configuration.id());
-                    self.rollback_exact_captures(&captured)?;
-                    return Err(SchedulerError::BoundaryViolation {
-                        message: format!(
-                            "exact checkpoint {} is already registered for this scenario",
-                            configuration.id().to_hex()
-                        ),
-                    });
-                }
+                registry.insert(key, checkpoint_set);
                 Ok(())
             }
             Err(error) => {

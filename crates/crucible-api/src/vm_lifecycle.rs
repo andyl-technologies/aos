@@ -167,6 +167,7 @@ struct ProductionVmExactCheckpointSet {
     configuration: Configuration,
     scheduler: SingleScheduler,
     trigger_state: EventGraphState,
+    fault_checkpoint: ProductionFaultRuntimeCheckpoint,
     targets: BTreeMap<NodeId, ProductionVmExactCheckpointTarget>,
     node_generations: BTreeMap<NodeId, u64>,
     node_service_states: BTreeMap<NodeId, ProductionNodeServiceState>,
@@ -768,7 +769,14 @@ pub fn build_production_vm_lifecycle_loop(
         let restore_target = restore_checkpoint
             .as_ref()
             .and_then(|checkpoint| checkpoint.targets.get(&vm.id));
-        if restore_checkpoint.is_some() && restore_target.is_none() {
+        let restored_service_state = restore_checkpoint
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.node_service_states.get(&vm.id))
+            .copied();
+        if restore_checkpoint.is_some()
+            && restore_target.is_none()
+            && restored_service_state != Some(ProductionNodeServiceState::PermanentlyFailed)
+        {
             return Err(loop_factory_error(format!(
                 "production exact checkpoint has no target for `{}`",
                 vm.id.name
@@ -921,11 +929,7 @@ pub fn build_production_vm_lifecycle_loop(
             .and_then(|checkpoint| checkpoint.node_generations.get(&vm.id))
             .copied()
             .unwrap_or(1);
-        let service_state = restore_checkpoint
-            .as_ref()
-            .and_then(|checkpoint| checkpoint.node_service_states.get(&vm.id))
-            .copied()
-            .unwrap_or(ProductionNodeServiceState::Running);
+        let service_state = restored_service_state.unwrap_or(ProductionNodeServiceState::Running);
         node_generations.insert(vm.id.clone(), generation);
         node_service_states.insert(vm.id.clone(), service_state);
         let launched = match (restore_target, service_state) {
@@ -955,6 +959,7 @@ pub fn build_production_vm_lifecycle_loop(
                     vm.id.name
                 )));
             }
+            (None, ProductionNodeServiceState::PermanentlyFailed) => continue,
             (None, _) => launch_production_live_node(
                 &launch,
                 &node_directory,
@@ -1093,12 +1098,10 @@ pub fn build_production_vm_lifecycle_loop(
     ));
     let (fault_runtime, fault_evaluation_cursor, network_interceptor, pending_network_outputs) =
         if let Some(checkpoint) = &restore_checkpoint {
-            let mut targets = checkpoint.targets.values();
-            let first_target = targets.next().ok_or_else(|| {
-                loop_factory_error("production exact checkpoint has no QEMU targets")
-            })?;
-            if targets
-                .any(|target| target.fault_checkpoint.id() != first_target.fault_checkpoint.id())
+            if checkpoint
+                .targets
+                .values()
+                .any(|target| target.fault_checkpoint.id() != checkpoint.fault_checkpoint.id())
             {
                 return Err(loop_factory_error(
                     "production exact checkpoint targets disagree on the fault continuation",
@@ -1123,7 +1126,7 @@ pub fn build_production_vm_lifecycle_loop(
                 signal_plan,
                 signal_artifacts,
                 scenario.id(),
-                first_target.fault_checkpoint.clone(),
+                checkpoint.fault_checkpoint.clone(),
                 &mut backends,
                 source.world().fault_topology().clone(),
                 source.world().links().to_vec(),
