@@ -17,10 +17,10 @@ use crucible_protocol::{
 };
 use crucible_shmem::{
     ABI_VERSION, DequeuedFaultResult, FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR,
-    FAULT_COMMAND_SEMANTIC_VERSION, FaultAbiError, FaultBoundaryPhase, FaultCapabilityRowV1,
-    FaultClockCapabilityManifestV1, FaultCommandHeaderV1, FaultCommandKind,
-    FaultInterruptCapabilityManifestV1, FaultRegisterCapabilityManifestV1, FaultResultStatus,
-    FaultTargetManifestKind, FaultTargetManifestQueryV1, FaultTransportError,
+    FAULT_COMMAND_SEMANTIC_VERSION, FaultAbiError, FaultAcceleratorCapabilityManifestV1,
+    FaultBoundaryPhase, FaultCapabilityRowV1, FaultClockCapabilityManifestV1, FaultCommandHeaderV1,
+    FaultCommandKind, FaultInterruptCapabilityManifestV1, FaultRegisterCapabilityManifestV1,
+    FaultResultStatus, FaultTargetManifestKind, FaultTargetManifestQueryV1, FaultTransportError,
     MappedSetupRegionAccessError, RegionAllocation, RegionConfig, RegionLayoutError,
     RegionSerializationError, RegionSetupValidationError, SetupRegionMapError,
     ValidatedSetupRegion, decode_fault_capability_manifest, dequeue_fault_result,
@@ -48,6 +48,7 @@ pub struct QemuHostPluginSetup {
     register_manifest: Option<FaultRegisterCapabilityManifestV1>,
     interrupt_manifest: Option<FaultInterruptCapabilityManifestV1>,
     clock_manifest: Option<FaultClockCapabilityManifestV1>,
+    accelerator_manifest: Option<FaultAcceleratorCapabilityManifestV1>,
     ready_markers: std::collections::BTreeSet<crucible::model::FaultObjectId>,
 }
 
@@ -318,6 +319,19 @@ pub fn complete_qemu_host_plugin_setup(
             4,
         )?;
     }
+    if required_capabilities
+        .target_manifest()
+        .and_then(crate::QemuTargetManifestRequirement::exact_accelerator_manifest)
+        .is_some()
+    {
+        enqueue_target_manifest_query(
+            &mut admission_region,
+            slot_index,
+            fault_node_hash,
+            FaultTargetManifestKind::Accelerator,
+            5,
+        )?;
+    }
 
     let mut control = ControlLifecycleStream::connected_unix_stream(control_socket)
         .map_err(|source| QemuHostPluginSetupError::Control { source })?;
@@ -371,11 +385,17 @@ pub fn complete_qemu_host_plugin_setup(
             )
         })
         .transpose()?;
+    let accelerator_manifest = required_capabilities
+        .target_manifest()
+        .and_then(crate::QemuTargetManifestRequirement::exact_accelerator_manifest)
+        .map(|required| accept_accelerator_manifest(&mut admission_region, slot_index, required))
+        .transpose()?;
     let expected_capabilities = required_capabilities
         .rows_for_manifests(
             register_manifest.as_ref(),
             interrupt_manifest.as_ref(),
             clock_manifest.as_ref(),
+            accelerator_manifest.as_ref(),
         )
         .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })?;
     if fault_capabilities != expected_capabilities {
@@ -406,6 +426,7 @@ pub fn complete_qemu_host_plugin_setup(
         register_manifest,
         interrupt_manifest,
         clock_manifest,
+        accelerator_manifest,
         ready_markers: required_capabilities.ready_markers().clone(),
     })
 }
@@ -744,6 +765,63 @@ fn accept_clock_manifest(
     Ok(manifest)
 }
 
+fn accept_accelerator_manifest(
+    region: &mut crucible_shmem::MappedSetupRegion,
+    slot_index: u32,
+    required: &FaultAcceleratorCapabilityManifestV1,
+) -> Result<FaultAcceleratorCapabilityManifestV1, QemuHostPluginSetupError> {
+    let transport = region
+        .fault_result_transport_mut(slot_index)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionAccess { source })?;
+    let result = dequeue_fault_result(
+        transport.ring,
+        transport.slots,
+        transport.arena_header,
+        transport.arena,
+        transport.arena_region_offset,
+    )
+    .map_err(|source| QemuHostPluginSetupError::AdmissionTransport { source })?
+    .ok_or(QemuHostPluginSetupError::AdmissionResultMissing)?;
+    let (header, payload) = match result {
+        DequeuedFaultResult::Valid { header, payload } => (header, payload),
+        DequeuedFaultResult::Invalid {
+            command_sequence,
+            error,
+        } => {
+            return Err(QemuHostPluginSetupError::AdmissionResultInvalid {
+                command_sequence,
+                source: error,
+            });
+        }
+    };
+    if header.command_sequence != 5
+        || header.command_kind != FaultCommandKind::QueryTargetManifest as u16
+        || header.status != FaultResultStatus::Applied
+        || header.phase != FaultBoundaryPhase::NodeBoundary
+        || header.capability_version != 1
+        || header.observed_icount != 0
+        || header.applied_icount != 0
+        || header.evidence_hash != *blake3::hash(&payload).as_bytes()
+    {
+        return Err(QemuHostPluginSetupError::AdmissionResultRejected {
+            command_sequence: header.command_sequence,
+            command_kind: header.command_kind,
+            status: header.status,
+            phase: header.phase,
+            capability_version: header.capability_version,
+            observed_icount: header.observed_icount,
+            applied_icount: header.applied_icount,
+            evidence_hash: header.evidence_hash,
+        });
+    }
+    let manifest = FaultAcceleratorCapabilityManifestV1::decode(&payload)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })?;
+    if &manifest != required {
+        return Err(QemuHostPluginSetupError::AdmissionAcceleratorManifestMismatch);
+    }
+    Ok(manifest)
+}
+
 fn write_shmem_setup_region(fd: RawFd, bytes: &[u8]) -> Result<(), QemuHostPluginSetupError> {
     let mut written = 0;
     while written < bytes.len() {
@@ -927,6 +1005,9 @@ pub enum QemuHostPluginSetupError {
         /// CPU model returned by live QEMU.
         observed_cpu_model: String,
     },
+    /// QEMU's accelerator manifest differed from the exact World declaration.
+    #[error("accelerator target manifest differs from the launch-bound World manifest")]
+    AdmissionAcceleratorManifestMismatch,
     /// The control-protocol lifecycle failed.
     #[error("setup control lifecycle failed")]
     Control {

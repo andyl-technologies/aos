@@ -20,12 +20,13 @@ use crucible_shmem::{
     FAULT_REGISTER_SIDE_EFFECT_CONTROL_FLOW, FAULT_REGISTER_SIDE_EFFECT_CPU_FLAGS,
     FAULT_REGISTER_SIDE_EFFECT_INTERRUPT, FAULT_REGISTER_SIDE_EFFECT_TB_FLUSH,
     FAULT_REGISTER_SIDE_EFFECT_TIMER, FAULT_REGISTER_SIDE_EFFECT_TLB_FLUSH,
-    FAULT_TARGET_MANIFEST_QUERY_V1_BYTES, FaultAbiError, FaultBoundaryPhase, FaultCapabilityRowV1,
-    FaultCapabilityScope, FaultClockCapabilityManifestV1, FaultClockCapabilityRowV1,
-    FaultCommandKind, FaultInterruptCapabilityManifestV1, FaultInterruptCapabilityRowV1,
-    FaultInterruptDeliveryDropV1, FaultInterruptFamilyV1, FaultInterruptPolarityV1,
-    FaultInterruptTriggerV1, FaultRegisterCapabilityManifestV1, FaultRegisterCapabilityRowV1,
-    FaultRegisterGroupV1, HARD_FAULT_PAYLOAD_BYTES, fault_capability_manifest_digest,
+    FAULT_TARGET_MANIFEST_QUERY_V1_BYTES, FaultAbiError, FaultAcceleratorCapabilityManifestV1,
+    FaultBoundaryPhase, FaultCapabilityRowV1, FaultCapabilityScope, FaultClockCapabilityManifestV1,
+    FaultClockCapabilityRowV1, FaultCommandKind, FaultInterruptCapabilityManifestV1,
+    FaultInterruptCapabilityRowV1, FaultInterruptDeliveryDropV1, FaultInterruptFamilyV1,
+    FaultInterruptPolarityV1, FaultInterruptTriggerV1, FaultRegisterCapabilityManifestV1,
+    FaultRegisterCapabilityRowV1, FaultRegisterGroupV1, HARD_FAULT_PAYLOAD_BYTES,
+    fault_capability_manifest_digest,
 };
 
 use crate::LivePluginGuestArchitecture;
@@ -49,6 +50,7 @@ pub struct QemuTargetManifestRequirement {
     exact_register_manifest: Option<FaultRegisterCapabilityManifestV1>,
     exact_interrupt_manifest: Option<FaultInterruptCapabilityManifestV1>,
     exact_clock_manifest: Option<FaultClockCapabilityManifestV1>,
+    exact_accelerator_manifest: Option<FaultAcceleratorCapabilityManifestV1>,
 }
 
 impl QemuTargetManifestRequirement {
@@ -86,6 +88,14 @@ impl QemuTargetManifestRequirement {
     #[must_use]
     pub const fn exact_clock_manifest(&self) -> Option<&FaultClockCapabilityManifestV1> {
         self.exact_clock_manifest.as_ref()
+    }
+
+    /// Returns the exact canonical accelerator manifest admitted by the World.
+    #[must_use]
+    pub const fn exact_accelerator_manifest(
+        &self,
+    ) -> Option<&FaultAcceleratorCapabilityManifestV1> {
+        self.exact_accelerator_manifest.as_ref()
     }
 
     /// Returns the canonical QOM typename expected for the realized CPU.
@@ -131,7 +141,7 @@ impl QemuFaultCapabilityRequirement {
             FaultCommandKind::QueryTargetManifest,
             scope,
             b"qemu.target-manifest.node.v1",
-            b"crucible.target-manifest-query.v1;kinds=register,interrupt,hardware-error,clock",
+            b"crucible.target-manifest-query.v1;kinds=register,interrupt,hardware-error,clock,accelerator",
             FAULT_TARGET_MANIFEST_QUERY_V1_BYTES as u32,
             1,
             FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION | FAULT_CAPABILITY_FEATURE_GUEST_CLOCK,
@@ -255,6 +265,7 @@ impl QemuFaultCapabilityRequirement {
                 exact_register_manifest: None,
                 exact_interrupt_manifest: None,
                 exact_clock_manifest: None,
+                exact_accelerator_manifest: None,
             }),
             ready_markers: std::collections::BTreeSet::new(),
             world_bound: false,
@@ -528,6 +539,47 @@ impl QemuFaultCapabilityRequirement {
             rows: clock_rows,
         };
         clock_manifest.encode()?;
+        let accelerator_manifest = if node.accelerators.is_empty() {
+            None
+        } else {
+            let rows = node
+                .accelerators
+                .iter()
+                .map(|device| {
+                    let class_mask = device.classes.iter().fold(0_u16, |mask, class| {
+                        mask | match class {
+                            crucible::model::WorldNodeAcceleratorKind::Gpu => 1,
+                            crucible::model::WorldNodeAcceleratorKind::Tpu => 2,
+                            crucible::model::WorldNodeAcceleratorKind::Fpga => 4,
+                        }
+                    });
+                    crucible_shmem::FaultAcceleratorCapabilityRowV1 {
+                        id: device.id.as_str().to_owned(),
+                        implementation: "virtio-crucible-accelerator-v1".to_owned(),
+                        class_mask,
+                        fault_family_mask: 0xf,
+                        queue_start: 0,
+                        queue_end: 0,
+                        queue_depth: 64,
+                        maximum_input_bytes: 4_608,
+                        maximum_output_bytes: 4_608,
+                        device_memory_bytes: 65_536,
+                        ecc_mode_mask: 0x3,
+                        job_kind_count: u32::from(class_mask.count_ones() as u16),
+                        vmstate: true,
+                    }
+                })
+                .collect();
+            let manifest = FaultAcceleratorCapabilityManifestV1 { rows };
+            let encoded = manifest.encode()?;
+            if node.accelerators.len() != 1
+                || *blake3::hash(&encoded).as_bytes()
+                    != node.accelerators[0].capability_manifest.bytes
+            {
+                return Err(FaultAbiError::CapabilityInvariant);
+            }
+            Some(manifest)
+        };
         let mut requirement = Self::current_v1(
             architecture,
             node.cpu_model.clone(),
@@ -540,10 +592,59 @@ impl QemuFaultCapabilityRequirement {
         target.exact_register_manifest = Some(manifest.clone());
         target.exact_interrupt_manifest = interrupt_manifest.clone();
         target.exact_clock_manifest = Some(clock_manifest.clone());
+        target.exact_accelerator_manifest = accelerator_manifest.clone();
+        if accelerator_manifest.is_some() {
+            let boundary = FaultBoundaryPhase::NodeBoundary.bit();
+            let device = FaultBoundaryPhase::Device.bit();
+            let mut rows = [
+                capability_row(
+                    FaultCommandKind::AcceleratorLifecycle,
+                    FaultCapabilityScope::Accelerator,
+                    b"qemu.accelerator.lifecycle.v1",
+                    b"crucible.node-fault-payload.v1",
+                    HARD_FAULT_PAYLOAD_BYTES,
+                    DEFAULT_FAULT_COMMAND_CAPACITY,
+                    0,
+                ),
+                capability_row(
+                    FaultCommandKind::AcceleratorResultTransform,
+                    FaultCapabilityScope::Accelerator,
+                    b"qemu.accelerator.result-transform.v1",
+                    b"crucible.node-fault-payload.v1",
+                    HARD_FAULT_PAYLOAD_BYTES,
+                    DEFAULT_FAULT_COMMAND_CAPACITY,
+                    0,
+                ),
+                capability_row(
+                    FaultCommandKind::AcceleratorMemoryEvent,
+                    FaultCapabilityScope::Accelerator,
+                    b"qemu.accelerator.memory-event.v1",
+                    b"crucible.node-fault-payload.v1",
+                    HARD_FAULT_PAYLOAD_BYTES,
+                    DEFAULT_FAULT_COMMAND_CAPACITY,
+                    0,
+                ),
+                capability_row(
+                    FaultCommandKind::AcceleratorService,
+                    FaultCapabilityScope::Accelerator,
+                    b"qemu.accelerator.service.v1",
+                    b"crucible.node-fault-payload.v1",
+                    HARD_FAULT_PAYLOAD_BYTES,
+                    DEFAULT_FAULT_COMMAND_CAPACITY,
+                    0,
+                ),
+            ];
+            rows[0].phase_mask = boundary | device;
+            rows[1].phase_mask = device;
+            rows[2].phase_mask = boundary | device;
+            rows[3].phase_mask = boundary | device;
+            requirement.rows.extend(rows);
+        }
         requirement.rows = requirement.rows_for_manifests(
             Some(&manifest),
             interrupt_manifest.as_ref(),
             Some(&clock_manifest),
+            accelerator_manifest.as_ref(),
         )?;
         requirement.digest = fault_capability_manifest_digest(&requirement.rows)?;
         requirement.ready_markers = node
@@ -662,6 +763,7 @@ impl QemuFaultCapabilityRequirement {
         register_manifest: Option<&FaultRegisterCapabilityManifestV1>,
         interrupt_manifest: Option<&FaultInterruptCapabilityManifestV1>,
         clock_manifest: Option<&FaultClockCapabilityManifestV1>,
+        accelerator_manifest: Option<&FaultAcceleratorCapabilityManifestV1>,
     ) -> Result<Vec<FaultCapabilityRowV1>, FaultAbiError> {
         let Some(required_target) = &self.target_manifest else {
             return Ok(self.rows.clone());
@@ -678,6 +780,7 @@ impl QemuFaultCapabilityRequirement {
                 .exact_clock_manifest
                 .as_ref()
                 .is_some_and(|required| Some(required) != clock_manifest)
+            || required_target.exact_accelerator_manifest.as_ref() != accelerator_manifest
         {
             return Err(FaultAbiError::CapabilityInvariant);
         }
@@ -706,8 +809,16 @@ impl QemuFaultCapabilityRequirement {
             .map(FaultClockCapabilityManifestV1::encode)
             .transpose()?
             .map(|payload| *blake3::hash(&payload).as_bytes());
-        query.capability_hash =
-            target_manifest_capability_hash(manifest_digest, interrupt_digest, clock_digest);
+        let accelerator_digest = accelerator_manifest
+            .map(FaultAcceleratorCapabilityManifestV1::encode)
+            .transpose()?
+            .map(|payload| *blake3::hash(&payload).as_bytes());
+        query.capability_hash = target_manifest_capability_hash(
+            manifest_digest,
+            interrupt_digest,
+            clock_digest,
+            accelerator_digest,
+        );
         rows.sort_by_key(|row| {
             (
                 row.command_kind as u16,
@@ -747,12 +858,13 @@ fn target_manifest_capability_hash(
     register_manifest_digest: [u8; 32],
     interrupt_manifest_digest: Option<[u8; 32]>,
     clock_manifest_digest: Option<[u8; 32]>,
+    accelerator_manifest_digest: Option<[u8; 32]>,
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"crucible.qemu-fault-capability.v1\0");
     hasher.update(b"qemu.target-manifest.node.v1\0");
     hasher.update(
-        b"crucible.target-manifest-query.v1;kinds=register,interrupt,hardware-error,clock\0",
+        b"crucible.target-manifest-query.v1;kinds=register,interrupt,hardware-error,clock,accelerator\0",
     );
     hasher.update(&register_manifest_digest);
     match interrupt_manifest_digest {
@@ -766,6 +878,15 @@ fn target_manifest_capability_hash(
     }
     hasher.update(&[0]);
     match clock_manifest_digest {
+        Some(digest) => {
+            hasher.update(&[1]);
+            hasher.update(&digest);
+        }
+        None => {
+            hasher.update(&[0]);
+        }
+    }
+    match accelerator_manifest_digest {
         Some(digest) => {
             hasher.update(&[1]);
             hasher.update(&digest);
@@ -1032,7 +1153,7 @@ mod tests {
             .unwrap_or_else(|| panic!("World requirement should retain its clock manifest"));
         assert!(
             requirement
-                .rows_for_manifests(Some(&manifest), None, Some(&clock_manifest))
+                .rows_for_manifests(Some(&manifest), None, Some(&clock_manifest), None)
                 .is_ok()
         );
         assert!(requirement.ready_markers().contains(
@@ -1047,7 +1168,7 @@ mod tests {
         let mut changed = manifest.clone();
         changed.rows[0].name = "rbx".to_owned();
         assert_eq!(
-            requirement.rows_for_manifests(Some(&changed), None, Some(&clock_manifest)),
+            requirement.rows_for_manifests(Some(&changed), None, Some(&clock_manifest), None),
             Err(FaultAbiError::CapabilityInvariant)
         );
     }

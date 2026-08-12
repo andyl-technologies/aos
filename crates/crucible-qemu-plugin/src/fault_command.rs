@@ -16,7 +16,8 @@ use crucible_shmem::{
     FAULT_CAPABILITY_FEATURE_HARDWARE_ERROR, FAULT_CAPABILITY_FEATURE_INSTRUCTION,
     FAULT_CAPABILITY_FEATURE_INTERRUPT, FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION,
     FAULT_COMMAND_SEMANTIC_VERSION, FAULT_REGISTER_CAPABILITY_IMPULSE,
-    FAULT_TARGET_MANIFEST_QUERY_V1_BYTES, FaultAbiError, FaultBoundaryPhase, FaultCapabilityRowV1,
+    FAULT_TARGET_MANIFEST_QUERY_V1_BYTES, FaultAbiError, FaultAcceleratorCapabilityManifestV1,
+    FaultAcceleratorCapabilityRowV1, FaultBoundaryPhase, FaultCapabilityRowV1,
     FaultCapabilityScope, FaultClockCapabilityManifestV1, FaultClockCapabilityRowV1,
     FaultClockEvidenceV1, FaultClockObservationV1, FaultCommandHeaderV1, FaultCommandKind,
     FaultCommandSlotV1, FaultEventHeaderV1, FaultEventOutcomeV1, FaultEventSlotV1,
@@ -100,6 +101,9 @@ pub const QEMU_PLUGIN_CRUCIBLE_FAULT_CLOCK_BIND_SYMBOL: &str =
 /// QEMU symbol that seals every guest-clock source identity.
 pub const QEMU_PLUGIN_CRUCIBLE_FAULT_CLOCK_BINDINGS_SEAL_SYMBOL: &str =
     "qemu_plugin_crucible_fault_clock_bindings_seal";
+/// QEMU symbol that copies realized accelerator-device rows.
+pub const QEMU_PLUGIN_CRUCIBLE_FAULT_ACCELERATOR_MANIFEST_SYMBOL: &str =
+    "qemu_plugin_crucible_fault_accelerator_manifest";
 
 const CAPABILITIES_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_capabilities\0";
 const SUBMIT_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_submit\0";
@@ -127,6 +131,7 @@ const HARDWARE_ERROR_BINDINGS_SEAL_SYMBOL_C: &[u8] =
 const CLOCK_MANIFEST_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_clock_manifest\0";
 const CLOCK_BIND_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_clock_bind\0";
 const CLOCK_BINDINGS_SEAL_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_clock_bindings_seal\0";
+const ACCELERATOR_MANIFEST_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_accelerator_manifest\0";
 const CAPABILITY_HASH_DOMAIN: &[u8] = b"crucible.qemu-fault-capability.v1\0";
 
 #[repr(C)]
@@ -288,6 +293,25 @@ struct QemuFaultClockCapability {
     implementation: *const c_char,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct QemuFaultAcceleratorCapability {
+    class_mask: u16,
+    fault_family_mask: u16,
+    queue_start: u16,
+    queue_end: u16,
+    queue_depth: u32,
+    maximum_input_bytes: u32,
+    maximum_output_bytes: u32,
+    device_memory_bytes: u64,
+    ecc_mode_mask: u32,
+    job_kind_count: u32,
+    vmstate: u8,
+    reserved: [u8; 7],
+    id: *const c_char,
+    implementation: *const c_char,
+}
+
 type QemuFaultCapabilitiesFn = extern "C" fn(*mut QemuFaultCapability, usize) -> usize;
 type QemuFaultSubmitFn = extern "C" fn(*const QemuFaultCommand, *const u8, usize) -> c_int;
 type QemuFaultCancelFn = extern "C" fn(u64) -> c_int;
@@ -314,6 +338,8 @@ type QemuFaultClockManifestFn =
     extern "C" fn(*mut QemuFaultClockCapability, usize, *mut u16) -> usize;
 type QemuFaultClockBindFn = extern "C" fn(u32, *const u8) -> c_int;
 type QemuFaultClockBindingsSealFn = extern "C" fn(*const u8) -> c_int;
+type QemuFaultAcceleratorManifestFn =
+    extern "C" fn(*mut QemuFaultAcceleratorCapability, usize) -> usize;
 
 /// Resolved, closed QEMU fault registry operations.
 #[derive(Clone, Copy)]
@@ -340,6 +366,7 @@ pub(crate) struct QemuFaultCommandApis {
     clock_manifest: QemuFaultClockManifestFn,
     clock_bind: QemuFaultClockBindFn,
     clock_bindings_seal: QemuFaultClockBindingsSealFn,
+    accelerator_manifest: QemuFaultAcceleratorManifestFn,
 }
 
 impl QemuFaultCommandApis {
@@ -418,6 +445,10 @@ impl QemuFaultCommandApis {
             clock_bindings_seal: resolve_symbol(
                 CLOCK_BINDINGS_SEAL_SYMBOL_C,
                 QEMU_PLUGIN_CRUCIBLE_FAULT_CLOCK_BINDINGS_SEAL_SYMBOL,
+            )?,
+            accelerator_manifest: resolve_symbol(
+                ACCELERATOR_MANIFEST_SYMBOL_C,
+                QEMU_PLUGIN_CRUCIBLE_FAULT_ACCELERATOR_MANIFEST_SYMBOL,
             )?,
         })
     }
@@ -779,6 +810,77 @@ impl QemuFaultCommandApis {
         .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })
     }
 
+    fn accelerator_manifest(
+        self,
+    ) -> Result<Option<FaultAcceleratorCapabilityManifestV1>, FaultCommandBridgeError> {
+        let required = (self.accelerator_manifest)(std::ptr::null_mut(), 0);
+        if required == 0 {
+            return Ok(None);
+        }
+        if required > crucible_shmem::HARD_FAULT_TARGET_MANIFEST_ROWS {
+            return Err(FaultCommandBridgeError::AcceleratorManifestCount { required });
+        }
+        let empty = QemuFaultAcceleratorCapability {
+            class_mask: 0,
+            fault_family_mask: 0,
+            queue_start: 0,
+            queue_end: 0,
+            queue_depth: 0,
+            maximum_input_bytes: 0,
+            maximum_output_bytes: 0,
+            device_memory_bytes: 0,
+            ecc_mode_mask: 0,
+            job_kind_count: 0,
+            vmstate: 0,
+            reserved: [0; 7],
+            id: std::ptr::null(),
+            implementation: std::ptr::null(),
+        };
+        let mut raw = vec![empty; required];
+        let observed = (self.accelerator_manifest)(raw.as_mut_ptr(), raw.len());
+        if observed != required {
+            return Err(FaultCommandBridgeError::AcceleratorManifestChanged {
+                expected: required,
+                observed,
+            });
+        }
+        let manifest = FaultAcceleratorCapabilityManifestV1 {
+            rows: raw
+                .into_iter()
+                .map(|row| {
+                    if row.reserved != [0; 7] {
+                        return Err(FaultCommandBridgeError::AcceleratorManifestRow);
+                    }
+                    Ok(FaultAcceleratorCapabilityRowV1 {
+                        id: capability_text(row.id, "accelerator.id")?.to_owned(),
+                        implementation: capability_text(
+                            row.implementation,
+                            "accelerator.implementation",
+                        )?
+                        .to_owned(),
+                        class_mask: row.class_mask,
+                        fault_family_mask: row.fault_family_mask,
+                        queue_start: row.queue_start,
+                        queue_end: row.queue_end,
+                        queue_depth: row.queue_depth,
+                        maximum_input_bytes: row.maximum_input_bytes,
+                        maximum_output_bytes: row.maximum_output_bytes,
+                        device_memory_bytes: row.device_memory_bytes,
+                        ecc_mode_mask: row.ecc_mode_mask,
+                        job_kind_count: row.job_kind_count,
+                        vmstate: row.vmstate == 1,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        let encoded = manifest
+            .encode()
+            .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?;
+        FaultAcceleratorCapabilityManifestV1::decode(&encoded)
+            .map(Some)
+            .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })
+    }
+
     fn bind_clock_manifest(
         self,
         manifest: &FaultClockCapabilityManifestV1,
@@ -868,8 +970,17 @@ impl QemuFaultCommandApis {
             clock_manifest: test_clock_manifest,
             clock_bind: test_clock_bind,
             clock_bindings_seal: test_clock_bindings_seal,
+            accelerator_manifest: test_accelerator_manifest,
         }
     }
+}
+
+#[cfg(test)]
+extern "C" fn test_accelerator_manifest(
+    _out: *mut QemuFaultAcceleratorCapability,
+    _capacity: usize,
+) -> usize {
+    0
 }
 
 #[cfg(test)]
@@ -1656,6 +1767,7 @@ pub(crate) struct FaultCommandBridge {
     interrupt_manifest_payload: Option<Vec<u8>>,
     hardware_error_manifest_payload: Option<Vec<u8>>,
     clock_manifest_payload: Option<Vec<u8>>,
+    accelerator_manifest_payload: Option<Vec<u8>>,
     register_evidence_identity: Option<RegisterEvidenceIdentity>,
     instruction_evidence_identity: Option<InstructionEvidenceIdentity>,
     register_commands: BTreeMap<u64, RegisterCommandExpectation>,
@@ -1780,6 +1892,19 @@ impl FaultCommandBridge {
         } else {
             (None, None)
         };
+        let (accelerator_manifest_payload, accelerator_manifest_digest) =
+            match apis.accelerator_manifest()? {
+                Some(manifest) => {
+                    let payload = manifest
+                        .encode()
+                        .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?;
+                    (
+                        Some(payload.clone()),
+                        Some(*blake3::hash(&payload).as_bytes()),
+                    )
+                }
+                None => (None, None),
+            };
         if let Some(register) = register_evidence_identity.as_ref() {
             rows.push(target_manifest_capability_row(
                 register.architecture,
@@ -1787,6 +1912,7 @@ impl FaultCommandBridge {
                 interrupt_manifest_digest,
                 hardware_error_manifest_digest,
                 clock_manifest_digest,
+                accelerator_manifest_digest,
             ));
             rows.sort_by_key(|row| {
                 (
@@ -1845,6 +1971,7 @@ impl FaultCommandBridge {
             interrupt_manifest_payload,
             hardware_error_manifest_payload,
             clock_manifest_payload,
+            accelerator_manifest_payload,
             register_evidence_identity,
             instruction_evidence_identity,
             register_commands: BTreeMap::new(),
@@ -1914,6 +2041,10 @@ impl FaultCommandBridge {
                         Some(FaultTargetManifestKind::Clock) => {
                             self.clock_manifest_payload.as_ref().map_or(0, Vec::len)
                         }
+                        Some(FaultTargetManifestKind::Accelerator) => self
+                            .accelerator_manifest_payload
+                            .as_ref()
+                            .map_or(0, Vec::len),
                         None => 0,
                     }
                 }
@@ -2018,6 +2149,7 @@ impl FaultCommandBridge {
                     self.hardware_error_manifest_payload.clone()
                 }
                 FaultTargetManifestKind::Clock => self.clock_manifest_payload.clone(),
+                FaultTargetManifestKind::Accelerator => self.accelerator_manifest_payload.clone(),
             };
             let Some(result_payload) = result_payload else {
                 return self.publish_local_rejection(
@@ -2791,9 +2923,10 @@ fn target_manifest_capability_row(
     interrupt_manifest_digest: Option<[u8; 32]>,
     hardware_error_manifest_digest: Option<[u8; 32]>,
     clock_manifest_digest: Option<[u8; 32]>,
+    accelerator_manifest_digest: Option<[u8; 32]>,
 ) -> FaultCapabilityRowV1 {
     let name = b"qemu.target-manifest.node.v1";
-    let schema = b"crucible.target-manifest-query.v1;kinds=register,interrupt,hardware-error,clock";
+    let schema = b"crucible.target-manifest-query.v1;kinds=register,interrupt,hardware-error,clock,accelerator";
     let mut hasher = blake3::Hasher::new();
     hasher.update(CAPABILITY_HASH_DOMAIN);
     hasher.update(name);
@@ -2820,6 +2953,15 @@ fn target_manifest_capability_row(
         }
     }
     match clock_manifest_digest {
+        Some(digest) => {
+            hasher.update(&[1]);
+            hasher.update(&digest);
+        }
+        None => {
+            hasher.update(&[0]);
+        }
+    }
+    match accelerator_manifest_digest {
         Some(digest) => {
             hasher.update(&[1]);
             hasher.update(&digest);
@@ -5472,6 +5614,23 @@ pub enum FaultCommandBridgeError {
         /// Negative errno-style status.
         status: c_int,
     },
+    /// The accelerator registry reported an invalid row count.
+    #[error("QEMU accelerator manifest reported invalid row count {required}")]
+    AcceleratorManifestCount {
+        /// Reported row count.
+        required: usize,
+    },
+    /// The immutable accelerator registry changed between size and copy calls.
+    #[error("QEMU accelerator manifest changed from {expected} to {observed} rows")]
+    AcceleratorManifestChanged {
+        /// First size query.
+        expected: usize,
+        /// Copy-call result.
+        observed: usize,
+    },
+    /// A raw accelerator row contained invalid framing or identity state.
+    #[error("QEMU accelerator manifest row has invalid raw framing")]
+    AcceleratorManifestRow,
     /// Register mutation was advertised without its required capability row.
     #[error("QEMU register manifest has no CPU register-transform capability")]
     RegisterCapabilityMissing,
@@ -5830,6 +5989,7 @@ mod tests {
             interrupt_manifest_payload: None,
             hardware_error_manifest_payload: None,
             clock_manifest_payload: None,
+            accelerator_manifest_payload: None,
             register_evidence_identity: None,
             instruction_evidence_identity: None,
             register_commands: BTreeMap::new(),

@@ -2892,8 +2892,8 @@ pub enum WorldNodeAcceleratorKind {
 pub struct WorldNodeAccelerator {
     /// Stable device ID.
     pub id: SignalId,
-    /// Accelerator class.
-    pub kind: WorldNodeAcceleratorKind,
+    /// Canonically ordered accelerator classes exposed by this device.
+    pub classes: Vec<WorldNodeAcceleratorKind>,
     /// Exact accelerator fault-device semantic version.
     pub semantic_version: u16,
     /// Content address of the device-specific capability manifest.
@@ -3232,9 +3232,11 @@ impl WorldNodeFaultCapabilities {
         }
         hard_count(&self.clock_sources, "node clock sources", 4_096)?;
         require(
-            self.accelerators
-                .iter()
-                .all(|device| device.semantic_version == 1),
+            self.accelerators.iter().all(|device| {
+                device.semantic_version == 1
+                    && !device.classes.is_empty()
+                    && !device.classes.windows(2).any(|pair| pair[0] >= pair[1])
+            }),
             "node accelerator semantic version",
         )?;
         require(

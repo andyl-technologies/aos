@@ -509,7 +509,7 @@ Register side-effect values are exhaustive:
 | `[world.node_fault_capabilities.dram_geometry]` | `channels=2`, `ranks=2`, `banks=16`, `interleave_bytes=64`, `semantic_version=1` | The only currently implemented GPA-to-DRAM mapping. |
 | `[[world.node_fault_capabilities.interrupts]]` | All interrupt-row fields below | One exact source-to-controller route and its mutation contract. |
 | `[[world.node_fault_capabilities.clock_sources]]` | `id`, `semantic_version=1`, `monotonic` | One registered guest clock and whether reads must remain monotonic. |
-| `[[world.node_fault_capabilities.accelerators]]` | `id`, `kind`, `semantic_version=1`, `capability_manifest` | One `gpu`, `tpu`, or `fpga` fault device plus its exact content-addressed capability manifest. |
+| `[[world.node_fault_capabilities.accelerators]]` | `id`, nonempty sorted `classes`, `semantic_version=1`, `capability_manifest` | One realized fault device and its exact content-addressed manifest; `classes` contains any supported combination of `gpu`, `tpu`, and `fpga`. |
 
 `ready_markers` is part of the content-addressed QEMU launch contract. Each
 entry names a decoded guest `event` marker, not an assertion, lifecycle,
