@@ -248,6 +248,14 @@ mod tests {
 
     type SharedLog = Rc<RefCell<Vec<RealizationCall>>>;
 
+    fn diskless_snapshot(
+        checkpoint: Checkpoint,
+        validation: QemuReplayOracleValidation,
+    ) -> QemuVmSnapshot {
+        QemuVmSnapshot::diskless(checkpoint, validation)
+            .unwrap_or_else(|error| panic!("build diskless snapshot: {error}"))
+    }
+
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum RealizationCall {
         ExactSnapshot(ContentHash),
@@ -390,7 +398,7 @@ mod tests {
         let world = world("backend-exact-loadvm");
         let def = scenario("backend-exact-loadvm");
         let config = config_with_decisions(def.clone(), 1);
-        let snapshot = QemuVmSnapshot::diskless(
+        let snapshot = diskless_snapshot(
             checkpoint_for_config("backend-exact-loadvm", &config),
             QemuReplayOracleValidation::Match {
                 runtime_hash: config.id(),
@@ -444,7 +452,7 @@ mod tests {
             checkpoint_for_config("backend-ancestor-replay-target", &target),
             42,
         );
-        let ancestor_snapshot = QemuVmSnapshot::diskless(
+        let ancestor_snapshot = diskless_snapshot(
             ancestor_checkpoint,
             QemuReplayOracleValidation::Match {
                 runtime_hash: ancestor.id(),
