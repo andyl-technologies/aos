@@ -707,6 +707,8 @@
       linux-headers = callPackage ./kernel/linux-headers.nix {inherit linuxSource;};
       zfsForKernel = kernel:
         callPackage ./filesystem/zfs.nix {inherit kernel;};
+      nvidiaOpenForKernel = kernel:
+        callPackage ./kernel/nvidia-open.nix {inherit kernel;};
 
       qemu-crucible = callPackage ./emulation/qemu.nix {
         pname = "qemu-crucible";

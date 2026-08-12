@@ -199,10 +199,9 @@ in
               ARCH=${kernelArch.karch}
           fi
 
-          # Runtime module consumers resolve the immutable development output;
-          # no symlink points back into the ephemeral sandbox build directory.
-          ln -s "$kernel_build" $out/lib/modules/${linuxSource.version}/build
-          ln -s "$kernel_build" $out/lib/modules/${linuxSource.version}/source
+          # External-module builders consume the explicit `dev` output. Keep
+          # the runtime module tree independent so boot closures do not retain
+          # the configured source tree or deployment signing inputs.
         '';
       }
     ];
