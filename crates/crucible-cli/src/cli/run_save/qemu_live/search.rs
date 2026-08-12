@@ -142,8 +142,8 @@ pub(crate) fn run_local_qemu_search_workflow(
             break;
         };
         let frontier = pending.remove(index);
-        let materialization_budget = match usize::try_from(plan.budget.max_states) {
-            Ok(max_states) => max_states,
+        let materialization_budget = match usize::try_from(plan.budget.max_expansions) {
+            Ok(max_expansions) => max_expansions,
             Err(_) => usize::MAX,
         };
         let search = graph
