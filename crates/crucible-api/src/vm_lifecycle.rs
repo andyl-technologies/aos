@@ -846,6 +846,9 @@ pub fn build_production_vm_lifecycle_loop(
                 )));
             }
             launch = launch.with_fault_capabilities(capabilities.clone());
+            if !capabilities.accelerators.is_empty() {
+                launch = launch.with_accelerator();
+            }
         }
         if vm.white_box == crucible::WhiteBoxPolicy::Enabled {
             let app_random = if let Some(checkpoint) = &restore_checkpoint {
