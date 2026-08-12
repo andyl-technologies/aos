@@ -252,7 +252,7 @@ pub(crate) fn realize_qemu_vm_resume_from_savepoint_with_executor(
         target,
         &mut store,
         executor,
-        QemuExactSnapshotPolicy::default(),
+        QemuExactSnapshotPolicy,
     )
     .map_err(|error| VmResumeRealizationError::Realization {
         message: error.to_string(),

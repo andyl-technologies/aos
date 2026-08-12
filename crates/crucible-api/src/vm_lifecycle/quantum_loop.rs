@@ -1668,14 +1668,12 @@ impl ProductionVmLifecycleLoop {
                 );
             }
         };
-        if has_lifecycle {
-            if let Err(error) = self.record_prepared_lifecycle_processes(&prepared) {
-                return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
-                    &decisions,
-                    &mut prepared,
-                    error,
-                ));
-            }
+        if has_lifecycle && let Err(error) = self.record_prepared_lifecycle_processes(&prepared) {
+            return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
+                &decisions,
+                &mut prepared,
+                error,
+            ));
         }
         let observed_exit_codes = match self.supervise_terminal_lifecycle_exits(&decisions) {
             Ok(observed) => observed,
@@ -1702,16 +1700,15 @@ impl ProductionVmLifecycleLoop {
                 error,
             ));
         }
-        if has_lifecycle {
-            if let Err(error) =
+        if has_lifecycle
+            && let Err(error) =
                 self.advance_lifecycle_journal(ProductionLifecycleJournalPhase::ExitsReaped)
-            {
-                return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
-                    &decisions,
-                    &mut prepared,
-                    error,
-                ));
-            }
+        {
+            return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
+                &decisions,
+                &mut prepared,
+                error,
+            ));
         }
         if let Err(error) = self.commit_terminal_replacements(&mut prepared) {
             return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
@@ -1720,12 +1717,11 @@ impl ProductionVmLifecycleLoop {
                 error,
             ));
         }
-        if has_lifecycle {
-            if let Err(error) =
+        if has_lifecycle
+            && let Err(error) =
                 self.retain_completed_lifecycle_exits(&decisions, &observed_exit_codes)
-            {
-                return Err(self.quarantine_terminal_lifecycle_transaction(&decisions, error));
-            }
+        {
+            return Err(self.quarantine_terminal_lifecycle_transaction(&decisions, error));
         }
         if !decisions.is_empty() {
             let mut runtime =

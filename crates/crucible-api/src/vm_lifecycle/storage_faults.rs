@@ -51,6 +51,10 @@ const HARD_STORAGE_SETTLE_STEPS: usize = 4_096;
 /// Maximum undrained signal observations across one backend quantum.
 const HARD_STORAGE_FAULT_OBSERVATIONS: usize = 262_144;
 
+type StorageArrayDestinations = Vec<(ContentHash, QemuSharedBlockDevice, Vec<BlockRequest>)>;
+type StorageArrayDirtyRanges = Vec<crucible_device::block::BlockArrayDirtyRange>;
+type StorageArrayWriteDestinations = (StorageArrayDestinations, StorageArrayDirtyRanges);
+
 /// Authenticated World material retained for launch and coordinator binding.
 #[derive(Clone)]
 pub(super) struct ProductionBlockBinding {
@@ -79,14 +83,6 @@ pub(super) struct ProductionNinepBinding {
     pub(super) latency: NinepLatency,
     /// Resolved signal target for typed 9p opportunities.
     pub(super) target: ResolvedFaultTarget,
-    /// Immutable World hash indexing the device.
-    device_hash: ContentHash,
-}
-
-impl ProductionNinepBinding {
-    pub(super) const fn device_hash(&self) -> ContentHash {
-        self.device_hash
-    }
 }
 
 /// Resolves the optional block device owned by one World VM.
@@ -214,7 +210,6 @@ pub(super) fn ninep_binding_for_vm(
         target: ResolvedFaultTarget::NinePDevice {
             device: node.fault_target_hash(),
         },
-        device_hash: node.fault_target_hash(),
     }))
 }
 
@@ -349,6 +344,10 @@ pub(super) struct ProductionBlockFaultCoordinator {
 
 impl ProductionBlockFaultCoordinator {
     /// Binds a World block target to the shared production continuation.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the coordinator binds independently owned runtime, observation, world, target, plan, seed, and clock inputs"
+    )]
     pub(super) fn new(
         runtime: Arc<Mutex<ProductionFaultRuntime>>,
         cursor: SharedProductionFaultEvaluationCursor,
@@ -698,13 +697,7 @@ impl ProductionBlockFaultCoordinator {
         &self,
         policy: &crucible_qemu::ResolvedStorageArrayPolicy,
         request: &BlockRequest,
-    ) -> Result<
-        (
-            Vec<(ContentHash, QemuSharedBlockDevice, Vec<BlockRequest>)>,
-            Vec<crucible_device::block::BlockArrayDirtyRange>,
-        ),
-        StorageArrayError,
-    > {
+    ) -> Result<StorageArrayWriteDestinations, StorageArrayError> {
         if policy.online_paths == 0 {
             return Err(StorageArrayError::QuorumUnavailable);
         }
@@ -814,13 +807,7 @@ impl ProductionBlockFaultCoordinator {
         policy: &crucible_qemu::ResolvedStorageArrayPolicy,
         request: &BlockRequest,
         logical: &QemuSharedBlockDevice,
-    ) -> Result<
-        (
-            Vec<(ContentHash, QemuSharedBlockDevice, Vec<BlockRequest>)>,
-            Vec<crucible_device::block::BlockArrayDirtyRange>,
-        ),
-        StorageArrayError,
-    > {
+    ) -> Result<StorageArrayWriteDestinations, StorageArrayError> {
         let bytes = logical
             .storage_array_discard_replacement(request)
             .map_err(|error| StorageArrayError::MemberRead {
@@ -2389,8 +2376,10 @@ impl ProductionNinepFaultCoordinator {
         let events = self.observed_visibility_events(now_nanos)?;
         self.advance_visibility(servicer, guest_icount, now_nanos, &events)?;
 
-        let mut result = QemuLive9pIoServiceStep::default();
-        result.next_completion_icount = servicer.next_completion_icount();
+        let mut result = QemuLive9pIoServiceStep {
+            next_completion_icount: servicer.next_completion_icount(),
+            ..QemuLive9pIoServiceStep::default()
+        };
         let due = servicer.due_fault_opportunities(guest_icount);
         for (completion_icount, request) in &due {
             let visibility = self.evaluate_phase(&self.opportunity(

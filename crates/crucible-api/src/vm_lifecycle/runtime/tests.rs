@@ -287,6 +287,7 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
         storage_fault_observations,
         fault_runtime,
         fault_evaluation_cursor,
+        fault_replay_installed: false,
         icount_shift: 0,
         node_indexes: BTreeMap::new(),
         node_run_directories: BTreeMap::new(),
