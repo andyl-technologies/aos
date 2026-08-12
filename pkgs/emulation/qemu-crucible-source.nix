@@ -32,7 +32,7 @@
       # characterization store paths.
       && !lib.hasPrefix characterizationGoldens pathString;
   };
-  cargoDepsHash = "sha256-byK2knHIciv8rLm+TLiOfTXNU9m/u7idWbSsvG6mIys=";
+  cargoDepsHash = "sha256-CHxtW0lBAN3Ux2p9SGkWlcc9iHhCUiWWDCEmrRWb76I=";
   crucibleCargoDeps = fetchCargoVendor {
     src = crucibleSource;
     name = "crucible-vendor-${version}";
