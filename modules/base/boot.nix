@@ -154,11 +154,12 @@ in {
 
       firmwarePackages = lib.mkOption {
         type = lib.types.listOf lib.types.package;
-        default = [];
+        default = [pkgs.server-initrd-firmware];
         description = ''
-          Firmware packages required before switch-root. Runtime-only device
-          firmware belongs in aos.kernel.firmwarePackages so it does not
-          inflate every unified kernel image.
+          Firmware packages required before switch-root. The default is a
+          focused server storage and network subset. Runtime-only device
+          firmware belongs in aos.kernel.firmwarePackages; hardware profiles
+          must add any other firmware required to discover or unlock root.
         '';
       };
 
