@@ -335,10 +335,13 @@ and preserves or loses content according to the triggering effect.
 
 ## 11.12 Arrays, RAID, and rebuild
 
-Array declarations contain layout (`mirror`, `stripe`, or explicit parity
-layout), members, stripe/chunk geometry, quorum, read/write selection, degraded
-policy, rebuild target/source selection, and consistency policy. Parity math is
-a versioned exact byte operation with golden vectors.
+Array declarations contain one guest-visible logical block-device node, layout
+(`mirror`, `stripe`, or explicit parity layout), distinct backing members,
+stripe/chunk geometry, quorum, read/write selection, degraded policy, rebuild
+target/source selection, and consistency policy. A logical device MUST NOT also
+be a backing member. This explicit binding is the only way an adapter identifies
+array requests; inference from capacity, names, or shared members is forbidden.
+Parity math is a versioned exact byte operation with golden vectors.
 
 Member/path failures update array state before the next opportunity. Rebuild is
 a bounded background operation sharing the same storage service model and

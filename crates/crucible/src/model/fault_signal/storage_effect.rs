@@ -365,6 +365,8 @@ pub enum StorageEffectSpecification {
         rebuild_service: FaultObjectId,
         /// Registered consistency policy.
         consistency_policy: FaultObjectId,
+        /// Typed non-success block result returned when no legal quorum exists.
+        failure_result: FaultObjectId,
     },
     /// Typed 9p error, stale result, or misdirection.
     NinePResult {
