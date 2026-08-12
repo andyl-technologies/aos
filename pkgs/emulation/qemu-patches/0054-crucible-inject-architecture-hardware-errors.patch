@@ -883,7 +883,7 @@ index 0000000..3a8523d
 +        .privilege_mask = CRUCIBLE_HWERR_PRIVILEGES,
 +        .corrected = corrected,
 +        .maskable = maskable,
-+        .vmstate = 1,
++        .vmstate = 0,
 +        .id = id,
 +        .bank = bank,
 +        .channel = channel,
