@@ -475,6 +475,20 @@
       enforces = "QFP-CLOCK-1,QFP-CLOCK-2,FAULT-ORDER";
       capability = "transactional guest-clock transforms, source-state transitions, timer rearming, and typed causal evidence";
     }
+    {
+      file = "0069-crucible-accelerator-fault-device.patch";
+      catalogName = "crucible-accelerator-fault-device";
+      class = "D";
+      enforces = "QFP-ACCEL-1,QFP-ACCEL-2,FAULT-ORDER";
+      capability = "migration-safe virtio accelerator co-simulation transport with lifecycle, result, memory/ECC, and service mutations for closed GPU, TPU, and FPGA job schemas";
+    }
+    {
+      file = "0070-crucible-fault-vmstate.patch";
+      catalogName = "crucible-fault-vmstate";
+      class = "D";
+      enforces = "QFP-STATE-1,QFP-STATE-2,QFP-STATE-3";
+      capability = "live fail-closed build, patch-series, shared-memory ABI, and exact aggregate fault VMState identity";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
