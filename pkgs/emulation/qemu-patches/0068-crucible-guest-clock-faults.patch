@@ -1,3 +1,49 @@
+From b32459c4bd0dfed4c5823448dba304ab620f6822 Mon Sep 17 00:00:00 2001
+From: Dylan Plecki <dylan@andyl.com>
+Date: Tue, 11 Aug 2026 14:15:30 -0700
+Subject: [PATCH] crucible: guest clock faults
+
+Signed-off-by: Dylan Plecki <dylan@andyl.com>
+---
+ accel/tcg/tcg-accel-ops-rr.c        |   91 +-
+ hw/acpi/core.c                      |  151 +-
+ hw/acpi/ich9.c                      |   24 +
+ hw/acpi/piix4.c                     |   21 +
+ hw/intc/apic.c                      |  160 +-
+ hw/intc/apic_common.c               |   44 +-
+ hw/rtc/mc146818rtc.c                |  589 +++-
+ hw/rtc/pl031.c                      |  226 +-
+ hw/timer/hpet.c                     |  322 +-
+ hw/timer/i8254.c                    |  174 +-
+ hw/timer/i8254_common.c             |   27 +
+ include/hw/acpi/acpi.h              |    3 +
+ include/hw/i386/apic_internal.h     |    3 +
+ include/hw/rtc/mc146818rtc.h        |   12 +
+ include/hw/rtc/pl031.h              |    4 +
+ include/hw/timer/i8254_internal.h   |    3 +
+ include/qemu/crucible-fault.h       |  131 +-
+ include/qemu/qemu-plugin.h          |   36 +-
+ migration/savevm.c                  |    3 +-
+ plugins/api-system.c                |   14 +-
+ plugins/crucible-fault-clock.c      | 4327 +++++++++++++++++++++++++++
+ plugins/crucible-fault-interrupt.c  |    6 +-
+ plugins/crucible-fault-lifecycle.c  |   16 +-
+ plugins/crucible-fault-node.c       |  223 +-
+ plugins/crucible-fault-vmstate.c    |   11 +
+ plugins/crucible-fault.c            |   11 +-
+ plugins/meson.build                 |    1 +
+ system/vl.c                         |   25 +-
+ target/arm/cpu.c                    |   40 +
+ target/arm/cpu.h                    |    3 +
+ target/arm/helper.c                 |  188 +-
+ target/arm/internals.h              |    1 +
+ target/arm/machine.c                |   29 +
+ target/i386/cpu.c                   |   50 +
+ target/i386/tcg/misc_helper.c       |   18 +
+ target/i386/tcg/system/svm_helper.c |   29 +-
+ 36 files changed, 6850 insertions(+), 166 deletions(-)
+ create mode 100644 plugins/crucible-fault-clock.c
+
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
 index 5617692..a47e73e 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
@@ -7477,7 +7523,7 @@ index 73cffb6..7f4c1ad 100644
              return -EINVAL;
          }
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index e75bc75..8f215a7 100644
+index e75bc75..1710ab3 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -2303,6 +2303,16 @@ static bool node_ratio_capacity_valid(QemuCrucibleFaultRule *rule, uint16_t tag)
@@ -7643,6 +7689,270 @@ index e75bc75..8f215a7 100644
  QemuCrucibleFaultEventReservation *
  qemu_crucible_fault_event_reserve(size_t count)
  {
+@@ -4250,23 +4342,19 @@ static void node_memory_index_finalize(GArray *index, IntervalTreeRoot *root)
+     }
+ }
+ 
+-static void node_memory_index_rebuild(void)
++static void node_memory_index_build(GPtrArray *rules,
++                                    GArray **gpa_index_out,
++                                    GArray **gva_index_out,
++                                    GPtrArray **binding_order_out,
++                                    uint32_t *access_classes_out)
+ {
+-    uint32_t prior_access_classes = crucible_memory_access_classes;
+-    bool was_active =
+-        (crucible_memory_gpa_index && crucible_memory_gpa_index->len != 0) ||
+-        (crucible_memory_gva_index && crucible_memory_gva_index->len != 0);
+-    memset(&crucible_memory_gpa_root, 0, sizeof(crucible_memory_gpa_root));
+-    memset(&crucible_memory_gva_root, 0, sizeof(crucible_memory_gva_root));
+-    g_clear_pointer(&crucible_memory_gpa_index, g_array_unref);
+-    g_clear_pointer(&crucible_memory_gva_index, g_array_unref);
+-    g_clear_pointer(&crucible_memory_binding_order, g_ptr_array_unref);
+-    crucible_memory_gpa_index = g_array_new(
++    GArray *gpa_index = g_array_new(
+         false, false, sizeof(CrucibleMemoryIndexEntry));
+-    crucible_memory_gva_index = g_array_new(
++    GArray *gva_index = g_array_new(
+         false, false, sizeof(CrucibleMemoryIndexEntry));
+-    crucible_memory_binding_order = g_ptr_array_new();
+-    crucible_memory_access_classes = 0;
++    GPtrArray *binding_order = g_ptr_array_new();
++    uint32_t access_classes = 0;
++
+     if (!crucible_memory_checksum) {
+         crucible_memory_checksum = g_checksum_new(G_CHECKSUM_SHA256);
+         if (!crucible_memory_checksum) {
+@@ -4274,8 +4362,8 @@ static void node_memory_index_rebuild(void)
+             abort();
+         }
+     }
+-    for (guint i = 0; i < crucible_node_rules->len; i++) {
+-        QemuCrucibleFaultRule *rule = g_ptr_array_index(crucible_node_rules, i);
++    for (guint i = 0; i < rules->len; i++) {
++        QemuCrucibleFaultRule *rule = g_ptr_array_index(rules, i);
+         CrucibleMemoryIndexEntry entry = { .rule = rule };
+         uint64_t length;
+         bool has_vcpu;
+@@ -4294,27 +4382,50 @@ static void node_memory_index_rebuild(void)
+         }
+         entry.vcpu = has_vcpu ? target_vcpu : UINT32_MAX;
+         entry.interval.last = entry.interval.start + length - 1;
+-        if (crucible_memory_binding_order->len ==
++        if (binding_order->len ==
+             CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT) {
+             error_report("Crucible memory rule index exceeds resource bound");
+             abort();
+         }
+-        entry.rank = crucible_memory_binding_order->len;
++        entry.rank = binding_order->len;
+         if (rule->command_kind ==
+             CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM) {
+             uint32_t classes;
+ 
+             g_assert(node_field_u32(
+                 rule, CRUCIBLE_NODE_FAULT_FIELD_P8, &classes));
+-            crucible_memory_access_classes |= classes;
++            access_classes |= classes;
+         } else {
+-            crucible_memory_access_classes |= 0x3fU;
++            access_classes |= 0x3fU;
+         }
+-        g_ptr_array_add(crucible_memory_binding_order, rule);
+-        g_array_append_val(has_vcpu ? crucible_memory_gva_index :
+-                                      crucible_memory_gpa_index,
++        g_ptr_array_add(binding_order, rule);
++        g_array_append_val(has_vcpu ? gva_index : gpa_index,
+                            entry);
+     }
++    *gpa_index_out = gpa_index;
++    *gva_index_out = gva_index;
++    *binding_order_out = binding_order;
++    *access_classes_out = access_classes;
++}
++
++static void node_memory_index_install(GArray *gpa_index, GArray *gva_index,
++                                      GPtrArray *binding_order,
++                                      uint32_t access_classes)
++{
++    uint32_t prior_access_classes = crucible_memory_access_classes;
++    bool was_active =
++        (crucible_memory_gpa_index && crucible_memory_gpa_index->len != 0) ||
++        (crucible_memory_gva_index && crucible_memory_gva_index->len != 0);
++
++    memset(&crucible_memory_gpa_root, 0, sizeof(crucible_memory_gpa_root));
++    memset(&crucible_memory_gva_root, 0, sizeof(crucible_memory_gva_root));
++    g_clear_pointer(&crucible_memory_gpa_index, g_array_unref);
++    g_clear_pointer(&crucible_memory_gva_index, g_array_unref);
++    g_clear_pointer(&crucible_memory_binding_order, g_ptr_array_unref);
++    crucible_memory_gpa_index = gpa_index;
++    crucible_memory_gva_index = gva_index;
++    crucible_memory_binding_order = binding_order;
++    crucible_memory_access_classes = access_classes;
+     node_memory_index_finalize(crucible_memory_gpa_index,
+                                &crucible_memory_gpa_root);
+     node_memory_index_finalize(crucible_memory_gva_index,
+@@ -4337,6 +4448,19 @@ static void node_memory_index_rebuild(void)
+     }
+ }
+ 
++static void node_memory_index_rebuild(void)
++{
++    GArray *gpa_index;
++    GArray *gva_index;
++    GPtrArray *binding_order;
++    uint32_t access_classes;
++
++    node_memory_index_build(crucible_node_rules, &gpa_index, &gva_index,
++                            &binding_order, &access_classes);
++    node_memory_index_install(gpa_index, gva_index, binding_order,
++                              access_classes);
++}
++
+ static void node_memory_match_mark(uint32_t rank)
+ {
+     uint32_t word = rank / 64;
+@@ -10207,14 +10331,20 @@ typedef struct CrucibleNodeVmstate {
+ 
+ typedef struct CrucibleMemoryVmstateLedger {
+     QemuCrucibleFaultRule *rule;
++    CrucibleMemoryServiceLedger *prepared_ledger;
+     uint64_t ready_ns;
+ } CrucibleMemoryVmstateLedger;
+ 
+ typedef struct CrucibleMemoryVmstate {
+     GHashTable *retry_states;
++    GHashTable *service_ledgers;
++    GArray *gpa_index;
++    GArray *gva_index;
++    GPtrArray *binding_order;
+     GArray *ledgers;
+     uint64_t access_sequence;
+     uint64_t retention_next_ns;
++    uint32_t access_classes;
+ } CrucibleMemoryVmstate;
+ 
+ typedef struct CrucibleMemoryVmstateRetention {
+@@ -10535,6 +10665,8 @@ static int crucible_node_vmstate_prepare(const uint8_t *payload,
+         (GDestroyNotify)node_rule_unref);
+     state->events = g_ptr_array_new_with_free_func(
+         crucible_node_vmstate_event_free);
++    node_events_ensure();
++    node_rules_ensure();
+     if (!qemu_crucible_fault_vmstate_get_bytes(&reader, magic,
+                                                 sizeof(magic)) ||
+         memcmp(magic, CRUCIBLE_NODE_VMSTATE_MAGIC, sizeof(magic)) != 0 ||
+@@ -10630,7 +10762,6 @@ static void crucible_node_vmstate_commit(void *opaque)
+     CrucibleNodeVmstate *state = opaque;
+     CrucibleNodeEvent *queued;
+ 
+-    node_events_ensure();
+     g_assert(crucible_node_vmstate_prepared == state);
+     crucible_node_vmstate_prepared = NULL;
+     while ((queued = QTAILQ_FIRST(&crucible_node_events))) {
+@@ -10639,7 +10770,6 @@ static void crucible_node_vmstate_commit(void *opaque)
+         queued->payload_length = 0;
+         QTAILQ_INSERT_TAIL(&crucible_node_free_events, queued, link);
+     }
+-    node_rules_ensure();
+     g_ptr_array_unref(crucible_node_rules);
+     crucible_node_rules = g_steal_pointer(&state->rules);
+     crucible_node_event_count = 0;
+@@ -10668,7 +10798,6 @@ static void crucible_node_vmstate_commit(void *opaque)
+     crucible_node_terminal_requested = state->terminal_requested;
+     crucible_node_terminal_configured = state->terminal_configured;
+     crucible_node_terminal_hard = state->terminal_hard;
+-    node_memory_index_rebuild();
+     g_ptr_array_set_size(state->events, 0);
+     crucible_node_vmstate_free(state);
+ }
+@@ -11007,6 +11136,10 @@ static void crucible_memory_vmstate_free(void *opaque)
+         g_array_unref(state->ledgers);
+     }
+     g_clear_pointer(&state->retry_states, g_hash_table_unref);
++    g_clear_pointer(&state->service_ledgers, g_hash_table_unref);
++    g_clear_pointer(&state->gpa_index, g_array_unref);
++    g_clear_pointer(&state->gva_index, g_array_unref);
++    g_clear_pointer(&state->binding_order, g_ptr_array_unref);
+     g_free(state);
+ }
+ 
+@@ -11225,6 +11358,8 @@ static int crucible_memory_vmstate_prepare(const uint8_t *payload,
+ 
+     state->ledgers = g_array_new(
+         false, false, sizeof(CrucibleMemoryVmstateLedger));
++    state->service_ledgers = g_hash_table_new_full(
++        g_str_hash, g_str_equal, NULL, node_memory_service_ledger_free);
+     state->retry_states = g_hash_table_new_full(
+         node_memory_retry_key_hash, node_memory_retry_key_equal,
+         g_free, g_free);
+@@ -11280,6 +11415,9 @@ static int crucible_memory_vmstate_prepare(const uint8_t *payload,
+             g_autofree char *ledger_key = node_memory_service_ledger_key(rule);
+             uint64_t *existing = ledger_key ?
+                 g_hash_table_lookup(ledger_values, ledger_key) : NULL;
++            CrucibleMemoryServiceLedger *prepared_ledger = ledger_key ?
++                g_hash_table_lookup(state->service_ledgers, ledger_key) :
++                NULL;
+ 
+             if (!ledger_key || (existing && *existing != ledger.ready_ns)) {
+                 qemu_crucible_fault_rule_unref(rule);
+@@ -11292,6 +11430,17 @@ static int crucible_memory_vmstate_prepare(const uint8_t *payload,
+                 g_hash_table_insert(ledger_values,
+                                     g_steal_pointer(&ledger_key), stored);
+             }
++            if (!prepared_ledger) {
++                prepared_ledger = g_new0(CrucibleMemoryServiceLedger, 1);
++                prepared_ledger->key = node_memory_service_ledger_key(rule);
++                g_assert(prepared_ledger->key);
++                g_hash_table_insert(state->service_ledgers,
++                                    prepared_ledger->key, prepared_ledger);
++            }
++            g_assert(prepared_ledger->references != UINT32_MAX);
++            prepared_ledger->references++;
++            prepared_ledger->ready_ns = ledger.ready_ns;
++            ledger.prepared_ledger = prepared_ledger;
+         }
+         g_hash_table_add(seen, rule);
+         rule->exposure_initialized = exposure;
+@@ -11452,6 +11601,9 @@ static int crucible_memory_vmstate_prepare(const uint8_t *payload,
+     if (!qemu_crucible_fault_vmstate_reader_finished(&reader)) {
+         goto fail;
+     }
++    node_memory_index_build(crucible_node_vmstate_prepared->rules,
++                            &state->gpa_index, &state->gva_index,
++                            &state->binding_order, &state->access_classes);
+     *staged_out = state;
+     return 0;
+ 
+@@ -11469,21 +11621,18 @@ static void crucible_memory_vmstate_commit(void *opaque)
+     crucible_memory_access_sequence = state->access_sequence;
+     crucible_memory_retention_next_ns = state->retention_next_ns;
+     g_clear_pointer(&crucible_memory_service_ledgers, g_hash_table_unref);
++    crucible_memory_service_ledgers =
++        g_steal_pointer(&state->service_ledgers);
+     for (guint i = 0; i < state->ledgers->len; i++) {
+         CrucibleMemoryVmstateLedger *ledger = &g_array_index(
+             state->ledgers, CrucibleMemoryVmstateLedger, i);
+ 
+-        g_assert(node_memory_service_ledger_acquire(ledger->rule));
+-        if (ledger->rule->service_ledger) {
+-            if (ledger->rule->service_ledger->references > 1) {
+-                g_assert(ledger->rule->service_ledger->ready_ns ==
+-                         ledger->ready_ns);
+-            } else {
+-                ledger->rule->service_ledger->ready_ns = ledger->ready_ns;
+-            }
+-        }
++        ledger->rule->service_ledger = ledger->prepared_ledger;
+     }
+-    node_memory_index_rebuild();
++    node_memory_index_install(g_steal_pointer(&state->gpa_index),
++                              g_steal_pointer(&state->gva_index),
++                              g_steal_pointer(&state->binding_order),
++                              state->access_classes);
+     node_memory_retention_deadline_recompute();
+     crucible_memory_vmstate_free(state);
+ }
 diff --git a/plugins/crucible-fault-vmstate.c b/plugins/crucible-fault-vmstate.c
 index 629eb40..486b17a 100644
 --- a/plugins/crucible-fault-vmstate.c
@@ -8362,3 +8672,5 @@ index f9982b7..ead3000 100644
  
      env->gdt.base  = x86_ldq_phys(cs, env->vm_hsave + offsetof(struct vmcb,
                                                         save.gdtr.base));
+-- 
+2.54.0
