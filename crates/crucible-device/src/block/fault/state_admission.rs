@@ -272,7 +272,7 @@ impl BlockFaultState {
             || directive.reported_capacity_bytes != prior.reported_capacity_bytes
             || directive.error_result != prior.error_result
             || directive.additional_latency_nanos != prior.additional_latency_nanos
-            || prior.external_durability_dependency.is_some()
+            || !prior.external_durability_dependencies.is_empty()
             || directive.retain_completion != prior.retain_completion
             || directive.retention_timeout_response != prior.retention_timeout_response
             || directive.retention_timeout_nanos != prior.retention_timeout_nanos
@@ -373,7 +373,7 @@ impl BlockFaultState {
             || directive.cache_policy != prior.cache_policy
             || directive.persistence_transforms != prior.persistence_transforms
             || directive.persistence_media_rules != prior.persistence_media_rules
-            || directive.external_durability_dependency != prior.external_durability_dependency
+            || directive.external_durability_dependencies != prior.external_durability_dependencies
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "delivery directive identity or earlier phases differ",

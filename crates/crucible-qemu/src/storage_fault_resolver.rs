@@ -11,9 +11,11 @@ use crucible::model::{
     FaultContractError, FaultCoordinate, FaultObjectId, FaultOperation, FaultOpportunity,
     FaultPhase, MappedEffectParameter, OpportunityPayload, ResolvedBindingAction,
     ResolvedFaultTarget, ResolvedMappingOutput, SignalValue, StorageAvailabilityState,
-    StorageEffectSpecification, StorageFlushKind, StorageMediaState, StoragePolicyArtifactKind,
+    StorageEffectSpecification, StorageFlushKind, StorageMediaState, StoragePolicyArrayConsistency,
+    StoragePolicyArraySelection, StoragePolicyArtifactKind,
     StoragePolicyCacheEviction, StoragePolicyDirtyEviction, StoragePolicyDuplicateCompletion,
-    StoragePolicyPersistenceOrdering, StoragePolicyQueueDiscipline, StoragePolicyServiceClass,
+    StoragePolicyPersistenceOrdering, StoragePolicyQueueDiscipline, StoragePolicyRebuild,
+    StoragePolicyServiceClass,
     StoragePolicyTransitionPendingOperation, StoragePolicyTransitionRequestIds,
     StoragePolicyTransitionResolvedOperation, StoragePolicyTransitionState,
     StoragePolicyTransitionTopology, StoragePolicyTransitionUnadmitted,
@@ -43,6 +45,46 @@ pub struct ResolvedVolatileCacheLoss {
     pub durable_frontier_before: u64,
     /// Actual durable frontier immediately after the selected loss.
     pub durable_frontier_after: u64,
+}
+
+/// One resolved member of a live storage array.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedStorageArrayMember {
+    /// Stable member identity within the array.
+    pub member: FaultObjectId,
+    /// Immutable target hash of the authoritative backing block device.
+    pub device: ContentHash,
+    /// Stable layout ordinal.
+    pub ordinal: u16,
+    /// Whether the member accepts operations in this state transition.
+    pub online: bool,
+}
+
+/// Complete closed policy for one live array-state transition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedStorageArrayPolicy {
+    /// Stable array identity.
+    pub array: FaultObjectId,
+    /// Immutable target hash of the guest-visible logical block device.
+    pub logical_device: ContentHash,
+    /// Declared read quorum.
+    pub read_quorum: u16,
+    /// Declared write quorum.
+    pub write_quorum: u16,
+    /// Positive stripe chunk size.
+    pub chunk_bytes: u64,
+    /// Canonically member-ID-ordered backing members.
+    pub members: Vec<ResolvedStorageArrayMember>,
+    /// Number of online access paths.
+    pub online_paths: u16,
+    /// Deterministic member-selection policy.
+    pub selection: StoragePolicyArraySelection,
+    /// Bounded rebuild service policy.
+    pub rebuild: StoragePolicyRebuild,
+    /// Partial-update consistency policy.
+    pub consistency: StoragePolicyArrayConsistency,
+    /// Typed failure returned when no legal quorum exists.
+    pub failure_result: BlockFaultResult,
 }
 
 /// Resolves a registered controller transition policy for a live block device.
@@ -118,6 +160,159 @@ pub fn resolve_block_controller_transition(
         },
         recovery_nanos: policy.recovery_nanos.get(),
     })
+}
+
+/// Resolves every artifact referenced by one array-state action.
+///
+/// # Errors
+///
+/// Returns [`StorageFaultResolutionError`] when the action is not an array
+/// transition, its array/logical/member device is absent, or any referenced
+/// artifact has the wrong closed type.
+pub fn resolve_storage_array_policy(
+    world: &World,
+    action: &ResolvedBindingAction,
+) -> Result<ResolvedStorageArrayPolicy, StorageFaultResolutionError> {
+    let EffectSpecification::Storage(StorageEffectSpecification::ArrayState {
+        layout,
+        member_path_state,
+        selection_policy,
+        rebuild_service,
+        consistency_policy,
+        failure_result,
+    }) = action.effect.specification()
+    else {
+        return Err(unsupported(action, "array state boundary"));
+    };
+    let array = world
+        .fault_topology()
+        .storage_arrays
+        .iter()
+        .find(|array| array.id.as_str() == layout.as_str())
+        .ok_or(StorageFaultResolutionError::UnsupportedTarget)?;
+    let device_id = FaultObjectId::parse(array.device.as_str())
+        .map_err(|_| StorageFaultResolutionError::UnsupportedTarget)?;
+    let logical_device = storage_device_by_id(world, &device_id)
+        .map(|(_, hash)| hash)
+        .ok_or(StorageFaultResolutionError::UnsupportedTarget)?;
+    let (member_states, path_states) = world
+        .fault_topology()
+        .storage_policy_artifact(member_path_state)
+        .and_then(|artifact| match &artifact.artifact {
+            StoragePolicyArtifactKind::ArrayState { members, paths } => Some((members, paths)),
+            _ => None,
+        })
+        .ok_or_else(|| StorageFaultResolutionError::PolicyReference {
+            binding: action.binding.clone(),
+            reference: member_path_state.clone(),
+            expected: "array_state",
+        })?;
+    let mut members = Vec::with_capacity(array.members.len());
+    for member in &array.members {
+        let member_id = FaultObjectId::parse(member.id.as_str())
+            .map_err(|_| StorageFaultResolutionError::UnsupportedTarget)?;
+        let online = member_states
+            .iter()
+            .find(|candidate| candidate.member == member_id)
+            .map(|candidate| candidate.online)
+            .ok_or(StorageFaultResolutionError::UnsupportedTarget)?;
+        let member_device_id = FaultObjectId::parse(member.device.as_str())
+            .map_err(|_| StorageFaultResolutionError::UnsupportedTarget)?;
+        let device = storage_device_by_id(world, &member_device_id)
+            .map(|(_, hash)| hash)
+            .ok_or(StorageFaultResolutionError::UnsupportedTarget)?;
+        members.push(ResolvedStorageArrayMember {
+            member: member_id,
+            device,
+            ordinal: member.ordinal,
+            online,
+        });
+    }
+    let selection = array_selection(world, action, selection_policy)?;
+    let rebuild = array_rebuild(world, action, rebuild_service)?;
+    let consistency = array_consistency(world, action, consistency_policy)?;
+    let failure_result = resolve_block_failure(world, failure_result).ok_or_else(|| {
+        StorageFaultResolutionError::PolicyReference {
+            binding: action.binding.clone(),
+            reference: failure_result.clone(),
+            expected: "non-success block typed_result",
+        }
+    })?;
+    let online_paths = u16::try_from(path_states.iter().filter(|path| path.online).count())
+        .map_err(|_| StorageFaultResolutionError::Overflow {
+            binding: action.binding.clone(),
+            field: "array_online_paths",
+        })?;
+    Ok(ResolvedStorageArrayPolicy {
+        array: layout.clone(),
+        logical_device,
+        read_quorum: array.read_quorum,
+        write_quorum: array.write_quorum,
+        chunk_bytes: array.chunk_bytes,
+        members,
+        online_paths,
+        selection,
+        rebuild,
+        consistency,
+        failure_result,
+    })
+}
+
+fn array_selection(
+    world: &World,
+    action: &ResolvedBindingAction,
+    reference: &FaultObjectId,
+) -> Result<StoragePolicyArraySelection, StorageFaultResolutionError> {
+    world
+        .fault_topology()
+        .storage_policy_artifact(reference)
+        .and_then(|artifact| match artifact.artifact {
+            StoragePolicyArtifactKind::ArraySelection(policy) => Some(policy),
+            _ => None,
+        })
+        .ok_or_else(|| StorageFaultResolutionError::PolicyReference {
+            binding: action.binding.clone(),
+            reference: reference.clone(),
+            expected: "array_selection",
+        })
+}
+
+fn array_rebuild(
+    world: &World,
+    action: &ResolvedBindingAction,
+    reference: &FaultObjectId,
+) -> Result<StoragePolicyRebuild, StorageFaultResolutionError> {
+    world
+        .fault_topology()
+        .storage_policy_artifact(reference)
+        .and_then(|artifact| match &artifact.artifact {
+            StoragePolicyArtifactKind::Rebuild(policy) => Some(policy.clone()),
+            _ => None,
+        })
+        .ok_or_else(|| StorageFaultResolutionError::PolicyReference {
+            binding: action.binding.clone(),
+            reference: reference.clone(),
+            expected: "rebuild",
+        })
+}
+
+fn array_consistency(
+    world: &World,
+    action: &ResolvedBindingAction,
+    reference: &FaultObjectId,
+) -> Result<StoragePolicyArrayConsistency, StorageFaultResolutionError> {
+    world
+        .fault_topology()
+        .storage_policy_artifact(reference)
+        .and_then(|artifact| match artifact.artifact {
+            StoragePolicyArtifactKind::ArrayConsistency(policy) => Some(policy),
+            _ => None,
+        })
+        .ok_or_else(|| StorageFaultResolutionError::PolicyReference {
+            binding: action.binding.clone(),
+            reference: reference.clone(),
+            expected: "array_consistency",
+        })
 }
 
 /// Replay policy for one atomic volatile-cache loss transition.

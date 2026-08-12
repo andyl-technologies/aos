@@ -575,9 +575,9 @@ pub struct ResolvedBlockFaultDirective {
     pub error_result: Option<BlockFaultResult>,
     /// Dynamic service, latency, stall, and reorder delay.
     pub additional_latency_nanos: u64,
-    /// Durable frontier on an externally redirected destination that must be
+    /// Canonically device-ordered external durable frontiers that must all be
     /// acknowledged before this request's completion may be delivered.
-    pub external_durability_dependency: Option<BlockExternalDurabilityDependency>,
+    pub external_durability_dependencies: Vec<BlockExternalDurabilityDependency>,
     /// Canonically contributor-ordered service rules sampled at admission.
     pub service_rules: Vec<ResolvedBlockServiceRule>,
     /// Exact virtual coordinate at which this request resolves in the adapter.
@@ -691,7 +691,7 @@ impl ResolvedBlockFaultDirective {
             reported_capacity_bytes: capacity,
             error_result: None,
             additional_latency_nanos: 0,
-            external_durability_dependency: None,
+            external_durability_dependencies: Vec::new(),
             service_rules: Vec::new(),
             execution_nanos: 0,
             retain_completion: false,
@@ -942,12 +942,21 @@ impl ResolvedBlockFaultDirective {
                 reason: "write dispositions require a write request",
             });
         }
-        if self.external_durability_dependency.is_some()
+        if !self.external_durability_dependencies.is_empty()
             && (self.operation != BlockOp::Write
                 || self.write_disposition != BlockFaultWriteDisposition::Lost)
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "external durability dependency requires a committed external write",
+            });
+        }
+        if self
+            .external_durability_dependencies
+            .windows(2)
+            .any(|pair| pair[0].destination_device >= pair[1].destination_device)
+        {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "external durability dependencies are not in unique device order",
             });
         }
         if self.operation == BlockOp::Discard

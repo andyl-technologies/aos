@@ -293,13 +293,14 @@ pub use spawn::{
     spawn_qemu_child_with_fds, spawn_qemu_child_with_fds_in_directory,
 };
 pub use storage_fault_resolver::{
-    ResolvedVolatileCacheLoss, StorageFaultResolutionContext, StorageFaultResolutionError,
+    ResolvedStorageArrayMember, ResolvedStorageArrayPolicy, ResolvedVolatileCacheLoss,
+    StorageFaultResolutionContext, StorageFaultResolutionError,
     VolatileCacheLossReplay, block_delivery_fault_opportunity, block_durability_config,
     block_persistence_fault_opportunity, block_request_fault_opportunity,
     block_request_persistence_fault_opportunity, merge_block_fault_phase_directive,
     resolve_block_controller_transition, resolve_block_fault_directive,
     resolve_block_persistence_media_directive,
-    resolve_volatile_cache_loss, storage_recovery_event_key,
+    resolve_storage_array_policy, resolve_volatile_cache_loss, storage_recovery_event_key,
 };
 #[cfg(target_os = "linux")]
 pub use supervision::{

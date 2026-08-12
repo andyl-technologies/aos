@@ -396,24 +396,17 @@ impl ProductionBlockFaultCoordinator {
         &self,
         opportunity: &crucible_device::block::BlockDeliveryOpportunity,
     ) -> Result<bool, QemuAsyncDriverRuntimeError> {
-        let Some(dependency) = opportunity.resolved.external_durability_dependency else {
-            return Ok(true);
-        };
-        let destination_id = ContentHash {
-            bytes: dependency.destination_device,
-        };
-        let destination = self
-            .devices
-            .lock()
-            .map_err(|_| {
-                storage_error(
-                    "check cross-device durability",
-                    "authoritative block-device registry is poisoned",
-                )
-            })?
-            .get(&destination_id)
-            .cloned()
-            .ok_or_else(|| {
+        let devices = self.devices.lock().map_err(|_| {
+            storage_error(
+                "check cross-device durability",
+                "authoritative block-device registry is poisoned",
+            )
+        })?;
+        for dependency in &opportunity.resolved.external_durability_dependencies {
+            let destination_id = ContentHash {
+                bytes: dependency.destination_device,
+            };
+            let destination = devices.get(&destination_id).cloned().ok_or_else(|| {
                 storage_error(
                     "check cross-device durability",
                     format!(
@@ -422,9 +415,14 @@ impl ProductionBlockFaultCoordinator {
                     ),
                 )
             })?;
-        destination
-            .satisfies_external_durability(dependency)
-            .map_err(|error| storage_error("check cross-device durability", error))
+            if !destination
+                .satisfies_external_durability(*dependency)
+                .map_err(|error| storage_error("check cross-device durability", error))?
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn virtual_nanos(&self, icount: u64) -> Result<u64, QemuAsyncDriverRuntimeError> {

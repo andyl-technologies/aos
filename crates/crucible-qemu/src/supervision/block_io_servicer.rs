@@ -71,6 +71,7 @@ use crucible_device::block::{
     ResolvedBlockPersistenceMediaDirective, ResolvedBlockRequestPersistenceDirective,
     install_cross_device_misdirected_persistence,
 };
+use crucible_device::block::BlockFaultWriteDisposition;
 use crucible_device::{
     BaseImage, BlockDevice, BlockLatency, BlockRequest, BlockRequestIdentity, DeviceError, IoCore,
     Request,
@@ -316,6 +317,117 @@ impl QemuSharedBlockDevice {
             dependency
         };
         Ok(dependency)
+    }
+
+    /// Atomically persists one logical write across an ordered device set.
+    ///
+    /// `destinations` contains `(device identity, handle, offset, bytes)` and
+    /// must be in unique identity order. Every complete device is cloned while
+    /// all locks are held; the logical source and all destinations commit only
+    /// after every destination accepts its exact write. Runtime notifications
+    /// are then published for every changed destination. A notification failure
+    /// restores every device and republishes the prior horizons.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::CrossDeviceIdentityMismatch`]
+    /// for aliases or noncanonical destination order, a lock/notification error
+    /// for host ownership failures, or [`QemuLiveBlockIoServicerError::Device`]
+    /// when any real block device rejects the transaction.
+    pub fn install_multi_device_persistence(
+        &self,
+        source_id: ContentHash,
+        destinations: &[(ContentHash, QemuSharedBlockDevice, u64, Vec<u8>)],
+        mut resolved: ResolvedBlockRequestPersistenceDirective,
+    ) -> Result<Vec<BlockExternalDurabilityDependency>, QemuLiveBlockIoServicerError> {
+        if destinations.is_empty()
+            || destinations.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+            || destinations
+                .iter()
+                .any(|(id, handle, _, _)| *id == source_id || self.ptr_eq(handle))
+            || destinations.iter().enumerate().any(|(index, (_, handle, _, _))| {
+                destinations[index + 1..]
+                    .iter()
+                    .any(|(_, other, _, _)| handle.ptr_eq(other))
+            })
+        {
+            return Err(QemuLiveBlockIoServicerError::CrossDeviceIdentityMismatch);
+        }
+        let mut handles = Vec::with_capacity(destinations.len() + 1);
+        handles.push((source_id, self.clone()));
+        handles.extend(
+            destinations
+                .iter()
+                .map(|(id, handle, _, _)| (*id, handle.clone())),
+        );
+        handles.sort_by_key(|(id, _)| *id);
+        let mut devices = handles
+            .iter()
+            .map(|(_, handle)| handle.lock())
+            .collect::<Result<Vec<_>, _>>()?;
+        let prior = devices.iter().map(|device| (*device).clone()).collect::<Vec<_>>();
+        let mut staged = prior.clone();
+        let prior_deadlines = prior
+            .iter()
+            .map(BlockDevice::next_exact_local_event)
+            .collect::<Vec<_>>();
+        let source_index = handles
+            .binary_search_by_key(&source_id, |(id, _)| *id)
+            .map_err(|_| QemuLiveBlockIoServicerError::CrossDeviceIdentityMismatch)?;
+        let mut dependencies = Vec::with_capacity(destinations.len());
+        for (destination_id, _, offset, bytes) in destinations {
+            let destination_index = handles
+                .binary_search_by_key(destination_id, |(id, _)| *id)
+                .map_err(|_| QemuLiveBlockIoServicerError::CrossDeviceIdentityMismatch)?;
+            let (required_durability, required_frontier) = staged[destination_index]
+                .apply_storage_external_write(
+                    resolved.opportunity.request.request_id,
+                    resolved.directive.request_sequence,
+                    resolved.opportunity.ready_nanos,
+                    *offset,
+                    bytes.clone(),
+                )
+                .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+            dependencies.push(BlockExternalDurabilityDependency {
+                destination_device: destination_id.bytes,
+                required_durability,
+                required_frontier,
+            });
+        }
+        resolved.directive.write_disposition = BlockFaultWriteDisposition::Lost;
+        resolved.directive.external_durability_dependencies = dependencies.clone();
+        staged[source_index]
+            .install_storage_request_persistence_directive(resolved)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        let deadlines = staged
+            .iter()
+            .map(|device| device.next_exact_local_event())
+            .collect::<Vec<_>>();
+        for (device, next) in devices.iter_mut().zip(staged) {
+            **device = next;
+        }
+        for (index, (_, handle)) in handles.iter().enumerate() {
+            if index == source_index {
+                continue;
+            }
+            if let Err(error) =
+                handle.publish_remote_mutation(deadlines[index], prior_deadlines[index])
+            {
+                for (device, before) in devices.iter_mut().zip(prior.iter()) {
+                    **device = before.clone();
+                }
+                for (rollback_index, (_, rollback_handle)) in handles.iter().enumerate() {
+                    if rollback_index != source_index {
+                        let _ = rollback_handle.publish_remote_mutation(
+                            prior_deadlines[rollback_index],
+                            deadlines[rollback_index],
+                        );
+                    }
+                }
+                return Err(error);
+            }
+        }
+        Ok(dependencies)
     }
 
     fn publish_remote_mutation(
@@ -2205,6 +2317,66 @@ mod tests {
                 .satisfies_external_durability(dependency)
                 .unwrap_or_else(|error| panic!("inspect acknowledged durability: {error}")),
             "source completion may proceed only after the exact frontier is durable"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn multi_device_write_commits_every_member_and_orders_dependencies() {
+        let (_source_file, _source_region_len, source_servicer) = checkpoint_fixture();
+        let (_first_file, _first_region_len, first_servicer) = checkpoint_fixture();
+        let (_second_file, _second_region_len, second_servicer) = checkpoint_fixture();
+        let source = source_servicer.shared_device();
+        let first = first_servicer.shared_device();
+        let second = second_servicer.shared_device();
+        for destination in [&first, &second] {
+            let mut device = destination
+                .lock()
+                .unwrap_or_else(|error| panic!("lock destination: {error}"));
+            let mut config = BlockDurabilityConfig::write_through(4096);
+            config.atomic_write_bytes = 512;
+            config.retained_versions = 16;
+            device
+                .configure_storage_faults(config, false)
+                .unwrap_or_else(|error| panic!("configure destination: {error}"));
+        }
+        first
+            .attach_notification_wake(Arc::new(unlinked_wake_file()))
+            .unwrap_or_else(|error| panic!("attach first wake: {error}"));
+        second
+            .attach_notification_wake(Arc::new(unlinked_wake_file()))
+            .unwrap_or_else(|error| panic!("attach second wake: {error}"));
+        let now_nanos = 64;
+        let mut directive = staged_persistence(&source, now_nanos);
+        directive.directive.write_disposition = BlockFaultWriteDisposition::Apply;
+        let dependencies = source
+            .install_multi_device_persistence(
+                ContentHash { bytes: [1; 32] },
+                &[
+                    (ContentHash { bytes: [2; 32] }, first.clone(), 0, vec![0xa5; 512]),
+                    (ContentHash { bytes: [3; 32] }, second.clone(), 512, vec![0x5a; 512]),
+                ],
+                directive,
+            )
+            .unwrap_or_else(|error| panic!("commit multi-device write: {error}"));
+        assert_eq!(
+            dependencies
+                .iter()
+                .map(|dependency| dependency.destination_device)
+                .collect::<Vec<_>>(),
+            vec![[2; 32], [3; 32]]
+        );
+        assert_eq!(
+            first
+                .inspect_storage_visible(0, 512)
+                .unwrap_or_else(|error| panic!("inspect first member: {error}")),
+            vec![0xa5; 512]
+        );
+        assert_eq!(
+            second
+                .inspect_storage_visible(512, 512)
+                .unwrap_or_else(|error| panic!("inspect second member: {error}")),
+            vec![0x5a; 512]
         );
     }
 }
