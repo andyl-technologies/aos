@@ -56,8 +56,8 @@ use crucible_shmem::{
 };
 
 pub use definition::{
-    CADENCE_ICOUNT, FAULT_ACTIVATION_ICOUNT, FRAME_DELIVERY_ICOUNT, RUST_PLUGIN_FINGERPRINT_DOMAIN,
-    RustPluginFingerprintDefinition, SAMPLE_ICOUNTS,
+    CADENCE_ICOUNT, FRAME_DELIVERY_ICOUNT, RUST_PLUGIN_FINGERPRINT_DOMAIN,
+    RustPluginFingerprintDefinition, SAMPLE_ICOUNTS, SIGNAL_EFFECT_BOUNDARY_ICOUNT,
 };
 pub use error::PluginFingerprintRunnerError;
 use error::{channel_error, hash_file, node_id, path_text, to_run_error};
@@ -334,7 +334,7 @@ impl PluginFingerprintRunner {
                 )
                 .map_err(|source| channel_error("enqueue fingerprint frame event", source))?;
             }
-            let preemption_sequence = if target == FAULT_ACTIVATION_ICOUNT {
+            let preemption_sequence = if target == SIGNAL_EFFECT_BOUNDARY_ICOUNT {
                 let irq = if self.config.second_run_divergence_control
                     && matches!(role, RunRole::HostLoad | RunRole::Repeat)
                 {
@@ -364,11 +364,13 @@ impl PluginFingerprintRunner {
                     .consumed_preemption_sequence()
                     .map_err(|source| PluginFingerprintRunnerError::MappedHotPath { source })?;
                 if observed != expected {
-                    return Err(PluginFingerprintRunnerError::FaultActivationNotConsumed {
-                        target_icount: target,
-                        expected_sequence: expected,
-                        observed_sequence: observed,
-                    });
+                    return Err(
+                        PluginFingerprintRunnerError::SignalEffectBoundaryNotConsumed {
+                            target_icount: target,
+                            expected_sequence: expected,
+                            observed_sequence: observed,
+                        },
+                    );
                 }
             }
             let sample =
@@ -734,9 +736,9 @@ fn trigger_for_icount(icount: u64) -> SingleVmFingerprintTrigger {
         FRAME_DELIVERY_ICOUNT => {
             SingleVmFingerprintTrigger::Event(SingleVmFingerprintEventBoundary::FrameDelivery)
         }
-        FAULT_ACTIVATION_ICOUNT => {
-            SingleVmFingerprintTrigger::Event(SingleVmFingerprintEventBoundary::FaultActivation)
-        }
+        SIGNAL_EFFECT_BOUNDARY_ICOUNT => SingleVmFingerprintTrigger::Event(
+            SingleVmFingerprintEventBoundary::SignalEffectBoundary,
+        ),
         _ => SingleVmFingerprintTrigger::Periodic,
     }
 }

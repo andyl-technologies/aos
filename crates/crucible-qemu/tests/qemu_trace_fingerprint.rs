@@ -25,7 +25,7 @@ fn canonical_trace_definition_pins_complete_preflight_observation_semantics() {
     assert!(material.contains("trigger[0]=periodic-aggregate-icount"));
     assert!(material.contains("trigger[1]=horizon-advance"));
     assert!(material.contains("trigger[2]=frame-delivery"));
-    assert!(material.contains("trigger[3]=fault-activation"));
+    assert!(material.contains("trigger[3]=signal-effect-boundary"));
     assert!(material.contains("component[3]=qemu-non-ram-vmstate-sha256"));
     assert!(material.contains("rr_switch_quantum=4096"));
     assert!(material.contains("guest_ram_bytes=67108864"));

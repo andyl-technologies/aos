@@ -144,7 +144,7 @@ fn definition_material(cadence_icount: u64, observation: &QemuTraceObservationCo
         "trigger[0]=periodic-aggregate-icount".to_owned(),
         "trigger[1]=horizon-advance".to_owned(),
         "trigger[2]=frame-delivery".to_owned(),
-        "trigger[3]=fault-activation".to_owned(),
+        "trigger[3]=signal-effect-boundary".to_owned(),
         "component[0]=aggregate-icount".to_owned(),
         "component[1]=all-vcpu-register-files-sha256-v1".to_owned(),
         "component[2]=full-guest-ram-sha256-v1".to_owned(),
@@ -1577,7 +1577,7 @@ fn sample_trigger(
             let boundary = match boundary {
                 "horizon-advance" => SingleVmFingerprintEventBoundary::HorizonAdvance,
                 "frame-delivery" => SingleVmFingerprintEventBoundary::FrameDelivery,
-                "fault-activation" => SingleVmFingerprintEventBoundary::FaultActivation,
+                "signal-effect-boundary" => SingleVmFingerprintEventBoundary::SignalEffectBoundary,
                 other => {
                     return Err(QemuTraceFingerprintImportError::MalformedTrace {
                         line,
