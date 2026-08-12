@@ -71,8 +71,9 @@ pub struct AcceleratorEntry {
     flags: u16,
     data_len: u32,
     service_units: u64,
+    output_capacity: u32,
     data: [u8; ACCELERATOR_ENTRY_DATA_BYTES],
-    _reserved: [u8; 40],
+    _reserved: [u8; 36],
 }
 
 impl Default for AcceleratorEntry {
@@ -89,8 +90,9 @@ impl Default for AcceleratorEntry {
             flags: 0,
             data_len: 0,
             service_units: 0,
+            output_capacity: 0,
             data: [0; ACCELERATOR_ENTRY_DATA_BYTES],
-            _reserved: [0; 40],
+            _reserved: [0; 36],
         }
     }
 }
@@ -129,6 +131,9 @@ pub const ACCELERATOR_ENTRY_DATA_LEN_OFFSET: usize =
 /// Byte offset of deterministic service units.
 pub const ACCELERATOR_ENTRY_SERVICE_UNITS_OFFSET: usize =
     core::mem::offset_of!(AcceleratorEntry, service_units);
+/// Byte offset of the maximum result bytes accepted by the submitter.
+pub const ACCELERATOR_ENTRY_OUTPUT_CAPACITY_OFFSET: usize =
+    core::mem::offset_of!(AcceleratorEntry, output_capacity);
 /// Byte offset of job or result bytes.
 pub const ACCELERATOR_ENTRY_DATA_OFFSET: usize = core::mem::offset_of!(AcceleratorEntry, data);
 /// Byte offset of the reserved tail.
@@ -139,7 +144,8 @@ const _: () = assert!(core::mem::offset_of!(AcceleratorEntry, sequence) == 0);
 const _: () = assert!(core::mem::offset_of!(AcceleratorEntry, generation) == 8);
 const _: () = assert!(core::mem::offset_of!(AcceleratorEntry, device_id) == 16);
 const _: () = assert!(core::mem::offset_of!(AcceleratorEntry, class) == 48);
-const _: () = assert!(core::mem::offset_of!(AcceleratorEntry, data) == 72);
+const _: () = assert!(core::mem::offset_of!(AcceleratorEntry, output_capacity) == 72);
+const _: () = assert!(core::mem::offset_of!(AcceleratorEntry, data) == 76);
 const _: () = assert!(ACCELERATOR_ENTRY_SIZE == 4_736);
 const _: () = assert!(ACCELERATOR_ENTRY_ALIGN == 64);
 
@@ -162,12 +168,18 @@ impl AcceleratorEntry {
         status: u16,
         completion: bool,
         service_units: u64,
+        output_capacity: u32,
         data: &[u8],
     ) -> Result<Self, AcceleratorEntryError> {
         if sequence == 0 || generation == 0 || device_id.iter().all(|byte| *byte == 0) {
             return Err(AcceleratorEntryError::InvalidIdentity);
         }
-        if job_kind == 0 || service_units == 0 || (!completion && status != 0) {
+        if job_kind == 0
+            || service_units == 0
+            || output_capacity as usize > ACCELERATOR_ENTRY_DATA_BYTES
+            || (completion && data.len() > output_capacity as usize)
+            || (!completion && (status != 0 || output_capacity == 0))
+        {
             return Err(AcceleratorEntryError::InvalidJob);
         }
         if data.len() > ACCELERATOR_ENTRY_DATA_BYTES {
@@ -193,6 +205,7 @@ impl AcceleratorEntry {
                 }
             })?,
             service_units,
+            output_capacity,
             ..Self::default()
         };
         entry.data[..data.len()].copy_from_slice(data);
@@ -247,6 +260,12 @@ impl AcceleratorEntry {
         self.service_units
     }
 
+    /// Returns the maximum completion payload accepted by the guest request.
+    #[must_use]
+    pub const fn output_capacity(self) -> u32 {
+        self.output_capacity
+    }
+
     /// Returns whether this record is a completion.
     #[must_use]
     pub const fn is_completion(self) -> bool {
@@ -285,6 +304,8 @@ impl AcceleratorEntry {
             || !matches!(self.class, 1..=3)
             || self.job_kind == 0
             || self.service_units == 0
+            || self.output_capacity == 0
+            || self.output_capacity as usize > ACCELERATOR_ENTRY_DATA_BYTES
             || self.flags > 1
             || (self.flags == 0 && self.status != 0)
         {
@@ -296,6 +317,9 @@ impl AcceleratorEntry {
                 len,
                 capacity: ACCELERATOR_ENTRY_DATA_BYTES,
             });
+        }
+        if self.flags == 1 && len > self.output_capacity as usize {
+            return Err(AcceleratorEntryError::InvalidJob);
         }
         if self.data[len..].iter().any(|byte| *byte != 0)
             || self._reserved.iter().any(|byte| *byte != 0)
@@ -343,6 +367,7 @@ mod tests {
             0,
             0,
             false,
+            4,
             4,
             &[1, 2, 3, 4],
         )

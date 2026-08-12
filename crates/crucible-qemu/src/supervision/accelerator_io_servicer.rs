@@ -109,13 +109,10 @@ impl QemuLiveAcceleratorServicer {
                     sequence: identity.1,
                 });
             }
-            let due_icount = guest_icount.checked_add(request.service_units()).ok_or(
-                QemuLiveAcceleratorServicerError::ServiceCoordinateOverflow {
-                    guest_icount,
-                    service_units: request.service_units(),
-                },
-            )?;
-            let completion = execute_request(request)?;
+            let (due_icount, completion) = match guest_icount.checked_add(request.service_units()) {
+                Some(due_icount) => (due_icount, execute_request(request)?),
+                None => (guest_icount, completion_for(request, STATUS_MALFORMED_JOB, &[])?),
+            };
             self.pending.insert(
                 identity,
                 PendingAcceleratorCompletion {
@@ -203,12 +200,27 @@ fn execute_request(
     let input = request
         .data()
         .map_err(|source| QemuLiveAcceleratorServicerError::Entry { source })?;
+    let capacity = request.output_capacity() as usize;
     let (status, output) = match (request.class(), request.job_kind()) {
-        (class, 1) if class == AcceleratorClass::Gpu as u16 => execute_gpu_vector_add(input),
-        (class, 1) if class == AcceleratorClass::Tpu as u16 => execute_tpu_i8_matmul(input),
-        (class, 1) if class == AcceleratorClass::Fpga as u16 => execute_fpga_lut(input),
+        (class, 1) if class == AcceleratorClass::Gpu as u16 => {
+            execute_gpu_vector_add(input, capacity)
+        }
+        (class, 1) if class == AcceleratorClass::Tpu as u16 => {
+            execute_tpu_i8_matmul(input, capacity)
+        }
+        (class, 1) if class == AcceleratorClass::Fpga as u16 => {
+            execute_fpga_lut(input, capacity)
+        }
         _ => (STATUS_UNSUPPORTED_JOB, Vec::new()),
     };
+    completion_for(request, status, &output)
+}
+
+fn completion_for(
+    request: AcceleratorEntry,
+    status: u16,
+    output: &[u8],
+) -> Result<AcceleratorEntry, QemuLiveAcceleratorServicerError> {
     let class = match request.class() {
         1 => AcceleratorClass::Gpu,
         2 => AcceleratorClass::Tpu,
@@ -225,12 +237,13 @@ fn execute_request(
         status,
         true,
         request.service_units(),
-        &output,
+        request.output_capacity(),
+        output,
     )
     .map_err(|source| QemuLiveAcceleratorServicerError::Entry { source })
 }
 
-fn execute_gpu_vector_add(input: &[u8]) -> (u16, Vec<u8>) {
+fn execute_gpu_vector_add(input: &[u8], capacity: usize) -> (u16, Vec<u8>) {
     let Some(count_bytes) = input.get(..4) else {
         return (STATUS_MALFORMED_JOB, Vec::new());
     };
@@ -238,7 +251,7 @@ fn execute_gpu_vector_add(input: &[u8]) -> (u16, Vec<u8>) {
     let Some(vector_bytes) = count.checked_mul(8) else {
         return (STATUS_MALFORMED_JOB, Vec::new());
     };
-    if input.len() != 4 + vector_bytes {
+    if input.len() != 4 + vector_bytes || count.checked_mul(4).is_none_or(|len| len > capacity) {
         return (STATUS_MALFORMED_JOB, Vec::new());
     }
     let mut output = Vec::with_capacity(count * 4);
@@ -255,7 +268,7 @@ fn execute_gpu_vector_add(input: &[u8]) -> (u16, Vec<u8>) {
     (0, output)
 }
 
-fn execute_tpu_i8_matmul(input: &[u8]) -> (u16, Vec<u8>) {
+fn execute_tpu_i8_matmul(input: &[u8], capacity: usize) -> (u16, Vec<u8>) {
     let Some(header) = input.get(..6) else {
         return (STATUS_MALFORMED_JOB, Vec::new());
     };
@@ -282,6 +295,9 @@ fn execute_tpu_i8_matmul(input: &[u8]) -> (u16, Vec<u8>) {
     let Some(output_len) = m.checked_mul(n).and_then(|v| v.checked_mul(4)) else {
         return (STATUS_MALFORMED_JOB, Vec::new());
     };
+    if output_len > capacity {
+        return (STATUS_MALFORMED_JOB, Vec::new());
+    }
     let mut output = Vec::with_capacity(output_len);
     for row in 0..m {
         for column in 0..n {
@@ -300,11 +316,14 @@ fn execute_tpu_i8_matmul(input: &[u8]) -> (u16, Vec<u8>) {
     (0, output)
 }
 
-fn execute_fpga_lut(input: &[u8]) -> (u16, Vec<u8>) {
+fn execute_fpga_lut(input: &[u8], capacity: usize) -> (u16, Vec<u8>) {
     if input.len() < 256 {
         return (STATUS_MALFORMED_JOB, Vec::new());
     }
     let (lut, values) = input.split_at(256);
+    if values.len() > capacity {
+        return (STATUS_MALFORMED_JOB, Vec::new());
+    }
     let output = values.iter().map(|value| lut[*value as usize]).collect();
     (0, output)
 }
@@ -362,24 +381,24 @@ mod tests {
         gpu.extend_from_slice(&3_i32.to_le_bytes());
         gpu.extend_from_slice(&4_i32.to_le_bytes());
         assert_eq!(
-            execute_gpu_vector_add(&gpu),
+            execute_gpu_vector_add(&gpu, 8),
             (0, [4_i32.to_le_bytes(), 6_i32.to_le_bytes()].concat())
         );
         assert_eq!(
-            execute_gpu_vector_add(&gpu[..gpu.len() - 1]).0,
+            execute_gpu_vector_add(&gpu[..gpu.len() - 1], 8).0,
             STATUS_MALFORMED_JOB
         );
 
         let mut fpga = (0_u8..=255).rev().collect::<Vec<_>>();
         fpga.extend_from_slice(&[0, 1, 255]);
-        assert_eq!(execute_fpga_lut(&fpga), (0, vec![255, 254, 0]));
+        assert_eq!(execute_fpga_lut(&fpga, 3), (0, vec![255, 254, 0]));
 
         let mut tpu = vec![1, 0, 2, 0, 1, 0, 2, 3, 4, 5];
         assert_eq!(
-            execute_tpu_i8_matmul(&tpu),
+            execute_tpu_i8_matmul(&tpu, 4),
             (0, 23_i32.to_le_bytes().to_vec())
         );
         tpu.push(0);
-        assert_eq!(execute_tpu_i8_matmul(&tpu).0, STATUS_MALFORMED_JOB);
+        assert_eq!(execute_tpu_i8_matmul(&tpu, 4).0, STATUS_MALFORMED_JOB);
     }
 }

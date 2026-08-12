@@ -10,6 +10,7 @@ use crate::{
     ACCELERATOR_ENTRY_DATA_LEN_OFFSET, ACCELERATOR_ENTRY_DATA_OFFSET,
     ACCELERATOR_ENTRY_DEVICE_ID_OFFSET, ACCELERATOR_ENTRY_FLAGS_OFFSET,
     ACCELERATOR_ENTRY_GENERATION_OFFSET, ACCELERATOR_ENTRY_JOB_KIND_OFFSET,
+    ACCELERATOR_ENTRY_OUTPUT_CAPACITY_OFFSET,
     ACCELERATOR_ENTRY_PROTOCOL_VERSION_OFFSET, ACCELERATOR_ENTRY_QUEUE_ID_OFFSET,
     ACCELERATOR_ENTRY_RESERVED_OFFSET, ACCELERATOR_ENTRY_SEQUENCE_OFFSET,
     ACCELERATOR_ENTRY_SERVICE_UNITS_OFFSET, ACCELERATOR_ENTRY_SIZE,
@@ -890,6 +891,7 @@ fn emit_accelerator_entry(out: &mut String) {
             ("FLAGS", ACCELERATOR_ENTRY_FLAGS_OFFSET),
             ("DATA_LEN", ACCELERATOR_ENTRY_DATA_LEN_OFFSET),
             ("SERVICE_UNITS", ACCELERATOR_ENTRY_SERVICE_UNITS_OFFSET),
+            ("OUTPUT_CAPACITY", ACCELERATOR_ENTRY_OUTPUT_CAPACITY_OFFSET),
             ("DATA", ACCELERATOR_ENTRY_DATA_OFFSET),
             ("RESERVED", ACCELERATOR_ENTRY_RESERVED_OFFSET),
         ],
@@ -913,6 +915,7 @@ fn emit_accelerator_entry(out: &mut String) {
     out.push_str("    uint16_t flags;\n");
     out.push_str("    uint32_t data_len;\n");
     out.push_str("    uint64_t service_units;\n");
+    out.push_str("    uint32_t output_capacity;\n");
     out.push_str("    uint8_t data[CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_DATA_BYTES];\n");
     out.push_str("    uint8_t reserved[CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_RESERVED_LEN];\n");
     out.push_str("} crucible_shmem_accelerator_entry;\n\n");
@@ -932,6 +935,7 @@ fn emit_accelerator_entry(out: &mut String) {
             ("flags", "FLAGS"),
             ("data_len", "DATA_LEN"),
             ("service_units", "SERVICE_UNITS"),
+            ("output_capacity", "OUTPUT_CAPACITY"),
             ("data", "DATA"),
             ("reserved", "RESERVED"),
         ],
