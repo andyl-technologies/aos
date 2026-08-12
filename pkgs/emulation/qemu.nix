@@ -307,10 +307,10 @@ in
         name = "configure";
         script = ''
           export PYTHONPATH="${meson}/lib/python3/site-packages:${distlib}/lib/python3.14/site-packages:${setuptools}/lib/python3.14/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
-          export CFLAGS="''${CFLAGS:-} -DQEMU_CRUCIBLE_BUILD_ID=\\\"${qemuBuildIdentity}\\\" -DQEMU_CRUCIBLE_PATCH_SERIES_HASH=\\\"${patchSeriesHash}\\\" -DQEMU_CRUCIBLE_SHMEM_HEADER_HASH=\\\"${shmemHeaderHash}\\\""
 
           ./configure \
             --prefix=$out \
+            --extra-cflags='-DQEMU_CRUCIBLE_BUILD_ID="${qemuBuildIdentity}" -DQEMU_CRUCIBLE_PATCH_SERIES_HASH="${patchSeriesHash}" -DQEMU_CRUCIBLE_SHMEM_HEADER_HASH="${shmemHeaderHash}"' \
             ${qemuConfigureFlagsScript}
         '';
       }
