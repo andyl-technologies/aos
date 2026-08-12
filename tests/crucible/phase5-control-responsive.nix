@@ -70,10 +70,6 @@
         needle = "ControlOperationKind::Pause";
       }
       {
-        label = "snapshot coverage";
-        needle = "ControlOperationKind::Snapshot";
-      }
-      {
         label = "fork coverage";
         needle = "ControlOperationKind::Fork";
       }
@@ -104,10 +100,6 @@
       {
         label = "running-session issue route";
         needle = "issue_against_running_session";
-      }
-      {
-        label = "snapshot command mapping";
-        needle = "ControlOperationKind::Snapshot => SessionCommand::Snapshot";
       }
       {
         label = "fork command mapping";
@@ -166,8 +158,8 @@
         needle = "observed_control_operations";
       }
       {
-        label = "API asserts delivered scheduler control";
-        needle = "SchedulerControlOperationKind::Snapshot";
+        label = "API asserts delivered scheduler query";
+        needle = "SchedulerControlOperationKind::Query";
       }
       {
         label = "required rejection fails";
@@ -253,7 +245,7 @@
       }
       {
         label = "session snapshot command";
-        needle = "SessionCommand::Snapshot";
+        needle = "SessionCommand::query_snapshot()";
       }
       {
         label = "session fork command";

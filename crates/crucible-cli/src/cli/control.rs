@@ -1042,7 +1042,6 @@ pub(super) fn session_command_name(command: SessionCommandKind) -> &'static str 
         SessionCommandKind::Query => "query",
         SessionCommandKind::Stop => "stop",
         SessionCommandKind::ExhaustBudget => "exhaust-budget",
-        SessionCommandKind::Snapshot => "snapshot",
         SessionCommandKind::AttachGdb => "attach-gdb",
         SessionCommandKind::DebugGoto => "debug-goto",
         SessionCommandKind::DebugReverseStep => "debug-reverse-step",

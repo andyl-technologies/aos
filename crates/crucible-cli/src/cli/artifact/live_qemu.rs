@@ -497,7 +497,6 @@ fn known_control_command(command: &str) -> bool {
             | "query"
             | "stop"
             | "exhaust-budget"
-            | "snapshot"
             | "attach-gdb"
             | "debug-goto"
             | "debug-reverse-step"

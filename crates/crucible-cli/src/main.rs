@@ -1092,7 +1092,6 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
             session_commands: vec![
                 SessionCommandKind::Start,
                 SessionCommandKind::Continue,
-                SessionCommandKind::Snapshot,
                 SessionCommandKind::Query,
             ],
             api_calls: vec![CliApiCall::Hello, CliApiCall::CreateSession],
@@ -1212,11 +1211,7 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
         },
         Commands::Replay(_) => CliThinWrapperPlan {
             subcommand,
-            session_commands: vec![
-                SessionCommandKind::Start,
-                SessionCommandKind::Continue,
-                SessionCommandKind::Snapshot,
-            ],
+            session_commands: vec![SessionCommandKind::Start, SessionCommandKind::Continue],
             api_calls: Vec::new(),
             delegated_drivers: vec![
                 CliDelegatedDriver::SessionControlPlane,
@@ -1283,7 +1278,6 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
             subcommand,
             session_commands: vec![
                 SessionCommandKind::Query,
-                SessionCommandKind::Snapshot,
                 SessionCommandKind::AttachGdb,
                 SessionCommandKind::DebugGoto,
                 SessionCommandKind::DebugReverseStep,

@@ -765,7 +765,7 @@ pub(super) async fn session_actor_command_driven_step_acknowledges_preexisting_r
     let (sender, receiver) = mpsc::channel(4);
     let mut actor = SessionActor::new(engine, receiver);
 
-    if let Err(error) = sender.send(SessionCommand::Snapshot).await {
+    if let Err(error) = sender.send(SessionCommand::query_snapshot()).await {
         panic!("snapshot should enqueue: {error}");
     }
     if let Err(error) = actor.run_once().await {
@@ -822,7 +822,7 @@ pub(super) async fn session_actor_paused_step_acknowledges_preexisting_running_c
     let (sender, receiver) = mpsc::channel(4);
     let mut actor = SessionActor::new(engine, receiver);
 
-    if let Err(error) = sender.send(SessionCommand::Snapshot).await {
+    if let Err(error) = sender.send(SessionCommand::query_snapshot()).await {
         panic!("snapshot should enqueue: {error}");
     }
     if let Err(error) = actor.run_once().await {

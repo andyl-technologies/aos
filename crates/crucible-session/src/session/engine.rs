@@ -1281,7 +1281,6 @@ impl<L: QuantumLoop> Engine<L> {
             | SessionCommandKind::RemoveBreakpoint
             | SessionCommandKind::CreateSavepoint
             | SessionCommandKind::Query
-            | SessionCommandKind::Snapshot
             | SessionCommandKind::AttachGdb
             | SessionCommandKind::DebugGoto
             | SessionCommandKind::DebugReverseStep
@@ -1376,12 +1375,6 @@ impl<L: QuantumLoop> Engine<L> {
                     Err(self.invalid_transition(command.clone()))
                 }
             },
-            SessionCommand::Snapshot => {
-                if matches!(self.state, EngineState::Running) {
-                    self.admit_control_operation(ControlOperationKind::Snapshot);
-                }
-                Ok(self.snapshot())
-            }
             SessionCommand::Fork { from, reply } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } | EngineState::Stopped { .. } => {
                     let checkpoint = self.resolve_fork_checkpoint(*from)?;
