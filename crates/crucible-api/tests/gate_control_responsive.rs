@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crucible::{
-    Checkpoint, CheckpointKind, Configuration,
+    BackendEffect, Checkpoint, CheckpointKind, Configuration,
     ControlOperationKind as SchedulerControlOperationKind, Decision, DeliveryOrderDecision,
     EventClass, EventDiagnosticPayload, EventKey, EventLevel, GenesisCheckpoint, NodeId,
     QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef, SchedulerError,
