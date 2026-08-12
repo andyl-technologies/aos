@@ -1262,7 +1262,9 @@ pub fn build_production_vm_lifecycle_loop(
     }
 
     let committed_frontier = scheduler.frontier();
-    let active_branch = if restore_checkpoint.is_some() && scheduler.branch_frontier_cap().is_none()
+    let active_branch = if restore_checkpoint
+        .as_ref()
+        .is_some_and(|checkpoint| checkpoint.scheduler.branch_frontier_cap().is_none())
     {
         None
     } else {
