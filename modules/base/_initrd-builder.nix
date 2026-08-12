@@ -463,6 +463,7 @@ in
             cp -a ${package}/lib/modules/. root/lib/modules/
           '') kernelModulePackages}
           for module_dir in root/lib/modules/*; do
+            chmod -R u+w "$module_dir"
             rm -f "$module_dir/build" "$module_dir/source"
             ${kmod}/sbin/depmod -b root "$(basename "$module_dir")"
           done
