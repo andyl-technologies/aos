@@ -318,11 +318,7 @@ pub fn complete_qemu_host_plugin_setup(
             2,
         )?;
     }
-    if required_capabilities
-        .target_manifest()
-        .and_then(crate::QemuTargetManifestRequirement::exact_interrupt_manifest)
-        .is_some()
-    {
+    if required_capabilities.target_manifest().is_some() {
         enqueue_target_manifest_query(
             &mut admission_region,
             slot_index,
@@ -397,16 +393,7 @@ pub fn complete_qemu_host_plugin_setup(
         .transpose()?;
     let interrupt_manifest = required_capabilities
         .target_manifest()
-        .and_then(crate::QemuTargetManifestRequirement::exact_interrupt_manifest)
-        .map(|_required| {
-            accept_interrupt_manifest(
-                &mut admission_region,
-                slot_index,
-                required_capabilities
-                    .target_manifest()
-                    .ok_or(QemuHostPluginSetupError::AdmissionTargetIdentity)?,
-            )
-        })
+        .map(|required| accept_interrupt_manifest(&mut admission_region, slot_index, required))
         .transpose()?;
     let clock_manifest = required_capabilities
         .target_manifest()
@@ -444,9 +431,17 @@ pub fn complete_qemu_host_plugin_setup(
             .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })?;
         let required_digest = fault_capability_manifest_digest(&expected_capabilities)
             .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })?;
+        let first_mismatch_index = expected_capabilities
+            .iter()
+            .zip(&fault_capabilities)
+            .position(|(required, observed)| required != observed)
+            .unwrap_or_else(|| expected_capabilities.len().min(fault_capabilities.len()));
         return Err(QemuHostPluginSetupError::AdmissionCapabilityMismatch {
             required_digest,
             observed_digest,
+            first_mismatch_index,
+            required_row: expected_capabilities.get(first_mismatch_index).cloned(),
+            observed_row: fault_capabilities.get(first_mismatch_index).cloned(),
         });
     }
     let admitted_capability_digest = fault_capability_manifest_digest(&fault_capabilities)
@@ -730,7 +725,9 @@ fn accept_interrupt_manifest(
     let manifest = FaultInterruptCapabilityManifestV1::decode(&payload)
         .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })?;
     if manifest.architecture != required.architecture()
-        || required.exact_interrupt_manifest() != Some(&manifest)
+        || required
+            .exact_interrupt_manifest()
+            .is_some_and(|expected| expected != &manifest)
     {
         return Err(QemuHostPluginSetupError::AdmissionTargetManifestMismatch {
             required_architecture: required.architecture(),
@@ -1144,13 +1141,19 @@ pub enum QemuHostPluginSetupError {
     },
     /// QEMU advertised a valid manifest other than the launch-bound exact set.
     #[error(
-        "fault capability manifest mismatch: required={required_digest:02x?} observed={observed_digest:02x?}"
+        "fault capability manifest mismatch at row {first_mismatch_index}: required_digest={required_digest:02x?} observed_digest={observed_digest:02x?} required_row={required_row:?} observed_row={observed_row:?}"
     )]
     AdmissionCapabilityMismatch {
         /// Digest of the launch-bound exact manifest.
         required_digest: [u8; 32],
         /// Digest of the manifest returned by live QEMU.
         observed_digest: [u8; 32],
+        /// First row index at which the exact manifests differ.
+        first_mismatch_index: usize,
+        /// Launch-bound row at the first mismatch, or `None` when QEMU has an extra row.
+        required_row: Option<FaultCapabilityRowV1>,
+        /// QEMU row at the first mismatch, or `None` when QEMU omitted a row.
+        observed_row: Option<FaultCapabilityRowV1>,
     },
     /// QEMU's target manifest described a different launch identity.
     #[error(
@@ -1350,6 +1353,7 @@ pub(crate) mod tests {
             QemuHostPluginSetupError::AdmissionCapabilityMismatch {
                 required_digest,
                 observed_digest,
+                ..
             } if required_digest == required.digest() && observed_digest != required_digest
         ));
         let _peer_result = plugin_peer
