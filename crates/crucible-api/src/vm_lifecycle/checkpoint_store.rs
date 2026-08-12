@@ -1337,22 +1337,27 @@ fn persist_object(
             "checkpoint object content hash mismatch before persistence",
         ));
     }
-    let destination = directory.join(expected.to_hex());
+    let destination = object_path(directory, expected);
     if destination.exists() {
-        return validate_file_hash(&destination, expected);
+        return sync_existing_object(&destination, expected);
     }
+    let staging_directory = destination
+        .parent()
+        .ok_or_else(|| store_error("checkpoint object path has no parent directory"))?;
+    fs::create_dir_all(staging_directory)
+        .map_err(|error| store_error(format!("create checkpoint object prefix: {error}")))?;
     let mut staging = tempfile::Builder::new()
         .prefix(".object-")
-        .tempfile_in(directory)
+        .tempfile_in(staging_directory)
         .map_err(|error| store_error(format!("stage checkpoint object: {error}")))?;
     staging
         .write_all(bytes)
         .and_then(|()| staging.as_file().sync_all())
         .map_err(|error| store_error(format!("flush staged checkpoint object: {error}")))?;
     match staging.persist_noclobber(&destination) {
-        Ok(_) => Ok(()),
+        Ok(_) => sync_directory(staging_directory),
         Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
-            validate_file_hash(&destination, expected)
+            sync_existing_object(&destination, expected)
         }
         Err(error) => Err(store_error(format!(
             "publish checkpoint object {}: {}",
@@ -1368,13 +1373,18 @@ fn persist_file_object(
     source: &Path,
 ) -> Result<(), SchedulerError> {
     validate_file_hash(source, expected)?;
-    let destination = directory.join(expected.to_hex());
+    let destination = object_path(directory, expected);
     if destination.exists() {
-        return validate_file_hash(&destination, expected);
+        return sync_existing_object(&destination, expected);
     }
+    let staging_directory = destination
+        .parent()
+        .ok_or_else(|| store_error("checkpoint object path has no parent directory"))?;
+    fs::create_dir_all(staging_directory)
+        .map_err(|error| store_error(format!("create checkpoint object prefix: {error}")))?;
     let staging = tempfile::Builder::new()
         .prefix(".object-")
-        .tempfile_in(directory)
+        .tempfile_in(staging_directory)
         .map_err(|error| store_error(format!("stage checkpoint file object: {error}")))?;
     fs::copy(source, staging.path()).map_err(|error| {
         store_error(format!(
@@ -1387,9 +1397,12 @@ fn persist_file_object(
         .sync_all()
         .map_err(|error| store_error(format!("flush staged checkpoint object: {error}")))?;
     match staging.persist_noclobber(&destination) {
-        Ok(_) => validate_file_hash(&destination, expected),
+        Ok(_) => {
+            validate_file_hash(&destination, expected)?;
+            sync_directory(staging_directory)
+        }
         Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
-            validate_file_hash(&destination, expected)
+            sync_existing_object(&destination, expected)
         }
         Err(error) => Err(store_error(format!(
             "publish checkpoint object {}: {}",
@@ -1397,6 +1410,17 @@ fn persist_file_object(
             error.error
         ))),
     }
+}
+
+fn sync_existing_object(path: &Path, expected: ContentHash) -> Result<(), SchedulerError> {
+    validate_file_hash(path, expected)?;
+    File::open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| store_error(format!("flush checkpoint object: {error}")))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| store_error("checkpoint object path has no parent directory"))?;
+    sync_directory(parent)
 }
 
 fn artifact_manifest(
@@ -1843,7 +1867,7 @@ pub(super) fn checkpoint_dag_store(
 }
 
 fn object_path(root: &Path, identity: ContentHash) -> PathBuf {
-    root.join(identity.to_hex())
+    LocalDagStore::new(root).object_path(&identity)
 }
 
 fn sync_directory(path: &Path) -> Result<(), SchedulerError> {
@@ -1966,6 +1990,12 @@ mod tests {
 
         persist_object(directory.path(), identity, bytes).expect("persist first object");
         persist_object(directory.path(), identity, bytes).expect("reuse equal object");
+        let dag_store = LocalDagStore::new(directory.path());
+        assert_eq!(
+            dag_store.get(&identity).expect("read exact object as DAG object"),
+            bytes
+        );
+        assert!(!directory.path().join(identity.to_hex()).exists());
     }
 
     #[test]
@@ -2015,7 +2045,12 @@ mod tests {
             .expect("deduplicate second artifact");
         let stored_count = fs::read_dir(&object_directory)
             .expect("read object directory")
-            .count();
+            .map(|entry| {
+                fs::read_dir(entry.expect("read object prefix entry").path())
+                    .expect("read object prefix directory")
+                    .count()
+            })
+            .sum::<usize>();
         assert_eq!(stored_count, 2);
 
         let chunked = ProductionCheckpointArtifact {
