@@ -751,6 +751,7 @@ in
                  root/nix/store/*-coreutils-8.32 \
                  root/nix/store/*-bash-4.2 \
                  root/nix/store/*-linux-headers-2.6.* \
+                 root/nix/store/*-linux-*-dev \
                  root/nix/store/*-source
 
           # util-linux: man pages, zsh completion, etc.
