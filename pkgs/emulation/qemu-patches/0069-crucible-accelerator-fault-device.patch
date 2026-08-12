@@ -1,4 +1,4 @@
-From 4850f525b7c97dc58fcbd920c598af4a81df8a6f Mon Sep 17 00:00:00 2001
+From 62cf187e5acc692992dc7c4af85772d1b3c1557c Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Tue, 11 Aug 2026 19:29:49 -0700
 Subject: [PATCH] crucible: add deterministic accelerator device
@@ -7,14 +7,19 @@ Signed-off-by: Dylan Plecki <dylan@andyl.com>
 ---
  hw/virtio/Kconfig                             |   5 +
  hw/virtio/meson.build                         |   2 +
- hw/virtio/virtio-crucible-accelerator-pci.c   |  77 ++++
- hw/virtio/virtio-crucible-accelerator.c       | 339 ++++++++++++++++++
- .../hw/virtio/virtio-crucible-accelerator.h   |  57 +++
- include/qemu/qemu-plugin.h                    |  40 +++
- 6 files changed, 520 insertions(+)
+ hw/virtio/virtio-crucible-accelerator-pci.c   |  77 +++
+ hw/virtio/virtio-crucible-accelerator.c       | 410 +++++++++++
+ .../hw/virtio/virtio-crucible-accelerator.h   |  57 ++
+ include/qemu/crucible-fault.h                 |  29 +
+ include/qemu/qemu-plugin.h                    |  40 ++
+ plugins/crucible-fault-accelerator.c          | 642 ++++++++++++++++++
+ plugins/crucible-fault-node.c                 |  21 +
+ plugins/meson.build                           |   1 +
+ 10 files changed, 1284 insertions(+)
  create mode 100644 hw/virtio/virtio-crucible-accelerator-pci.c
  create mode 100644 hw/virtio/virtio-crucible-accelerator.c
  create mode 100644 include/hw/virtio/virtio-crucible-accelerator.h
+ create mode 100644 plugins/crucible-fault-accelerator.c
 
 diff --git a/hw/virtio/Kconfig b/hw/virtio/Kconfig
 index 7648a2d..805bea4 100644
@@ -137,10 +142,10 @@ index 0000000..63b8124
 +type_init(accelerator_pci_register)
 diff --git a/hw/virtio/virtio-crucible-accelerator.c b/hw/virtio/virtio-crucible-accelerator.c
 new file mode 100644
-index 0000000..d120ea4
+index 0000000..57b3c60
 --- /dev/null
 +++ b/hw/virtio/virtio-crucible-accelerator.c
-@@ -0,0 +1,339 @@
+@@ -0,0 +1,410 @@
 +/*
 + * Crucible deterministic accelerator co-simulation device
 + *
@@ -154,6 +159,7 @@ index 0000000..d120ea4
 +#include "qapi/error.h"
 +#include "qemu/iov.h"
 +#include "qemu/module.h"
++#include "qemu/crucible-fault.h"
 +#include "qemu/qemu-plugin.h"
 +#include "hw/virtio/virtio-crucible-accelerator.h"
 +#include "migration/qemu-file-types.h"
@@ -172,6 +178,11 @@ index 0000000..d120ea4
 +static qemu_plugin_accelerator_wait_cb_t accelerator_wait_cb;
 +static qemu_plugin_accelerator_restore_cb_t accelerator_restore_cb;
 +static void *accelerator_userdata;
++
++static void accelerator_complete(VirtIOCrucibleAccelerator *dev,
++                                 VirtIOCrucibleAcceleratorRequest *request,
++                                 uint16_t status, uint8_t *output,
++                                 size_t output_len);
 +
 +void qemu_plugin_register_accelerator_cb(
 +    qemu_plugin_accelerator_submit_cb_t submit_cb,
@@ -210,13 +221,48 @@ index 0000000..d120ea4
 +           job->status == 0 && job->output_len == 0;
 +}
 +
++static void accelerator_drop_pending(VirtIOCrucibleAccelerator *dev,
++                                     uint16_t status)
++{
++    VirtIOCrucibleAcceleratorRequest *request, *next;
++
++    QTAILQ_FOREACH_SAFE(request, &dev->pending, link, next) {
++        accelerator_complete(dev, request, status, NULL, 0);
++    }
++}
++
++static void accelerator_fault_lifecycle(void *opaque, uint32_t transition,
++                                        uint32_t queue_policy,
++                                        uint32_t memory_policy)
++{
++    VirtIOCrucibleAccelerator *dev = opaque;
++
++    if ((transition == 1 || transition == 2) && queue_policy != 1) {
++        accelerator_drop_pending(dev, 4);
++    }
++    if (transition == 2 || queue_policy == 3 || memory_policy == 3) {
++        virtio_reset(VIRTIO_DEVICE(dev));
++    }
++    virtio_notify_config(VIRTIO_DEVICE(dev));
++}
++
 +static void accelerator_complete(VirtIOCrucibleAccelerator *dev,
 +                                 VirtIOCrucibleAcceleratorRequest *request,
-+                                 uint16_t status, const uint8_t *output,
++                                 uint16_t status, uint8_t *output,
 +                                 size_t output_len)
 +{
 +    VirtIODevice *vdev = VIRTIO_DEVICE(dev);
 +    VirtIOCrucibleAcceleratorJob result = request->job;
++
++    if (!qemu_crucible_fault_accelerator_complete(
++            dev->config.device_id, le16_to_cpu(request->job.class_id),
++            le16_to_cpu(request->job.job_kind),
++            le16_to_cpu(request->job.queue_id),
++            le64_to_cpu(request->job.sequence), output,
++            output_len, &status)) {
++        status = 1;
++        output_len = 0;
++    }
 +
 +    result.status = cpu_to_le32(status);
 +    result.output_len = cpu_to_le32(output_len);
@@ -274,22 +320,43 @@ index 0000000..d120ea4
 +        VirtIOCrucibleAcceleratorRequest *request;
 +        VirtIOCrucibleAcceleratorJob job;
 +        uint8_t input[VIRTIO_CRUCIBLE_ACCELERATOR_DATA_MAX];
++        uint16_t fault_status = 0;
++        uint64_t service_units;
 +        size_t out_bytes = iov_size(element->out_sg, element->out_num);
 +        size_t in_bytes = iov_size(element->in_sg, element->in_num);
 +
 +        if (out_bytes < sizeof(job) ||
 +            iov_to_buf(element->out_sg, element->out_num, 0,
 +                       &job, sizeof(job)) != sizeof(job) ||
-+            !accelerator_job_valid(&job, out_bytes, in_bytes) ||
++            !accelerator_job_valid(&job, out_bytes, in_bytes)) {
++            VirtIOCrucibleAcceleratorJob error = {
++                .status = cpu_to_le32(1),
++            };
++            iov_from_buf(element->in_sg, element->in_num, 0,
++                         &error, sizeof(error));
++            virtqueue_push(vq, element, sizeof(error));
++            virtio_notify(vdev, vq);
++            g_free(element);
++            continue;
++        }
++        service_units = le64_to_cpu(job.service_units);
++        if (
 +            iov_to_buf(element->out_sg, element->out_num, sizeof(job),
 +                       input, le32_to_cpu(job.input_len)) !=
 +                           le32_to_cpu(job.input_len) ||
++            !qemu_crucible_fault_accelerator_submit(
++                dev->config.device_id, le16_to_cpu(job.class_id),
++                le16_to_cpu(job.job_kind), le16_to_cpu(job.queue_id),
++                le64_to_cpu(job.sequence), &service_units, input,
++                le32_to_cpu(job.input_len),
++                le32_to_cpu(job.output_capacity), &fault_status) ||
++            fault_status != 0 ||
 +            accelerator_submit_cb(le64_to_cpu(job.sequence),
 +                                  dev->config.device_id,
 +                                  le16_to_cpu(job.class_id),
 +                                  le16_to_cpu(job.job_kind),
 +                                  le16_to_cpu(job.queue_id),
-+                                  le64_to_cpu(job.service_units), input,
++                                  service_units, input,
 +                                  le32_to_cpu(job.input_len),
 +                                  le32_to_cpu(job.output_capacity),
 +                                  accelerator_userdata) != 0) {
@@ -303,6 +370,7 @@ index 0000000..d120ea4
 +            g_free(element);
 +            continue;
 +        }
++        job.service_units = cpu_to_le64(service_units);
 +        request = g_new0(VirtIOCrucibleAcceleratorRequest, 1);
 +        request->element = element;
 +        request->job = job;
@@ -403,8 +471,6 @@ index 0000000..d120ea4
 +{
 +    VirtIOCrucibleAccelerator *dev = VIRTIO_CRUCIBLE_ACCELERATOR(device);
 +    VirtIODevice *vdev = VIRTIO_DEVICE(device);
-+    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
-+    gsize digest_len = sizeof(dev->config.device_id);
 +
 +    if (!accelerator_callbacks_ready()) {
 +        error_setg(errp, "Crucible accelerator callbacks must be registered");
@@ -424,15 +490,17 @@ index 0000000..d120ea4
 +    dev->config.queue_depth = cpu_to_le32(
 +        VIRTIO_CRUCIBLE_ACCELERATOR_QUEUE_SIZE);
 +    dev->config.data_max = cpu_to_le32(VIRTIO_CRUCIBLE_ACCELERATOR_DATA_MAX);
-+    g_checksum_update(checksum,
-+                      (const guchar *)"virtio-crucible-accelerator-0", 29);
-+    g_checksum_get_digest(checksum, dev->config.device_id, &digest_len);
++    qemu_crucible_fault_accelerator_device_id(dev->config.device_id);
++    qemu_crucible_fault_accelerator_device_register(
++        dev->config.device_id, accelerator_fault_lifecycle, dev);
 +}
 +
 +static void accelerator_unrealize(DeviceState *device)
 +{
 +    VirtIOCrucibleAccelerator *dev = VIRTIO_CRUCIBLE_ACCELERATOR(device);
 +    VirtIODevice *vdev = VIRTIO_DEVICE(device);
++
++    qemu_crucible_fault_accelerator_device_unregister(dev);
 +
 +    if (dev->wake_registered) {
 +        qemu_plugin_wake_notifier_remove(&dev->wake_notifier);
@@ -441,6 +509,13 @@ index 0000000..d120ea4
 +    g_assert(QTAILQ_EMPTY(&dev->pending));
 +    virtio_del_queue(vdev, 0);
 +    virtio_cleanup(vdev);
++}
++
++static void accelerator_reset(DeviceState *device)
++{
++    VirtIOCrucibleAccelerator *dev = VIRTIO_CRUCIBLE_ACCELERATOR(device);
++
++    qemu_crucible_fault_accelerator_reset(dev->config.device_id);
 +}
 +
 +static const VMStateDescription vmstate_accelerator = {
@@ -463,6 +538,7 @@ index 0000000..d120ea4
 +    vdc->realize = accelerator_realize;
 +    vdc->unrealize = accelerator_unrealize;
 +    vdc->get_config = accelerator_get_config;
++    device_class_set_legacy_reset(dc, accelerator_reset);
 +    vdc->save = accelerator_save;
 +    vdc->load = accelerator_load;
 +}
@@ -543,6 +619,60 @@ index 0000000..cbea0d3
 +};
 +
 +#endif
+diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
+index 0f0fee9..d59b6e4 100644
+--- a/include/qemu/crucible-fault.h
++++ b/include/qemu/crucible-fault.h
+@@ -20,6 +20,9 @@ typedef struct QemuCrucibleFaultEventReservation
+     QemuCrucibleFaultEventReservation;
+ typedef struct CPUFaultException CPUFaultException;
+ typedef struct QObject QObject;
++typedef void (*QemuCrucibleAcceleratorLifecycleFn)(
++    void *opaque, uint32_t transition, uint32_t queue_policy,
++    uint32_t memory_policy);
+ 
+ typedef int (*QemuCrucibleFaultVmstateSaveFn)(GByteArray *payload);
+ typedef int (*QemuCrucibleFaultVmstatePrepareFn)(
+@@ -80,6 +83,10 @@ int qemu_crucible_fault_vmstate_enable(void);
+ #define QEMU_CRUCIBLE_MODEL_PHASE_FIRE 30
+ #define QEMU_CRUCIBLE_MODEL_PHASE_SYNCHRONIZE 31
+ #define QEMU_CRUCIBLE_MODEL_PHASE_SOURCE_SWITCH 32
++#define QEMU_CRUCIBLE_MODEL_PHASE_ACCELERATOR_SUBMIT 33
++#define QEMU_CRUCIBLE_MODEL_PHASE_ACCELERATOR_EXECUTE 34
++#define QEMU_CRUCIBLE_MODEL_PHASE_ACCELERATOR_COMPLETE 35
++#define QEMU_CRUCIBLE_MODEL_PHASE_ACCELERATOR_MEMORY_ACCESS 36
+ 
+ typedef int (*QemuCrucibleFaultValidateFn)(
+     const struct qemu_plugin_crucible_fault_command *command,
+@@ -244,6 +251,28 @@ QemuCrucibleFaultEventReservation *
+ qemu_crucible_fault_event_reservation_restore(size_t remaining);
+ int qemu_plugin_crucible_vmstop_admit_internal(void);
+ 
++int qemu_crucible_fault_accelerator_validate(
++    const QemuCrucibleFaultRule *rule);
++void qemu_crucible_fault_accelerator_rules_changed(
++    const QemuCrucibleFaultRule *transition_rule,
++    QemuCrucibleFaultEventReservation **event_reservation);
++bool qemu_crucible_fault_accelerator_submit(
++    const uint8_t device_id[32], uint16_t class_id, uint16_t job_kind,
++    uint16_t queue_id, uint64_t sequence, uint64_t *service_units,
++    const uint8_t *input, size_t input_len, size_t output_capacity,
++    uint16_t *status);
++bool qemu_crucible_fault_accelerator_complete(
++    const uint8_t device_id[32], uint16_t class_id, uint16_t job_kind,
++    uint16_t queue_id, uint64_t sequence, uint8_t *output,
++    size_t output_len, uint16_t *status);
++void qemu_crucible_fault_accelerator_reset(const uint8_t device_id[32]);
++void qemu_crucible_fault_accelerator_event_terminal(void);
++void qemu_crucible_fault_accelerator_device_id(uint8_t device_id[32]);
++void qemu_crucible_fault_accelerator_device_register(
++    const uint8_t device_id[32], QemuCrucibleAcceleratorLifecycleFn callback,
++    void *opaque);
++void qemu_crucible_fault_accelerator_device_unregister(void *opaque);
++
+ int qemu_crucible_fault_register_validate(const QemuCrucibleFaultRule *rule);
+ bool qemu_crucible_fault_register_ensure_registered(void);
+ bool qemu_crucible_fault_register_rules_active(void);
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 index 3584c8d..9131e3b 100644
 --- a/include/qemu/qemu-plugin.h
@@ -601,7 +731,718 @@ index 3584c8d..9131e3b 100644
  /**
   * qemu_plugin_register_9p_cb() - register shmem 9p callbacks
   * @burst_start_cb: burst-start callback, or NULL to disable shmem forwarding
+diff --git a/plugins/crucible-fault-accelerator.c b/plugins/crucible-fault-accelerator.c
+new file mode 100644
+index 0000000..fd148da
+--- /dev/null
++++ b/plugins/crucible-fault-accelerator.c
+@@ -0,0 +1,642 @@
++/*
++ * Crucible deterministic accelerator fault device integration
++ *
++ * Copyright (c) 2026 ANDYL Technologies
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/bswap.h"
++#include "qemu/crucible-fault.h"
++#include "qemu/error-report.h"
++#include "qemu/module.h"
++#include "qobject/qdict.h"
++#include "qobject/qnum.h"
++#include "qobject/qstring.h"
++#include "system/cpu-timers.h"
++
++#define CRUCIBLE_ACCELERATOR_STATUS_UNAVAILABLE 4
++#define CRUCIBLE_ACCELERATOR_STATUS_UNCORRECTABLE 5
++#define CRUCIBLE_ACCELERATOR_EVIDENCE_BYTES 256
++
++enum CrucibleAcceleratorLifecycle {
++    CRUCIBLE_ACCELERATOR_PRESENT = 1,
++    CRUCIBLE_ACCELERATOR_DISAPPEARED = 2,
++};
++
++typedef struct CrucibleAcceleratorState {
++    uint32_t lifecycle;
++    uint64_t reset_generation;
++    uint64_t job_sequence;
++    uint64_t service_remainder;
++    uint64_t memory_generation;
++    bool terminal;
++    GPtrArray *lifecycle_rules;
++    GPtrArray *result_rules;
++    GPtrArray *memory_rules;
++    GPtrArray *service_rules;
++} CrucibleAcceleratorState;
++
++typedef struct CrucibleAcceleratorVmstate {
++    uint32_t lifecycle;
++    uint64_t reset_generation;
++    uint64_t job_sequence;
++    uint64_t service_remainder;
++    uint64_t memory_generation;
++    uint8_t terminal;
++} CrucibleAcceleratorVmstate;
++
++static CrucibleAcceleratorState crucible_accelerator;
++static QemuCrucibleAcceleratorLifecycleFn accelerator_lifecycle_callback;
++static void *accelerator_lifecycle_opaque;
++static uint8_t accelerator_registered_device[32];
++
++void qemu_crucible_fault_accelerator_device_register(
++    const uint8_t device_id[32], QemuCrucibleAcceleratorLifecycleFn callback,
++    void *opaque)
++{
++    g_assert(device_id && callback && opaque && !accelerator_lifecycle_callback);
++    memcpy(accelerator_registered_device, device_id, 32);
++    accelerator_lifecycle_callback = callback;
++    accelerator_lifecycle_opaque = opaque;
++}
++
++void qemu_crucible_fault_accelerator_device_unregister(void *opaque)
++{
++    g_assert(opaque == accelerator_lifecycle_opaque);
++    accelerator_lifecycle_callback = NULL;
++    accelerator_lifecycle_opaque = NULL;
++    memset(accelerator_registered_device, 0,
++           sizeof(accelerator_registered_device));
++}
++
++/* Keep this public object identity byte-for-byte equal to the host codec. */
++void qemu_crucible_fault_accelerator_device_id(uint8_t output[32])
++{
++    static const uint64_t initial[4] = {
++        UINT64_C(0x243f6a8885a308d3), UINT64_C(0x13198a2e03707344),
++        UINT64_C(0xa4093822299f31d0), UINT64_C(0x082efa98ec4e6c89),
++    };
++    static const char *parts[] = {
++        "crucible.content-hash.v1", "crucible.fault-object.v1",
++        "accelerator-0",
++    };
++    uint64_t lanes[4];
++    uint64_t written = 0;
++
++    memcpy(lanes, initial, sizeof(lanes));
++    for (size_t part = 0; part < G_N_ELEMENTS(parts); part++) {
++        size_t length = strlen(parts[part]);
++        uint64_t words = length;
++
++#define MIX(value) do { \
++        uint64_t mix_value = (value); \
++        for (size_t lane = 0; lane < 4; lane++) { \
++            uint32_t rotation = 13 + lane * 7; \
++            uint64_t salt = lane * UINT64_C(0xd6e8feb86659fd93); \
++            lanes[lane] ^= mix_value + salt; \
++            lanes[lane] = rol64(lanes[lane], rotation) * \
++                          UINT64_C(0x9e3779b185ebca87); \
++            lanes[lane] ^= lanes[lane] >> 33; \
++        } \
++    } while (0)
++        MIX(words);
++        written += 8;
++        for (size_t offset = 0; offset < length; offset += 8) {
++            uint8_t word[8] = { 0 };
++            size_t take = MIN((size_t)8, length - offset);
++
++            memcpy(word, parts[part] + offset, take);
++            MIX(ldq_le_p(word));
++        }
++        written += length;
++    }
++#undef MIX
++    for (size_t lane = 0; lane < 4; lane++) {
++        uint64_t word = lanes[lane] + written +
++            lane * UINT64_C(0x9e3779b97f4a7c15);
++
++        word ^= word >> 30;
++        word *= UINT64_C(0xbf58476d1ce4e5b9);
++        word ^= word >> 27;
++        word *= UINT64_C(0x94d049bb133111eb);
++        word ^= word >> 31;
++        stq_le_p(output + lane * 8, word);
++    }
++}
++
++static bool accelerator_field(const QemuCrucibleFaultRule *rule,
++                              uint16_t tag, uint16_t type,
++                              const uint8_t **data, uint32_t *length)
++{
++    return qemu_crucible_fault_rule_field(rule, tag, type, data, length);
++}
++
++static bool accelerator_u32(const QemuCrucibleFaultRule *rule,
++                            uint16_t tag, uint32_t *value)
++{
++    const uint8_t *data;
++    uint32_t length;
++
++    if (!accelerator_field(rule, tag, CRUCIBLE_NODE_FAULT_FIELD_TYPE_U32,
++                           &data, &length) || length != 4) {
++        return false;
++    }
++    *value = ldl_le_p(data);
++    return true;
++}
++
++static bool accelerator_ratio(const QemuCrucibleFaultRule *rule,
++                              uint64_t *numerator, uint64_t *denominator)
++{
++    const uint8_t *data;
++    uint32_t length;
++
++    if (!accelerator_field(rule, CRUCIBLE_NODE_FAULT_FIELD_P1,
++                           CRUCIBLE_NODE_FAULT_FIELD_TYPE_RATIO,
++                           &data, &length) || length != 16) {
++        return false;
++    }
++    *numerator = ldq_le_p(data);
++    *denominator = ldq_le_p(data + 8);
++    return *numerator != 0 && *numerator <= *denominator;
++}
++
++static bool accelerator_target_matches(const QemuCrucibleFaultRule *rule,
++                                       const uint8_t device_id[32])
++{
++    const uint8_t *target;
++    uint32_t length;
++
++    return accelerator_field(rule, CRUCIBLE_NODE_FAULT_FIELD_T1,
++                             CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH,
++                             &target, &length) && length == 32 &&
++           memcmp(target, device_id, 32) == 0;
++}
++
++static void accelerator_rule_unref(gpointer opaque)
++{
++    qemu_crucible_fault_rule_unref(opaque);
++}
++
++static GPtrArray *accelerator_rule_array(void)
++{
++    return g_ptr_array_new_with_free_func(accelerator_rule_unref);
++}
++
++static void accelerator_state_ensure(void)
++{
++    if (!crucible_accelerator.lifecycle_rules) {
++        crucible_accelerator.lifecycle = CRUCIBLE_ACCELERATOR_PRESENT;
++        crucible_accelerator.lifecycle_rules = accelerator_rule_array();
++        crucible_accelerator.result_rules = accelerator_rule_array();
++        crucible_accelerator.memory_rules = accelerator_rule_array();
++        crucible_accelerator.service_rules = accelerator_rule_array();
++    }
++}
++
++static void accelerator_collect_rule(const QemuCrucibleFaultRule *rule,
++                                     void *opaque)
++{
++    GPtrArray *rules = opaque;
++
++    g_ptr_array_add(rules, qemu_crucible_fault_rule_ref(
++                              (QemuCrucibleFaultRule *)rule));
++}
++
++int qemu_crucible_fault_accelerator_validate(
++    const QemuCrucibleFaultRule *rule)
++{
++    uint8_t device_id[32];
++    uint16_t kind = qemu_crucible_fault_rule_command_kind(rule);
++    uint16_t operation = qemu_crucible_fault_rule_operation(rule);
++
++    qemu_crucible_fault_accelerator_device_id(device_id);
++    if (!accelerator_target_matches(rule, device_id)) {
++        return -EINVAL;
++    }
++    if (!accelerator_lifecycle_callback ||
++        memcmp(accelerator_registered_device, device_id, 32) != 0) {
++        return -ENOTSUP;
++    }
++    if (operation == CRUCIBLE_NODE_FAULT_OPERATION_REMOVE) {
++        return 0;
++    }
++    if (kind == CRUCIBLE_FAULT_COMMAND_ACCELERATOR_LIFECYCLE) {
++        uint32_t transition, queue_policy, memory_policy;
++
++        return accelerator_u32(rule, CRUCIBLE_NODE_FAULT_FIELD_P2,
++                               &transition) && transition >= 1 &&
++               transition <= 3 &&
++               accelerator_u32(rule, CRUCIBLE_NODE_FAULT_FIELD_P3,
++                               &queue_policy) && queue_policy >= 1 &&
++               queue_policy <= 3 &&
++               accelerator_u32(rule, CRUCIBLE_NODE_FAULT_FIELD_P4,
++                               &memory_policy) && memory_policy >= 1 &&
++               memory_policy <= 3 ? 0 : -EINVAL;
++    }
++    if (kind == CRUCIBLE_FAULT_COMMAND_ACCELERATOR_SERVICE) {
++        uint64_t numerator, denominator;
++
++        return accelerator_ratio(rule, &numerator, &denominator) ? 0 : -EINVAL;
++    }
++    return kind == CRUCIBLE_FAULT_COMMAND_ACCELERATOR_RESULT_TRANSFORM ||
++           kind == CRUCIBLE_FAULT_COMMAND_ACCELERATOR_MEMORY_EVENT ? 0 :
++           -ENOTSUP;
++}
++
++static void accelerator_rebuild_rules(void)
++{
++    GPtrArray *lifecycle = accelerator_rule_array();
++    GPtrArray *result = accelerator_rule_array();
++    GPtrArray *memory = accelerator_rule_array();
++    GPtrArray *service = accelerator_rule_array();
++
++    qemu_crucible_fault_rule_foreach(
++        CRUCIBLE_FAULT_COMMAND_ACCELERATOR_LIFECYCLE,
++        accelerator_collect_rule, lifecycle);
++    qemu_crucible_fault_rule_foreach(
++        CRUCIBLE_FAULT_COMMAND_ACCELERATOR_RESULT_TRANSFORM,
++        accelerator_collect_rule, result);
++    qemu_crucible_fault_rule_foreach(
++        CRUCIBLE_FAULT_COMMAND_ACCELERATOR_MEMORY_EVENT,
++        accelerator_collect_rule, memory);
++    qemu_crucible_fault_rule_foreach(
++        CRUCIBLE_FAULT_COMMAND_ACCELERATOR_SERVICE,
++        accelerator_collect_rule, service);
++    g_clear_pointer(&crucible_accelerator.lifecycle_rules, g_ptr_array_unref);
++    g_clear_pointer(&crucible_accelerator.result_rules, g_ptr_array_unref);
++    g_clear_pointer(&crucible_accelerator.memory_rules, g_ptr_array_unref);
++    g_clear_pointer(&crucible_accelerator.service_rules, g_ptr_array_unref);
++    crucible_accelerator.lifecycle_rules = lifecycle;
++    crucible_accelerator.result_rules = result;
++    crucible_accelerator.memory_rules = memory;
++    crucible_accelerator.service_rules = service;
++}
++
++void qemu_crucible_fault_accelerator_rules_changed(
++    const QemuCrucibleFaultRule *transition_rule,
++    QemuCrucibleFaultEventReservation **event_reservation)
++{
++    uint8_t device_id[32];
++    uint32_t transition;
++
++    accelerator_state_ensure();
++    accelerator_rebuild_rules();
++    if (!transition_rule ||
++        qemu_crucible_fault_rule_command_kind(transition_rule) !=
++            CRUCIBLE_FAULT_COMMAND_ACCELERATOR_LIFECYCLE ||
++        qemu_crucible_fault_rule_operation(transition_rule) ==
++            CRUCIBLE_NODE_FAULT_OPERATION_REMOVE ||
++        !accelerator_u32(transition_rule, CRUCIBLE_NODE_FAULT_FIELD_P2,
++                         &transition)) {
++        return;
++    }
++    qemu_crucible_fault_accelerator_device_id(device_id);
++    if (!accelerator_target_matches(transition_rule, device_id)) {
++        return;
++    }
++    if (transition == 1) {
++        crucible_accelerator.lifecycle = CRUCIBLE_ACCELERATOR_DISAPPEARED;
++    } else if (transition == 2) {
++        crucible_accelerator.lifecycle = CRUCIBLE_ACCELERATOR_PRESENT;
++        crucible_accelerator.reset_generation++;
++        crucible_accelerator.memory_generation++;
++        crucible_accelerator.service_remainder = 0;
++    } else {
++        crucible_accelerator.lifecycle = CRUCIBLE_ACCELERATOR_PRESENT;
++        crucible_accelerator.reset_generation++;
++    }
++    uint32_t queue_policy, memory_policy;
++    if (!accelerator_u32(transition_rule, CRUCIBLE_NODE_FAULT_FIELD_P3,
++                         &queue_policy) ||
++        !accelerator_u32(transition_rule, CRUCIBLE_NODE_FAULT_FIELD_P4,
++                         &memory_policy) || !accelerator_lifecycle_callback) {
++        error_report("Crucible accelerator lifecycle target disappeared");
++        abort();
++    }
++    accelerator_lifecycle_callback(accelerator_lifecycle_opaque, transition,
++                                   queue_policy, memory_policy);
++    (void)event_reservation;
++}
++
++static bool accelerator_scale_service(uint64_t input, uint64_t numerator,
++                                      uint64_t denominator,
++                                      uint64_t *remainder, uint64_t *output)
++{
++    __uint128_t scaled = (__uint128_t)input * denominator + *remainder;
++    __uint128_t quotient = scaled / numerator;
++
++    if (quotient == 0 || quotient > UINT64_MAX) {
++        return false;
++    }
++    *output = quotient;
++    *remainder = scaled % numerator;
++    return true;
++}
++
++bool qemu_crucible_fault_accelerator_submit(
++    const uint8_t device_id[32], uint16_t class_id, uint16_t job_kind,
++    uint16_t queue_id, uint64_t sequence, uint64_t *service_units,
++    const uint8_t *input, size_t input_len, size_t output_capacity,
++    uint16_t *status)
++{
++    uint64_t numerator = 1, denominator = 1;
++
++    (void)class_id;
++    (void)job_kind;
++    (void)queue_id;
++    (void)sequence;
++    (void)input;
++    (void)input_len;
++    accelerator_state_ensure();
++    uint8_t expected[32];
++
++    qemu_crucible_fault_accelerator_device_id(expected);
++    if (!service_units || !status || crucible_accelerator.terminal ||
++        memcmp(expected, device_id, 32) != 0) {
++        return false;
++    }
++    if (crucible_accelerator.lifecycle ==
++            CRUCIBLE_ACCELERATOR_DISAPPEARED) {
++        *status = CRUCIBLE_ACCELERATOR_STATUS_UNAVAILABLE;
++        return true;
++    }
++    for (guint i = 0; i < crucible_accelerator.memory_rules->len; i++) {
++        QemuCrucibleFaultRule *rule = g_ptr_array_index(
++            crucible_accelerator.memory_rules, i);
++        uint32_t ecc;
++
++        if (!accelerator_u32(rule, CRUCIBLE_NODE_FAULT_FIELD_P4, &ecc)) {
++            continue;
++        }
++        if (ecc == 2 && output_capacity != 0) {
++            *status = CRUCIBLE_ACCELERATOR_STATUS_UNCORRECTABLE;
++            crucible_accelerator.memory_generation++;
++            return true;
++        }
++    }
++    for (guint i = 0; i < crucible_accelerator.service_rules->len; i++) {
++        QemuCrucibleFaultRule *rule = g_ptr_array_index(
++            crucible_accelerator.service_rules, i);
++        uint64_t candidate_numerator, candidate_denominator;
++
++        if (accelerator_ratio(rule, &candidate_numerator,
++                              &candidate_denominator) &&
++            (__uint128_t)candidate_numerator * denominator <
++                (__uint128_t)numerator * candidate_denominator) {
++            numerator = candidate_numerator;
++            denominator = candidate_denominator;
++        }
++    }
++    if (!accelerator_scale_service(*service_units, numerator, denominator,
++                                   &crucible_accelerator.service_remainder,
++                                   service_units)) {
++        qemu_crucible_fault_accelerator_event_terminal();
++        return false;
++    }
++    if (crucible_accelerator.job_sequence == UINT64_MAX) {
++        qemu_crucible_fault_accelerator_event_terminal();
++        return false;
++    }
++    crucible_accelerator.job_sequence++;
++    *status = 0;
++    return true;
++}
++
++static bool accelerator_json_u64(const QObject *object, uint64_t *value)
++{
++    QNum *number = qobject_to(QNum, object);
++
++    if (!number || number->kind == QNUM_DOUBLE ||
++        (number->kind == QNUM_I64 && qnum_get_int(number) < 0)) {
++        return false;
++    }
++    *value = qnum_get_uint(number);
++    return true;
++}
++
++static GByteArray *accelerator_hex(const char *value)
++{
++    size_t length = strlen(value);
++    GByteArray *bytes;
++
++    if (length == 0 || (length & 1) != 0) {
++        return NULL;
++    }
++    bytes = g_byte_array_sized_new(length / 2);
++    for (size_t i = 0; i < length; i += 2) {
++        int high = g_ascii_xdigit_value(value[i]);
++        int low = g_ascii_xdigit_value(value[i + 1]);
++        uint8_t byte;
++
++        if (high < 0 || low < 0) {
++            g_byte_array_unref(bytes);
++            return NULL;
++        }
++        byte = (high << 4) | low;
++        g_byte_array_append(bytes, &byte, 1);
++    }
++    return bytes;
++}
++
++bool qemu_crucible_fault_accelerator_complete(
++    const uint8_t device_id[32], uint16_t class_id, uint16_t job_kind,
++    uint16_t queue_id, uint64_t sequence, uint8_t *output,
++    size_t output_len, uint16_t *status)
++{
++    uint8_t expected[32];
++
++    (void)class_id;
++    (void)sequence;
++    accelerator_state_ensure();
++    qemu_crucible_fault_accelerator_device_id(expected);
++    if (!status || memcmp(expected, device_id, 32) != 0 ||
++        (output_len != 0 && !output) || crucible_accelerator.terminal) {
++        return false;
++    }
++    if (crucible_accelerator.lifecycle ==
++            CRUCIBLE_ACCELERATOR_DISAPPEARED) {
++        *status = CRUCIBLE_ACCELERATOR_STATUS_UNAVAILABLE;
++        return true;
++    }
++    for (guint i = 0; i < crucible_accelerator.memory_rules->len; i++) {
++        QemuCrucibleFaultRule *rule = g_ptr_array_index(
++            crucible_accelerator.memory_rules, i);
++        uint32_t ecc;
++
++        if (accelerator_u32(rule, CRUCIBLE_NODE_FAULT_FIELD_P4, &ecc) &&
++            ecc == 2) {
++            *status = CRUCIBLE_ACCELERATOR_STATUS_UNCORRECTABLE;
++            crucible_accelerator.memory_generation++;
++            return true;
++        }
++    }
++    for (guint i = 0; i < crucible_accelerator.result_rules->len; i++) {
++        QemuCrucibleFaultRule *rule = g_ptr_array_index(
++            crucible_accelerator.result_rules, i);
++        QDict *selector = qobject_to(QDict, qemu_crucible_fault_rule_json(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_P1));
++        QDict *mutation = qobject_to(QDict, qemu_crucible_fault_rule_json(
++            rule, CRUCIBLE_NODE_FAULT_FIELD_P2));
++        uint64_t offset;
++        QNum *queue;
++        g_autoptr(GByteArray) mask = NULL;
++        g_autoptr(GByteArray) value = NULL;
++
++        QString *job_name;
++        QString *mask_text;
++        QString *value_text;
++
++        if (!selector || !mutation ||
++            !accelerator_json_u64(qdict_get(mutation, "offset"), &offset)) {
++            return false;
++        }
++        job_name = qobject_to(QString, qdict_get(selector, "job_kind"));
++        mask_text = qobject_to(QString, qdict_get(mutation, "mask"));
++        value_text = qobject_to(QString, qdict_get(mutation, "value"));
++        if (!job_name || !mask_text || !value_text) {
++            return false;
++        }
++        queue = qobject_to(QNum, qdict_get(selector, "queue"));
++        if (queue && qnum_get_uint(queue) != queue_id) {
++            continue;
++        }
++        /* Closed job kind 1 is named matrix-multiply by the public manifest. */
++        const char *expected_job = class_id == 1 ? "vector-add" :
++                                   class_id == 2 ? "matrix-multiply" :
++                                   class_id == 3 ? "lookup-table" : NULL;
++        if (job_kind != 1 || !expected_job ||
++            strcmp(qstring_get_str(job_name), expected_job) != 0) {
++            continue;
++        }
++        if (!qemu_crucible_fault_rule_occurs_nested(
++                rule, CRUCIBLE_NODE_FAULT_FIELD_P1, "occurrence")) {
++            continue;
++        }
++        mask = accelerator_hex(qstring_get_str(mask_text));
++        value = accelerator_hex(qstring_get_str(value_text));
++        if (!mask || !value || mask->len != value->len ||
++            offset > output_len || mask->len > output_len - offset) {
++            return false;
++        }
++        for (guint byte = 0; byte < mask->len; byte++) {
++            output[offset + byte] = (output[offset + byte] & ~mask->data[byte]) |
++                                    (value->data[byte] & mask->data[byte]);
++        }
++    }
++    return true;
++}
++
++void qemu_crucible_fault_accelerator_reset(const uint8_t device_id[32])
++{
++    uint8_t expected[32];
++
++    qemu_crucible_fault_accelerator_device_id(expected);
++    if (memcmp(expected, device_id, 32) == 0) {
++        crucible_accelerator.reset_generation++;
++        crucible_accelerator.service_remainder = 0;
++    }
++}
++
++void qemu_crucible_fault_accelerator_event_terminal(void)
++{
++    crucible_accelerator.terminal = true;
++}
++
++static int accelerator_vmstate_save(GByteArray *payload)
++{
++    accelerator_state_ensure();
++    qemu_crucible_fault_vmstate_put_u32(payload,
++                                        crucible_accelerator.lifecycle);
++    qemu_crucible_fault_vmstate_put_u64(payload,
++                                        crucible_accelerator.reset_generation);
++    qemu_crucible_fault_vmstate_put_u64(payload,
++                                        crucible_accelerator.job_sequence);
++    qemu_crucible_fault_vmstate_put_u64(payload,
++                                        crucible_accelerator.service_remainder);
++    qemu_crucible_fault_vmstate_put_u64(payload,
++                                        crucible_accelerator.memory_generation);
++    qemu_crucible_fault_vmstate_put_u8(payload,
++                                       crucible_accelerator.terminal);
++    return 0;
++}
++
++static int accelerator_vmstate_prepare(const uint8_t *payload,
++                                       size_t payload_len, void **staged)
++{
++    QemuCrucibleFaultVmstateReader reader = {
++        .data = payload,
++        .length = payload_len,
++    };
++    CrucibleAcceleratorVmstate *state = g_new0(
++        CrucibleAcceleratorVmstate, 1);
++
++    if (!qemu_crucible_fault_vmstate_get_u32(&reader, &state->lifecycle) ||
++        !qemu_crucible_fault_vmstate_get_u64(
++            &reader, &state->reset_generation) ||
++        !qemu_crucible_fault_vmstate_get_u64(&reader, &state->job_sequence) ||
++        !qemu_crucible_fault_vmstate_get_u64(
++            &reader, &state->service_remainder) ||
++        !qemu_crucible_fault_vmstate_get_u64(
++            &reader, &state->memory_generation) ||
++        !qemu_crucible_fault_vmstate_get_u8(&reader, &state->terminal) ||
++        state->lifecycle < CRUCIBLE_ACCELERATOR_PRESENT ||
++        state->lifecycle > CRUCIBLE_ACCELERATOR_DISAPPEARED ||
++        !qemu_crucible_fault_vmstate_reader_finished(&reader)) {
++        g_free(state);
++        return -EINVAL;
++    }
++    *staged = state;
++    return 0;
++}
++
++static void accelerator_vmstate_commit(void *opaque)
++{
++    CrucibleAcceleratorVmstate *state = opaque;
++
++    accelerator_state_ensure();
++    crucible_accelerator.lifecycle = state->lifecycle;
++    crucible_accelerator.reset_generation = state->reset_generation;
++    crucible_accelerator.job_sequence = state->job_sequence;
++    crucible_accelerator.service_remainder = state->service_remainder;
++    crucible_accelerator.memory_generation = state->memory_generation;
++    crucible_accelerator.terminal = state->terminal;
++    g_free(state);
++}
++
++static const QemuCrucibleFaultVmstateSection accelerator_vmstate_section = {
++    .name = "accelerator",
++    .version = 1,
++    .save = accelerator_vmstate_save,
++    .prepare = accelerator_vmstate_prepare,
++    .commit = accelerator_vmstate_commit,
++    .free_staged = g_free,
++};
++
++static void accelerator_fault_register(void)
++{
++    uint32_t boundary = 1U << (CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY - 1);
++    uint32_t device = 1U << (CRUCIBLE_FAULT_PHASE_DEVICE - 1);
++
++    qemu_crucible_fault_node_register(
++        CRUCIBLE_FAULT_COMMAND_ACCELERATOR_LIFECYCLE,
++        CRUCIBLE_FAULT_CAPABILITY_SCOPE_ACCELERATOR, boundary | device,
++        "qemu.accelerator.lifecycle.v1", NULL);
++    qemu_crucible_fault_node_register(
++        CRUCIBLE_FAULT_COMMAND_ACCELERATOR_RESULT_TRANSFORM,
++        CRUCIBLE_FAULT_CAPABILITY_SCOPE_ACCELERATOR, device,
++        "qemu.accelerator.result-transform.v1", NULL);
++    qemu_crucible_fault_node_register(
++        CRUCIBLE_FAULT_COMMAND_ACCELERATOR_MEMORY_EVENT,
++        CRUCIBLE_FAULT_CAPABILITY_SCOPE_ACCELERATOR, boundary | device,
++        "qemu.accelerator.memory-event.v1", NULL);
++    qemu_crucible_fault_node_register(
++        CRUCIBLE_FAULT_COMMAND_ACCELERATOR_SERVICE,
++        CRUCIBLE_FAULT_CAPABILITY_SCOPE_ACCELERATOR, boundary | device,
++        "qemu.accelerator.service.v1", NULL);
++    qemu_crucible_fault_vmstate_register(&accelerator_vmstate_section);
++}
++
++type_init(accelerator_fault_register)
+diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
+index 1710ab3..aebc85e 100644
+--- a/plugins/crucible-fault-node.c
++++ b/plugins/crucible-fault-node.c
+@@ -3342,6 +3342,22 @@ static int node_prepare(
+             return status;
+         }
+     }
++    if (staging->rule.command_kind ==
++            CRUCIBLE_FAULT_COMMAND_ACCELERATOR_LIFECYCLE ||
++        staging->rule.command_kind ==
++            CRUCIBLE_FAULT_COMMAND_ACCELERATOR_RESULT_TRANSFORM ||
++        staging->rule.command_kind ==
++            CRUCIBLE_FAULT_COMMAND_ACCELERATOR_MEMORY_EVENT ||
++        staging->rule.command_kind ==
++            CRUCIBLE_FAULT_COMMAND_ACCELERATOR_SERVICE) {
++        status = qemu_crucible_fault_accelerator_validate(&staging->rule);
++        if (status != 0) {
++            result->status = status == -ENOTSUP ?
++                CRUCIBLE_FAULT_STATUS_UNSUPPORTED_CAPABILITY :
++                CRUCIBLE_FAULT_STATUS_INVALID_TARGET;
++            return status;
++        }
++    }
+     node_sha256(payload, payload_len, staging->request_hash);
+     node_rules_digest_with(NULL, false, staging->before_hash);
+     if (command->command_flags & CRUCIBLE_FAULT_COMMAND_FLAG_PREPARE_ONLY) {
+@@ -3531,6 +3547,7 @@ static void node_event_enqueue(const QemuCrucibleFaultRule *rule,
+         qemu_crucible_fault_hardware_error_event_terminal();
+         qemu_crucible_fault_vcpu_service_event_terminal();
+         qemu_crucible_fault_clock_event_terminal();
++        qemu_crucible_fault_accelerator_event_terminal();
+         qemu_crucible_fault_notify_events();
+         qemu_system_vmstop_request_prepare();
+         qemu_system_vmstop_request(RUN_STATE_INTERNAL_ERROR);
+@@ -3597,6 +3614,8 @@ static void node_commit(
+             &staging->rule, &staging->event_reservation);
+         qemu_crucible_fault_clock_rules_changed(
+             &staging->event_reservation);
++        qemu_crucible_fault_accelerator_rules_changed(
++            &staging->rule, &staging->event_reservation);
+         if (staging->event_reservation) {
+             qemu_crucible_fault_event_reservation_release(
+                 staging->event_reservation);
+@@ -3617,6 +3636,8 @@ static void node_commit(
+             &staging->rule, &staging->event_reservation);
+         qemu_crucible_fault_clock_rules_changed(
+             &staging->event_reservation);
++        qemu_crucible_fault_accelerator_rules_changed(
++            &staging->rule, &staging->event_reservation);
+         if (staging->event_reservation) {
+             qemu_crucible_fault_event_reservation_release(
+                 staging->event_reservation);
+diff --git a/plugins/meson.build b/plugins/meson.build
+index a100e60..a9448a7 100644
+--- a/plugins/meson.build
++++ b/plugins/meson.build
+@@ -69,5 +69,6 @@ system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c',
+                     'crucible-fault-hardware-error.c',
+                     'crucible-fault-vcpu-service.c',
+                     'crucible-fault-lifecycle.c'))
++system_ss.add(files('crucible-fault-accelerator.c'))
+ 
+ common_ss.add(files('loader.c', 'api.c', 'core.c'))
 -- 
 2.54.0
-
 
