@@ -10,7 +10,9 @@ Unknown TOML fields and unknown closed-vocabulary values are rejected. Generate 
 scenario through the Rust builder and `to_canonical_toml` whenever possible; its
 content-addressed IDs are computed values, not labels to invent by hand. See the
 [scenario authoring guide](scenarios.md) and the
-[Nginx/Curl tutorial](quickstart.md).
+[Nginx/Curl tutorial](quickstart.md). For a conceptual walkthrough of causes,
+bindings, opportunities, and effects, start with
+[Signal-driven faults](signal-driven-faults.md).
 
 Direct implementation references:
 
