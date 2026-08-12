@@ -50,6 +50,8 @@
   # /etc lower; subsequent generations are rendered by the stage-2 config-eval
   # fixpoint and switched in by `activate`.
   filesUnit = "aos-config-seed.service";
+  zfsState = config.aos.filesystems.zfs.enable;
+  zfsPackage = config.aos.filesystems.zfs.package;
 
   # The neutral boot-infrastructure units are always emitted and ordered
   # against `disksUnit` and `filesUnit`.
@@ -88,15 +90,18 @@
         "etc-overlay-setup.service"
         "initrd-fs.target"
       ];
-      requires = ["sysroot.mount"] ++ lib.optional (disksUnit != null) disksUnit;
+      requires = ["sysroot.mount"]
+        ++ lib.optional (!zfsState && disksUnit != null) disksUnit
+        ++ lib.optional zfsState "aos-zfs-unlock.service";
       after =
         ["sysroot.mount"]
-        ++ lib.optional (disksUnit != null) disksUnit
+        ++ lib.optional (!zfsState && disksUnit != null) disksUnit
+        ++ lib.optional zfsState "aos-zfs-unlock.service"
         ++ ["systemd-udev-settle.service"];
-      unitConfig = {
+      unitConfig = lib.optionalAttrs (!zfsState) {
         ConditionPathExists = "/dev/disk/by-partlabel/var";
       };
-      environment.PATH = bootPath;
+      environment.PATH = bootPath + lib.optionalString zfsState ":${zfsPackage}/bin:${zfsPackage}/sbin";
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -111,7 +116,10 @@
           # aos-var-crypt service runs first and exposes the unlocked
           # LUKS volume as /dev/mapper/var; mount that. Otherwise the
           # raw partition is mounted directly (unchanged behaviour).
-          if [ -e /dev/mapper/var ]; then
+          if ${if zfsState then "true" else "false"}; then
+            mount -t zfs -o zfsutil,nosuid,nodev \
+              ${lib.escapeShellArg "${config.aos.filesystems.zfs.poolName}/var"} /sysroot/var
+          elif [ -e /dev/mapper/var ]; then
             mount -o nosuid,nodev /dev/mapper/var /sysroot/var
           else
             mount -o nosuid,nodev /dev/disk/by-partlabel/var /sysroot/var

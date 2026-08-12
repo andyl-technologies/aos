@@ -705,6 +705,8 @@
       linuxWith = extraConfig:
         callPackage ./kernel/linux.nix {inherit linuxSource extraConfig;};
       linux-headers = callPackage ./kernel/linux-headers.nix {inherit linuxSource;};
+      zfsForKernel = kernel:
+        callPackage ./filesystem/zfs.nix {inherit kernel;};
 
       qemu-crucible = callPackage ./emulation/qemu.nix {
         pname = "qemu-crucible";
