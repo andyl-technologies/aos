@@ -1488,18 +1488,15 @@ fn validate_boot_esp_mount(
         .with_context(|| format!("resolving mounted EFI device {source}"))?;
     let mut matched = false;
     for expected_device in expected_devices {
-        let expected_device = std::fs::canonicalize(expected_device).with_context(|| {
-            format!(
-                "resolving configured EFI System Partition {}",
-                expected_device.display()
-            )
-        })?;
-        let expected_file = std::fs::File::open(&expected_device).with_context(|| {
-            format!(
-                "opening configured EFI System Partition {}",
-                expected_device.display()
-            )
-        })?;
+        // A failed replica must not prevent validating the ESP that firmware
+        // actually selected. Replication still reports the failed member when
+        // the transaction attempts to synchronize every configured ESP.
+        let Ok(expected_device) = std::fs::canonicalize(expected_device) else {
+            continue;
+        };
+        let Ok(expected_file) = std::fs::File::open(&expected_device) else {
+            continue;
+        };
         let expected_metadata = expected_file.metadata()?;
         if require_block_devices && !expected_metadata.file_type().is_block_device() {
             bail!("EFI System Partition paths must both be block devices");
@@ -4766,6 +4763,9 @@ mod tests {
         .unwrap();
 
         validate_boot_esp_mount(&boot, &mountinfo, std::slice::from_ref(&expected), false).unwrap();
+
+        let missing = devices.join("missing-replica");
+        validate_boot_esp_mount(&boot, &mountinfo, &[missing, expected.clone()], false).unwrap();
 
         std::fs::write(
             &mountinfo,

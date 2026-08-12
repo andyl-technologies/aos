@@ -246,6 +246,15 @@ The mechanisms currently demonstrated are:
 - TPM2 sealing of `/var` to a signed PCR 11 policy and pinned PCR 7 value;
 - dm-verity verification of the read-only EROFS root.
 
+The bare-metal ZFS profile extends this model with native ZFS encryption. Its
+installer creates the pool under one encryption root, returns the only raw
+recovery-key copy to an operator-selected path, and places a TPM2-encrypted
+credential on every ESP. Unlock is bound to the signed PCR policy and pinned
+Secure Boot state. Installation therefore requires Secure Boot already
+enforcing; a recovery environment must have the deployment keys enrolled
+before it seals storage. The checked-in fixture keys must never be used for
+this purpose.
+
 Durable upgrades preserve those bindings per image generation: APM validates
 the signed catalog, writes the inactive root/hash slot and slot-specific UKI,
 and selects the counted entry. A boot is blessed only after the TPM reaches the
