@@ -112,7 +112,11 @@ in {
             --replace-fail '@sealed_key_path@' '${cfg.zfs.sealedKeyPath}' \
             --replace-fail '@signed_pcrs@' '${config.aos.boot.secureBoot.measuredBoot.signedPcrs}' \
             --replace-fail '@pinned_pcrs@' '${config.aos.boot.secureBoot.measuredBoot.pinnedPcrs}' \
-            --replace-fail '@esp_devices@' '${lib.concatStringsSep " " cfg.espDevices}'
+            --replace-fail '@esp_devices@' '${lib.concatStringsSep " " cfg.espDevices}' \
+            --replace-fail '@esp_count@' '${toString (builtins.length cfg.espDevices)}' \
+            --replace-fail '@root_slot_size@' '${toString cfg.zfs.rootSlotSizeGiB}' \
+            --replace-fail '@verity_slot_size@' '${toString cfg.zfs.veritySlotSizeMiB}'
+          ${pkgs.bash}/bin/bash -n "$out/bin/aos-install-zfs"
           chmod 0755 "$out/bin/aos-install-zfs"
         '';
       }];

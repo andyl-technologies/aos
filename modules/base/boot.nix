@@ -11,6 +11,7 @@
 {
   config,
   lib,
+  pkgs,
   ...
 }: let
   hardwareAutoloadedInitrdModules = [
@@ -138,6 +139,26 @@ in {
           Those drivers remain available in the copied module tree and
           load via udev/modalias only on matching hardware, avoiding
           noisy module insertion failures on unrelated hypervisors.
+        '';
+      };
+
+      modulePackages = lib.mkOption {
+        type = lib.types.listOf lib.types.package;
+        default = [];
+        description = ''
+          External kernel-module packages required before switch-root. Keep
+          this list limited to storage and unlock dependencies; runtime-only
+          drivers belong in aos.kernel.modulePackages.
+        '';
+      };
+
+      firmwarePackages = lib.mkOption {
+        type = lib.types.listOf lib.types.package;
+        default = [pkgs.firmware];
+        description = ''
+          Firmware packages required before switch-root. Runtime-only device
+          firmware belongs in aos.kernel.firmwarePackages so it does not
+          inflate every unified kernel image.
         '';
       };
 

@@ -16,13 +16,16 @@ mapfile -t devices < <(jq -er '.espDevices[]' "$metadata")
   exit 1
 }
 
-primary=$(readlink -f "${devices[0]}")
 mounted=$(findmnt -n -o SOURCE --target /boot)
 mounted=$(readlink -f "$mounted")
-[ -b "$primary" ] && [ "$mounted" = "$primary" ] || {
-  echo "aos-sync-esps: /boot is not mounted from the configured primary ESP" >&2
-  exit 1
-}
+primary=
+for device in "${devices[@]}"; do
+  if [ -b "$device" ] && [ "$(readlink -f "$device")" = "$mounted" ]; then
+    primary=$mounted
+    break
+  fi
+done
+[ -n "$primary" ] || { echo "aos-sync-esps: /boot is not a configured ESP" >&2; exit 1; }
 
 work=$(mktemp -d /run/aos-esp-replica.XXXXXX)
 mounted_replica=false
@@ -32,7 +35,8 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-for device in "${devices[@]:1}"; do
+for device in "${devices[@]}"; do
+  [ "$(readlink -f "$device" 2>/dev/null || true)" != "$primary" ] || continue
   [ -b "$device" ] || {
     echo "aos-sync-esps: configured replica is not a block device: $device" >&2
     exit 1
@@ -46,7 +50,7 @@ for device in "${devices[@]:1}"; do
   for tree in EFI/BOOT EFI/systemd EFI/Linux loader aos; do
     if [ -d "/boot/$tree" ]; then
       mkdir -p "$work/$tree"
-      rsync -a --delete "/boot/$tree/" "$work/$tree/"
+      rsync -rt --delete --modify-window=1 "/boot/$tree/" "$work/$tree/"
     elif [ -e "$work/$tree" ]; then
       rm -rf "$work/$tree"
     fi

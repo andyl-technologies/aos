@@ -22,7 +22,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ "$confirm" = ERASE-AND-INSTALL ] || usage
-[ -n "$recovery" ] && [ ! -e "$recovery" ] || {
+[ -n "$recovery" ] && [ "${recovery#/}" != "$recovery" ] \
+  && [ ! -e "$recovery" ] && [ ! -L "$recovery" ] && [ -d "$(dirname "$recovery")" ] || {
   echo "recovery output must be a new path" >&2
   exit 1
 }
@@ -30,9 +31,22 @@ done
   echo "supply an even number of at least two disks; adjacent disks form mirrors" >&2
   exit 1
 }
+[ "${#disks[@]}" -eq @esp_count@ ] || {
+  echo "disk count must equal the configured EFI System Partition count (@esp_count@)" >&2
+  exit 1
+}
+
+secure_boot_var=/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c
+[ -r "$secure_boot_var" ] && [ "$(od -An -t u1 -j4 -N1 "$secure_boot_var" | tr -d ' ')" = 1 ] || {
+  echo "installation requires UEFI Secure Boot enforcing before TPM policy sealing" >&2
+  exit 1
+}
 
 resolved_disks=()
+expected_esps=(@esp_devices@)
+index=0
 for disk in "${disks[@]}"; do
+  index=$((index + 1))
   case "$disk" in /dev/disk/by-id/*) ;; *) echo "unsafe disk identity: $disk" >&2; exit 1 ;; esac
   [ -b "$disk" ] || { echo "not a block device: $disk" >&2; exit 1; }
   resolved=$(readlink -f "$disk")
@@ -55,11 +69,28 @@ for disk in "${disks[@]}"; do
     echo "refusing disk with existing partitions: $disk" >&2
     exit 1
   }
+  case "${expected_esps[$((index - 1))]}" in
+    /dev/disk/by-partlabel/aos-esp-"$index") ;;
+    *)
+      echo "configured ESP $index must be /dev/disk/by-partlabel/aos-esp-$index" >&2
+      exit 1
+      ;;
+  esac
 done
 
 bundle=$(cd "$(dirname "$0")/.." && pwd -P)
 key=$(mktemp /run/aos-zfs-key.XXXXXX)
-cleanup() { shred -u "$key" 2>/dev/null || rm -f "$key"; }
+sealed=
+esp=
+esp_mounted=false
+pool_created=false
+cleanup() {
+  if [ "$esp_mounted" = true ]; then umount "$esp" 2>/dev/null || true; fi
+  if [ -n "$esp" ]; then rmdir "$esp" 2>/dev/null || true; fi
+  if [ -n "$sealed" ]; then rm -f "$sealed"; fi
+  if [ "$pool_created" = true ]; then zpool export @pool@ 2>/dev/null || true; fi
+  shred -u "$key" 2>/dev/null || rm -f "$key"
+}
 trap cleanup EXIT INT TERM
 dd if=/dev/urandom of="$key" bs=32 count=1 status=none
 install -m 0600 "$key" "$recovery"
@@ -91,14 +122,18 @@ zpool create -f -o ashift=12 -o autotrim=on \
   -O encryption=aes-256-gcm -O keyformat=raw -O keylocation="file://$key" \
   -O compression=zstd-3 -O atime=off -O mountpoint=none \
   @pool@ "${vdevs[@]}"
-zfs create -o mountpoint=none @pool@/aos
-zfs create -o mountpoint=none @pool@/@dataset@
+pool_created=true
+zfs create -p -o mountpoint=none @pool@/@dataset@
 zfs create -o mountpoint=legacy -o canmount=noauto @pool@/var
+zfs create -o mountpoint=legacy @pool@/var/log
+zfs create -o mountpoint=legacy @pool@/var/lib
 
 root_bytes=$(stat -c %s "$bundle/payload/root.img")
 verity_bytes=$(stat -c %s "$bundle/payload/root.verity")
-root_size=$(( (root_bytes + 67108863) / 67108864 * 67108864 ))
-verity_size=$(( (verity_bytes + 16777215) / 16777216 * 16777216 ))
+root_size=$(( @root_slot_size@ * 1073741824 ))
+verity_size=$(( @verity_slot_size@ * 1048576 ))
+[ "$root_bytes" -le "$root_size" ] || { echo "root image exceeds configured zvol capacity" >&2; exit 1; }
+[ "$verity_bytes" -le "$verity_size" ] || { echo "verity image exceeds configured zvol capacity" >&2; exit 1; }
 for slot in a b; do
   zfs create -V "$root_size" -o volblocksize=16K -o compression=off @pool@/@dataset@/root-$slot
   zfs create -V "$verity_size" -o volblocksize=16K -o compression=off @pool@/@dataset@/root-$slot-hash
@@ -118,20 +153,31 @@ for disk in "${disks[@]}"; do
   index=$((index + 1))
   esp=$(mktemp -d /run/aos-esp.XXXXXX)
   mount -t vfat "${disk}-part1" "$esp"
+  esp_mounted=true
   cp -aL "$bundle/payload/esp/." "$esp/"
   mkdir -p "$esp/$(dirname '@sealed_key_path@')"
   install -m 0600 "$sealed" "$esp/@sealed_key_path@"
   sync -f "$esp"
   umount "$esp"
+  esp_mounted=false
   rmdir "$esp"
+  esp=
 done
 rm -f "$sealed"
+sealed=
 
+index=0
 for expected in @esp_devices@; do
+  index=$((index + 1))
   [ -b "$expected" ] || {
     echo "configured ESP path did not resolve after installation: $expected" >&2
     exit 1
   }
+  [ "$(readlink -f "$expected")" = "$(readlink -f "${disks[$((index - 1))]}-part1")" ] || {
+    echo "configured ESP path does not identify installed disk $index: $expected" >&2
+    exit 1
+  }
 done
 zpool export @pool@
+pool_created=false
 echo "installation complete; escrow the recovery key at $recovery before rebooting"

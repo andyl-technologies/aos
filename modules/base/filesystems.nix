@@ -48,7 +48,7 @@
     }"
     ""
     "# EFI System Partition — FAT32 so UEFI firmware can read it."
-    "${cfg.espDevice}  /boot  vfat  ro,noatime,fmask=0077,dmask=0077  0  2"
+    "${cfg.espDevice}  /boot  vfat  noauto,nofail,ro,noatime,fmask=0077,dmask=0077  0  0"
     ""
     (if cfg.zfs.enable then ''
       # /var is a native ZFS dataset mounted by zfs-mount.service.

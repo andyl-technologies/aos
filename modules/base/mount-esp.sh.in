@@ -1,0 +1,43 @@
+#!@bash@
+set -euo pipefail
+
+PATH=@coreutils@/bin:@jq@/bin:@util_linux@/bin:@util_linux@/sbin
+export PATH
+
+mountpoint -q /boot && exit 0
+mkdir -p /boot
+metadata=/aos-toplevel/meta/boot-storage.json
+mapfile -t configured < <(jq -er '.espDevices[]' "$metadata")
+
+candidates=()
+loader_var=/sys/firmware/efi/efivars/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
+if [ -r "$loader_var" ]; then
+  loader_uuid=$(dd if="$loader_var" bs=1 skip=4 status=none | tr -d '\000' | tr 'A-F' 'a-f')
+  case "$loader_uuid" in
+    ????????-????-????-????-????????????) candidates+=("/dev/disk/by-partuuid/$loader_uuid") ;;
+  esac
+fi
+if [ "${#configured[@]}" -eq 1 ]; then
+  candidates+=("${configured[0]}")
+elif [ "${#candidates[@]}" -eq 0 ]; then
+  echo "aos-mount-esp: firmware did not identify the booted ESP" >&2
+  exit 1
+fi
+
+for candidate in "${candidates[@]}"; do
+  [ -b "$candidate" ] || continue
+  configured_match=false
+  for device in "${configured[@]}"; do
+    if [ -b "$device" ] && [ "$(readlink -f "$candidate")" = "$(readlink -f "$device")" ]; then
+      configured_match=true
+      break
+    fi
+  done
+  [ "$configured_match" = true ] || continue
+  if mount -t vfat -o ro,noatime,fmask=0077,dmask=0077 "$candidate" /boot; then
+    exit 0
+  fi
+done
+
+echo "aos-mount-esp: no configured EFI System Partition could be mounted" >&2
+exit 1

@@ -45,7 +45,21 @@
       --replace-fail '@jq@' '${pkgs.jq}' \
       --replace-fail '@rsync@' '${pkgs.rsync}' \
       --replace-fail '@util_linux@' '${pkgs.util-linux}'
+    ${pkgs.bash}/bin/bash -n "$out/bin/aos-sync-esps"
     chmod 0755 "$out/bin/aos-sync-esps"
+  '';
+  espMount = pkgs.runCommand "aos-mount-esp" {
+    buildDeps = [pkgs.coreutils pkgs.perl];
+  } ''
+    mkdir -p "$out/bin"
+    cp ${./mount-esp.sh.in} "$out/bin/aos-mount-esp"
+    substituteInPlace "$out/bin/aos-mount-esp" \
+      --replace-fail '@bash@' '${pkgs.bash}/bin/bash' \
+      --replace-fail '@coreutils@' '${pkgs.coreutils}' \
+      --replace-fail '@jq@' '${pkgs.jq}' \
+      --replace-fail '@util_linux@' '${pkgs.util-linux}'
+    ${pkgs.bash}/bin/bash -n "$out/bin/aos-mount-esp"
+    chmod 0755 "$out/bin/aos-mount-esp"
   '';
   deviceOption = name:
     lib.mkOption {
@@ -70,8 +84,9 @@ in {
       default = ["/dev/disk/by-partlabel/ESP"];
       description = ''
         Stable device paths for independently bootable EFI System Partition
-        replicas. The first entry is mounted at /boot; update transactions
-        replicate bootloader configuration and UKIs to every entry.
+        replicas. Firmware identifies the ESP that actually booted; it becomes
+        the authoritative /boot mount, and successful update transactions
+        replicate bootloader configuration and UKIs to every other entry.
       '';
     };
 
@@ -108,8 +123,20 @@ in {
         description = "Native-encryption root containing immutable zvols and mutable datasets.";
       };
 
+      rootSlotSizeGiB = lib.mkOption {
+        type = lib.types.addCheck lib.types.int (value: value > 0);
+        default = 16;
+        description = "Fixed capacity of each immutable root zvol in GiB.";
+      };
+
+      veritySlotSizeMiB = lib.mkOption {
+        type = lib.types.addCheck lib.types.int (value: value > 0);
+        default = 1024;
+        description = "Fixed capacity of each dm-verity hash zvol in MiB.";
+      };
+
       sealedKeyPath = lib.mkOption {
-        type = lib.types.strMatching "[A-Za-z0-9_.+/-]+";
+        type = lib.types.strMatching "aos/[A-Za-z0-9_.+-]+";
         default = "aos/zfs-key.cred";
         description = "ESP-relative TPM-sealed native ZFS key path.";
       };
@@ -126,11 +153,29 @@ in {
         assertion = lib.all (device: lib.hasPrefix "/dev/" device) (builtins.attrValues resolvedDevices);
         message = "resolved immutable boot-storage devices must be absolute /dev paths";
       }
+      {
+        assertion = !lib.hasInfix ".." cfg.zfs.sealedKeyPath;
+        message = "aos.boot.storage.zfs.sealedKeyPath must be a normalized path under aos/";
+      }
     ];
 
     aos.boot.storage.resolvedDevices = resolvedDevices;
     aos.filesystems.espDevice = lib.mkDefault (builtins.head cfg.espDevices);
-    environment.systemPackages = [espSync];
+    environment.systemPackages = [espMount espSync];
+    systemd.services.aos-mount-esp = {
+      description = "Mount an available booted EFI System Partition";
+      wantedBy = ["local-fs.target"];
+      before = ["local-fs.target" "aos-image-boot-commit.service"];
+      unitConfig = {
+        DefaultDependencies = "no";
+        ConditionPathExists = "/sys/firmware/efi";
+      };
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = ''${espMount}/bin/aos-mount-esp'';
+    };
     systemd.services.aos-sync-esps = {
       description = "Replicate the primary EFI System Partition";
       wantedBy = ["multi-user.target"];
@@ -147,6 +192,7 @@ in {
     };
   } (lib.mkIf (cfg.backend == "zfs-zvol") {
     aos.kernel.modulePackages = [zfsPackage];
+    aos.boot.initrd.modulePackages = [zfsPackage];
     aos.boot.initrd.extraPackages = [zfsPackage];
     aos.boot.initrd.loadModules = ["zfs"];
     aos.filesystems.zfs = {
@@ -176,16 +222,24 @@ in {
         set -euo pipefail
         key=/run/aos-zfs.key
         esp=/run/aos-zfs-esp
+        mounted=false
+        cleanup() {
+          rm -f "$key"
+          if [ "$mounted" = true ]; then umount "$esp" || true; fi
+        }
+        trap cleanup EXIT INT TERM
         mkdir -p "$esp"
         credential=
         for device in ${lib.concatMapStringsSep " " lib.escapeShellArg cfg.espDevices}; do
           [ -e "$device" ] || continue
           if mount -t vfat -o ro,noatime,fmask=0077,dmask=0077 "$device" "$esp"; then
+            mounted=true
             if [ -r "$esp/${cfg.zfs.sealedKeyPath}" ]; then
               credential="$esp/${cfg.zfs.sealedKeyPath}"
               break
             fi
             umount "$esp"
+            mounted=false
           fi
         done
         if [ -z "$credential" ]; then
@@ -204,6 +258,7 @@ in {
         systemd-creds decrypt --name=aos-zfs-key $signature_arg "$credential" "$key"
         chmod 0400 "$key"
         umount "$esp"
+        mounted=false
 
         zpool import -N -f ${lib.escapeShellArg cfg.zfs.poolName}
         zfs load-key -L "file://$key" ${lib.escapeShellArg cfg.zfs.encryptionRoot}
