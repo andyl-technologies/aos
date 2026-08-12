@@ -2,33 +2,139 @@
 
 use std::collections::BTreeMap;
 
-use crucible::model::EffectKind;
+use crucible::model::{
+    EffectKind, FaultTargetKind, PureSignalOperator, SignalSourceKind, StatefulSignalOperator,
+};
 
 const REFERENCE: &str = include_str!("../../../docs/users/crucible/reference.md");
 
 #[test]
 fn every_executable_effect_has_exactly_one_reference_row() {
-    let section = REFERENCE
-        .split_once("### Exhaustive effect registry")
+    assert_exact_reference_rows(
+        section(
+            "### Exhaustive effect registry",
+            "## Properties and predicates",
+        ),
+        EffectKind::all().iter().map(|kind| kind.as_str()),
+        "effect",
+    );
+}
+
+#[test]
+fn every_signal_and_target_registry_value_has_exactly_one_reference_row() {
+    assert_exact_reference_rows(
+        section("Signal source kinds are exhaustive:", "Interpolation is"),
+        SignalSourceKind::all().iter().map(|kind| kind.as_str()),
+        "signal source",
+    );
+    assert_exact_reference_rows(
+        section(
+            "The `operator` field is exhaustive:",
+            "Stateful specification kinds are exhaustive:",
+        ),
+        PureSignalOperator::all().iter().map(|kind| kind.as_str()),
+        "pure operator",
+    );
+    assert_exact_reference_rows(
+        section(
+            "Stateful specification kinds are exhaustive:",
+            "Unknown variants or fields",
+        ),
+        StatefulSignalOperator::all()
+            .iter()
+            .map(|kind| kind.as_str()),
+        "stateful operator",
+    );
+    assert_exact_reference_rows(
+        section("### Target selector values", "Sensor targets are"),
+        FaultTargetKind::all().iter().map(|kind| kind.as_str()),
+        "target",
+    );
+}
+
+#[test]
+fn reference_tables_have_balanced_code_spans_and_columns() {
+    let mut expected_columns = None;
+    for (line_number, line) in REFERENCE.lines().enumerate() {
+        if !line.starts_with('|') {
+            expected_columns = None;
+            continue;
+        }
+        assert_eq!(
+            line.bytes().filter(|byte| *byte == b'`').count() % 2,
+            0,
+            "reference line {} has an unclosed code span",
+            line_number + 1
+        );
+        let columns = markdown_table_columns(line);
+        match expected_columns {
+            None => expected_columns = Some(columns),
+            Some(expected) => assert_eq!(
+                columns,
+                expected,
+                "reference table line {} has {columns} columns, expected {expected}: {line}",
+                line_number + 1
+            ),
+        }
+    }
+}
+
+fn section(start: &str, end: &str) -> &'static str {
+    REFERENCE
+        .split_once(start)
         .map(|(_, tail)| tail)
-        .and_then(|tail| tail.split_once("## Properties and predicates"))
+        .and_then(|tail| tail.split_once(end))
         .map(|(section, _)| section)
-        .unwrap_or_else(|| panic!("effect-reference section headings must remain present"));
+        .unwrap_or_else(|| {
+            panic!("reference section `{start}` through `{end}` must remain present")
+        })
+}
+
+fn assert_exact_reference_rows<'a>(
+    section: &str,
+    expected: impl Iterator<Item = &'a str>,
+    registry: &str,
+) {
     let mut documented = BTreeMap::<&str, usize>::new();
     for line in section.lines().filter(|line| line.starts_with("| `")) {
-        let Some(key) = line.strip_prefix("| `").and_then(|line| line.split('`').next()) else {
-            panic!("effect-reference row must begin with one code-formatted key: {line}");
+        let Some(key) = line
+            .strip_prefix("| `")
+            .and_then(|line| line.split('`').next())
+        else {
+            panic!("{registry} reference row must begin with one code-formatted key: {line}");
         };
+        if key == "kind" {
+            continue;
+        }
         *documented.entry(key).or_default() += 1;
     }
-
-    assert_eq!(documented.len(), EffectKind::all().len());
-    for effect in EffectKind::all() {
+    let expected = expected.collect::<Vec<_>>();
+    assert_eq!(
+        documented.len(),
+        expected.len(),
+        "{registry} reference must contain no missing or extra rows"
+    );
+    for key in expected {
         assert_eq!(
-            documented.get(effect.as_str()),
+            documented.get(key),
             Some(&1),
-            "effect `{}` must have exactly one reference row",
-            effect.as_str()
+            "{registry} `{key}` must have exactly one reference row"
         );
     }
+}
+
+fn markdown_table_columns(line: &str) -> usize {
+    let mut columns = 0_usize;
+    let mut preceding_backslashes = 0_usize;
+    for byte in line.bytes() {
+        if byte == b'|' && preceding_backslashes.is_multiple_of(2) {
+            columns += 1;
+        }
+        preceding_backslashes = if byte == b'\\' {
+            preceding_backslashes + 1
+        } else {
+            0
+        };
+    }
+    columns.saturating_sub(1)
 }

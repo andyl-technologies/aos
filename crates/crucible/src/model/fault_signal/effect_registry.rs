@@ -129,6 +129,33 @@ pub enum FaultTargetKind {
 }
 
 impl FaultTargetKind {
+    /// Returns every executable target kind in canonical reference order.
+    #[must_use]
+    pub const fn all() -> &'static [Self] {
+        &[
+            Self::NetworkInterface,
+            Self::NetworkSegment,
+            Self::NetworkMedium,
+            Self::NetworkQueue,
+            Self::NetworkForwarder,
+            Self::NetworkPath,
+            Self::NetworkAttachment,
+            Self::NetworkContact,
+            Self::BlockDevice,
+            Self::BlockRange,
+            Self::StorageController,
+            Self::StorageArray,
+            Self::NinePDevice,
+            Self::Node,
+            Self::Vcpu,
+            Self::Register,
+            Self::MemoryRange,
+            Self::Interrupt,
+            Self::ClockSource,
+            Self::Accelerator,
+        ]
+    }
+
     /// Returns the production adapter that owns this target kind.
     #[must_use]
     pub const fn adapter(self) -> FaultAdapter {

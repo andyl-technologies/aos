@@ -875,6 +875,94 @@ pub enum PureSignalOperator {
     GateEvents,
 }
 
+impl PureSignalOperator {
+    /// Returns every accepted pure operator in canonical reference order.
+    #[must_use]
+    pub const fn all() -> &'static [Self] {
+        &[
+            Self::Add,
+            Self::Subtract,
+            Self::MultiplyRatio,
+            Self::DivideRatio,
+            Self::Absolute,
+            Self::Negate,
+            Self::Min,
+            Self::Max,
+            Self::Clamp,
+            Self::Equal,
+            Self::NotEqual,
+            Self::Less,
+            Self::LessEqual,
+            Self::Greater,
+            Self::GreaterEqual,
+            Self::All,
+            Self::Any,
+            Self::Not,
+            Self::Select,
+            Self::LookupStep,
+            Self::PiecewiseLinear,
+            Self::EnumMap,
+            Self::UnitConvert,
+            Self::Delay,
+            Self::SampleHold,
+            Self::WindowMin,
+            Self::WindowMax,
+            Self::WindowMean,
+            Self::Distance,
+            Self::ZoneContains,
+            Self::FieldSample,
+            Self::OrientationDelta,
+            Self::EdgeRising,
+            Self::EdgeFalling,
+            Self::MergeEvents,
+            Self::GateEvents,
+        ]
+    }
+
+    /// Returns the exact spelling accepted by the scenario schema.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Add => "add",
+            Self::Subtract => "subtract",
+            Self::MultiplyRatio => "multiply_ratio",
+            Self::DivideRatio => "divide_ratio",
+            Self::Absolute => "absolute",
+            Self::Negate => "negate",
+            Self::Min => "min",
+            Self::Max => "max",
+            Self::Clamp => "clamp",
+            Self::Equal => "equal",
+            Self::NotEqual => "not_equal",
+            Self::Less => "less",
+            Self::LessEqual => "less_equal",
+            Self::Greater => "greater",
+            Self::GreaterEqual => "greater_equal",
+            Self::All => "all",
+            Self::Any => "any",
+            Self::Not => "not",
+            Self::Select => "select",
+            Self::LookupStep => "lookup_step",
+            Self::PiecewiseLinear => "piecewise_linear",
+            Self::EnumMap => "enum_map",
+            Self::UnitConvert => "unit_convert",
+            Self::Delay => "delay",
+            Self::SampleHold => "sample_hold",
+            Self::WindowMin => "window_min",
+            Self::WindowMax => "window_max",
+            Self::WindowMean => "window_mean",
+            Self::Distance => "distance",
+            Self::ZoneContains => "zone_contains",
+            Self::FieldSample => "field_sample",
+            Self::OrientationDelta => "orientation_delta",
+            Self::EdgeRising => "edge_rising",
+            Self::EdgeFalling => "edge_falling",
+            Self::MergeEvents => "merge_events",
+            Self::GateEvents => "gate_events",
+        }
+    }
+}
+
 /// Closed stateful operator vocabulary for evaluator version 1.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -900,6 +988,40 @@ pub enum StatefulSignalOperator {
     Counter,
     /// Bounded service and backlog model.
     QueueModel,
+}
+
+impl StatefulSignalOperator {
+    /// Returns every accepted stateful operator in canonical reference order.
+    #[must_use]
+    pub const fn all() -> &'static [Self] {
+        &[
+            Self::Hysteresis,
+            Self::Debounce,
+            Self::Integrator,
+            Self::LeakyIntegrator,
+            Self::FiniteStateMachine,
+            Self::MarkovChain,
+            Self::BurstProcess,
+            Self::Counter,
+            Self::QueueModel,
+        ]
+    }
+
+    /// Returns the exact spelling accepted by the scenario schema.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Hysteresis => "hysteresis",
+            Self::Debounce => "debounce",
+            Self::Integrator => "integrator",
+            Self::LeakyIntegrator => "leaky_integrator",
+            Self::FiniteStateMachine => "finite_state_machine",
+            Self::MarkovChain => "markov_chain",
+            Self::BurstProcess => "burst_process",
+            Self::Counter => "counter",
+            Self::QueueModel => "queue_model",
+        }
+    }
 }
 
 /// Closed source vocabulary for evaluator version 1.
@@ -951,6 +1073,64 @@ pub enum SignalSourceKind {
     ExponentialWait,
     /// Versioned exact inverse-CDF Weibull wait.
     WeibullWait,
+}
+
+impl SignalSourceKind {
+    /// Returns every accepted source kind in canonical reference order.
+    #[must_use]
+    pub const fn all() -> &'static [Self] {
+        &[
+            Self::Constant,
+            Self::Step,
+            Self::Pulse,
+            Self::PeriodicPulse,
+            Self::Ramp,
+            Self::Triangle,
+            Self::Sawtooth,
+            Self::EventSequence,
+            Self::Trace,
+            Self::Telemetry,
+            Self::PointSet,
+            Self::RegularGrid,
+            Self::TiledGrid,
+            Self::ZoneMap,
+            Self::PathProfile,
+            Self::SeededField,
+            Self::TransmitterField,
+            Self::Bernoulli,
+            Self::UniformInteger,
+            Self::ExponentialWait,
+            Self::WeibullWait,
+        ]
+    }
+
+    /// Returns the exact spelling accepted by the scenario schema.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Constant => "constant",
+            Self::Step => "step",
+            Self::Pulse => "pulse",
+            Self::PeriodicPulse => "periodic_pulse",
+            Self::Ramp => "ramp",
+            Self::Triangle => "triangle",
+            Self::Sawtooth => "sawtooth",
+            Self::EventSequence => "event_sequence",
+            Self::Trace => "trace",
+            Self::Telemetry => "telemetry",
+            Self::PointSet => "point_set",
+            Self::RegularGrid => "regular_grid",
+            Self::TiledGrid => "tiled_grid",
+            Self::ZoneMap => "zone_map",
+            Self::PathProfile => "path_profile",
+            Self::SeededField => "seeded_field",
+            Self::TransmitterField => "transmitter_field",
+            Self::Bernoulli => "bernoulli",
+            Self::UniformInteger => "uniform_integer",
+            Self::ExponentialWait => "exponential_wait",
+            Self::WeibullWait => "weibull_wait",
+        }
+    }
 }
 
 /// Behavior before or after the defined extent of an ordered source.
