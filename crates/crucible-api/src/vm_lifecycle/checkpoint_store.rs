@@ -1581,7 +1581,7 @@ mod tests {
             node: String::from(node),
             counter: 0,
             scheduler_time: 0,
-            snapshot: ContentHash::default(),
+            snapshot: ContentHash::from_bytes(node.as_bytes()),
             overlay: artifact.clone(),
             vmstate: artifact,
             manifest_identity: ContentHash::default(),
