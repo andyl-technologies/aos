@@ -683,29 +683,31 @@ Signal units are exhaustive:
 | `parts_per_million`, `probability_millionths` | Ratio or probability; probability is `0..=1_000_000`. |
 | `micrometres_per_second_squared`, `micrometres_per_hour` | Acceleration or precipitation rate. |
 
-Signal source kinds:
+Signal source kinds are exhaustive:
 
-| `kind` | Required fields | Purpose |
-| --- | --- | --- |
-| `step` | ordered `points`, `before` | Piecewise-constant values. |
-| `pulse` | `start`, `duration`, `inactive`, `active` | One finite interval. |
-| `periodic_pulse` | `epoch`, `period`, `width`, `phase`, `inactive`, `active` | Repeating finite intervals. |
-| `ramp` | `start`, `end`, `start_value`, `end_value`, `rounding` | Exact linear transition. |
-| `triangle`, `sawtooth` | `epoch`, `period`, `phase`, `minimum`, `maximum`, `rounding` | Periodic analytic wave. |
-| `event_sequence` | ordered `events` | Typed events with stable same-coordinate order. |
-| `trace` | `artifact`, `raw_provenance`, `channel`, `interpolation`, `before`, `after`, `missing`; optional quality channel/threshold and time mapping | Replay a normalized recorded channel while retaining its raw provenance. |
-| `telemetry` | `adapter`, `target`, `field`, `boundary_delay=1` | Read delayed production telemetry without a feedback loop. |
-| `point_set` | `artifact`, `coordinate_frame`, `interpolation`, `outside` | Sample irregular spatial data. |
-| `regular_grid` | `artifact`, `coordinate_frame`, `origin_mm`, `cell_size_mm`, `dimensions`, `interpolation`, `outside` | Sample a dense 3-D grid. |
-| `tiled_grid` | `manifest`, `coordinate_frame`, `tile_size_mm`, `interpolation`, `outside` | Sample a bounded tiled grid. |
-| `zone_map` | `artifact`, `coordinate_frame`, `boundary`, `overlap` | Resolve polygon/polyhedron membership. |
-| `path_profile` | `artifact`, `path`, `interpolation`, `before`, `after` | Sample a quantity by distance along a path. |
-| `seeded_field` | `field_seed_domain`, `coordinate_frame`, `quantization_mm`, `correlation_mm`, `distribution`, `distribution_parameters` | Generate a deterministic correlated field. |
-| `transmitter_field` | `transmitter`, `coordinate_frame`, `position_signal`, optional `orientation_signal`, `model`, `lookup`, `environment_signals` | Apply calibrated path-loss/antenna/environment transfer. |
-| `bernoulli` | `probability_millionths`, `key_domain`, optional `opportunity_filter` | Keyed Boolean draw. |
-| `uniform_integer` | `minimum`, `maximum`, `key_domain`, optional `opportunity_filter` | Unbiased keyed inclusive integer draw. |
-| `exponential_wait` | `rate`, `sampler_version`, `sampler_table`, `key_domain`, optional `maximum_nanos` | Exact integer inverse-CDF exponential wait. |
-| `weibull_wait` | `shape`, `scale_nanos`, `sampler_version`, `sampler_table`, `key_domain`, optional `maximum_nanos` | Exact integer inverse-CDF Weibull wait. |
+| `kind` | Required fields | Purpose | Configuration source |
+| --- | --- | --- | --- |
+| `constant` | `value` | Emit one immutable typed literal. | [signal schema](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `step` | ordered `points`, `before` | Emit piecewise-constant values. | [signal schema](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `pulse` | `start`, `duration`, `inactive`, `active` | Emit one finite active interval. | [signal schema](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `periodic_pulse` | `epoch`, `period`, `width`, `phase`, `inactive`, `active` | Emit repeating exact active intervals. | [signal schema](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `ramp` | `start`, `end`, `start_value`, `end_value`, `rounding` | Emit one exact linear transition. | [signal schema](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `triangle` | `epoch`, `period`, `phase`, `minimum`, `maximum`, `rounding` | Emit a periodic triangle wave. | [signal schema](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `sawtooth` | `epoch`, `period`, `phase`, `minimum`, `maximum`, `rounding` | Emit a periodic sawtooth wave. | [signal schema](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `event_sequence` | ordered `events` | Emit typed events with stable same-coordinate order. | [signal schema](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `trace` | `artifact`, `raw_provenance`, `channel`, `interpolation`, `before`, `after`, `missing`; optional quality channel/threshold and time mapping | Replay a normalized recorded channel while retaining its raw provenance. | [signal schema](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `telemetry` | `adapter`, `target`, `field`, `boundary_delay=1` | Read delayed production telemetry without a feedback loop. | [signal schema](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `point_set` | `artifact`, `coordinate_frame`, `interpolation`, `outside` | Sample irregular spatial data. | [signal schema](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `regular_grid` | `artifact`, `coordinate_frame`, `origin_mm`, `cell_size_mm`, `dimensions`, `interpolation`, `outside` | Sample a dense 3-D grid. | [signal schema](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `tiled_grid` | `manifest`, `coordinate_frame`, `tile_size_mm`, `interpolation`, `outside` | Sample a bounded tiled grid. | [signal schema](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `zone_map` | `artifact`, `coordinate_frame`, `boundary`, `overlap` | Resolve polygon/polyhedron membership. | [signal schema](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `path_profile` | `artifact`, `path`, `interpolation`, `before`, `after` | Sample a quantity by distance along a path. | [signal schema](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `seeded_field` | `field_seed_domain`, `coordinate_frame`, `quantization_mm`, `correlation_mm`, `distribution`, `distribution_parameters` | Generate a deterministic correlated field. | [signal schema](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `transmitter_field` | `transmitter`, `coordinate_frame`, `position_signal`, optional `orientation_signal`, `model`, `lookup`, `environment_signals` | Apply calibrated path-loss, antenna, and environment transfer. | [signal schema](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `bernoulli` | `probability_millionths`, `key_domain`, optional `opportunity_filter` | Make a stable-key Boolean draw. | [signal schema](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `uniform_integer` | `minimum`, `maximum`, `key_domain`, optional `opportunity_filter` | Make an unbiased stable-key inclusive integer draw. | [signal schema](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `exponential_wait` | `rate`, `sampler_version`, `sampler_table`, `key_domain`, optional `maximum_nanos` | Sample an exact integer inverse-CDF exponential wait. | [signal schema](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `weibull_wait` | `shape`, `scale_nanos`, `sampler_version`, `sampler_table`, `key_domain`, optional `maximum_nanos` | Sample an exact integer inverse-CDF Weibull wait. | [signal schema](../../../crates/crucible/src/model/fault_signal/mod.rs) |
 
 Interpolation is `exact`, `hold_previous`, `nearest`, or `linear`; linear also
 declares `rounding` and `overflow`. Boundary behavior is `error`, `hold`,
@@ -714,16 +716,83 @@ declares `rounding` and `overflow`. Boundary behavior is `error`, `hold`,
 `away_from_zero`, or `nearest_ties_to_even`; overflow is `error` or `saturate`.
 Stochastic `key_domain` is `opportunity`, `transition`, or `coordinate`.
 
-Pure and stateful operators are also closed. Pure operators cover exact
-arithmetic (`add`, `subtract`, `min`, `max`, rational multiply/divide,
-`absolute`, `negate`, `clamp`), comparisons, Boolean logic, select, step and
-piecewise-linear lookup, enum maps, unit conversion, bounded delay/sample-hold
-and windows, distance/spatial sampling/orientation, and typed edge/merge/gate
-event operations. Stateful kinds are `hysteresis`, `debounce`, `integrator`,
-`leaky_integrator`, `finite_state_machine`, `markov_chain`, `burst_process`,
-`counter`, and `queue_model`. Their exact Rust field contracts are in the
-[signal schema source](../../../crates/crucible/src/model/fault_signal/mod.rs);
-unknown variants or fields are rejected.
+Pure specification kinds select the parameter shape:
+
+| `kind` | Required fields | Purpose | Configuration source |
+| --- | --- | --- | --- |
+| `simple` | `operator`, `overflow` | Configure a parameter-free arithmetic, comparison, Boolean, selection, or edge operator. | [pure schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `ratio_arithmetic` | `operator`, `ratio`, `rounding`, `overflow` | Multiply or divide by an exact reduced ratio. | [pure schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `clamp` | `minimum`, `maximum`, `overflow` | Clamp a value to inclusive typed bounds. | [pure schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `lookup_step` | ordered `points`, `before`, `after` | Apply a piecewise-constant lookup. | [pure schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `piecewise_linear` | ordered `points`, `rounding`, `overflow` | Apply exact linear interpolation between lookup points. | [pure schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `enum_map` | exhaustive `entries` | Map every accepted enum input to a typed output. | [pure schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `unit_convert` | `from_unit`, `to_unit`, `ratio`, `offset`, `rounding`, `overflow` | Convert compatible units with exact affine arithmetic. | [pure schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `delay` | positive `delay`, positive `retained_samples` | Delay values in their declared domain with a hard history bound. | [pure schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `sample_hold` | positive `cadence`, `epoch`, positive `retained_samples` | Sample and hold at exact domain coordinates. | [pure schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `window` | `operator`, positive `window`, `sampling_cadence`, positive `retained_samples`, `rounding`, `overflow` | Compute a bounded window minimum, maximum, or mean. | [pure schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `distance` | `metric`, `rounding` | Compute spatial distance in one coordinate frame. | [pure schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `zone_contains` | `zone` | Test declared zone membership. | [pure schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `field_sample` | none | Sample a declared spatial field using the input coordinate. | [pure schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `orientation_delta` | `convention` | Compute orientation difference using a closed convention. | [pure schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `merge_events` | positive `source_sequence_limit` | Merge typed event streams with bounded stable ordering. | [pure schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `gate_events` | none | Pass typed events only while the Boolean gate input is true. | [pure schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+
+The `operator` field is exhaustive:
+
+| Operator | Valid pure specification | Result |
+| --- | --- | --- |
+| `add` | `simple` | Add equal-shaped inputs. |
+| `subtract` | `simple` | Subtract the second input from the first. |
+| `multiply_ratio` | `ratio_arithmetic` | Multiply by the declared exact ratio. |
+| `divide_ratio` | `ratio_arithmetic` | Divide by the declared exact ratio. |
+| `absolute` | `simple` | Produce a signed value's absolute magnitude. |
+| `negate` | `simple` | Negate a signed value. |
+| `min` | `simple` | Select the minimum input. |
+| `max` | `simple` | Select the maximum input. |
+| `clamp` | `clamp` | Clamp to explicit inclusive bounds. |
+| `equal` | `simple` | Test equality. |
+| `not_equal` | `simple` | Test inequality. |
+| `less` | `simple` | Test strict less-than ordering. |
+| `less_equal` | `simple` | Test less-than-or-equal ordering. |
+| `greater` | `simple` | Test strict greater-than ordering. |
+| `greater_equal` | `simple` | Test greater-than-or-equal ordering. |
+| `all` | `simple` | Compute Boolean conjunction. |
+| `any` | `simple` | Compute Boolean disjunction. |
+| `not` | `simple` | Compute Boolean negation. |
+| `select` | `simple` | Select between equal-shaped branches with a Boolean condition. |
+| `lookup_step` | `lookup_step` | Apply the declared piecewise-constant lookup. |
+| `piecewise_linear` | `piecewise_linear` | Apply the declared interpolating lookup. |
+| `enum_map` | `enum_map` | Apply the exhaustive enum mapping. |
+| `unit_convert` | `unit_convert` | Apply the exact compatible-unit conversion. |
+| `delay` | `delay` | Read the bounded delayed value. |
+| `sample_hold` | `sample_hold` | Read the fixed-cadence held value. |
+| `window_min` | `window` | Compute the bounded window minimum. |
+| `window_max` | `window` | Compute the bounded window maximum. |
+| `window_mean` | `window` | Compute the exactly rounded bounded window mean. |
+| `distance` | `distance` | Compute spatial distance. |
+| `zone_contains` | `zone_contains` | Test zone membership. |
+| `field_sample` | `field_sample` | Sample a spatial field. |
+| `orientation_delta` | `orientation_delta` | Compute orientation difference. |
+| `edge_rising` | `simple` | Emit an event on a Boolean rising edge. |
+| `edge_falling` | `simple` | Emit an event on a Boolean falling edge. |
+| `merge_events` | `merge_events` | Merge typed events in stable order. |
+| `gate_events` | `gate_events` | Gate a typed event stream. |
+
+Stateful specification kinds are exhaustive:
+
+| `kind` | Required fields | Purpose | Configuration source |
+| --- | --- | --- | --- |
+| `hysteresis` | `initial`, `set_when`, `clear_when`, `minimum_residence_nanos` | Apply Boolean hysteresis with an optional residence interval. | [stateful schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `debounce` | `initial`, `residence_nanos` | Commit an input only after it remains stable for the residence interval. | [stateful schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `integrator` | `initial`, `cadence_nanos`, positive `time_unit_nanos`, `rounding`, `overflow` | Integrate exactly at source changes or a declared cadence. | [stateful schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `leaky_integrator` | `initial`, positive `cadence_nanos`, positive `time_unit_nanos`, `decay_ratio`, positive `maximum_catch_up_steps`, `rounding`, `overflow` | Integrate at fixed cadence while applying exact rational decay. | [stateful schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `finite_state_machine` | nonempty `states`, `initial`, exhaustive `transitions`, `unmatched_event` | Run a closed event/guard/timer transition table. | [stateful schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `markov_chain` | nonempty `states`, `initial`, `opportunity`, `probability_rows` | Run an exact-probability finite Markov chain. | [stateful schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `burst_process` | `initial_bad`, transition probabilities, `opportunity` | Run a two-state correlated good/bad process. | [stateful schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `counter` | `initial`, `maximum`, `overflow`, optional `reset_event` | Count bounded typed events with explicit overflow/reset behavior. | [stateful schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+| `queue_model` | positive `capacity`, `discipline`, `overflow` | Model bounded checkpointed service backlog. | [stateful schemas](../../../crates/crucible/src/model/fault_signal/mod.rs) |
+
+Unknown variants or fields in any table are rejected.
 
 ### `[[plan.fault_binding]]` fields
 
@@ -768,11 +837,17 @@ Search policy kinds are `fixed`, `branch_outcome { maximum_branches }`,
 | `network_path` | network | Versioned directed path. |
 | `network_attachment` | network | Interface association/attachment. |
 | `network_contact` | network | Scheduled or acquired contact. |
-| `block_device`, `block_range` | storage | Whole block/flash device or byte range. |
-| `storage_controller`, `storage_array` | storage | Controller namespace/path or array member/path. |
+| `block_device` | storage | One whole block or flash device. |
+| `block_range` | storage | One byte-addressed range of a block or flash device. |
+| `storage_controller` | storage | One controller namespace or access path. |
+| `storage_array` | storage | One declared array member or path. |
 | `ninep_device` | storage | One 9p device. |
-| `node`, `vcpu` | node | Whole emulated node or vCPU. |
-| `register`, `memory_range`, `interrupt`, `clock_source` | node | Architecture-resolved machine object. |
+| `node` | node | One whole emulated node. |
+| `vcpu` | node | One virtual CPU. |
+| `register` | node | One architecture-resolved register bit range. |
+| `memory_range` | node | One physical or resolved virtual memory range. |
+| `interrupt` | node | One exact source, route, target vCPU, and vector/type. |
+| `clock_source` | node | One registered guest-visible clock source. |
 | `accelerator` | node | Declared accelerator device. |
 
 Sensor targets are specification-only and are rejected by this schema.
@@ -790,15 +865,21 @@ enforced by the [effect registry](../../../crates/crucible/src/model/fault_signa
 | `network.flap` | Down, training, and recovery durations; model timed link transitions. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
 | `network.negotiated_mode` | Rate, duplex, lanes, FEC, and training duration. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
 | `network.profile_delta` | Optional latency/rate/error/technology profile components. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
-| `network.propagation_delay`, `network.access_delay`, `network.jitter` | Exact delay or keyed bounded delay variation. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
-| `network.service_curve`, `network.token_bucket` | Piecewise service, rate, burst, and initial-token constraints. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.propagation_delay` | Exact delay or a distance/velocity lookup; adds propagation time above the immutable scheduler floor. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.access_delay` | Per-opportunity arbitration or retry delay in virtual nanoseconds. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.jitter` | Keyed bounded delay variation with a closed distribution. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.service_curve` | Ordered piecewise-constant rate segments integrated over virtual time. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.token_bucket` | Rate, burst size, and initial tokens for a checkpointed service constraint. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
 | `network.queue_policy` | Byte/frame capacity, discipline/classes, and overflow response. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
-| `network.frame_loss`, `network.burst_error_state` | Independent or correlated loss/corruption probability state. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
-| `network.duplicate`, `network.reorder` | Probability/copies/gap or bounded reorder window and selection. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.frame_loss` | Explicit or millionths-probability frame loss keyed to stable frame identity. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.burst_error_state` | Correlated good/bad loss and corruption process with checkpointed transition state. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.duplicate` | Probability, copy count, and inter-copy gap for bounded additional deliveries. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.reorder` | Bounded reorder window and keyed selection rule. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
 | `network.payload_transform` | Bit flip, field mutation, truncation, or undetected corruption. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
 | `network.detected_frame_error` | CRC/FCS/framing/FEC class and corrected/retry/drop/reset receiver action. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
 | `network.mtu` | MTU plus drop, fragment, or typed-error oversize policy. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
-| `network.pause_backpressure`, `network.recipient_subset` | Class-scoped pause or versioned multicast recipient selection. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.pause_backpressure` | Class-scoped pause state with an optional exact resume boundary. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
+| `network.recipient_subset` | Versioned multicast/broadcast candidate filtering by declared membership. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
 | `network.forwarder_lifecycle` | Restart/reset/power-loss transition, downtime, and queue/table retention. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
 | `network.forwarding_mutation` | Wrong-port, flood, blackhole, loop, or stale-age lookup mutation. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
 | `network.route_transition` | Old/new paths, convergence events, and in-flight policy. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
@@ -813,30 +894,47 @@ enforced by the [effect registry](../../../crates/crucible/src/model/fault_signa
 | `network.custody_queue` | Bundle/byte capacity, priority, expiry, route/contact plan, hop bound, and overflow. | [network parameters](../../../crates/crucible/src/model/fault_signal/network_effect.rs) |
 | `storage.availability` | Online/offline/read-only/degraded state. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
 | `storage.reported_capacity` | Guest-visible length and affected-range policy. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
-| `storage.latency`, `storage.service` | Operation-filtered delay/jitter or bandwidth/IOPS/queue/token service. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
-| `storage.operation_failure`, `storage.stall_timeout` | Typed operation error or stall/recovery/timeout schedule. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
-| `storage.completion_reorder`, `storage.duplicate_completion` | Bounded completion ordering or protocol-valid duplicates. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `storage.latency` | Operation-filtered base delay and keyed jitter at resolve or delivery. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `storage.service` | Integrated bandwidth, IOPS, queue, class, and token service constraints. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `storage.operation_failure` | Operation set, keyed probability, and referenced typed failure result. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `storage.stall_timeout` | Stall, recovery, and modeled timeout coordinates with explicit completion behavior. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `storage.completion_reorder` | Bounded keyed completion ordering within the declared window. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `storage.duplicate_completion` | Protocol-valid additional completions and guest duplicate disposition. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
 | `storage.read_transform` | Bit corruption, stale-version read, or cross-range/device misdirection. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
 | `storage.write_disposition` | Applied, lost, torn, or misdirected persistence. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
 | `storage.persistence_order` | Declared durable partial order and violation behavior. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
-| `storage.volatile_cache`, `storage.volatile_cache_loss` | Bounded cache/admission/eviction or exact selected power-loss set. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `storage.volatile_cache` | Bounded cache admission, eviction, dirty-eviction, and power-loss-protection policy. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `storage.volatile_cache_loss` | Boundary impulse selecting the exact eligible cached-write set to lose. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
 | `storage.flush_disposition` | Honest, erroring, lying, or stalled flush result. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
-| `storage.media_range`, `storage.flash_state` | Bad/latent/poisoned/read-only ranges or flash wear/retention/disturb state. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
-| `storage.controller_lifecycle`, `storage.array_state` | Reset/reconnect/enumeration/path state or member/rebuild/consistency state. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
-| `ninep.result`, `ninep.visibility` | Typed errno/stale/misdirected result or committed-versus-visible frontier. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
-| `node.lifecycle`, `node.hang` | Boot/crash/reset/power transition or scoped progress outage/watchdog recovery. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
-| `cpu.service`, `cpu.vcpu_state` | Rational execution capacity/schedule or online/offline/stalled vCPU state. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `storage.media_range` | Persistent bad, latent, poisoned, or read-only byte range with count/time thresholds. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `storage.flash_state` | Per-erase-block wear, program/erase failure, retention, and read-disturb state. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `storage.controller_lifecycle` | Reset/reconnect/enumeration/namespace/path transition and pending-I/O treatment. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `storage.array_state` | Array member/path state, selection, quorum, rebuild, and partial-update consistency. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `ninep.result` | Typed errno, stale object, or misdirected 9p result. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `ninep.visibility` | Checkpointed committed-versus-visible frontier and lookup behavior. | [storage parameters](../../../crates/crucible/src/model/fault_signal/storage_effect.rs) |
+| `node.lifecycle` | Boot, crash, reset, power-cycle, stop, and recovery transition with explicit state loss. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `node.hang` | Node, vCPU-set, or accelerator progress outage with watchdog/recovery policy. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `cpu.service` | Exact rational execution capacity, thermal throttling, and vCPU service schedule. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `cpu.vcpu_state` | Online, offline, or stalled vCPU transition with round-robin topology state. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
 | `cpu.register_transform` | Architecture-resolved bit flip, stuck mask/value, or replacement. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
-| `cpu.instruction_transform`, `cpu.exception` | Result corruption/skip/replay or architecture machine-check/exception injection. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
-| `interrupt.disposition`, `interrupt.storm` | Drop/delay/duplicate/replace delivery or bounded generated sequence. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `cpu.instruction_transform` | Instruction result corruption, skip, or replay at an exact instruction opportunity. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `cpu.exception` | Architecture-specific machine check, hardware error, or injected exception. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `interrupt.disposition` | Drop, delay, duplicate, or replace one exact interrupt delivery. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `interrupt.storm` | Bounded generated interrupt sequence with exact acknowledgements. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
 | `memory.mutation` | Atomic GPA/GVA bit flip or byte replacement at a safe boundary. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
 | `memory.access_transform` | Stuck/read-corrupt/lost-write/torn-write/poison transform by access class. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
-| `memory.ecc_event`, `memory.region_state`, `memory.service` | Corrected/uncorrectable ECC; failed/retention/rowhammer state; or latency/bandwidth service. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
-| `clock.transform`, `clock.source_state` | Offset/drift/jump/freeze/jitter/wander or source failure/fallback/synchronization. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
-| `accelerator.lifecycle`, `accelerator.result_transform`, `accelerator.memory_event`, `accelerator.service` | Accelerator presence/reset, job/result corruption, memory error, or compute/memory/thermal/power service. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `memory.ecc_event` | Corrected or uncorrectable ECC event with a platform error record and acknowledgement. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `memory.region_state` | Persistent failure, retention decay, or rowhammer disturbance with range counters. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `memory.service` | Shared memory-access latency, bandwidth, and page-table-walk service constraints. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `clock.transform` | Guest-visible offset, rational drift, jump, freeze, jitter, or wander. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `clock.source_state` | Clock-source failure, fallback, selection, or synchronization state. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `accelerator.lifecycle` | Device disappearance, reset, reconnect, enumeration, and queue treatment. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `accelerator.result_transform` | Ordered accelerator job-field or result-buffer corruption. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `accelerator.memory_event` | Corrected, uncorrectable, or transformed device-memory event. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
+| `accelerator.service` | Compute, memory, thermal, or power service cap with queue/job ledgers. | [node parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs) |
 
-The registry has 71 distinct keys even where adjacent rows above share a
-description. A reference-integrity gate compares this document with the closed
+The registry has 71 distinct keys and exactly one row above for each key. A
+reference-integrity gate compares this document with the closed
 registry so a new executable kind cannot ship undocumented.
 
 ## Properties and predicates
