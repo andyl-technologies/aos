@@ -1,7 +1,8 @@
 //! Accelerator co-simulation request and completion transport.
 //!
 //! ABI v11 appends one guest/QEMU-to-host request ring and one host-to-QEMU
-//! completion ring per VM. Each fixed-size entry owns a complete, bounded job
+//! completion ring per VM. ABI v12 adds the completion-capacity field and moves
+//! the payload accordingly. Each fixed-size entry owns a complete, bounded job
 //! or result; no guest address, native pointer, or process-private object
 //! crosses the Apache/GPL process boundary.
 
@@ -73,7 +74,7 @@ pub struct AcceleratorEntry {
     service_units: u64,
     output_capacity: u32,
     data: [u8; ACCELERATOR_ENTRY_DATA_BYTES],
-    _reserved: [u8; 36],
+    _reserved: [u8; 52],
 }
 
 impl Default for AcceleratorEntry {
@@ -92,7 +93,7 @@ impl Default for AcceleratorEntry {
             service_units: 0,
             output_capacity: 0,
             data: [0; ACCELERATOR_ENTRY_DATA_BYTES],
-            _reserved: [0; 36],
+            _reserved: [0; 52],
         }
     }
 }

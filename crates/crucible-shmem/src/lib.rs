@@ -186,7 +186,9 @@ pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// for actual QEMU fault-rule occurrences.
 /// Version 10 appends bounded bidirectional guest-introspection rings per VM.
 /// Version 11 appends bounded accelerator request/completion rings per VM.
-pub const ABI_VERSION: u32 = 11;
+/// Version 12 adds an explicit accelerator completion-capacity field and moves
+/// accelerator payload bytes to preserve a canonical bounded result envelope.
+pub const ABI_VERSION: u32 = 12;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of entries in each plugin-to-host coverage queue.
 ///
