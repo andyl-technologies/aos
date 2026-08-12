@@ -72,20 +72,12 @@
         needle = "running_boundary_commands_record_deterministic_control_log";
       }
       {
-        label = "legacy inject boundary control coverage";
-        needle = "SessionCommand::Inject";
-      }
-      {
         label = "fork local boundary coverage";
         needle = "SessionCommandKind::Fork";
       }
       {
         label = "scheduler control delivery coverage";
         needle = "recorded_control_batches";
-      }
-      {
-        label = "stop after scheduler control regression";
-        needle = "stop_after_scheduler_control_does_not_drop_logged_effect";
       }
       {
         label = "pause stop boundary test";
@@ -200,7 +192,7 @@ in
             tasks=${taskList}
             component=crucible-session
             boundary_control_log=frontier-quanta
-            scheduler_control=legacy-inject-inject-fault-heal-fault
+            scheduler_control=typed-boundary-operations
             stopped_drain=read-only-plus-fork
             pause_stop=boundary-no-extra-quantum
             stop=shutdown

@@ -43,8 +43,7 @@ pub(super) fn control_operation_command_kind(
     control: &ControlOperationKind,
 ) -> Option<SessionCommandKind> {
     match control {
-        ControlOperationKind::Inject
-        | ControlOperationKind::Pause
+        ControlOperationKind::Pause
         | ControlOperationKind::Resume
         | ControlOperationKind::Step
         | ControlOperationKind::Snapshot

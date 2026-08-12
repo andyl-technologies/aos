@@ -332,8 +332,6 @@ pub enum SessionCommand {
     },
     /// Capture a boundary snapshot.
     Snapshot,
-    /// Inject a deterministic control-plane fault at the next boundary.
-    Inject,
     /// Add a predicate-based breakpoint.
     SetBreakpoint {
         /// Breakpoint predicate, disposition, and fire policy.
@@ -495,7 +493,6 @@ impl SessionCommand {
             | Self::Continue
             | Self::Pause
             | Self::Step { .. }
-            | Self::Inject
             | Self::SetBreakpoint { .. }
             | Self::RemoveBreakpoint { .. }
             | Self::CreateSavepoint { .. }
@@ -515,7 +512,6 @@ impl SessionCommand {
             | Self::Continue
             | Self::Pause
             | Self::Step { .. }
-            | Self::Inject
             | Self::SetBreakpoint { .. }
             | Self::RemoveBreakpoint { .. }
             | Self::CreateSavepoint { .. }
@@ -536,7 +532,6 @@ impl SessionCommand {
             Self::Pause
             | Self::Snapshot
             | Self::Fork { .. }
-            | Self::Inject
             | Self::SetBreakpoint { .. }
             | Self::RemoveBreakpoint { .. }
             | Self::CreateSavepoint { .. }
@@ -561,7 +556,6 @@ impl SessionCommand {
             | Self::Continue
             | Self::Pause
             | Self::Step { .. }
-            | Self::Inject
             | Self::SetBreakpoint { .. }
             | Self::RemoveBreakpoint { .. }
             | Self::CreateSavepoint { .. }
@@ -582,7 +576,6 @@ impl SessionCommand {
             Self::Acknowledge { command, .. } => command.requires_non_canonical_debug_branch(),
             Self::Continue
             | Self::Step { .. }
-            | Self::Inject
             | Self::SetBreakpoint { .. }
             | Self::RemoveBreakpoint { .. }
             | Self::GuestIntrospection { .. } => true,
@@ -625,7 +618,7 @@ impl SessionCommand {
             | Self::Step { .. }
             | Self::Stop
             | Self::ExhaustBudget => {}
-            Self::Snapshot | Self::Inject => {}
+            Self::Snapshot => {}
         }
     }
 }
@@ -653,8 +646,6 @@ pub enum SessionCommandKind {
     Stop,
     /// Transition to a terminal timeout after budget exhaustion.
     ExhaustBudget,
-    /// Inject legacy deterministic control.
-    Inject,
     /// Add a predicate breakpoint.
     SetBreakpoint,
     /// Remove a predicate breakpoint.
@@ -685,9 +676,9 @@ impl SessionCommandKind {
     /// The lifecycle command-kind set.
     ///
     /// This covers the RFC §4 command surface plus the current implementation's
-    /// legacy `Inject` and boundary `Snapshot` shims. T-SESS-4 replaces those
-    /// shims with the reply-carrying command payloads.
-    pub const ALL: [Self; 23] = [
+    /// boundary `Snapshot` shim. T-SESS-4 replaces that shim with the
+    /// reply-carrying command payloads.
+    pub const ALL: [Self; 22] = [
         Self::Start,
         Self::Continue,
         Self::Pause,
@@ -698,7 +689,6 @@ impl SessionCommandKind {
         Self::StepDuration,
         Self::Stop,
         Self::ExhaustBudget,
-        Self::Inject,
         Self::SetBreakpoint,
         Self::RemoveBreakpoint,
         Self::CreateSavepoint,
@@ -725,7 +715,6 @@ impl SessionCommandKind {
             Self::StepDuration => "step-duration",
             Self::Stop => "stop",
             Self::ExhaustBudget => "exhaust-budget",
-            Self::Inject => "inject",
             Self::SetBreakpoint => "set-breakpoint",
             Self::RemoveBreakpoint => "remove-breakpoint",
             Self::CreateSavepoint => "create-savepoint",
@@ -770,7 +759,6 @@ impl SessionCommandKind {
             },
             Self::Stop => SessionCommand::Stop,
             Self::ExhaustBudget => SessionCommand::ExhaustBudget,
-            Self::Inject => SessionCommand::Inject,
             Self::SetBreakpoint => SessionCommand::SetBreakpoint {
                 spec: BreakpointSpec::suspend_once(Condition::Quiescent),
                 reply: CommandReply::discard(),
@@ -835,7 +823,6 @@ pub const fn lifecycle_transition(
             | Command::StepAssertion
             | Command::StepTimer
             | Command::StepDuration
-            | Command::Inject
             | Command::CreateSavepoint
             | Command::Fork
             | Command::AttachGdb
@@ -869,7 +856,6 @@ pub const fn lifecycle_transition(
             Command::Pause
             | Command::Snapshot
             | Command::Fork
-            | Command::Inject
             | Command::SetBreakpoint
             | Command::RemoveBreakpoint
             | Command::CreateSavepoint
@@ -894,7 +880,6 @@ pub const fn lifecycle_transition(
         (
             State::Running,
             Command::Snapshot
-            | Command::Inject
             | Command::SetBreakpoint
             | Command::RemoveBreakpoint
             | Command::CreateSavepoint
@@ -919,7 +904,6 @@ pub const fn lifecycle_transition(
             | Command::StepAssertion
             | Command::StepTimer
             | Command::StepDuration
-            | Command::Inject
             | Command::SetBreakpoint
             | Command::RemoveBreakpoint
             | Command::CreateSavepoint

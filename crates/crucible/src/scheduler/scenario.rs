@@ -691,7 +691,6 @@ pub(super) fn control_operation_material(operation: &ControlOperation) -> String
         | ControlOperationKind::Step
         | ControlOperationKind::Snapshot
         | ControlOperationKind::Fork
-        | ControlOperationKind::Inject
         | ControlOperationKind::Query => {}
     }
     lines.join("\n")
@@ -704,7 +703,6 @@ pub(super) fn control_operation_kind_label(kind: &ControlOperationKind) -> &'sta
         ControlOperationKind::Step => "step",
         ControlOperationKind::Snapshot => "snapshot",
         ControlOperationKind::Fork => "fork",
-        ControlOperationKind::Inject => "inject",
         ControlOperationKind::Query => "query",
     }
 }

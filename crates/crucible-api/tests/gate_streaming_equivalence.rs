@@ -235,7 +235,6 @@ async fn lagged_state_observer_recovers_to_a_retained_monotone_update() {
 async fn control_and_send_drive_non_basic_command_classes() {
     for command in [
         SessionCommandKind::StepQuantum,
-        SessionCommandKind::Inject,
         SessionCommandKind::SetBreakpoint,
         SessionCommandKind::RemoveBreakpoint,
         SessionCommandKind::CreateSavepoint,
@@ -414,7 +413,6 @@ const fn command_index(command: SessionCommandKind) -> u64 {
         SessionCommandKind::StepTimer => 7,
         SessionCommandKind::StepDuration => 8,
         SessionCommandKind::Stop => 9,
-        SessionCommandKind::Inject => 10,
         SessionCommandKind::SetBreakpoint => 11,
         SessionCommandKind::RemoveBreakpoint => 12,
         SessionCommandKind::CreateSavepoint => 13,

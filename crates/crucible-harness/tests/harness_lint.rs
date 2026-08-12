@@ -92,6 +92,9 @@ fn retired_fault_surfaces_cannot_reenter_executable_or_user_documentation_paths(
         &["Fault", "SlowdownFactorBasisPoints"],
         &["NineP", "Errno"],
         &["Fault", "Activation"],
+        &["SessionCommand", "Inject"],
+        &["SessionCommandKind", "Inject"],
+        &["ControlOperationKind", "Inject"],
     ];
     let snake_fragments: &[&[&str]] = &[
         &["active", "faults"],

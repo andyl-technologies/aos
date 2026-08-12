@@ -490,7 +490,6 @@ fn known_control_command(command: &str) -> bool {
             | "step-assertion"
             | "step-timer"
             | "step-duration"
-            | "inject"
             | "set-breakpoint"
             | "remove-breakpoint"
             | "create-savepoint"

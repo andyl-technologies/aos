@@ -108,25 +108,22 @@ async fn reproduction_context_is_read_only_and_visible_on_attach_snapshot() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn interactive_and_scripted_same_schedule_reproduce_equivalently() {
-    let interactive = drive_inject_with_control(Seed::from_u64(902)).await;
-    let scripted = drive_inject_with_send(Seed::from_u64(902)).await;
+    let interactive = drive_pause_with_control(Seed::from_u64(902)).await;
+    let scripted = drive_pause_with_send(Seed::from_u64(902)).await;
     assert_eq!(interactive, scripted);
 
     let record = interactive
         .first()
-        .expect("inject schedule should record one command");
-    assert_eq!(record.payload.command, SessionCommandKind::Inject);
+        .expect("pause schedule should record one command");
+    assert_eq!(record.payload.command, SessionCommandKind::Pause);
     assert!(
         record
             .payload
             .command_payload
             .contains("payload=command-kind")
     );
-    assert!(record.payload.command_payload.contains("command=Inject"));
-    assert_eq!(
-        record.payload.scheduler_control,
-        Some(String::from("control=inject\n")),
-    );
+    assert!(record.payload.command_payload.contains("command=Pause"));
+    assert_eq!(record.payload.scheduler_control, None);
     assert_eq!(record.virtual_time, VirtualTime::default());
     assert_eq!(record.quanta, 0);
     assert_eq!(record.at_sequence, 0);
@@ -134,7 +131,7 @@ async fn interactive_and_scripted_same_schedule_reproduce_equivalently() {
     assert_eq!(record.observational_order, record.sequence);
 }
 
-async fn drive_inject_with_control(seed: Seed) -> Vec<ReproductionCommandRecord> {
+async fn drive_pause_with_control(seed: Seed) -> Vec<ReproductionCommandRecord> {
     let mut control_plane = lifecycle_control_plane();
     let session = create_paused_session(&mut control_plane, seed).await;
     let control = control_plane
@@ -142,11 +139,11 @@ async fn drive_inject_with_control(seed: Seed) -> Vec<ReproductionCommandRecord>
         .unwrap_or_else(|error| panic!("streaming session should exist: {error}"))
         .control(AttachRequest::new(session))
         .unwrap_or_else(|error| panic!("Control attach should succeed: {error}"));
-    let injected = control
-        .send_command(1, SessionCommand::Inject)
+    let paused = control
+        .send_command(1, SessionCommand::Pause)
         .await
-        .unwrap_or_else(|error| panic!("Control Inject should dispatch: {error}"));
-    assert_eq!(injected.result.status, CommandResultStatus::Accepted);
+        .unwrap_or_else(|error| panic!("Control Pause should dispatch: {error}"));
+    assert_eq!(paused.result.status, CommandResultStatus::Accepted);
     let commands = wait_for_reproduction_len(&control_plane, session, 1).await;
     control_plane
         .destroy_session(DestroySessionRequest::new(session))
@@ -155,14 +152,14 @@ async fn drive_inject_with_control(seed: Seed) -> Vec<ReproductionCommandRecord>
     commands
 }
 
-async fn drive_inject_with_send(seed: Seed) -> Vec<ReproductionCommandRecord> {
+async fn drive_pause_with_send(seed: Seed) -> Vec<ReproductionCommandRecord> {
     let mut control_plane = lifecycle_control_plane();
     let session = create_paused_session(&mut control_plane, seed).await;
-    let injected = control_plane
-        .send_streaming_command(SendRequest::new(session, 1, SessionCommand::Inject))
+    let paused = control_plane
+        .send_streaming_command(SendRequest::new(session, 1, SessionCommand::Pause))
         .await
-        .unwrap_or_else(|error| panic!("Send Inject should dispatch: {error}"));
-    assert_eq!(injected.result.status, CommandResultStatus::Accepted);
+        .unwrap_or_else(|error| panic!("Send Pause should dispatch: {error}"));
+    assert_eq!(paused.result.status, CommandResultStatus::Accepted);
     let commands = wait_for_reproduction_len(&control_plane, session, 1).await;
     control_plane
         .destroy_session(DestroySessionRequest::new(session))

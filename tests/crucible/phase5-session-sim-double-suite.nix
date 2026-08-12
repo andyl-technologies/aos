@@ -201,10 +201,6 @@
         needle = "SessionCommand::Snapshot";
       }
       {
-        label = "session gate covers inject";
-        needle = "SessionCommand::Inject";
-      }
-      {
         label = "session gate covers query";
         needle = "SessionCommand::query_snapshot()";
       }

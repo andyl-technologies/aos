@@ -25,7 +25,6 @@ impl From<&SessionCommand> for SessionCommandKind {
             } => Self::StepDuration,
             SessionCommand::Snapshot => Self::Snapshot,
             SessionCommand::Fork { .. } => Self::Fork,
-            SessionCommand::Inject => Self::Inject,
             SessionCommand::SetBreakpoint { .. } => Self::SetBreakpoint,
             SessionCommand::RemoveBreakpoint { .. } => Self::RemoveBreakpoint,
             SessionCommand::CreateSavepoint { .. } => Self::CreateSavepoint,

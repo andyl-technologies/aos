@@ -238,7 +238,6 @@ fn lifecycle_state_reason_outcome_and_command_sets_are_closed() {
             SessionCommandKind::StepDuration,
             SessionCommandKind::Stop,
             SessionCommandKind::ExhaustBudget,
-            SessionCommandKind::Inject,
             SessionCommandKind::SetBreakpoint,
             SessionCommandKind::RemoveBreakpoint,
             SessionCommandKind::CreateSavepoint,
@@ -1294,13 +1293,6 @@ async fn running_boundary_commands_record_deterministic_control_log() {
     }
     assert_eq!(actor.engine().quanta(), 1);
 
-    if let Err(error) = sender.send(SessionCommand::Inject).await {
-        panic!("legacy inject command should enqueue: {error}");
-    }
-    if let Err(error) = actor.run_once().await {
-        panic!("running legacy inject should be applied at a boundary: {error}");
-    }
-
     let breakpoint = BreakpointSpec::suspend_once(Condition::Quiescent);
     let (set_reply, set_receiver) = CommandReply::channel();
     if let Err(error) = sender
@@ -1368,17 +1360,11 @@ async fn running_boundary_commands_record_deterministic_control_log() {
     assert_eq!(fork.configuration, actor.engine().configuration().id());
 
     let log = actor.engine().boundary_control_log();
-    assert_eq!(log.len(), 5);
-    assert_boundary_log_entry(
-        &log[0],
-        1,
-        SessionCommandKind::Inject,
-        Some(ControlOperationKind::Inject),
-    );
-    assert_boundary_log_entry(&log[1], 2, SessionCommandKind::SetBreakpoint, None);
-    assert_boundary_log_entry(&log[2], 3, SessionCommandKind::RemoveBreakpoint, None);
-    assert_boundary_log_entry(&log[3], 4, SessionCommandKind::CreateSavepoint, None);
-    assert_boundary_log_entry(&log[4], 5, SessionCommandKind::Fork, None);
+    assert_eq!(log.len(), 4);
+    assert_boundary_log_entry(&log[0], 1, SessionCommandKind::SetBreakpoint, None);
+    assert_boundary_log_entry(&log[1], 2, SessionCommandKind::RemoveBreakpoint, None);
+    assert_boundary_log_entry(&log[2], 3, SessionCommandKind::CreateSavepoint, None);
+    assert_boundary_log_entry(&log[3], 4, SessionCommandKind::Fork, None);
     assert!(
         log.iter()
             .all(|entry| entry.frontier.ticks > 0 && entry.quanta > 0),
@@ -1386,12 +1372,9 @@ async fn running_boundary_commands_record_deterministic_control_log() {
     );
     assert_eq!(log[0].frontier, VirtualTime { ticks: 1 });
     assert_eq!(log[0].quanta, 1);
-    assert_eq!(log[4].frontier, VirtualTime { ticks: 1 });
-    assert_eq!(log[4].quanta, 1);
-    assert_eq!(
-        recorded_control_batches(&control_batches),
-        vec![Vec::new(), vec![ControlOperationKind::Inject]]
-    );
+    assert_eq!(log[3].frontier, VirtualTime { ticks: 1 });
+    assert_eq!(log[3].quanta, 1);
+    assert_eq!(recorded_control_batches(&control_batches), vec![Vec::new()]);
     assert_eq!(actor.engine().pending_control_len(), 0);
     assert_eq!(actor.engine().quanta(), 1);
     assert!(matches!(
@@ -1417,104 +1400,14 @@ async fn paused_boundary_mutators_apply_and_record_control_log() {
         panic!("start should instantiate runtime: {error}");
     }
 
-    if let Err(error) = engine.apply_command(SessionCommand::Inject) {
-        panic!("paused legacy inject should apply at the current boundary: {error}");
-    }
-
     let log = engine.boundary_control_log();
-    assert_eq!(log.len(), 1);
-    assert_boundary_log_entry(
-        &log[0],
-        1,
-        SessionCommandKind::Inject,
-        Some(ControlOperationKind::Inject),
-    );
-    assert!(
-        log.iter()
-            .all(|entry| entry.frontier == VirtualTime::default() && entry.quanta == 0),
-        "paused mutators should record the existing boundary, not host timing"
-    );
-    assert_eq!(
-        recorded_control_batches(&control_batches),
-        vec![vec![ControlOperationKind::Inject]]
-    );
+    assert!(log.is_empty());
+    assert!(recorded_control_batches(&control_batches).is_empty());
     assert_eq!(engine.pending_control_len(), 0);
     assert!(matches!(
         engine.state(),
         EngineState::Paused {
             reason: PauseReason::Instantiated
-        }
-    ));
-}
-
-#[test]
-fn boundary_control_at_sequence_is_before_scheduler_control_events() {
-    let scenario = generated_scenario(431);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let mut engine = Engine::new(config, graph, ControlEventLoop);
-    if let Err(error) = engine.apply_command(SessionCommand::Start) {
-        panic!("start should instantiate runtime: {error}");
-    }
-
-    if let Err(error) = engine.apply_command(SessionCommand::Inject) {
-        panic!("paused inject should apply at the current boundary: {error}");
-    }
-
-    assert_eq!(engine.event_log_len(), 1);
-    let log = engine.boundary_control_log();
-    assert_eq!(log.len(), 1);
-    assert_eq!(log[0].event_log_sequence_before, 0);
-    assert_eq!(log[0].command, SessionCommandKind::Inject);
-    assert_eq!(
-        log[0].payload,
-        SessionControlPayload::CommandKind {
-            command: SessionCommandKind::Inject,
-        },
-    );
-}
-
-#[test]
-fn control_replay_artifact_rejects_wrong_boundary_frontier() {
-    let scenario = generated_scenario(45);
-    let initial = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let mut interactive = Engine::new(
-        initial.clone(),
-        graph.clone(),
-        ControlSensitiveLoop::default(),
-    );
-    if let Err(error) = interactive.apply_command(SessionCommand::Start) {
-        panic!("interactive replay producer should instantiate: {error}");
-    }
-    if let Err(error) = interactive.apply_command(SessionCommand::Continue) {
-        panic!("interactive replay producer should run: {error}");
-    }
-    if let Err(error) = interactive.step_quantum() {
-        panic!("producer quantum should establish a replay boundary: {error}");
-    }
-    if let Err(error) = interactive.apply_command(SessionCommand::Inject) {
-        panic!("producer inject should apply at the current boundary: {error}");
-    }
-    let mut artifact = interactive.control_replay_artifact(initial);
-    artifact.control_log[0].frontier = VirtualTime { ticks: 99 };
-
-    let error = match Engine::<ControlSensitiveLoop>::replay_control_replay_artifact(
-        &artifact,
-        graph_with_baked_genesis(&scenario),
-        ControlSensitiveLoop::default(),
-    ) {
-        Ok(snapshot) => {
-            panic!("frontier-mismatched artifact should reject, got {snapshot:?}")
-        }
-        Err(error) => error,
-    };
-
-    assert!(matches!(
-        error,
-        SessionError::ControlReplayFrontierMismatch {
-            current: VirtualTime { ticks: 1 },
-            recorded: VirtualTime { ticks: 99 },
         }
     ));
 }
@@ -1606,60 +1499,6 @@ async fn pause_and_stop_take_effect_at_boundary_without_extra_quantum() {
         }
         assert_eq!(shutdowns.load(Ordering::SeqCst), expected_shutdowns);
     }
-}
-
-#[tokio::test]
-async fn stop_after_scheduler_control_does_not_drop_logged_effect() {
-    let scenario = generated_scenario(37);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let control_batches = Arc::new(Mutex::new(Vec::new()));
-    let shutdowns = Arc::new(AtomicU64::new(0));
-    let mut engine = Engine::new(
-        config,
-        graph,
-        RecordingLoop::with_shutdown(Arc::clone(&control_batches), Arc::clone(&shutdowns)),
-    );
-    if let Err(error) = engine.apply_command(SessionCommand::Start) {
-        panic!("start should instantiate runtime: {error}");
-    }
-    if let Err(error) = engine.apply_command(SessionCommand::Continue) {
-        panic!("continue should enter running state: {error}");
-    }
-    let (sender, receiver) = mpsc::channel(4);
-    let mut actor = SessionActor::new(engine, receiver);
-
-    if let Err(error) = sender.send(SessionCommand::Inject).await {
-        panic!("inject command should enqueue: {error}");
-    }
-    if let Err(error) = actor.run_once().await {
-        panic!("running inject should be applied at a boundary: {error}");
-    }
-    assert_eq!(actor.engine().pending_control_len(), 0);
-
-    if let Err(error) = sender.send(SessionCommand::Stop).await {
-        panic!("stop command should enqueue after scheduler control: {error}");
-    }
-    if let Err(error) = actor.run_once().await {
-        panic!("stop after scheduler control should not drive a quantum: {error}");
-    }
-
-    assert_eq!(actor.engine().quanta(), 0);
-    assert_eq!(
-        recorded_control_batches(&control_batches),
-        vec![vec![ControlOperationKind::Inject]]
-    );
-    assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
-    let log = actor.engine().boundary_control_log();
-    assert_eq!(log.len(), 2);
-    assert_eq!(log[0].command, SessionCommandKind::Inject);
-    assert_eq!(log[1].command, SessionCommandKind::Stop);
-    assert!(matches!(
-        actor.engine().state(),
-        EngineState::Stopped {
-            outcome: Outcome::Stopped
-        }
-    ));
 }
 
 #[tokio::test]

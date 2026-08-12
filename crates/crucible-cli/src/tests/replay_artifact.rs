@@ -2004,14 +2004,13 @@ pub(super) fn cli_run_workflow_executes_remote_daemon_session_against_production
 #[test]
 pub(super) fn cli_run_workflow_parses_interactive_session_commands() -> Result<(), Box<dyn Error>> {
     let commands =
-        parse_interactive_session_commands("\n# comment\nquery\nstep\ninject\nsave\nfork\nstop\n")?;
+        parse_interactive_session_commands("\n# comment\nquery\nstep\nsave\nfork\nstop\n")?;
 
     assert_eq!(
         commands,
         vec![
             SessionCommandKind::Query,
             SessionCommandKind::StepQuantum,
-            SessionCommandKind::Inject,
             SessionCommandKind::CreateSavepoint,
             SessionCommandKind::Fork,
             SessionCommandKind::Stop,
@@ -2108,7 +2107,7 @@ pub(super) async fn cli_run_workflow_acknowledges_interactive_reader_commands()
 
 #[test]
 pub(super) fn retired_fault_commands_are_unknown() {
-    for command in ["inject-fault", "heal-fault"] {
+    for command in ["inject", "inject-fault", "heal", "heal-fault"] {
         let error = match parse_interactive_session_command(command) {
             Ok(_) => panic!("retired fault command must be unknown"),
             Err(error) => error,
