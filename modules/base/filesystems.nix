@@ -50,8 +50,12 @@
     "# EFI System Partition — FAT32 so UEFI firmware can read it."
     "${cfg.espDevice}  /boot  vfat  ro,noatime,fmask=0077,dmask=0077  0  2"
     ""
-    "# /var — persistent mutable state (partition created by systemd-repart)"
-    "/dev/disk/by-partlabel/var  /var  ext4  rw,relatime,nosuid,nodev  0  2"
+    (if cfg.zfs.enable then ''
+      # /var is a native ZFS dataset mounted by zfs-mount.service.
+    '' else ''
+      # /var — persistent mutable state (partition created by systemd-repart)
+      /dev/disk/by-partlabel/var  /var  ext4  rw,relatime,nosuid,nodev  0  2
+    '')
     ""
     "# tmpfs mounts"
     "tmpfs  /tmp  tmpfs  nosuid,nodev,noexec,mode=1777,size=50%  0  0"
@@ -133,6 +137,13 @@ in {
         type = lib.types.str;
         default = "aos-pool";
         description = "Name of the ZFS pool for persistent data.";
+      };
+
+      package = lib.mkOption {
+        type = lib.types.package;
+        default = pkgs.zfs;
+        internal = true;
+        description = "OpenZFS userland and optional exact-kernel module package.";
       };
 
       ## ZFS datasets to create and mount.
@@ -260,8 +271,8 @@ in {
           serviceConfig = {
             Type = "oneshot";
             RemainAfterExit = true;
-            ExecStart = "${pkgs.zfs}/sbin/zpool import -N -f ${cfg.zfs.poolName}";
-            ExecStop = "${pkgs.zfs}/sbin/zpool export ${cfg.zfs.poolName}";
+            ExecStart = "${pkgs.bash}/bin/bash -c '${cfg.zfs.package}/sbin/zpool list -H ${cfg.zfs.poolName} >/dev/null 2>&1 || ${cfg.zfs.package}/sbin/zpool import -N -f ${cfg.zfs.poolName}'";
+            ExecStop = "${cfg.zfs.package}/sbin/zpool export ${cfg.zfs.poolName}";
           };
         };
 
@@ -274,7 +285,7 @@ in {
           serviceConfig = {
             Type = "oneshot";
             RemainAfterExit = true;
-            ExecStart = "${pkgs.zfs}/sbin/zfs mount -a -l";
+            ExecStart = "${cfg.zfs.package}/sbin/zfs mount -a -l";
           };
         };
       })

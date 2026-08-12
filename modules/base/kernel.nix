@@ -80,6 +80,26 @@ in {
         systemd-modules-load.service. Example: ["br_netfilter" "overlay"].
       '';
     };
+
+    modulePackages = lib.mkOption {
+      type = lib.types.listOf lib.types.package;
+      default = [];
+      description = ''
+        External kernel-module packages built against system.build.kernel.
+        Their module trees are merged into the root filesystem and initrd and
+        indexed together with the in-tree modules.
+      '';
+    };
+
+    firmwarePackages = lib.mkOption {
+      type = lib.types.listOf lib.types.package;
+      default = [pkgs.firmware];
+      description = ''
+        Firmware packages exposed below /usr/lib/firmware and included in the
+        initrd. Package trees are merged in list order and duplicate paths are
+        rejected at image-build time.
+      '';
+    };
   };
 
   config = {

@@ -83,6 +83,8 @@
   # key-independent).
   secureBootKey ? null,
   secureBootCert ? null,
+  kernelModulePackages ? [],
+  firmwarePackages ? [],
 }: let
   toplevel = system.config.system.build.toplevel;
   kernel = system.config.system.build.kernel;
@@ -105,7 +107,7 @@
   # the running rootfs references store paths the closure reachability
   # scanner wouldn't otherwise catch (e.g. the VM agent shell script
   # referencing `/nix/store/...-socat-*` verbatim).
-  allClosures = [toplevel kernel] ++ extraClosures;
+  allClosures = [toplevel kernel] ++ kernelModulePackages ++ firmwarePackages ++ extraClosures;
 
   regInfo = import ./closure-info.nix {inherit pkgs lib;} {
     rootPaths = allClosures;
@@ -289,6 +291,23 @@ in
               # kmod looks up modules at /lib/modules/$(uname -r); the
               # /lib → usr/lib symlink makes this resolve to usr/lib/modules.
               ln -sfn "$KERNEL/lib/modules" rootfs/usr/lib/modules
+              ${lib.optionalString (kernelModulePackages != []) ''
+                rm rootfs/usr/lib/modules
+                mkdir -p rootfs/usr/lib/modules
+                cp -a "$KERNEL/lib/modules/." rootfs/usr/lib/modules/
+                ${lib.concatMapStringsSep "\n" (package: ''
+                  cp -a ${package}/lib/modules/. rootfs/usr/lib/modules/
+                '') kernelModulePackages}
+                for module_dir in rootfs/usr/lib/modules/*; do
+                  rm -f "$module_dir/build" "$module_dir/source"
+                  ${pkgs.kmod}/sbin/depmod -b rootfs "$(basename "$module_dir")"
+                done
+              ''}
+
+              mkdir -p rootfs/usr/lib/firmware
+              ${lib.concatMapStringsSep "\n" (package: ''
+                cp -a ${package}/lib/firmware/. rootfs/usr/lib/firmware/
+              '') firmwarePackages}
 
               # ── 5. /var/run → /run ──────────────────────────────────────────
               # Modern-Linux convention: /run is tmpfs, /var/run is a back-

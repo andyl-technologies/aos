@@ -133,6 +133,8 @@
       fsType = rootFsType;
       erofsCompressionLevel = system.config.aos.image.erofsCompressionLevel;
       extraClosures = system.config.aos.image.hostConfigClosures;
+      kernelModulePackages = system.config.aos.kernel.modulePackages;
+      firmwarePackages = system.config.aos.kernel.firmwarePackages;
       shrinkToFit = true;
       headroomMiB = 64;
     }

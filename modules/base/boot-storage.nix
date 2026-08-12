@@ -8,6 +8,7 @@
 {
   config,
   lib,
+  pkgs,
   ...
 }: let
   cfg = config.aos.boot.storage;
@@ -32,6 +33,7 @@
       then fallback
       else cfg.devices.${name}
   ) defaultDevices;
+  zfsPackage = pkgs.zfsForKernel config.system.build.kernel;
   deviceOption = name:
     lib.mkOption {
       type = lib.types.nullOr lib.types.str;
@@ -86,10 +88,22 @@ in {
         default = "aos/slots";
         description = "Dataset below the pool containing immutable image zvols.";
       };
+
+      encryptionRoot = lib.mkOption {
+        type = lib.types.strMatching "[A-Za-z][A-Za-z0-9_.:-]*(/[A-Za-z0-9_.:-]+)*";
+        default = cfg.zfs.poolName;
+        description = "Native-encryption root containing immutable zvols and mutable datasets.";
+      };
+
+      sealedKeyPath = lib.mkOption {
+        type = lib.types.strMatching "[A-Za-z0-9_.+/-]+";
+        default = "aos/zfs-key.cred";
+        description = "ESP-relative TPM-sealed native ZFS key path.";
+      };
     };
   };
 
-  config = {
+  config = lib.mkMerge [{
     assertions = [
       {
         assertion = lib.all (device: lib.hasPrefix "/dev/" device) cfg.espDevices;
@@ -103,5 +117,82 @@ in {
 
     aos.boot.storage.resolvedDevices = resolvedDevices;
     aos.filesystems.espDevice = lib.mkDefault (builtins.head cfg.espDevices);
-  };
+  } (lib.mkIf (cfg.backend == "zfs-zvol") {
+    aos.kernel.modulePackages = [zfsPackage];
+    aos.boot.initrd.extraPackages = [zfsPackage];
+    aos.boot.initrd.loadModules = ["zfs"];
+    aos.filesystems.zfs = {
+      enable = true;
+      poolName = cfg.zfs.poolName;
+      package = zfsPackage;
+    };
+
+    boot.initrd.systemd.services."aos-zfs-unlock" = {
+      description = "Import and unlock immutable ZFS boot storage";
+      requiredBy = ["initrd-root-device.target"];
+      before = ["sysroot.mount" "initrd-root-device.target"];
+      after = ["systemd-udev-settle.service" "systemd-modules-load.service"];
+      requires = ["systemd-udev-settle.service" "systemd-modules-load.service"];
+      unitConfig.DefaultDependencies = "no";
+      environment.PATH = lib.concatStringsSep ":" [
+        (lib.makeBinPath [pkgs.coreutils pkgs.systemd pkgs.util-linux zfsPackage])
+        (lib.makeSearchPath "sbin" [pkgs.coreutils pkgs.systemd pkgs.util-linux zfsPackage])
+      ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        StandardOutput = "journal+console";
+        StandardError = "journal+console";
+      };
+      script = ''
+        set -euo pipefail
+        key=/run/aos-zfs.key
+        esp=/run/aos-zfs-esp
+        mkdir -p "$esp"
+        credential=
+        for device in ${lib.concatMapStringsSep " " lib.escapeShellArg cfg.espDevices}; do
+          [ -e "$device" ] || continue
+          if mount -t vfat -o ro,noatime,fmask=0077,dmask=0077 "$device" "$esp"; then
+            if [ -r "$esp/${cfg.zfs.sealedKeyPath}" ]; then
+              credential="$esp/${cfg.zfs.sealedKeyPath}"
+              break
+            fi
+            umount "$esp"
+          fi
+        done
+        if [ -z "$credential" ]; then
+          echo "aos-zfs-unlock: sealed key is absent from every configured ESP" >&2
+          exit 1
+        fi
+
+        signature=
+        for candidate in /run/systemd/tpm2-pcr-signature.json \
+          /.extra/tpm2-pcr-signature.json \
+          /run/credentials/@system/tpm2-pcr-signature.json; do
+          if [ -r "$candidate" ]; then signature="$candidate"; break; fi
+        done
+        signature_arg=
+        [ -n "$signature" ] && signature_arg="--tpm2-signature=$signature"
+        systemd-creds decrypt --name=aos-zfs-key $signature_arg "$credential" "$key"
+        chmod 0400 "$key"
+        umount "$esp"
+
+        zpool import -N -f ${lib.escapeShellArg cfg.zfs.poolName}
+        zfs load-key -L "file://$key" ${lib.escapeShellArg cfg.zfs.encryptionRoot}
+        rm -f "$key"
+        udevadm settle
+        ${lib.concatMapStringsSep "\n" (device: ''
+          i=0
+          while [ ! -e ${lib.escapeShellArg device} ] && [ "$i" -lt 60 ]; do
+            i=$((i + 1))
+            sleep 0.5
+          done
+          [ -e ${lib.escapeShellArg device} ] || {
+            echo "aos-zfs-unlock: expected zvol did not appear: ${device}" >&2
+            exit 1
+          }
+        '') (builtins.attrValues resolvedDevices)}
+      '';
+    };
+  })];
 }
