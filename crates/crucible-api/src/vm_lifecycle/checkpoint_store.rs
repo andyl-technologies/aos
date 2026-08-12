@@ -315,8 +315,14 @@ fn validate_restored_node_sets(
         .iter()
         .map(|node| node.id.clone())
         .collect::<std::collections::BTreeSet<_>>();
-    let generation_nodes = generations.keys().cloned().collect();
-    let service_nodes = service_states.keys().cloned().collect();
+    let generation_nodes = generations
+        .keys()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    let service_nodes = service_states
+        .keys()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
     let expected_targets = expected
         .iter()
         .filter(|node| {
@@ -324,7 +330,10 @@ fn validate_restored_node_sets(
         })
         .cloned()
         .collect::<std::collections::BTreeSet<_>>();
-    let target_nodes = targets.keys().cloned().collect();
+    let target_nodes = targets
+        .keys()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
     if generation_nodes != expected
         || service_nodes != expected
         || target_nodes != expected_targets
