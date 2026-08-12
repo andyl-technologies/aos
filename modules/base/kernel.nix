@@ -86,8 +86,9 @@ in {
       default = [];
       description = ''
         External kernel-module packages built against system.build.kernel.
-        Their module trees are merged into the root filesystem and initrd and
-        indexed together with the in-tree modules.
+        Their module trees are merged into the root filesystem and indexed
+        together with the in-tree modules. Packages needed before switch-root
+        must also be listed in aos.boot.initrd.modulePackages.
       '';
     };
 
@@ -95,9 +96,10 @@ in {
       type = lib.types.listOf lib.types.package;
       default = [pkgs.firmware];
       description = ''
-        Firmware packages exposed below /usr/lib/firmware and included in the
-        initrd. Package trees are merged in list order and duplicate paths are
-        rejected at image-build time.
+        Firmware packages exposed below /usr/lib/firmware in the runtime
+        system. Package trees are merged in list order and duplicate paths are
+        rejected at image-build time. Early-boot firmware is selected
+        separately with aos.boot.initrd.firmwarePackages.
       '';
     };
   };

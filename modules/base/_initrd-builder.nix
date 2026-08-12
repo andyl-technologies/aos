@@ -467,7 +467,7 @@ in
             ${kmod}/sbin/depmod -b root "$(basename "$module_dir")"
           done
 
-          # Firmware needed by early storage, network, TPM, and GPU drivers.
+          # Firmware selected specifically for early storage, network, and TPM drivers.
           mkdir -p root/lib/firmware
           ${lib.concatMapStringsSep "\n" (package: ''
             if [ ! -d ${package}/lib/firmware ]; then

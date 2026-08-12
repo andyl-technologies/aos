@@ -354,12 +354,15 @@ fn load_running_image_generation_from(
         .get("systemd.verity_root_data")
         .or_else(|| cmdline_fields.get("root"))
     {
-        let booted_slot = match root.as_str() {
-            ROOT_A_DEVICE => Some(ImageSlot::A),
-            ROOT_B_DEVICE => Some(ImageSlot::B),
-            _ => None,
+        let layout = ImageSlotLayout::from_toplevel(toplevel_link)?;
+        let booted_slot = if Path::new(root) == layout.root_a {
+            ImageSlot::A
+        } else if Path::new(root) == layout.root_b {
+            ImageSlot::B
+        } else {
+            bail!("running kernel root device is not a declared image slot");
         };
-        if booted_slot.is_some() && booted_slot != Some(running.slot) {
+        if booted_slot != running.slot {
             bail!(
                 "running root slot disagrees with image generation {}",
                 running.number
@@ -1361,8 +1364,8 @@ fn image_artifact_path(
 
 fn copy_payload_to_slot(source: &Path, destination: &Path) -> Result<()> {
     let source_len = std::fs::metadata(source)?.len();
-    let production_partlabel = destination.starts_with("/dev/disk/by-partlabel");
-    if production_partlabel {
+    let production_device = destination.starts_with("/dev");
+    if production_device {
         let resolved = std::fs::canonicalize(destination)
             .with_context(|| format!("resolving inactive image slot {}", destination.display()))?;
         if !resolved.starts_with("/dev") {
@@ -1380,8 +1383,8 @@ fn copy_payload_to_slot(source: &Path, destination: &Path) -> Result<()> {
         .open(destination)
         .with_context(|| format!("opening inactive image slot {}", destination.display()))?;
     let destination_metadata = output.metadata()?;
-    if (production_partlabel && !destination_metadata.file_type().is_block_device())
-        || (!production_partlabel
+    if (production_device && !destination_metadata.file_type().is_block_device())
+        || (!production_device
             && !(destination_metadata.file_type().is_block_device()
                 || destination_metadata.is_file()))
     {
@@ -1417,20 +1420,11 @@ fn copy_payload_to_slot(source: &Path, destination: &Path) -> Result<()> {
 /// rename UKIs, so they use this narrow bracket and restore read-only state on
 /// both success and failure.
 fn with_writable_boot<T>(action: impl FnOnce() -> Result<T>) -> Result<T> {
-    let expected_device = PathBuf::from(read_toplevel_meta(
-        Path::new(RUNNING_TOPLEVEL_LINK),
-        "esp-device",
-    )?);
-    if !expected_device.is_absolute() || !expected_device.starts_with("/dev") {
-        bail!(
-            "running image records an unsafe EFI System Partition device: {}",
-            expected_device.display()
-        );
-    }
+    let layout = ImageSlotLayout::from_running_toplevel()?;
     validate_boot_esp_mount(
         Path::new(BOOT_ROOT),
         Path::new("/proc/self/mountinfo"),
-        &expected_device,
+        &layout.esp_devices,
         true,
     )?;
     with_writable_boot_using(Path::new(BOOT_ROOT), remount_boot, action)
@@ -1439,17 +1433,14 @@ fn with_writable_boot<T>(action: impl FnOnce() -> Result<T>) -> Result<T> {
 fn validate_boot_esp_mount(
     boot_root: &Path,
     mountinfo: &Path,
-    expected_device: &Path,
+    expected_devices: &[PathBuf],
     require_block_devices: bool,
 ) -> Result<()> {
     let boot_root = std::fs::canonicalize(boot_root)
         .with_context(|| format!("resolving EFI mount point {}", boot_root.display()))?;
-    let expected_device = std::fs::canonicalize(expected_device).with_context(|| {
-        format!(
-            "resolving expected EFI System Partition {}",
-            expected_device.display()
-        )
-    })?;
+    if expected_devices.is_empty() {
+        bail!("no EFI System Partition devices are configured");
+    }
     let contents = std::fs::read_to_string(mountinfo)
         .with_context(|| format!("reading mount table {}", mountinfo.display()))?;
     let (mounted_root, filesystem_type, source) = contents
@@ -1487,37 +1478,48 @@ fn validate_boot_esp_mount(
     }
     // Open both paths before inspecting them so a symlink replacement cannot
     // change the device identity between validation and comparison.
-    let expected_file = std::fs::File::open(&expected_device).with_context(|| {
-        format!(
-            "opening expected EFI System Partition {}",
-            expected_device.display()
-        )
-    })?;
     let mounted_file = std::fs::File::open(source)
         .with_context(|| format!("opening mounted EFI device {source}"))?;
-    let expected_metadata = expected_file.metadata()?;
     let mounted_metadata = mounted_file.metadata()?;
-    if require_block_devices
-        && (!expected_metadata.file_type().is_block_device()
-            || !mounted_metadata.file_type().is_block_device())
-    {
+    if require_block_devices && !mounted_metadata.file_type().is_block_device() {
         bail!("EFI System Partition paths must both be block devices");
     }
     let mounted_device = std::fs::canonicalize(source)
         .with_context(|| format!("resolving mounted EFI device {source}"))?;
-    let same_device = if expected_metadata.file_type().is_block_device()
-        && mounted_metadata.file_type().is_block_device()
-    {
-        expected_metadata.rdev() == mounted_metadata.rdev()
-    } else {
-        mounted_device == expected_device
-    };
-    if !same_device {
+    let mut matched = false;
+    for expected_device in expected_devices {
+        let expected_device = std::fs::canonicalize(expected_device).with_context(|| {
+            format!(
+                "resolving configured EFI System Partition {}",
+                expected_device.display()
+            )
+        })?;
+        let expected_file = std::fs::File::open(&expected_device).with_context(|| {
+            format!(
+                "opening configured EFI System Partition {}",
+                expected_device.display()
+            )
+        })?;
+        let expected_metadata = expected_file.metadata()?;
+        if require_block_devices && !expected_metadata.file_type().is_block_device() {
+            bail!("EFI System Partition paths must both be block devices");
+        }
+        matched = if expected_metadata.file_type().is_block_device()
+            && mounted_metadata.file_type().is_block_device()
+        {
+            expected_metadata.rdev() == mounted_metadata.rdev()
+        } else {
+            mounted_device == expected_device
+        };
+        if matched {
+            break;
+        }
+    }
+    if !matched {
         bail!(
-            "{} is mounted from {}, expected {}",
+            "{} is mounted from {}, not a configured EFI System Partition",
             boot_root.display(),
-            mounted_device.display(),
-            expected_device.display()
+            mounted_device.display()
         );
     }
     Ok(())
@@ -4763,7 +4765,7 @@ mod tests {
         )
         .unwrap();
 
-        validate_boot_esp_mount(&boot, &mountinfo, &expected, false).unwrap();
+        validate_boot_esp_mount(&boot, &mountinfo, std::slice::from_ref(&expected), false).unwrap();
 
         std::fs::write(
             &mountinfo,
@@ -4774,8 +4776,10 @@ mod tests {
             ),
         )
         .unwrap();
-        let error = validate_boot_esp_mount(&boot, &mountinfo, &expected, false).unwrap_err();
-        assert!(error.to_string().contains("expected"));
+        let error =
+            validate_boot_esp_mount(&boot, &mountinfo, std::slice::from_ref(&expected), false)
+                .unwrap_err();
+        assert!(error.to_string().contains("not a configured"));
 
         std::fs::write(
             &mountinfo,
@@ -4786,7 +4790,9 @@ mod tests {
             ),
         )
         .unwrap();
-        let error = validate_boot_esp_mount(&boot, &mountinfo, &expected, false).unwrap_err();
+        let error =
+            validate_boot_esp_mount(&boot, &mountinfo, std::slice::from_ref(&expected), false)
+                .unwrap_err();
         assert!(error.to_string().contains("bind/subtree"));
 
         std::fs::write(
@@ -4798,7 +4804,9 @@ mod tests {
             ),
         )
         .unwrap();
-        let error = validate_boot_esp_mount(&boot, &mountinfo, &expected, false).unwrap_err();
+        let error =
+            validate_boot_esp_mount(&boot, &mountinfo, std::slice::from_ref(&expected), false)
+                .unwrap_err();
         assert!(error.to_string().contains("expected vfat"));
 
         std::fs::write(
@@ -4810,7 +4818,9 @@ mod tests {
             ),
         )
         .unwrap();
-        let error = validate_boot_esp_mount(&boot, &mountinfo, &expected, true).unwrap_err();
+        let error =
+            validate_boot_esp_mount(&boot, &mountinfo, std::slice::from_ref(&expected), true)
+                .unwrap_err();
         assert!(error.to_string().contains("block devices"));
     }
 
