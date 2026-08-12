@@ -374,14 +374,6 @@ impl ProductionBlockFaultCoordinator {
             })
             .cloned()
             .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .fold(BTreeMap::new(), |mut selected, target| {
-                if let ResolvedFaultTarget::StorageArray { array, .. } = &target {
-                    selected.entry(array.clone()).or_insert(target);
-                }
-                selected
-            })
-            .into_values()
             .collect();
         Self {
             runtime,
@@ -417,6 +409,56 @@ impl ProductionBlockFaultCoordinator {
             return Err(StorageFaultResolutionError::UnsupportedTarget);
         }
         Ok(policies.pop())
+    }
+
+    fn evaluate_array_phase(
+        &mut self,
+        request: &BlockRequest,
+        request_sequence: u64,
+        wire_digest: ContentHash,
+        phase: FaultPhase,
+        coordinate: FaultCoordinate,
+    ) -> Result<Option<crucible_qemu::ResolvedStorageArrayPolicy>, QemuAsyncDriverRuntimeError>
+    {
+        let mut actions = Vec::new();
+        for target in self.array_targets.clone() {
+            let opportunity = block_request_fault_opportunity(
+                target,
+                request,
+                wire_digest,
+                phase,
+                coordinate,
+                request_sequence,
+            )
+            .map_err(|error| storage_error("construct storage array opportunity", error))?;
+            actions.extend(self.evaluate_phase(&opportunity)?.actions);
+        }
+        self.active_array_policy(&actions)
+            .map_err(|error| storage_error("resolve storage array policy", error))
+    }
+
+    fn compose_array_phase(
+        &self,
+        directive: &mut crucible_device::block::ResolvedBlockFaultDirective,
+        policy: Option<&crucible_qemu::ResolvedStorageArrayPolicy>,
+        request: &BlockRequest,
+        phase: FaultPhase,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let Some(policy) = policy else {
+            return Ok(());
+        };
+        if request.op == BlockOp::Read && phase == FaultPhase::Resolve {
+            match self.array_read_transform(policy, request) {
+                Ok(bytes) => directive
+                    .read_transforms
+                    .push(BlockFaultReadTransform::Replace { bytes }),
+                Err(StorageArrayError::QuorumUnavailable) => {
+                    directive.error_result = Some(policy.failure_result)
+                }
+                Err(error) => return Err(storage_error("read storage array", error)),
+            }
+        }
+        Ok(())
     }
 
     fn array_read_transform(
@@ -514,7 +556,6 @@ impl ProductionBlockFaultCoordinator {
             .iter()
             .filter(|target| block_target_intersects_request(target, request))
             .cloned()
-            .chain(self.array_targets.iter().cloned())
             .collect()
     }
 
@@ -758,32 +799,6 @@ impl ProductionBlockFaultCoordinator {
         opportunity: &crucible::model::FaultOpportunity,
         actions: &[ResolvedBindingAction],
     ) -> Result<crucible_device::block::ResolvedBlockFaultDirective, String> {
-        if matches!(target, ResolvedFaultTarget::StorageArray { .. }) {
-            let mut directive = crucible_device::block::ResolvedBlockFaultDirective::fault_free(
-                request,
-                self.array_logical_capacity()?,
-            );
-            directive.request_sequence = request_sequence;
-            directive.execution_nanos = opportunity.coordinate().virtual_nanos;
-            directive.persistence_admitted_nanos = opportunity.coordinate().virtual_nanos;
-            if let Some(policy) = self
-                .active_array_policy(actions)
-                .map_err(|error| error.to_string())?
-                && request.op == BlockOp::Read
-                && opportunity.phase() == FaultPhase::Resolve
-            {
-                match self.array_read_transform(&policy, request) {
-                    Ok(bytes) => directive
-                        .read_transforms
-                        .push(BlockFaultReadTransform::Replace { bytes }),
-                    Err(StorageArrayError::QuorumUnavailable) => {
-                        directive.error_result = Some(policy.failure_result)
-                    }
-                    Err(error) => return Err(error.to_string()),
-                }
-            }
-            return Ok(directive);
-        }
         let devices = Arc::clone(&self.devices);
         let mut read_source = move |device: ContentHash, offset: u64, count: u32| {
             let handle = devices
@@ -812,23 +827,6 @@ impl ProductionBlockFaultCoordinator {
             actions,
         )
         .map_err(|error| error.to_string())
-    }
-
-    fn array_logical_capacity(&self) -> Result<u64, String> {
-        let attached = self
-            .attached_device_hash()
-            .map_err(|error| error.to_string())?;
-        let devices = self
-            .devices
-            .lock()
-            .map_err(|_| String::from("authoritative block-device registry is poisoned"))?;
-        let device = devices.get(&attached).ok_or_else(|| {
-            format!(
-                "World block device {} has no live runtime",
-                attached.to_hex()
-            )
-        })?;
-        device.storage_length().map_err(|error| error.to_string())
     }
 
     fn record_device_outcomes(
@@ -987,6 +985,14 @@ impl ProductionBlockFaultCoordinator {
                     merge_block_fault_phase_directive(&mut directive, phase, partial),
                 )?;
             }
+            let array_policy = self.evaluate_array_phase(
+                &request,
+                observed.request_sequence,
+                observed.wire_digest,
+                phase,
+                coordinate,
+            )?;
+            self.compose_array_phase(&mut directive, array_policy.as_ref(), &request, phase)?;
         }
         directive.execution_nanos = request_nanos;
         self.after_evaluation(
@@ -1049,6 +1055,19 @@ impl ProductionBlockFaultCoordinator {
                         ),
                     )?;
                 }
+                let array_policy = self.evaluate_array_phase(
+                    &opportunity.request,
+                    opportunity.request_sequence,
+                    opportunity.wire_digest,
+                    FaultPhase::Resolve,
+                    coordinate,
+                )?;
+                self.compose_array_phase(
+                    &mut directive,
+                    array_policy.as_ref(),
+                    &opportunity.request,
+                    FaultPhase::Resolve,
+                )?;
                 directive.execution_nanos = opportunity.ready_nanos;
                 self.after_evaluation(
                     "install block resolve directive",
@@ -1070,6 +1089,7 @@ impl ProductionBlockFaultCoordinator {
                     ),
                 };
                 let mut directive = opportunity.resolved.clone();
+                let mut array_policy = None;
                 for target in self.request_targets(&opportunity.request) {
                     let fault_opportunity = block_request_persistence_fault_opportunity(
                         target.clone(),
@@ -1101,6 +1121,31 @@ impl ProductionBlockFaultCoordinator {
                         ),
                     )?;
                 }
+                for target in self.array_targets.clone() {
+                    let fault_opportunity = block_request_persistence_fault_opportunity(
+                        target,
+                        &opportunity,
+                        coordinate,
+                    )
+                    .map_err(|error| {
+                        storage_error("construct storage array persist opportunity", error)
+                    })?;
+                    let evaluation = self.evaluate_phase(&fault_opportunity)?;
+                    let resolved = self
+                        .active_array_policy(&evaluation.actions)
+                        .map_err(|error| storage_error("resolve storage array policy", error))?;
+                    if let Some(resolved) = resolved {
+                        if let Some(existing) = &array_policy
+                            && existing != &resolved
+                        {
+                            return Err(storage_error(
+                                "resolve storage array policy",
+                                "multiple active array policies disagree",
+                            ));
+                        }
+                        array_policy = Some(resolved);
+                    }
+                }
                 directive.execution_nanos = opportunity.ready_nanos;
                 if !directive.persistence_transforms.is_empty() {
                     directive.persistence_admitted_nanos = opportunity.ready_nanos;
@@ -1109,22 +1154,6 @@ impl ProductionBlockFaultCoordinator {
                     opportunity,
                     directive,
                 };
-                let array_policy = self
-                    .array_targets
-                    .first()
-                    .and_then(|target| {
-                        self.runtime.lock().ok().map(|runtime| {
-                            runtime
-                                .host_state()
-                                .matching(target, FaultPhase::Persist)
-                                .cloned()
-                                .collect::<Vec<_>>()
-                        })
-                    })
-                    .map(|actions| self.active_array_policy(&actions))
-                    .transpose()
-                    .map_err(|error| storage_error("resolve storage array persistence", error))?
-                    .flatten();
                 if resolved.opportunity.request.op == BlockOp::Write
                     && let Some(policy) = array_policy
                 {
