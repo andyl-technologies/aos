@@ -13,19 +13,19 @@
   hostModule = fixtureRoot + "/host.nix";
   firewallRoot = builtins.path {
     path = fixtureRoot + "/firewall";
-    name = "rfc0011-parity-firewall-config";
+    name = "config-parity-firewall-config";
   };
   webRoot = builtins.path {
     path = fixtureRoot + "/web";
-    name = "rfc0011-parity-web-config";
+    name = "config-parity-web-config";
   };
   databaseRoot = builtins.path {
     path = fixtureRoot + "/database";
-    name = "rfc0011-parity-database-config";
+    name = "config-parity-database-config";
   };
   telemetryRoot = builtins.path {
     path = fixtureRoot + "/telemetry";
-    name = "rfc0011-parity-telemetry-config";
+    name = "config-parity-telemetry-config";
   };
 
   # This is the P1 publish-time interface projection. The stock side maps
@@ -63,7 +63,8 @@
     telemetry = "telemetry";
     web = "web";
   };
-  readAccesses = lib.concatMap
+  readAccesses =
+    lib.concatMap
     (interface:
       builtins.map
       (option: let
@@ -80,7 +81,8 @@
         })
       interface.reads)
     interfaces;
-  writeAccesses = lib.concatMap
+  writeAccesses =
+    lib.concatMap
     (interface:
       builtins.map
       (option: {
@@ -99,89 +101,90 @@
     then left.kind == "read"
     else (left.provider or "") < (right.provider or "");
   expectedGraph.accesses = builtins.sort accessLess (readAccesses ++ writeAccesses);
-  expectedGraphJson = builtins.toFile
-    "rfc0011-config-parity-p2-graph.json"
+  expectedGraphJson =
+    builtins.toFile
+    "config-parity-p2-graph.json"
     (builtins.toJSON expectedGraph);
 
   entryRoot = pkgs.writeTextFile {
-    name = "rfc0011-config-parity-p2-entry";
+    name = "config-parity-p2-entry";
     destination = "/entry.nix";
     text = ''
-      let
-      baseLib = import ${baseLib};
-      hostModule = import ${hostModule};
-      system = baseLib.evalHostConfig {
-        operatorModules = [ hostModule ];
-        packageModules = [
-          {
-            name = "firewall";
-            authorization = { owns = []; contributes = {}; };
-            configRoot = ${firewallRoot};
-            module = ${firewallRoot}/module.nix;
-            outputs = { self = "${baseLib}"; dependencies = {}; };
-          }
-          {
-            name = "web";
-            authorization = {
-              owns = [];
-              contributes.firewall = [];
-            };
-            configRoot = ${webRoot};
-            module = ${webRoot}/module.nix;
-            outputs = { self = "${baseLib}"; dependencies = {}; };
-          }
-          {
-            name = "database";
-            authorization = { owns = []; contributes = {}; };
-            configRoot = ${databaseRoot};
-            module = ${databaseRoot}/module.nix;
-            outputs = { self = "${baseLib}"; dependencies = {}; };
-          }
-          {
-            name = "telemetry";
-            authorization = {
-              owns = [];
-              contributes = {
-                database = [];
-                firewall = [];
-                web = [];
+        let
+        baseLib = import ${baseLib};
+        hostModule = import ${hostModule};
+        system = baseLib.evalHostConfig {
+          operatorModules = [ hostModule ];
+          packageModules = [
+            {
+              name = "firewall";
+              authorization = { owns = []; contributes = {}; };
+              configRoot = ${firewallRoot};
+              module = ${firewallRoot}/module.nix;
+              outputs = { self = "${baseLib}"; dependencies = {}; };
+            }
+            {
+              name = "web";
+              authorization = {
+                owns = [];
+                contributes.firewall = [];
               };
-            };
-            configRoot = ${telemetryRoot};
-            module = ${telemetryRoot}/module.nix;
-            outputs = { self = "${baseLib}"; dependencies = {}; };
-          }
-        ];
-        structuredErrors = true;
-      };
-    in {
-      optionWrites = system._optionWrites;
-      manifest = system.config.system.build.configManifest // {
-        config = baseLib.lib.recursiveUpdate
-          system.config.system.build.configManifest.config
-          system.config.aos.apm.installAtBoot.config;
-        credentials = baseLib.lib.recursiveUpdate
-          system.config.system.build.configManifest.credentials
-          (baseLib.lib.recursiveUpdate
-            system.config.aos.apm.installAtBoot.credentials
-            (builtins.mapAttrs
-              (_package: handles: builtins.mapAttrs
-                (name: systemCredential: {
-                  inherit name;
-                  source = null;
-                  encrypted = true;
-                  units = [];
-                  ref = "system-credential:''${systemCredential}";
-                })
-                handles)
-              system.config.aos.apm.installAtBoot.systemCredentials));
-      };
-      }
+              configRoot = ${webRoot};
+              module = ${webRoot}/module.nix;
+              outputs = { self = "${baseLib}"; dependencies = {}; };
+            }
+            {
+              name = "database";
+              authorization = { owns = []; contributes = {}; };
+              configRoot = ${databaseRoot};
+              module = ${databaseRoot}/module.nix;
+              outputs = { self = "${baseLib}"; dependencies = {}; };
+            }
+            {
+              name = "telemetry";
+              authorization = {
+                owns = [];
+                contributes = {
+                  database = [];
+                  firewall = [];
+                  web = [];
+                };
+              };
+              configRoot = ${telemetryRoot};
+              module = ${telemetryRoot}/module.nix;
+              outputs = { self = "${baseLib}"; dependencies = {}; };
+            }
+          ];
+          structuredErrors = true;
+        };
+      in {
+        optionWrites = system._optionWrites;
+        manifest = system.config.system.build.configManifest // {
+          config = baseLib.lib.recursiveUpdate
+            system.config.system.build.configManifest.config
+            system.config.aos.apm.installAtBoot.config;
+          credentials = baseLib.lib.recursiveUpdate
+            system.config.system.build.configManifest.credentials
+            (baseLib.lib.recursiveUpdate
+              system.config.aos.apm.installAtBoot.credentials
+              (builtins.mapAttrs
+                (_package: handles: builtins.mapAttrs
+                  (name: systemCredential: {
+                    inherit name;
+                    source = null;
+                    encrypted = true;
+                    units = [];
+                    ref = "system-credential:''${systemCredential}";
+                  })
+                  handles)
+                system.config.aos.apm.installAtBoot.systemCredentials));
+        };
+        }
     '';
   };
   entry = entryRoot + "/entry.nix";
   stockEntryRoot = pkgs.writeTextFile {
-    name = "rfc0011-config-parity-p2-stock";
+    name = "config-parity-p2-stock";
     destination = "/entry.nix";
     text = ''
       let evaluated = import ${entry};
@@ -193,13 +196,13 @@
   };
   stockEntry = stockEntryRoot + "/entry.nix";
   cacheLeaf = fixtureRoot + "/cache-leaf.nix";
-  cacheHostV1 = builtins.toFile "rfc0011-config-parity-p2-cache-host-v1.nix" ''
+  cacheHostV1 = builtins.toFile "config-parity-p2-cache-host-v1.nix" ''
     { label = "before"; offset = 1; }
   '';
-  cacheHostV2 = builtins.toFile "rfc0011-config-parity-p2-cache-host-v2.nix" ''
+  cacheHostV2 = builtins.toFile "config-parity-p2-cache-host-v2.nix" ''
     { label = "after"; offset = 2; }
   '';
-  cacheEntryTemplate = builtins.toFile "rfc0011-config-parity-p2-cache-entry.nix" ''
+  cacheEntryTemplate = builtins.toFile "config-parity-p2-cache-entry.nix" ''
     let host = import ./host.nix;
     in {
       manifest = {
@@ -209,20 +212,20 @@
       optionWrites = [];
     }
   '';
-  unchangedCacheEntry = builtins.toFile "rfc0011-config-parity-p2-cache-unchanged.nix" ''
+  unchangedCacheEntry = builtins.toFile "config-parity-p2-cache-unchanged.nix" ''
     {
       manifest.total = import ${cacheLeaf};
       optionWrites = [];
     }
   '';
-  resourceDivergentEntry = builtins.toFile "rfc0011-config-parity-p2-resource-divergent.nix" ''
+  resourceDivergentEntry = builtins.toFile "config-parity-p2-resource-divergent.nix" ''
     let loop = value: loop (value + 1);
     in {
       manifest.value = loop 0;
       optionWrites = [];
     }
   '';
-  staticDivergentEntry = builtins.toFile "rfc0011-config-parity-p2-static-divergent.nix" ''
+  staticDivergentEntry = builtins.toFile "config-parity-p2-static-divergent.nix" ''
     let bottom = bottom;
     in {
       manifest.value = bottom;
@@ -281,7 +284,7 @@ in
             "$TMPDIR/stock-canonical.json" "$TMPDIR/native-canonical.json"
           ${pkgs.jq}/bin/jq -e '
             .manifest.schema == "aos.config-manifest/v1"
-            and .manifest.etc."rfc0011/parity".text == "providers=8080:8080:5432\n"
+            and .manifest.etc."config-parity/p2".text == "providers=8080:8080:5432\n"
             and (.graph.accesses | length == 8)
             and any(.graph.accesses[];
               .package == "web"

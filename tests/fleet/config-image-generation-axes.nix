@@ -15,7 +15,7 @@
     ../../systems/server-verity.nix
     ../../systems/_fleet-transition-test.nix
     {
-      aos.system.version = "9999.0.0-rfc0011-abi2";
+      aos.system.version = "9999.0.0-generation-axes-abi2";
       aos.system.moduleAbi = 2;
       # The transition fixture exercises evaluator and image compatibility;
       # its retained configuration already supplies every selected package.
@@ -47,16 +47,16 @@
   # A real installable package whose authored configuration module supports
   # ABI 1 only. The authored option module remains the negative ABI gate.
   abi1OnlyConfig = pkgs.mkDerivation {
-    pname = "rfc0011-abi1-config";
+    pname = "generation-axes-abi1-config";
     version = "0";
     src = null;
     phases = [
       {
         name = "install";
         script = ''
-          mkdir -p "$out/share/rfc0011-abi1-config"
-          printf '%s\n' fixture > "$out/share/rfc0011-abi1-config/payload"
-          ln -s '${pkgs.bash}' "$out/share/rfc0011-abi1-config/bash"
+          mkdir -p "$out/share/generation-axes-abi1-config"
+          printf '%s\n' fixture > "$out/share/generation-axes-abi1-config/payload"
+          ln -s '${pkgs.bash}' "$out/share/generation-axes-abi1-config/bash"
         '';
       }
     ];
@@ -115,7 +115,7 @@
     }
   ];
 in {
-  name = "rfc-0011-two-axis-gen";
+  name = "config-image-generation-axes";
   timeout = 5400;
   # Three concurrent Secure Boot guests can spend several minutes in firmware
   # when a KVM builder is under I/O pressure. Keep the initial readiness budget
@@ -170,7 +170,7 @@ in {
           aos.provisioning.storage.partitions.var.sizeMin = "8G";
           aos.networking.hostName = "axis-one";
           aos.apm.desiredPackages = [ "aos-test-agent" ];
-          environment.etc."rfc0011-axis".text = "one\n";
+          environment.etc."config-generation-axis".text = "one\n";
         }
       '';
     };
@@ -187,7 +187,7 @@ in {
           aos.provisioning.storage.partitions.var.sizeMin = "8G";
           aos.networking.hostName = "axis-incompatible";
           aos.apm.desiredPackages = [ "aos-test-agent" ];
-          environment.etc."rfc0011-axis".text = "incompatible\n";
+          environment.etc."config-generation-axis".text = "incompatible\n";
         }
       '';
     };
@@ -241,7 +241,7 @@ in {
 
       def assert_live(machine, hostname, value):
           machine.succeed(f'test "$(cat /etc/hostname)" = {hostname}')
-          machine.succeed(f'test "$(cat /etc/rfc0011-axis)" = {value}')
+          machine.succeed(f'test "$(cat /etc/config-generation-axis)" = {value}')
           machine.succeed("systemctl is-active --quiet aos-test-agent.service")
           machine.succeed("systemctl is-active --quiet multi-user.target")
 
@@ -303,12 +303,12 @@ in {
         aos.provisioning.storage.partitions.var.sizeMin = \"8G\";
         aos.networking.hostName = \"axis-two\";
         aos.apm.desiredPackages = [ \"aos-test-agent\" ];
-        environment.etc.\"rfc0011-axis\".text = \"two\\n\";
+        environment.etc.\"config-generation-axis\".text = \"two\\n\";
       }
       """
       encoded = base64.b64encode(second_host.encode()).decode()
       target.succeed(
-          f"printf '%s' {encoded} | base64 -d > /run/rfc0011-axis-two.nix"
+          f"printf '%s' {encoded} | base64 -d > /run/config-generation-axis-two.nix"
       )
       image_before_switch = image_state(target)
       boot_before_switch = target.succeed(
@@ -316,8 +316,8 @@ in {
       ).strip()
       target.succeed(f"""
           {APM} switch \
-            --from /run/rfc0011-axis-two.nix \
-            --eval-root /run/rfc0011-axis-two-eval
+            --from /run/config-generation-axis-two.nix \
+            --eval-root /run/config-generation-axis-two-eval
       """, timeout=300)
       second_state, second = current_config(target)
       assert second["number"] != initial["number"], (initial, second)
@@ -419,7 +419,7 @@ in {
 
           if ! ${pkgs.aos}/bin/apr --json publish '${abi2Top}' \
             --name aos \
-            --version 9999.0.0-rfc0011-abi2 \
+            --version 9999.0.0-generation-axes-abi2 \
             --description 'Two-axis ABI fixture' \
             --license MIT \
             --maintainer test \
@@ -434,7 +434,7 @@ in {
             exit 1
           fi
           ${pkgs.aos}/bin/apr publish '${abi1OnlyConfig}' \
-            --name rfc0011-abi1-config \
+            --name generation-axes-abi1-config \
             --version 0 \
             --description 'ABI-1-only config module fixture' \
             --license MIT \
@@ -514,19 +514,19 @@ in {
       incompatible_host = """{
         aos.provisioning.storage.partitions.var.sizeMin = \"8G\";
         aos.networking.hostName = \"axis-incompatible\";
-        aos.apm.desiredPackages = [ \"aos-test-agent\" \"rfc0011-abi1-config\" ];
+        aos.apm.desiredPackages = [ \"aos-test-agent\" \"generation-axes-abi1-config\" ];
         configModuleSmoke.enable = true;
-        environment.etc.\"rfc0011-axis\".text = \"incompatible\\n\";
+        environment.etc.\"config-generation-axis\".text = \"incompatible\\n\";
       }
       """
       incompatible_encoded = base64.b64encode(incompatible_host.encode()).decode()
       incompatible.succeed(
-          f"printf '%s' {incompatible_encoded} | base64 -d > /run/rfc0011-incompatible.nix"
+          f"printf '%s' {incompatible_encoded} | base64 -d > /run/generation-axes-incompatible.nix"
       )
       incompatible.succeed(f"""
           {APM} -v switch \
-            --from /run/rfc0011-incompatible.nix \
-            --eval-root /run/rfc0011-incompatible-eval
+            --from /run/generation-axes-incompatible.nix \
+            --eval-root /run/generation-axes-incompatible-eval
       """, timeout=600)
       incompatible_initial_state, incompatible_initial = current_config(incompatible)
       assert incompatible_initial["module_abi_pinned"] == 1, incompatible_initial
@@ -631,7 +631,7 @@ in {
           "journalctl -b -u aos-eval.service --no-pager"
       )
       assert "module ABI" in failed_output, failed_output
-      assert "rfc0011-abi1-config" in failed_output, failed_output
+      assert "generation-axes-abi1-config" in failed_output, failed_output
       after_failure = config_state(incompatible)
       assert after_failure == staged_incompatible_config, after_failure
       failed_current = config_generation(

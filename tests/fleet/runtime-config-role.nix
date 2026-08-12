@@ -31,7 +31,7 @@ in
   assert !builtins.elem (builtins.toString pkgs.chrony) roleImage.config.system.build.configManifest.storePaths;
   assert builtins.elem pkgs.openssh roleImage.config.aos.image.hostConfigClosures;
   assert builtins.elem pkgs.chrony roleImage.config.aos.image.hostConfigClosures; {
-    name = "rfc-0011-runtime-role";
+    name = "runtime-config-role";
     timeout = 1200;
 
     machines.runtime = {

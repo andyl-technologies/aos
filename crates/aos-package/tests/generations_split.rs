@@ -24,7 +24,7 @@ fn config_generation(parent: u32, abi: u32) -> ConfigGeneration {
 }
 
 #[test]
-fn rfc_0011_generation_axes_round_trip_independently() {
+fn generation_axes_round_trip_independently() {
     let image = ImageGeneration {
         number: 3,
         slot: ImageSlot::A,
@@ -76,7 +76,7 @@ fn rfc_0011_generation_axes_round_trip_independently() {
 }
 
 #[test]
-fn rfc_0011_cross_image_same_abi_directly_reactivates() {
+fn cross_image_same_abi_directly_reactivates() {
     let target = config_generation(2, 9);
     assert!(matches!(
         target.reactivation_plan(9).expect("plan"),
@@ -85,7 +85,7 @@ fn rfc_0011_cross_image_same_abi_directly_reactivates() {
 }
 
 #[test]
-fn rfc_0011_cross_abi_reactivation_replays_retained_inputs() {
+fn cross_abi_reactivation_replays_retained_inputs() {
     let target = config_generation(2, 8);
     let plan = target
         .reactivation_plan(9)
@@ -101,7 +101,7 @@ fn rfc_0011_cross_abi_reactivation_replays_retained_inputs() {
 }
 
 #[test]
-fn rfc_0011_legacy_bundled_state_is_not_live_config_authority() {
+fn legacy_bundled_state_is_not_live_config_authority() {
     let legacy = r#"{
         "current": 1,
         "next": 2,

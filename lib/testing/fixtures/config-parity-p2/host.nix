@@ -1,5 +1,5 @@
 {config, ...}: {
-  environment.etc."rfc0011/parity" = {
+  environment.etc."config-parity/p2" = {
     text = "providers=${config.telemetry.summary}\n";
     mode = "0644";
   };

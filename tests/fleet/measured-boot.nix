@@ -403,7 +403,7 @@ in {
           # release/store verification remains covered by registry fixtures.
           attested_host = """{ config, pkgs, ... }: {
             aos.apm.desiredPackages = [ \"test-http-server\" ];
-            environment.etc.\"rfc0011-attested\".text = \"enforcing\\n\";
+            environment.etc.\"runtime-config-attested\".text = \"enforcing\\n\";
             systemd.services.aos-test-agent = {
               description = \"AOS VM Test Guest Agent\";
               wantedBy = [ \"multi-user.target\" ];
@@ -421,14 +421,14 @@ in {
           """
           encoded = base64.b64encode(attested_host.encode()).decode()
           target.succeed(
-              f"printf '%s' {encoded} | base64 -d > /run/rfc0011-attested-host.nix"
+              f"printf '%s' {encoded} | base64 -d > /run/runtime-config-attested-host.nix"
           )
           target.succeed(f"""
-              rm -rf /run/rfc0011-attestation-switch
+              rm -rf /run/runtime-config-attestation-switch
               {APM} switch \
-                --from /run/rfc0011-attested-host.nix \
+                --from /run/runtime-config-attested-host.nix \
                 --facts /run/aos-metadata/facts.json \
-                --eval-root /run/rfc0011-attestation-switch
+                --eval-root /run/runtime-config-attestation-switch
           """, timeout=300)
 
           generation = int(target.succeed(
@@ -514,8 +514,8 @@ in {
                 -f {quote_dir}/quote.pcrs \
                 -l sha256:7,11,12,15 \
                 -g sha256 -q {record_digest}
-              {TPM2_PCRREAD} -o /tmp/rfc0011-current-pcrs sha256:7,11,12,15
-              {CMP} {quote_dir}/quote.pcrs /tmp/rfc0011-current-pcrs
+              {TPM2_PCRREAD} -o /tmp/runtime-config-current-pcrs sha256:7,11,12,15
+              {CMP} {quote_dir}/quote.pcrs /tmp/runtime-config-current-pcrs
           """)
           pcrs = target.succeed(f"{TPM2_PCRREAD} sha256:7,11")
           parsed = {
@@ -567,18 +567,18 @@ in {
           # re-derivation while ignoring JSON object insertion order, which is
           # deliberately outside the canonical attestation identity.
           target.succeed(f"""
-              rm -rf /run/rfc0011-attestation-rederive
-              mkdir -p /run/rfc0011-attestation-rederive
+              rm -rf /run/runtime-config-attestation-rederive
+              mkdir -p /run/runtime-config-attestation-rederive
               {APM} __eval \
-                --host-nix /run/rfc0011-attested-host.nix \
+                --host-nix /run/runtime-config-attested-host.nix \
                 --base-lib {inputs['base_lib']['store_path']} \
                 --facts /run/aos-metadata/facts.json \
                 --module-abi {inputs['base_lib']['module_abi']} \
-                --out /run/rfc0011-attestation-rederive/manifest.json \
-                --eval-root /run/rfc0011-attestation-rederive
+                --out /run/runtime-config-attestation-rederive/manifest.json \
+                --eval-root /run/runtime-config-attestation-rederive
           """, timeout=300)
           rederived_text = target.succeed(
-              "cat /run/rfc0011-attestation-rederive/manifest.json"
+              "cat /run/runtime-config-attestation-rederive/manifest.json"
           )
           rederived = json.loads(rederived_text)
           if manifest != rederived:
@@ -695,18 +695,18 @@ in {
               json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()
           ).decode()
           target.succeed(
-              f"printf '%s' {policy_encoded} | base64 -d > /run/rfc0011-attestation-policy.json"
+              f"printf '%s' {policy_encoded} | base64 -d > /run/runtime-config-attestation-policy.json"
           )
           target.succeed(f"""
               printf '%s\n' 'measured-boot fixture identity proof' \
-                > /run/rfc0011-attestation-enrollment.txt
-              rm -f /run/rfc0011-attestation-identities.json
+                > /run/runtime-config-attestation-enrollment.txt
+              rm -f /run/runtime-config-attestation-identities.json
               {APM} attest enroll \
                 --quote-dir {quote_dir} \
                 --label measured-boot-target \
                 --method out-of-band \
-                --evidence-file /run/rfc0011-attestation-enrollment.txt \
-                --catalog-file /run/rfc0011-attestation-identities.json
+                --evidence-file /run/runtime-config-attestation-enrollment.txt \
+                --catalog-file /run/runtime-config-attestation-identities.json
           """, timeout=300)
           verification = json.loads(target.succeed(f"""
               {APM} --json attest verify --system \
@@ -714,10 +714,10 @@ in {
                 --pcr15-baseline {baseline_pcr15} \
                 --quote-dir {quote_dir} \
                 --nonce {record_digest} \
-                --quote-identity-file /run/rfc0011-attestation-identities.json \
+                --quote-identity-file /run/runtime-config-attestation-identities.json \
                 --generation-attestation {record_path} \
-                --generation-policy-file /run/rfc0011-attestation-policy.json \
-                --rederived-manifest /run/rfc0011-attestation-rederive/manifest.json
+                --generation-policy-file /run/runtime-config-attestation-policy.json \
+                --rederived-manifest /run/runtime-config-attestation-rederive/manifest.json
           """, timeout=300))
           assert verification["generation_verified"] is True, verification
           assert verification["quote_bundle_verified"] is True, verification

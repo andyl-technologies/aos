@@ -52,17 +52,17 @@
   anchorA = systemA.config.environment.etc.${anchorPath}.text;
   anchorB = systemB.config.environment.etc.${anchorPath}.text;
 
-  hostFixture = builtins.toFile "rfc-0011-preflight-host.nix" ''
+  hostFixture = builtins.toFile "config-eval-preflight-host.nix" ''
     {
-      aos.networking.hostName = "rfc0011-preflight";
-      environment.etc."rfc0011/preflight" = {
+      aos.networking.hostName = "config-eval-preflight";
+      environment.etc."config-eval/preflight" = {
         text = "enabled\n";
         mode = "0644";
       };
       aos.security.pki.certificates = [ "-----BEGIN CERTIFICATE-----\nMAgwADAAAwIAAA==\n-----END CERTIFICATE-----\n" ];
     }
   '';
-  factsFixture = builtins.toFile "rfc-0011-preflight-facts.json" "{}\n";
+  factsFixture = builtins.toFile "config-eval-preflight-facts.json" "{}\n";
   baseLib = systemA.config.aos.config.evalAtBoot.baseLib;
   moduleAbi = systemA.config.aos.system.moduleAbi;
 
@@ -200,8 +200,8 @@ in
             and .inputs.base_lib.store_path == $baseLib
             and (.users | type == "array")
             and (.packages | type == "array")
-            and .etc.hostname.text == "rfc0011-preflight\n"
-            and .etc."rfc0011/preflight".text == "enabled\n"
+            and .etc.hostname.text == "config-eval-preflight\n"
+            and .etc."config-eval/preflight".text == "enabled\n"
             and .etc."ssl/certs/ca-certificates.crt".kind == "certificate-bundle"
             and .etc."ssl/certs/ca-certificates.crt".mode == "0644"
             and (.etc."ssl/certs/ca-certificates.crt".parts | length == 2)

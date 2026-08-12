@@ -7,22 +7,22 @@
   secretSystem = systems.server-test.extendModules {
     modules = [
       {
-        aos.packages.aos-rfc0011-secret = {
-          package = pkgs.aos-rfc0011-secret;
+        aos.packages.aos-secret-reference-test = {
+          package = pkgs.aos-secret-reference-test;
           bundle = true;
           preset = false;
         };
         # The in-guest publisher needs both registry-only artifacts. The
         # runtime package is bundled separately above.
         environment.systemPackages = [
-          pkgs.aos-rfc0011-secret.expose
-          pkgs.aos-rfc0011-secret.config
+          pkgs.aos-secret-reference-test.expose
+          pkgs.aos-secret-reference-test.config
         ];
       }
     ];
   };
 in {
-  name = "rfc-0011-secret-ref";
+  name = "config-secret-reference";
   timeout = 1200;
 
   machines.target = {
@@ -30,7 +30,7 @@ in {
     bootMode = "image";
     imageDiskMiB = 16384;
     memoryMiB = 4096;
-    packages = ["aos-test-agent" "aos-rfc0011-secret"];
+    packages = ["aos-test-agent" "aos-secret-reference-test"];
     metadata."host.nix" = ''
       {
         aos.provisioning.storage.partitions.var.sizeMin = "2G";
@@ -38,7 +38,7 @@ in {
     '';
     extraModules = [
       {
-        systemd.services.rfc0011-system-credential = {
+        systemd.services.secret-reference-system-credential = {
           description = "Provide the platform system credential";
           wantedBy = ["sysinit.target"];
           before = ["aos-eval.service"];
@@ -49,15 +49,15 @@ in {
           script = ''
             set -eu
             mkdir -p /run/credentials/@system
-            printf '%s' rfc0011-secret-alpha \
+            printf '%s' secret-reference-test-alpha \
               > /run/credentials/@system/bootstrap-token
             chmod 0600 /run/credentials/@system/bootstrap-token
           '';
         };
 
         systemd.services.aos-eval = {
-          requires = ["rfc0011-system-credential.service"];
-          after = ["rfc0011-system-credential.service"];
+          requires = ["secret-reference-system-credential.service"];
+          after = ["secret-reference-system-credential.service"];
         };
       }
     ];
@@ -72,10 +72,10 @@ in {
 
       APM = "${pkgs.aos}/bin/apm"
       JQ = "${pkgs.jq}/bin/jq"
-      SOURCE = "/run/credstore/rfc0011/join-token"
-      STATE = "/var/lib/aos-pkg-aos-rfc0011-secret"
-      ALPHA = "rfc0011-secret-alpha"
-      BETA = "rfc0011-secret-beta"
+      SOURCE = "/run/credstore/secret-reference-test/join-token"
+      STATE = "/var/lib/aos-pkg-aos-secret-reference-test"
+      ALPHA = "secret-reference-test-alpha"
+      BETA = "secret-reference-test-beta"
 
 
       def current_generation():
@@ -138,17 +138,17 @@ in {
       # generation through the production switch path.
       target.succeed(textwrap.dedent(r"""
           set -eu
-          export HOME=/tmp/rfc0011-secret-publisher
+          export HOME=/tmp/secret-reference-test-publisher
           export GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@test
           export GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@test
           export NIX_REMOTE=""
-          export NIX_CONF_DIR=/tmp/rfc0011-secret-nix-conf
+          export NIX_CONF_DIR=/tmp/secret-reference-test-nix-conf
           mkdir -p "$NIX_CONF_DIR"
           printf 'experimental-features = nix-command\nsandbox = false\nbuild-users-group =\n' \
             > "$NIX_CONF_DIR/nix.conf"
 
           KEYGEN=$(${pkgs.aos}/bin/apr keys generate release \
-            --registry rfc0011-secret-reg 2>&1)
+            --registry secret-reference-test-reg 2>&1)
           printf '%s\n' "$KEYGEN"
           PUBKEY=
           while IFS= read -r line; do
@@ -159,78 +159,78 @@ in {
           $KEYGEN
           EOF
           test -n "$PUBKEY"
-          KEY=$HOME/.config/apm/keys/rfc0011-secret-reg-release.key
-          ${pkgs.aos}/bin/apr create rfc0011-secret-reg \
+          KEY=$HOME/.config/apm/keys/secret-reference-test-reg-release.key
+          ${pkgs.aos}/bin/apr create secret-reference-test-reg \
             --trust-key "$PUBKEY" \
             --trust-key-id release \
             --key "$KEY"
-          REG_DIR=$HOME/.local/share/apm/registries/rfc0011-secret-reg
+          REG_DIR=$HOME/.local/share/apm/registries/secret-reference-test-reg
           mkdir -p "$HOME/.config/apm/registries.d"
-          cat > "$HOME/.config/apm/registries.d/rfc0011-secret-reg.toml" <<EOF
+          cat > "$HOME/.config/apm/registries.d/secret-reference-test-reg.toml" <<EOF
           [registry]
-          name = "rfc0011-secret-reg"
+          name = "secret-reference-test-reg"
           url = "file://$REG_DIR"
 
           [registry.signing_keys]
           release = "$KEY"
           EOF
 
-          ${pkgs.aos}/bin/apr publish '${pkgs.aos-rfc0011-secret}' \
-            --name aos-rfc0011-secret \
+          ${pkgs.aos}/bin/apr publish '${pkgs.aos-secret-reference-test}' \
+            --name aos-secret-reference-test \
             --version 1.0.0 \
             --description 'Secret reference fixture' \
             --license MIT \
             --maintainer test \
-            --expose-manifest '${pkgs.aos-rfc0011-secret.expose}/manifest.json' \
-            --config-module '${pkgs.aos-rfc0011-secret.config}' \
+            --expose-manifest '${pkgs.aos-secret-reference-test.expose}/manifest.json' \
+            --config-module '${pkgs.aos-secret-reference-test.config}' \
             --config-base-lib '${secretSystem.config.aos.config.evalAtBoot.baseLib}' \
-            --registry rfc0011-secret-reg \
+            --registry secret-reference-test-reg \
             --key-id release
-          mkdir -p /var/lib/rfc0011-secret-cache
+          mkdir -p /var/lib/secret-reference-test-cache
           ${pkgs.aos}/bin/apr release 1.0.0 \
-            --registry rfc0011-secret-reg \
+            --registry secret-reference-test-reg \
             --key-id release \
-            --cache-url file:///var/lib/rfc0011-secret-cache \
-            --upload-url file:///var/lib/rfc0011-secret-cache
+            --cache-url file:///var/lib/secret-reference-test-cache \
+            --upload-url file:///var/lib/secret-reference-test-cache
           HOME=/tmp USER=root ${pkgs.aos}/bin/apm registry --system add \
             "file://$REG_DIR" \
-            --name rfc0011-secret-reg \
+            --name secret-reference-test-reg \
             --version '=1.0.0' \
             --trust-key "$PUBKEY"
           HOME=/tmp USER=root ${pkgs.aos}/bin/apm update \
-            --system --registry rfc0011-secret-reg
+            --system --registry secret-reference-test-reg
       """), timeout=1200)
 
       first_host = """{
         aos.provisioning.storage.partitions.var.sizeMin = \"2G\";
-        aos.apm.desiredPackages = [ \"aos-rfc0011-secret\" ];
-        \"aos-rfc0011-secret\".credentials.join-token.ref =
+        aos.apm.desiredPackages = [ \"aos-secret-reference-test\" ];
+        \"aos-secret-reference-test\".credentials.join-token.ref =
           \"system-credential:bootstrap-token\";
-        environment.etc.\"rfc0011-secret-generation\".text = \"one\\n\";
+        environment.etc.\"secret-reference-test-generation\".text = \"one\\n\";
       }
       """
       encoded = base64.b64encode(first_host.encode()).decode()
       target.succeed(
-          f"printf '%s' {encoded} | base64 -d > /run/rfc0011-secret-one.nix"
+          f"printf '%s' {encoded} | base64 -d > /run/secret-reference-test-one.nix"
       )
       target.succeed(f"""
           if ! {APM} switch \
-              --from /run/rfc0011-secret-one.nix \
-              --eval-root /run/rfc0011-secret-first-switch; then
+              --from /run/secret-reference-test-one.nix \
+              --eval-root /run/secret-reference-test-first-switch; then
             systemctl --no-pager --full status \
               aos-config.target aos-fetch.target aos-config-render.target \
               aos-activate.service \
-              'aos-pkg-fetch@aos-rfc0011-secret.service' \
-              'aos-pkg-install@aos-rfc0011-secret.service' || true
+              'aos-pkg-fetch@aos-secret-reference-test.service' \
+              'aos-pkg-install@aos-secret-reference-test.service' || true
             journalctl --no-pager -u aos-config.target -u aos-fetch.target \
               -u aos-config-render.target -u aos-activate.service \
-              -u 'aos-pkg-fetch@aos-rfc0011-secret.service' \
-              -u 'aos-pkg-install@aos-rfc0011-secret.service' || true
+              -u 'aos-pkg-fetch@aos-secret-reference-test.service' \
+              -u 'aos-pkg-install@aos-secret-reference-test.service' || true
             exit 1
           fi
       """, timeout=300)
       target.wait_until_succeeds(
-          "systemctl is-active --quiet aos-rfc0011-secret.service", timeout=120
+          "systemctl is-active --quiet aos-secret-reference-test.service", timeout=120
       )
       first = current_generation()
       target.succeed(f"test \"$(cat {SOURCE})\" = {ALPHA}")
@@ -244,12 +244,12 @@ in {
       assert delivery_mode == "440", delivery_mode
 
       manifest = json.loads(target.succeed("cat /run/aos/manifest.json"))
-      reference = manifest["credentials"]["aos-rfc0011-secret"]["join-token"]
+      reference = manifest["credentials"]["aos-secret-reference-test"]["join-token"]
       assert reference == {
           "name": "join-token",
           "source": SOURCE,
           "encrypted": False,
-          "units": ["aos-rfc0011-secret.service"],
+          "units": ["aos-secret-reference-test.service"],
           "ref": "system-credential:bootstrap-token",
       }, reference
       assert_no_plaintext(first, ALPHA)
@@ -263,20 +263,20 @@ in {
       """)
       second_host = """{
         aos.provisioning.storage.partitions.var.sizeMin = \"2G\";
-        aos.apm.desiredPackages = [ \"aos-rfc0011-secret\" ];
-        \"aos-rfc0011-secret\".credentials.join-token.ref =
+        aos.apm.desiredPackages = [ \"aos-secret-reference-test\" ];
+        \"aos-secret-reference-test\".credentials.join-token.ref =
           \"system-credential:bootstrap-token\";
-        environment.etc.\"rfc0011-secret-generation\".text = \"two\\n\";
+        environment.etc.\"secret-reference-test-generation\".text = \"two\\n\";
       }
       """
       encoded = base64.b64encode(second_host.encode()).decode()
       target.succeed(
-          f"printf '%s' {encoded} | base64 -d > /run/rfc0011-secret-two.nix"
+          f"printf '%s' {encoded} | base64 -d > /run/secret-reference-test-two.nix"
       )
       second_switch = target.succeed(f"""
           {APM} switch \
-            --from /run/rfc0011-secret-two.nix \
-            --eval-root /run/rfc0011-secret-switch
+            --from /run/secret-reference-test-two.nix \
+            --eval-root /run/secret-reference-test-switch
       """, timeout=300)
 
       second = current_generation()
@@ -289,10 +289,10 @@ in {
               printf '%s\n' '--- consumer state ---'
               cat {STATE}/start-count {STATE}/attempt-count || true
               systemctl --no-pager --full status \
-                aos-rfc0011-secret.service || true
-              journalctl --no-pager -u aos-rfc0011-secret.service || true
+                aos-secret-reference-test.service || true
+              journalctl --no-pager -u aos-secret-reference-test.service || true
               printf '%s\n' '--- current credential reference ---'
-              {JQ} '.credentials."aos-rfc0011-secret"."join-token"' \
+              {JQ} '.credentials."aos-secret-reference-test"."join-token"' \
                 /run/aos/manifest.json || true
           """)
           raise AssertionError(
@@ -301,7 +301,7 @@ in {
           )
       target.succeed(f"test \"$(cat {STATE}/start-count)\" = 2")
       target.succeed(f"test \"$(cat {STATE}/attempt-count)\" = 2")
-      target.succeed("systemctl is-active --quiet aos-rfc0011-secret.service")
+      target.succeed("systemctl is-active --quiet aos-secret-reference-test.service")
       assert_no_plaintext(second, ALPHA, BETA)
 
       # A same-ABI retained-generation rollback must traverse the same
@@ -318,54 +318,54 @@ in {
       target.succeed(f"test \"$(cat {STATE}/observed)\" = {ALPHA}")
       target.succeed(f"test \"$(cat {STATE}/start-count)\" = 3")
       target.succeed(f"test \"$(cat {STATE}/attempt-count)\" = 3")
-      target.succeed("systemctl is-active --quiet aos-rfc0011-secret.service")
+      target.succeed("systemctl is-active --quiet aos-secret-reference-test.service")
       assert_no_plaintext(first, ALPHA, BETA)
 
       # Credential rotation never activates a stopped consumer. Removing the
       # authenticated handle then prunes the previously managed source while
       # leaving that consumer in its exact pre-transaction state.
-      target.succeed("systemctl stop aos-rfc0011-secret.service")
+      target.succeed("systemctl stop aos-secret-reference-test.service")
       target.succeed(f"""
           printf '%s' {BETA} > /run/credentials/@system/bootstrap-token
           chmod 0600 /run/credentials/@system/bootstrap-token
       """)
       inactive_host = """{
         aos.provisioning.storage.partitions.var.sizeMin = \"2G\";
-        aos.apm.desiredPackages = [ \"aos-rfc0011-secret\" ];
-        \"aos-rfc0011-secret\".credentials.join-token.ref =
+        aos.apm.desiredPackages = [ \"aos-secret-reference-test\" ];
+        \"aos-secret-reference-test\".credentials.join-token.ref =
           \"system-credential:bootstrap-token\";
-        environment.etc.\"rfc0011-secret-generation\".text = \"inactive\\n\";
+        environment.etc.\"secret-reference-test-generation\".text = \"inactive\\n\";
       }
       """
       encoded = base64.b64encode(inactive_host.encode()).decode()
       target.succeed(
-          f"printf '%s' {encoded} | base64 -d > /run/rfc0011-secret-inactive.nix"
+          f"printf '%s' {encoded} | base64 -d > /run/secret-reference-test-inactive.nix"
       )
       target.succeed(f"""
           {APM} switch \
-            --from /run/rfc0011-secret-inactive.nix \
-            --eval-root /run/rfc0011-secret-inactive-switch
+            --from /run/secret-reference-test-inactive.nix \
+            --eval-root /run/secret-reference-test-inactive-switch
       """, timeout=300)
-      target.fail("systemctl is-active --quiet aos-rfc0011-secret.service")
+      target.fail("systemctl is-active --quiet aos-secret-reference-test.service")
       target.succeed(f"test \"$(cat {STATE}/start-count)\" = 3")
       target.succeed(f"test \"$(cat {SOURCE})\" = {BETA}")
 
       removed_host = """{
         aos.provisioning.storage.partitions.var.sizeMin = \"2G\";
-        aos.apm.desiredPackages = [ \"aos-rfc0011-secret\" ];
-        environment.etc.\"rfc0011-secret-generation\".text = \"removed\\n\";
+        aos.apm.desiredPackages = [ \"aos-secret-reference-test\" ];
+        environment.etc.\"secret-reference-test-generation\".text = \"removed\\n\";
       }
       """
       encoded = base64.b64encode(removed_host.encode()).decode()
       target.succeed(
-          f"printf '%s' {encoded} | base64 -d > /run/rfc0011-secret-removed.nix"
+          f"printf '%s' {encoded} | base64 -d > /run/secret-reference-test-removed.nix"
       )
       target.succeed(f"""
           {APM} switch \
-            --from /run/rfc0011-secret-removed.nix \
-            --eval-root /run/rfc0011-secret-removed-switch
+            --from /run/secret-reference-test-removed.nix \
+            --eval-root /run/secret-reference-test-removed-switch
       """, timeout=300)
-      target.fail("systemctl is-active --quiet aos-rfc0011-secret.service")
+      target.fail("systemctl is-active --quiet aos-secret-reference-test.service")
       target.succeed(f"test \"$(cat {STATE}/start-count)\" = 3")
       target.succeed(f"test ! -e {SOURCE}")
     '';

@@ -10,7 +10,7 @@
   systems,
   ...
 }: {
-  name = "rfc-0011-gc-roots";
+  name = "config-generation-gc-roots";
   timeout = 1500;
 
   machines.target = {
@@ -22,7 +22,7 @@
     metadata."host.nix" = ''
       {
         aos.provisioning.storage.partitions.var.sizeMin = "2G";
-        environment.etc."rfc0011-gc-generation".text = "one\n";
+        environment.etc."config-generation-gc-generation".text = "one\n";
       }
     '';
   };
@@ -46,21 +46,21 @@
       def switch(value):
           host = f"""{{
             aos.provisioning.storage.partitions.var.sizeMin = "2G";
-            environment.etc."rfc0011-gc-generation".text = "{value}\\n";
+            environment.etc."config-generation-gc-generation".text = "{value}\\n";
           }}
           """
           encoded = base64.b64encode(host.encode()).decode()
           target.succeed(
-              f"printf '%s' {encoded} | base64 -d > /run/rfc0011-gc-{value}.nix"
+              f"printf '%s' {encoded} | base64 -d > /run/config-generation-gc-{value}.nix"
           )
           target.succeed(f"""
               {APM} switch \
-                --from /run/rfc0011-gc-{value}.nix \
-                --eval-root /run/rfc0011-gc-eval-{value}
+                --from /run/config-generation-gc-{value}.nix \
+                --eval-root /run/config-generation-gc-eval-{value}
           """, timeout=300)
           generation = current_generation()
           target.succeed(
-              f'test "$(cat /etc/rfc0011-gc-generation)" = {value}'
+              f'test "$(cat /etc/config-generation-gc-generation)" = {value}'
           )
           return generation
 
@@ -139,7 +139,7 @@
           f"{APM} rollback --system --generation {second}", timeout=300
       )
       assert current_generation() == second
-      target.succeed('test "$(cat /etc/rfc0011-gc-generation)" = two')
+      target.succeed('test "$(cat /etc/config-generation-gc-generation)" = two')
       pruned_host = record(third)["host_nix_ref"]
 
       clean = json.loads(target.succeed(
@@ -182,7 +182,7 @@
           f"{APM} rollback --system --generation {fourth}", timeout=300
       )
       assert current_generation() == fourth
-      target.succeed('test "$(cat /etc/rfc0011-gc-generation)" = four')
+      target.succeed('test "$(cat /etc/config-generation-gc-generation)" = four')
       target.succeed("systemctl is-active --quiet multi-user.target")
       target.succeed("systemctl is-active --quiet aos-test-agent.service")
     '';

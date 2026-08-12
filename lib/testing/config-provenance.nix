@@ -192,7 +192,7 @@ in
   assert !ancestorEtcCollision.success;
   assert !mixedUserGroupOwner.success;
     pkgs.mkDerivation {
-      pname = "rfc-0011-provenance-check";
+      pname = "config-provenance-check";
       version = "0";
       src = null;
       phases = [

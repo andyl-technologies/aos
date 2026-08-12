@@ -98,20 +98,25 @@
     # The base library bundles only source-backed system modules, so without
     # carrying this value explicitly an inline image override would leave the
     # runtime image and its evaluator library on different ABIs.
-    moduleAbi = (lib.evalModules {
-      modules =
-        modules
-        ++ moduleList
-        ++ [
-          {
-            aos.config.evalAtBoot = {
-              baseLib = "/nix/store/00000000000000000000000000000000-aos-base-lib-probe";
-              baseLibAbiHash = "sha256:${builtins.concatStringsSep "" (builtins.genList (_: "0") 64)}";
-            };
-          }
-        ];
-      inherit pkgs lib specialArgs operatorModules packageModules;
-    }).config.aos.system.moduleAbi;
+    moduleAbi =
+      (lib.evalModules {
+        modules =
+          modules
+          ++ moduleList
+          ++ [
+            {
+              aos.config.evalAtBoot = {
+                baseLib = "/nix/store/00000000000000000000000000000000-aos-base-lib-probe";
+                baseLibAbiHash = "sha256:${builtins.concatStringsSep "" (builtins.genList (_: "0") 64)}";
+              };
+            }
+          ];
+        inherit pkgs lib specialArgs operatorModules packageModules;
+      })
+      .config
+      .aos
+      .system
+      .moduleAbi;
     baseLib = mkBaseLib {
       baseModules = modules;
       inherit systemModules systemName moduleAbi;
@@ -1018,7 +1023,7 @@ in {
         system-structure
         config-eval
         config-manifest
-        rfc-0011-provenance
+        config-provenance
         config-materialize
         config-parity
         config-parity-p2
@@ -1071,19 +1076,18 @@ in {
       inherit pkgs lib;
       system = discoverSystems.server;
     };
-    rfc-0011-provenance = import ./lib/testing/rfc-0011-provenance.nix {
+    config-provenance = import ./lib/testing/config-provenance.nix {
       inherit pkgs mkSystem;
       serverModule = ./systems/server.nix;
     };
-    rfc-0011-cfgsrc-gc = import ./lib/testing/rfc-0011-cfgsrc-gc.nix {inherit pkgs lib;};
+    config-source-gc = import ./lib/testing/config-source-gc.nix {inherit pkgs lib;};
     config-materialize = import ./lib/testing/config-materialize.nix {inherit pkgs lib;};
-    rfc-0011-materialize = config-materialize;
     config-parity = import ./lib/testing/config-parity.nix {inherit pkgs lib;};
     config-parity-p2 = import ./lib/testing/config-parity-p2.nix {inherit pkgs lib;};
     # Complete non-KVM on-host configuration gate. The image lifecycle and
     # degraded-network contracts are exercised by the fleet aggregate below.
-    rfc-0011-all = pkgs.mkDerivation {
-      pname = "rfc-0011-all";
+    runtime-config-all = pkgs.mkDerivation {
+      pname = "runtime-config-all";
       version = "0";
       src = null;
       buildDeps =
@@ -1099,8 +1103,8 @@ in {
           module-args
           module-enforcement
           package-expose
-          rfc-0011-cfgsrc-gc
-          rfc-0011-provenance
+          config-source-gc
+          config-provenance
           system-structure
           systemd-credentials
           systemd-generate
@@ -1174,29 +1178,31 @@ in {
     integration = packageChecks // stdenvChecks;
     fleet = let
       base = discoverFleetTests // crucibleFleetChecks;
-      rfcNames =
-        builtins.filter
-        (name:
-          lib.hasPrefix "rfc-0011-" name
-          || builtins.elem name [
-            "apm-desired-sequencing"
-            "apm-system-activation-fail"
-            "apm-system-upgrade"
-            "install-from-image"
-            "measured-boot"
-            "package-attestation-quote"
-            "provisioning-boot"
-          ])
-        (builtins.attrNames base);
-      rfcFleet = builtins.map (name: base.${name}) rfcNames;
+      runtimeConfigNames = [
+        "apm-desired-sequencing"
+        "apm-system-activation-fail"
+        "apm-system-upgrade"
+        "config-degraded-boot"
+        "config-generation-gc-roots"
+        "config-image-generation-axes"
+        "config-secret-reference"
+        "install-from-image"
+        "measured-boot"
+        "on-host-config-eval"
+        "package-attestation-quote"
+        "provisioning-boot"
+        "runtime-config-role"
+        "system-image-rollback"
+      ];
+      runtimeConfigFleet = builtins.map (name: base.${name}) runtimeConfigNames;
     in
       base
       // {
-        rfc-0011-all = pkgs.mkDerivation {
-          pname = "rfc-0011-fleet-all";
+        runtime-config-all = pkgs.mkDerivation {
+          pname = "runtime-config-fleet-all";
           version = "0";
           src = null;
-          buildDeps = rfcFleet;
+          buildDeps = runtimeConfigFleet;
           phases = [
             {
               name = "check";
