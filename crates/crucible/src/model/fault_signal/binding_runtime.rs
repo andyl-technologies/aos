@@ -957,6 +957,10 @@ impl<'a> FaultBindingRuntime<'a> {
         })
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one atomic binding evaluation carries coordinate, opportunity, sink, replay, recording, and verification state"
+    )]
     fn evaluate_matching(
         &mut self,
         coordinate: FaultCoordinate,
@@ -1039,17 +1043,15 @@ impl<'a> FaultBindingRuntime<'a> {
                     )?;
                 }
                 let results = prepare_and_commit(sink, &evaluation.actions)?;
-                if verify_replay_outcomes {
-                    if let Some(trace) = replay.as_deref_mut() {
-                        verify_replay_results(
-                            trace,
-                            &evaluation.actions,
-                            &results,
-                            coordinate,
-                            same_coordinate_sequence,
-                            opportunity,
-                        )?;
-                    }
+                if verify_replay_outcomes && let Some(trace) = replay.as_deref_mut() {
+                    verify_replay_results(
+                        trace,
+                        &evaluation.actions,
+                        &results,
+                        coordinate,
+                        same_coordinate_sequence,
+                        opportunity,
+                    )?;
                 }
                 if let Some(work_items) = recorded.as_deref_mut() {
                     work_items.push(resolved_replay_work_item(
@@ -1087,11 +1089,10 @@ impl<'a> FaultBindingRuntime<'a> {
                 self.active = active;
                 self.consumed_opportunities = consumed_opportunities;
                 self.consumed_search_overrides = consumed_search_overrides;
-                if let (Some(trace), Some(before)) = (replay.as_deref_mut(), replay_before.as_ref())
-                {
+                if let (Some(trace), Some(before)) = (replay, replay_before.as_ref()) {
                     *trace = before.clone();
                 }
-                if let Some(records) = recorded.as_deref_mut() {
+                if let Some(records) = recorded {
                     records.truncate(recorded_before);
                 }
                 self.evaluator = match SignalEvaluator::restore(

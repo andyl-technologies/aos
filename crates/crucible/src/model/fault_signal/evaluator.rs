@@ -205,6 +205,10 @@ pub trait SignalArtifactProvider: Send + Sync {
     /// Returns [`SignalEvaluationError`] when the artifact is absent, corrupt,
     /// incompatible with the source declaration, or has no value under the
     /// declaration's explicit boundary policy.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "artifact evaluation requires the complete typed node, coordinate, keyed choice, input, and resource context"
+    )]
     fn evaluate_artifact_source(
         &self,
         node: &SignalNode,

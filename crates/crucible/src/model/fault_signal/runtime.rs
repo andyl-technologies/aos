@@ -640,8 +640,8 @@ impl ResolvedEffectTrace {
             resource_limits
                 .reserve("resolved_effect_records", 0, records)
                 .map_err(FaultRuntimeError::ResourceLimit)?;
-            if let FaultReplayMode::OutcomeOnlyNetwork(alignment) = self.mode {
-                if item.network_frame_key.is_none()
+            if let FaultReplayMode::OutcomeOnlyNetwork(alignment) = self.mode
+                && (item.network_frame_key.is_none()
                     || matches!(
                         alignment,
                         NetworkOutcomeAlignment::OrderedTimeBucket { width_nanos: 0 }
@@ -649,10 +649,9 @@ impl ResolvedEffectTrace {
                     || item
                         .records
                         .iter()
-                        .any(|record| record.effect.descriptor().adapter != FaultAdapter::Network)
-                {
-                    return Err(FaultRuntimeError::InvalidReplayTrace);
-                }
+                        .any(|record| record.effect.descriptor().adapter != FaultAdapter::Network))
+            {
+                return Err(FaultRuntimeError::InvalidReplayTrace);
             }
         }
         Ok(())
@@ -1243,8 +1242,10 @@ mod tests {
             }),
         )
         .unwrap_or_else(|error| panic!("test request must be valid: {error}"));
-        let mut limits = FaultResourceLimits::default();
-        limits.active_contributions_per_target = 1;
+        let limits = FaultResourceLimits {
+            active_contributions_per_target: 1,
+            ..FaultResourceLimits::default()
+        };
         let mut table = ActiveContributionTable::default();
         for name in ["binding-first", "binding-rejected"] {
             let result = table.activate(

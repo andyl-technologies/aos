@@ -2976,6 +2976,10 @@ impl WorldNodeClockSource {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the closed clock-source manifest carries independent hardware identity and behavior fields"
+    )]
     fn qemu_programmable_v1(
         id: SignalId,
         implementation: &str,

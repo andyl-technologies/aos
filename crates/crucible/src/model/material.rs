@@ -1366,8 +1366,10 @@ mod migration_tests {
             "id = 'x'\nfault_model = 'signal_bindings_v1'",
             "id = 'x'\n[plan]\nid = 'p'",
         ] {
-            let error = require_current_fault_schema(input)
-                .expect_err("a pre-signal form must be rejected before typed lowering");
+            let error = match require_current_fault_schema(input) {
+                Ok(()) => panic!("a pre-signal form must be rejected before typed lowering"),
+                Err(error) => error,
+            };
             assert_eq!(
                 error.to_string(),
                 "scenario serialized form is invalid: unsupported pre-signal fault schema; regenerate the plan with `fault_model = \"signal_bindings_v2\"`, `[[signal]]`, and `[[fault_binding]]` (or their `[plan]`-qualified scenario forms)"
