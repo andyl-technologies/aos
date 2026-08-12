@@ -272,9 +272,13 @@ impl ProductionVmLifecycleConfig {
         self
     }
 
-    /// Returns this configuration with the content-addressed signal artifact provider.
+    /// Returns this configuration with the authoritative signal artifact store.
+    ///
+    /// Exact checkpoints copy every transitively referenced signal object into
+    /// their authenticated execution closure, so direct restore does not depend
+    /// on this original store remaining available.
     #[must_use]
-    pub fn with_signal_artifacts(mut self, artifacts: Arc<dyn SignalArtifactProvider>) -> Self {
+    pub fn with_signal_artifacts(mut self, artifacts: Arc<dyn DagStore>) -> Self {
         self.signal_artifacts = Some(artifacts);
         self
     }
