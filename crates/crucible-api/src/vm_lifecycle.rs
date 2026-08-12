@@ -174,13 +174,10 @@ struct ProductionVmExactCheckpointSet {
     node_service_states: BTreeMap<NodeId, ProductionNodeServiceState>,
 }
 
-type ProductionCheckpointRegistryKey = (ContentHash, ContentHash);
-
 fn production_checkpoint_registry()
--> &'static Mutex<BTreeMap<ProductionCheckpointRegistryKey, ProductionVmExactCheckpointSet>> {
-    static REGISTRY: OnceLock<
-        Mutex<BTreeMap<ProductionCheckpointRegistryKey, ProductionVmExactCheckpointSet>>,
-    > = OnceLock::new();
+-> &'static Mutex<BTreeMap<ContentHash, ProductionVmExactCheckpointSet>> {
+    static REGISTRY: OnceLock<Mutex<BTreeMap<ContentHash, ProductionVmExactCheckpointSet>>> =
+        OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
@@ -674,11 +671,10 @@ pub fn build_production_vm_lifecycle_loop_from_checkpoint(
     let closure = checkpoint.execution_closure.ok_or_else(|| {
         loop_factory_error("production direct restore requires a concrete execution closure")
     })?;
-    let key = (scenario.id(), checkpoint.id);
     let restored = production_checkpoint_registry()
         .lock()
         .map_err(|_| loop_factory_error("production checkpoint registry lock is poisoned"))?
-        .get(&key)
+        .get(&closure)
         .cloned()
         .ok_or_else(|| {
             loop_factory_error(format!(
