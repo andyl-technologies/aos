@@ -297,6 +297,22 @@ impl QemuNodeSet {
             .map_err(BackendError::from)
     }
 
+    /// Captures one live node without resuming its intentionally paused process.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent or exact continuation
+    /// capture fails.
+    pub fn capture_exact_snapshot_paused(
+        &mut self,
+        node: &NodeId,
+        checkpoint: crucible::Checkpoint,
+    ) -> Result<QemuVmSnapshot, BackendError> {
+        self.node_mut(node)?
+            .capture_exact_snapshot_paused(node, checkpoint)
+            .map_err(BackendError::from)
+    }
+
     /// Captures one terminal lifecycle transition without resuming QEMU.
     ///
     /// # Errors

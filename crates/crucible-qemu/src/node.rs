@@ -1643,6 +1643,24 @@ impl QemuNode {
         self.capture_exact_snapshot_inner(node, checkpoint, true)
     }
 
+    /// Captures an exact snapshot while preserving an intentional QEMU pause.
+    ///
+    /// This is the savepoint operation for a lifecycle node whose service state
+    /// is powered off. It records the same VMState and host-I/O continuation as
+    /// [`Self::capture_exact_snapshot`], but does not issue `cont` after capture.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] under the same conditions as
+    /// [`Self::capture_exact_snapshot`].
+    pub fn capture_exact_snapshot_paused(
+        &mut self,
+        node: &NodeId,
+        checkpoint: Checkpoint,
+    ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
+        self.capture_exact_snapshot_inner(node, checkpoint, false)
+    }
+
     /// Captures the post-mutation restart state for a terminal lifecycle fault.
     ///
     /// QEMU remains paused after a successful capture. The caller must next

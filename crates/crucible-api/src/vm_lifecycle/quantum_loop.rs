@@ -1423,6 +1423,29 @@ impl ProductionVmLifecycleLoop {
         &mut self,
         configuration: &Configuration,
     ) -> Result<(), SchedulerError> {
+        let registry_key = (self.scenario.id(), configuration.id());
+        if self.checkpoint_targets.contains_key(&configuration.id()) {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "exact checkpoint {} was already captured by this lifecycle",
+                    configuration.id().to_hex()
+                ),
+            });
+        }
+        if production_checkpoint_registry()
+            .lock()
+            .map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("production checkpoint registry lock is poisoned"),
+            })?
+            .contains_key(&registry_key)
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "exact checkpoint {} is already owned by another lifecycle",
+                    configuration.id().to_hex()
+                ),
+            });
+        }
         let checkpoint_virtual_time = self.inner.loop_impl().frontier();
         let fault_checkpoint = {
             let (scheduler, backend, interceptor, pending_outputs) =
@@ -1457,7 +1480,14 @@ impl ProductionVmLifecycleLoop {
                     retired: physical.ticks,
                 },
             );
-            boundaries.push((vm.id.clone(), physical.ticks, scheduler_time));
+            let service_state = self
+                .node_service_states
+                .get(&vm.id)
+                .copied()
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!("exact checkpoint has no service state for `{}`", vm.id.name),
+                })?;
+            boundaries.push((vm.id.clone(), physical.ticks, scheduler_time, service_state));
         }
 
         let checkpoint_parent = self._run_directory.path().join("exact-checkpoints");
@@ -1492,7 +1522,7 @@ impl ProductionVmLifecycleLoop {
         let result =
             (|| -> Result<BTreeMap<NodeId, ProductionVmExactCheckpointTarget>, SchedulerError> {
                 let mut targets = BTreeMap::new();
-                for (node, counter, scheduler_time) in boundaries {
+                for (node, counter, scheduler_time, service_state) in boundaries {
                     let parent = if configuration.schedule.is_empty() {
                         None
                     } else {
@@ -1520,10 +1550,24 @@ impl ProductionVmLifecycleLoop {
                     .map_err(|error| SchedulerError::BoundaryViolation {
                         message: format!("materialize exact scheduler checkpoint: {error}"),
                     })?;
-                    let snapshot = self
-                        .inner
-                        .backend_mut()
-                        .capture_exact_snapshot(&node, checkpoint)?;
+                    let snapshot = match service_state {
+                        ProductionNodeServiceState::Running => self
+                            .inner
+                            .backend_mut()
+                            .capture_exact_snapshot(&node, checkpoint)?,
+                        ProductionNodeServiceState::PoweredOff => self
+                            .inner
+                            .backend_mut()
+                            .capture_exact_snapshot_paused(&node, checkpoint)?,
+                        ProductionNodeServiceState::PermanentlyFailed => {
+                            return Err(SchedulerError::BoundaryViolation {
+                                message: format!(
+                                    "permanently failed node `{}` unexpectedly reached snapshot capture",
+                                    node.name
+                                ),
+                            });
+                        }
+                    };
                     captured.push((node.clone(), snapshot.clone()));
                     let index = self.node_indexes.get(&node).copied().ok_or_else(|| {
                         SchedulerError::BoundaryViolation {
@@ -1633,26 +1677,44 @@ impl ProductionVmLifecycleLoop {
                     node_generations: self.node_generations.clone(),
                     node_service_states: self.node_service_states.clone(),
                 };
-                if self
-                    .checkpoint_targets
-                    .insert(configuration.id(), checkpoint_set.clone())
-                    .is_some()
-                {
-                    self.rollback_exact_captures(&captured)?;
-                    return Err(SchedulerError::BoundaryViolation {
-                        message: format!(
-                            "exact checkpoint {} was already captured",
-                            configuration.id().to_hex()
-                        ),
-                    });
-                }
-                let mut registry = production_checkpoint_registry().lock().map_err(|_| {
-                    SchedulerError::BoundaryViolation {
+                let publish_result = production_checkpoint_registry()
+                    .lock()
+                    .map_err(|_| SchedulerError::BoundaryViolation {
                         message: String::from("production checkpoint registry lock is poisoned"),
-                    }
-                })?;
-                let key = (self.scenario.id(), configuration.id());
-                registry.insert(key, checkpoint_set);
+                    })
+                    .and_then(|mut registry| match registry.entry(registry_key) {
+                        std::collections::btree_map::Entry::Vacant(entry) => {
+                            entry.insert(checkpoint_set.clone());
+                            Ok(())
+                        }
+                        std::collections::btree_map::Entry::Occupied(_) => {
+                            Err(SchedulerError::BoundaryViolation {
+                                message: format!(
+                                    "exact checkpoint {} became owned by another lifecycle during capture",
+                                    configuration.id().to_hex()
+                                ),
+                            })
+                        }
+                    });
+                if let Err(error) = publish_result {
+                    let artifact_cleanup =
+                        fs::remove_dir_all(&checkpoint_root).map_err(|cleanup| {
+                            SchedulerError::BoundaryViolation {
+                                message: format!(
+                                    "remove unpublished exact checkpoint directory {}: {cleanup}",
+                                    checkpoint_root.display()
+                                ),
+                            }
+                        });
+                    let snapshot_cleanup = self.rollback_exact_captures(&captured);
+                    artifact_cleanup?;
+                    snapshot_cleanup?;
+                    return Err(error);
+                }
+                let replaced = self
+                    .checkpoint_targets
+                    .insert(configuration.id(), checkpoint_set);
+                debug_assert!(replaced.is_none());
                 Ok(())
             }
             Err(error) => {
