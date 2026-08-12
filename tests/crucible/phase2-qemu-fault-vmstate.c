@@ -11,6 +11,29 @@ static void fail(const char *message)
     abort();
 }
 
+static bool digest_is_nonzero(const uint8_t digest[32])
+{
+    uint8_t combined = 0;
+
+    for (size_t index = 0; index < 32; index++) {
+        combined |= digest[index];
+    }
+    return combined != 0;
+}
+
+static bool identity_is_sha256_hex(const char *identity)
+{
+    if (!identity || strlen(identity) != 64) {
+        return false;
+    }
+    for (size_t index = 0; index < 64; index++) {
+        if (!g_ascii_isxdigit(identity[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
 #include "phase2-qemu-fault-manifest-bindings.h"
 
 QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
@@ -18,6 +41,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
                                            int argc, char **argv)
 {
     const char *binding_error;
+    struct qemu_plugin_crucible_fault_system_manifest system;
     struct qemu_plugin_crucible_fault_clock_capability *rows;
     uint16_t architecture = 0;
     size_t count;
@@ -63,8 +87,28 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     if (!found_tsc || !found_rtc || !found_timer) {
         fail("realized x86 clock manifest omitted a required source class");
     }
-    g_printerr("CRUCIBLE_FAULT_VMSTATE_FIXTURE_READY clocks=%zu architecture=%u\n",
-               count, architecture);
+    if (qemu_plugin_crucible_fault_system_manifest(&system) != 0) {
+        fail("final fault-system manifest was unavailable");
+    }
+    if (system.semantic_version != 1 ||
+        system.vmstate_format_version != 1 ||
+        (system.vmstate_section_count != 9 &&
+         system.vmstate_section_count != 10) ||
+        system.reserved != 0 ||
+        !digest_is_nonzero(system.vmstate_sections_sha256)) {
+        fail("final fault-system VMState identity was invalid");
+    }
+    if (g_strcmp0(system.system_capability,
+                  "qemu.fault-system.complete.v1") != 0 ||
+        g_strcmp0(system.vmstate_capability,
+                  "qemu.fault-vmstate.v1") != 0 ||
+        !identity_is_sha256_hex(system.qemu_build_id) ||
+        !identity_is_sha256_hex(system.qemu_patch_series_hash) ||
+        !identity_is_sha256_hex(system.shmem_header_hash)) {
+        fail("final fault-system build identities were invalid");
+    }
+    g_printerr("CRUCIBLE_FAULT_VMSTATE_FIXTURE_READY clocks=%zu architecture=%u sections=%u\n",
+               count, architecture, system.vmstate_section_count);
     g_free(rows);
     return 0;
 }

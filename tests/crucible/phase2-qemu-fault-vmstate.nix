@@ -15,10 +15,22 @@
         {label = "transactional staged restore"; needle = "CrucibleFaultVmstateStaged";}
         {label = "closed core registry"; needle = "crucible_fault_vmstate_required";}
       ]
-      else [
+      else if lib.hasPrefix "0068-" patchName
+      then [
         {label = "clock VMState section"; needle = "crucible_clock_vmstate_section";}
         {label = "device-local timer arm sequence"; needle = "crucible_timer_arm_sequence";}
         {label = "realized clock manifest"; needle = "qemu_plugin_crucible_fault_clock_manifest";}
+      ]
+      else if lib.hasPrefix "0069-" patchName
+      then [
+        {label = "real accelerator device"; needle = "virtio-crucible-accelerator-device";}
+        {label = "accelerator VMState section"; needle = "accelerator_vmstate_section";}
+        {label = "realized accelerator manifest"; needle = "qemu_plugin_crucible_fault_accelerator_manifest";}
+      ]
+      else [
+        {label = "final fault-system manifest"; needle = "qemu_plugin_crucible_fault_system_manifest";}
+        {label = "complete fault-system capability"; needle = "qemu.fault-system.complete.v1";}
+        {label = "VMState registry digest"; needle = "vmstate_sections_sha256";}
       ]
     );
 in
@@ -273,6 +285,7 @@ in
               echo vmstate=authenticated-aggregate-snapshot-roundtrip
               echo corruption=aggregate-magic-rejected-before-commit
               echo clock_manifest=realized-bound-sealed-and-restored
+              echo system_manifest=authenticated-build-patch-header-and-vmstate-identity
             } > "$out/result"
           '';
         }

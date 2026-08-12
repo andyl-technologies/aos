@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "32355c881cf20243664aedc364838a45248e9efe79fe409e481b41b1096f5ed9";
+  patchBranchBundleSha256 = "1975371c5e8d589cc16bda760126b4bf43cfe643662965182dac19f52e7b977f";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "78405df9432088f0ac3f4fdbd7953739a5f23a32";
+  patchBranchHeadCommit = "e47dba89099196b56a709fd29e6021dfd65a001a";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -625,6 +625,16 @@ let
       class = "D";
       enforces = "QFP-ACCEL-1,QFP-ACCEL-2,FAULT-ORDER";
       capability = "migration-safe virtio accelerator co-simulation transport with lifecycle, result, memory/ECC, and service mutations for closed GPU, TPU, and FPGA job schemas";
+    }
+    {
+      file = "0070-crucible-fault-vmstate.patch";
+      branchSubject = "crucible: finalize fault VMState identity";
+      branchCommit = "e47dba89099196b56a709fd29e6021dfd65a001a";
+      branchTree = "cac949c98da76537a760c6dc5826c6044879b269";
+      catalogName = "crucible-fault-vmstate";
+      class = "D";
+      enforces = "QFP-STATE-1,QFP-STATE-2,QFP-STATE-3";
+      capability = "live fail-closed build, patch-series, shared-memory ABI, and exact aggregate fault VMState identity";
     }
   ];
   catalogOnlyCapabilities = [
