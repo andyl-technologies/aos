@@ -9,6 +9,9 @@ use crucible::{ContentHash, NodeId, PreemptionDecision, VirtualTime};
 use crucible_device::{BlockSnapshot, NinepRequestOpportunity, NinepSnapshot};
 use crucible_shmem::{RegionHeaderSnapshot, SpscRingSnapshot};
 
+mod host_io_codec;
+pub use host_io_codec::QemuHostIoCheckpointCodecError;
+
 /// Complete host block-device continuation paired with QEMU VMState.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuLiveBlockIoServicerCheckpoint {
@@ -429,6 +432,69 @@ impl QemuHostIoCheckpoint {
 mod tests {
     use super::*;
     use crucible::{Icount, IrqVector, PreemptionKind, VcpuId};
+    use crucible_device::{BaseImage, BlockDevice, BlockLatency, IoCore};
+    use crucible_shmem::{RegionConfig, RegionHeader, RegionLayout};
+
+    #[test]
+    fn host_io_checkpoint_codec_round_trips_device_free_state() {
+        let binding = ContentHash::from_bytes(b"host-io-checkpoint-binding");
+        let checkpoint = QemuHostIoCheckpoint::without_devices(binding);
+        let bytes = checkpoint
+            .to_canonical_bytes()
+            .unwrap_or_else(|error| panic!("encode host I/O checkpoint: {error}"));
+        assert_eq!(
+            QemuHostIoCheckpoint::from_canonical_bytes(&bytes, binding)
+                .unwrap_or_else(|error| panic!("decode host I/O checkpoint: {error}")),
+            checkpoint
+        );
+        assert_eq!(
+            QemuHostIoCheckpoint::from_canonical_bytes(
+                &bytes,
+                ContentHash::from_bytes(b"wrong binding")
+            ),
+            Err(QemuHostIoCheckpointCodecError::ExecutionBinding)
+        );
+    }
+
+    #[test]
+    fn host_io_checkpoint_codec_round_trips_block_state() {
+        let binding = ContentHash::from_bytes(b"host-io-block-binding");
+        let layout = RegionLayout::for_config(RegionConfig::new(1, 8, 0))
+            .unwrap_or_else(|error| panic!("valid test region: {error}"));
+        let region_header = RegionHeader::new(layout).snapshot();
+        let device = BlockDevice::new(
+            IoCore::new(8, crucible_shmem::SLOT_BLK_IO as u32, 8, 8)
+                .unwrap_or_else(|error| panic!("valid test core: {error}")),
+            BaseImage::new(vec![0; 8_192]),
+            BlockLatency::default(),
+        );
+        let checkpoint = QemuHostIoCheckpoint {
+            execution_binding: binding,
+            block: Some(QemuLiveBlockIoServicerCheckpoint {
+                execution_binding: binding,
+                storage_device: Some(ContentHash::from_bytes(b"storage identity")),
+                region_header,
+                vm_slot: 0,
+                size_bytes: 8_192,
+                device: device.snapshot(),
+                requests: SpscRingSnapshot { frames: Vec::new() },
+                responses: SpscRingSnapshot { frames: Vec::new() },
+                frames_processed: 4,
+                frames_delivered: 3,
+            }),
+            ninep: None,
+            #[cfg(target_os = "linux")]
+            accelerator: None,
+        };
+        let bytes = checkpoint
+            .to_canonical_bytes()
+            .unwrap_or_else(|error| panic!("encode block host I/O checkpoint: {error}"));
+        assert_eq!(
+            QemuHostIoCheckpoint::from_canonical_bytes(&bytes, binding)
+                .unwrap_or_else(|error| panic!("decode block host I/O checkpoint: {error}")),
+            checkpoint
+        );
+    }
 
     #[test]
     fn node_continuation_codec_round_trips_complete_state() {
