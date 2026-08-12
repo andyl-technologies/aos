@@ -12,13 +12,16 @@ impl FaultCommandBridge {
         if target_node_hash == [0; 32] {
             return Err(FaultCommandBridgeError::ZeroTargetNodeHash);
         }
-        let mut rows = apis.capability_rows()?;
+        let mut rows = initialization_stage("capability registry", apis.capability_rows())?;
         let (register_manifest_payload, register_evidence_identity) = if rows.iter().any(|row| {
             row.command_kind == FaultCommandKind::CpuRegisterTransform
                 && row.required_feature_bits & FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION != 0
         }) {
-            let manifest = apis.register_manifest()?;
-            apis.bind_register_manifest(&manifest)?;
+            let manifest = initialization_stage("register manifest", apis.register_manifest())?;
+            initialization_stage(
+                "register manifest binding",
+                apis.bind_register_manifest(&manifest),
+            )?;
             let payload = manifest
                 .encode()
                 .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?;
@@ -50,8 +53,11 @@ impl FaultCommandBridge {
                 FaultCommandKind::InterruptDisposition | FaultCommandKind::InterruptStorm
             ) && row.required_feature_bits & FAULT_CAPABILITY_FEATURE_INTERRUPT != 0
         }) {
-            let manifest = apis.interrupt_manifest()?;
-            apis.bind_interrupt_manifest(&manifest)?;
+            let manifest = initialization_stage("interrupt manifest", apis.interrupt_manifest())?;
+            initialization_stage(
+                "interrupt manifest binding",
+                apis.bind_interrupt_manifest(&manifest),
+            )?;
             if register_evidence_identity
                 .as_ref()
                 .is_some_and(|register| register.architecture != manifest.architecture)
@@ -72,8 +78,12 @@ impl FaultCommandBridge {
             .iter()
             .any(|row| row.required_feature_bits & FAULT_CAPABILITY_FEATURE_HARDWARE_ERROR != 0)
         {
-            let manifest = apis.hardware_error_manifest()?;
-            apis.bind_hardware_error_manifest(&manifest)?;
+            let manifest =
+                initialization_stage("hardware-error manifest", apis.hardware_error_manifest())?;
+            initialization_stage(
+                "hardware-error manifest binding",
+                apis.bind_hardware_error_manifest(&manifest),
+            )?;
             if register_evidence_identity
                 .as_ref()
                 .is_some_and(|register| register.architecture != manifest.architecture)
@@ -94,8 +104,11 @@ impl FaultCommandBridge {
             .iter()
             .any(|row| row.required_feature_bits & FAULT_CAPABILITY_FEATURE_GUEST_CLOCK != 0)
         {
-            let manifest = apis.clock_manifest()?;
-            apis.bind_clock_manifest(&manifest)?;
+            let manifest = initialization_stage("clock manifest", apis.clock_manifest())?;
+            initialization_stage(
+                "clock manifest binding",
+                apis.bind_clock_manifest(&manifest),
+            )?;
             if register_evidence_identity
                 .as_ref()
                 .is_some_and(|register| register.architecture != manifest.architecture)
@@ -113,7 +126,7 @@ impl FaultCommandBridge {
             (None, None)
         };
         let (accelerator_manifest_payload, accelerator_manifest_digest) =
-            match apis.accelerator_manifest()? {
+            match initialization_stage("accelerator manifest", apis.accelerator_manifest())? {
                 Some(manifest) => {
                     let payload = manifest
                         .encode()
@@ -125,11 +138,11 @@ impl FaultCommandBridge {
                 }
                 None => (None, None),
             };
-        let system_manifest_payload = apis
-            .system_manifest()?
-            .encode()
-            .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?
-            .to_vec();
+        let system_manifest_payload =
+            initialization_stage("system manifest", apis.system_manifest())?
+                .encode()
+                .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?
+                .to_vec();
         if let Some(register) = register_evidence_identity.as_ref() {
             rows.push(target_manifest_capability_row(
                 register.architecture,
@@ -1140,4 +1153,14 @@ impl FaultCommandBridge {
         };
         self.results.enqueue(header, payload)
     }
+}
+
+fn initialization_stage<T>(
+    stage: &'static str,
+    result: Result<T, FaultCommandBridgeError>,
+) -> Result<T, FaultCommandBridgeError> {
+    result.map_err(|source| FaultCommandBridgeError::InitializationStage {
+        stage,
+        source: Box::new(source),
+    })
 }
