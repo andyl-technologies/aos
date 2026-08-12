@@ -16,15 +16,16 @@ in-memory host test double.
 
 ## Production device coverage
 
-The patch provides two integration forms:
-
-1. registration hooks for realized QEMU accelerator devices whose command,
-   result, memory, lifecycle, and VMState boundaries can be completely described;
-   the initial GPU coverage includes the pinned QEMU virtio-gpu device path;
-2. a sim-only `virtio-crucible-accelerator` production co-simulation device with
-   closed GPU-compute, tensor/TPU, and FPGA-job class descriptors. It exposes a
-   versioned virtio transport to a guest and forwards bounded typed jobs/results
-   through the public shared-memory protocol to the host accelerator adapter.
+The patch provides one complete integration: the sim-only
+`virtio-crucible-accelerator` production co-simulation device with closed
+GPU-compute, tensor/TPU, and FPGA-job classes. It exposes a versioned virtio
+transport to a guest and forwards bounded typed jobs/results through the public
+shared-memory protocol to the host accelerator adapter. Existing QEMU
+`virtio-gpu` devices are intentionally not registered as accelerator-fault
+targets: their display/command paths do not provide the closed compute-job,
+device-memory, ECC, and service interfaces required by this contract. Adding a
+different realized device requires a new complete device registration and gate;
+there is no generic or partially functional registration path.
 
 The co-sim device is a real QEMU device and guest transport, not a test double.
 Each class requires a live fixture driver/workload, strict job schema, and result
@@ -33,11 +34,26 @@ libraries, and host device timing are forbidden.
 
 ## Device/job manifest
 
-Each device reports class, device/queue IDs, job kinds, input/output buffer
-schemas, device-memory spaces/geometry, ECC/reporting modes, lifecycle states,
-service units, DMA scopes, and VMState support. Job identity includes device,
-queue, guest descriptor sequence, command/payload digest, and retry/replay
-ordinal.
+The realized-device manifest reports stable device and implementation IDs,
+class and fault-family masks, queue range/depth, maximum input/output bytes,
+device-memory size, ECC-mode mask, closed job-kind count, and VMState support.
+The manifest codec is
+[`FaultAcceleratorCapabilityRowV1`](../../../../crates/crucible-shmem/src/shmem/fault_target_manifest.rs);
+the QEMU producer is
+[`qemu_plugin_crucible_fault_accelerator_manifest`](../../../../pkgs/emulation/qemu-patches/0069-crucible-accelerator-fault-device.patch).
+
+The protocol has exactly one job kind per advertised class:
+
+| Class | Job kind | Input bytes | Output bytes | Failure conditions |
+|---|---:|---|---|---|
+| GPU (`1`) | vector-add (`1`) | `count: u32le`, then `count` signed `i32le` left values and `count` signed `i32le` right values | `count` checked signed `i32le` sums | zero/truncated/trailing shape, size beyond the manifest limits, or signed addition overflow |
+| TPU (`2`) | matrix-multiply (`1`) | `m: u16le`, `k: u16le`, `n: u16le`, then row-major signed i8 matrices of `m*k` and `k*n` bytes | row-major `m*n` checked signed `i32le` accumulators | zero/truncated/trailing shape, size beyond the manifest limits, or signed accumulation overflow |
+| FPGA (`3`) | lookup-table (`1`) | exactly 256 LUT bytes followed by input bytes | one LUT result byte per input byte | truncated LUT or output beyond the manifest limit |
+
+The normative host execution is in
+[`accelerator_io_servicer.rs`](../../../../crates/crucible-qemu/src/supervision/accelerator_io_servicer.rs).
+Job identity is the immutable tuple `(device_id, generation, sequence, class,
+job_kind, queue_id, service_units, output_capacity)` plus the entry payload.
 
 ## Fault semantics
 
@@ -69,15 +85,20 @@ typed virtio errors without host memory unsafety.
 
 ## Evidence and VMState
 
-Evidence includes manifest/device identity, lifecycle/queue state, job schema and
-ID, input/output digests, service ledger, DMA/device-memory changes, ECC record,
-guest completion/status, and fingerprints. Patch 0070 validates device
-realization/lifecycle, queues, active jobs, service remainder, device memory,
-fault rules, and pending completions.
+Evidence is command- and manifest-authenticated by the Apache bridge. Lifecycle
+records carry old/new state, state policies, generations, device ID, and memory
+digests. Result records carry class/job/queue/sequence, status, output bounds,
+before/after digests, and mask/value digests. Memory records carry the configured
+range/ECC/syndrome, overlap, counters, before/after digests, and transform digest.
+Service records carry job identity, effective capacity/rates, exact accumulator
+remainders, thermal/power metadata, sizes, and state digests. Patch 0069
+serializes device lifecycle, counters, service remainders, memory/ECC overlays,
+terminal state, and queue continuation; the host rejects checkpoints while
+requests, completions, or host jobs remain live.
 
 ## Live microtests
 
-1. Run a real guest virtio-gpu workload and one job per co-sim GPU/TPU/FPGA class.
+1. Run one real guest virtio transport job per co-sim GPU/TPU/FPGA class.
 2. Apply every lifecycle transition and queue/memory state policy with work
    unadmitted, queued, executing, completed, and DMA-in-flight; verify the exact
    treatment.
@@ -86,8 +107,8 @@ fault rules, and pending completions.
    outcome plus platform record where declared.
 5. Throttle service at exact ratios and checkpoint mid-job/queue.
 6. Fuzz descriptor/job schemas and limits; no malformed input escapes validation.
-7. Revert patch and fail live device gates; prove non-sim machine enumeration and
-   behavior equal unpatched QEMU.
+7. Revert patch and fail live device gates; prove machines without the co-sim
+   device do not advertise accelerator fault capability.
 
 ## Licensing checklist
 

@@ -290,9 +290,11 @@ produce live patched-QEMU architectural or device evidence.
   VMState, and live clock tests.
 - [ ] **T-QEMU-0069** Implement
   [`crucible-accelerator-fault-device`](14-qemu-fault-patches/12-accelerator-device.md):
-  a real QEMU/virtio GPU, TPU, and FPGA co-simulation device and applicable
-  virtio-gpu hooks with lifecycle, result, memory/ECC, service, guest driver,
-  workload, VMState, and live tests; no in-memory substitute is accepted.
+  a real QEMU/virtio GPU, TPU, and FPGA co-simulation device with lifecycle,
+  result, memory/ECC, service, guest driver, workload, VMState, and live tests;
+  existing virtio-gpu devices remain outside the capability because they lack
+  the required closed compute-job/ECC contract, and no in-memory substitute is
+  accepted.
 - [ ] **T-QEMU-0070** Implement
   [`crucible-fault-vmstate`](14-qemu-fault-patches/13-vmstate-and-final-gates.md):
   save/restore for all fault state, a cross-patch snapshot barrier, system
