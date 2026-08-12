@@ -79,6 +79,12 @@ for disk in "${disks[@]}"; do
 done
 
 bundle=$(cd "$(dirname "$0")/.." && pwd -P)
+esp_payload_bytes=$(du -sk "$bundle/payload/esp" | cut -f1)
+# Leave ample FAT metadata, temporary update, and future UKI headroom.
+[ "$esp_payload_bytes" -le 786432 ] || {
+  echo "EFI payload exceeds the 768 MiB budget for a 1 GiB ESP" >&2
+  exit 1
+}
 key=$(mktemp /run/aos-zfs-key.XXXXXX)
 sealed=
 esp=

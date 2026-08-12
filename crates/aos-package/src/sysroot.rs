@@ -1816,11 +1816,18 @@ where
                 pending.number
             );
         }
-        let pending_entry = resolve_installed_uki_entry(&layout.boot_root, &pending.uki_path)?;
-        select_image_default_with(profile, &mut state, pending.number, &pending_entry, select)?;
-        cleanup_replaced_slot_ukis(layout, &state, pending.slot, &pending.uki_path)?;
-        replicate_boot_partitions(layout)?;
-        return Ok(pending);
+        // A crash may occur after the authenticated pending record is durable
+        // but before its UKI is published. In that case, fall through and
+        // reconstruct the same slot transaction instead of requiring an entry
+        // that deliberately does not exist yet.
+        if let Ok(pending_entry) =
+            resolve_installed_uki_entry(&layout.boot_root, &pending.uki_path)
+        {
+            select_image_default_with(profile, &mut state, pending.number, &pending_entry, select)?;
+            cleanup_replaced_slot_ukis(layout, &state, pending.slot, &pending.uki_path)?;
+            replicate_boot_partitions(layout)?;
+            return Ok(pending);
+        }
     }
 
     // Allocate the persistent image number before naming the ESP entry. The
@@ -1888,14 +1895,15 @@ where
     } else {
         state.generations.push(generation.clone());
     }
-    // Authenticate the generation before any firmware-discoverable UKI is
-    // published. A crash may leave this non-pending record without an entry,
-    // which is safe and retryable; the inverse would let firmware select an
-    // orphan that early boot must reject.
+    // Authenticate and mark the generation pending before any
+    // firmware-discoverable UKI is published. A crash may leave a pending
+    // record without an entry, which is safe and retryable; the inverse would
+    // let firmware select a candidate that boot assessment refuses to bless.
     write_atomic_durable(
         &profile.join(IMAGE_STATE_FILE),
         &serde_json::to_vec_pretty(&state)?,
     )?;
+    prepare_image_selection(profile, &mut state, number, &entry_id)?;
     stage_slot_artifacts(
         layout,
         target_slot,
@@ -2197,7 +2205,33 @@ fn select_image_default_with<F>(
 where
     F: FnOnce(&str) -> Result<()>,
 {
+    prepare_image_selection(profile, state, target, entry_id)?;
     let stable_entry_id = stable_uki_entry_id(entry_id)?;
+
+    // sd-boot renames counted entries before launching them (for example,
+    // `image+3.efi` becomes `image+2-1.efi`). Selection therefore receives the
+    // stable entry ID even when the caller clears an older exact override and
+    // lets the image-owned pattern choose the newest live generation.
+    select(&stable_entry_id)?;
+    let mut committed = state.clone();
+    committed.default = target;
+    write_atomic_durable(
+        &profile.join(IMAGE_STATE_FILE),
+        &serde_json::to_vec_pretty(&committed)?,
+    )?;
+    remove_file_durable(&profile.join(IMAGE_TRANSITION_INTENT))?;
+    *state = committed;
+    Ok(())
+}
+
+/// Durably authenticates a candidate and records selection intent.
+fn prepare_image_selection(
+    profile: &Path,
+    state: &mut ImageGenerationState,
+    target: u32,
+    entry_id: &str,
+) -> Result<()> {
+    stable_uki_entry_id(entry_id)?;
     let intent_path = profile.join(IMAGE_TRANSITION_INTENT);
     if intent_path.is_file() {
         let existing: ImageTransitionIntent = serde_json::from_slice(&std::fs::read(&intent_path)?)
@@ -2229,20 +2263,6 @@ where
         &serde_json::to_vec_pretty(&prepared)?,
     )?;
     *state = prepared;
-
-    // sd-boot renames counted entries before launching them (for example,
-    // `image+3.efi` becomes `image+2-1.efi`). Selection therefore receives the
-    // stable entry ID even when the caller clears an older exact override and
-    // lets the image-owned pattern choose the newest live generation.
-    select(&stable_entry_id)?;
-    let mut committed = state.clone();
-    committed.default = target;
-    write_atomic_durable(
-        &profile.join(IMAGE_STATE_FILE),
-        &serde_json::to_vec_pretty(&committed)?,
-    )?;
-    remove_file_durable(&intent_path)?;
-    *state = committed;
     Ok(())
 }
 
@@ -5590,6 +5610,28 @@ mod tests {
         assert_eq!(state.default, 2);
         assert_eq!(state.pending, Some(2));
         assert!(!tmp.path().join(IMAGE_TRANSITION_INTENT).exists());
+    }
+
+    #[test]
+    fn image_selection_preparation_precedes_candidate_publication() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut state = ImageGenerationState {
+            running: 1,
+            default: 1,
+            pending: None,
+            generations: Vec::new(),
+        };
+
+        prepare_image_selection(tmp.path(), &mut state, 2, "aos-2+3.efi").unwrap();
+
+        assert_eq!(state.default, 1);
+        assert_eq!(state.pending, Some(2));
+        assert!(tmp.path().join(IMAGE_TRANSITION_INTENT).is_file());
+        assert!(!tmp.path().join("aos-2+3.efi").exists());
+        let durable: ImageGenerationState =
+            serde_json::from_slice(&std::fs::read(tmp.path().join(IMAGE_STATE_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(durable.pending, Some(2));
     }
 
     #[test]
