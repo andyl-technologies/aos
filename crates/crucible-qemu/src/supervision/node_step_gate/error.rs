@@ -161,6 +161,12 @@ pub enum QemuLiveNodeStepGateError {
         /// Underlying 9p-servicer error.
         source: crate::QemuLive9pIoServicerError,
     },
+    /// The accelerator host adapter could not be constructed or serviced.
+    #[error("build live accelerator servicer failed")]
+    AcceleratorServicer {
+        /// Underlying accelerator-servicer error.
+        source: crate::QemuLiveAcceleratorServicerError,
+    },
     /// The typed QMP VMState channel could not connect.
     #[error("connect QMP VMState channel failed")]
     QmpConnect {

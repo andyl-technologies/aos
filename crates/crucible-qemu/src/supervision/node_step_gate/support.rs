@@ -287,9 +287,14 @@ pub(super) fn vm_launch_config(
         )),
         None => vm,
     };
-    match &config.shmem_ninep {
+    let vm = match &config.shmem_ninep {
         Some(_) => vm.with_crucible_shmem_9p(CrucibleShmem9pDevice::new()),
         None => vm,
+    };
+    if config.accelerator {
+        vm.with_crucible_accelerator(CrucibleAcceleratorDevice::new())
+    } else {
+        vm
     }
 }
 
