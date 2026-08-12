@@ -18,6 +18,8 @@ use crate::{
 
 mod backend_executor;
 pub use backend_executor::QemuBackendRealizationExecutor;
+mod snapshot_codec;
+pub use snapshot_codec::QemuVmSnapshotCodecError;
 #[cfg(target_os = "linux")]
 mod node_executor;
 #[cfg(target_os = "linux")]
@@ -1240,6 +1242,48 @@ mod tests {
 
     #[derive(Clone, Copy)]
     struct ScriptedLoadvmPolicy;
+
+    #[test]
+    fn qemu_vm_snapshot_codec_round_trips_complete_diskless_state() {
+        let definition = scenario("snapshot-codec");
+        let configuration = config_with_decisions(definition, 1);
+        let node_icounts = std::collections::BTreeMap::from([(
+            NodeId {
+                name: String::from("qemu"),
+            },
+            crucible::Icount { retired: 0 },
+        )]);
+        let checkpoint = Checkpoint::from_recorded_configuration(
+            &configuration,
+            Some(&Configuration::genesis(configuration.def.clone())),
+            crucible::VirtualTime { ticks: 0 },
+            node_icounts,
+            CheckpointKind::Fat,
+            qemu_materialized_node_blobs(&configuration),
+        )
+        .unwrap_or_else(|error| panic!("build checkpoint: {error}"));
+        let snapshot = QemuVmSnapshot::diskless(
+            checkpoint,
+            QemuReplayOracleValidation::Match {
+                runtime_hash: hash("runtime", "snapshot-codec"),
+            },
+        );
+        let bytes = snapshot
+            .to_canonical_bytes()
+            .unwrap_or_else(|error| panic!("encode VM snapshot: {error}"));
+        assert_eq!(
+            QemuVmSnapshot::from_canonical_bytes(&bytes)
+                .unwrap_or_else(|error| panic!("decode VM snapshot: {error}")),
+            snapshot
+        );
+
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert_eq!(
+            QemuVmSnapshot::from_canonical_bytes(&trailing),
+            Err(QemuVmSnapshotCodecError::Noncanonical)
+        );
+    }
 
     impl QemuVmRealizationStore for ScriptedStore {
         fn exact_snapshot(
