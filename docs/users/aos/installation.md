@@ -308,10 +308,11 @@ If first boot stops before the target, inspect the units and state in
 - The ZFS installer supports mirrored pairs striped into RAID10-style pools.
   RAID0-only topology is intentionally not exposed because it cannot satisfy
   the redundant-storage contract.
-- The initrd does not carry the general server firmware bundle. Image
-  definitions that require firmware before switch-root must add only those
-  firmware packages to `aos.boot.initrd.firmwarePackages`; runtime firmware
-  remains available after the immutable root is mounted.
+- The initrd carries a focused firmware subset for supported pre-root server
+  storage and network adapters, not the general runtime bundle. Image
+  definitions for other hardware must add the required firmware package to
+  `aos.boot.initrd.firmwarePackages`; runtime firmware remains available after
+  the immutable root is mounted.
 - NVIDIA support in this repository stops at open kernel modules and matching
   GSP firmware. CUDA, OpenGL, Vulkan, management utilities, and other matching
   proprietary userspace components must be supplied separately.
