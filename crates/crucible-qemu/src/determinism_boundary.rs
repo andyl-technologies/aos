@@ -37,7 +37,7 @@ pub const REQUIRED_QEMU_FINGERPRINT_COMPONENTS: [QemuFingerprintStateComponent; 
 pub const REQUIRED_QEMU_FINGERPRINT_EVENT_BOUNDARIES: [SingleVmFingerprintEventBoundary; 3] = [
     SingleVmFingerprintEventBoundary::HorizonAdvance,
     SingleVmFingerprintEventBoundary::FrameDelivery,
-    SingleVmFingerprintEventBoundary::FaultActivation,
+    SingleVmFingerprintEventBoundary::SignalEffectBoundary,
 ];
 
 /// Host-controlled entropy eliminations that must each have a negative micro-test.
@@ -1008,7 +1008,7 @@ fn event_boundary_order(boundary: SingleVmFingerprintEventBoundary) -> u8 {
     match boundary {
         SingleVmFingerprintEventBoundary::HorizonAdvance => 0,
         SingleVmFingerprintEventBoundary::FrameDelivery => 1,
-        SingleVmFingerprintEventBoundary::FaultActivation => 2,
+        SingleVmFingerprintEventBoundary::SignalEffectBoundary => 2,
     }
 }
 
@@ -1016,7 +1016,7 @@ fn event_boundary_token(boundary: SingleVmFingerprintEventBoundary) -> &'static 
     match boundary {
         SingleVmFingerprintEventBoundary::HorizonAdvance => "horizon-advance",
         SingleVmFingerprintEventBoundary::FrameDelivery => "frame-delivery",
-        SingleVmFingerprintEventBoundary::FaultActivation => "fault-activation",
+        SingleVmFingerprintEventBoundary::SignalEffectBoundary => "signal-effect-boundary",
     }
 }
 
@@ -1132,7 +1132,7 @@ mod tests {
                 QemuFingerprintStateComponent::ArchitecturalRegisters,
             ],
             [
-                SingleVmFingerprintEventBoundary::FaultActivation,
+                SingleVmFingerprintEventBoundary::SignalEffectBoundary,
                 SingleVmFingerprintEventBoundary::HorizonAdvance,
                 SingleVmFingerprintEventBoundary::FrameDelivery,
             ],

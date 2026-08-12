@@ -193,7 +193,7 @@ in
             printf 'attr_path=%s\n' "$ATTR_PATH"
             printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'open_task_ids=%s\n' "$OPEN_TASK_IDS"
-            printf 'proven=rust-plugin-fingerprint-authority,async-digest-worker,synchronous-corpus-identity,periodic-cadence-sampling,frame-delivery-sampling,fault-activation-sampling,run-twice-determinism,restart-probe-equality,instruction-exact-bisection,both-side-raw-state-dump\n'
+            printf 'proven=rust-plugin-fingerprint-authority,async-digest-worker,synchronous-corpus-identity,periodic-cadence-sampling,frame-delivery-sampling,signal-effect-boundary-sampling,run-twice-determinism,restart-probe-equality,instruction-exact-bisection,both-side-raw-state-dump\n'
           } >> "$out/result"
         '';
       }

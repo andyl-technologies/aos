@@ -80,8 +80,8 @@ pub enum FingerprintEventBoundary {
     HorizonAdvance,
     /// An icount-stamped frame became visible.
     FrameDelivery,
-    /// A scheduled fault activation became visible.
-    FaultActivation,
+    /// A scheduled signal effect boundary became visible.
+    SignalEffectBoundary,
 }
 
 /// The reason one fingerprint sample is taken.
@@ -205,7 +205,7 @@ fn canonical_event_boundaries() -> [FingerprintEventBoundary; 3] {
     [
         FingerprintEventBoundary::HorizonAdvance,
         FingerprintEventBoundary::FrameDelivery,
-        FingerprintEventBoundary::FaultActivation,
+        FingerprintEventBoundary::SignalEffectBoundary,
     ]
 }
 
@@ -216,7 +216,7 @@ fn write_event_boundary_set(hasher: &mut FingerprintHasher) {
         hasher.write_tag(match boundary {
             FingerprintEventBoundary::HorizonAdvance => "horizon-advance",
             FingerprintEventBoundary::FrameDelivery => "frame-delivery",
-            FingerprintEventBoundary::FaultActivation => "fault-activation",
+            FingerprintEventBoundary::SignalEffectBoundary => "signal-effect-boundary",
         });
     }
 }
