@@ -12,6 +12,7 @@
 
 /// Engine vocabulary exposed through the session boundary for control-plane clients.
 pub mod engine {
+    pub use crucible::model::ResolvedEffectTrace;
     pub use crucible::{
         Action, AssertionDef, AssertionId, AssertionPhase, AssertionQuantifierKind,
         BlackBoxHostOracle, CRASH_RESTART_SCENARIO_NAME, Checkpoint, CheckpointKind, ChoiceTag,
@@ -39,13 +40,12 @@ pub mod engine {
         MemoryWidth, MinimizationConfig, MinimizationRun, NodeId, NodeTemplate, ObservableEvent,
         OverrideDecision, PARTITION_RECOVERY_SCENARIO_NAME, Plan, Predicate, Properties, Property,
         QuantumLoop, QuantumOutcome, QuantumRequest, ReadyPoint, RecordedAssertionLog,
-        ReplayOracleCheck, ReproductionArtifact, ResolvedCodePoint, ResolvedEffectTrace,
-        ResolvedMemPlace, RngDecision, RngStreamId, SHMEM_ABI_VERSION, ScenarioDef,
-        ScenarioDefForm, ScenarioFamily, Schedule, SchedulerError, SchedulerEvaluationBoundaryKind,
-        SchedulerEventLogClass, SchedulerEventLogEntry, SchedulerEventLogPayload,
-        SchedulerQuiescence, SchedulingPoint, SearchBudget, SearchDiscoveredFailure,
-        SearchExpansion, SearchFailureOracle, SearchFrontierChoices,
-        SearchReplayOracleSamplingConfig, SearchReplayOracleSamplingReport,
+        ReplayOracleCheck, ReproductionArtifact, ResolvedCodePoint, ResolvedMemPlace, RngDecision,
+        RngStreamId, SHMEM_ABI_VERSION, ScenarioDef, ScenarioDefForm, ScenarioFamily, Schedule,
+        SchedulerError, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass,
+        SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerQuiescence, SchedulingPoint,
+        SearchBudget, SearchDiscoveredFailure, SearchExpansion, SearchFailureOracle,
+        SearchFrontierChoices, SearchReplayOracleSamplingConfig, SearchReplayOracleSamplingReport,
         SearchRetainedLogAssertionEvidence, SearchRuntimeFrontier, SearchScheduleNamedPredicateKey,
         SearchScheduleNamedPredicateTruths, SearchStrategy, Seed, SeedSpace, SignaturePolicy,
         SignaturePolicyLevel, SimBackend, SimDuration, SimulationBackend, TemporalGraph,
