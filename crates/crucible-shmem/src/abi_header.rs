@@ -184,6 +184,11 @@ fn emit_constants(out: &mut String) {
         "CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_DATA_BYTES",
         ACCELERATOR_ENTRY_DATA_BYTES,
     );
+    emit_define_usize(
+        out,
+        "CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_SIZE",
+        ACCELERATOR_ENTRY_SIZE,
+    );
     emit_define_u32(
         out,
         "CRUCIBLE_SHMEM_ACCELERATOR_PROTOCOL_VERSION",
@@ -870,10 +875,9 @@ fn emit_guest_introspection_entry(out: &mut String) {
 }
 
 fn emit_accelerator_entry(out: &mut String) {
-    emit_layout_constant_group(
+    emit_layout_offset_group(
         out,
         "ACCELERATOR_ENTRY",
-        ACCELERATOR_ENTRY_SIZE,
         ACCELERATOR_ENTRY_ALIGN,
         &[
             ("SEQUENCE", ACCELERATOR_ENTRY_SEQUENCE_OFFSET),
@@ -969,6 +973,22 @@ fn emit_layout_constant_group(
     offsets: &[(&str, usize)],
 ) {
     emit_define_usize(out, &format!("CRUCIBLE_SHMEM_{prefix}_SIZE"), size);
+    emit_define_usize(out, &format!("CRUCIBLE_SHMEM_{prefix}_ALIGN"), align);
+    for (field, offset) in offsets {
+        emit_define_usize(
+            out,
+            &format!("CRUCIBLE_SHMEM_{prefix}_{field}_OFFSET"),
+            *offset,
+        );
+    }
+}
+
+fn emit_layout_offset_group(
+    out: &mut String,
+    prefix: &str,
+    align: usize,
+    offsets: &[(&str, usize)],
+) {
     emit_define_usize(out, &format!("CRUCIBLE_SHMEM_{prefix}_ALIGN"), align);
     for (field, offset) in offsets {
         emit_define_usize(
