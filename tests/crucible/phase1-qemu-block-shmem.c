@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "migration/vmstate.h"
 #include "block/crucible-shmem.c"
 
 typedef enum TestOutcome {
