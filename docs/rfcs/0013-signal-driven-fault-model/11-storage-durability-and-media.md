@@ -343,6 +343,15 @@ be a backing member. This explicit binding is the only way an adapter identifies
 array requests; inference from capacity, names, or shared members is forbidden.
 Parity math is a versioned exact byte operation with golden vectors.
 
+Each declaration references a complete baseline member/path-state, selection,
+rebuild, consistency, and typed quorum-failure policy. The baseline governs all
+logical reads, writes, discards, flushes, and length queries when no array-state
+fault is active. A `storage.array_state` state machine atomically replaces that
+complete policy; deactivation restores the declaration baseline. It is invalid
+to route an array operation through the logical node's otherwise-unused private
+backing image, and no policy field is inferred or inherited from an inactive
+fault action.
+
 Member/path failures update array state before the next opportunity. Rebuild is
 a bounded background operation sharing the same storage service model and
 creating stable range opportunities. Rebuild failure, latent source errors,

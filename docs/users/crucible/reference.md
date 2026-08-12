@@ -590,6 +590,36 @@ Implementation sources:
 - [node, CPU, memory, interrupt, clock, and accelerator parameters](../../../crates/crucible/src/model/fault_signal/node_effect.rs)
 - [resource-limit registry](../../../crates/crucible/src/model/fault_signal/resource_limits.rs)
 
+### Storage-array declarations
+
+Every `[[world.fault_topology.storage_array]]` row is a complete logical-device
+contract. All fields below are required; there are no inferred RAID defaults or
+legacy fallbacks.
+
+| Field | Accepted value | Meaning |
+| --- | --- | --- |
+| `id` | Unique object ID | Stable array identity used by `storage_array` targets. |
+| `device` | Block storage-device ID | Guest-visible logical block node. It must not be a member. |
+| `semantic_version` | `1` | Exact layout, parity, and rebuild semantics. |
+| `layout` | `mirror`, `stripe`, `single_parity`, or `dual_parity` | Closed physical layout. Single parity requires at least three members; dual parity requires at least four. |
+| `chunk_bytes` | Positive power of two | Data chunk and parity-stripe unit. |
+| `read_quorum` | Positive integer no greater than member count | Minimum online member paths before reads are admitted. |
+| `write_quorum` | Positive integer no greater than member count | Minimum online members before non-atomic writes are admitted. |
+| `members` | Canonical nonempty member table | Each row has unique `id`, unique block `device`, and contiguous `ordinal` beginning at zero. |
+| `paths` | Canonical path table | Each row has `id`, positive `queue_depth`, and a `path` policy reference. |
+| `member_path_state` | `array_state` artifact ID | Complete baseline online state for every declared member and path. |
+| `selection_policy` | `array_selection` artifact ID | Baseline mirror read selection: lowest healthy, stable hash, or least loaded. |
+| `rebuild_service` | `rebuild` artifact ID | Baseline positive rebuild chunk, queue depth, and byte rate. |
+| `consistency_policy` | `array_consistency` artifact ID | Baseline quorum, degraded-commit, or atomic-stripe behavior. |
+| `failure_result` | Non-success block `typed_result` artifact ID | Exact result returned when no legal quorum exists. |
+| `fault_domains` | Canonical fault-domain ID list | Shared-cause domains containing the array. |
+
+The smallest member capacity, rounded down to `chunk_bytes`, must cover the
+logical device after mirror/stripe/parity overhead. The baseline policy always
+routes logical I/O through the declared members. An active
+`storage.array_state` binding replaces all five baseline policy references as
+one state transition; when it deactivates, the declaration baseline resumes.
+
 ### `[plan]` fields
 
 | Field | Required/default | Meaning |

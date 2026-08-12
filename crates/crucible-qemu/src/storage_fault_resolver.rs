@@ -261,6 +261,101 @@ pub fn resolve_storage_array_policy(
     })
 }
 
+/// Resolves the complete baseline policy declared by one World storage array.
+///
+/// # Errors
+///
+/// Returns [`StorageFaultResolutionError`] when the array, logical device, a
+/// member device, or any required baseline policy artifact is absent or has the
+/// wrong closed type.
+pub fn resolve_storage_array_baseline(
+    world: &World,
+    array_id: &FaultObjectId,
+) -> Result<ResolvedStorageArrayPolicy, StorageFaultResolutionError> {
+    let array = world
+        .fault_topology()
+        .storage_arrays
+        .iter()
+        .find(|array| array.id.as_str() == array_id.as_str())
+        .ok_or(StorageFaultResolutionError::UnsupportedTarget)?;
+    let logical_device_id = FaultObjectId::parse(array.device.as_str())
+        .map_err(|_| StorageFaultResolutionError::UnsupportedTarget)?;
+    let logical_device = storage_device_by_id(world, &logical_device_id)
+        .map(|(_, hash)| hash)
+        .ok_or(StorageFaultResolutionError::UnsupportedTarget)?;
+    let (member_states, path_states) = world
+        .fault_topology()
+        .storage_policy_artifact(&array.member_path_state)
+        .and_then(|artifact| match &artifact.artifact {
+            StoragePolicyArtifactKind::ArrayState { members, paths } => Some((members, paths)),
+            _ => None,
+        })
+        .ok_or(StorageFaultResolutionError::UnsupportedTarget)?;
+    let mut members = Vec::with_capacity(array.members.len());
+    for member in &array.members {
+        let member_id = FaultObjectId::parse(member.id.as_str())
+            .map_err(|_| StorageFaultResolutionError::UnsupportedTarget)?;
+        let online = member_states
+            .iter()
+            .find(|candidate| candidate.member == member_id)
+            .map(|candidate| candidate.online)
+            .ok_or(StorageFaultResolutionError::UnsupportedTarget)?;
+        let member_device_id = FaultObjectId::parse(member.device.as_str())
+            .map_err(|_| StorageFaultResolutionError::UnsupportedTarget)?;
+        let device = storage_device_by_id(world, &member_device_id)
+            .map(|(_, hash)| hash)
+            .ok_or(StorageFaultResolutionError::UnsupportedTarget)?;
+        members.push(ResolvedStorageArrayMember {
+            member: member_id,
+            device,
+            ordinal: member.ordinal,
+            online,
+        });
+    }
+    let selection = world
+        .fault_topology()
+        .storage_policy_artifact(&array.selection_policy)
+        .and_then(|artifact| match artifact.artifact {
+            StoragePolicyArtifactKind::ArraySelection(policy) => Some(policy),
+            _ => None,
+        })
+        .ok_or(StorageFaultResolutionError::UnsupportedTarget)?;
+    let rebuild = world
+        .fault_topology()
+        .storage_policy_artifact(&array.rebuild_service)
+        .and_then(|artifact| match &artifact.artifact {
+            StoragePolicyArtifactKind::Rebuild(policy) => Some(policy.clone()),
+            _ => None,
+        })
+        .ok_or(StorageFaultResolutionError::UnsupportedTarget)?;
+    let consistency = world
+        .fault_topology()
+        .storage_policy_artifact(&array.consistency_policy)
+        .and_then(|artifact| match artifact.artifact {
+            StoragePolicyArtifactKind::ArrayConsistency(policy) => Some(policy),
+            _ => None,
+        })
+        .ok_or(StorageFaultResolutionError::UnsupportedTarget)?;
+    let failure_result = resolve_block_failure(world, &array.failure_result)
+        .ok_or(StorageFaultResolutionError::UnsupportedTarget)?;
+    let online_paths = u16::try_from(path_states.iter().filter(|path| path.online).count())
+        .map_err(|_| StorageFaultResolutionError::UnsupportedTarget)?;
+    Ok(ResolvedStorageArrayPolicy {
+        array: array_id.clone(),
+        logical_device,
+        read_quorum: array.read_quorum,
+        write_quorum: array.write_quorum,
+        chunk_bytes: array.chunk_bytes,
+        layout: array.layout,
+        members,
+        online_paths,
+        selection,
+        rebuild,
+        consistency,
+        failure_result,
+    })
+}
+
 fn array_selection(
     world: &World,
     action: &ResolvedBindingAction,
