@@ -107,8 +107,8 @@
       hash = cargoDepsHash;
     };
 
-    cargoFlags = workspaceCargoFlags;
-    cargoTestFlags = "${workspaceCargoFlags} --features crucible-cli/test-double";
+    cargoFlags = packageFlags;
+    cargoTestFlags = "${packageFlags} --features crucible-cli/test-double";
     doCheck = true;
     buildDeps = [rust.dev pkg-config openssl];
     runtimeDeps = [openssl];
@@ -143,7 +143,7 @@
         --frozen \
         --offline \
         -j$NIX_BUILD_CORES \
-        ${workspaceCargoFlags} \
+        ${packageFlags} \
         -- \
         -D warnings
       export RUSTDOCFLAGS="-D warnings -D missing_docs"
