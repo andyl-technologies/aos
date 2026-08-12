@@ -2381,6 +2381,7 @@ dependencies = [
  "axum",
  "blake3",
  "bytes",
+ "ciborium",
  "crucible",
  "crucible-device",
  "crucible-protocol",

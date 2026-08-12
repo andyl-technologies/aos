@@ -59,14 +59,18 @@ pub(super) fn production_app_random_launch_config(
     config
 }
 
-pub(super) fn production_app_random_continuation_config(
-    scheduler: &SingleScheduler,
+pub(super) fn production_app_random_checkpoint_config(
+    scheduler: &SingleSchedulerCheckpoint,
     scenario: &ScenarioDef,
     branch: Option<&ProductionVmBranchConfig>,
     node: &NodeId,
 ) -> Result<ProductionAppRandomConfig, SchedulerError> {
-    let streams = scheduler
-        .configuration()
+    let configuration = scheduler.configuration_for(scenario).map_err(|error| {
+        SchedulerError::BoundaryViolation {
+            message: format!("decode scheduler checkpoint configuration: {error}"),
+        }
+    })?;
+    let streams = configuration
         .schedule
         .decisions()
         .iter()
