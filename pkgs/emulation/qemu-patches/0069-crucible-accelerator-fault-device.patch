@@ -1,4 +1,4 @@
-From 62cf187e5acc692992dc7c4af85772d1b3c1557c Mon Sep 17 00:00:00 2001
+From 0e7d682e9944b2eb267a485ce5bd98469a1cdc62 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Tue, 11 Aug 2026 19:29:49 -0700
 Subject: [PATCH] crucible: add deterministic accelerator device
@@ -8,14 +8,14 @@ Signed-off-by: Dylan Plecki <dylan@andyl.com>
  hw/virtio/Kconfig                             |   5 +
  hw/virtio/meson.build                         |   2 +
  hw/virtio/virtio-crucible-accelerator-pci.c   |  77 +++
- hw/virtio/virtio-crucible-accelerator.c       | 410 +++++++++++
+ hw/virtio/virtio-crucible-accelerator.c       | 415 +++++++++++
  .../hw/virtio/virtio-crucible-accelerator.h   |  57 ++
  include/qemu/crucible-fault.h                 |  29 +
  include/qemu/qemu-plugin.h                    |  40 ++
- plugins/crucible-fault-accelerator.c          | 642 ++++++++++++++++++
+ plugins/crucible-fault-accelerator.c          | 647 ++++++++++++++++++
  plugins/crucible-fault-node.c                 |  21 +
  plugins/meson.build                           |   1 +
- 10 files changed, 1284 insertions(+)
+ 10 files changed, 1294 insertions(+)
  create mode 100644 hw/virtio/virtio-crucible-accelerator-pci.c
  create mode 100644 hw/virtio/virtio-crucible-accelerator.c
  create mode 100644 include/hw/virtio/virtio-crucible-accelerator.h
@@ -142,10 +142,10 @@ index 0000000..63b8124
 +type_init(accelerator_pci_register)
 diff --git a/hw/virtio/virtio-crucible-accelerator.c b/hw/virtio/virtio-crucible-accelerator.c
 new file mode 100644
-index 0000000..57b3c60
+index 0000000..e9bc25c
 --- /dev/null
 +++ b/hw/virtio/virtio-crucible-accelerator.c
-@@ -0,0 +1,410 @@
+@@ -0,0 +1,415 @@
 +/*
 + * Crucible deterministic accelerator co-simulation device
 + *
@@ -219,6 +219,24 @@ index 0000000..57b3c60
 +           out_bytes == sizeof(*job) + input_len &&
 +           in_bytes >= sizeof(*job) + output_capacity &&
 +           job->status == 0 && job->output_len == 0;
++}
++
++static void accelerator_complete_error(VirtIODevice *vdev, VirtQueue *vq,
++                                       VirtQueueElement *element,
++                                       size_t in_bytes, uint32_t status)
++{
++    VirtIOCrucibleAcceleratorJob error = {
++        .status = cpu_to_le32(status),
++    };
++    size_t written = MIN(in_bytes, sizeof(error));
++
++    if (written != 0) {
++        written = iov_from_buf(element->in_sg, element->in_num, 0,
++                               &error, written);
++    }
++    virtqueue_push(vq, element, written);
++    virtio_notify(vdev, vq);
++    g_free(element);
 +}
 +
 +static void accelerator_drop_pending(VirtIOCrucibleAccelerator *dev,
@@ -329,14 +347,7 @@ index 0000000..57b3c60
 +            iov_to_buf(element->out_sg, element->out_num, 0,
 +                       &job, sizeof(job)) != sizeof(job) ||
 +            !accelerator_job_valid(&job, out_bytes, in_bytes)) {
-+            VirtIOCrucibleAcceleratorJob error = {
-+                .status = cpu_to_le32(1),
-+            };
-+            iov_from_buf(element->in_sg, element->in_num, 0,
-+                         &error, sizeof(error));
-+            virtqueue_push(vq, element, sizeof(error));
-+            virtio_notify(vdev, vq);
-+            g_free(element);
++            accelerator_complete_error(vdev, vq, element, in_bytes, 1);
 +            continue;
 +        }
 +        service_units = le64_to_cpu(job.service_units);
@@ -360,14 +371,7 @@ index 0000000..57b3c60
 +                                  le32_to_cpu(job.input_len),
 +                                  le32_to_cpu(job.output_capacity),
 +                                  accelerator_userdata) != 0) {
-+            VirtIOCrucibleAcceleratorJob error = {
-+                .status = cpu_to_le32(1),
-+            };
-+            iov_from_buf(element->in_sg, element->in_num, 0,
-+                         &error, sizeof(error));
-+            virtqueue_push(vq, element, sizeof(error));
-+            virtio_notify(vdev, vq);
-+            g_free(element);
++            accelerator_complete_error(vdev, vq, element, in_bytes, 1);
 +            continue;
 +        }
 +        job.service_units = cpu_to_le64(service_units);
@@ -506,7 +510,7 @@ index 0000000..57b3c60
 +        qemu_plugin_wake_notifier_remove(&dev->wake_notifier);
 +        dev->wake_registered = false;
 +    }
-+    g_assert(QTAILQ_EMPTY(&dev->pending));
++    accelerator_drop_pending(dev, 4);
 +    virtio_del_queue(vdev, 0);
 +    virtio_cleanup(vdev);
 +}
@@ -515,6 +519,7 @@ index 0000000..57b3c60
 +{
 +    VirtIOCrucibleAccelerator *dev = VIRTIO_CRUCIBLE_ACCELERATOR(device);
 +
++    accelerator_drop_pending(dev, 4);
 +    qemu_crucible_fault_accelerator_reset(dev->config.device_id);
 +}
 +
@@ -733,10 +738,10 @@ index 3584c8d..9131e3b 100644
   * @burst_start_cb: burst-start callback, or NULL to disable shmem forwarding
 diff --git a/plugins/crucible-fault-accelerator.c b/plugins/crucible-fault-accelerator.c
 new file mode 100644
-index 0000000..fd148da
+index 0000000..75f0460
 --- /dev/null
 +++ b/plugins/crucible-fault-accelerator.c
-@@ -0,0 +1,642 @@
+@@ -0,0 +1,647 @@
 +/*
 + * Crucible deterministic accelerator fault device integration
 + *
@@ -790,6 +795,9 @@ index 0000000..fd148da
 +static QemuCrucibleAcceleratorLifecycleFn accelerator_lifecycle_callback;
 +static void *accelerator_lifecycle_opaque;
 +static uint8_t accelerator_registered_device[32];
++static bool accelerator_capabilities_registered;
++
++static void accelerator_fault_register(void);
 +
 +void qemu_crucible_fault_accelerator_device_register(
 +    const uint8_t device_id[32], QemuCrucibleAcceleratorLifecycleFn callback,
@@ -799,6 +807,10 @@ index 0000000..fd148da
 +    memcpy(accelerator_registered_device, device_id, 32);
 +    accelerator_lifecycle_callback = callback;
 +    accelerator_lifecycle_opaque = opaque;
++    if (!accelerator_capabilities_registered) {
++        accelerator_fault_register();
++        accelerator_capabilities_registered = true;
++    }
 +}
 +
 +void qemu_crucible_fault_accelerator_device_unregister(void *opaque)
@@ -1377,8 +1389,6 @@ index 0000000..fd148da
 +        "qemu.accelerator.service.v1", NULL);
 +    qemu_crucible_fault_vmstate_register(&accelerator_vmstate_section);
 +}
-+
-+type_init(accelerator_fault_register)
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
 index 1710ab3..aebc85e 100644
 --- a/plugins/crucible-fault-node.c

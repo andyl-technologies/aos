@@ -65,6 +65,10 @@ struct PendingNinePRequest {
 struct PendingAcceleratorRequest {
     token: DeviceIoRequestToken,
     device_id: [u8; 32],
+    class_id: u16,
+    job_kind: u16,
+    queue_id: u16,
+    service_units: u64,
     output_capacity: usize,
 }
 
@@ -143,6 +147,13 @@ impl LiveDeviceCallbackState {
             0,
             false,
             service_units,
+            u32::try_from(output_capacity).map_err(|_error| {
+                LiveDeviceCallbackError::AcceleratorOutputTooLarge {
+                    sequence,
+                    len: output_capacity,
+                    capacity: crucible_shmem::ACCELERATOR_ENTRY_DATA_BYTES,
+                }
+            })?,
             input,
         )
         .map_err(|source| LiveDeviceCallbackError::AcceleratorEntry { source })?;
@@ -161,6 +172,10 @@ impl LiveDeviceCallbackState {
             PendingAcceleratorRequest {
                 token,
                 device_id,
+                class_id,
+                job_kind,
+                queue_id,
+                service_units,
                 output_capacity,
             },
         );
@@ -194,14 +209,20 @@ impl LiveDeviceCallbackState {
                 });
             }
         }
-        let Some(completion) = self.accelerator_completed.remove(&sequence) else {
+        let Some(completion) = self.accelerator_completed.get(&sequence).copied() else {
             return Ok((0, QEMU_PLUGIN_ACCELERATOR_POLL_PENDING));
         };
         let pending = self
             .accelerator_pending
-            .remove(&sequence)
+            .get(&sequence)
             .ok_or(LiveDeviceCallbackError::UnknownAcceleratorSequence { sequence })?;
-        if completion.device_id() != pending.device_id {
+        if completion.device_id() != pending.device_id
+            || completion.class() != pending.class_id
+            || completion.job_kind() != pending.job_kind
+            || completion.queue_id() != pending.queue_id
+            || completion.service_units() != pending.service_units
+            || completion.output_capacity() as usize != pending.output_capacity
+        {
             return Err(LiveDeviceCallbackError::InvalidAcceleratorCompletion { sequence });
         }
         let data = completion
@@ -215,6 +236,11 @@ impl LiveDeviceCallbackState {
             });
         }
         output[..data.len()].copy_from_slice(data);
+        let pending = self
+            .accelerator_pending
+            .remove(&sequence)
+            .ok_or(LiveDeviceCallbackError::UnknownAcceleratorSequence { sequence })?;
+        self.accelerator_completed.remove(&sequence);
         self.freeze
             .complete_request(slot, pending.token)
             .map_err(|source| LiveDeviceCallbackError::AcceleratorFreeze { source })?;
@@ -1042,10 +1068,10 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_accelerator_submit_cb(
 pub(super) extern "C" fn crucible_qemu_plugin_live_accelerator_restore_cb(
     sequence: u64,
     device_id: *const u8,
-    _class_id: u16,
-    _job_kind: u16,
-    _queue_id: u16,
-    _service_units: u64,
+    class_id: u16,
+    job_kind: u16,
+    queue_id: u16,
+    service_units: u64,
     output_capacity: usize,
     userdata: *mut c_void,
 ) -> c_int {
@@ -1068,8 +1094,15 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_accelerator_restore_cb(
         Ok(value) => value,
         Err(error) => abort_live_callback(error),
     };
-    if devices.accelerator_pending.contains_key(&sequence) {
-        return 0;
+    if let Some(pending) = devices.accelerator_pending.get(&sequence) {
+        return i32::from(
+            pending.device_id != identity_bytes
+                || pending.class_id != class_id
+                || pending.job_kind != job_kind
+                || pending.queue_id != queue_id
+                || pending.service_units != service_units
+                || pending.output_capacity != output_capacity,
+        ) * -1;
     }
     let token = match devices
         .freeze
@@ -1085,6 +1118,10 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_accelerator_restore_cb(
         PendingAcceleratorRequest {
             token,
             device_id: identity_bytes,
+            class_id,
+            job_kind,
+            queue_id,
+            service_units,
             output_capacity,
         },
     );

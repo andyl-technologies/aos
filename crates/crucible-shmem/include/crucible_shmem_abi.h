@@ -1368,9 +1368,10 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_guest_introspection_entry, 
 #define CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_FLAGS_OFFSET 58u
 #define CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_DATA_LEN_OFFSET 60u
 #define CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_SERVICE_UNITS_OFFSET 64u
-#define CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_DATA_OFFSET 72u
-#define CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_RESERVED_OFFSET 4680u
-#define CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_RESERVED_LEN 56u
+#define CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_OUTPUT_CAPACITY_OFFSET 72u
+#define CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_DATA_OFFSET 76u
+#define CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_RESERVED_OFFSET 4684u
+#define CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_RESERVED_LEN 52u
 typedef struct CRUCIBLE_SHMEM_ALIGNED(64) crucible_shmem_accelerator_entry {
     uint64_t sequence;
     uint64_t generation;
@@ -1383,6 +1384,7 @@ typedef struct CRUCIBLE_SHMEM_ALIGNED(64) crucible_shmem_accelerator_entry {
     uint16_t flags;
     uint32_t data_len;
     uint64_t service_units;
+    uint32_t output_capacity;
     uint8_t data[CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_DATA_BYTES];
     uint8_t reserved[CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_RESERVED_LEN];
 } crucible_shmem_accelerator_entry;
@@ -1400,6 +1402,7 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_accelerator_entry, protocol
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_accelerator_entry, flags) == CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_FLAGS_OFFSET, "crucible_shmem_accelerator_entry.flags offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_accelerator_entry, data_len) == CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_DATA_LEN_OFFSET, "crucible_shmem_accelerator_entry.data_len offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_accelerator_entry, service_units) == CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_SERVICE_UNITS_OFFSET, "crucible_shmem_accelerator_entry.service_units offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_accelerator_entry, output_capacity) == CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_OUTPUT_CAPACITY_OFFSET, "crucible_shmem_accelerator_entry.output_capacity offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_accelerator_entry, data) == CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_DATA_OFFSET, "crucible_shmem_accelerator_entry.data offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_accelerator_entry, reserved) == CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_RESERVED_OFFSET, "crucible_shmem_accelerator_entry.reserved offset");
 

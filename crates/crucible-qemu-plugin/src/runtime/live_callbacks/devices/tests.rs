@@ -94,6 +94,7 @@ fn accelerator_adapter_round_trips_a_real_shared_memory_request() {
         0,
         true,
         8,
+        4,
         &[5, 6, 7, 8],
     )
     .unwrap_or_else(|error| panic!("completion should build: {error}"));
