@@ -283,6 +283,7 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
             .with_world_white_box_policies(source.world()),
         assertion_oracle: BlackBoxHostOracle,
         terminal_verdict: None,
+        checkpoint_terminal_cause: None,
         initial_lifecycle_observations_pending: true,
         branch: None,
         launch_configs: BTreeMap::new(),

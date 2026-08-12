@@ -190,6 +190,7 @@ struct ProductionVmExactCheckpointSet {
     trigger_state: EventGraphState,
     assertion_state: HostAssertionEvaluatorCheckpoint,
     terminal_verdict: Option<QuantumTerminalVerdict>,
+    terminal_cause: Option<CheckpointTerminalCause>,
     initial_lifecycle_observations_pending: bool,
     branch: Option<ProductionVmBranchConfig>,
     recorded_controls: Vec<ProductionVmRecordedControl>,
@@ -384,6 +385,7 @@ pub struct ProductionVmLifecycleLoop {
     assertion_evaluator: HostAssertionEvaluator,
     assertion_oracle: BlackBoxHostOracle,
     terminal_verdict: Option<QuantumTerminalVerdict>,
+    checkpoint_terminal_cause: Option<CheckpointTerminalCause>,
     initial_lifecycle_observations_pending: bool,
     branch: Option<ProductionVmBranchConfig>,
     launch_configs: BTreeMap<NodeId, ProductionLiveNodeStepGateConfig>,
@@ -1339,6 +1341,9 @@ pub fn build_production_vm_lifecycle_loop(
         terminal_verdict: restore_checkpoint
             .as_ref()
             .and_then(|checkpoint| checkpoint.terminal_verdict.clone()),
+        checkpoint_terminal_cause: restore_checkpoint
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.terminal_cause.clone()),
         initial_lifecycle_observations_pending: restore_checkpoint
             .as_ref()
             .map_or(true, |checkpoint| {
