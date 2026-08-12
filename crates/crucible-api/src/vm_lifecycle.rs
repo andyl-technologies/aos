@@ -687,7 +687,7 @@ pub fn build_production_vm_lifecycle_loop(
 ) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
     let restore_checkpoint = config.restore_checkpoint.clone();
     if let Some(checkpoint) = &restore_checkpoint {
-        if checkpoint.configuration.def.id != scenario.id()
+        if checkpoint.configuration.def.id() != scenario.id()
             || checkpoint.configuration.id() != checkpoint.scheduler.configuration().id()
         {
             return Err(loop_factory_error(
