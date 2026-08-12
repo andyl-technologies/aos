@@ -16,8 +16,9 @@ use std::fmt::Debug;
 
 use crucible_device::{
     AdditionalCompletion, AffineLatency, BaseImage, BlockDevice, BlockLatency, BlockRequest,
-    BlockResponse, BlockStatus, ComputedResponse, DeviceError, FsTree, IoCore, IoSubNode,
-    NinepDevice, NinepLatency, Node, Request, Response, ResponseStatus,
+    BlockResponse, BlockStatus, ComputedResponse, DeviceError, FsTree, IoCore, IoCoreSnapshot,
+    IoCoreSnapshotCodecError, IoSubNode, NinepDevice, NinepLatency, Node, Request, Response,
+    ResponseStatus,
 };
 use crucible_shmem::{
     FrameEntry, KIND_9P, KIND_BLK, KIND_VM, NodeSlot, RingHeader, SLOT_9P_IO, SLOT_BLK_IO,
@@ -407,6 +408,15 @@ fn snapshot_restore_round_trips_mid_flight() {
     ok(core.advance_to(head));
 
     let snapshot = core.snapshot();
+    let snapshot_bytes = ok(snapshot.canonical_bytes());
+    let snapshot = ok(IoCoreSnapshot::from_canonical_bytes(&snapshot_bytes));
+    assert_eq!(ok(snapshot.canonical_bytes()), snapshot_bytes);
+    let mut trailing = snapshot_bytes;
+    trailing.push(0);
+    assert_eq!(
+        IoCoreSnapshot::from_canonical_bytes(&trailing),
+        Err(IoCoreSnapshotCodecError::Noncanonical)
+    );
     let mut restored = ok(IoCore::restore(&snapshot));
     assert_eq!(restored.snapshot(), snapshot);
 
