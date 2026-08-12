@@ -102,18 +102,17 @@ fn initially_violated_scenario() -> ScenarioDefForm {
 }
 
 #[test]
-fn durable_run_state_rejects_a_concurrent_scenario_owner() {
+fn durable_run_state_allows_concurrent_sessions_for_one_scenario() {
     let root =
         tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
     let source = initially_violated_scenario();
     let scenario = source.scenario_def();
     let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", root.path());
-    let (_run, _, _) = production_run_directory(&scenario, &config)
+    let (first, _, _) = production_run_directory(&scenario, &config)
         .unwrap_or_else(|error| panic!("first run owner should acquire: {error}"));
-    let error = production_run_directory(&scenario, &config)
-        .err()
-        .unwrap_or_else(|| panic!("concurrent run owner should be rejected"));
-    assert!(error.to_string().contains("already has an active"));
+    let (second, _, _) = production_run_directory(&scenario, &config)
+        .unwrap_or_else(|error| panic!("concurrent session should acquire: {error}"));
+    assert_ne!(first.path(), second.path());
 }
 
 #[test]
@@ -123,9 +122,12 @@ fn durable_run_state_recovers_an_unfinished_run_before_reuse() {
     let source = initially_violated_scenario();
     let scenario = source.scenario_def();
     let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", root.path());
-    let (first, _, _) = production_run_directory(&scenario, &config)
+    let (first, mut first_manifest, _) = production_run_directory(&scenario, &config)
         .unwrap_or_else(|error| panic!("first run should build: {error}"));
     let first_path = first.path().to_path_buf();
+    first_manifest.owner.process_id = u32::MAX;
+    persist_atomic_json(&first_path.join("run-manifest.json"), &first_manifest)
+        .unwrap_or_else(|error| panic!("dead owner fixture should persist: {error}"));
     drop(first);
 
     let (second, _, _) = production_run_directory(&scenario, &config)
@@ -157,9 +159,12 @@ fn durable_run_state_recovers_every_incomplete_transaction_phase() {
         let scenario = source.scenario_def();
         let config =
             ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", root.path());
-        let (first, _, mut journal) = production_run_directory(&scenario, &config)
+        let (first, mut manifest, mut journal) = production_run_directory(&scenario, &config)
             .unwrap_or_else(|error| panic!("first run should build: {error}"));
         let first_path = first.path().to_path_buf();
+        manifest.owner.process_id = u32::MAX;
+        persist_atomic_json(&first_path.join("run-manifest.json"), &manifest)
+            .unwrap_or_else(|error| panic!("dead owner fixture should persist: {error}"));
         journal.phase = phase;
         journal.transaction = 17;
         persist_atomic_json(&first_path.join("lifecycle-journal.json"), &journal)
@@ -301,8 +306,11 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
             completed_exits: Vec::new(),
         },
         run_manifest: ProductionRunManifest {
-            version: 1,
+            version: 2,
             scenario: scenario.id().to_hex(),
+            owner: linux_process_identity(std::process::id())
+                .unwrap_or_else(|error| panic!("test process identity should read: {error}"))
+                .unwrap_or_else(|| panic!("test process should have a Linux identity")),
             processes: BTreeMap::new(),
             staged_processes: BTreeMap::new(),
             clean_shutdown: false,

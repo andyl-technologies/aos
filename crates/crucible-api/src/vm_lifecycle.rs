@@ -236,6 +236,22 @@ fn validate_exact_checkpoint_target(
     Ok(())
 }
 
+fn copy_exact_checkpoint_artifact(
+    source: &Path,
+    destination: &Path,
+    expected: ContentHash,
+    role: &str,
+) -> Result<(), LifecycleApiError> {
+    fs::copy(source, destination).map_err(|error| {
+        loop_factory_error(format!(
+            "materialize exact checkpoint {role} {} as {}: {error}",
+            source.display(),
+            destination.display()
+        ))
+    })?;
+    validate_exact_checkpoint_artifact(destination, expected, role)
+}
+
 #[derive(Clone, Debug)]
 struct ProductionVmRecordedControl {
     configuration: Configuration,
@@ -300,6 +316,7 @@ struct ProductionLifecycleJournal {
 struct ProductionRunManifest {
     version: u32,
     scenario: String,
+    owner: QemuProcessIdentity,
     processes: BTreeMap<String, QemuProcessIdentity>,
     staged_processes: BTreeMap<String, QemuProcessIdentity>,
     clean_shutdown: bool,
@@ -323,7 +340,6 @@ impl Drop for ProductionRunLock {
 
 struct ProductionRunDirectory {
     path: PathBuf,
-    _lock: Option<ProductionRunLock>,
     _temporary: Option<tempfile::TempDir>,
 }
 
@@ -337,7 +353,6 @@ impl ProductionRunDirectory {
         let temporary = tempfile::tempdir()?;
         Ok(Self {
             path: temporary.path().to_path_buf(),
-            _lock: None,
             _temporary: Some(temporary),
         })
     }
@@ -530,13 +545,32 @@ fn production_run_directory(
             decode_run_json(&manifest_path).map_err(|message| {
                 loop_factory_error(format!("invalid prior run manifest: {message}"))
             })?;
-        if manifest.version != 1 || manifest.scenario != scenario_identity {
+        if manifest.version != 2 || manifest.scenario != scenario_identity {
             return Err(loop_factory_error(format!(
                 "prior run manifest {} has incompatible identity or version",
                 manifest_path.display()
             )));
         }
+        let journal_path = directory.join("lifecycle-journal.json");
+        let mut journal: ProductionLifecycleJournal =
+            decode_run_json(&journal_path).map_err(|message| {
+                loop_factory_error(format!("invalid prior lifecycle journal: {message}"))
+            })?;
+        if journal.version != 1 {
+            return Err(loop_factory_error(format!(
+                "prior lifecycle journal {} has unsupported version {}",
+                journal_path.display(),
+                journal.version
+            )));
+        }
         if !manifest.clean_shutdown {
+            let live_owner =
+                linux_process_identity(manifest.owner.process_id).map_err(|error| {
+                    loop_factory_error(format!("validate lifecycle run owner: {error}"))
+                })?;
+            if live_owner.as_ref() == Some(&manifest.owner) {
+                continue;
+            }
             for identity in manifest
                 .processes
                 .values()
@@ -550,18 +584,6 @@ fn production_run_directory(
                         ))
                     },
                 )?;
-            }
-            let journal_path = directory.join("lifecycle-journal.json");
-            let mut journal: ProductionLifecycleJournal =
-                decode_run_json(&journal_path).map_err(|message| {
-                    loop_factory_error(format!("invalid prior lifecycle journal: {message}"))
-                })?;
-            if journal.version != 1 {
-                return Err(loop_factory_error(format!(
-                    "prior lifecycle journal {} has unsupported version {}",
-                    journal_path.display(),
-                    journal.version
-                )));
             }
             journal.phase = ProductionLifecycleJournalPhase::Quarantined;
             persist_atomic_json(&journal_path, &journal)
@@ -582,8 +604,11 @@ fn production_run_directory(
         loop_factory_error(format!("create lifecycle run {}: {error}", path.display()))
     })?;
     let manifest = ProductionRunManifest {
-        version: 1,
+        version: 2,
         scenario: scenario_identity,
+        owner: linux_process_identity(std::process::id())
+            .map_err(|error| loop_factory_error(format!("identify lifecycle owner: {error}")))?
+            .ok_or_else(|| loop_factory_error("lifecycle process has no Linux process identity"))?,
         processes: BTreeMap::new(),
         staged_processes: BTreeMap::new(),
         clean_shutdown: false,
@@ -601,10 +626,10 @@ fn production_run_directory(
     persist_atomic_json(&path.join("lifecycle-journal.json"), &journal).map_err(|message| {
         loop_factory_error(format!("initialize lifecycle journal: {message}"))
     })?;
+    drop(lock);
     Ok((
         ProductionRunDirectory {
             path,
-            _lock: Some(lock),
             _temporary: None,
         },
         manifest,
@@ -784,26 +809,18 @@ pub fn build_production_vm_lifecycle_loop(
         }
         if let Some(target) = restore_target {
             validate_exact_checkpoint_target(&vm.id, target)?;
-            fs::copy(
+            copy_exact_checkpoint_artifact(
                 &target.overlay_artifact,
-                node_directory.join(PRODUCTION_ROOT_OVERLAY_FILE_NAME),
-            )
-            .map_err(|error| {
-                loop_factory_error(format!(
-                    "materialize exact root overlay for `{}`: {error}",
-                    vm.id.name
-                ))
-            })?;
-            fs::copy(
+                &node_directory.join(PRODUCTION_ROOT_OVERLAY_FILE_NAME),
+                target.overlay_hash,
+                "root overlay",
+            )?;
+            copy_exact_checkpoint_artifact(
                 &target.vmstate_artifact,
-                node_directory.join(PRODUCTION_VMSTATE_FILE_NAME),
-            )
-            .map_err(|error| {
-                loop_factory_error(format!(
-                    "materialize exact VMState for `{}`: {error}",
-                    vm.id.name
-                ))
-            })?;
+                &node_directory.join(PRODUCTION_VMSTATE_FILE_NAME),
+                target.vmstate_hash,
+                "VMState",
+            )?;
         } else {
             prepare_root_overlay(
                 &config.executable,
@@ -880,17 +897,19 @@ pub fn build_production_vm_lifecycle_loop(
         if !source.world().links().is_empty() {
             launch = launch.with_shmem_network_mac(crucible::deterministic_node_mac_string(&vm.id));
         }
-        if let Some(block) =
-            block_binding_for_vm(source.world(), &vm.id, config.world_artifacts.as_ref())?
-        {
-            launch = launch.with_shmem_block(block.base.clone(), block.durability.clone());
-            block_bindings.insert(vm.id.clone(), block);
-        }
-        if let Some(ninep) =
-            ninep_binding_for_vm(source.world(), &vm.id, config.world_artifacts.as_ref())?
-        {
-            launch = launch.with_shmem_ninep(ninep.tree.clone(), ninep.latency);
-            ninep_bindings.insert(vm.id.clone(), ninep);
+        if restored_service_state != Some(ProductionNodeServiceState::PermanentlyFailed) {
+            if let Some(block) =
+                block_binding_for_vm(source.world(), &vm.id, config.world_artifacts.as_ref())?
+            {
+                launch = launch.with_shmem_block(block.base.clone(), block.durability.clone());
+                block_bindings.insert(vm.id.clone(), block);
+            }
+            if let Some(ninep) =
+                ninep_binding_for_vm(source.world(), &vm.id, config.world_artifacts.as_ref())?
+            {
+                launch = launch.with_shmem_ninep(ninep.tree.clone(), ninep.latency);
+                ninep_bindings.insert(vm.id.clone(), ninep);
+            }
         }
         if vm.initrd.is_some() && config.initrd.is_none() {
             return Err(loop_factory_error(format!(
