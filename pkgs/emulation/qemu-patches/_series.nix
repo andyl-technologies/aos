@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "97819af7e21777d4a772214a79d96e5deb67a983da18a82cb82c6fba66d8402f";
+  patchBranchBundleSha256 = "8f465392662d0a5bb952f88f7a927a976cc358e5410770e8bbf8f7ea2d4332a4";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "4850f525b7c97dc58fcbd920c598af4a81df8a6f";
+  patchBranchHeadCommit = "62cf187e5acc692992dc7c4af85772d1b3c1557c";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -619,12 +619,12 @@ let
     {
       file = "0069-crucible-accelerator-fault-device.patch";
       branchSubject = "crucible: add deterministic accelerator device";
-      branchCommit = "4850f525b7c97dc58fcbd920c598af4a81df8a6f";
-      branchTree = "234720b2d0d43c737ae2dafb5cbe3889dd5e7c0";
+      branchCommit = "62cf187e5acc692992dc7c4af85772d1b3c1557c";
+      branchTree = "0cb90266e14d4732dd8461fe92113e55f55e5a7d";
       catalogName = "crucible-accelerator-fault-device";
       class = "D";
       enforces = "QFP-ACCEL-1,QFP-ACCEL-2,FAULT-ORDER";
-      capability = "migration-safe virtio accelerator co-simulation transport for closed GPU, TPU, and FPGA job schemas";
+      capability = "migration-safe virtio accelerator co-simulation transport with lifecycle, result, memory/ECC, and service mutations for closed GPU, TPU, and FPGA job schemas";
     }
   ];
   catalogOnlyCapabilities = [

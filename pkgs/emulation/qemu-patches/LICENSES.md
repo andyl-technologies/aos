@@ -32,6 +32,7 @@ The series currently creates these QEMU source files:
 | `plugins/crucible-fault-lifecycle.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-fault-vmstate.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-fault-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-fault-accelerator.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `target/arm/crucible-register.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `target/i386/crucible-register.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/tcg/plugins/crucible-register.c` | GPL-2.0-or-later | Explicit SPDX identifier |
