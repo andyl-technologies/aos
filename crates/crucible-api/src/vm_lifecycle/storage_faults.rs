@@ -17,7 +17,7 @@ use crucible::model::{
     StoragePolicyNinePVisibilityScope, World, WorldIoNodeKind,
 };
 use crucible_device::block::{
-    BaseImage, BlockDurabilityConfig, BlockFaultMisdirectionDestination,
+    BaseImage, BlockDurabilityConfig, BlockFaultMisdirectionDestination, BlockFaultReadTransform,
     BlockFaultWriteDisposition, BlockOp, BlockPersistenceMediaOutcome, BlockRequest,
     BlockRetainedRelease, BlockServiceCompletion, BlockStorageOutcome,
     ResolvedBlockDeliveryDirective, ResolvedBlockExecutionDirective,
@@ -34,13 +34,13 @@ use crucible_qemu::{
     QemuLive9pIoServiceStep, QemuLive9pIoServicer, QemuLive9pResponseEvidence,
     QemuLiveBlockIoDeliveryStep, QemuLiveBlockIoIntakeStep, QemuLiveBlockIoServiceStep,
     QemuLiveBlockIoServicer, QemuNinepFaultCoordinator, QemuSharedBlockDevice,
-    ResolvedVolatileCacheLoss, StorageFaultResolutionContext, StorageFaultResolutionError,
-    VolatileCacheLossReplay, block_delivery_fault_opportunity, block_durability_config,
-    block_persistence_fault_opportunity, block_request_fault_opportunity,
+    ResolvedVolatileCacheLoss, StorageArrayError, StorageFaultResolutionContext,
+    StorageFaultResolutionError, VolatileCacheLossReplay, block_delivery_fault_opportunity,
+    block_durability_config, block_persistence_fault_opportunity, block_request_fault_opportunity,
     block_request_persistence_fault_opportunity, merge_block_fault_phase_directive,
+    plan_storage_array_write, read_storage_array, resolve_block_controller_transition,
     resolve_block_fault_directive, resolve_block_persistence_media_directive,
-    resolve_block_controller_transition, resolve_volatile_cache_loss,
-    storage_recovery_event_key,
+    resolve_storage_array_policy, resolve_volatile_cache_loss, storage_recovery_event_key,
 };
 
 /// Maximum phase/device settle transitions performed during one host poll.
@@ -338,6 +338,7 @@ pub(super) struct ProductionBlockFaultCoordinator {
     world: World,
     target: ResolvedFaultTarget,
     opportunity_targets: Vec<ResolvedFaultTarget>,
+    array_targets: Vec<ResolvedFaultTarget>,
     context: StorageFaultResolutionContext,
     icount_shift: u8,
 }
@@ -363,6 +364,25 @@ impl ProductionBlockFaultCoordinator {
             .cloned()
             .collect::<std::collections::BTreeSet<_>>();
         opportunity_targets.insert(target.clone());
+        let array_targets = signal_plan
+            .bindings()
+            .iter()
+            .flat_map(|binding| binding.selector().resolved().targets())
+            .filter(|candidate| {
+                matches!(candidate, ResolvedFaultTarget::StorageArray { .. })
+                    && storage_array_target_attaches_device(&world, candidate, &target)
+            })
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .fold(BTreeMap::new(), |mut selected, target| {
+                if let ResolvedFaultTarget::StorageArray { array, .. } = &target {
+                    selected.entry(array.clone()).or_insert(target);
+                }
+                selected
+            })
+            .into_values()
+            .collect();
         Self {
             runtime,
             cursor,
@@ -371,9 +391,122 @@ impl ProductionBlockFaultCoordinator {
             world,
             target,
             opportunity_targets: opportunity_targets.into_iter().collect(),
+            array_targets,
             context: StorageFaultResolutionContext::new(scenario_seed),
             icount_shift,
         }
+    }
+
+    fn active_array_policy(
+        &self,
+        actions: &[ResolvedBindingAction],
+    ) -> Result<Option<crucible_qemu::ResolvedStorageArrayPolicy>, StorageFaultResolutionError>
+    {
+        let mut policies = actions
+            .iter()
+            .filter(|action| {
+                matches!(
+                    action.effect.specification(),
+                    EffectSpecification::Storage(StorageEffectSpecification::ArrayState { .. })
+                )
+            })
+            .map(|action| resolve_storage_array_policy(&self.world, action))
+            .collect::<Result<Vec<_>, _>>()?;
+        policies.dedup();
+        if policies.len() > 1 {
+            return Err(StorageFaultResolutionError::UnsupportedTarget);
+        }
+        Ok(policies.pop())
+    }
+
+    fn array_read_transform(
+        &self,
+        policy: &crucible_qemu::ResolvedStorageArrayPolicy,
+        request: &BlockRequest,
+    ) -> Result<Vec<u8>, StorageArrayError> {
+        let devices = self
+            .devices
+            .lock()
+            .map_err(|_| StorageArrayError::MemberRead {
+                ordinal: 0,
+                message: String::from("authoritative block-device registry is poisoned"),
+            })?;
+        read_storage_array(
+            policy,
+            request.offset,
+            request.count,
+            &request
+                .encode()
+                .map_err(|error| StorageArrayError::MemberRead {
+                    ordinal: 0,
+                    message: error.to_string(),
+                })?,
+            &BTreeMap::new(),
+            |device, offset, count| {
+                devices
+                    .get(&device)
+                    .cloned()
+                    .ok_or_else(|| {
+                        format!("World block device {} has no live runtime", device.to_hex())
+                    })?
+                    .inspect_storage_visible(offset, count)
+                    .map_err(|error| error.to_string())
+            },
+        )
+    }
+
+    fn array_write_destinations(
+        &self,
+        policy: &crucible_qemu::ResolvedStorageArrayPolicy,
+        request: &BlockRequest,
+    ) -> Result<Vec<(ContentHash, QemuSharedBlockDevice, Vec<(u64, Vec<u8>)>)>, StorageArrayError>
+    {
+        let devices = self
+            .devices
+            .lock()
+            .map_err(|_| StorageArrayError::MemberRead {
+                ordinal: 0,
+                message: String::from("authoritative block-device registry is poisoned"),
+            })?;
+        let plan = plan_storage_array_write(
+            policy,
+            request.offset,
+            &request.data,
+            |device, offset, count| {
+                devices
+                    .get(&device)
+                    .cloned()
+                    .ok_or_else(|| {
+                        format!("World block device {} has no live runtime", device.to_hex())
+                    })?
+                    .inspect_storage_visible(offset, count)
+                    .map_err(|error| error.to_string())
+            },
+        )?;
+        let mut grouped = BTreeMap::<ContentHash, Vec<(u64, Vec<u8>)>>::new();
+        for write in plan.writes {
+            grouped
+                .entry(write.device)
+                .or_default()
+                .push((write.offset, write.bytes));
+        }
+        grouped
+            .into_iter()
+            .map(|(device, writes)| {
+                let handle =
+                    devices
+                        .get(&device)
+                        .cloned()
+                        .ok_or_else(|| StorageArrayError::MemberRead {
+                            ordinal: 0,
+                            message: format!(
+                                "World block device {} has no live runtime",
+                                device.to_hex()
+                            ),
+                        })?;
+                Ok((device, handle, writes))
+            })
+            .collect()
     }
 
     fn request_targets(&self, request: &BlockRequest) -> Vec<ResolvedFaultTarget> {
@@ -381,6 +514,7 @@ impl ProductionBlockFaultCoordinator {
             .iter()
             .filter(|target| block_target_intersects_request(target, request))
             .cloned()
+            .chain(self.array_targets.iter().cloned())
             .collect()
     }
 
@@ -623,8 +757,33 @@ impl ProductionBlockFaultCoordinator {
         request_sequence: u64,
         opportunity: &crucible::model::FaultOpportunity,
         actions: &[ResolvedBindingAction],
-    ) -> Result<crucible_device::block::ResolvedBlockFaultDirective, StorageFaultResolutionError>
-    {
+    ) -> Result<crucible_device::block::ResolvedBlockFaultDirective, String> {
+        if matches!(target, ResolvedFaultTarget::StorageArray { .. }) {
+            let mut directive = crucible_device::block::ResolvedBlockFaultDirective::fault_free(
+                request,
+                self.array_logical_capacity()?,
+            );
+            directive.request_sequence = request_sequence;
+            directive.execution_nanos = opportunity.coordinate().virtual_nanos;
+            directive.persistence_admitted_nanos = opportunity.coordinate().virtual_nanos;
+            if let Some(policy) = self
+                .active_array_policy(actions)
+                .map_err(|error| error.to_string())?
+                && request.op == BlockOp::Read
+                && opportunity.phase() == FaultPhase::Resolve
+            {
+                match self.array_read_transform(&policy, request) {
+                    Ok(bytes) => directive
+                        .read_transforms
+                        .push(BlockFaultReadTransform::Replace { bytes }),
+                    Err(StorageArrayError::QuorumUnavailable) => {
+                        directive.error_result = Some(policy.failure_result)
+                    }
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+            return Ok(directive);
+        }
         let devices = Arc::clone(&self.devices);
         let mut read_source = move |device: ContentHash, offset: u64, count: u32| {
             let handle = devices
@@ -652,6 +811,24 @@ impl ProductionBlockFaultCoordinator {
             &mut read_source,
             actions,
         )
+        .map_err(|error| error.to_string())
+    }
+
+    fn array_logical_capacity(&self) -> Result<u64, String> {
+        let attached = self
+            .attached_device_hash()
+            .map_err(|error| error.to_string())?;
+        let devices = self
+            .devices
+            .lock()
+            .map_err(|_| String::from("authoritative block-device registry is poisoned"))?;
+        let device = devices.get(&attached).ok_or_else(|| {
+            format!(
+                "World block device {} has no live runtime",
+                attached.to_hex()
+            )
+        })?;
+        device.storage_length().map_err(|error| error.to_string())
     }
 
     fn record_device_outcomes(
@@ -932,7 +1109,51 @@ impl ProductionBlockFaultCoordinator {
                     opportunity,
                     directive,
                 };
-                if let BlockFaultWriteDisposition::Misdirected {
+                let array_policy = self
+                    .array_targets
+                    .first()
+                    .and_then(|target| {
+                        self.runtime.lock().ok().map(|runtime| {
+                            runtime
+                                .host_state()
+                                .matching(target, FaultPhase::Persist)
+                                .cloned()
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .map(|actions| self.active_array_policy(&actions))
+                    .transpose()
+                    .map_err(|error| storage_error("resolve storage array persistence", error))?
+                    .flatten();
+                if resolved.opportunity.request.op == BlockOp::Write
+                    && let Some(policy) = array_policy
+                {
+                    let destinations = match self
+                        .array_write_destinations(&policy, &resolved.opportunity.request)
+                    {
+                        Ok(destinations) => destinations,
+                        Err(StorageArrayError::QuorumUnavailable) => {
+                            let mut failed = resolved;
+                            failed.directive.error_result = Some(policy.failure_result);
+                            failed.directive.write_disposition = BlockFaultWriteDisposition::Lost;
+                            self.after_evaluation(
+                                "install failed storage array persistence",
+                                servicer.install_storage_request_persistence_directive(failed),
+                            )?;
+                            installed = true;
+                            continue;
+                        }
+                        Err(error) => {
+                            return Err(storage_error("plan storage array persistence", error));
+                        }
+                    };
+                    let source = servicer.shared_device();
+                    let source_id = self.attached_device_hash()?;
+                    self.after_evaluation(
+                        "install storage array persistence",
+                        source.install_multi_device_persistence(source_id, &destinations, resolved),
+                    )?;
+                } else if let BlockFaultWriteDisposition::Misdirected {
                     destination: BlockFaultMisdirectionDestination::ExternalDevice(bytes),
                     ..
                 } = &resolved.directive.write_disposition
@@ -1152,9 +1373,9 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
                         evidence: volatile_cache_loss_evidence(&resolved),
                     });
                 }
-                EffectSpecification::Storage(
-                    StorageEffectSpecification::ControllerLifecycle { .. },
-                ) => {
+                EffectSpecification::Storage(StorageEffectSpecification::ControllerLifecycle {
+                    ..
+                }) => {
                     let transition = resolve_block_controller_transition(&self.world, action)
                         .map_err(|error| {
                             storage_error("resolve controller lifecycle boundary", error)
@@ -2104,6 +2325,31 @@ fn block_targets_same_device(left: &ResolvedFaultTarget, right: &ResolvedFaultTa
     device(left)
         .zip(device(right))
         .is_some_and(|(left, right)| left == right)
+}
+
+fn storage_array_target_attaches_device(
+    world: &World,
+    candidate: &ResolvedFaultTarget,
+    attached: &ResolvedFaultTarget,
+) -> bool {
+    let ResolvedFaultTarget::StorageArray { array, .. } = candidate else {
+        return false;
+    };
+    let attached = match attached {
+        ResolvedFaultTarget::BlockDevice { device }
+        | ResolvedFaultTarget::BlockRange { device, .. } => *device,
+        _ => return false,
+    };
+    world
+        .fault_topology()
+        .storage_arrays
+        .iter()
+        .find(|candidate| candidate.id.as_str() == array.as_str())
+        .is_some_and(|array| {
+            world.io_nodes().any(|node| {
+                node.id.name == array.device.as_str() && node.fault_target_hash() == attached
+            })
+        })
 }
 
 fn block_target_intersects_request(target: &ResolvedFaultTarget, request: &BlockRequest) -> bool {

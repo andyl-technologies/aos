@@ -78,6 +78,7 @@ mod shutdown;
 mod single_vm_fingerprint;
 #[cfg(target_os = "linux")]
 mod spawn;
+mod storage_array;
 mod storage_fault_resolver;
 #[cfg(target_os = "linux")]
 mod supervision;
@@ -291,6 +292,10 @@ pub use single_vm_fingerprint::{
 pub use spawn::{
     QemuSpawnError, QemuSpawnHostResources, QemuSpawnSetupResources, QemuSpawnedChild,
     spawn_qemu_child_with_fds, spawn_qemu_child_with_fds_in_directory,
+};
+pub use storage_array::{
+    StorageArrayError, StorageArrayMemberWrite, StorageArrayWritePlan, plan_storage_array_write,
+    read_storage_array,
 };
 pub use storage_fault_resolver::{
     ResolvedStorageArrayMember, ResolvedStorageArrayPolicy, ResolvedVolatileCacheLoss,
