@@ -304,6 +304,85 @@ pub struct DequeuedFaultEvent {
     pub payload: Vec<u8>,
 }
 
+impl DequeuedFaultEvent {
+    /// Encodes this drained event as a canonical durable-checkpoint record.
+    ///
+    /// The original transport header is retained byte-for-byte so restore can
+    /// authenticate the same rule, opportunity, state, and arena-coordinate
+    /// evidence that was observed before capture.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultEventError`] when the payload exceeds the hard bound, its
+    /// length differs from the header, or its authenticated digests are invalid.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, FaultEventError> {
+        const MAGIC: &[u8] = b"crucible.dequeued-fault-event.v1\0";
+        let payload_length =
+            u32::try_from(self.payload.len()).map_err(|_| FaultEventError::Bounds)?;
+        if payload_length == 0
+            || payload_length > HARD_FAULT_PAYLOAD_BYTES
+            || self.header.payload_length != payload_length
+        {
+            return Err(FaultEventError::Bounds);
+        }
+        self.header.validate()?;
+        self.header.authenticate_payload(&self.payload)?;
+        let mut bytes =
+            Vec::with_capacity(MAGIC.len() + FAULT_EVENT_HEADER_V1_BYTES + 4 + self.payload.len());
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&self.header.encode());
+        bytes.extend_from_slice(&payload_length.to_le_bytes());
+        bytes.extend_from_slice(&self.payload);
+        Ok(bytes)
+    }
+
+    /// Decodes and authenticates a durable drained-event record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultEventError`] when the version, record framing, event
+    /// header, hard payload bound, header length, or either payload digest is
+    /// invalid, or when bytes remain after the record.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, FaultEventError> {
+        const MAGIC: &[u8] = b"crucible.dequeued-fault-event.v1\0";
+        let body = bytes
+            .strip_prefix(MAGIC)
+            .ok_or(FaultEventError::CheckpointVersion)?;
+        let (header_bytes, body) = body
+            .split_at_checked(FAULT_EVENT_HEADER_V1_BYTES)
+            .ok_or(FaultEventError::CheckpointLength)?;
+        let (length_bytes, payload) = body
+            .split_at_checked(4)
+            .ok_or(FaultEventError::CheckpointLength)?;
+        let length = u32::from_le_bytes(
+            length_bytes
+                .try_into()
+                .map_err(|_| FaultEventError::CheckpointLength)?,
+        );
+        if length == 0 || length > HARD_FAULT_PAYLOAD_BYTES {
+            return Err(FaultEventError::Bounds);
+        }
+        if payload.len()
+            != usize::try_from(length).map_err(|_| FaultEventError::CheckpointLength)?
+        {
+            return Err(FaultEventError::CheckpointLength);
+        }
+        let header = FaultEventHeaderV1::decode_header(header_bytes)?;
+        if header.payload_length != length {
+            return Err(FaultEventError::CheckpointLength);
+        }
+        header.authenticate_payload(payload)?;
+        let event = Self {
+            header,
+            payload: payload.to_vec(),
+        };
+        if event.canonical_bytes()?.as_slice() != bytes {
+            return Err(FaultEventError::CheckpointCanonical);
+        }
+        Ok(event)
+    }
+}
+
 /// Enqueues one event and publishes it with release ordering.
 ///
 /// # Errors
@@ -483,6 +562,15 @@ impl<'a> EventReader<'a> {
 /// Invalid event bytes or event transport state.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum FaultEventError {
+    /// Durable drained-event record version is unsupported.
+    #[error("unsupported durable fault-event checkpoint version")]
+    CheckpointVersion,
+    /// Durable drained-event record framing is invalid.
+    #[error("invalid durable fault-event checkpoint length")]
+    CheckpointLength,
+    /// Durable drained-event record is not in canonical form.
+    #[error("noncanonical durable fault-event checkpoint")]
+    CheckpointCanonical,
     /// Event header length is invalid.
     #[error("invalid fault-event header length")]
     HeaderLength,
@@ -626,5 +714,38 @@ mod tests {
         value.outcome = FaultEventOutcomeV1::Passed;
         value.payload_length = 1;
         assert_eq!(value.validate(), Err(FaultEventError::Invariant));
+    }
+
+    #[test]
+    fn drained_event_checkpoint_round_trips_and_rejects_trailing_bytes() {
+        let payload = b"typed-memory-access-evidence".to_vec();
+        let mut event_header = header();
+        event_header.payload_offset = 65_536;
+        event_header.payload_length = u32::try_from(payload.len()).expect("payload length fits");
+        event_header.payload_hash = *blake3::hash(&payload).as_bytes();
+        event_header.evidence_hash = Sha256::digest(&payload).into();
+        let event = DequeuedFaultEvent {
+            header: event_header,
+            payload,
+        };
+        let bytes = event
+            .canonical_bytes()
+            .expect("valid drained event encodes");
+        let restored = DequeuedFaultEvent::from_canonical_bytes(&bytes)
+            .expect("canonical drained event decodes");
+        assert_eq!(restored, event);
+        assert_eq!(
+            restored
+                .canonical_bytes()
+                .expect("restored event remains valid"),
+            bytes
+        );
+
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert_eq!(
+            DequeuedFaultEvent::from_canonical_bytes(&trailing),
+            Err(FaultEventError::CheckpointLength)
+        );
     }
 }
