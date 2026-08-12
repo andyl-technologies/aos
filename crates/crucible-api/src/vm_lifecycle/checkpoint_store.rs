@@ -82,7 +82,7 @@ struct BranchWire {
     base_schedule: Vec<u8>,
     frontier: u64,
     decisions: Vec<Decision>,
-    seed: Option<Seed>,
+    seed: Option<[u8; 32]>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -670,7 +670,7 @@ fn encode_lifecycle(
             base_schedule: branch.base.schedule.to_compact_binary(),
             frontier: branch.frontier.ticks,
             decisions: branch.decisions.clone(),
-            seed: branch.seed,
+            seed: branch.seed.map(Seed::bytes),
         }),
         recorded_controls: checkpoint
             .recorded_controls
@@ -722,23 +722,25 @@ fn decode_lifecycle(
     });
     let branch = wire
         .branch
-        .map(|branch| {
-            let schedule =
-                Schedule::from_compact_binary(&branch.base_schedule).map_err(|error| {
-                    loop_factory_error(format!("decode checkpoint branch schedule: {error}"))
-                })?;
-            Ok(ProductionVmBranchConfig {
-                base: Configuration {
-                    def: scenario.clone(),
-                    schedule,
-                },
-                frontier: VirtualTime {
-                    ticks: branch.frontier,
-                },
-                decisions: branch.decisions,
-                seed: branch.seed,
-            })
-        })
+        .map(
+            |branch| -> Result<ProductionVmBranchConfig, LifecycleApiError> {
+                let schedule =
+                    Schedule::from_compact_binary(&branch.base_schedule).map_err(|error| {
+                        loop_factory_error(format!("decode checkpoint branch schedule: {error}"))
+                    })?;
+                Ok(ProductionVmBranchConfig {
+                    base: Configuration {
+                        def: scenario.clone(),
+                        schedule,
+                    },
+                    frontier: VirtualTime {
+                        ticks: branch.frontier,
+                    },
+                    decisions: branch.decisions,
+                    seed: branch.seed.map(Seed::from_bytes),
+                })
+            },
+        )
         .transpose()?;
     let mut recorded_controls = Vec::with_capacity(wire.recorded_controls.len());
     for record in wire.recorded_controls {
