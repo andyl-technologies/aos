@@ -2094,8 +2094,9 @@ fn validate_resume_checkpoint_closure(
         // erase the true zero-time genesis. Thin replay never registers the
         // supplied material: it may use a nonzero frontier to reconstruct a
         // deterministic runtime whose causal schedule is still empty.
-        let requires_baked_genesis = validation == ResumeCheckpointValidation::DirectLoad
-            || checkpoint.virtual_time == VirtualTime::default();
+        let requires_baked_genesis = checkpoint.execution_closure.is_none()
+            && (validation == ResumeCheckpointValidation::DirectLoad
+                || checkpoint.virtual_time == VirtualTime::default());
         if requires_baked_genesis && checkpoint != &baked {
             return Err(LifecycleApiError::ResumeCheckpoint {
                 message: String::from(

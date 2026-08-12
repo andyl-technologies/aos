@@ -1348,6 +1348,63 @@ pub(super) fn engine_rejects_non_dense_final_shutdown_entries() {
     );
 }
 
+#[test]
+pub(super) fn engine_captures_terminal_checkpoint_before_shutdown() {
+    let scenario = generated_scenario(226);
+    let config = Configuration::genesis(scenario.clone());
+    let graph = graph_with_baked_genesis(&scenario);
+    let operations = Arc::new(Mutex::new(Vec::new()));
+    let loop_impl = CaptureBeforeShutdownLoop {
+        operations: Arc::clone(&operations),
+    };
+    let mut engine = Engine::new(config, graph, loop_impl);
+
+    engine
+        .apply_command(SessionCommand::Stop)
+        .expect("terminal stop should capture and shut down");
+
+    let observed = operations.lock().expect("operation log lock").clone();
+    assert_eq!(observed, vec!["capture", "shutdown"]);
+}
+
+pub(super) struct CaptureBeforeShutdownLoop {
+    operations: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl QuantumLoop for CaptureBeforeShutdownLoop {
+    fn drive_quantum(
+        &mut self,
+        _request: QuantumRequest,
+    ) -> Result<QuantumOutcome, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("terminal-order test must not drive a quantum"),
+        })
+    }
+
+    fn capture_checkpoint(
+        &mut self,
+        _configuration: &Configuration,
+    ) -> Result<Option<ContentHash>, SchedulerError> {
+        self.operations
+            .lock()
+            .map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("terminal-order operation log lock is poisoned"),
+            })?
+            .push("capture");
+        Ok(Some(ContentHash::from_bytes(b"terminal-order-checkpoint")))
+    }
+
+    fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        self.operations
+            .lock()
+            .map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("terminal-order operation log lock is poisoned"),
+            })?
+            .push("shutdown");
+        Ok(Vec::new())
+    }
+}
+
 pub(super) struct NonDenseShutdownLoop;
 
 impl QuantumLoop for NonDenseShutdownLoop {

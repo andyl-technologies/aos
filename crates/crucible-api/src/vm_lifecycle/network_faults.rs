@@ -935,6 +935,11 @@ fn stage_network_restore(
             })?;
     let (scheduler_state, pending_outputs, adapter_bytes, identity) = network.into_parts();
     validate_pending_network_outputs(&pending_outputs)?;
+    if scheduler.network_checkpoint() != scheduler_state {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from("scheduler and production-fault network continuations differ"),
+        });
+    }
     let adapter: NetworkAdapterCheckpoint =
         serde_json::from_slice(&adapter_bytes).map_err(|error| {
             SchedulerError::BoundaryViolation {
@@ -943,8 +948,7 @@ fn stage_network_restore(
         })?;
     validate_network_adapter_checkpoint(&adapter)?;
     validate_medium_pending_links(&adapter.effect_state, &pending_outputs)?;
-    let mut staged_scheduler = scheduler.clone();
-    staged_scheduler.restore_network_checkpoint(&scheduler_state)?;
+    let staged_scheduler = scheduler.clone();
     let actual = network_state_digest_from_parts(
         &staged_scheduler,
         &pending_outputs,
