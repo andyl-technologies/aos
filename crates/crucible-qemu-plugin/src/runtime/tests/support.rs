@@ -444,7 +444,11 @@ pub(super) extern "C" fn test_register_accelerator(
     _submit: Option<crate::QemuAcceleratorSubmitCbFn>,
     _poll: Option<crate::QemuAcceleratorPollCbFn>,
     _wait: Option<crate::QemuAcceleratorWaitCbFn>,
+    _restore_begin: Option<crate::QemuAcceleratorRestoreBeginCbFn>,
     _restore: Option<crate::QemuAcceleratorRestoreCbFn>,
+    _restore_commit: Option<crate::QemuAcceleratorRestoreCommitCbFn>,
+    _restore_abort: Option<crate::QemuAcceleratorRestoreAbortCbFn>,
+    _cancel: Option<crate::QemuAcceleratorCancelCbFn>,
     _userdata: *mut std::ffi::c_void,
 ) {
 }

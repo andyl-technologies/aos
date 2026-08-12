@@ -188,7 +188,7 @@ pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// Version 11 appends bounded accelerator request/completion rings per VM.
 /// Version 12 adds an explicit accelerator completion-capacity field and moves
 /// accelerator payload bytes to preserve a canonical bounded result envelope.
-pub const ABI_VERSION: u32 = 12;
+pub const ABI_VERSION: u32 = 13;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of entries in each plugin-to-host coverage queue.
 ///

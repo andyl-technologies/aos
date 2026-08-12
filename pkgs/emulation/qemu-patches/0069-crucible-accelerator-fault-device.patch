@@ -1,4 +1,4 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 5948b19b5dbd34bbdea01857a8a3e876c69676fa Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Tue, 11 Aug 2026 19:29:49 -0700
 Subject: [PATCH] crucible: add deterministic accelerator device
@@ -8,14 +8,14 @@ Signed-off-by: Dylan Plecki <dylan@andyl.com>
  hw/virtio/Kconfig                             |   5 +
  hw/virtio/meson.build                         |   2 +
  hw/virtio/virtio-crucible-accelerator-pci.c   |  77 ++
- hw/virtio/virtio-crucible-accelerator.c       | 418 +++++++++++
+ hw/virtio/virtio-crucible-accelerator.c       | 476 ++++++++++++
  .../hw/virtio/virtio-crucible-accelerator.h   |  57 ++
  include/qemu/crucible-fault.h                 |  29 +
- include/qemu/qemu-plugin.h                    |  64 ++
+ include/qemu/qemu-plugin.h                    |  82 +++
  plugins/crucible-fault-accelerator.c          | 676 ++++++++++++++++++
  plugins/crucible-fault-node.c                 |  21 +
  plugins/meson.build                           |   1 +
- 10 files changed, 1350 insertions(+)
+ 10 files changed, 1426 insertions(+)
  create mode 100644 hw/virtio/virtio-crucible-accelerator-pci.c
  create mode 100644 hw/virtio/virtio-crucible-accelerator.c
  create mode 100644 include/hw/virtio/virtio-crucible-accelerator.h
@@ -142,10 +142,10 @@ index 0000000..63b8124
 +type_init(accelerator_pci_register)
 diff --git a/hw/virtio/virtio-crucible-accelerator.c b/hw/virtio/virtio-crucible-accelerator.c
 new file mode 100644
-index 0000000..fdd64c4
+index 0000000..e0fb29f
 --- /dev/null
 +++ b/hw/virtio/virtio-crucible-accelerator.c
-@@ -0,0 +1,418 @@
+@@ -0,0 +1,476 @@
 +/*
 + * Crucible deterministic accelerator co-simulation device
 + *
@@ -177,7 +177,11 @@ index 0000000..fdd64c4
 +static qemu_plugin_accelerator_submit_cb_t accelerator_submit_cb;
 +static qemu_plugin_accelerator_poll_cb_t accelerator_poll_cb;
 +static qemu_plugin_accelerator_wait_cb_t accelerator_wait_cb;
++static qemu_plugin_accelerator_restore_begin_cb_t accelerator_restore_begin_cb;
 +static qemu_plugin_accelerator_restore_cb_t accelerator_restore_cb;
++static qemu_plugin_accelerator_restore_commit_cb_t accelerator_restore_commit_cb;
++static qemu_plugin_accelerator_restore_abort_cb_t accelerator_restore_abort_cb;
++static qemu_plugin_accelerator_cancel_cb_t accelerator_cancel_cb;
 +static void *accelerator_userdata;
 +
 +static void accelerator_complete(VirtIOCrucibleAccelerator *dev,
@@ -189,19 +193,30 @@ index 0000000..fdd64c4
 +    qemu_plugin_accelerator_submit_cb_t submit_cb,
 +    qemu_plugin_accelerator_poll_cb_t poll_cb,
 +    qemu_plugin_accelerator_wait_cb_t wait_cb,
-+    qemu_plugin_accelerator_restore_cb_t restore_cb, void *userdata)
++    qemu_plugin_accelerator_restore_begin_cb_t restore_begin_cb,
++    qemu_plugin_accelerator_restore_cb_t restore_cb,
++    qemu_plugin_accelerator_restore_commit_cb_t restore_commit_cb,
++    qemu_plugin_accelerator_restore_abort_cb_t restore_abort_cb,
++    qemu_plugin_accelerator_cancel_cb_t cancel_cb, void *userdata)
 +{
 +    accelerator_submit_cb = submit_cb;
 +    accelerator_poll_cb = poll_cb;
 +    accelerator_wait_cb = wait_cb;
++    accelerator_restore_begin_cb = restore_begin_cb;
 +    accelerator_restore_cb = restore_cb;
++    accelerator_restore_commit_cb = restore_commit_cb;
++    accelerator_restore_abort_cb = restore_abort_cb;
++    accelerator_cancel_cb = cancel_cb;
 +    accelerator_userdata = userdata;
 +}
 +
 +static bool accelerator_callbacks_ready(void)
 +{
 +    return accelerator_submit_cb && accelerator_poll_cb &&
-+           accelerator_wait_cb && accelerator_restore_cb;
++           accelerator_wait_cb && accelerator_restore_begin_cb &&
++           accelerator_restore_cb && accelerator_restore_commit_cb &&
++           accelerator_restore_abort_cb &&
++           accelerator_cancel_cb;
 +}
 +
 +static bool accelerator_job_valid(const VirtIOCrucibleAcceleratorJob *job,
@@ -248,6 +263,11 @@ index 0000000..fdd64c4
 +    VirtIOCrucibleAcceleratorRequest *request, *next;
 +
 +    QTAILQ_FOREACH_SAFE(request, &dev->pending, link, next) {
++        if (accelerator_cancel_cb(le64_to_cpu(request->job.sequence),
++                                  accelerator_userdata) != 0) {
++            virtio_error(VIRTIO_DEVICE(dev),
++                         "accelerator request cancellation failed");
++        }
 +        accelerator_complete(dev, request, status, NULL, 0);
 +    }
 +}
@@ -305,6 +325,11 @@ index 0000000..fdd64c4
 +{
 +    VirtIOCrucibleAcceleratorRequest *request, *next;
 +    uint8_t output[VIRTIO_CRUCIBLE_ACCELERATOR_DATA_MAX];
++    uint16_t discarded_status = 0;
++
++    /* Sequence zero drains host acknowledgements for cancelled requests. */
++    accelerator_poll_cb(0, &discarded_status, output, sizeof(output),
++                        accelerator_userdata);
 +
 +    QTAILQ_FOREACH_SAFE(request, &dev->pending, link, next) {
 +        uint16_t status = 0;
@@ -420,12 +445,19 @@ index 0000000..fdd64c4
 +    VirtIOCrucibleAccelerator *dev = VIRTIO_CRUCIBLE_ACCELERATOR(vdev);
 +    uint32_t count = qemu_get_be32(f);
 +    uint32_t i;
++    QTAILQ_HEAD(, VirtIOCrucibleAcceleratorRequest) staged;
++    VirtIOCrucibleAcceleratorRequest *request, *next;
 +
-+    if (count > VIRTIO_CRUCIBLE_ACCELERATOR_QUEUE_SIZE) {
++    QTAILQ_INIT(&staged);
++
++    if (!accelerator_callbacks_ready() ||
++        count > VIRTIO_CRUCIBLE_ACCELERATOR_QUEUE_SIZE ||
++        dev->pending_count != 0 ||
++        accelerator_restore_begin_cb(count, accelerator_userdata) != 0) {
 +        return -EINVAL;
 +    }
 +    for (i = 0; i < count; i++) {
-+        VirtIOCrucibleAcceleratorRequest *request = g_new0(
++        request = g_new0(
 +            VirtIOCrucibleAcceleratorRequest, 1);
 +        size_t out_bytes;
 +        size_t in_bytes;
@@ -433,13 +465,13 @@ index 0000000..fdd64c4
 +        if (qemu_get_buffer(f, (uint8_t *)&request->job,
 +                            sizeof(request->job)) != sizeof(request->job)) {
 +            g_free(request);
-+            return -EIO;
++            goto abort_io;
 +        }
 +        request->element = qemu_get_virtqueue_element_checked(
 +            vdev, f, sizeof(*request->element));
 +        if (!request->element) {
 +            g_free(request);
-+            return -EINVAL;
++            goto abort_invalid;
 +        }
 +        out_bytes = iov_size(request->element->out_sg,
 +                             request->element->out_num);
@@ -448,7 +480,7 @@ index 0000000..fdd64c4
 +        if (!accelerator_job_valid(&request->job, out_bytes, in_bytes)) {
 +            g_free(request->element);
 +            g_free(request);
-+            return -EINVAL;
++            goto abort_invalid;
 +        }
 +        if (accelerator_restore_cb(
 +                le64_to_cpu(request->job.sequence), dev->config.device_id,
@@ -460,12 +492,37 @@ index 0000000..fdd64c4
 +                accelerator_userdata) != 0) {
 +            g_free(request->element);
 +            g_free(request);
-+            return -EINVAL;
++            goto abort_invalid;
 +        }
++        QTAILQ_INSERT_TAIL(&staged, request, link);
++    }
++    if (accelerator_restore_commit_cb(accelerator_userdata) != 0) {
++        goto abort_invalid;
++    }
++    QTAILQ_FOREACH_SAFE(request, &staged, link, next) {
++        QTAILQ_REMOVE(&staged, request, link);
 +        QTAILQ_INSERT_TAIL(&dev->pending, request, link);
 +        dev->pending_count++;
 +    }
 +    return 0;
++
++abort_io:
++    accelerator_restore_abort_cb(accelerator_userdata);
++    QTAILQ_FOREACH_SAFE(request, &staged, link, next) {
++        QTAILQ_REMOVE(&staged, request, link);
++        g_free(request->element);
++        g_free(request);
++    }
++    return -EIO;
++
++abort_invalid:
++    accelerator_restore_abort_cb(accelerator_userdata);
++    QTAILQ_FOREACH_SAFE(request, &staged, link, next) {
++        QTAILQ_REMOVE(&staged, request, link);
++        g_free(request->element);
++        g_free(request);
++    }
++    return -EINVAL;
 +}
 +
 +static void accelerator_get_config(VirtIODevice *vdev, uint8_t *config)
@@ -542,6 +599,7 @@ index 0000000..fdd64c4
 +    VirtioDeviceClass *vdc = VIRTIO_DEVICE_CLASS(klass);
 +
 +    dc->vmsd = &vmstate_accelerator;
++    dc->hotpluggable = false;
 +    set_bit(DEVICE_CATEGORY_MISC, dc->categories);
 +    vdc->realize = accelerator_realize;
 +    vdc->unrealize = accelerator_unrealize;
@@ -682,10 +740,10 @@ index 0f0fee9..d59b6e4 100644
  bool qemu_crucible_fault_register_ensure_registered(void);
  bool qemu_crucible_fault_register_rules_active(void);
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 3584c8d..70b8203 100644
+index 3584c8d..c3a4ee7 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -324,6 +324,29 @@ typedef int (*qemu_plugin_blk_transport_restore_cb_t)(
+@@ -324,6 +324,43 @@ typedef int (*qemu_plugin_blk_transport_restore_cb_t)(
      const uint8_t *data, size_t len, uint64_t epoch,
      uint32_t next_request_id, void *userdata);
  
@@ -701,6 +759,20 @@ index 3584c8d..70b8203 100644
 +    uint16_t job_kind, uint16_t queue_id, uint64_t service_units,
 +    size_t output_capacity, void *userdata);
 +
++/** Begin one all-or-nothing accelerator pending-request restore. */
++typedef int (*qemu_plugin_accelerator_restore_begin_cb_t)(uint32_t count,
++                                                          void *userdata);
++
++/** Commit all accelerator pending requests staged by the current restore. */
++typedef int (*qemu_plugin_accelerator_restore_commit_cb_t)(void *userdata);
++
++/** Discard all accelerator pending requests staged by the current restore. */
++typedef void (*qemu_plugin_accelerator_restore_abort_cb_t)(void *userdata);
++
++/** Accelerator pending-request cancellation callback. */
++typedef int (*qemu_plugin_accelerator_cancel_cb_t)(uint64_t sequence,
++                                                   void *userdata);
++
 +/** Accelerator completion poll callback. */
 +typedef int64_t (*qemu_plugin_accelerator_poll_cb_t)(
 +    uint64_t sequence, uint16_t *status, uint8_t *data, size_t capacity,
@@ -715,7 +787,7 @@ index 3584c8d..70b8203 100644
  #define QEMU_PLUGIN_BLK_OP_READ 0u
  #define QEMU_PLUGIN_BLK_OP_WRITE 1u
  #define QEMU_PLUGIN_BLK_OP_FLUSH 2u
-@@ -1237,6 +1260,23 @@ QEMU_PLUGIN_API
+@@ -1237,6 +1274,27 @@ QEMU_PLUGIN_API
  void qemu_plugin_register_blk_wait_cb(qemu_plugin_blk_wait_cb_t wait_cb,
                                        void *userdata);
  
@@ -734,12 +806,16 @@ index 3584c8d..70b8203 100644
 +    qemu_plugin_accelerator_submit_cb_t submit_cb,
 +    qemu_plugin_accelerator_poll_cb_t poll_cb,
 +    qemu_plugin_accelerator_wait_cb_t wait_cb,
-+    qemu_plugin_accelerator_restore_cb_t restore_cb, void *userdata);
++    qemu_plugin_accelerator_restore_begin_cb_t restore_begin_cb,
++    qemu_plugin_accelerator_restore_cb_t restore_cb,
++    qemu_plugin_accelerator_restore_commit_cb_t restore_commit_cb,
++    qemu_plugin_accelerator_restore_abort_cb_t restore_abort_cb,
++    qemu_plugin_accelerator_cancel_cb_t cancel_cb, void *userdata);
 +
  /**
   * qemu_plugin_register_9p_cb() - register shmem 9p callbacks
   * @burst_start_cb: burst-start callback, or NULL to disable shmem forwarding
-@@ -1920,6 +1960,30 @@ size_t qemu_plugin_crucible_fault_clock_manifest(
+@@ -1920,6 +1978,30 @@ size_t qemu_plugin_crucible_fault_clock_manifest(
      struct qemu_plugin_crucible_fault_clock_capability *out,
      size_t capacity, uint16_t *architecture);
  

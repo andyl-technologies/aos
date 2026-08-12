@@ -403,12 +403,24 @@ pub type QemuAcceleratorWaitCbFn = extern "C" fn(u64, *mut c_void);
 /// Accelerator pending-request restore callback.
 pub type QemuAcceleratorRestoreCbFn =
     extern "C" fn(u64, *const u8, u16, u16, u16, u64, usize, *mut c_void) -> c_int;
+/// Accelerator restore-transaction begin callback.
+pub type QemuAcceleratorRestoreBeginCbFn = extern "C" fn(u32, *mut c_void) -> c_int;
+/// Accelerator restore-transaction commit callback.
+pub type QemuAcceleratorRestoreCommitCbFn = extern "C" fn(*mut c_void) -> c_int;
+/// Accelerator restore-transaction abort callback.
+pub type QemuAcceleratorRestoreAbortCbFn = extern "C" fn(*mut c_void);
+/// Accelerator pending-request cancellation callback.
+pub type QemuAcceleratorCancelCbFn = extern "C" fn(u64, *mut c_void) -> c_int;
 /// QEMU deterministic accelerator callback registration export.
 pub type QemuRegisterAcceleratorCbFn = extern "C" fn(
     Option<QemuAcceleratorSubmitCbFn>,
     Option<QemuAcceleratorPollCbFn>,
     Option<QemuAcceleratorWaitCbFn>,
+    Option<QemuAcceleratorRestoreBeginCbFn>,
     Option<QemuAcceleratorRestoreCbFn>,
+    Option<QemuAcceleratorRestoreCommitCbFn>,
+    Option<QemuAcceleratorRestoreAbortCbFn>,
+    Option<QemuAcceleratorCancelCbFn>,
     *mut c_void,
 );
 /// Standard QEMU vCPU lifecycle callback body.

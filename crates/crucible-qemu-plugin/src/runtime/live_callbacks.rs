@@ -328,7 +328,11 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
             Some(devices::crucible_qemu_plugin_live_accelerator_submit_cb),
             Some(devices::crucible_qemu_plugin_live_accelerator_poll_cb),
             Some(devices::crucible_qemu_plugin_live_accelerator_wait_cb),
+            Some(devices::crucible_qemu_plugin_live_accelerator_restore_begin_cb),
             Some(devices::crucible_qemu_plugin_live_accelerator_restore_cb),
+            Some(devices::crucible_qemu_plugin_live_accelerator_restore_commit_cb),
+            Some(devices::crucible_qemu_plugin_live_accelerator_restore_abort_cb),
+            Some(devices::crucible_qemu_plugin_live_accelerator_cancel_cb),
             callback_state.cast(),
         );
         let mut mask = OwnedCallbackRegistrationMask::base_required();

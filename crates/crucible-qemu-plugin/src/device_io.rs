@@ -129,6 +129,49 @@ impl PluginDeviceIoFreeze {
         self.begin_submit_with_burst_membership(slot, submit_icount, false)
     }
 
+    /// Atomically records a batch of independent restored requests.
+    ///
+    /// No counter, sequence, or shared-memory state changes unless every token
+    /// in the requested batch can be represented.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceIoFreezeError::PendingCounterOverflow`] or
+    /// [`DeviceIoFreezeError::RequestSequenceOverflow`] when the complete batch
+    /// cannot be admitted.
+    pub fn begin_independent_batch(
+        &mut self,
+        slot: &NodeSlot,
+        submit_icount: u64,
+        count: u32,
+    ) -> Result<Vec<DeviceIoRequestToken>, DeviceIoFreezeError> {
+        let next_pending = self.pending_requests.checked_add(count).ok_or(
+            DeviceIoFreezeError::PendingCounterOverflow {
+                pending_requests: self.pending_requests,
+            },
+        )?;
+        let next_sequence = self.next_request_seq.checked_add(u64::from(count)).ok_or(
+            DeviceIoFreezeError::RequestSequenceOverflow {
+                next_request_seq: self.next_request_seq,
+            },
+        )?;
+        let mut tokens = Vec::with_capacity(count as usize);
+        for offset in 0..u64::from(count) {
+            tokens.push(DeviceIoRequestToken {
+                owner_id: self.owner_id,
+                request_seq: self.next_request_seq + offset,
+                submit_icount,
+                burst_member: false,
+            });
+        }
+        if count != 0 {
+            PluginShmemOrdering::publish_device_io_active(slot);
+        }
+        self.pending_requests = next_pending;
+        self.next_request_seq = next_sequence;
+        Ok(tokens)
+    }
+
     fn begin_submit_with_burst_membership(
         &mut self,
         slot: &NodeSlot,

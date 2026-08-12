@@ -2,14 +2,15 @@
 //!
 //! ABI v11 appends one guest/QEMU-to-host request ring and one host-to-QEMU
 //! completion ring per VM. ABI v12 adds the completion-capacity field and moves
-//! the payload accordingly. Each fixed-size entry owns a complete, bounded job
+//! the payload accordingly. ABI v13 reserves request-ring capacity for
+//! cancellation of every full-depth guest queue entry. Each fixed-size entry owns a complete, bounded job
 //! or result; no guest address, native pointer, or process-private object
 //! crosses the Apache/GPL process boundary.
 
 use super::*;
 
 /// Fixed entry capacity for each accelerator direction.
-pub const ACCELERATOR_QUEUE_CAPACITY: u32 = 64;
+pub const ACCELERATOR_QUEUE_CAPACITY: u32 = 128;
 /// Number of accelerator rings per VM.
 pub const ACCELERATOR_RINGS_PER_VM: u32 = 2;
 /// Per-VM request ring offset.
@@ -20,6 +21,10 @@ pub const ACCELERATOR_COMPLETION_RING_OFFSET: u32 = 1;
 pub const ACCELERATOR_ENTRY_DATA_BYTES: usize = MAX_FRAME_DATA;
 /// Accelerator entry protocol version.
 pub const ACCELERATOR_PROTOCOL_VERSION: u16 = 1;
+/// Request-entry flag for cancellation of an existing sequence.
+pub const ACCELERATOR_ENTRY_FLAG_CANCELLATION: u16 = 2;
+/// Completion status acknowledging that a sequence is cancelled host-side.
+pub const ACCELERATOR_STATUS_CANCELLED: u16 = 6;
 
 /// Accelerator class encoded on the public process boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,6 +218,43 @@ impl AcceleratorEntry {
         Ok(entry)
     }
 
+    /// Builds a canonical cancellation request for a previously submitted job.
+    ///
+    /// The complete immutable job envelope is repeated so the host can reject
+    /// cancellation of a different request that merely reuses a sequence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AcceleratorEntryError`] when an identity or job field is not
+    /// canonical for the accelerator transport.
+    #[allow(clippy::too_many_arguments)]
+    pub fn cancellation(
+        sequence: u64,
+        generation: u64,
+        device_id: [u8; 32],
+        class: AcceleratorClass,
+        job_kind: u16,
+        queue_id: u16,
+        service_units: u64,
+        output_capacity: u32,
+    ) -> Result<Self, AcceleratorEntryError> {
+        let mut entry = Self::new(
+            sequence,
+            generation,
+            device_id,
+            class,
+            job_kind,
+            queue_id,
+            0,
+            false,
+            service_units,
+            output_capacity,
+            &[],
+        )?;
+        entry.flags = ACCELERATOR_ENTRY_FLAG_CANCELLATION;
+        Ok(entry)
+    }
+
     /// Returns the publication sequence.
     #[must_use]
     pub const fn sequence(self) -> u64 {
@@ -273,6 +315,12 @@ impl AcceleratorEntry {
         self.flags == 1
     }
 
+    /// Returns whether this record cancels an earlier request.
+    #[must_use]
+    pub const fn is_cancellation(self) -> bool {
+        self.flags == ACCELERATOR_ENTRY_FLAG_CANCELLATION
+    }
+
     /// Returns the owned job or result bytes.
     ///
     /// # Errors
@@ -307,8 +355,8 @@ impl AcceleratorEntry {
             || self.service_units == 0
             || self.output_capacity == 0
             || self.output_capacity as usize > ACCELERATOR_ENTRY_DATA_BYTES
-            || self.flags > 1
-            || (self.flags == 0 && self.status != 0)
+            || self.flags > ACCELERATOR_ENTRY_FLAG_CANCELLATION
+            || (self.flags != 1 && self.status != 0)
         {
             return Err(AcceleratorEntryError::InvalidJob);
         }
@@ -319,7 +367,9 @@ impl AcceleratorEntry {
                 capacity: ACCELERATOR_ENTRY_DATA_BYTES,
             });
         }
-        if self.flags == 1 && len > self.output_capacity as usize {
+        if (self.flags == 1 && len > self.output_capacity as usize)
+            || (self.flags == ACCELERATOR_ENTRY_FLAG_CANCELLATION && len != 0)
+        {
             return Err(AcceleratorEntryError::InvalidJob);
         }
         if self.data[len..].iter().any(|byte| *byte != 0)
@@ -380,5 +430,16 @@ mod tests {
             malformed.validate(),
             Err(AcceleratorEntryError::NonzeroReservedBytes)
         );
+    }
+
+    #[test]
+    fn cancellation_repeats_a_canonical_job_envelope_without_payload() {
+        let cancellation =
+            AcceleratorEntry::cancellation(7, 8, [9; 32], AcceleratorClass::Tpu, 1, 0, 12, 64)
+                .unwrap_or_else(|error| panic!("cancellation should build: {error}"));
+        assert!(cancellation.is_cancellation());
+        assert!(!cancellation.is_completion());
+        assert_eq!(cancellation.data(), Ok(&[][..]));
+        assert_eq!(cancellation.output_capacity(), 64);
     }
 }
