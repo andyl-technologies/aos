@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn plugin_handshake_preserves_protocol_failures() {
-        assert_eq!(ABI_VERSION, 11);
+        assert_eq!(ABI_VERSION, 12);
         for host_abi in [1, ABI_VERSION + 1] {
             let ack = control_encode_host_msg(&HostMsg::HelloAck {
                 proto_version: CONTROL_PROTOCOL_VERSION,

@@ -8,14 +8,14 @@ Signed-off-by: Dylan Plecki <dylan@andyl.com>
  hw/virtio/Kconfig                             |   5 +
  hw/virtio/meson.build                         |   2 +
  hw/virtio/virtio-crucible-accelerator-pci.c   |  77 ++
- hw/virtio/virtio-crucible-accelerator.c       | 415 +++++++++++
+ hw/virtio/virtio-crucible-accelerator.c       | 418 +++++++++++
  .../hw/virtio/virtio-crucible-accelerator.h   |  57 ++
  include/qemu/crucible-fault.h                 |  29 +
  include/qemu/qemu-plugin.h                    |  64 ++
  plugins/crucible-fault-accelerator.c          | 676 ++++++++++++++++++
  plugins/crucible-fault-node.c                 |  21 +
  plugins/meson.build                           |   1 +
- 10 files changed, 1347 insertions(+)
+ 10 files changed, 1350 insertions(+)
  create mode 100644 hw/virtio/virtio-crucible-accelerator-pci.c
  create mode 100644 hw/virtio/virtio-crucible-accelerator.c
  create mode 100644 include/hw/virtio/virtio-crucible-accelerator.h
@@ -142,10 +142,10 @@ index 0000000..63b8124
 +type_init(accelerator_pci_register)
 diff --git a/hw/virtio/virtio-crucible-accelerator.c b/hw/virtio/virtio-crucible-accelerator.c
 new file mode 100644
-index 0000000..e9bc25c
+index 0000000..fdd64c4
 --- /dev/null
 +++ b/hw/virtio/virtio-crucible-accelerator.c
-@@ -0,0 +1,415 @@
+@@ -0,0 +1,418 @@
 +/*
 + * Crucible deterministic accelerator co-simulation device
 + *
@@ -157,6 +157,7 @@ index 0000000..e9bc25c
 +
 +#include "qemu/osdep.h"
 +#include "qapi/error.h"
++#include "qemu/accel.h"
 +#include "qemu/iov.h"
 +#include "qemu/module.h"
 +#include "qemu/crucible-fault.h"
@@ -212,9 +213,11 @@ index 0000000..e9bc25c
 +
 +    return le16_to_cpu(job->protocol_version) == 1 && class_id >= 1 &&
 +           class_id <= 3 && le16_to_cpu(job->job_kind) != 0 &&
++           le16_to_cpu(job->queue_id) == 0 &&
 +           le64_to_cpu(job->sequence) != 0 &&
 +           le64_to_cpu(job->service_units) != 0 &&
 +           input_len <= VIRTIO_CRUCIBLE_ACCELERATOR_DATA_MAX &&
++           output_capacity != 0 &&
 +           output_capacity <= VIRTIO_CRUCIBLE_ACCELERATOR_DATA_MAX &&
 +           out_bytes == sizeof(*job) + input_len &&
 +           in_bytes >= sizeof(*job) + output_capacity &&
@@ -476,8 +479,8 @@ index 0000000..e9bc25c
 +    VirtIOCrucibleAccelerator *dev = VIRTIO_CRUCIBLE_ACCELERATOR(device);
 +    VirtIODevice *vdev = VIRTIO_DEVICE(device);
 +
-+    if (!accelerator_callbacks_ready()) {
-+        error_setg(errp, "Crucible accelerator callbacks must be registered");
++    if (strcmp(current_accel_name(), "sim") != 0) {
++        error_setg(errp, "virtio-crucible-accelerator requires -accel sim");
 +        return;
 +    }
 +    virtio_init(vdev, VIRTIO_ID_CRUCIBLE_ACCELERATOR,
