@@ -78,10 +78,6 @@
         needle = "ControlOperationKind::Fork";
       }
       {
-        label = "inject coverage";
-        needle = "ControlOperationKind::Inject";
-      }
-      {
         label = "query coverage";
         needle = "ControlOperationKind::Query";
       }
@@ -116,10 +112,6 @@
       {
         label = "fork command mapping";
         needle = "ControlOperationKind::Fork => SessionCommand::fork_current()";
-      }
-      {
-        label = "inject command mapping";
-        needle = "ControlOperationKind::Inject => SessionCommand::Inject";
       }
       {
         label = "query command mapping";
@@ -266,10 +258,6 @@
       {
         label = "session fork command";
         needle = "SessionCommand::fork_current()";
-      }
-      {
-        label = "session inject command";
-        needle = "SessionCommand::Inject";
       }
       {
         label = "session query command";

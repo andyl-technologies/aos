@@ -1413,7 +1413,6 @@ pub(super) fn external_control_operation_kind_material(
         ControlOperationKind::Step => lines.push(format!("{prefix}=step")),
         ControlOperationKind::Snapshot => lines.push(format!("{prefix}=snapshot")),
         ControlOperationKind::Fork => lines.push(format!("{prefix}=fork")),
-        ControlOperationKind::Inject => lines.push(format!("{prefix}=inject")),
         ControlOperationKind::Query => lines.push(format!("{prefix}=query")),
     }
     lines.join("\n")

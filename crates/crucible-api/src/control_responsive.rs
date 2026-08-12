@@ -17,10 +17,9 @@ use tokio::sync::mpsc;
 pub const CONTROL_RESPONSIVE_QUANTUM_BOUND: u64 = 1;
 
 /// Running-session control operations that the responsiveness gate must observe.
-pub const CONTROL_RESPONSIVE_REQUIRED_OPERATIONS: [ControlOperationKind; 4] = [
+pub const CONTROL_RESPONSIVE_REQUIRED_OPERATIONS: [ControlOperationKind; 3] = [
     ControlOperationKind::Pause,
     ControlOperationKind::Snapshot,
-    ControlOperationKind::Inject,
     ControlOperationKind::Query,
 ];
 
@@ -33,8 +32,6 @@ pub enum ControlOperationKind {
     Snapshot,
     /// Fork a child session from a deterministic checkpoint or prefix boundary.
     Fork,
-    /// Inject a deterministic fault or input through the session control path.
-    Inject,
     /// Read the current session state without mutating the run.
     Query,
 }
@@ -284,7 +281,6 @@ fn session_command_for(operation: ControlOperationKind) -> SessionCommand {
         ControlOperationKind::Pause => SessionCommand::Pause,
         ControlOperationKind::Snapshot => SessionCommand::Snapshot,
         ControlOperationKind::Fork => SessionCommand::fork_current(),
-        ControlOperationKind::Inject => SessionCommand::Inject,
         ControlOperationKind::Query => SessionCommand::query_snapshot(),
     }
 }
@@ -293,7 +289,7 @@ fn session_command_for(operation: ControlOperationKind) -> SessionCommand {
 ///
 /// The validator requires each record to be issued while the session is running,
 /// rejects backward quantum counters, enforces the supplied quantum bound, and
-/// requires coverage of pause, snapshot, inject, and query operations.
+/// requires coverage of pause, snapshot, and query operations.
 ///
 /// # Errors
 ///

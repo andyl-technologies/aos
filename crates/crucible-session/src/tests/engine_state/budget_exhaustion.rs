@@ -22,9 +22,17 @@ fn control_replay_artifact_reproduces_interactive_scheduler_state() {
         panic!("first producer quantum should establish a control boundary: {error}");
     }
 
-    if let Err(error) = interactive.apply_command(SessionCommand::Inject) {
-        panic!("producer legacy inject should apply at the current boundary: {error}");
+    let (savepoint_reply, mut savepoint_receiver) = CommandReply::channel();
+    if let Err(error) = interactive.apply_command(SessionCommand::CreateSavepoint {
+        label: String::from("replay-boundary"),
+        reply: savepoint_reply,
+    }) {
+        panic!("producer savepoint should apply at the current boundary: {error}");
     }
+    let _savepoint = savepoint_receiver
+        .try_recv()
+        .unwrap_or_else(|error| panic!("savepoint reply should be available: {error}"))
+        .unwrap_or_else(|error| panic!("savepoint should succeed: {error}"));
     if let Err(error) = interactive.step_quantum() {
         panic!("second producer quantum should observe injected scheduler state: {error}");
     }

@@ -193,7 +193,6 @@ pub(super) fn write_control_operation_kind_binary(
         ControlOperationKind::Step => writer.write_u8(2),
         ControlOperationKind::Snapshot => writer.write_u8(3),
         ControlOperationKind::Fork => writer.write_u8(4),
-        ControlOperationKind::Inject => writer.write_u8(5),
         ControlOperationKind::Query => writer.write_u8(6),
     }
 }
@@ -207,7 +206,6 @@ pub(super) fn read_control_operation_kind_binary(
         2 => Ok(ControlOperationKind::Step),
         3 => Ok(ControlOperationKind::Snapshot),
         4 => Ok(ControlOperationKind::Fork),
-        5 => Ok(ControlOperationKind::Inject),
         6 => Ok(ControlOperationKind::Query),
         _ => Err(scenario_serialization_error(
             "invalid control-operation-kind tag",

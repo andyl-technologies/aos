@@ -6,13 +6,13 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crucible::{
-    BackendEffect, BackendInput, Checkpoint, CheckpointKind, Configuration, ControlOperation,
+    BackendEffect, Checkpoint, CheckpointKind, Configuration, ControlOperation,
     ControlOperationKind, Decision, DeliveryOrderDecision, EventClass, EventDiagnosticPayload,
-    EventKey, EventLevel, EventSource, GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome,
-    QuantumRequest, ScenarioDef, ScheduledEvent, ScheduledEventKey, SchedulerError,
-    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind, Seed,
-    SimDouble, SimDoubleConfig, SimulationBackend, TemporalGraph, VirtualTime,
-    compare_event_log_determinism, step,
+    EventKey, EventLevel, GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest,
+    ScenarioDef, ScheduledEvent, ScheduledEventKey, SchedulerError, SchedulerEventLogEntry,
+    SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind, Seed, SimDouble,
+    SimDoubleConfig, SimulationBackend, TemporalGraph, VirtualTime, compare_event_log_determinism,
+    step,
 };
 use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
 use crucible_session::{
@@ -81,12 +81,9 @@ async fn gate_control_responsive_reads_live_snapshot_without_mailbox_roundtrip()
     let snapshot_acknowledged =
         acknowledge_operation(&sender, &live, SessionCommand::Snapshot, "snapshot").await;
     assert_eq!(snapshot_acknowledged.state_kind, LiveStateKind::Running);
-    let inject_acknowledged =
-        acknowledge_operation(&sender, &live, SessionCommand::Inject, "inject").await;
-    assert_eq!(inject_acknowledged.state_kind, LiveStateKind::Running);
     assert_eq!(
         live.query(LiveQueryKind::Status),
-        LiveQueryResult::Status(inject_acknowledged)
+        LiveQueryResult::Status(snapshot_acknowledged)
     );
     assert_eq!(
         live.query(LiveQueryKind::State),
@@ -94,11 +91,11 @@ async fn gate_control_responsive_reads_live_snapshot_without_mailbox_roundtrip()
     );
     assert_eq!(
         live.query(LiveQueryKind::EventLogLength),
-        LiveQueryResult::EventLogLength(inject_acknowledged.event_log_len)
+        LiveQueryResult::EventLogLength(snapshot_acknowledged.event_log_len)
     );
     assert_eq!(
         observed_control_operations(&observed_control),
-        vec![ControlOperationKind::Snapshot, ControlOperationKind::Inject,]
+        vec![ControlOperationKind::Snapshot]
     );
 
     let paused = acknowledge_operation(&sender, &live, SessionCommand::Pause, "pause").await;
@@ -212,7 +209,7 @@ async fn gate_control_plane_streams_event_log_entries_from_cursor_without_mutati
         .unwrap_or_else(|| panic!("future cursor stream should deliver live entries"));
     assert_eq!(future_frame.cursor, EventLogCursor::default());
 
-    acknowledge_operation(&sender, &live, SessionCommand::Inject, "stream-inject").await;
+    acknowledge_operation(&sender, &live, SessionCommand::Snapshot, "stream-snapshot").await;
     send_command(&sender, SessionCommand::Pause).await;
 
     let mut streamed = Vec::new();
@@ -229,10 +226,7 @@ async fn gate_control_plane_streams_event_log_entries_from_cursor_without_mutati
         let has_observational = streamed
             .iter()
             .any(|entry| entry.class() == EventClass::Observational);
-        let has_command = streamed
-            .iter()
-            .any(|entry| matches!(entry.source(), EventSource::Command { command_id } if *command_id == 1));
-        if has_causal && has_observational && has_command {
+        if has_causal && has_observational {
             break;
         }
         tokio::task::yield_now().await;
@@ -248,9 +242,6 @@ async fn gate_control_plane_streams_event_log_entries_from_cursor_without_mutati
             .iter()
             .any(|entry| entry.class() == EventClass::Observational)
     );
-    assert!(streamed.iter().any(
-        |entry| matches!(entry.source(), EventSource::Command { command_id } if *command_id == 1)
-    ));
     let comparison = compare_event_log_determinism(&streamed, &streamed);
     assert!(comparison.passes());
 
@@ -543,18 +534,6 @@ impl SimDoubleQuantumLoop {
                 ControlOperationKind::Query => {
                     let _fingerprint =
                         SimulationBackend::fingerprint(&mut self.backend, control_node().node)?;
-                }
-                ControlOperationKind::Inject => {
-                    let input = BackendInput {
-                        node: control_node().node,
-                        payload: b"session-control-inject".to_vec(),
-                    };
-                    let now = SimulationBackend::now(&self.backend);
-                    SimulationBackend::apply(
-                        &mut self.backend,
-                        &BackendEffect::DeliverInput(input),
-                        now,
-                    )?;
                 }
                 ControlOperationKind::Pause
                 | ControlOperationKind::Resume

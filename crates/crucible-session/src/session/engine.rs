@@ -683,16 +683,6 @@ impl<L> Engine<L> {
         });
     }
 
-    fn apply_control_operation_at_boundary(
-        &mut self,
-        kind: ControlOperationKind,
-    ) -> Result<(), SessionError>
-    where
-        L: QuantumLoop,
-    {
-        self.apply_control_operations_at_boundary(vec![kind])
-    }
-
     fn apply_control_operations_at_boundary(
         &mut self,
         kinds: Vec<ControlOperationKind>,
@@ -1287,7 +1277,6 @@ impl<L: QuantumLoop> Engine<L> {
             | SessionCommandKind::StepAssertion
             | SessionCommandKind::StepTimer
             | SessionCommandKind::StepDuration
-            | SessionCommandKind::Inject
             | SessionCommandKind::SetBreakpoint
             | SessionCommandKind::RemoveBreakpoint
             | SessionCommandKind::CreateSavepoint
@@ -1408,23 +1397,6 @@ impl<L: QuantumLoop> Engine<L> {
                     Ok(self.snapshot())
                 }
                 EngineState::Loaded => Err(self.invalid_transition(command.clone())),
-            },
-            SessionCommand::Inject => match self.state {
-                EngineState::Running | EngineState::Paused { .. } => {
-                    self.reject_debug_forward_without_branch(&command)?;
-                    let control = ControlOperationKind::Inject;
-                    let event_log_sequence_before = usize_to_u64(self.event_log_len());
-                    self.apply_control_operation_at_boundary(control.clone())?;
-                    self.record_boundary_control_at(
-                        &command,
-                        Some(control),
-                        event_log_sequence_before,
-                    );
-                    Ok(self.snapshot())
-                }
-                EngineState::Loaded | EngineState::Stopped { .. } => {
-                    Err(self.invalid_transition(command.clone()))
-                }
             },
             SessionCommand::SetBreakpoint { spec, reply } => match self.state {
                 EngineState::Loaded | EngineState::Running | EngineState::Paused { .. } => {

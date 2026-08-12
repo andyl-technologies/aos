@@ -574,7 +574,6 @@ pub(super) fn push_debug_control_operation_lines(
         | ControlOperationKind::Step
         | ControlOperationKind::Snapshot
         | ControlOperationKind::Fork
-        | ControlOperationKind::Inject
         | ControlOperationKind::Query => {}
     }
 }
@@ -586,7 +585,6 @@ pub(super) fn debug_control_operation_kind_label(kind: &ControlOperationKind) ->
         ControlOperationKind::Step => "step",
         ControlOperationKind::Snapshot => "snapshot",
         ControlOperationKind::Fork => "fork",
-        ControlOperationKind::Inject => "inject",
         ControlOperationKind::Query => "query",
     }
 }

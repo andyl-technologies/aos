@@ -695,7 +695,6 @@ fn control_operation_material(control: &ControlOperationKind) -> String {
         ControlOperationKind::Step => String::from("control=step\n"),
         ControlOperationKind::Snapshot => String::from("control=snapshot\n"),
         ControlOperationKind::Fork => String::from("control=fork\n"),
-        ControlOperationKind::Inject => String::from("control=inject\n"),
         ControlOperationKind::Query => String::from("control=query\n"),
     }
 }

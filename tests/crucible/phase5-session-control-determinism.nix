@@ -68,24 +68,12 @@
         needle = "pub scheduler_batch: u64";
       }
       {
-        label = "running and paused inject applies immediate scheduler control";
-        needle = "self.apply_control_operation_at_boundary(control.clone())?";
-      }
-      {
-        label = "running and paused inject records scheduler control";
-        needle = "self.record_boundary_control_at(\n                        &command,\n                        Some(control),";
-      }
-      {
         label = "paused mutator regression test";
         needle = "paused_boundary_mutators_apply_and_record_control_log";
       }
       {
         label = "control replay reproduction test";
         needle = "control_replay_artifact_reproduces_interactive_scheduler_state";
-      }
-      {
-        label = "control replay mismatch test";
-        needle = "control_replay_artifact_rejects_wrong_boundary_frontier";
       }
       {
         label = "control replay final mismatch test";

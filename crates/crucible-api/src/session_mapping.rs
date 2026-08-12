@@ -314,10 +314,6 @@ pub const API_COMMAND_MAPPINGS: [ApiCommandMapping; 23] = [
         command_kind: SessionCommandKind::ExhaustBudget,
     },
     ApiCommandMapping {
-        command_name: "inject",
-        command_kind: SessionCommandKind::Inject,
-    },
-    ApiCommandMapping {
         command_name: "set-breakpoint",
         command_kind: SessionCommandKind::SetBreakpoint,
     },
