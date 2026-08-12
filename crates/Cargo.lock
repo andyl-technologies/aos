@@ -2198,6 +2198,7 @@ dependencies = [
  "crucible",
  "crucible-protocol",
  "crucible-shmem",
+ "hex",
  "libc",
  "serde_json",
  "sha2 0.10.9",
