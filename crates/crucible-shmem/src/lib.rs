@@ -155,10 +155,12 @@ use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 pub use abi_header::generated_c_header;
 #[cfg(unix)]
 pub use mapped_setup_region::{
-    DetachedPluginGuestIntrospectionRings, MappedCoverageRingMut, MappedDirectedRingMut,
+    DetachedPluginGuestIntrospectionRings, MappedAcceleratorConsumerRingMut,
+    MappedAcceleratorProducerRingMut, MappedCoverageRingMut, MappedDirectedRingMut,
     MappedFaultCommandTransportMut, MappedFaultEventTransportMut, MappedFaultResultTransportMut,
     MappedGuestIntrospectionConsumerRingMut, MappedGuestIntrospectionProducerRingMut,
     MappedHostGuestIntrospectionRingsMut, MappedNodeRingPairMut,
+    MappedHostAcceleratorRingsMut, MappedPluginAcceleratorRingsMut,
     MappedPluginGuestIntrospectionRingsMut, MappedSetupRegion, MappedSetupRegionAccessError,
     MappedWhiteboxMarkerRingMut, SetupRegionMapError, mmap_setup_region,
 };
@@ -182,9 +184,9 @@ pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// a fresh plugin can reconstruct idle-jump time after QEMU loads VMState.
 /// Version 9 adds typed node-fault commands and an independent lossless stream
 /// for actual QEMU fault-rule occurrences.
-/// Version 10 appends bounded bidirectional guest-introspection rings per VM
-/// after the ABI v9 fault transports.
-pub const ABI_VERSION: u32 = 10;
+/// Version 10 appends bounded bidirectional guest-introspection rings per VM.
+/// Version 11 appends bounded accelerator request/completion rings per VM.
+pub const ABI_VERSION: u32 = 11;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of entries in each plugin-to-host coverage queue.
 ///
@@ -263,6 +265,8 @@ mod frame_node;
 mod region;
 #[path = "shmem/ring_coverage.rs"]
 mod ring_coverage;
+#[path = "shmem/ring_accelerator.rs"]
+mod ring_accelerator;
 #[path = "shmem/ring_guest_introspection.rs"]
 mod ring_guest_introspection;
 #[path = "shmem/ring_whitebox_marker.rs"]
@@ -284,5 +288,6 @@ pub use fingerprint_sample::*;
 pub use frame_node::*;
 pub use region::*;
 pub use ring_coverage::*;
+pub use ring_accelerator::*;
 pub use ring_guest_introspection::*;
 pub use ring_whitebox_marker::*;

@@ -184,6 +184,29 @@ impl RingHeader {
         Ok(())
     }
 
+    /// Enqueues one validated accelerator request or completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when the backing slice or shared indices are
+    /// invalid or the bounded queue is full.
+    pub fn enqueue_accelerator(
+        &self,
+        entries: &mut [AcceleratorEntry],
+        entry: AcceleratorEntry,
+    ) -> Result<(), SpscRingError> {
+        let capacity = validated_capacity(entries)?;
+        let tail = self.write_idx.load(Ordering::Relaxed);
+        let head = self.read_idx.load(Ordering::Acquire);
+        let live = live_count(head, tail, capacity)?;
+        if live == capacity {
+            return Err(SpscRingError::QueueFull { capacity });
+        }
+        entries[(tail & (capacity - 1)) as usize] = entry;
+        self.write_idx.store(tail.wrapping_add(1), Ordering::Release);
+        Ok(())
+    }
+
     /// Returns the next frame's delivery icount without consuming it.
     ///
     /// # Errors
@@ -314,6 +337,29 @@ impl RingHeader {
         let entry = entries[slot]
             .validate()
             .map_err(|source| SpscRingError::InvalidGuestIntrospectionEntry { source })?;
+        self.read_idx.store(head.wrapping_add(1), Ordering::Release);
+        Ok(Some(entry))
+    }
+
+    /// Dequeues and validates one accelerator request or completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when geometry or indices are invalid, or the
+    /// next cross-process entry is malformed. Malformed entries remain queued.
+    pub fn dequeue_accelerator(
+        &self,
+        entries: &[AcceleratorEntry],
+    ) -> Result<Option<AcceleratorEntry>, SpscRingError> {
+        let capacity = validated_capacity(entries)?;
+        let head = self.read_idx.load(Ordering::Relaxed);
+        let tail = self.write_idx.load(Ordering::Acquire);
+        if live_count(head, tail, capacity)? == 0 {
+            return Ok(None);
+        }
+        let entry = entries[(head & (capacity - 1)) as usize]
+            .validate()
+            .map_err(|source| SpscRingError::InvalidAcceleratorEntry { source })?;
         self.read_idx.store(head.wrapping_add(1), Ordering::Release);
         Ok(Some(entry))
     }

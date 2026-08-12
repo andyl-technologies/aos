@@ -7,6 +7,8 @@ use std::ptr::NonNull;
 use thiserror::Error;
 
 use super::{
+    ACCELERATOR_ENTRY_ALIGN, ACCELERATOR_ENTRY_SIZE, AcceleratorEntry,
+    AcceleratorRingDirection,
     COVERAGE_ENTRY_ALIGN, COVERAGE_ENTRY_SIZE, CoverageEntry, DirectedRing,
     FAULT_COMMAND_SLOT_V1_BYTES, FAULT_EVENT_SLOT_V1_BYTES, FAULT_PAYLOAD_ARENA_HEADER_BYTES,
     FAULT_RESULT_SLOT_V1_BYTES, FINGERPRINT_SAMPLE_SLOT_ALIGN, FINGERPRINT_SAMPLE_SLOT_SIZE,
@@ -20,6 +22,64 @@ use super::{
     WhiteboxMarkerEntry, directed_rings, layout_from_setup_region_header,
     validate_setup_region_header,
 };
+
+/// Producer-only access to one directional accelerator ring.
+pub struct MappedAcceleratorProducerRingMut<'a> {
+    /// Logical VM that owns this direction.
+    pub vm_slot: u32,
+    /// Fixed producer/consumer direction.
+    pub direction: AcceleratorRingDirection,
+    header: &'a RingHeader,
+    entries: &'a mut [AcceleratorEntry],
+}
+
+impl MappedAcceleratorProducerRingMut<'_> {
+    /// Enqueues one validated accelerator record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] for invalid geometry, indices, or exhaustion.
+    pub fn enqueue(&mut self, entry: AcceleratorEntry) -> Result<(), SpscRingError> {
+        self.header.enqueue_accelerator(self.entries, entry)
+    }
+}
+
+/// Consumer-only access to one directional accelerator ring.
+pub struct MappedAcceleratorConsumerRingMut<'a> {
+    /// Logical VM that owns this direction.
+    pub vm_slot: u32,
+    /// Fixed producer/consumer direction.
+    pub direction: AcceleratorRingDirection,
+    header: &'a RingHeader,
+    entries: &'a mut [AcceleratorEntry],
+}
+
+impl MappedAcceleratorConsumerRingMut<'_> {
+    /// Dequeues and validates one accelerator record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] for invalid geometry, indices, or records.
+    pub fn dequeue(&mut self) -> Result<Option<AcceleratorEntry>, SpscRingError> {
+        self.header.dequeue_accelerator(self.entries)
+    }
+}
+
+/// QEMU/plugin-side accelerator roles.
+pub struct MappedPluginAcceleratorRingsMut<'a> {
+    /// Job request producer.
+    pub requests: MappedAcceleratorProducerRingMut<'a>,
+    /// Completion consumer.
+    pub completions: MappedAcceleratorConsumerRingMut<'a>,
+}
+
+/// Host-side accelerator adapter roles.
+pub struct MappedHostAcceleratorRingsMut<'a> {
+    /// Job request consumer.
+    pub requests: MappedAcceleratorConsumerRingMut<'a>,
+    /// Completion producer.
+    pub completions: MappedAcceleratorProducerRingMut<'a>,
+}
 
 /// An owned setup-time `mmap` of the shared-memory region descriptor.
 pub struct MappedSetupRegion {
@@ -895,6 +955,128 @@ impl MappedSetupRegion {
         })
     }
 
+    /// Borrows one VM's QEMU/plugin-side accelerator role pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MappedSetupRegionAccessError`] when the VM or either fixed
+    /// shared-memory segment is invalid.
+    pub fn plugin_accelerator_rings_mut(
+        &mut self,
+        vm_slot: u32,
+    ) -> Result<MappedPluginAcceleratorRingsMut<'_>, MappedSetupRegionAccessError> {
+        let (request_header, request_entries, completion_header, completion_entries) =
+            self.accelerator_ring_pair_mut(vm_slot)?;
+        Ok(MappedPluginAcceleratorRingsMut {
+            requests: MappedAcceleratorProducerRingMut {
+                vm_slot,
+                direction: AcceleratorRingDirection::Request,
+                header: request_header,
+                entries: request_entries,
+            },
+            completions: MappedAcceleratorConsumerRingMut {
+                vm_slot,
+                direction: AcceleratorRingDirection::Completion,
+                header: completion_header,
+                entries: completion_entries,
+            },
+        })
+    }
+
+    /// Borrows one VM's host-side accelerator adapter role pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MappedSetupRegionAccessError`] when the VM or either fixed
+    /// shared-memory segment is invalid.
+    pub fn host_accelerator_rings_mut(
+        &mut self,
+        vm_slot: u32,
+    ) -> Result<MappedHostAcceleratorRingsMut<'_>, MappedSetupRegionAccessError> {
+        let (request_header, request_entries, completion_header, completion_entries) =
+            self.accelerator_ring_pair_mut(vm_slot)?;
+        Ok(MappedHostAcceleratorRingsMut {
+            requests: MappedAcceleratorConsumerRingMut {
+                vm_slot,
+                direction: AcceleratorRingDirection::Request,
+                header: request_header,
+                entries: request_entries,
+            },
+            completions: MappedAcceleratorProducerRingMut {
+                vm_slot,
+                direction: AcceleratorRingDirection::Completion,
+                header: completion_header,
+                entries: completion_entries,
+            },
+        })
+    }
+
+    fn accelerator_ring_pair_mut(
+        &mut self,
+        vm_slot: u32,
+    ) -> Result<(
+        &RingHeader,
+        &mut [AcceleratorEntry],
+        &RingHeader,
+        &mut [AcceleratorEntry],
+    ), MappedSetupRegionAccessError> {
+        let layout = self.layout().map_err(|source| {
+            MappedSetupRegionAccessError::Header { source }
+        })?;
+        if vm_slot >= layout.vm_node_count {
+            return Err(MappedSetupRegionAccessError::UnknownGuestIntrospectionRing {
+                vm_slot,
+                vm_node_count: layout.vm_node_count,
+            });
+        }
+        let request_index = AcceleratorRingDirection::Request.ring_index(vm_slot)
+            .ok_or(MappedSetupRegionAccessError::SegmentOffsetOverflow {
+                segment: "accelerator ring",
+                index: vm_slot,
+            })?;
+        let completion_index = AcceleratorRingDirection::Completion.ring_index(vm_slot)
+            .ok_or(MappedSetupRegionAccessError::SegmentOffsetOverflow {
+                segment: "accelerator ring",
+                index: vm_slot,
+            })?;
+        let request_header_offset = mapped_accelerator_ring_header_offset(
+            layout, self.len, request_index,
+        )?;
+        let completion_header_offset = mapped_accelerator_ring_header_offset(
+            layout, self.len, completion_index,
+        )?;
+        let request_entries_offset = mapped_accelerator_ring_entries_offset(
+            layout, self.len, request_index,
+        )?;
+        let completion_entries_offset = mapped_accelerator_ring_entries_offset(
+            layout, self.len, completion_index,
+        )?;
+        let count = usize::try_from(layout.accelerator_queue_capacity).map_err(|_error| {
+            MappedSetupRegionAccessError::SegmentOffsetOverflow {
+                segment: "accelerator entry",
+                index: vm_slot,
+            }
+        })?;
+        let base = self.base_ptr();
+        // SAFETY: both offset helpers validate complete aligned ranges. The
+        // request and completion indices are distinct and their fixed strides
+        // cannot overlap; the exclusive mapping borrow prevents aliasing.
+        Ok(unsafe {
+            (
+                &*base.add(request_header_offset).cast::<RingHeader>(),
+                core::slice::from_raw_parts_mut(
+                    base.add(request_entries_offset).cast::<AcceleratorEntry>(),
+                    count,
+                ),
+                &*base.add(completion_header_offset).cast::<RingHeader>(),
+                core::slice::from_raw_parts_mut(
+                    base.add(completion_entries_offset).cast::<AcceleratorEntry>(),
+                    count,
+                ),
+            )
+        })
+    }
+
     fn guest_introspection_ring_pair_mut(
         &mut self,
         vm_slot: u32,
@@ -1536,6 +1718,21 @@ fn mapped_guest_introspection_ring_header_offset(
     )
 }
 
+fn mapped_accelerator_ring_header_offset(
+    layout: RegionLayout,
+    region_len: usize,
+    ring_index: u32,
+) -> Result<usize, MappedSetupRegionAccessError> {
+    mapped_segment_offset(
+        "accelerator ring header",
+        ring_index,
+        layout.accelerator_ring_hdr_off,
+        RING_HEADER_SIZE,
+        RING_HEADER_ALIGN,
+        region_len,
+    )
+}
+
 fn mapped_fault_slot_offset(
     base: u64,
     count: u32,
@@ -1610,6 +1807,33 @@ fn mapped_guest_introspection_ring_entries_offset(
         layout.guest_introspection_ring_data_off,
         byte_len,
         GUEST_INTROSPECTION_ENTRY_ALIGN,
+        region_len,
+    )
+}
+
+fn mapped_accelerator_ring_entries_offset(
+    layout: RegionLayout,
+    region_len: usize,
+    ring_index: u32,
+) -> Result<usize, MappedSetupRegionAccessError> {
+    let capacity = usize::try_from(layout.accelerator_queue_capacity).map_err(|_error| {
+        MappedSetupRegionAccessError::SegmentOffsetOverflow {
+            segment: "accelerator entry",
+            index: ring_index,
+        }
+    })?;
+    let byte_len = capacity.checked_mul(ACCELERATOR_ENTRY_SIZE).ok_or(
+        MappedSetupRegionAccessError::SegmentOffsetOverflow {
+            segment: "accelerator entry",
+            index: ring_index,
+        },
+    )?;
+    mapped_segment_offset(
+        "accelerator entry",
+        ring_index,
+        layout.accelerator_ring_data_off,
+        byte_len,
+        ACCELERATOR_ENTRY_ALIGN,
         region_len,
     )
 }

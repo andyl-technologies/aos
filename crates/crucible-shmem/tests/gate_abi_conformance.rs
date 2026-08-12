@@ -5,6 +5,12 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crucible_shmem::{
+    ACCELERATOR_ENTRY_CLASS_OFFSET, ACCELERATOR_ENTRY_DATA_LEN_OFFSET,
+    ACCELERATOR_ENTRY_DATA_OFFSET, ACCELERATOR_ENTRY_DEVICE_ID_OFFSET,
+    ACCELERATOR_ENTRY_GENERATION_OFFSET, ACCELERATOR_ENTRY_JOB_KIND_OFFSET,
+    ACCELERATOR_ENTRY_PROTOCOL_VERSION_OFFSET, ACCELERATOR_ENTRY_QUEUE_ID_OFFSET,
+    ACCELERATOR_ENTRY_SEQUENCE_OFFSET, ACCELERATOR_ENTRY_SERVICE_UNITS_OFFSET,
+    ACCELERATOR_ENTRY_SIZE,
     ABI_VERSION, COVERAGE_ENTRY_BLOCK_LEN_OFFSET, COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET,
     COVERAGE_ENTRY_GUEST_PC_OFFSET, COVERAGE_ENTRY_MAP_INDEX_OFFSET, COVERAGE_ENTRY_SIZE,
     COVERAGE_ENTRY_VCPU_INDEX_OFFSET, FRAME_ENTRY_DATA_OFFSET, FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET,
@@ -48,8 +54,9 @@ const GOLDEN_COVERAGE_ENTRY_BASE: usize = GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_
 const GOLDEN_WHITEBOX_MARKER_ENTRY_BASE: usize = GOLDEN_COVERAGE_ENTRY_BASE + COVERAGE_ENTRY_SIZE;
 const GOLDEN_GUEST_INTROSPECTION_ENTRY_BASE: usize =
     GOLDEN_WHITEBOX_MARKER_ENTRY_BASE + WHITEBOX_MARKER_ENTRY_SIZE;
-const GOLDEN_TOTAL_LEN: usize =
+const GOLDEN_ACCELERATOR_ENTRY_BASE: usize =
     GOLDEN_GUEST_INTROSPECTION_ENTRY_BASE + GUEST_INTROSPECTION_ENTRY_SIZE;
+const GOLDEN_TOTAL_LEN: usize = GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_SIZE;
 const GOLDEN_GUEST_INTROSPECTION_RECORD: &[u8] =
     b"CRGI\x01\x00\x07\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
 
@@ -390,6 +397,20 @@ fn live_golden_bytes() -> Vec<u8> {
             + GUEST_INTROSPECTION_ENTRY_DATA_OFFSET
             + GOLDEN_GUEST_INTROSPECTION_RECORD.len()]
         .copy_from_slice(GOLDEN_GUEST_INTROSPECTION_RECORD);
+    write_u64(&mut bytes, GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_SEQUENCE_OFFSET, 23);
+    write_u64(&mut bytes, GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_GENERATION_OFFSET, 5);
+    bytes[GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_DEVICE_ID_OFFSET
+        ..GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_DEVICE_ID_OFFSET + 32]
+        .fill(0xa5);
+    write_u16(&mut bytes, GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_CLASS_OFFSET, 2);
+    write_u16(&mut bytes, GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_JOB_KIND_OFFSET, 1);
+    write_u16(&mut bytes, GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_QUEUE_ID_OFFSET, 7);
+    write_u16(&mut bytes, GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_PROTOCOL_VERSION_OFFSET, 1);
+    write_u32(&mut bytes, GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_DATA_LEN_OFFSET, 4);
+    write_u64(&mut bytes, GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_SERVICE_UNITS_OFFSET, 16);
+    bytes[GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_DATA_OFFSET
+        ..GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_DATA_OFFSET + 4]
+        .copy_from_slice(b"TENS");
 
     bytes
 }
@@ -670,6 +691,19 @@ fn decode_golden_state(bytes: &[u8]) -> Result<GoldenState, String> {
                     + guest_introspection_len]
                 .to_vec(),
         },
+        accelerator: AcceleratorEntryState {
+            sequence: read_u64(bytes, GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_SEQUENCE_OFFSET),
+            generation: read_u64(bytes, GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_GENERATION_OFFSET),
+            device_id: bytes[GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_DEVICE_ID_OFFSET
+                ..GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_DEVICE_ID_OFFSET + 32].to_vec(),
+            class: read_u16(bytes, GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_CLASS_OFFSET),
+            job_kind: read_u16(bytes, GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_JOB_KIND_OFFSET),
+            queue_id: read_u16(bytes, GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_QUEUE_ID_OFFSET),
+            service_units: read_u64(bytes, GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_SERVICE_UNITS_OFFSET),
+            data: bytes[GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_DATA_OFFSET
+                ..GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_DATA_OFFSET
+                    + read_u32(bytes, GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_DATA_LEN_OFFSET) as usize].to_vec(),
+        },
     })
 }
 
@@ -944,6 +978,20 @@ fn encode_golden_state(state: &GoldenState) -> Vec<u8> {
             + GUEST_INTROSPECTION_ENTRY_DATA_OFFSET
             + state.guest_introspection.record.len()]
         .copy_from_slice(&state.guest_introspection.record);
+    write_u64(&mut bytes, GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_SEQUENCE_OFFSET, state.accelerator.sequence);
+    write_u64(&mut bytes, GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_GENERATION_OFFSET, state.accelerator.generation);
+    bytes[GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_DEVICE_ID_OFFSET
+        ..GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_DEVICE_ID_OFFSET + 32]
+        .copy_from_slice(&state.accelerator.device_id);
+    write_u16(&mut bytes, GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_CLASS_OFFSET, state.accelerator.class);
+    write_u16(&mut bytes, GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_JOB_KIND_OFFSET, state.accelerator.job_kind);
+    write_u16(&mut bytes, GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_QUEUE_ID_OFFSET, state.accelerator.queue_id);
+    write_u16(&mut bytes, GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_PROTOCOL_VERSION_OFFSET, 1);
+    write_u32(&mut bytes, GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_DATA_LEN_OFFSET, state.accelerator.data.len() as u32);
+    write_u64(&mut bytes, GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_SERVICE_UNITS_OFFSET, state.accelerator.service_units);
+    bytes[GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_DATA_OFFSET
+        ..GOLDEN_ACCELERATOR_ENTRY_BASE + ACCELERATOR_ENTRY_DATA_OFFSET + state.accelerator.data.len()]
+        .copy_from_slice(&state.accelerator.data);
 
     bytes
 }
@@ -1001,6 +1049,7 @@ struct GoldenState {
     coverage: CoverageEntryState,
     whitebox_marker: WhiteboxMarkerEntryState,
     guest_introspection: GuestIntrospectionEntryState,
+    accelerator: AcceleratorEntryState,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1080,4 +1129,16 @@ struct WhiteboxMarkerEntryState {
 struct GuestIntrospectionEntryState {
     sequence: u64,
     record: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AcceleratorEntryState {
+    sequence: u64,
+    generation: u64,
+    device_id: Vec<u8>,
+    class: u16,
+    job_kind: u16,
+    queue_id: u16,
+    service_units: u64,
+    data: Vec<u8>,
 }

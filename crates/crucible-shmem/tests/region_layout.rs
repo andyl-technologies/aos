@@ -311,9 +311,21 @@ fn region_layout_computes_offsets_and_directed_rings() {
         GUEST_INTROSPECTION_ENTRY_SIZE as u64
     );
     assert_eq!(
+        layout.accelerator_ring_hdr_off,
+        (layout.guest_introspection_ring_data_off
+            + layout.guest_introspection_entry_count() * layout.guest_introspection_entry_stride)
+            .div_ceil(RING_HEADER_ALIGN as u64) * RING_HEADER_ALIGN as u64
+    );
+    assert_eq!(layout.accelerator_ring_count, 2 * layout.vm_node_count);
+    assert_eq!(
+        layout.accelerator_ring_data_off,
+        layout.accelerator_ring_hdr_off
+            + u64::from(layout.accelerator_ring_count) * RING_HEADER_SIZE as u64
+    );
+    assert_eq!(
         layout.region_size,
-        layout.guest_introspection_ring_data_off
-            + layout.guest_introspection_entry_count() * layout.guest_introspection_entry_stride
+        layout.accelerator_ring_data_off
+            + layout.accelerator_entry_count() * layout.accelerator_entry_stride
     );
     assert_eq!(
         layout.frame_entry_count(),

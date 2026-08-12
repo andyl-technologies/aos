@@ -255,6 +255,14 @@ fn assert_structure_aware_fuzz_corpus(fixture: &Fixture, decoded: &GoldenState) 
         decoded.guest_introspection.record,
         GOLDEN_GUEST_INTROSPECTION_RECORD
     );
+    assert_eq!(decoded.accelerator.sequence, 23);
+    assert_eq!(decoded.accelerator.generation, 5);
+    assert_eq!(decoded.accelerator.device_id, vec![0xa5; 32]);
+    assert_eq!(decoded.accelerator.class, 2);
+    assert_eq!(decoded.accelerator.job_kind, 1);
+    assert_eq!(decoded.accelerator.queue_id, 7);
+    assert_eq!(decoded.accelerator.service_units, 16);
+    assert_eq!(decoded.accelerator.data, b"TENS");
 
     let mut payload_mutation = fixture.bytes.clone();
     payload_mutation[GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_DATA_OFFSET

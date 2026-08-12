@@ -498,6 +498,16 @@ pub struct RegionLayout {
     pub guest_introspection_ring_data_off: u64,
     /// Byte stride between guest-introspection entries.
     pub guest_introspection_entry_stride: u64,
+    /// Number of accelerator rings, two per logical VM.
+    pub accelerator_ring_count: u32,
+    /// Fixed entry capacity of every accelerator ring.
+    pub accelerator_queue_capacity: u32,
+    /// Byte offset to the first accelerator ring header.
+    pub accelerator_ring_hdr_off: u64,
+    /// Byte offset to the first accelerator entry.
+    pub accelerator_ring_data_off: u64,
+    /// Byte stride between accelerator entries.
+    pub accelerator_entry_stride: u64,
     /// Total mapped region size in bytes.
     pub region_size: u64,
     /// Fixed icount shift used to derive virtual nanoseconds.
@@ -778,10 +788,40 @@ impl RegionLayout {
         let guest_introspection_entry_count = u64::from(guest_introspection_ring_count)
             .checked_mul(u64::from(guest_introspection_queue_capacity))
             .ok_or(RegionLayoutError::GeometryOverflow)?;
-        let region_size = guest_introspection_ring_data_off
+        let guest_introspection_data_end = guest_introspection_ring_data_off
             .checked_add(
                 guest_introspection_entry_count
                     .checked_mul(guest_introspection_entry_stride)
+                    .ok_or(RegionLayoutError::GeometryOverflow)?,
+            )
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+
+        // ABI v11 appends accelerator request/completion rings, preserving all
+        // prior section offsets.
+        let accelerator_ring_count = config
+            .vm_node_count
+            .checked_mul(ACCELERATOR_RINGS_PER_VM)
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+        let accelerator_queue_capacity = ACCELERATOR_QUEUE_CAPACITY;
+        let accelerator_ring_hdr_off = checked_align_up(
+            guest_introspection_data_end,
+            usize_to_u64(RING_HEADER_ALIGN)?,
+        )?;
+        let accelerator_ring_data_off = accelerator_ring_hdr_off
+            .checked_add(
+                u64::from(accelerator_ring_count)
+                    .checked_mul(usize_to_u64(RING_HEADER_SIZE)?)
+                    .ok_or(RegionLayoutError::GeometryOverflow)?,
+            )
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+        let accelerator_entry_stride = usize_to_u64(ACCELERATOR_ENTRY_SIZE)?;
+        let accelerator_entry_count = u64::from(accelerator_ring_count)
+            .checked_mul(u64::from(accelerator_queue_capacity))
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+        let region_size = accelerator_ring_data_off
+            .checked_add(
+                accelerator_entry_count
+                    .checked_mul(accelerator_entry_stride)
                     .ok_or(RegionLayoutError::GeometryOverflow)?,
             )
             .ok_or(RegionLayoutError::GeometryOverflow)?;
@@ -837,6 +877,11 @@ impl RegionLayout {
             guest_introspection_ring_hdr_off,
             guest_introspection_ring_data_off,
             guest_introspection_entry_stride,
+            accelerator_ring_count,
+            accelerator_queue_capacity,
+            accelerator_ring_hdr_off,
+            accelerator_ring_data_off,
+            accelerator_entry_stride,
             region_size,
             icount_shift: config.icount_shift,
             fault_payload_arena_bytes: config.fault_payload_arena_bytes,
@@ -884,6 +929,13 @@ impl RegionLayout {
     pub fn guest_introspection_entry_count(&self) -> u64 {
         u64::from(self.guest_introspection_ring_count)
             * u64::from(self.guest_introspection_queue_capacity)
+    }
+
+    /// Returns the number of accelerator entry slots.
+    #[must_use]
+    pub fn accelerator_entry_count(&self) -> u64 {
+        u64::from(self.accelerator_ring_count)
+            * u64::from(self.accelerator_queue_capacity)
     }
 }
 
@@ -961,6 +1013,8 @@ pub struct RegionAllocation {
     fault_event_arena_bytes: Vec<u8>,
     guest_introspection_ring_headers: Vec<RingHeader>,
     guest_introspection_entries: Vec<GuestIntrospectionEntry>,
+    accelerator_ring_headers: Vec<RingHeader>,
+    accelerator_entries: Vec<AcceleratorEntry>,
     rings: Vec<DirectedRing>,
     layout: RegionLayout,
 }
@@ -990,6 +1044,8 @@ impl Clone for RegionAllocation {
             fault_event_arena_bytes: self.fault_event_arena_bytes.clone(),
             guest_introspection_ring_headers: self.guest_introspection_ring_headers.clone(),
             guest_introspection_entries: self.guest_introspection_entries.clone(),
+            accelerator_ring_headers: self.accelerator_ring_headers.clone(),
+            accelerator_entries: self.accelerator_entries.clone(),
             rings: self.rings.clone(),
             layout: self.layout,
         }
@@ -1145,6 +1201,14 @@ impl RegionAllocation {
         let guest_introspection_entries = (0..guest_introspection_entry_count)
             .map(|_| GuestIntrospectionEntry::default())
             .collect::<Vec<_>>();
+        let accelerator_ring_headers = (0..layout.accelerator_ring_count)
+            .map(|_| RingHeader::new())
+            .collect::<Vec<_>>();
+        let accelerator_entry_count = usize::try_from(layout.accelerator_entry_count())
+            .map_err(|_| RegionLayoutError::GeometryOverflow)?;
+        let accelerator_entries = (0..accelerator_entry_count)
+            .map(|_| AcceleratorEntry::default())
+            .collect::<Vec<_>>();
 
         Ok(Self {
             header,
@@ -1169,6 +1233,8 @@ impl RegionAllocation {
             fault_event_arena_bytes,
             guest_introspection_ring_headers,
             guest_introspection_entries,
+            accelerator_ring_headers,
+            accelerator_entries,
             rings,
             layout,
         })
