@@ -865,6 +865,15 @@ impl WorldFaultTopology {
             )?;
             require(!array.members.is_empty(), "storage array members")?;
             hard_count(&array.members, "storage array members", 4_096)?;
+            let minimum_members = match array.layout {
+                WorldStorageArrayLayout::Mirror | WorldStorageArrayLayout::Stripe => 1,
+                WorldStorageArrayLayout::SingleParity => 3,
+                WorldStorageArrayLayout::DualParity => 4,
+            };
+            require(
+                array.members.len() >= minimum_members,
+                "storage array layout member count",
+            )?;
             require(
                 array.chunk_bytes.is_power_of_two(),
                 "storage array chunk geometry",
@@ -892,7 +901,11 @@ impl WorldFaultTopology {
                 .map(|member| member.ordinal)
                 .collect::<BTreeSet<_>>();
             require(
-                ordinals.len() == array.members.len(),
+                ordinals.len() == array.members.len()
+                    && ordinals
+                        .iter()
+                        .enumerate()
+                        .all(|(expected, ordinal)| usize::from(*ordinal) == expected),
                 "storage array member ordinal",
             )?;
             for path in &array.paths {
