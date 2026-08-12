@@ -165,6 +165,14 @@
         needle = "Some(crucible_qemu_plugin_live_whitebox_insn_exec_cb)";
       }
       {
+        label = "doorbell TB-entry coordinate callback";
+        needle = "Some(crucible_qemu_plugin_live_whitebox_tb_exec_cb)";
+      }
+      {
+        label = "instruction coordinate uses cached TB entry";
+        needle = "location.current_icount(self.tb_entries[vcpu_index])";
+      }
+      {
         label = "x86 immediate-port instruction filter";
         needle = "WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES";
       }
@@ -173,6 +181,10 @@
       {
         label = "upstream QEMU execution callback binding";
         needle = "qemu_plugin_register_vcpu_insn_exec_cb";
+      }
+      {
+        label = "upstream QEMU TB-entry callback binding";
+        needle = "qemu_plugin_register_vcpu_tb_exec_cb";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/mapped_quantum.rs" mappedQuantum [

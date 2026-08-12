@@ -27,7 +27,9 @@
     {
       "x86_64-linux" = "qemu-system-x86_64";
       "aarch64-linux" = "qemu-system-aarch64";
-    }.${stdenv.hostPlatform.system}
+    }.${
+      stdenv.hostPlatform.system
+    }
     or (throw "crucible: unsupported native QEMU system '${stdenv.hostPlatform.system}'");
   nativeQemuPath = "${qemu-crucible}/bin/${nativeQemuSystemBinary}";
   liveDebuggerMatrixArchitectures =
@@ -73,6 +75,7 @@
     [debugGateway qemu-crucible crucible-qemu-plugin linux-crucible crucible-fixtures];
   shmemLib = builtins.readFile ../../../crates/crucible-shmem/src/lib.rs;
   protocolLib = builtins.readFile ../../../crates/crucible-protocol/src/lib.rs;
+  doorbellAbi = builtins.readFile ../../../crates/crucible-protocol/src/doorbell_abi.rs;
   apiRpcAbi = builtins.readFile ../../../crates/crucible-api/src/rpc_abi.rs;
   firstLineWith = label: prefix: content: let
     matches = builtins.filter (line: lib.hasPrefix prefix line) (lib.splitString "\n" content);
@@ -88,6 +91,7 @@
     (lib.removePrefix prefix (firstLineWith label prefix content));
   shmemAbiVersion = sourceConst "shmem ABI version" "pub const ABI_VERSION: u32 = " shmemLib;
   guestHostProtocolVersion = sourceConst "guest-host protocol version" "pub const CONTROL_PROTOCOL_VERSION: u32 = " protocolLib;
+  doorbellInstructionAbiVersion = sourceConst "doorbell instruction ABI version" "pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = " doorbellAbi;
   rpcProtocolMajor = sourceConst "RPC ABI major version" "pub const RPC_PROTOCOL_MAJOR: u16 = " apiRpcAbi;
   rpcProtocolMinor = sourceConst "RPC ABI minor version" "pub const RPC_PROTOCOL_MINOR: u16 = " apiRpcAbi;
   rpcProtocolPatch = sourceConst "RPC ABI patch version" "pub const RPC_PROTOCOL_PATCH: u16 = " apiRpcAbi;
@@ -222,6 +226,7 @@
       shmem_abi=crucible-shmem-abi-v${shmemAbiVersion}
       guest_host_protocol_version=${guestHostProtocolVersion}
       guest_host_protocol_abi=crucible-guest-host-channel-v${guestHostProtocolVersion}
+      doorbell_instruction_abi_version=${doorbellInstructionAbiVersion}
       rpc_abi_version=${rpcProtocolMajor}.${rpcProtocolMinor}.${rpcProtocolPatch}
       rpc_abi_build=${rpcProtocolBuild}
       INFO
@@ -350,13 +355,16 @@
           export CRUCIBLE_MATRIX_FIXTURE_GENERATOR="$out/bin/crucible-debugger-live-fixture"
           export CRUCIBLE_MATRIX_BUILD_INFO="$out/nix-support/crucible-build-info"
           export CRUCIBLE_MATRIX_SUPPORTED_ARCHITECTURES="${liveDebuggerMatrixArchitectures}"
+          export CRUCIBLE_MATRIX_DOORBELL_INSTRUCTION_ABI_VERSION="${doorbellInstructionAbiVersion}"
           ${lib.optionalString (stdenv.hostPlatform.system == "x86_64-linux") ''
             export CRUCIBLE_MATRIX_KERNEL_X86_64="${linux-crucible}/boot/vmlinuz-${linux-crucible.version}"
             export CRUCIBLE_MATRIX_ROOT_IMAGE_X86_64="${crucible-fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4"
+            export CRUCIBLE_MATRIX_KERNEL_CMDLINE_X86_64="${linux-crucible.passthru.crucibleFixtureKernelCmdline} init=/init"
           ''}
           ${lib.optionalString (stdenv.hostPlatform.system == "aarch64-linux") ''
             export CRUCIBLE_MATRIX_KERNEL_AARCH64="${linux-crucible}/boot/vmlinuz-${linux-crucible.version}"
             export CRUCIBLE_MATRIX_ROOT_IMAGE_AARCH64="${crucible-fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4"
+            export CRUCIBLE_KERNEL_CMDLINE_AARCH64="${linux-crucible.passthru.crucibleFixtureKernelCmdline} init=/init"
           ''}
           export PATH="${coreutils}/bin:${grep}/bin:${sed}/bin:${util-linux}/bin:${bash}/bin"
           exec ${bash}/bin/bash "$out/share/aos/crucible/debugger-live-matrix.sh" "\$@"
@@ -417,6 +425,7 @@
           shmem_abi=crucible-shmem-abi-v${shmemAbiVersion}
           guest_host_protocol_version=${guestHostProtocolVersion}
           guest_host_protocol_abi=crucible-guest-host-channel-v${guestHostProtocolVersion}
+          doorbell_instruction_abi_version=${doorbellInstructionAbiVersion}
           rpc_abi_version=${rpcProtocolMajor}.${rpcProtocolMinor}.${rpcProtocolPatch}
           rpc_abi_build=${rpcProtocolBuild}
           INFO

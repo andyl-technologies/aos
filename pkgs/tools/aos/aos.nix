@@ -2,7 +2,7 @@
 {
   lib,
   mkCargoPackage,
-  fetchCargoDeps,
+  fetchCargoVendor,
   bash,
   binutils,
   git-minimal,
@@ -27,6 +27,7 @@
   mtools,
   qemu,
   tpm2-tools,
+  util-linux,
   which,
   zlib,
   zstd,
@@ -51,42 +52,41 @@
   #   sbsigntools   sbverify for image signature verification
   #   binutils      objcopy for UKI section extraction
   #   zstd          pack-delta compression and store decompression
+  #   util-linux    mount: scoped EFI System Partition remount transactions
   #   which         check_command_exists() preflight in the drain/sysroot path
   #   bash          wrapper interpreter; avoids relying on /bin/sh on the host
   # These are declared as runtimeDeps below (not just buildDeps) so the
   # scrubPhase keeps their store-path references in the wrappers and pulls them
   # into the runtime closure; without that, nuke-refs would rewrite these paths
   # to placeholders and the wrappers would point at nonexistent stores.
-  runtimeTools = [bash binutils nix sbsigntools systemd mtools qemu zstd which];
+  runtimeTools = [bash binutils nix sbsigntools systemd mtools qemu util-linux zstd which];
   runtimeBinPath = lib.concatStringsSep ":" [
     (lib.makeBinPath runtimeTools)
     "${systemd}/lib/systemd"
   ];
-  src = builtins.path {
-    path = repoRoot;
-    name = "aos-workspace-src";
-    filter = path: _type: let
-      pathString = toString path;
-      base = baseNameOf path;
-    in
-      base != "target"
-      && base != ".git"
-      && (
-        pathString == repoRootString
-        || lib.hasPrefix "${repoRootString}/crates" pathString
-        || lib.hasPrefix "${repoRootString}/lib" pathString
-        || lib.hasPrefix "${repoRootString}/modules" pathString
-        || lib.hasPrefix "${repoRootString}/pkgs" pathString
-        || lib.hasPrefix "${repoRootString}/stdenv" pathString
-        || lib.hasPrefix "${repoRootString}/systems" pathString
-        || pathString == "${repoRootString}/default.nix"
-        || pathString == "${repoRootString}/flake.nix"
-        || pathString == "${repoRootString}/justfile"
-        || pathString == "${repoRootString}/docs"
-        || pathString == "${repoRootString}/docs/rfcs"
-        || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
-      );
-  };
+  src = import ./_workspace-source.nix {inherit lib;};
+  applicationTestPackages = [
+    "aos"
+    "aos-cache"
+    "aos-core"
+    "aos-doc"
+    "aos-hub"
+    "aos-hub-core"
+    "aos-hub-worker"
+    "aos-net"
+    "aos-package"
+    "aos-profile"
+    "aos-proto"
+    "aos-proto-types"
+    "aos-registry-spa"
+    "aos-registry-surface"
+    "aos-remote"
+    "aos-server"
+    "aos-systemd"
+  ];
+  applicationTestFlags = builtins.concatStringsSep " " (
+    map (package: "-p ${package}") applicationTestPackages
+  );
 in
   mkCargoPackage {
     pname = "aos";
@@ -94,10 +94,14 @@ in
 
     cargoFlags = "-p aos";
 
-    cargoDeps = fetchCargoDeps {
+    # The native evaluator uses `nix-compat` from the pinned snix monorepo.
+    # The lockfile-driven vendor builder extracts the crate subtree instead of
+    # treating the whole monorepo as a crate root.
+    cargoDeps = fetchCargoVendor {
       inherit src;
+      name = "aos-vendor-${version}";
       sourceRoot = "source/crates";
-      hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
+      hash = "sha256-byK2knHIciv8rLm+TLiOfTXNU9m/u7idWbSsvG6mIys=";
     };
 
     # cmake + libssh2: git2's vendored libgit2 is compiled from source here
@@ -112,7 +116,6 @@ in
     runtimeDeps = [openssl zlib aos-landlock aos-selinux-run aos-verity-root-guard aos-ebpf-net-policy aos-ebpf-lsm-policy checkpolicy policycoreutils semodule-utils tpm2-tools] ++ runtimeTools;
 
     preBuild = ''
-      cd crates
       export OPENSSL_DIR="${openssl}"
       export OPENSSL_LIB_DIR="${openssl}/lib"
       export OPENSSL_INCLUDE_DIR="${openssl}/include"
@@ -138,6 +141,7 @@ in
       export AOS_CHECKMODULE="${checkpolicy}/bin/checkmodule"
       export AOS_SEMODULE="${policycoreutils}/sbin/semodule"
       export AOS_SEMODULE_PACKAGE="${semodule-utils}/bin/semodule_package"
+      cd crates
       # The real-Git interoperability test intentionally exercises stock
       # OpenSSH signing. Nix builders have numeric uids without /etc/passwd
       # entries, while ssh-keygen requires getpwuid(3) even with an explicit
@@ -150,12 +154,12 @@ in
     '';
 
     doCheck = true;
-    # This package owns the AOS CLI/server workspace surface. Crucible has its
-    # own full-repository package and gate suite (`pkgs.crucible`), whose source
-    # includes RFC and Nix wiring files required by its harness lints. Selecting
-    # the AOS package family here keeps those repository-aware tests in their
-    # correct derivation now that both projects share one Cargo workspace.
-    cargoTestFlags = "-p 'aos*'";
+    # This package owns the AOS application and package-manager test surface.
+    # Native evaluator components are tested by `pkgs.aos-evaluator-tests`,
+    # whose source intentionally includes the repository Nix/fuzz corpus. Keep
+    # those repository-aware tests out of the shipped CLI derivation so edits
+    # to unrelated Nix sources do not change the runtime package identity.
+    cargoTestFlags = applicationTestFlags;
     # Run the workspace test suite in the debug profile while the binary itself
     # ships release (installed from target/release). The registry-hub's
     # integration tests stand up loopback HTTP servers and register

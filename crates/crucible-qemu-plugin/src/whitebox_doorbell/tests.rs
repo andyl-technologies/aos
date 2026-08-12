@@ -128,17 +128,17 @@ fn whitebox_registration_on_mode_requires_setup_collision_validation() {
     assert_eq!(
         doorbell.registration_plan(
             WhiteboxDoorbellCapabilities::guest_to_host(),
-            collision_free_setup(WhiteboxDoorbellTrap::Aarch64Hlt { immediate: 0x4c1 }),
+            collision_free_setup(WhiteboxDoorbellTrap::Aarch64Hint { immediate: 0x4c }),
         ),
         Err(WhiteboxDoorbellError::SetupValidationTrapMismatch {
             configured: doorbell.trap(),
-            validated: WhiteboxDoorbellTrap::Aarch64Hlt { immediate: 0x4c1 },
+            validated: WhiteboxDoorbellTrap::Aarch64Hint { immediate: 0x4c },
         })
     );
 
     let aarch64 = PluginWhiteboxDoorbell::new(
         PluginSwitch::On,
-        WhiteboxDoorbellTrap::Aarch64Hlt { immediate: 0x4c1 },
+        WhiteboxDoorbellTrap::Aarch64Hint { immediate: 0x4c },
         128,
     );
     assert_eq!(
@@ -146,14 +146,12 @@ fn whitebox_registration_on_mode_requires_setup_collision_validation() {
             WhiteboxDoorbellCapabilities::guest_to_host(),
             WhiteboxDoorbellSetupValidation::validate(
                 aarch64.trap(),
-                WhiteboxDoorbellSetupResources::from_observed_resources(&[], &[0x4c1]),
+                WhiteboxDoorbellSetupResources::from_observed_resources(&[], &[0x4c]),
             ),
         ),
         Err(WhiteboxDoorbellError::SetupCollision {
             trap: aarch64.trap(),
-            collision: WhiteboxDoorbellCollision::Aarch64ReservedImmediateInUse {
-                immediate: 0x4c1,
-            },
+            collision: WhiteboxDoorbellCollision::Aarch64ReservedImmediateInUse { immediate: 0x4c },
         })
     );
 }
@@ -166,7 +164,7 @@ fn whitebox_doorbell_abi_vectors_cover_x86_64_and_aarch64() {
             .iter()
             .map(|abi| abi.vector_name())
             .collect::<Vec<_>>(),
-        vec!["x86_64-out-imm8-al-port-e7", "aarch64-hlt-imm-04c1"]
+        vec!["x86_64-out-imm8-al-port-e7", "aarch64-hint-imm-4c"]
     );
     assert_eq!(
         WHITEBOX_DOORBELL_ABIS
@@ -217,31 +215,31 @@ fn whitebox_doorbell_x86_64_golden_vector_freezes_out_imm8_al() {
 }
 
 #[test]
-fn whitebox_doorbell_aarch64_golden_vector_freezes_hlt_immediate() {
+fn whitebox_doorbell_aarch64_golden_vector_freezes_inert_hint() {
     let abi = WHITEBOX_DOORBELL_AARCH64_ABI;
     assert_eq!(abi.architecture().as_str(), "aarch64");
-    assert_eq!(abi.instruction(), WhiteboxDoorbellInstruction::Aarch64Hlt);
-    assert_eq!(abi.instruction().as_str(), "hlt-imm16");
+    assert_eq!(abi.instruction(), WhiteboxDoorbellInstruction::Aarch64Hint);
+    assert_eq!(abi.instruction().as_str(), "hint-imm7");
     assert_eq!(
         abi.trap(),
-        WhiteboxDoorbellTrapAbi::Aarch64Hlt {
-            immediate: WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE,
+        WhiteboxDoorbellTrapAbi::Aarch64Hint {
+            immediate: WHITEBOX_DOORBELL_AARCH64_RESERVED_HINT,
         }
     );
     assert_eq!(
         WhiteboxDoorbellTrap::from_abi(abi.trap()),
-        WhiteboxDoorbellTrap::Aarch64Hlt {
-            immediate: WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE,
+        WhiteboxDoorbellTrap::Aarch64Hint {
+            immediate: WHITEBOX_DOORBELL_AARCH64_RESERVED_HINT,
         }
     );
     assert_eq!(abi.payload_pointer_register(), "x0");
     assert_eq!(abi.payload_length_register(), "x1");
-    assert_eq!(abi.assembly(), "hlt #0x04c1");
+    assert_eq!(abi.assembly(), "hint #0x4c");
     assert_eq!(
-        encode_aarch64_hlt_instruction(WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE),
-        WHITEBOX_DOORBELL_AARCH64_HLT_BYTES
+        encode_aarch64_hint_instruction(WHITEBOX_DOORBELL_AARCH64_RESERVED_HINT),
+        Some(WHITEBOX_DOORBELL_AARCH64_HINT_BYTES)
     );
-    assert_eq!(abi.instruction_bytes(), &[0x20, 0x98, 0x40, 0xd4]);
+    assert_eq!(abi.instruction_bytes(), &[0x9f, 0x29, 0x03, 0xd5]);
 }
 
 #[test]
@@ -656,7 +654,7 @@ fn whitebox_doorbell_rejects_oversized_payload_before_guest_memory_read() {
 fn whitebox_doorbell_read_failure_records_no_marker() {
     let doorbell = PluginWhiteboxDoorbell::new(
         PluginSwitch::On,
-        WhiteboxDoorbellTrap::Aarch64Hlt { immediate: 0x4c1 },
+        WhiteboxDoorbellTrap::Aarch64Hint { immediate: 0x4c },
         128,
     );
     let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, 0x2000, 4);

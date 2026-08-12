@@ -54,6 +54,16 @@ pub(crate) type DesiredPackageConfig =
 pub(crate) type DesiredPackageCredentials =
     BTreeMap<String, BTreeMap<String, DesiredCredentialValue>>;
 
+/// Loads only the credential resolver inputs from a desired-package file.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be read or its TOML contract is
+/// malformed.
+pub(crate) fn load_desired_credentials(path: &Path) -> Result<DesiredPackageCredentials> {
+    Ok(DesiredFile::from_path(path)?.credentials)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum DesiredCredentialValue {

@@ -36,11 +36,20 @@
     options = {
       serial = mkOption {
         type = types.str;
-        description = "Stable virtio serial exposed below /dev/disk/by-id.";
+        description = "Stable device serial exposed below /dev/disk/by-id.";
       };
       sizeMiB = mkOption {
         type = positiveInt;
         description = "Capacity of the empty additional disk in MiB.";
+      };
+      interface = mkOption {
+        type = types.enum ["virtio" "scsi"];
+        default = "virtio";
+        description = ''
+          QEMU interface used for the additional disk. Virtio preserves the
+          existing stable-path contract; SCSI keeps auxiliary disks outside
+          the root virtio block-device namespace.
+        '';
       };
     };
   };
@@ -131,10 +140,9 @@
         type = types.listOf extraDiskType;
         default = [];
         description = ''
-          Empty virtio block devices attached in addition to the root disk.
-          Their serials appear as /dev/disk/by-id/virtio-<serial>, allowing
-          multi-device provisioning tests to use the production stable-path
-          contract.
+          Empty block devices attached in addition to the root disk. Virtio
+          devices expose /dev/disk/by-id/virtio-<serial>; SCSI devices are
+          available for tests that must preserve root-disk enumeration.
         '';
       };
 
@@ -214,10 +222,10 @@
           partition inside the disk image. `repart` ships no /var partition:
           the driver grows the per-run copy by `varSizeMiB`, and
           systemd-repart carves /var (and swap) in the trailing free space at
-          first boot. With no baked /var seed the guest agent arrives via a
-          baked `systemd.services.aos-test-agent` unit — the harness adds that
-          package automatically (lib/testing/fleet.nix), so tests need not
-          list it.
+          first boot. With no baked /var seed the guest agent arrives through a
+          test-only unit in the effective machine system. Its payload is the
+          bundled `aos-test-agent` package, but it is kept out of runtime package
+          selection so the control channel does not depend on registry access.
         '';
       };
     };
@@ -254,6 +262,15 @@
           that are legitimately slow — e.g. measured boot, where the
           emulated TPM adds tens of seconds of slow command round-trips
           per boot. Null uses the driver default.
+        '';
+      };
+      systemReadyTimeout = mkOption {
+        type = types.nullOr types.int;
+        default = null;
+        description = ''
+          Per-machine budget (seconds) for the driver's generic systemd
+          readiness probe. Set to zero when the test script supplies its own
+          explicit readiness checks. Null uses the driver default.
         '';
       };
     };

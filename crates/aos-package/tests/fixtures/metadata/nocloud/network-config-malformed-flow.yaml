@@ -1,0 +1,6 @@
+network:
+  version: 2
+  ethernets:
+    ens3:
+      addresses: [192.0.2.22/24]
+      match: {macaddress: "52:54:00:12:34:56}

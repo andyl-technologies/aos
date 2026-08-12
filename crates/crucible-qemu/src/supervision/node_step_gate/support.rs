@@ -319,7 +319,9 @@ pub(super) fn live_node_plugin_config(
             LivePluginGuestArchitecture::X86_64 => {
                 crate::probe_x86_whitebox_setup(&probe_command, run_directory)
             }
-            LivePluginGuestArchitecture::Aarch64 => crate::validate_aarch64_whitebox_setup(&[]),
+            LivePluginGuestArchitecture::Aarch64 => {
+                crate::validate_aarch64_whitebox_setup(config.doorbell_instruction_abi_version)
+            }
         }
         .map_err(|source| QemuLiveNodeStepGateError::WhiteboxSetup { source })?;
         plugin_base

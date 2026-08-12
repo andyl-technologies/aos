@@ -43,7 +43,7 @@ IO 16  QEMU 16  API 14  DBG 14  OBS 14  SESS 14  STD 14  PROTO 11  TEMP 11
 DCE 10  PAT 9  TIME 9  TRI 8  WL 6  ARCH 5  EX 5  BOUND 4  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:a21bc3bc8e8a3582`
+Checklist sync digest: `rfc0010-checklist-v1:319543a1c050f25d`
 
 ### Adversarial completion audit (2026-07-09)
 
@@ -781,19 +781,20 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   replacement. An in-flight operation gate prevents controller lease handoff
   until replacement completes, and checkpoint-resumed actors reject event
   history before their explicit resume floor.
-  `T-DBG-9 … T-DBG-12` remain open for the production gateway/live replacement
-  gates, complete authorization and peer-credential enforcement, and live
-  guest-channel acceptance. Manual production testing additionally showed that
+  `T-DBG-9`, `T-DBG-10`, and `T-DBG-12` are complete through the packaged live
+  gateway/replacement/run-control and guest-channel evidence. `T-DBG-11` remains
+  open for complete authorization and peer-credential enforcement. Earlier
+  manual production testing showed that
   distinct runtime-coordinate requests may report the same schedule-empty
   configuration identity and expose no earlier reverse coordinate;
-  T-DBG-10 and the live architecture acceptance task must bind landed runtime
-  evidence and exercise non-empty live reverse history before completion. Typed
-  requested/landed evidence and
-  the inclusive exact event cursor are implemented. A packaged, out-of-check
-  manual runner now defines the complete evidence capture, including
+  configuration identity alone was insufficient. Typed requested/landed evidence
+  and the inclusive exact event cursor are implemented. The packaged,
+  out-of-check manual runner captures
   content-bound guest assets, non-empty history, atomic operator barriers,
-  scheduler run control, and fork-time guest channels on both architectures;
-  executing and reviewing that live proof is still required.
+  scheduler run control, and fork-time guest channels on both architectures.
+  On 2026-08-11, two AArch64 runs and one combined x86_64/AArch64 run passed the
+  complete matrix and retained exact landed-coordinate and asset-identity
+  evidence.
 - Failure triage: `T-TRI-1` is green through `checks.crucible.phase6.failureSignature`,
   which implements the recorded-run-only `FailureSignature` tuple for property
   violations and divergence bisection points, binds checked event-log projection
@@ -855,16 +856,16 @@ acceptance gate.
   `T-DBG-13` is green through `checks.crucible.phase7.debuggerPackage`, which
   builds GNU GDB 17.2 hermetically with the AOS toolchain, exposes `gdb` and
   `gdbserver` from the Crucible suite, and verifies Python plus x86_64/aarch64
-  target selection. `T-DBG-14` remains open for captured live parity evidence.
+  target selection. `T-DBG-14` is complete through captured live parity evidence.
   The first parity slice is automated by
   `checks.crucible.phase7.debuggerLiveArchitectures`: packaged x86_64 and
   aarch64 QEMU run under TCG, negotiate RSP with packaged GDB, preserve repeated
   register reads, and accept hardware-breakpoint insert/remove packets without
-  a model double. The native suite now retains architecture-specific x86_64 and
-  AArch64 guest closures and selects the corresponding production launch
-  profile. The suite ships the complete controller/gateway/run-control/
-  guest-channel matrix as a manual evidence runner outside Nix checks. The task
-  remains open until successful x86_64 and AArch64 executions are captured.
+  a model double. The suite interface admits complete architecture-specific
+  guest closures and selects the corresponding production launch profile. The
+  suite ships the complete controller/gateway/run-control/guest-channel matrix
+  as a manual evidence runner outside Nix checks. Two AArch64 executions and one
+  combined x86_64/AArch64 execution passed that runner on 2026-08-11.
 - Performance (incl. the fleet-perf tasks `T-PERF-27, T-PERF-28` and the host-parallelism tasks `T-PERF-29 … T-PERF-34`): `T-PERF-1 … T-PERF-34` ([`25`](25-performance-targets.md)).
 - Distributed / continuous exploration (campaigns spanning a fleet of workers): `T-DCE-1 … T-DCE-10` ([`35`](35-distributed-continuous-exploration.md)).
 - Worked example scenarios as CI fixtures (happy path, partition-recovery, crash/restart, fault campaign, determinism check): `T-EX-1 … T-EX-5` ([`33`](33-examples-and-workloads.md)). These double as the `gate:e2e-determinism` corpus.

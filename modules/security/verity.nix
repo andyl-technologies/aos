@@ -119,5 +119,25 @@ in {
     # is not a hardware-autoloaded NIC, boot.nix's loadModules default also
     # force-loads it via /etc/modules-load.d/initrd.conf.
     aos.boot.initrd.modules = ["dm_verity"];
+
+    # libdevmapper sits below systemd in the bootstrap graph and therefore
+    # cannot use libudev synchronization. Ensure coldplug is complete before
+    # the generated verity unit creates /dev/mapper/root; otherwise an early
+    # add event can leave the device conservatively marked not ready forever.
+    boot.initrd.systemd.services."systemd-veritysetup@root" = {
+      overrideStrategy = "asDropin";
+      wants = ["systemd-udev-settle.service"];
+      after = ["systemd-udev-settle.service"];
+      postStart = ''
+        # Without libudev synchronization, the initial mapper event may be
+        # observed before activation finishes. A change event after the
+        # verity command returns lets 10-dm.rules publish the active device.
+        ${pkgs.systemd}/bin/udevadm trigger \
+          --action=change \
+          --subsystem-match=block \
+          --sysname-match='dm-*'
+        ${pkgs.systemd}/bin/udevadm settle
+      '';
+    };
   };
 }

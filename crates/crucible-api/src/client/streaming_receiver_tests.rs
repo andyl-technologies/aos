@@ -111,6 +111,46 @@ async fn ready_rpc_frames_coalesce_before_state_delivery() {
 }
 
 #[tokio::test]
+async fn state_poll_preserves_a_full_scheduler_event_burst() {
+    let (sender, frames) = mpsc::channel(64);
+    let mut receiver = RpcStreamingEventReceiver {
+        frames,
+        pending_events: VecDeque::new(),
+        pending_state_updates: VecDeque::new(),
+        skipped_events: 0,
+        last_state_sequence: None,
+    };
+    for sequence in 0..32 {
+        sender
+            .send(Ok(RpcStreamingFrame::Event(event(sequence))))
+            .await
+            .unwrap_or_else(|error| panic!("event frame should enqueue: {error}"));
+    }
+    sender
+        .send(Ok(RpcStreamingFrame::StateUpdate(state_update(
+            33,
+            LiveStateKind::Stopped,
+        ))))
+        .await
+        .unwrap_or_else(|error| panic!("state frame should enqueue: {error}"));
+
+    let update = receiver
+        .recv_state_update()
+        .await
+        .unwrap_or_else(|error| panic!("state update should decode: {error}"))
+        .unwrap_or_else(|| panic!("state update should remain available"));
+    assert_eq!(update.sequence, 33);
+    for sequence in 0..32 {
+        let observed = receiver
+            .recv_event()
+            .await
+            .unwrap_or_else(|error| panic!("event burst must not lag: {error}"))
+            .unwrap_or_else(|| panic!("event {sequence} should remain buffered"));
+        assert_eq!(observed.event.sequence, sequence);
+    }
+}
+
+#[tokio::test]
 async fn pending_event_overflow_remains_fail_closed() {
     let mut receiver = receiver();
     for sequence in 0..=RPC_STREAM_PENDING_FRAME_CAPACITY as u64 {

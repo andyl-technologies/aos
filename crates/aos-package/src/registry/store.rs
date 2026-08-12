@@ -536,6 +536,37 @@ impl StoreMap {
     pub fn iter(&self) -> impl Iterator<Item = (&str, &StoreEntry)> {
         self.entries.iter().map(|(k, v)| (k.as_str(), v))
     }
+
+    /// Hashes the exact signed `store/` subgraph reachable from `roots`.
+    ///
+    /// The canonical object maps each IA hash to the canonical text form of
+    /// its complete realization record. Missing records fail closed, so a
+    /// stripped graph cannot acquire an attestation identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the graph is absent or any reachable member has
+    /// no record.
+    pub fn realization_subset_hash(&self, roots: &[String]) -> Result<String> {
+        if !self.present {
+            bail!("cannot attest config modules from a registry without a store graph");
+        }
+        let mut members = BTreeMap::new();
+        for root in roots {
+            for ia in self.reachable(root) {
+                let entry = self.entries.get(&ia).with_context(|| {
+                    format!("signed store graph has no record for reachable member {ia}")
+                })?;
+                if entry.realisations.is_empty() {
+                    bail!("signed store graph has an empty record for reachable member {ia}");
+                }
+                members.insert(ia, serialize_entry(entry));
+            }
+        }
+        Ok(crate::graph_compile::reproject::hash_cjson(
+            &serde_json::to_value(members).context("serializing signed store subset")?,
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -960,6 +991,84 @@ mod tests {
         assert!(!map.is_present());
         assert!(map.is_empty());
         assert!(map.get("anything").is_none());
+        assert!(
+            map.realization_subset_hash(&["anything".to_string()])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn realization_subset_hash_is_order_independent_and_covers_dependencies() {
+        let tmp = TempDir::new().unwrap();
+        let root = "a4q1m2kp8v3x";
+        upsert_realisation(
+            tmp.path(),
+            DEP_IA,
+            Realisation {
+                nar: nar(D_A, 10),
+                ca: None,
+                deps: vec![],
+            },
+            false,
+        )
+        .unwrap();
+        upsert_realisation(
+            tmp.path(),
+            root,
+            Realisation {
+                nar: nar(D_B, 20),
+                ca: None,
+                deps: vec![DepEdge {
+                    dep_ia: DEP_IA.to_string(),
+                    dep_ca: None,
+                }],
+            },
+            false,
+        )
+        .unwrap();
+
+        let before = StoreMap::load(tmp.path()).unwrap();
+        let forward = before
+            .realization_subset_hash(&[root.to_string(), DEP_IA.to_string()])
+            .unwrap();
+        let reverse = before
+            .realization_subset_hash(&[DEP_IA.to_string(), root.to_string()])
+            .unwrap();
+        assert_eq!(forward, reverse);
+        assert_eq!(forward.len(), 71);
+
+        upsert_realisation(
+            tmp.path(),
+            DEP_IA,
+            Realisation {
+                nar: nar(D_C, 30),
+                ca: None,
+                deps: vec![],
+            },
+            true,
+        )
+        .unwrap();
+        let after = StoreMap::load(tmp.path()).unwrap();
+        assert_ne!(
+            forward,
+            after.realization_subset_hash(&[root.to_string()]).unwrap()
+        );
+        assert!(
+            after
+                .realization_subset_hash(&["missing0000".to_string()])
+                .is_err()
+        );
+
+        let empty_root = "b4q1m2kp8v3x";
+        let empty_path = tmp.path().join(STORE_DIR).join("b4");
+        std::fs::create_dir_all(&empty_path).unwrap();
+        std::fs::write(empty_path.join(empty_root), "").unwrap();
+        let with_empty = StoreMap::load(tmp.path()).unwrap();
+        assert!(
+            with_empty
+                .realization_subset_hash(&[empty_root.to_string()])
+                .is_err()
+        );
     }
 
     #[test]

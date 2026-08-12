@@ -1,68 +1,159 @@
-# lib/testing/config-parity.nix — flat-merge to module-eval parity.
+# lib/testing/config-parity.nix - expose flat/module migration parity.
 #
-# operability.md §Parity gate (model: the aos-nix `.drv` parity gate). The
-# safe-migration invariant is that a package migrating from a flat
-# `expose.config` to an equivalent config module renders a **byte-identical**
-# materialized artifact + reload/restart set. The authoritative oracle is the
-# Rust `golden_config_artifact` integration test (CS1): it snapshots
-# `aos_package::render_package_config` for a multi-artifact fixture and pins
-#   (a) equality with the committed golden under tests/fixtures/,
-#   (b) order independence (shuffled artifact/field input -> identical bytes),
-#   (c) idempotence.
-# That test runs inside the hermetic `pkgs.aos` build, so byte-parity is already
-# gated on every PR through the crate build.
+# This gate has two independent halves:
 #
-# This Nix derivation is the declarative CI handle for that gate: it pins the
-# committed golden fixture into the closure and re-asserts its well-formedness
-# (non-empty, canonical `=== <name> ===` section headers), so a reviewer sees
-# `checks.config-parity` go RED in the same PR that perturbs the oracle's
-# fixture. As packages migrate, each gains a flat-vs-module parity fixture in
-# the Rust oracle; once module-only, the fixture retires.
-#
-# Runs via `nix-build -A checks.config-parity`.
+# 1. Nix evaluates the migrated fixture through the typed expose
+#    module and compares that projection to metadata emitted by the live legacy
+#    `_expose-renderer.nix` path.  This catches schema/default/action drift.
+# 2. `golden_config_artifact.rs` consumes the exact JSON projection pinned here
+#    and renders both paths through production serialization, comparing bytes
+#    and reload/restart sets.  It also exercises mixed, shuffled, and tampered
+#    projections.
 {
   pkgs,
   lib,
 }: let
+  exposeModule = import ../../pkgs/build-support/_expose-module.nix {inherit lib;};
+  moduleFixture = ./fixtures/expose-parity/module.nix;
+  moduleProjectionFile = ../../crates/aos-package/tests/fixtures/golden_config_artifact/web.module-eval.json;
   golden = ../../crates/aos-package/tests/fixtures/golden_config_artifact/web.golden;
-  goldenText = builtins.readFile golden;
 
-  # The golden is a sequence of `=== <name> ===` sections (the order-independent
-  # canonical form the Rust oracle compares). Assert it parses as such.
-  sectionHeaders =
-    builtins.filter (l: builtins.match "=== .* ===" l != null)
-    (lib.splitString "\n" goldenText);
+  evaluated = lib.evalModules {
+    modules = [
+      {
+        options.packageExpose = exposeModule.exposeOptions;
+        options.parityDesired = lib.mkOption {
+          type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
+          default = {};
+        };
+        config._module.strict = true;
+      }
+      moduleFixture
+    ];
+    inherit lib;
+  };
+  moduleProjection = {
+    artifacts = builtins.map
+      (artifact: builtins.removeAttrs artifact ["_module"])
+      evaluated.config.packageExpose.config.artifacts;
+    desired = evaluated.config.parityDesired;
+  };
+  pinnedProjection = builtins.fromJSON (builtins.readFile moduleProjectionFile);
 
-  goldenNonEmpty = goldenText != "";
-  hasSections = sectionHeaders != [];
-  # The fixture corpus spans three artifacts (env/json/toml); a regression that
-  # drops a section is a parity-oracle break.
-  hasAllSections = builtins.length sectionHeaders >= 3;
+  legacyPackage = pkgs.mkDerivation {
+    pname = "config-parity-web";
+    version = "0";
+    src = null;
+    phases = [{
+      name = "install";
+      script = ''
+        mkdir -p "$out"
+      '';
+    }];
+    expose = {
+      units."web.service" = {
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.coreutils}/bin/true";
+        };
+      };
+      config.artifacts = pinnedProjection.artifacts;
+    };
+  };
+  flatArtifacts = legacyPackage.expose.passthru.manifest.expose.config.artifacts;
 
-  evalAssertions =
-    lib.throwIfNot goldenNonEmpty
-    "config-parity: the committed flat-merge golden must be non-empty"
-    (lib.throwIfNot hasSections
-      "config-parity: the golden must contain canonical '=== <name> ===' section headers"
-      (lib.throwIfNot hasAllSections
-        "config-parity: the golden must retain all fixture artifact sections (parity-oracle break)"
-        true));
+  actionsFor = artifacts: {
+    reload = lib.sort builtins.lessThan (lib.unique (lib.concatMap
+      (artifact:
+        if artifact.reload == "reload"
+        then artifact.units
+        else [])
+      artifacts));
+    restart = lib.sort builtins.lessThan (lib.unique (lib.concatMap
+      (artifact:
+        if artifact.reload == "restart"
+        then artifact.units
+        else [])
+      artifacts));
+  };
+  flatActions = actionsFor flatArtifacts;
+  moduleActions = actionsFor moduleProjection.artifacts;
+
+  tamperedArtifacts = builtins.map
+    (artifact:
+      if artifact.name == "env"
+      then artifact // {reload = "restart";}
+      else artifact)
+    moduleProjection.artifacts;
+  tamperDetected = actionsFor tamperedArtifacts != flatActions;
+
+  # A mixed generation contains a migrated package and a non-migrated flat
+  # package.  Their final namespaces and action sets are disjoint, so union is
+  # deterministic regardless of evaluation/input order.
+  flatOnlyArtifacts = [{
+    name = "legacy";
+    path = "/etc/aos/packages/legacy/legacy.env";
+    format = "env";
+    required = [];
+    optional = ["VALUE"];
+    units = ["legacy.service"];
+    reload = "restart";
+  }];
+  mixedPaths = lib.sort builtins.lessThan (
+    (builtins.map (artifact: artifact.path) moduleProjection.artifacts)
+    ++ (builtins.map (artifact: artifact.path) flatOnlyArtifacts)
+  );
+  mixedActions = {
+    reload = lib.unique (moduleActions.reload ++ (actionsFor flatOnlyArtifacts).reload);
+    restart = lib.unique (moduleActions.restart ++ (actionsFor flatOnlyArtifacts).restart);
+  };
+  reversedMixedPaths = lib.sort builtins.lessThan (
+    (builtins.map (artifact: artifact.path) (lib.reverseList flatOnlyArtifacts))
+    ++ (builtins.map (artifact: artifact.path) (lib.reverseList moduleProjection.artifacts))
+  );
+
+  fixtureHasNoAuthoredRequires =
+    builtins.all
+    (line: builtins.match ".*expose[.]requires.*" line == null)
+    (lib.splitString "\n" (builtins.readFile moduleFixture));
+  assertions =
+    lib.throwIfNot
+    (moduleProjection == pinnedProjection)
+    "config-parity: module evaluation diverges from the projection consumed by the Rust byte oracle"
+    (lib.throwIfNot
+      (flatArtifacts == moduleProjection.artifacts)
+      "config-parity: module-evaluated artifact metadata differs from the live legacy expose renderer"
+      (lib.throwIfNot
+        (flatActions == moduleActions)
+        "config-parity: module-evaluated reload/restart sets differ from the legacy expose renderer"
+        (lib.throwIfNot tamperDetected
+          "config-parity: policy tampering did not make the parity oracle fail"
+          (lib.throwIfNot
+            (mixedPaths == reversedMixedPaths
+              && mixedActions == {
+                reload = ["web.service"];
+                restart = ["legacy.service"];
+              })
+            "config-parity: mixed migrated/flat projection is order-dependent"
+            (lib.throwIfNot fixtureHasNoAuthoredRequires
+              "config-parity: migration fixture must not hand-author expose.requires"
+              true)))));
 in
   pkgs.mkDerivation {
     pname = "config-parity-check";
     version = "0";
     src = null;
+    inherit assertions;
     phases = [
       {
         name = "check";
         script = ''
           set -eu
-          : ${builtins.toString evalAssertions}
-          mkdir -p $out
-          cp ${golden} $out/web.golden
-          echo "==> config-parity gate" | tee $out/result
-          echo "  flat-merge golden present + well-formed (${builtins.toString (builtins.length sectionHeaders)} sections): OK"
-          echo "  authoritative byte-parity oracle: crates/aos-package/tests/golden_config_artifact.rs (runs in pkgs.aos build)"
+          : "$assertions"
+          mkdir -p "$out"
+          cp ${golden} "$out/web.golden"
+          cp ${moduleProjectionFile} "$out/web.module-eval.json"
+          printf '%s\n' 'module projection == live flat metadata/actions: OK' > "$out/result"
         '';
       }
     ];

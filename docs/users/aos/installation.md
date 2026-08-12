@@ -64,8 +64,8 @@ is required; do not pass a separate kernel or initrd.
 ## Size the target
 
 The build output is sized tightly around the EFI System Partition and
-immutable `root-a`. The target must provide trailing unallocated space for
-first-boot state:
+immutable `root-a`/`root-b` slots. The target must provide trailing unallocated
+space for first-boot state:
 
 - `swap`: 2 GiB by default;
 - `/var`: 4 GiB minimum and grows to consume remaining space.
@@ -73,6 +73,14 @@ first-boot state:
 Allow more than 6 GiB beyond the image itself: the fixed provisioning marker
 and partition alignment need space in addition to the 2 GiB swap and 4 GiB
 `/var` minimum. The fleet tests use 16 GiB disks.
+
+> [!WARNING]
+> A measured-boot image started in UEFI Setup Mode uses a temporary plaintext
+> `/var` so keys can be enrolled. The first boot with Secure Boot enforcing
+> replaces it with TPM-sealed storage and erases everything written there.
+> Complete enrollment and that first enforcing boot before applying host
+> configuration, installing packages, or staging image updates.
+
 If a raw file is enlarged before boot, relocate its backup GPT header after
 resizing:
 
@@ -148,14 +156,14 @@ xorriso -as mkisofs \
 ```
 
 Attach `metadata.iso` as a CD-ROM for the first boot. The
-[configuration guide](configuration.md) explains the current runtime boundary;
+[configuration guide](configuration.md) explains runtime activation;
 the complete metadata lifecycle and storage recipe reference is in
 [Understand and operate `host.nix`](host-nix.md).
 
-The image detects Hetzner, Vultr, Scaleway, and Oracle Cloud, but their native
-metadata fetchers are not implemented. Those platforms fail closed rather than
-discarding supplied control-plane data. Bare metal, Hyper-V, VMware, and
-VirtualBox use image defaults unless an offline metadata drive is attached.
+The native network metadata agents support AWS IMDSv2, GCP, Azure,
+DigitalOcean, and OpenStack. Other clouds, bare metal, Hyper-V, VMware, and
+VirtualBox use image defaults unless an offline metadata or config drive is
+attached. AOS does not infer an unrecorded provider metadata protocol.
 
 ## Trust policy
 
@@ -187,6 +195,9 @@ findmnt /
 findmnt /var
 cat /etc/os-release
 cat /var/lib/aos-provisioning/audit.json
+cat /var/lib/profiles/image/state.json
+cat /var/lib/profiles/system/state.json
+cat /run/aos/activation.json
 ```
 
 If first boot stops before the target, inspect the units and state in
@@ -194,9 +205,12 @@ If first boot stops before the target, inspect the units and state in
 
 ## Installation limits
 
-- The stock image does not create a `root-b` partition.
-- General `host.nix` settings are evaluated but not activated as a live system
-  generation. Bake access, networking, users, and services into the image.
+- The stock disk carries `root-a` and `root-b`; durable image updates stage the
+  inactive slot and its UKI, then rely on sd-boot boot counting to accept or
+  fall back from the candidate.
+- General `host.nix` settings are activated as numbered configuration
+  generations after the first-boot storage phase. Keep an image-baked or
+  out-of-band recovery path when moving network and access policy to runtime.
 - Secure-boot and measured-boot variants in this repository use test keys.
   They are validation fixtures, not production enrollment artifacts.
 - `apm install PACKAGE --system --image raw --output FILE` downloads an image

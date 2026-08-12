@@ -13,13 +13,29 @@
   pkgs,
   lib,
 }: let
-  aos = import ../../. {};
+  aos = import ../../. {system = pkgs.stdenv.buildPlatform.system;};
 
-  system = aos.mkSystem [../../systems/server.nix];
+  system = aos.mkSystem {
+    modules = [../../systems/server.nix];
+    operatorModules = [
+      {
+        environment.etc."runtime-config/materialized.conf" = {
+          text = "host-owned\n";
+          mode = "0644";
+        };
+        systemd.services.runtime-config-materialized = {
+          wantedBy = ["multi-user.target"];
+          serviceConfig.Type = "oneshot";
+          script = "printf materialized > /run/runtime-config-materialized";
+        };
+      }
+    ];
+  };
 
-  # The real manifest the on-host evaluator would emit for this system, as JSON.
-  # `toFile` rejects string context, and the manifest's store-path strings carry
-  # it; the manifest is pure data here, so discard it (the paths stay verbatim).
+  # Exercise the same resolver-controlled `operatorModules` provenance arm
+  # that the native evaluator uses after authenticating host.nix. `toFile`
+  # rejects string context, and the manifest's store-path strings carry it;
+  # the manifest is pure data here, so discard it (the paths stay verbatim).
   manifestJson = builtins.toJSON system.config.system.build.configManifest;
   manifestFile =
     builtins.toFile "config-manifest.json"
@@ -29,39 +45,43 @@ in
     pname = "config-materialize-check";
     version = "0";
     src = null;
-    buildDeps = [pkgs.aos pkgs.coreutils pkgs.grep pkgs.findutils];
+    buildDeps = [pkgs.aos pkgs.coreutils pkgs.grep pkgs.findutils pkgs.erofs-utils];
     phases = [
       {
         name = "check";
         script = ''
           set -eu
           mkdir -p "$out"
-          etc_root="$(${pkgs.coreutils}/bin/mktemp -d)/etc"
-
-          echo "==> materializing the server configManifest" | tee "$out/result"
-          ${pkgs.aos}/bin/apm __materialize \
-            --manifest ${manifestFile} \
-            --etc-root "$etc_root"
+          generation="$(${pkgs.coreutils}/bin/mktemp -d)/gen-1"
+          mkdir -p "$generation"
 
           fail() {
             echo "FAIL: $1" >&2
             exit 1
           }
 
-          # A `text` entry lands as a real file with content (registries are
-          # always present on the server variant).
-          reg="$etc_root/apm/registries.d/andyl.toml"
-          [ -f "$reg" ] || fail "text entry /etc/apm/registries.d/andyl.toml not materialized"
-          ${pkgs.grep}/bin/grep -q 'name = "andyl"' "$reg" \
-            || fail "registries.d content missing"
+          echo "==> materializing the server configManifest" | tee "$out/result"
+          ${pkgs.aos}/bin/apm __materialize \
+            --manifest ${manifestFile} \
+            --generation-dir "$generation" \
+            --mkfs-erofs ${pkgs.erofs-utils}/bin/mkfs.erofs \
+            --fsck-erofs ${pkgs.erofs-utils}/bin/fsck.erofs
 
-          # A `store-symlink` entry lands as a symlink into /nix/store.
-          lt="$etc_root/localtime"
-          [ -L "$lt" ] || fail "store-symlink /etc/localtime not materialized as a symlink"
-          case "$(${pkgs.coreutils}/bin/readlink "$lt")" in
-            /nix/store/*) ;;
-            *) fail "localtime symlink does not point into /nix/store" ;;
-          esac
+          lower="$generation/config-lower"
+          etc_root="$lower/etc-tree"
+          [ -f "$lower/etc.erofs" ] || fail "content-addressed EROFS lower was not published"
+          [ -f "$lower/metadata.json" ] || fail "lower integrity metadata was not published"
+          ${pkgs.erofs-utils}/bin/fsck.erofs "$lower/etc.erofs" >/dev/null \
+            || fail "published EROFS image failed fsck"
+
+          # Host-owned text lands as a real file. Image-owned base artifacts
+          # stay in the image lower and must not be duplicated in this lower.
+          runtime_file="$etc_root/runtime-config/materialized.conf"
+          [ -f "$runtime_file" ] || fail "host-owned text entry not materialized"
+          ${pkgs.grep}/bin/grep -qx 'host-owned' "$runtime_file" \
+            || fail "host-owned text content missing"
+          [ ! -e "$etc_root/apm/registries.d/andyl.toml" ] \
+            || fail "image-owned registry was duplicated into the runtime lower"
 
           # A relative install `symlink` entry (the systemd .wants farm).
           units="$etc_root/systemd/system"
@@ -88,9 +108,30 @@ in
           [ -n "$js" ] || fail "no job script file materialized"
           [ -x "$js" ] || fail "materialized job script is not executable"
 
+          # A byte-identical retry validates and reuses the immutable artifact.
+          before="$(${pkgs.coreutils}/bin/sha256sum "$lower/etc.erofs")"
+          ${pkgs.aos}/bin/apm __materialize \
+            --manifest ${manifestFile} \
+            --generation-dir "$generation" \
+            --mkfs-erofs ${pkgs.erofs-utils}/bin/mkfs.erofs \
+            --fsck-erofs ${pkgs.erofs-utils}/bin/fsck.erofs
+          after="$(${pkgs.coreutils}/bin/sha256sum "$lower/etc.erofs")"
+          [ "$before" = "$after" ] || fail "idempotent reuse changed the EROFS lower"
+
+          # Tampering is detected before an existing generation can be reused.
+          ${pkgs.coreutils}/bin/printf x >> "$lower/etc.erofs"
+          if ${pkgs.aos}/bin/apm __materialize \
+            --manifest ${manifestFile} \
+            --generation-dir "$generation" \
+            --mkfs-erofs ${pkgs.erofs-utils}/bin/mkfs.erofs \
+            --fsck-erofs ${pkgs.erofs-utils}/bin/fsck.erofs; then
+            fail "tampered EROFS lower was accepted"
+          fi
+
           echo "  text entry + mode: OK" | tee -a "$out/result"
-          echo "  store-symlink + relative install symlink: OK" | tee -a "$out/result"
+          echo "  relative install symlink: OK" | tee -a "$out/result"
           echo "  job-script materialization + placeholder rewrite: OK" | tee -a "$out/result"
+          echo "  atomic EROFS publication + reuse/tamper validation: OK" | tee -a "$out/result"
         '';
       }
     ];

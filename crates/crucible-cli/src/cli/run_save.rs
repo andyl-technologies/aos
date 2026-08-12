@@ -1054,6 +1054,11 @@ where
         let Some(command) = parse_interactive_session_command_line(&line)? else {
             continue;
         };
+        if interactive_stream_command(command)?.is_none() {
+            write_interactive_payload_required(writer, command)?;
+            writer.flush()?;
+            continue;
+        }
         if command == SessionCommandKind::Stop {
             let boundary = current_remote_resume_summary(client, session).await?;
             if watch_streams_live_status {

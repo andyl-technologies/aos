@@ -823,14 +823,14 @@ fn qemu_node_generic_backend_drains_coverage_without_a_local_side_record()
 #[test]
 fn qemu_node_stamps_polled_console_at_the_scheduler_boundary() -> Result<(), Box<dyn Error>> {
     let log = shared_log();
-    let (mut console_writer, console_reader) = UnixStream::pair()?;
-    std::io::Write::write_all(&mut console_writer, b"guest output")?;
+    let spool = QemuConsoleObservationSpool::new();
+    spool.append(b"guest output")?;
     let mut node = scripted_node_with_options(
         log,
         ScriptedNodeOptions::default(),
         [QemuAsyncWaitOutcome::Completed],
     )?
-    .with_console_observation(node_id("vm-a"), console_reader)?;
+    .with_console_observation(node_id("vm-a"), spool);
 
     let boundary = VirtualTime { ticks: 97 };
     SimulationBackend::step_to(&mut node, boundary)?;

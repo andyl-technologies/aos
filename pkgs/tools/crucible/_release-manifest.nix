@@ -15,6 +15,7 @@
   crateRoot = ../../../crates;
   shmemLib = builtins.readFile (crateRoot + "/crucible-shmem/src/lib.rs");
   protocolLib = builtins.readFile (crateRoot + "/crucible-protocol/src/lib.rs");
+  doorbellAbi = builtins.readFile (crateRoot + "/crucible-protocol/src/doorbell_abi.rs");
   apiRpcAbi = builtins.readFile (crateRoot + "/crucible-api/src/rpc_abi.rs");
   firstLineWith = label: prefix: content: let
     matches = builtins.filter (line: lib.hasPrefix prefix line) (lib.splitString "\n" content);
@@ -58,6 +59,11 @@
     "guest-host protocol version"
     "pub const CONTROL_PROTOCOL_VERSION: u32 = "
     protocolLib;
+  doorbellInstructionAbiVersion =
+    sourceConst
+    "doorbell instruction ABI version"
+    "pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = "
+    doorbellAbi;
   rpcProtocolMajor = sourceConst "RPC ABI major version" "pub const RPC_PROTOCOL_MAJOR: u16 = " apiRpcAbi;
   rpcProtocolMinor = sourceConst "RPC ABI minor version" "pub const RPC_PROTOCOL_MINOR: u16 = " apiRpcAbi;
   rpcProtocolPatch = sourceConst "RPC ABI patch version" "pub const RPC_PROTOCOL_PATCH: u16 = " apiRpcAbi;
@@ -86,7 +92,7 @@
       workspacePackages = packages;
       workspacePackageVersions = packageVersions;
       cargoDeps = {
-        kind = "fetchCargoDeps";
+        kind = "fetchCargoVendor";
         sourceRoot = "source/crates";
         hash = cargoDepsHash;
         vendored = true;
@@ -191,6 +197,10 @@
         version = guestHostProtocolVersion;
         label = guestHostProtocolAbi;
       };
+      doorbellInstruction = {
+        version = doorbellInstructionAbiVersion;
+        architectures = ["x86_64" "aarch64"];
+      };
       rpc = {
         version = rpcAbiVersion;
         build = rpcProtocolBuild;
@@ -216,7 +226,7 @@
     manifest_schema_version=1
     crucible_version=${version}
     crucible_workspace_packages=${builtins.concatStringsSep "," packages}
-    cargo_deps=fetchCargoDeps
+    cargo_deps=fetchCargoVendor
     cargo_deps_source_root=source/crates
     cargo_deps_hash=${cargoDepsHash}
     cargo_deps_vendored=true
@@ -275,6 +285,7 @@
     shmem_generated_header_hash=${manifest.abi.shmem.generatedHeaderHash}
     guest_host_protocol_version=${guestHostProtocolVersion}
     guest_host_protocol_abi=${guestHostProtocolAbi}
+    doorbell_instruction_abi_version=${doorbellInstructionAbiVersion}
     rpc_abi_version=${rpcAbiVersion}
     rpc_abi_build=${rpcProtocolBuild}
     rpc_abi=${rpcAbi}

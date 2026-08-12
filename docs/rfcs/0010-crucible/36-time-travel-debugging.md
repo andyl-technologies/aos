@@ -1036,9 +1036,12 @@ native x86_64 kernel/root image and an AArch64 kernel/root image. The wrapper
 exports separate immutable artifact triplets, and the production lifecycle
 selects the triplet from each World VM's declared architecture, including
 restart and replacement launches. It never boots an AArch64 profile with
-x86_64 guest artifacts. Producing the AArch64 closure remains an independent
-packaging prerequisite; the debugger does not alter the bootstrap or cross
-toolchain to manufacture one.
+x86_64 guest artifacts. A native-only suite may admit a separately built
+hermetic AArch64 closure only as one complete kernel/root-image/kernel-command-
+line tuple with the exact doorbell instruction ABI. The runner binds that tuple
+to content hashes before QEMU starts and retains the admitted identities in its
+evidence. The debugger does not alter the bootstrap or cross toolchain to
+manufacture the closure.
 
 - **[DBG-47]** The Crucible suite MUST ship a hermetic GNU GDB and MUST pass live
   x86_64 and aarch64 gates for stable attach, read-only neutrality, scheduler-routed
@@ -1214,18 +1217,29 @@ the documented CLI without editing the implementation and report ambiguous outpu
 incorrect exit behavior, missing discovery, or operations that only emit a plan as
 usability defects. Accepted defects feed back into the CLI and user documentation.
 
-This exercise does not close T-DBG-9 through T-DBG-14. In particular, the local
-artifact/savepoint executor is unavailable and fails with exit `4` stating that
-no debug operation executed. Executed time travel requires a live daemon
-session. Guest exec/PTY/SSH admission is not proof of introspection while the
-shipped fixture does not activate the guest agent on a non-canonical fork.
-An August 2026 live operator pass also confirmed that `goto 0` and `goto 10`
-can return the same target configuration identity when the scenario has no
-intervening schedule decision; every reverse-step grain then reports that no
-earlier recorded coordinate exists. That is not live reverse evidence:
-T-DBG-10/T-DBG-14 remain open until responses bind the landed runtime coordinate
-and live scenarios demonstrate usable schedule/event history in both
-architectures.
+The 2026-08-11 packaged operator qualification closes the runtime portions of
+T-DBG-9, T-DBG-10, T-DBG-12, and T-DBG-14. Two independent AArch64 runs and one
+combined x86_64/AArch64 run used the public daemon and CLI outside Nix checks.
+Each architecture retained non-empty reverse history with distinct baseline and
+earlier event prefixes, landed at distinct virtual-time and node-icount
+coordinates, reproduced the complete landed tuple through repeated goto,
+advanced gateway generations while one GDB connection and hardware breakpoint
+remained live, exercised scheduler continue and single-step, ran guest
+exec/PTY/SSH, and closed an active guest stream on reposition. The AArch64 exec
+and SSH probes both reported `aarch64`. Each run binds the admitted AArch64
+kernel and root image as BLAKE3 identities in its aggregate evidence with
+doorbell instruction ABI v4. The canonical scenario and aggregate asset identity
+also retain the exact selected kernel command line, so the boot tuple can be
+reconstructed from the evidence without consulting invocation-local environment
+variables. Exact asset hashes and event-prefix counts remain per-run evidence:
+they are not copied into this source file because changing retained source can
+legitimately change a packaged guest or fixture identity.
+
+Independent boots may batch observational console entries differently. That is
+not a causal replay difference: the acceptance comparison follows OBS-15 and
+OBS-22 by comparing causal projections and, within each live session, the full
+landed runtime tuple. T-DBG-11 remains open for its separate authorization,
+peer-credential, and authenticated-relay completion criteria.
 
 ## Implementation checklist
 
@@ -1236,15 +1250,15 @@ architectures.
 > control-plane, fork, and event-log foundations they depend on ([ADV-1], [G-5],
 > [PLAN-4]).
 
-The completed entries among T-DBG-1 through T-DBG-8 record graph-model, session
+The completed entries among T-DBG-1 through T-DBG-10 and T-DBG-12 through
+T-DBG-14 record graph-model, session
 command, existing one-runtime attach, and the implemented CLI surface. T-DBG-6
 and T-DBG-8 were reopened when the explicit `fork-debug` policy replaced implicit
 forking and were closed after that transition was enforced end to end. These
-entries do **not** by themselves claim stable
-GDB across runtime replacement, authenticated remote access, scheduler-mediated RSP
-run control, guest exec/PTY/SSH, a hermetic GDB client, or live aarch64 parity. Those
-end-to-end claims remain open in T-DBG-9 through T-DBG-14 and MUST NOT be reported
-complete from model-double evidence.
+entries close stable GDB across runtime replacement, scheduler-mediated RSP run
+control, guest exec/PTY/SSH, hermetic GDB packaging, and live AArch64 parity only
+through the captured production evidence below. Authenticated remote access and
+peer-credential completion remain open in T-DBG-11.
 
 - [x] **T-DBG-1** Implement debug attach as `instantiate` of a resolved checkpoint
   configuration (05 §5, 10 §10.5) and the **fourth out-of-band gdbstub channel**
@@ -1423,12 +1437,12 @@ complete from model-double evidence.
   the actor's resume-history floor while instruction and coordinate `goto`
   remain available. The CLI accepts the closed reverse grain set and
   `quiescent`, `at:<ticks>`, or canonical compact-binary 17a conditions.
-- [ ] **T-DBG-9** Replace the Apache-side one-QEMU proxy with the standalone GPL
+- [x] **T-DBG-9** Replace the Apache-side one-QEMU proxy with the standalone GPL
   debugger gateway, a stable asynchronous GDB listener, bounded fail-closed RSP
   parsing, and scheduler-routed `continue`/`step`/`vCont`. Prove split/coalesced
   packets, acknowledgements, async output/stops, EOF, and unsupported mutations.
   — satisfies [DBG-6], [DBG-41], [DBG-42]; spec §36.2.2, §36.9.1.
-  In progress: the standalone gateway and Apache control client now negotiate over
+  Completed: the standalone gateway and Apache control client negotiate over
   the versioned Unix protocol; prepare/commit are reconnect-recoverable and
   state-epoch checked; semantic `OK` responses, not transport acknowledgements,
   define replayable thread/breakpoint state. A process-boundary gate keeps one GDB
@@ -1441,9 +1455,11 @@ complete from model-double evidence.
   rejects forward execution until `fork-debug`; the gateway never forwards them
   directly to QEMU. No unauthenticated TCP listener exists by default; the
   component-only loopback listener requires an explicit trusted-host launch policy.
-  The authenticated daemon relay and live breakpoint/terminal run-control gates
-  remain open, so this task is not complete.
-- [ ] **T-DBG-10** Implement production whole-world candidate instantiate/replay,
+  The packaged production matrix keeps one GDB connection and hardware
+  breakpoint across atomic backend replacement, then drives scheduler-owned
+  `continue`, interrupt, `stepi`, and thread-qualified `vCont`. Authentication
+  and peer-credential policy remain tracked independently by T-DBG-11.
+- [x] **T-DBG-10** Implement production whole-world candidate instantiate/replay,
   gateway prepare/hydrate/commit, verified endpoint/generation evidence, rollback
   before promotion, and stable GDB state across goto/reverse/fork. — satisfies
   [DBG-14]–[DBG-19], [DBG-41]; spec §36.4, §36.9.1.
@@ -1456,25 +1472,22 @@ complete from model-double evidence.
   selected worlds or nodes until gateway termination is observed; successful
   promotion transfers gateway ownership before revoking the retired world's
   scheduler authority, and cleanup evidence does not claim an unobserved reap.
-  Completion remains open for live end-to-end gates across goto, reverse, and
-  fork. A 2026-08 manual production-daemon pass landed two distinct requested
+  An earlier 2026-08 manual production-daemon pass landed two distinct requested
   virtual times on the same schedule-empty configuration identity and could not
   reverse from either event/schedule history. Completion therefore also requires
   operator-visible landed runtime-coordinate evidence and a live fixture with
   non-empty recorded reverse history; configuration identity alone is not
   sufficient proof of a successful distinct landing. The API and CLI now return
   requested and landed configuration/event/scheduler/node-icount evidence as
-  separate typed fields and retain an inclusive exact event cursor; the open
-  gate is a packaged live exercise proving those fields against non-empty
-  history. The manual acceptance runner now generates its scenario from the
+  separate typed fields and retain an inclusive exact event cursor. The manual
+  acceptance runner generates its scenario from the
   packaged kernel and root-image BLAKE3 identities, enables fail-closed asset
   reference validation, creates non-empty live history, and compares the full
   landed tuple across reverse and repeated goto operations. It queues validated
   GDB register traffic at the per-session operation barrier while each
   reverse/goto/fork transaction commits, then requires the gateway generation
   to advance and the same GDB connection and hardware breakpoint state to
-  remain usable. These checks define the required captured evidence; they do
-  not close this task until both packaged architectures pass live. A 2026-08-08
+  remain usable. A 2026-08-08
   live x86_64 source-tree pass captured non-empty history and exact equality of
   the landed configuration, checkpoint, scheduler frontier, event prefix, node
   icount, and reduced runtime across reverse and repeated goto. It also exposed
@@ -1484,8 +1497,11 @@ complete from model-double evidence.
   checks with 65 live events at the baseline and 64 after reverse, distinct
   landed virtual-time and node-icount coordinates, three successful gateway
   generations, and one stable GDB connection across reverse, repeated goto, and
-  fork. T-DBG-10 remains open only because its acceptance gate shares
-  T-DBG-14's required AArch64 parity leg.
+  fork. The 2026-08-11 qualification repeated the same complete landed-coordinate
+  equality on AArch64 twice and in the combined architecture run. It retained
+  65 baseline events and 64 after reverse, landed at virtual times 320,000,000
+  and 315,000,000 with node icounts 321,000,000 and 316,000,000, and advanced
+  gateway generations 2, 3, and 4 while one GDB connection remained usable.
 - [ ] **T-DBG-11** Enforce debugger identities, capability roles, one-controller
   leases, Unix peer authentication, remote HTTP/2+mTLS relay, and explicit trusted
   unauthenticated bind policy in the daemon and CLI. — satisfies [DBG-43], [DBG-44];
@@ -1523,7 +1539,7 @@ complete from model-double evidence.
   Read-only service cannot acquire, attach, open, or write a debugger relay.
   Completion remains open for Unix peer credentials, multiple-observer RPC
   plumbing, and live mTLS/relay conformance evidence.
-- [ ] **T-DBG-12** Version the public shared-memory ABI for the debug guest agent and
+- [x] **T-DBG-12** Version the public shared-memory ABI for the debug guest agent and
   implement whole-world-forked argv exec, PTY, resize, exit/close, and SSH-compatible
   byte bridging; close all streams on reposition and keep recording opt-in. —
   satisfies [DBG-45], [DBG-46], [SHM-47], [SHM-48]; spec §36.9.3, 13 §13.3.9.
@@ -1572,10 +1588,10 @@ complete from model-double evidence.
   fixed token. The agent advertises exec/PTY/resize/SSH features through the
   shared-memory protocol.
   Activation waits for at most 1,024 scheduler quanta and returns the committed
-  branch identity even when negotiation fails. Completion remains open only for
-  the packaged AArch64 parity exercise. The 2026-08-08 live x86_64 pass exercised
-  argv exec, controlling-terminal PTY, OpenSSH over the byte bridge, opt-in
-  transcripts, and typed closure of an active PTY after committed reposition.
+  branch identity even when negotiation fails. The 2026-08-08 live x86_64 pass
+  and the 2026-08-11 repeated AArch64 and combined passes exercised argv exec,
+  controlling-terminal PTY, OpenSSH over the byte bridge, opt-in transcripts,
+  and typed closure of an active PTY after committed reposition.
 - [x] **T-DBG-13** Package GNU GDB hermetically from source and add user workflows
   for local/remote GDB, reverse commands, guest exec, PTY, and SSH compatibility. —
   satisfies [DBG-47]; spec §36.9.4; cross-ref 23, 26.
@@ -1587,12 +1603,12 @@ complete from model-double evidence.
   Python and selects both x86_64 and aarch64 architectures. The
   local and authenticated remote relay workflows, symbol ownership, reverse
   commands, and guest exec/PTY/SSH workflows are documented for operators.
-- [ ] **T-DBG-14** Pass live x86_64 and aarch64 gates for read-only neutrality,
+- [x] **T-DBG-14** Pass live x86_64 and aarch64 gates for read-only neutrality,
   hardware breakpoints, scheduler run control, atomic runtime replacement, stable
   GDB, and guest exec/PTY/SSH introspection without model doubles or fallback. Update S14 and the
   decision register only from captured live evidence. — satisfies [DBG-36],
   [DBG-41], [DBG-42], [DBG-47]; spec §36.9.4, §36.10.1.
-  In progress: `checks.crucible.phase7.debuggerLiveArchitectures` boots the
+  Completed: `checks.crucible.phase7.debuggerLiveArchitectures` boots the
   packaged x86_64 `microvm` and aarch64 `virt` emulators under TCG without a
   model double, negotiates RSP with the packaged GDB, proves repeated register
   reads are identical, and exercises insert/remove hardware-breakpoint packets.
@@ -1608,20 +1624,12 @@ complete from model-double evidence.
   retained one GDB connection and its hardware-breakpoint model across gateway
   generations; drove `vCont;c`, interrupt/T02, `stepi`/T05, and breakpoint
   removal; negotiated the fork-time guest agent; ran exec, PTY, and SSH; and
-  observed typed active-stream closure on reposition. Completion remains open
-  for the equivalent AArch64 production matrix. The
+  observed typed active-stream closure on reposition. The
   native suite selects q35/qemu64/ttyS0 or virt/cortex-a57/ttyAMA0 consistently
   and configures debugger backends for every daemon-submitted World node. The
-  out-of-check runner also accepts an explicit AArch64 kernel, root image, and
-  kernel command-line triplet and passes it through to the production lifecycle;
-  these are required implementation prerequisites, not substitutes for the
-  remaining live gate. The currently evaluated AArch64 package path cannot
-  supply those assets: native evaluation stops in the phase-zero coreutils
-  bootstrap, while the x86_64-to-AArch64 form assigns a target compiler wrapper
-  to a build-platform dependency. The existing phase-zero AArch64 boot image
-  also lacks the guest agent and root filesystem required by exec, PTY, and SSH.
-  These are external asset/toolchain packaging blockers; this debugger change
-  neither modifies nor works around them.
+  out-of-check runner also accepts an explicit hermetic AArch64 kernel, root
+  image, kernel command line, and doorbell ABI as one fail-closed tuple and
+  passes it through to the production lifecycle.
   The suite now ships an out-of-check manual runner that exercises both retained
   architectures through the public CLI: repeated read-only GDB snapshots,
   non-empty reverse history, full landed-coordinate replay equality, queued
@@ -1638,12 +1646,11 @@ complete from model-double evidence.
   record even though `replay --check` expects only canonical causal entries; the
   trace writer now keeps that porcelain record on machine-readable stdout and
   writes directly replayable canonical bytes to the trace file. The runner uses
-  bounded process groups and hard TERM/KILL deadlines. This
-  paragraph records the acceptance design only; T-DBG-14 remains open until the
-  runner's live x86_64 and AArch64 evidence is captured and reviewed. A
-  packaged-suite x86_64 execution outside the Nix checks now passes every
-  listed matrix assertion, including non-empty reverse history, landed-coordinate
-  equality, atomic replacement, scheduler run control, hardware-breakpoint
-  retention, and guest exec/PTY/SSH. No retained AArch64 kernel/root-image pair
-  was available to the suite, so that successful x86_64 evidence does not close
-  the cross-architecture task.
+  bounded process groups and hard TERM/KILL deadlines. The 2026-08-11 evidence
+  captured two independent AArch64 passes and one combined x86_64/AArch64 pass.
+  Every per-architecture result records non-empty reverse history, complete
+  landed-coordinate equality, read-only neutrality, atomic replacement, stable
+  GDB and hardware-breakpoint retention, scheduler run control, guest
+  exec/PTY/SSH, and active-stream closure. The aggregate evidence binds the exact
+  architecture-specific kernel/root identities and doorbell ABI before declaring
+  `PASS`.

@@ -26,15 +26,27 @@ The output directory must not exist. The matrix clears debugger backend and boot
 asset overrides, generates each scenario from the BLAKE3 identities of the
 packaged kernel and root image, and uses only the public daemon and CLI surfaces.
 It preserves per-architecture logs, GDB transcripts, complete landed runtime
-coordinates, guest-channel transcripts, package build information, and an
+coordinates, guest-channel transcripts, the exact canonical kernel command line
+alongside kernel/root-image identities, package build information, and an
 aggregate `result` file. `--help` reports the architectures retained by that
 suite; `all` fails closed unless both x86_64 and AArch64 assets are present.
 On a native-only package, an operator may add retained AArch64 assets by setting
 `CRUCIBLE_MATRIX_EXTERNAL_KERNEL_AARCH64`,
-`CRUCIBLE_MATRIX_EXTERNAL_ROOT_IMAGE_AARCH64`, and
-`CRUCIBLE_MATRIX_EXTERNAL_KERNEL_CMDLINE_AARCH64` together. The runner passes
-that exact triplet to both scenario generation and the production lifecycle;
-partial overrides fail before creating evidence.
+`CRUCIBLE_MATRIX_EXTERNAL_ROOT_IMAGE_AARCH64`,
+`CRUCIBLE_MATRIX_EXTERNAL_KERNEL_CMDLINE_AARCH64`, and
+`CRUCIBLE_MATRIX_EXTERNAL_DOORBELL_INSTRUCTION_ABI_AARCH64=4` together. The
+runner passes that exact asset set to both scenario generation and the
+production lifecycle. Partial overrides and instruction-ABI mismatches fail
+before QEMU starts or an evidence directory is claimed as passing.
+
+The live qualification matrix proves more than boot success. A passing
+per-architecture `result` records non-empty reverse history, repeated complete
+landed runtime coordinates, stable GDB attachment across atomic
+controller/gateway replacement, scheduler-owned continue and single-step,
+fork-time guest exec, PTY and SSH, and typed closure of an active stream during
+reposition. The AArch64 instruction-ABI-v4 qualification and the combined
+x86_64/AArch64 matrix have passed this complete surface. Treat a partial manual
+probe as diagnostic evidence, not as a substitute for that result file.
 
 ## Interactive run control
 
@@ -79,8 +91,12 @@ after `stop`.
 
 The current parser accepts only the keyword; it does not parse payloads for a
 duration, fault, query selector, savepoint label, or fork override. Use the
-top-level `save`, `resume`, and `fork` commands for parameterized workflows. The
-argumentless mutation keywords primarily exercise the session control surface.
+top-level `save`, `resume`, and `fork` commands for parameterized workflows and
+put deterministic fault injection and healing in the scenario plan. Because an
+interactive fault cannot safely invent a target or tag, argumentless
+`inject-fault` and `heal-fault` return an agent-readable
+`status=rejected reason=unsupported detail=payload-required` acknowledgement.
+The session remains live and continues reading later commands.
 
 An interactive live-QEMU `fork` is intentionally transient: its final report
 retains checkpoint and oracle evidence but marks its reproduction artifact

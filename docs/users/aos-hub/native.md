@@ -55,10 +55,11 @@ On an AOS system, enable the service in the build-time system variant:
 }
 ```
 
-General runtime `host.nix` activation is not complete, so putting this setting
-in metadata does not start the service today. Rebuild and deploy the resulting
-system image. The [AOS customization guide](../aos/configuration.md) explains
-the distinction between image modules and first-boot `host.nix` policy.
+The same module can be supplied through authenticated runtime `host.nix`; its
+package and service configuration are evaluated into a numbered configuration
+generation and activated atomically. Keep release-image capabilities and trust
+roots in the image. The [AOS customization guide](../aos/configuration.md)
+explains that image/host boundary.
 
 After deploying the image, initialize the database as the service account. The
 unit's first start creates `/var/lib/aos-hub`; stop it before initialization so
