@@ -319,7 +319,7 @@ class AgentClient:
                 _write_all(sock, ping_frame, time.monotonic() + 2)
                 self._read_frame(sock, time.monotonic() + 2)
                 consecutive_down = 0  # still up
-            except (OSError, TimeoutError, AgentProtocolError):
+            except (OSError, TimeoutError, AgentProtocolError, _ProtocolMidstream):
                 consecutive_down += 1
                 if consecutive_down >= 2:
                     self._reset_conn()
@@ -415,7 +415,7 @@ class AgentClient:
                         attempts,
                     )
                 continue
-            except (OSError, _ProtocolMidstream) as e:
+            except (OSError, _ProtocolMidstream, AgentProtocolError) as e:
                 if attempts % 20 == 1:
                     log.info(
                         "[%s] wait_ready: probe failed (%s), retrying",

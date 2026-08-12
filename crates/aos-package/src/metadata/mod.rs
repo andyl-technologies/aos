@@ -52,6 +52,7 @@ pub mod repart;
 pub mod stash;
 pub mod state;
 pub mod staticnet;
+mod yaml;
 
 #[cfg(test)]
 mod tests;
@@ -60,7 +61,9 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-pub use detect::{DetectOptions, classify_dmi, needs_network, run_detect};
+pub use detect::{
+    DetectOptions, PlatformCapability, classify_dmi, needs_network, platform_capability, run_detect,
+};
 pub use facts_render::render_host_facts_nix;
 pub use fetcher::{Facts, PlatformFetcher, StaticNetwork, UserData};
 pub use http::{EngineHttp, MetadataHttp};
@@ -77,10 +80,19 @@ use aos_net::transfer::{TransferEngine, TransferEngineConfig};
 /// offline `metadata_dir` (when one was mounted by `detect`).
 ///
 /// Offline channels need their mounted directory; cloud channels ignore it.
-/// A detected network platform without a native fetcher fails closed instead
-/// of silently discarding possible control-plane provisioning data.
-pub fn select_fetcher(platform_id: &str, metadata_dir: Option<&str>) -> Box<dyn PlatformFetcher> {
-    match platform_id {
+/// Detection emits only identifiers with an explicit capability. A manually
+/// supplied or stale unknown identifier fails closed instead of silently
+/// discarding possible control-plane provisioning data.
+///
+/// # Errors
+///
+/// Returns an error when `platform_id` is not part of the supported capability
+/// model.
+pub fn select_fetcher(
+    platform_id: &str,
+    metadata_dir: Option<&str>,
+) -> Result<Box<dyn PlatformFetcher>> {
+    let fetcher: Box<dyn PlatformFetcher> = match platform_id {
         "aos-metadata" => Box::new(offline::AosMetadataFetcher::new(
             metadata_dir.unwrap_or(stash::DEFAULT_MEDIA_DIR),
         )),
@@ -96,16 +108,13 @@ pub fn select_fetcher(platform_id: &str, metadata_dir: Option<&str>) -> Box<dyn 
         "azure" => Box::new(cloud::AzureFetcher),
         "digitalocean" => Box::new(cloud::DigitalOceanFetcher),
         "openstack" => Box::new(cloud::OpenStackImdsFetcher),
-        "hetzner" => Box::new(cloud::UnsupportedCloudFetcher::new("hetzner")),
-        "vultr" => Box::new(cloud::UnsupportedCloudFetcher::new("vultr")),
-        "scaleway" => Box::new(cloud::UnsupportedCloudFetcher::new("scaleway")),
-        "oraclecloud" => Box::new(cloud::UnsupportedCloudFetcher::new("oraclecloud")),
         "metal" => Box::new(cloud::NoMetadataFetcher::new("metal")),
         "hyperv" => Box::new(cloud::NoMetadataFetcher::new("hyperv")),
         "vmware" => Box::new(cloud::NoMetadataFetcher::new("vmware")),
         "virtualbox" => Box::new(cloud::NoMetadataFetcher::new("virtualbox")),
-        _ => Box::new(cloud::NoMetadataFetcher::new("unknown")),
-    }
+        _ => anyhow::bail!("unsupported metadata platform id {platform_id:?}"),
+    };
+    Ok(fetcher)
 }
 
 /// Options for [`run_fetch`].
@@ -142,7 +151,7 @@ impl Default for FetchOptions {
 pub async fn run_fetch(opts: &FetchOptions) -> Result<()> {
     let stash = Stash::open(&opts.stash_dir)?;
     let env = stash.read_platform_env()?;
-    let fetcher = select_fetcher(&env.platform_id, env.metadata_dir.as_deref());
+    let fetcher = select_fetcher(&env.platform_id, env.metadata_dir.as_deref())?;
 
     let engine = TransferEngine::new(TransferEngineConfig::default());
     let http = EngineHttp::new(engine);
@@ -195,7 +204,7 @@ pub(crate) async fn run_fetch_with(
     let mut network_seed_written = false;
     if let Some(net) = &facts.network {
         if net.is_seedable() {
-            let rendered = staticnet::render_networkd(net);
+            let rendered = staticnet::render_networkd(net)?;
             stash.write_network_seed(&rendered)?;
             // Documented seam: also place into the gen-0 /var/etc lower so stage-2
             // networkd has a route before any config-gen.

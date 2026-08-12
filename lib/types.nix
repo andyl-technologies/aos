@@ -65,30 +65,35 @@
   #     `environment.PATH = lib.mkIf (path != []) "…";`
   # inside a submodule's `config` block would leak the raw marker into
   # the final value and crash the type's merge function.
-  peelDef = file: condition: priority: value:
+  peelDef = def: condition: priority: value:
     if isOverride value
-    then peelDef file condition value._priority value._value
+    then peelDef def condition value._priority value._value
     else if isMkIf value
-    then peelDef file (condition && value._condition) priority value._value
+    then peelDef def (condition && value._condition) priority value._value
     else if isMkMerge value
-    then builtins.concatLists (builtins.map (v: peelDef file condition priority v) value._values)
+    then builtins.concatLists (builtins.map (v: peelDef def condition priority v) value._values)
     else [
-      {
-        inherit file value;
+      (def
+        // {
+        inherit value;
         _priority = priority;
         _condition = condition;
-      }
+      })
     ];
 
   # Given a list of defs whose values may be wrapped in any combination
   # of `mkIf` / `mkMerge` / `mkDefault` / `mkForce` / `mkOverride`, peel
   # all markers off, drop defs whose mkIf conditions are false, and keep
   # only the defs at the winning (lowest) override priority.
-  dischargeProperties = defs: let
+  peelProperties = defs: let
     peeled = builtins.concatLists (
-      builtins.map (d: peelDef d.file true 100 d.value) defs
+      builtins.map (d: peelDef d true (d._priority or 100) d.value) defs
     );
-    active = builtins.filter (d: d._condition) peeled;
+  in
+    builtins.filter (d: d._condition) peeled;
+
+  dischargeProperties = defs: let
+    active = peelProperties defs;
     minPriority =
       builtins.foldl' (
         acc: d:
@@ -354,15 +359,13 @@ in rec {
       # Wrap a single list element into a priority-tagged record. Honours
       # per-element `mkBefore` / `mkAfter` markers; otherwise inherits the
       # def-level default priority (`defPriority`).
-      processElem = file: defPriority: elem:
+      processElem = def: defPriority: elem:
         if isOrder elem
-        then {
-          inherit file;
+        then def // {
           value = elem._value;
           priority = elem._priority;
         }
-        else {
-          inherit file;
+        else def // {
           value = elem;
           priority = defPriority;
         };
@@ -372,8 +375,8 @@ in rec {
       # element inside it.
       processDef = d:
         if isOrder d.value
-        then builtins.map (processElem d.file d.value._priority) d.value._value
-        else builtins.map (processElem d.file 1000) d.value;
+        then builtins.map (processElem d d.value._priority) d.value._value
+        else builtins.map (processElem d 1000) d.value;
       allElems = builtins.concatLists (builtins.map processDef defs);
       # Stable sort by priority (lower = earlier in the list).
       sorted = builtins.sort (a: b: a.priority < b.priority) allElems;
@@ -381,10 +384,7 @@ in rec {
         elemType.merge
         (loc ++ ["[${builtins.toString i}]"])
         [
-          {
-            inherit (e) file;
-            inherit (e) value;
-          }
+          (builtins.removeAttrs e ["priority"])
         ];
     in
       builtins.genList
@@ -418,6 +418,11 @@ in rec {
   attrsOf = elemType: {
     name = "attrsOf(${elemType.name})";
     description = "attribute set of ${elemType.description}";
+    # Resolver provenance priority is applied independently to each dynamic
+    # attribute, matching the ordinary mkOverride discharge performed here.
+    # Without this marker a tier-75 host definition of one `/etc` entry would
+    # discard every unrelated package/base entry in the attrsOf option.
+    mergeProvenanceByKey = true;
     check = v: builtins.isAttrs v && builtins.all elemType.check (builtins.attrValues v);
     merge = loc: defs: let
       allKeys = builtins.concatLists (builtins.map (d: builtins.attrNames d.value) defs);
@@ -447,16 +452,17 @@ in rec {
             keyDefs =
               builtins.filter (d: builtins.hasAttr key d.value)
               (
-                builtins.map (d: {
-                  file = d.file;
-                  value = d.value;
-                })
+                builtins.map (d:
+                  d
+                  // {_priority = d._priority or 100;})
                 defs
               );
             valueDefs =
-              builtins.map (d: {
-                file = d.file;
+              builtins.map (d:
+                d
+                // {
                 value = d.value.${key};
+                _priority = d._priority or 100;
               })
               keyDefs;
             # Unwrap override / mkIf / mkMerge markers at the sub-
@@ -466,7 +472,15 @@ in rec {
             # and
             #   `some.nested.field = lib.mkIf cond "…";`
             # work exactly like top-level option definitions.
-            filteredDefs = dischargeProperties valueDefs;
+            # A container must see every active definition: resolver priority
+            # belongs to the concrete nested leaf, not to the dynamic attr key
+            # as a whole. Filtering here would let a host write to one field
+            # and accidentally erase unrelated package fields, and would make
+            # host priority 75 incorrectly beat a nested package mkForce 50.
+            filteredDefs =
+              if elemType.mergeProvenanceByKey or false || elemType ? _submodule
+              then peelProperties valueDefs
+              else dischargeProperties valueDefs;
           in
             if filteredDefs == []
             then []
@@ -496,10 +510,7 @@ in rec {
       then null
       else
         elemType.merge loc [
-          {
-            file = (builtins.elemAt defs (builtins.length defs - 1)).file;
-            value = val;
-          }
+          ((builtins.elemAt defs (builtins.length defs - 1)) // {value = val;})
         ];
   };
 
@@ -564,6 +575,11 @@ in rec {
   submodule = moduleArgs: {
     name = "submodule";
     description = "submodule";
+    # A submodule is a structural container. Keep all active outer
+    # definitions so resolver priority is applied independently to its nested
+    # leaves; filtering the container at priority 75 would erase unrelated
+    # package fields whenever host.nix overrides one sibling.
+    mergeProvenanceByKey = true;
     check = builtins.isAttrs;
     merge = loc: defs:
       if evalSubmodule != null
@@ -661,6 +677,11 @@ in rec {
     name = "uniq(${elemType.name})";
     description = "unique ${elemType.description}";
     check = elemType.check;
+    # The module engine uses this marker only when structured evaluator
+    # diagnostics are requested. Keeping the marker on the type (rather than
+    # parsing a human error string) lets the native evaluator receive the
+    # complete conflicting definition set as typed data.
+    conflictOnDisagreement = true;
     merge = loc: defs: let
       first = builtins.elemAt defs 0;
       allSame = builtins.all (d: d.value == first.value) defs;

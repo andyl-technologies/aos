@@ -21,7 +21,7 @@ use super::exposed_units::{rebuild_generation_expose_roots, reconcile_system_pro
 use super::profile::Profile;
 use super::profile::meta::{self, list_meta};
 use super::registry::RegistrySet;
-use super::types::{ProfileScope, ReactivationPlan, SystemGeneration};
+use super::types::{ConfigGeneration, ProfileScope, ReactivationPlan};
 use aos_core::output::{OutputMode, Printer};
 
 /// List user package profile generations.
@@ -398,12 +398,12 @@ fn system_generation_hint(config: &ApmConfig) -> Option<usize> {
 /// Decide how a config-generation may be re-activated under the running image's
 /// shared-option ABI according to the generation pin.
 ///
-/// This is the rollback-side entrypoint to [`SystemGeneration::reactivation_plan`]:
+/// This is the rollback-side entrypoint to [`ConfigGeneration::reactivation_plan`]:
 /// it compares the target generation's `module_abi_pinned` against the running
 /// image's `running_image_abi` and returns the action required —
-/// [`ReactivationPlan::DirectReactivate`] for a same-ABI (or legacy) generation,
-/// or [`ReactivationPlan::CrossAbiReEval`] carrying the retained inputs the
-/// rolled-back image's evaluator must replay.
+/// [`ReactivationPlan::DirectReactivate`] for any generation with the same ABI,
+/// or [`ReactivationPlan::CrossAbiReEval`] carrying the
+/// retained inputs the running image's evaluator must replay.
 ///
 /// A `DirectReactivate` plan is the existing cheap path: a pure
 /// `Profile::switch_to` + `activate <N>` pointer switch over the retained `cfg/`
@@ -417,7 +417,8 @@ fn system_generation_hint(config: &ApmConfig) -> Option<usize> {
 /// from its record — a fail-closed signal that the generation cannot be safely
 /// recomputed.
 pub fn plan_config_gen_reactivation(
-    target: &SystemGeneration,
+    target: &ConfigGeneration,
+    _running_image: u32,
     running_image_abi: u32,
 ) -> Result<ReactivationPlan> {
     target.reactivation_plan(running_image_abi)
@@ -433,8 +434,8 @@ pub fn plan_config_gen_reactivation(
 /// pre-eval ABI gate still fires inside the fixpoint, so an incompatible config
 /// module is refused fail-closed and the old config-gen stays live.
 ///
-/// `desired`, `eval_root`, and `out` mirror
-/// [`crate::config_eval::EvalCommand`].
+/// `source_manifest` is the immutable manifest retained by the selected
+/// generation. `eval_root` and `out` select ephemeral re-evaluation outputs.
 ///
 /// # Errors
 ///
@@ -443,12 +444,19 @@ pub fn plan_config_gen_reactivation(
 pub fn execute_cross_abi_reeval(
     inputs: &crate::types::CrossAbiReEvalInputs,
     running_base_lib: &std::path::Path,
-    desired: Option<PathBuf>,
+    source_manifest: &std::path::Path,
     eval_root: PathBuf,
     out: PathBuf,
     verbose: u8,
 ) -> Result<()> {
-    crate::config_eval::reeval_cross_abi(inputs, running_base_lib, desired, eval_root, out, verbose)
+    crate::config_eval::reeval_cross_abi(
+        inputs,
+        running_base_lib,
+        source_manifest,
+        eval_root,
+        out,
+        verbose,
+    )
 }
 
 /// Human description of a root: `name version [registry]` when resolvable,
@@ -466,7 +474,7 @@ fn describe_root(registries: &RegistrySet, hash: &str, target: &std::path::Path)
 #[cfg(test)]
 mod tests {
     use crate::profile::Profile;
-    use crate::types::{ProfileScope, ReactivationPlan, SystemGeneration};
+    use crate::types::{ConfigGeneration, ProfileScope, ReactivationPlan};
     use tempfile::TempDir;
 
     fn test_profile(tmp: &TempDir) -> Profile {
@@ -474,67 +482,95 @@ mod tests {
     }
 
     /// Builds a configuration-generation record with the supplied axis metadata.
-    fn config_gen(
-        number: u32,
-        module_abi_pinned: Option<u32>,
-        with_inputs: bool,
-    ) -> SystemGeneration {
-        SystemGeneration {
+    fn config_gen(number: u32, module_abi_pinned: u32, with_inputs: bool) -> ConfigGeneration {
+        ConfigGeneration {
             number,
-            toplevel: format!("/nix/store/top{number}-server"),
-            version: "1.0".into(),
-            package_name: "server".into(),
-            registry: "core".into(),
             created_at: "2026-06-01T00:00:00Z".into(),
-            kernel_path: None,
-            image_gen_parent: module_abi_pinned.map(|_| 1),
+            image_gen_parent: 1,
             module_abi_pinned,
-            manifest_hash: Some("sha256:beef".into()),
-            config_module_closure: with_inputs.then(|| "/nix/store/src0-cfg".to_string()),
-            host_nix_ref: with_inputs.then(|| "/nix/store/hn0-host.nix".to_string()),
+            manifest_hash: "sha256:beef".into(),
+            config_module_closure: if with_inputs {
+                "/nix/store/src0-cfg".to_string()
+            } else {
+                "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                    .to_string()
+            },
+            config_module_paths: if with_inputs {
+                vec!["/nix/store/src0-cfg".to_string()]
+            } else {
+                vec![]
+            },
+            config_module_packages: if with_inputs {
+                vec!["server".to_string()]
+            } else {
+                vec![]
+            },
+            host_nix_ref: "/nix/store/hn0-host.nix".to_string(),
             host_nix_commit: None,
-            facts_hash: with_inputs.then(|| "sha256:facts".to_string()),
+            facts_hash: "sha256:facts".to_string(),
+            facts_ref: "/nix/store/fa0-facts.json".to_string(),
+            base_lib_ref: "/nix/store/bl0-base-lib".to_string(),
+            evaluator_ref: "/nix/store/ev0-evaluator".to_string(),
         }
     }
 
-    // A legacy generation without a pin reactivates directly.
+    // A cross-ABI generation with unauthenticated module identity fails closed.
     #[test]
-    fn reactivation_legacy_gen_is_direct() {
-        let target = config_gen(3, None, false);
-        let plan = super::plan_config_gen_reactivation(&target, 2).unwrap();
-        assert_eq!(plan, ReactivationPlan::DirectReactivate);
+    fn reactivation_cross_abi_with_mismatched_module_identity_is_rejected() {
+        let mut target = config_gen(3, 1, true);
+        target.config_module_packages.clear();
+        let error = super::plan_config_gen_reactivation(&target, 1, 2).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("authenticated package identities")
+        );
     }
 
-    // The same ABI permits direct pointer-switch reactivation.
+    // A host-only configuration has a legitimate empty module closure.
+    #[test]
+    fn reactivation_cross_abi_accepts_host_only_inputs() {
+        let target = config_gen(3, 1, false);
+        let plan = super::plan_config_gen_reactivation(&target, 1, 2).unwrap();
+        let ReactivationPlan::CrossAbiReEval(inputs) = plan else {
+            panic!("cross-ABI host-only reactivation must re-evaluate");
+        };
+        assert!(inputs.config_module_paths.is_empty());
+        assert!(inputs.config_module_packages.is_empty());
+    }
+
+    // The same ABI permits direct pointer-switch reactivation across images.
     #[test]
     fn reactivation_same_abi_is_direct() {
-        let target = config_gen(3, Some(2), true);
-        let plan = super::plan_config_gen_reactivation(&target, 2).unwrap();
+        let target = config_gen(3, 2, true);
+        let plan = super::plan_config_gen_reactivation(&target, 99, 2).unwrap();
         assert_eq!(plan, ReactivationPlan::DirectReactivate);
     }
 
     // A different ABI requires reevaluation over the retained inputs.
     #[test]
     fn reactivation_cross_abi_returns_retained_inputs() {
-        let target = config_gen(3, Some(1), true);
-        let plan = super::plan_config_gen_reactivation(&target, 2).unwrap();
+        let target = config_gen(3, 1, true);
+        let plan = super::plan_config_gen_reactivation(&target, 1, 2).unwrap();
         match plan {
             ReactivationPlan::CrossAbiReEval(inputs) => {
                 assert_eq!(inputs.from_module_abi, 1);
                 assert_eq!(inputs.to_module_abi, 2);
-                assert_eq!(inputs.config_module_closure, "/nix/store/src0-cfg");
+                assert_eq!(inputs.config_module_paths, ["/nix/store/src0-cfg"]);
                 assert_eq!(inputs.host_nix_ref, "/nix/store/hn0-host.nix");
                 assert_eq!(inputs.facts_hash, "sha256:facts");
+                assert_eq!(inputs.facts_ref, "/nix/store/fa0-facts.json");
             }
             other => panic!("expected CrossAbiReEval, got {other:?}"),
         }
     }
 
-    // A cross-ABI generation missing retained inputs fails closed.
+    // A cross-ABI generation with unauthenticated retained inputs fails closed.
     #[test]
-    fn reactivation_cross_abi_missing_inputs_errors() {
-        let target = config_gen(3, Some(1), false);
-        assert!(super::plan_config_gen_reactivation(&target, 2).is_err());
+    fn reactivation_cross_abi_mismatched_input_identity_errors() {
+        let mut target = config_gen(3, 1, true);
+        target.config_module_paths.clear();
+        assert!(super::plan_config_gen_reactivation(&target, 1, 2).is_err());
     }
 
     #[tokio::test]

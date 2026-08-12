@@ -49,8 +49,12 @@ use toml::Value as TomlValue;
 use super::membership::CacheMembership;
 use super::store::StoreMap;
 
-/// zstd compression level used for published NARs.
-const NAR_ZSTD_LEVEL: i32 = 19;
+/// Zstandard compression level used for published NARs.
+///
+/// Level 3 matches Nix's normal binary-cache default. Higher levels make
+/// publishing large, already-compressed system images disproportionately
+/// expensive while yielding little additional transfer-size reduction.
+const NAR_ZSTD_LEVEL: i32 = 3;
 
 /// Maximum uploads kept in flight per destination. The `aos_net`
 /// connection pool enforces the real per-host limit (8 connections);
@@ -838,9 +842,10 @@ pub fn registry_has_store_roots(registry_dir: &Path) -> Result<bool> {
 
 /// Collect the sorted root store paths the registry references.
 ///
-/// Roots are the paths directly recorded in package TOML metadata: output
-/// paths, source derivations, and image store paths. Closure expansion happens
-/// later so remote root membership can skip entire closures.
+/// Roots are the paths directly recorded in package TOML metadata: runtime
+/// outputs, source derivations, image outputs, configuration outputs, and
+/// configuration evaluation base libraries. Closure expansion happens later so
+/// remote root membership can skip entire closures.
 ///
 /// # Errors
 ///
@@ -951,8 +956,7 @@ fn collect_store_paths_from_dir(dir: &Path, paths: &mut BTreeSet<String>) -> Res
     Ok(())
 }
 
-/// Harvest `store_path`, `source_drv`, and sysroot image entries from every
-/// version/platform entry of one parsed package TOML document.
+/// Harvest every cacheable store root from one parsed package TOML document.
 fn collect_store_paths_from_package(value: &TomlValue, paths: &mut BTreeSet<String>) {
     let Some(versions) = value.get("versions").and_then(TomlValue::as_array) else {
         return;
@@ -973,6 +977,17 @@ fn collect_store_paths_from_package(value: &TomlValue, paths: &mut BTreeSet<Stri
             if let Some(images) = platform.get("images").and_then(TomlValue::as_array) {
                 for image in images {
                     if let Some(path) = image.get("store_path").and_then(TomlValue::as_str) {
+                        paths.insert(path.to_string());
+                    }
+                }
+            }
+            if let Some(config_module) = platform.get("config_module") {
+                for output in ["config_output", "evaluation_base_lib"] {
+                    if let Some(path) = config_module
+                        .get(output)
+                        .and_then(|metadata| metadata.get("store_path"))
+                        .and_then(TomlValue::as_str)
+                    {
                         paths.insert(path.to_string());
                     }
                 }
@@ -1223,7 +1238,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn collect_store_paths_reads_platforms_and_images() {
+    fn collect_store_paths_reads_all_package_outputs() {
         let mut paths = BTreeSet::new();
         let value: TomlValue = toml::from_str(
             r#"
@@ -1246,6 +1261,18 @@ format = "qcow2"
 store_path = "/nix/store/img111-system-image"
 nar_hash = "sha256:image"
 nar_size = 2
+
+[versions.platforms.x86_64-linux.config_module.config_output]
+store_path = "/nix/store/cfg111-kernel-config"
+nar_hash = "sha256:config"
+nar_size = 3
+references = []
+
+[versions.platforms.x86_64-linux.config_module.evaluation_base_lib]
+store_path = "/nix/store/lib111-config-base-lib"
+nar_hash = "sha256:base-lib"
+nar_size = 4
+references = []
 "#,
         )
         .unwrap();
@@ -1253,7 +1280,9 @@ nar_size = 2
         assert_eq!(
             paths.into_iter().collect::<Vec<_>>(),
             vec![
+                "/nix/store/cfg111-kernel-config".to_string(),
                 "/nix/store/img111-system-image".to_string(),
+                "/nix/store/lib111-config-base-lib".to_string(),
                 "/nix/store/root111-kernel".to_string(),
                 "/nix/store/src111-kernel-source".to_string(),
             ]

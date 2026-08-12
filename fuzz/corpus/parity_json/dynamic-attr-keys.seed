@@ -1,0 +1,12 @@
+# aos-nix-fuzz-source
+# Dynamic attribute keys: plain `${e}` null keys are skipped (including
+# nested paths), while quoted `"${e}"` keys are string interpolations that
+# always coerce and always bind dynamically.
+{
+  plainNullSkipped = { ${null} = 1; };
+  plainConditional = { ${if true then null else "x"} = 1; a = 2; };
+  nestedPrefixKept = { a.${null} = 1; };
+  plainStringExpr = { ${"k"} = 3; };
+  quotedInterp = { "${"k"}" = 4; };
+  quotedMultiFragment = { "p${"q"}r${""}" = 5; };
+}

@@ -1,0 +1,22 @@
+[package]
+name = "ratchet-core"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[features]
+# Exposes test-only constructors (e.g. `Builtin::test_with_call_arities`) to
+# downstream crates' test builds. Not enabled in production.
+test-util = []
+# RFC-0007 Candidate-C value-ABI cutover variant (task #12): selects the
+# one-word (8/1/8) runtime ABI layout descriptor in `runtime_abi::value_layout`
+# to match the `ratchet-value/candidate_c_value` carrier. Kept coherent with the
+# carrier feature by every downstream pass-through enabling both together.
+candidate_c_value = []
+
+[dependencies]
+thiserror = { workspace = true }
+aos-nix-syntax = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

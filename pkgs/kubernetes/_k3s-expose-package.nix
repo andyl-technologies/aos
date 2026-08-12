@@ -146,7 +146,6 @@ in
           syscalls = "privileged";
           security-label = "aos-pkg-${pname}";
         };
-        requires = [];
       };
 
       meta.description = "AOS exposed ${description} package";

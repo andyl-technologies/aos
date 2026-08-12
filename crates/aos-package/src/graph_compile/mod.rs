@@ -19,11 +19,12 @@
 //!   mirroring the config DAG;
 //! - `.wants/` symlinks pulling each instance from its target;
 //!
-//! then it calls `daemon-reload` once and `start --no-block aos-config.target`
-//! through the [`SystemdControl`] seam (invariant **I2** — the compiler drives
-//! systemd through nothing else). The on-disk surface is a pure function of the
-//! two inputs (invariant **I3**): re-running over identical inputs is a
-//! byte-identical no-op.
+//! then it calls `daemon-reload` once, awaits `aos-activate.service`, and
+//! publishes `aos-config.target` through the [`SystemdControl`] seam. A changed
+//! manifest first stops the old
+//! `RemainAfterExit` transaction so every required oneshot runs again. The
+//! on-disk surface is a pure function of the two inputs (invariant **I3**):
+//! re-running over identical inputs is a byte-identical no-op.
 //!
 //! # The dropin format
 //!
@@ -61,9 +62,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
+use crate::config_eval::materialize::ConfigManifest;
 use crate::types::validate_package_name;
 
 /// Default tmpfs root systemd reads runtime units from.
@@ -75,8 +77,16 @@ pub const DEFAULT_MANIFEST_PATH: &str = "/run/aos/manifest.json";
 /// Default path of the eval-produced cross-package DAG.
 pub const DEFAULT_GRAPH_PATH: &str = "/run/aos/graph.json";
 
+/// Runtime state shared by graph compilation, package subverbs, and activation.
+pub const GRAPH_TRANSACTION_STATE: &str = "graph-transaction.json";
+
+/// Runtime proof published only after configuration activation commits.
+const ACTIVATION_RECORD: &str = "activation.json";
+
 /// Fixed dropin filename carrying each install instance's ordering edges.
 const EDGES_DROPIN: &str = "10-edges.conf";
+/// Fixed dropin filename making each wing target wait for all of its instances.
+const INSTANCES_DROPIN: &str = "10-instances.conf";
 
 /// The static fetch template baked into gen-0.
 const FETCH_TEMPLATE: &str = "aos-pkg-fetch@.service";
@@ -86,7 +96,9 @@ const INSTALL_TEMPLATE: &str = "aos-pkg-install@.service";
 const FETCH_TARGET: &str = "aos-fetch.target";
 /// The render wing target.
 const RENDER_TARGET: &str = "aos-config-render.target";
-/// The umbrella target the compiler starts.
+/// The activation service that commits the evaluated transaction.
+const ACTIVATE_SERVICE: &str = "aos-activate.service";
+/// The umbrella target the compiler publishes after activation commits.
 const CONFIG_TARGET: &str = "aos-config.target";
 
 // ---------------------------------------------------------------------------
@@ -103,7 +115,7 @@ const CONFIG_TARGET: &str = "aos-config.target";
 /// ```text
 /// { "edges": { "nginx": ["firewall"], "firewall": [] } }
 /// ```
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigGraph {
     /// Adjacency map `package → out-neighbors`. A package with no dependencies
@@ -135,9 +147,9 @@ impl ConfigGraph {
 
 /// The validated, cycle-free package graph the compiler renders to disk.
 ///
-/// Built by [`plan`] from the manifest's package set intersected with the graph
-/// edges. Package names are validated against the apm `packageNameRegex` so they
-/// are safe to interpolate into systemd instance names and `/run` paths.
+/// Built by [`plan`] from a strict manifest and its identical companion graph.
+/// Package names are validated against the apm `packageNameRegex` so they are
+/// safe to interpolate into systemd instance names and `/run` paths.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompilePlan {
     /// Every package that gets a fetch + install instance, sorted.
@@ -161,20 +173,20 @@ impl CompilePlan {
 
 /// Build a [`CompilePlan`] from the eval outputs.
 ///
-/// The package set is read from `manifest.packages` when present (the resolved
-/// working set); otherwise it falls back to the union of the graph's nodes, so
-/// the compiler is robust to either manifest shape. Edges are restricted to
-/// endpoints in the package set, every name is validated, and the graph is
-/// checked for cycles (defensively — a non-converging eval fails `aos-eval`
-/// before any graph exists, build-spec §3).
+/// The manifest is validated in full and `graph.json` must exactly equal its
+/// embedded graph. Every package name and edge endpoint is validated, and the
+/// graph is checked for cycles defensively.
 ///
 /// # Errors
 ///
-/// Returns an error if a package name is invalid, if an edge names a package
-/// outside the manifest set, or if the graph contains a cycle (with the cycle
-/// path in the message).
-pub fn plan(manifest: &Value, graph: &ConfigGraph) -> Result<CompilePlan> {
-    let packages = read_packages(manifest, graph);
+/// Returns an error if the manifest is invalid, the companion graph disagrees,
+/// a package name or edge is invalid, or the graph contains a cycle.
+pub fn plan(manifest: &ConfigManifest, graph: &ConfigGraph) -> Result<CompilePlan> {
+    manifest.validate().context("validating config manifest")?;
+    if graph.edges != manifest.graph.edges {
+        bail!("graph.json disagrees with the dependency graph embedded in manifest.json");
+    }
+    let packages: BTreeSet<String> = manifest.packages.iter().cloned().collect();
     for pkg in &packages {
         validate_package_name(pkg)
             .with_context(|| format!("manifest package '{pkg}' is not a valid apm package name"))?;
@@ -203,42 +215,6 @@ pub fn plan(manifest: &Value, graph: &ConfigGraph) -> Result<CompilePlan> {
     detect_cycle(&edges)?;
 
     Ok(CompilePlan { packages, edges })
-}
-
-/// Read the package set: `manifest.packages` if present, else the graph nodes.
-fn read_packages(manifest: &Value, graph: &ConfigGraph) -> BTreeSet<String> {
-    if let Some(names) = manifest.get("packages").and_then(package_names) {
-        return names;
-    }
-    // Fallback: every node mentioned by the graph (keys and out-neighbors).
-    let mut set = BTreeSet::new();
-    for (pkg, deps) in &graph.edges {
-        set.insert(pkg.clone());
-        set.extend(deps.iter().cloned());
-    }
-    set
-}
-
-/// Extract package names from a `manifest.packages` value, accepting either a
-/// `["nginx", …]` array of strings or a `[{ "name": "nginx" }, …]` array of
-/// objects (with `name` or `package` keys).
-fn package_names(v: &Value) -> Option<BTreeSet<String>> {
-    let arr = v.as_array()?;
-    let mut set = BTreeSet::new();
-    for item in arr {
-        if let Some(s) = item.as_str() {
-            set.insert(s.to_string());
-        } else if let Some(obj) = item.as_object() {
-            let name = obj
-                .get("name")
-                .or_else(|| obj.get("package"))
-                .and_then(Value::as_str)?;
-            set.insert(name.to_string());
-        } else {
-            return None;
-        }
-    }
-    Some(set)
 }
 
 /// Detect an ordering cycle via DFS, reporting the offending path.
@@ -336,6 +312,28 @@ fn dropin_contents(pkg: &str, deps: &BTreeSet<String>) -> String {
     out
 }
 
+/// Render the target ordering barrier for one package wing.
+///
+/// A `.wants/` symlink alone does not order a target after the wanted unit;
+/// without this drop-in the target could become active while its oneshots were
+/// still running. The file is emitted even for an empty plan so a recompile
+/// overwrites stale instance ordering with an inert `[Unit]` section.
+fn target_dropin_contents(template: &str, packages: &BTreeSet<String>) -> String {
+    let mut out = String::new();
+    out.push_str("# Generated by aos-graph-compile from /run/aos/manifest.json.\n");
+    out.push_str("# Do not edit; regenerated on every `apm switch`/`upgrade`.\n");
+    out.push_str("[Unit]\n");
+    if !packages.is_empty() {
+        let units = packages
+            .iter()
+            .map(|package| template.replace("@.", &format!("@{package}.")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        out.push_str(&format!("After={units}\n"));
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // The systemd control seam
 // ---------------------------------------------------------------------------
@@ -343,8 +341,8 @@ fn dropin_contents(pkg: &str, deps: &BTreeSet<String>) -> String {
 /// The minimal systemd control surface the compiler is permitted to use
 /// (invariant **I2**).
 ///
-/// Exactly the four operations build-spec §2 names — `daemon-reload`,
-/// `start --no-block`, `reset-failed <unit>` — modeled as a trait so the
+/// Exactly the operations build-spec §2 names — `daemon-reload`, a target
+/// start, and `reset-failed <unit>` — modeled as a trait so the
 /// compiler is unit-testable on a host without a system bus (a `FakeSystemd`
 /// records calls). The production implementation is for
 /// [`aos_systemd::SystemdClient`].
@@ -357,13 +355,20 @@ pub trait SystemdControl {
     /// Returns an error if the reload request fails.
     async fn daemon_reload(&self) -> Result<()>;
 
-    /// Queue a start job for `name` without awaiting it (`systemctl start
-    /// --no-block`).
+    /// Start `name` and await its systemd job.
     ///
     /// # Errors
     ///
-    /// Returns an error if systemd rejects the unit name or cannot queue the job.
-    async fn start_unit_no_wait(&self, name: &str) -> Result<()>;
+    /// Returns an error if systemd rejects the unit, loses the job, or reports
+    /// a terminal result other than `done`.
+    async fn start_unit(&self, name: &str) -> Result<()>;
+
+    /// Stop `name` and await its systemd job.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if systemd rejects the unit or the job does not finish.
+    async fn stop_unit(&self, name: &str) -> Result<()>;
 
     /// Clear the failed state of a single unit (`systemctl reset-failed <name>`).
     ///
@@ -382,16 +387,42 @@ impl SystemdControl for aos_systemd::SystemdClient {
             .map_err(|e| anyhow::anyhow!("daemon-reload failed: {e}"))
     }
 
-    async fn start_unit_no_wait(&self, name: &str) -> Result<()> {
-        aos_systemd::SystemdClient::start_unit_no_wait(self, name)
+    async fn start_unit(&self, name: &str) -> Result<()> {
+        let outcome = aos_systemd::SystemdClient::start_unit(self, name)
             .await
-            .map_err(|e| anyhow::anyhow!("start {name} failed: {e}"))
+            .map_err(|e| anyhow::anyhow!("start {name} failed: {e}"))?;
+        if !outcome.result.is_done() {
+            anyhow::bail!(
+                "start {name} completed with systemd job result '{}'",
+                outcome.result.label()
+            );
+        }
+        Ok(())
+    }
+
+    async fn stop_unit(&self, name: &str) -> Result<()> {
+        let outcome = aos_systemd::SystemdClient::stop_unit(self, name)
+            .await
+            .map_err(|e| anyhow::anyhow!("stop {name} failed: {e}"))?;
+        if !outcome.result.is_done() {
+            anyhow::bail!(
+                "stop {name} completed with systemd job result '{}'",
+                outcome.result.label()
+            );
+        }
+        Ok(())
     }
 
     async fn reset_failed_unit(&self, name: &str) -> Result<()> {
-        aos_systemd::SystemdClient::reset_failed_unit(self, name)
-            .await
-            .map_err(|e| anyhow::anyhow!("reset-failed {name} failed: {e}"))
+        match aos_systemd::SystemdClient::reset_failed_unit(self, name).await {
+            Ok(()) => Ok(()),
+            // Reconciliation covers the union of the old and new graph. A
+            // newly added instance may not be loaded before daemon-reload,
+            // while a removed instance may already have been unloaded. In
+            // both cases there is no failed state left to clear.
+            Err(error) if error.is_no_such_unit() => Ok(()),
+            Err(error) => Err(anyhow::anyhow!("reset-failed {name} failed: {error}")),
+        }
     }
 }
 
@@ -411,11 +442,156 @@ pub struct ReconcileReport {
     pub removed: BTreeSet<String>,
 }
 
+/// Identity of one graph transaction and each package input pin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GraphTransaction {
+    /// Hash of the complete validated manifest.
+    pub manifest: String,
+    /// Package-specific hashes of closure, config, and credential inputs.
+    pub packages: BTreeMap<String, String>,
+    /// Whether the umbrella target completed successfully.
+    #[serde(default)]
+    pub completed: bool,
+}
+
+/// Proof that the activation service committed one graph transaction.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ActivationProof {
+    schema: String,
+    generation: u32,
+    generation_id: String,
+    transaction_manifest: String,
+    dropped_packages: Vec<String>,
+    status: String,
+    activation_exit: i32,
+}
+
+impl ActivationProof {
+    /// Whether immutable activation identity fields are structurally valid.
+    fn is_well_formed(&self) -> bool {
+        self.schema == "aos.config-activation/v1"
+            && self.generation > 0
+            && is_sha256_id(&self.generation_id)
+    }
+
+    /// Whether this proof authorizes the completed-transaction fast path.
+    fn completes(&self, transaction: &GraphTransaction) -> bool {
+        self.is_well_formed()
+            && self.transaction_manifest == transaction.manifest
+            && self.dropped_packages.is_empty()
+            && self.status == "complete"
+            && matches!(self.activation_exit, 0 | 5)
+    }
+
+    /// Whether this proof records a valid, retryable degraded transaction.
+    fn degrades(&self, transaction: &GraphTransaction) -> bool {
+        self.is_well_formed()
+            && self.transaction_manifest == transaction.manifest
+            && self.status == "degraded"
+            && (self.activation_exit == 6 || !self.dropped_packages.is_empty())
+    }
+}
+
+/// Checks the `sha256:<64 lowercase hexadecimal digits>` identity syntax.
+fn is_sha256_id(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    })
+}
+
+/// Computes the stable transaction and package pin identities for a manifest.
+pub(crate) fn graph_transaction(manifest: &ConfigManifest) -> Result<GraphTransaction> {
+    manifest.validate().context("validating config manifest")?;
+    let value = serde_json::to_value(manifest).context("serializing config manifest")?;
+    let manifest_hash = hash_json(&value)?;
+    let mut packages = BTreeMap::new();
+    for package in &manifest.packages {
+        let output = manifest
+            .package_outputs
+            .get(package)
+            .with_context(|| format!("manifest has no runtime output pin for {package:?}"))?;
+        let pin = serde_json::json!({
+            "package": package,
+            "output": output,
+            "config": manifest.config.get(package),
+            "credentials": manifest.credentials.get(package),
+        });
+        packages.insert(package.clone(), hash_json(&pin)?);
+    }
+    Ok(GraphTransaction {
+        manifest: manifest_hash,
+        packages,
+        completed: false,
+    })
+}
+
+/// Serializes JSON before hashing it with SHA-256.
+fn hash_json(value: &serde_json::Value) -> Result<String> {
+    let bytes = serde_json::to_vec(value).context("serializing graph transaction identity")?;
+    Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
+}
+
+/// Returns the state-file path below a marker/state root.
+pub(crate) fn transaction_state_path(root: &Path) -> PathBuf {
+    root.join(GRAPH_TRANSACTION_STATE)
+}
+
+/// Reads a transaction state, returning `None` when it is absent.
+pub(crate) fn read_transaction(root: &Path) -> Result<Option<GraphTransaction>> {
+    let path = transaction_state_path(root);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+    };
+    serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+}
+
+/// Atomically publishes transaction state for the package subverbs.
+fn write_transaction(root: &Path, state: &GraphTransaction) -> Result<()> {
+    std::fs::create_dir_all(root).with_context(|| format!("creating {}", root.display()))?;
+    let path = transaction_state_path(root);
+    let temporary = root.join(format!(".{GRAPH_TRANSACTION_STATE}.tmp"));
+    let mut bytes = serde_json::to_vec(state).context("serializing graph transaction state")?;
+    bytes.push(b'\n');
+    std::fs::write(&temporary, bytes)
+        .with_context(|| format!("writing {}", temporary.display()))?;
+    std::fs::rename(&temporary, &path)
+        .with_context(|| format!("renaming {} to {}", temporary.display(), path.display()))
+}
+
+/// Reads the activation proof. Absence means activation has not committed.
+fn read_activation_proof(root: &Path) -> Result<Option<ActivationProof>> {
+    let path = root.join(ACTIVATION_RECORD);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+    };
+    serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+}
+
+/// Removes the prior attempt's proof before systemd starts a new transaction.
+fn clear_activation_proof(root: &Path) -> Result<()> {
+    let path = root.join(ACTIVATION_RECORD);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("removing {}", path.display())),
+    }
+}
+
 /// The graph compiler, parameterized by its `/run/systemd/system` root so it can
 /// be driven against a tempdir in unit tests.
 #[derive(Debug, Clone)]
 pub struct GraphCompiler {
     run_root: PathBuf,
+    state_root: PathBuf,
 }
 
 impl Default for GraphCompiler {
@@ -429,13 +605,24 @@ impl GraphCompiler {
     pub fn new() -> Self {
         Self {
             run_root: PathBuf::from(RUN_SYSTEMD_SYSTEM),
+            state_root: PathBuf::from(subverbs::MARKER_ROOT),
         }
     }
 
     /// A compiler writing under `run_root` (used by tests + `--run-root`).
     pub fn with_run_root(run_root: impl Into<PathBuf>) -> Self {
+        let run_root = run_root.into();
+        Self {
+            state_root: run_root.clone(),
+            run_root,
+        }
+    }
+
+    /// A compiler with independent unit and transaction-state roots.
+    pub fn with_roots(run_root: impl Into<PathBuf>, state_root: impl Into<PathBuf>) -> Self {
         Self {
             run_root: run_root.into(),
+            state_root: state_root.into(),
         }
     }
 
@@ -443,6 +630,17 @@ impl GraphCompiler {
     pub fn render(&self, plan: &CompilePlan) -> PlannedArtifacts {
         let mut dropins = BTreeMap::new();
         let mut symlinks = BTreeMap::new();
+        for (target, template) in [
+            (FETCH_TARGET, FETCH_TEMPLATE),
+            (RENDER_TARGET, INSTALL_TEMPLATE),
+        ] {
+            dropins.insert(
+                self.run_root
+                    .join(format!("{target}.d"))
+                    .join(INSTANCES_DROPIN),
+                target_dropin_contents(template, &plan.packages),
+            );
+        }
         for pkg in &plan.packages {
             let deps = plan.edges.get(pkg).cloned().unwrap_or_default();
             // Install dropin (fetch instances get no dropin — they have no edges).
@@ -498,6 +696,33 @@ impl GraphCompiler {
         for (path, target) in &artifacts.symlinks {
             write_symlink(path, target)?;
         }
+        for (target, prefix) in [
+            (FETCH_TARGET, "aos-pkg-fetch@"),
+            (RENDER_TARGET, "aos-pkg-install@"),
+        ] {
+            let expected = plan
+                .packages
+                .iter()
+                .map(|package| format!("{prefix}{package}.service"))
+                .collect();
+            prune_managed_directory(&self.run_root.join(format!("{target}.wants")), &expected)?;
+        }
+        // These runtime drop-in directories are compiler-owned. Leaving an
+        // obsolete second drop-in beside the generated file can silently add
+        // hard systemd edges and makes the effective graph differ from the
+        // authenticated manifest.
+        for pkg in &plan.packages {
+            prune_dropin_directory(
+                &self
+                    .run_root
+                    .join(format!("aos-pkg-install@{pkg}.service.d")),
+                EDGES_DROPIN,
+            )?;
+            remove_dir_if_present(&self.run_root.join(format!("aos-pkg-fetch@{pkg}.service.d")))?;
+        }
+        for target in [FETCH_TARGET, RENDER_TARGET] {
+            prune_dropin_directory(&self.run_root.join(format!("{target}.d")), INSTANCES_DROPIN)?;
+        }
         // (3) prune stragglers (packages removed since the last compile).
         let on_disk = self.scan_existing_packages()?;
         let removed: BTreeSet<String> = on_disk.difference(&plan.packages).cloned().collect();
@@ -513,7 +738,9 @@ impl GraphCompiler {
 
     /// Full compile: reconcile the filesystem, then drive systemd (build-spec
     /// §2.3–2.4, §6) — `reset-failed` every removed instance, one `daemon-reload`,
-    /// then `start --no-block aos-config.target`.
+    /// then await `aos-activate.service` and publish `aos-config.target`.
+    /// Waiting for the service directly prevents the target's soft package
+    /// dependencies from hiding an activation failure.
     ///
     /// # Errors
     ///
@@ -522,7 +749,7 @@ impl GraphCompiler {
     /// box stays on the gen-0 seed (recovery ladder rung 4).
     pub async fn compile<C>(
         &self,
-        manifest: &Value,
+        manifest: &ConfigManifest,
         graph: &ConfigGraph,
         client: &C,
     ) -> Result<ReconcileReport>
@@ -530,11 +757,52 @@ impl GraphCompiler {
         C: SystemdControl + ?Sized,
     {
         let plan = plan(manifest, graph)?;
+        let desired_state = graph_transaction(manifest)?;
+        let previous_state = read_transaction(&self.state_root)?;
+        if let Some(previous) = previous_state
+            .as_ref()
+            .filter(|state| state.completed && state.manifest == desired_state.manifest)
+        {
+            if read_activation_proof(&self.state_root)
+                .ok()
+                .flatten()
+                .is_some_and(|proof| proof.completes(previous))
+                && self.runtime_artifacts_match(&plan)?
+            {
+                return Ok(ReconcileReport {
+                    written: plan.packages.clone(),
+                    removed: BTreeSet::new(),
+                });
+            }
+        }
+
+        let mut affected = plan.packages.clone();
+        if let Some(previous) = &previous_state {
+            affected.extend(previous.packages.keys().cloned());
+        }
+
+        // RemainAfterExit oneshots and their targets retain active state. Stop
+        // the complete old transaction explicitly so the new transaction is
+        // guaranteed to execute rather than being treated as already active.
+        for unit in [CONFIG_TARGET, ACTIVATE_SERVICE, RENDER_TARGET] {
+            client.stop_unit(unit).await?;
+        }
+        for package in affected.iter().rev() {
+            client
+                .stop_unit(&format!("aos-pkg-install@{package}.service"))
+                .await?;
+        }
+        client.stop_unit(FETCH_TARGET).await?;
+        for package in affected.iter().rev() {
+            client
+                .stop_unit(&format!("aos-pkg-fetch@{package}.service"))
+                .await?;
+        }
+
         let report = self.reconcile_filesystem(&plan)?;
 
-        // reset-failed each removed instance so a previously-failed unit does
-        // not linger (build-spec §6). Both planes (fetch + install) are cleared.
-        for pkg in &report.removed {
+        // Clear failures and start-limit accounting for every affected unit.
+        for pkg in &affected {
             client
                 .reset_failed_unit(&format!("aos-pkg-fetch@{pkg}.service"))
                 .await?;
@@ -542,13 +810,52 @@ impl GraphCompiler {
                 .reset_failed_unit(&format!("aos-pkg-install@{pkg}.service"))
                 .await?;
         }
+        for unit in [FETCH_TARGET, RENDER_TARGET, ACTIVATE_SERVICE, CONFIG_TARGET] {
+            client.reset_failed_unit(unit).await?;
+        }
 
         // Exactly one daemon-reload after all files are on disk (build-spec §2.3).
         client.daemon_reload().await?;
 
-        // Start the umbrella target and return immediately; systemd schedules
-        // the whole wing asynchronously (build-spec §2.4).
-        client.start_unit_no_wait(CONFIG_TARGET).await?;
+        // Publish incomplete state before starting the graph so fetch, render,
+        // and activation all validate markers against this exact transaction.
+        write_transaction(&self.state_root, &desired_state)?;
+        // A proof from an earlier attempt must never authorize this start. The
+        // activation service publishes a replacement only after pointer commit.
+        clear_activation_proof(&self.state_root)?;
+
+        // Start and await the commit service directly. Its Wants=/After= edges
+        // drive the soft fetch/render wings, but a failed activation job is a
+        // hard compiler failure instead of being hidden by target Wants=.
+        client.start_unit(ACTIVATE_SERVICE).await?;
+
+        // Publish the umbrella target only after activation committed. This is
+        // the stable ordering barrier consumed by the rest of the boot graph.
+        client.start_unit(CONFIG_TARGET).await?;
+
+        let proof = read_activation_proof(&self.state_root)?.with_context(|| {
+            format!(
+                "{} completed without publishing {}",
+                CONFIG_TARGET, ACTIVATION_RECORD
+            )
+        })?;
+        if proof.completes(&desired_state) {
+            let mut completed_state = desired_state;
+            completed_state.completed = true;
+            write_transaction(&self.state_root, &completed_state)?;
+        } else if proof.transaction_manifest != desired_state.manifest {
+            bail!(
+                "activation proof transaction {} does not match requested transaction {}",
+                proof.transaction_manifest,
+                desired_state.manifest
+            );
+        } else if !proof.degrades(&desired_state) {
+            bail!(
+                "activation proof did not establish a complete or degraded transaction: status={:?}, exit={}",
+                proof.status,
+                proof.activation_exit
+            );
+        }
 
         Ok(report)
     }
@@ -559,8 +866,11 @@ impl GraphCompiler {
         let mut found = BTreeSet::new();
 
         // Install dropin directories: aos-pkg-install@<p>.service.d
-        if let Ok(entries) = std::fs::read_dir(&self.run_root) {
-            for entry in entries.flatten() {
+        if let Some(entries) = read_dir_if_present(&self.run_root)? {
+            for entry in entries {
+                let entry = entry.with_context(|| {
+                    format!("reading directory entry below {}", self.run_root.display())
+                })?;
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
                 if let Some(pkg) = name
@@ -582,8 +892,11 @@ impl GraphCompiler {
             (RENDER_TARGET, "aos-pkg-install@"),
         ] {
             let dir = self.run_root.join(format!("{target}.wants"));
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-                for entry in entries.flatten() {
+            if let Some(entries) = read_dir_if_present(&dir)? {
+                for entry in entries {
+                    let entry = entry.with_context(|| {
+                        format!("reading directory entry below {}", dir.display())
+                    })?;
                     let name = entry.file_name();
                     let name = name.to_string_lossy();
                     if let Some(pkg) = name
@@ -597,6 +910,59 @@ impl GraphCompiler {
         }
 
         Ok(found)
+    }
+
+    /// Whether the loaded runtime graph is byte-for-byte the desired graph.
+    ///
+    /// A completed activation proof cannot authorize a no-reload fast path if
+    /// `/run/systemd/system` was lost or altered: repairing files without a
+    /// daemon reload would leave systemd executing its stale in-memory graph.
+    fn runtime_artifacts_match(&self, plan: &CompilePlan) -> Result<bool> {
+        let artifacts = self.render(plan);
+        for (path, expected) in artifacts.dropins {
+            if std::fs::read_to_string(&path).ok().as_deref() != Some(expected.as_str()) {
+                return Ok(false);
+            }
+            if !dropin_directory_has_only(
+                path.parent().context("generated drop-in has no parent")?,
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .context("generated drop-in has a non-UTF-8 filename")?,
+            )? {
+                return Ok(false);
+            }
+        }
+        for (path, expected) in artifacts.symlinks {
+            if std::fs::read_link(path).ok().as_ref() != Some(&expected) {
+                return Ok(false);
+            }
+        }
+        for (target, prefix) in [
+            (FETCH_TARGET, "aos-pkg-fetch@"),
+            (RENDER_TARGET, "aos-pkg-install@"),
+        ] {
+            let expected = plan
+                .packages
+                .iter()
+                .map(|package| format!("{prefix}{package}.service"))
+                .collect();
+            if !directory_names_equal(&self.run_root.join(format!("{target}.wants")), &expected)? {
+                return Ok(false);
+            }
+        }
+        if self.scan_existing_packages()? != plan.packages {
+            return Ok(false);
+        }
+        for package in &plan.packages {
+            if self
+                .run_root
+                .join(format!("aos-pkg-fetch@{package}.service.d"))
+                .exists()
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Delete every `/run` artifact belonging to `pkg`.
@@ -627,6 +993,72 @@ impl GraphCompiler {
 // ---------------------------------------------------------------------------
 // Filesystem helpers
 // ---------------------------------------------------------------------------
+
+/// Opens a directory, treating absence as an empty optional directory.
+fn read_dir_if_present(path: &Path) -> Result<Option<std::fs::ReadDir>> {
+    match std::fs::read_dir(path) {
+        Ok(entries) => Ok(Some(entries)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+/// Whether a compiler-owned drop-in directory contains exactly one file.
+fn dropin_directory_has_only(path: &Path, expected: &str) -> Result<bool> {
+    directory_names_equal(path, &BTreeSet::from([expected.to_string()]))
+}
+
+/// Whether a managed directory contains exactly the expected entry names.
+fn directory_names_equal(path: &Path, expected: &BTreeSet<String>) -> Result<bool> {
+    let Some(entries) = read_dir_if_present(path)? else {
+        return Ok(false);
+    };
+    let mut actual = BTreeSet::new();
+    for entry in entries {
+        let entry =
+            entry.with_context(|| format!("reading directory entry below {}", path.display()))?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("non-UTF-8 entry below {}", path.display()))?;
+        actual.insert(name);
+    }
+    Ok(&actual == expected)
+}
+
+/// Removes obsolete entries from one compiler-owned drop-in directory.
+fn prune_dropin_directory(path: &Path, expected: &str) -> Result<()> {
+    prune_managed_directory(path, &BTreeSet::from([expected.to_string()]))
+}
+
+/// Removes every entry not named in `expected` from a compiler-owned directory.
+fn prune_managed_directory(path: &Path, expected: &BTreeSet<String>) -> Result<()> {
+    let Some(entries) = read_dir_if_present(path)? else {
+        return Ok(());
+    };
+    for entry in entries {
+        let entry =
+            entry.with_context(|| format!("reading directory entry below {}", path.display()))?;
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| expected.contains(name))
+        {
+            continue;
+        }
+        let entry_path = entry.path();
+        let metadata = std::fs::symlink_metadata(&entry_path)
+            .with_context(|| format!("inspecting {}", entry_path.display()))?;
+        if metadata.file_type().is_dir() {
+            std::fs::remove_dir_all(&entry_path)
+                .with_context(|| format!("removing stale {}", entry_path.display()))?;
+        } else {
+            std::fs::remove_file(&entry_path)
+                .with_context(|| format!("removing stale {}", entry_path.display()))?;
+        }
+    }
+    Ok(())
+}
 
 /// Write a dropin file, creating its `…service.d/` parent (`0755`), with mode
 /// `0644`.
@@ -705,8 +1137,8 @@ fn remove_file_if_present(path: &Path) -> Result<()> {
 /// real [`aos_systemd::SystemdClient`], and drive the compile.
 ///
 /// `ConditionPathExists=/run/aos/manifest.json` on the unit guarantees the
-/// manifest is present before this runs; a missing graph.json is treated as an
-/// empty graph (independent packages, no ordering).
+/// manifest is present before this runs. The companion graph is mandatory and
+/// must exactly match the graph embedded in the validated manifest.
 ///
 /// # Errors
 ///
@@ -720,19 +1152,28 @@ pub async fn run_graph_compile_command(
 ) -> Result<()> {
     let manifest_text = std::fs::read_to_string(manifest_path)
         .with_context(|| format!("reading manifest {}", manifest_path.display()))?;
-    let manifest: Value = serde_json::from_str(&manifest_text)
+    let manifest: ConfigManifest = serde_json::from_str(&manifest_text)
         .with_context(|| format!("parsing manifest {}", manifest_path.display()))?;
+    manifest
+        .validate()
+        .with_context(|| format!("validating manifest {}", manifest_path.display()))?;
 
-    let graph = if graph_path.exists() {
-        let graph_text = std::fs::read_to_string(graph_path)
-            .with_context(|| format!("reading graph {}", graph_path.display()))?;
-        ConfigGraph::from_json(&graph_text)?
-    } else {
-        ConfigGraph::default()
-    };
+    let graph_text = std::fs::read_to_string(graph_path)
+        .with_context(|| format!("reading graph {}", graph_path.display()))?;
+    let graph = ConfigGraph::from_json(&graph_text)?;
+    if graph.edges != manifest.graph.edges {
+        bail!(
+            "{} disagrees with the dependency graph embedded in {}",
+            graph_path.display(),
+            manifest_path.display()
+        );
+    }
 
     let compiler = match run_root {
-        Some(root) => GraphCompiler::with_run_root(root),
+        Some(root) => GraphCompiler::with_roots(
+            root,
+            manifest_path.parent().unwrap_or_else(|| Path::new(".")),
+        ),
         None => GraphCompiler::new(),
     };
 

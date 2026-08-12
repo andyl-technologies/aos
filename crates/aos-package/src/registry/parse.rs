@@ -257,6 +257,7 @@ fn package_metas_for_platform(
                     sb_signer_cert_sha256: img.sb_signer_cert_sha256.clone(),
                     sbat: img.sbat.clone(),
                     expected_pcr11: img.expected_pcr11.clone(),
+                    ukis: img.ukis.clone(),
                     root_image: img.root_image.clone(),
                     root_verity: img.root_verity.clone(),
                     root_hash: img.root_hash.clone(),

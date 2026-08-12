@@ -47,11 +47,10 @@ pub struct EtcChange {
 pub struct UnitChange {
     /// The unit name.
     pub unit: String,
-    /// The reconcile action the candidate manifest declares (`restart`,
-    /// `reload`, `none`), or `start` for a unit new in the candidate.
+    /// The reconcile action (`restart`, `reload`, `none`, `start`, or `stop`).
     pub action: String,
-    /// Whether the unit is new in the candidate (drives `+` vs `~`).
-    pub added: bool,
+    /// Whether the unit was added, removed, or changed.
+    pub kind: ChangeKind,
 }
 
 /// The kind of a structural change.
@@ -109,10 +108,11 @@ impl ManifestDiff {
             out.push_str("    (no changes)\n");
         } else {
             for change in &self.units {
-                let sigil = if change.added { '+' } else { '~' };
                 out.push_str(&format!(
                     "    {} {:<24} {}\n",
-                    sigil, change.unit, change.action
+                    change.kind.sigil(),
+                    change.unit,
+                    change.action
                 ));
             }
         }
@@ -149,7 +149,11 @@ impl ManifestDiff {
             "unit_actions": self.units.iter().map(|u| json!({
                 "unit": u.unit,
                 "action": u.action,
-                "added": u.added,
+                "kind": match u.kind {
+                    ChangeKind::Added => "added",
+                    ChangeKind::Removed => "removed",
+                    ChangeKind::Changed => "changed",
+                },
             })).collect::<Vec<_>>(),
             "fetch_plan": self.fetch_plan,
             "resolution_trace": resolution_trace,
@@ -162,9 +166,10 @@ impl ManifestDiff {
 ///
 /// `etc` is keyed by `/etc`-relative path; a value difference (including a
 /// `kind`/`text`/`target`/`mode` change) is [`ChangeKind::Changed`]. `units`
-/// reports each candidate unit's reconcile action, marking units absent from the
-/// base as new (`start`). `fetch_plan` is the candidate `storePaths` set minus
-/// the base's — the closure delta the switch would have to materialize.
+/// reports each candidate unit's reconcile action when either its unit data or
+/// one of its generated job scripts changes, marking units absent from the base
+/// as new (`start`). `fetch_plan` is the candidate `storePaths` set minus the
+/// base's — the closure delta the switch would have to materialize.
 pub fn diff_manifests(base: &Value, candidate: &Value) -> ManifestDiff {
     ManifestDiff {
         etc: diff_etc(base, candidate),
@@ -203,17 +208,22 @@ fn diff_etc(base: &Value, candidate: &Value) -> Vec<EtcChange> {
     changes
 }
 
-/// Diff the `units` maps of two manifests, reporting each candidate unit's
-/// action and whether it is new.
+/// Diff the `units` maps of two manifests, including removed units that the
+/// pre-swap reconciler stops while their old definitions are still loaded.
 fn diff_units(base: &Value, candidate: &Value) -> Vec<UnitChange> {
     let base_units = object_or_empty(base.get("units"));
     let cand_units = object_or_empty(candidate.get("units"));
+    let base_job_scripts = object_or_empty(base.get("jobScripts"));
+    let cand_job_scripts = object_or_empty(candidate.get("jobScripts"));
     let mut changes = Vec::new();
     for (unit, cand_val) in &cand_units {
         let base_val = base_units.get(unit);
-        // A unit appears in the diff when it is new OR its definition changed.
+        // The rendered unit keeps a stable generation-local script path, so a
+        // script-body change must still expose the unit's reconcile action.
         let added = base_val.is_none();
-        let changed = base_val.map(|b| *b != *cand_val).unwrap_or(true);
+        let changed = base_val.map(|b| *b != *cand_val).unwrap_or(true)
+            || unit_job_scripts(&base_job_scripts, unit)
+                != unit_job_scripts(&cand_job_scripts, unit);
         if !changed {
             continue;
         }
@@ -229,11 +239,36 @@ fn diff_units(base: &Value, candidate: &Value) -> Vec<UnitChange> {
         changes.push(UnitChange {
             unit: unit.clone(),
             action,
-            added,
+            kind: if added {
+                ChangeKind::Added
+            } else {
+                ChangeKind::Changed
+            },
         });
+    }
+    for unit in base_units.keys() {
+        if !cand_units.contains_key(unit) {
+            changes.push(UnitChange {
+                unit: unit.clone(),
+                action: "stop".to_string(),
+                kind: ChangeKind::Removed,
+            });
+        }
     }
     changes.sort_by(|a, b| a.unit.cmp(&b.unit));
     changes
+}
+
+/// Returns the generated scripts belonging to one unit, keyed by slot.
+fn unit_job_scripts<'map, 'value>(
+    scripts: &'map BTreeMap<String, &'value Value>,
+    unit: &str,
+) -> BTreeMap<&'map str, &'value Value> {
+    let prefix = format!("{unit}:");
+    scripts
+        .iter()
+        .filter_map(|(key, value)| key.strip_prefix(&prefix).map(|slot| (slot, *value)))
+        .collect()
 }
 
 /// The candidate `storePaths` set minus the base's (the closure delta).
@@ -334,10 +369,9 @@ pub struct SwitchParams {
 /// Drives the (builder-gated) evaluator to a candidate manifest via
 /// [`super::run_eval_command`], diffs it against the loaded base, and prints the
 /// result. For `--dry-run` it stops there — a clean no-op on the live system.
-/// For a real switch it additionally publishes the committed candidate to
-/// [`SwitchParams::live_manifest`] (which the existing fetch/render/activate
-/// pipeline consumes) and to the generation dir alongside the base manifest, so
-/// `gen-N/manifest.json` is persisted.
+/// For a real switch it atomically publishes the candidate and its exact graph,
+/// compiles the transaction, and waits for the fetch/render/activate target.
+/// The active generation's retained source manifest is never overwritten.
 ///
 /// Returns the computed [`ManifestDiff`] so a fleet test can assert the realized
 /// `/etc` equals the predicted manifest (the dry-run-as-oracle property).
@@ -347,16 +381,16 @@ pub struct SwitchParams {
 /// Returns an error when the evaluator fails to produce a manifest (a clean
 /// no-op), when a manifest cannot be read, or when a real switch cannot publish
 /// the committed manifest.
-pub fn run_switch(params: &SwitchParams) -> Result<ManifestDiff> {
+pub async fn run_switch(params: &SwitchParams) -> Result<ManifestDiff> {
     // 1. Evaluate to the candidate manifest (no activation — eval-only).
-    super::run_eval_command(&params.eval)?;
+    let eval_report = super::run_eval_command_with_report(&params.eval)?;
 
     // 2. Diff the candidate against the base and print.
     let diff = run_switch_dry_run(
         &params.base_manifest,
         &params.base_label,
         &params.eval.out,
-        &[],
+        &eval_report.resolution_trace,
         params.json_out,
     )?;
 
@@ -364,27 +398,54 @@ pub fn run_switch(params: &SwitchParams) -> Result<ManifestDiff> {
         return Ok(diff);
     }
 
-    // 3. Real switch: publish the committed manifest for the downstream pipeline
-    //    and persist gen-N/manifest.json alongside the base.
-    if let Some(parent) = params.live_manifest.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
-    std::fs::copy(&params.eval.out, &params.live_manifest).with_context(|| {
+    // 3. Publish graph first and manifest second. A crash between the two is
+    // fail-closed: strict graph compilation rejects the mismatched pair. The
+    // next switch replaces both before starting any transaction.
+    let candidate_graph = params.eval.out.with_file_name("graph.json");
+    let live_graph = params.live_manifest.with_file_name("graph.json");
+    publish_file_atomic(&candidate_graph, &live_graph)?;
+    publish_file_atomic(&params.eval.out, &params.live_manifest)?;
+
+    // 4. Compile and synchronously await the systemd transaction. The compiler
+    // resets stale RemainAfterExit state, starts the package wings, and waits
+    // for aos-activate.service, so success here means activation committed.
+    crate::graph_compile::run_graph_compile_command(&params.live_manifest, &live_graph, None)
+        .await?;
+    Ok(diff)
+}
+
+fn publish_file_atomic(source: &Path, destination: &Path) -> Result<()> {
+    let parent = destination
+        .parent()
+        .with_context(|| format!("{} has no parent directory", destination.display()))?;
+    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    let file_name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .with_context(|| format!("{} has no UTF-8 file name", destination.display()))?;
+    let temporary = parent.join(format!(".{file_name}.tmp.{}", std::process::id()));
+    std::fs::copy(source, &temporary).with_context(|| {
         format!(
-            "publishing committed manifest to {}",
-            params.live_manifest.display()
+            "copying transaction input {} to {}",
+            source.display(),
+            temporary.display()
         )
     })?;
-    if let Some(gen_dir) = params.base_manifest.parent() {
-        let persisted = gen_dir.join("manifest.json");
-        if persisted != params.base_manifest {
-            std::fs::copy(&params.eval.out, &persisted).with_context(|| {
-                format!("persisting generation manifest to {}", persisted.display())
-            })?;
-        }
-    }
-    Ok(diff)
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .open(&temporary)
+        .with_context(|| format!("opening {} for sync", temporary.display()))?;
+    file.sync_all()
+        .with_context(|| format!("syncing {}", temporary.display()))?;
+    std::fs::rename(&temporary, destination)
+        .with_context(|| format!("publishing {}", destination.display()))?;
+    let directory = std::fs::OpenOptions::new()
+        .read(true)
+        .open(parent)
+        .with_context(|| format!("opening {} for sync", parent.display()))?;
+    directory
+        .sync_all()
+        .with_context(|| format!("syncing {}", parent.display()))
 }
 
 #[cfg(test)]
@@ -401,6 +462,9 @@ mod tests {
             },
             "units": {
                 "web.service": {"action": "reload"},
+            },
+            "jobScripts": {
+                "web.service:ExecStart.0": {"text": "serve 8080\n", "mode": "0755"},
             },
             "storePaths": [
                 "/nix/store/aaa-web-1.0",
@@ -420,6 +484,9 @@ mod tests {
                 "web.service": {"action": "reload"},
                 "firewall.service": {"action": "restart"},
                 "tracing.service": {"action": "restart"},
+            },
+            "jobScripts": {
+                "web.service:ExecStart.0": {"text": "serve 9090\n", "mode": "0755"},
             },
             "storePaths": [
                 "/nix/store/aaa-web-1.0",
@@ -447,12 +514,27 @@ mod tests {
         let diff = diff_manifests(&base(), &candidate());
         let by_unit: BTreeMap<&str, &UnitChange> =
             diff.units.iter().map(|u| (u.unit.as_str(), u)).collect();
-        // web.service is unchanged (same action+def) -> not in the diff.
-        assert!(!by_unit.contains_key("web.service"));
+        // The unit data is unchanged, but its generated script changed.
+        assert_eq!(by_unit["web.service"].kind, ChangeKind::Changed);
+        assert_eq!(by_unit["web.service"].action, "reload");
         // firewall and tracing are new -> "start".
-        assert!(by_unit["firewall.service"].added);
+        assert_eq!(by_unit["firewall.service"].kind, ChangeKind::Added);
         assert_eq!(by_unit["firewall.service"].action, "start");
-        assert!(by_unit["tracing.service"].added);
+        assert_eq!(by_unit["tracing.service"].kind, ChangeKind::Added);
+        // A base-only unit is an observable pre-swap stop action.
+        let mut without_web = candidate();
+        without_web["units"]
+            .as_object_mut()
+            .unwrap()
+            .remove("web.service");
+        let removed = diff_manifests(&base(), &without_web);
+        let web = removed
+            .units
+            .iter()
+            .find(|change| change.unit == "web.service")
+            .unwrap();
+        assert_eq!(web.kind, ChangeKind::Removed);
+        assert_eq!(web.action, "stop");
     }
 
     #[test]

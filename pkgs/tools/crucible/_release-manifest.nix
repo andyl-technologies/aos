@@ -92,7 +92,7 @@
       workspacePackages = packages;
       workspacePackageVersions = packageVersions;
       cargoDeps = {
-        kind = "fetchCargoDeps";
+        kind = "fetchCargoVendor";
         sourceRoot = "source/crates";
         hash = cargoDepsHash;
         vendored = true;
@@ -226,7 +226,7 @@
     manifest_schema_version=1
     crucible_version=${version}
     crucible_workspace_packages=${builtins.concatStringsSep "," packages}
-    cargo_deps=fetchCargoDeps
+    cargo_deps=fetchCargoVendor
     cargo_deps_source_root=source/crates
     cargo_deps_hash=${cargoDepsHash}
     cargo_deps_vendored=true

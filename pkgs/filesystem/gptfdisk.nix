@@ -1,8 +1,8 @@
 ##! gptfdisk — GPT partitioning utilities (sgdisk / gdisk / cgdisk)
 ##!
-##! sgdisk is the non-interactive scripting front-end ignition shells
-##! out to during the `disks` stage. Built from the Makefile-only
-##! upstream release; no autoconf.
+##! sgdisk is the non-interactive scripting front-end used by image and
+##! provisioning disk-layout code. Built from the Makefile-only upstream
+##! release; no autoconf.
 {
   mkDerivation,
   fetchurl,

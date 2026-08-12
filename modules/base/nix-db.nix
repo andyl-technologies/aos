@@ -16,7 +16,7 @@
       description = "Seed Nix store database and AOS GC roots";
       wantedBy = ["multi-user.target"];
       after = ["local-fs.target"];
-      before = ["multi-user.target"];
+      before = ["aos-eval.service" "multi-user.target"];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -31,10 +31,24 @@
           ${pkgs.nix}/bin/nix-store --load-db < /aos-registration
         fi
 
-        # Nix's GC follows symlinks under gcroots recursively. This bridge makes
-        # apm's existing profile generation symlinks visible to Nix GC.
-        ${pkgs.coreutils}/bin/mkdir -p /nix/var/nix/gcroots
-        ${pkgs.coreutils}/bin/ln -sfn /var/lib/profiles /nix/var/nix/gcroots/aos-profiles
+        # Nix recursively scans directories below gcroots, but does not follow
+        # a symlink whose target is an external directory. Bind the durable APM
+        # profile tree into a real gcroots directory so every generation root
+        # is visible to collection without duplicating profile state.
+        ${pkgs.coreutils}/bin/mkdir -p \
+          /var/lib/profiles \
+          /nix/var/nix/gcroots
+        if [ -L /nix/var/nix/gcroots/aos-profiles ]; then
+          ${pkgs.coreutils}/bin/rm -f /nix/var/nix/gcroots/aos-profiles
+        fi
+        ${pkgs.coreutils}/bin/mkdir -p \
+          /nix/var/nix/gcroots/aos-profiles
+        if ! ${pkgs.util-linux}/bin/mountpoint -q \
+          /nix/var/nix/gcroots/aos-profiles; then
+          ${pkgs.util-linux}/bin/mount --bind \
+            /var/lib/profiles \
+            /nix/var/nix/gcroots/aos-profiles
+        fi
       '';
     };
 
@@ -66,9 +80,15 @@
           name = "gcroot-bridge";
           description = "AOS profile tree is visible under Nix GC roots";
           script = ''
-            vm.succeed("${pkgs.coreutils}/bin/test -L /nix/var/nix/gcroots/aos-profiles")
-            assert "/var/lib/profiles" in vm.succeed(
-                "${pkgs.coreutils}/bin/readlink /nix/var/nix/gcroots/aos-profiles"
+            vm.succeed(
+                "${pkgs.util-linux}/bin/mountpoint -q "
+                "/nix/var/nix/gcroots/aos-profiles"
+            )
+            vm.succeed(
+                "${pkgs.coreutils}/bin/test "
+                "$(${pkgs.coreutils}/bin/stat -c %d:%i /var/lib/profiles) = "
+                "$(${pkgs.coreutils}/bin/stat -c %d:%i "
+                "/nix/var/nix/gcroots/aos-profiles)"
             )
           '';
         }

@@ -148,7 +148,6 @@ in
         ];
         syscalls = "system-service";
       };
-      requires = [];
     };
 
     meta.description = "AOS exposed registry and binary cache server package";

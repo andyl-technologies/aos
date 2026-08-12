@@ -18,6 +18,7 @@ pkgs.mkDerivation {
       name = "check";
       script = ''
         cryptsetup=${pkgs.cryptsetup}
+        device_mapper=${pkgs.device-mapper}
         systemd=${pkgs.systemd}
 
         fail() {
@@ -27,6 +28,12 @@ pkgs.mkDerivation {
 
         test -x "$cryptsetup/sbin/veritysetup" \
           || fail "veritysetup is missing from cryptsetup"
+        test -f "$device_mapper/lib/udev/rules.d/10-dm.rules" \
+          || fail "device-mapper's primary udev rule is missing"
+        test -f "$device_mapper/lib/udev/rules.d/13-dm-disk.rules" \
+          || fail "device-mapper's persistent disk udev rule is missing"
+        test -f "$device_mapper/lib/udev/rules.d/99-z-aos-dm-ready.rules" \
+          || fail "device-mapper's unsuspended readiness rule is missing"
         test -x "$systemd/lib/systemd/systemd-veritysetup" \
           || fail "systemd-veritysetup is missing"
         test -x "$systemd/lib/systemd/system-generators/systemd-veritysetup-generator" \

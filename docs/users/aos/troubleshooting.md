@@ -9,6 +9,8 @@ provisioning or APM.
 ```sh
 cat /etc/os-release
 readlink /var/lib/profiles/system/current
+cat /var/lib/profiles/image/state.json
+cat /var/lib/profiles/system/state.json
 apm rollback --system --list
 
 systemctl is-system-running
@@ -70,23 +72,32 @@ the host after preserving persistent data. A pending provisioning marker means
 an earlier mutation was interrupted; AOS refuses automatic replay and has no
 public recovery command for that state.
 
-## Metadata was accepted but settings did not change
+## Metadata was accepted but activation did not complete
 
 Check full evaluation:
 
 ```sh
 systemctl status aos-eval.service
-journalctl -b -u aos-eval.service
+journalctl -b \
+  -u aos-eval.service \
+  -u aos-graph-compile.service \
+  -u aos-activate.service
 test -s /run/aos/manifest.json
+cat /run/aos/activation.json
+readlink /var/lib/profiles/system/current
 ```
 
-Boot-time evaluation alone does not immediately apply general host fields.
-Hostname, networking, users, SSH keys, and services may appear in a valid
-manifest without changing the live host. A later sysroot generation switch can
-materialize that manifest into the candidate `/etc`, and package graph
-compilation can act on its package set. Bake required boot policy into a system
-variant as described in [Customize AOS](configuration.md), and review the
-manifest before a later generation activation.
+The manifest is an intermediate result. A complete transaction must also
+compile the package graph, fetch and render authenticated projections, resolve
+credential references, materialize a numbered EROFS lower, switch `/etc`,
+and publish a matching activation record. The journal's
+`config-eval.class=...` tag distinguishes assertion, undefined-option,
+conflict, provider, ABI, fetch, resource-limit, and convergence failures.
+
+If the activation record is `degraded`, inspect its dropped packages and
+failed units. Re-running the same transaction retries it; the graph compiler
+does not treat degraded or stale evidence as complete. If no new current
+pointer was committed, the previous configuration remains live.
 
 Storage is the exception: it is projected and committed in the initrd before
 the full manifest exists. See the [`host.nix` guide](host-nix.md) for the exact
@@ -105,16 +116,19 @@ ls -l /etc/ssh/authorized_keys
 
 Confirm that:
 
-- the image variant enables SSH;
-- the expected public key is baked into
+- authenticated `host.nix` enables SSH directly or selects
+  `aos.roles.server`/`aos.roles.edge`;
+- the active configuration generation contains the expected
   `/etc/ssh/authorized_keys/USER`;
 - the SSH port is open in `aos.firewall.allowedTCP`;
 - the network interface name and address match the target;
 - the hypervisor or cloud security policy also allows the port.
 
-Cloud metadata keys are not installed by the current runtime activation path.
-Do not treat their presence in instance metadata as proof that login is
-configured.
+Cloud metadata public keys are available to evaluation as the typed
+`host.facts.ssh_authorized_keys` input. They are not implicitly trusted as an
+account policy: verify that a trusted module deliberately projected them to the
+expected user's authorized-keys file. Presence in instance metadata alone is
+not proof that login is configured.
 
 ## A package is installed but its command is missing
 
@@ -169,13 +183,13 @@ cat /etc/os-release
 systemctl --failed
 ```
 
-Follow the direct error first. Resolution, download, verification, or import
-can fail before activation, and changed-kernel or reboot handling can fail after
-the generation commit. When the activation script reports a phase, its message
-distinguishes a pre-swap failure, an incomplete `/etc` swap, and a
-live-but-degraded generation; stale mount cleanup is a warning on an otherwise
-successful command. The full status mapping and rollback procedure are in
-[Upgrade and roll back a host](upgrades.md#interpret-activation-results).
+Follow the direct error first. Resolution, download, verification, or image
+import can fail before the inactive slot is changed. Once staged, the running
+image remains unchanged until reboot; inspect `pending`, `default`, and
+`running` in `/var/lib/profiles/image/state.json`. After boot, configuration
+re-evaluation or activation can fail before the image is blessed, allowing
+sd-boot boot counting to fall back. The full status and rollback procedure is in
+[Upgrade and roll back a host](upgrades.md#interpret-configuration-activation-results).
 
 Capture the current boot journal before rollback:
 
@@ -206,10 +220,12 @@ Relevant persistent trees include:
 ```
 
 Do not delete profile generations or provisioning state by hand.
-`apm clean --generations` only cleans the invoking user's package profile; no
-supported command prunes system-package or sysroot generations. If those
-profiles are the material consumer, preserve rollback capacity and expand or
-reimage the host until a supported pruning command is available.
+`apm clean --generations --keep N` prunes the invoking user's package profile.
+`apm clean --system --generations --keep N` prunes machine-wide package and
+configuration generations, always preserving each current generation; follow
+it with `apm gc` to reclaim unreachable store paths. There is no supported A/B
+image-generation prune command, so preserve image rollback capacity and expand
+or reimage the host if the image profile is the material consumer.
 
 ## Report an issue
 

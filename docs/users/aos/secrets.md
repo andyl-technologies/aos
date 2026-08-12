@@ -80,10 +80,58 @@ credential in `/var`. Provision `credentials.env` through the deployment's
 external secret system before starting the service. Set restrictive ownership
 and mode, and ensure the service sandbox can read only the required path.
 
-General runtime `host.nix` activation and a general AOS secret-delivery agent
-are not complete. Do not place a secret in metadata expecting AOS to install it
-safely. Use a console, platform facility, or separately deployed credential
-agent whose confidentiality and audit properties you have verified.
+Runtime configuration activation supports an opaque `secretRef` boundary. A
+reference contains a systemd credential name, writable credstore destination,
+encryption policy, consuming units, and resolver handle. There is no plaintext
+`value` or `text` field, and unknown fields fail validation, so secret bytes
+cannot enter the evaluated manifest.
+
+Activation validates every reference against the package's signed credential
+declaration before consumer reconciliation. Desired-state and system-credential
+references obtain bytes outside evaluation, optionally encrypt them to the
+configured signed-PCR policy, and stage mode-`0600` credstore files without
+placing plaintext in a retained generation. A TPM2-credstore reference instead
+verifies a package-authored sealed artifact in the fully composed staged view
+before any live unit is stopped; it does not fetch plaintext or reseal it. When
+an authenticated reference disappears, activation removes only the source
+recorded in the prior retained manifest, in the same rollback-capable
+transaction as replacements. Credential-triggered restarts are deduplicated,
+dependency ordered, and limited to consumers that were active before
+publication. Every selected consumer is attempted even if an earlier job
+fails. A missing value, unsafe path, unavailable encryption policy, or
+unsupported resolver fails closed before those restarts.
+After the atomic `/etc` swap, activation pauses before any consumer starts,
+publishes the complete credential set under a durable transaction journal, and
+folds changed consumers into the existing unit-reconciliation plan. A later
+publication failure restores every earlier target and enters rescue without
+publishing the generation pointer or activation proof. Boot recovery resolves
+an interrupted prepared or committed journal before the retained configuration
+lower and its consumers are admitted.
+
+The implemented sources are:
+
+- a package-authored TPM2-sealed credstore artifact;
+- a reviewed desired-state credential supplied outside evaluation;
+- a platform/systemd credential under `/run/credentials/@system`.
+
+`host.nix` carries only the handle and policy. It must never contain the bytes:
+
+```nix
+{
+  aos.apm.installAtBoot.credentials.web.api-token = {
+    source = "/etc/credstore.encrypted/web/api-token";
+    encrypted = true;
+    units = ["web.service"];
+    ref = "system-credential:bootstrap-token";
+  };
+}
+```
+
+This assumes the signed `web` package exposes the matching `api-token`
+credential and the deployment platform supplies `bootstrap-token` through the
+systemd credential channel. AOS does not ship a general Vault or cloud secret
+manager backend; those remain external delivery systems. Do not place secret
+bytes in metadata or `host.nix` while attempting to use a reference.
 
 ## Avoid secret command-line arguments
 

@@ -10,19 +10,23 @@ promise.
 | Bootable images | `x86_64-linux` workflow implemented | Use an x86 Linux host or remote builder |
 | UEFI boot | Required | Select UEFI firmware; legacy BIOS is not a supported image path |
 | Raw, QCOW2, VMDK, dynamic VHD output | Implemented | Provider import requirements remain platform-specific |
-| Build-time system modules | Implemented | Bake networking, users, access, services, firewall, and required packages into the image |
+| Build-time system modules | Implemented | Keep boot-critical substrate and image trust policy in the release image |
 | Runtime `host.nix` storage provisioning | Implemented, first boot only | Treat the committed plan as immutable; later differences are drift |
-| Other runtime `host.nix` settings | Evaluated but not activated end to end | Do not rely on metadata for live networking, users, SSH keys, services, or package changes |
+| Other runtime `host.nix` settings | Early-preview configuration generations implemented | Preview, activate, and verify the transaction-bound activation record on the exact image |
 | Platform-trusted metadata | Implemented for documented transports | Use signed mode when the metadata channel is not trusted |
-| Native Hetzner, Vultr, Scaleway, Oracle metadata | Detection only | Use an offline metadata drive |
+| Native AWS, GCP, Azure, DigitalOcean, OpenStack metadata | Implemented | User-data and normalized facts feed the same pure evaluation transaction |
+| Other native cloud metadata APIs | Unsupported | Use an offline metadata or config drive; AOS does not guess provider protocols |
 | Signed metadata on GCP, Azure, DigitalOcean, native OpenStack | No detached-signature channel | Use an offline drive or config-drive transport |
 | DHCP and single-address static networking | Implemented | Verify the target interface name before deployment |
 | MTU, VLAN, and bond high-level options | Incomplete rendering | Supply and test complete networkd units if required |
 | APM machine-wide packages | Add/remove reconciliation implemented; upgrade and rollback incomplete | Use `apm install --system --from`; do not confuse sysroot upgrade/rollback with runtime-package operations |
 | Stock unprivileged user package profile | Not provisioned | Do not assume user-scope package mutation is available on a stock host |
-| Userspace sysroot upgrade and rollback | Implemented for unchanged kernel/UKI | Dry-run, stage, and verify activation |
-| Durable kernel and UKI upgrade | Incomplete | Reimage releases that change boot artifacts |
-| System-package/sysroot generation pruning | Not implemented | Size `/var` and reimage instead of deleting generations manually |
+| Configuration generation rollback | Implemented | Same-ABI rollback is direct; cross-ABI rollback re-evaluates retained inputs |
+| Durable image, kernel, and UKI upgrade | Early-preview A/B path implemented with boot counting | Qualify inactive-slot staging, reboot, and image/config generation binding on the target firmware |
+| Image rollback | Early-preview path implemented | Select the image axis explicitly and qualify configuration rebind after boot |
+| Opaque runtime credential references | Implemented for system credentials, desired credentials, and TPM2 credstore | Keep bytes outside Nix; external Vault/cloud-secret backends are separate |
+| System-package/configuration generation pruning | Implemented | `apm clean --system --generations --keep N`, then `apm gc` |
+| A/B image-generation pruning | Not implemented | Preserve rollback capacity; size `/var` and reimage rather than deleting image generations manually |
 | Secure Boot, lockdown, measured boot, dm-verity | Fleet-test fixtures implemented | Checked-in variants use public test keys; no complete production key-custody workflow is shipped |
 | SELinux module | Present, not enabled by presets | No production policy package is wired into `standard` or `hardened` |
 | Audit, firewall, kernel hardening | Implemented in server baseline | Verify active rules and service state on the deployed host |
@@ -32,9 +36,9 @@ promise.
 
 ## Use the matrix in release reviews
 
-For every deployment, record which incomplete areas the design touches. An
-unsupported feature may be reasonable in a development environment, but it
-must not become an implicit production dependency.
+For every deployment, record which incomplete or unsupported areas the design
+touches. An unsupported feature may be reasonable in a development
+environment, but it must not become an implicit production dependency.
 
 When implementation changes one of these boundaries, update this page in the
 same change or the immediately following documentation change. Prefer a small,
