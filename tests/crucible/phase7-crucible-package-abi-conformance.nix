@@ -263,7 +263,7 @@ in
             printf '%s\n' 'cargo_mode=frozen-offline-vendored'
             printf '%s\n' 'shmem_vectors=generated-header,layout-fixture,spsc-structure-aware,spsc-snapshot-byte-codec'
             printf '%s\n' 'protocol_vectors=hello,hello-ack,setup-payload,setup-ack,quit,doorbell-frame,doorbell-marker'
-            printf '%s\n' 'rpc_vectors=hello-request,hello-response,attached,send-request,send-response,event-fault-activated'
+            printf '%s\n' 'rpc_vectors=hello-request,hello-response,attached,send-request,send-response,event-effect-applied'
             printf '%s\n' 'version_bump_rule=shmem+protocol+rpc-golden-corpora'
             printf '%s\n' 'rpc_major_mismatch_rejection=true'
             printf '%s\n' 'engine_test_double_aggregate=true'

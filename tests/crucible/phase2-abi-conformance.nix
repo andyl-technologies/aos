@@ -297,7 +297,7 @@
       }
       {
         label = "event vector";
-        needle = "name: \"event-fault-activated\"";
+        needle = "name: \"event-effect-applied\"";
       }
     ]
     ++ failuresFor "crates/crucible-api/tests/gate_abi_conformance.rs" apiGateTest [
@@ -458,7 +458,7 @@ in
             gate=gate:abi-conformance
             shmem_vectors=generated-header,layout-fixture,spsc-structure-aware,spsc-snapshot-byte-codec
             protocol_vectors=hello,hello-ack,setup-payload,setup-ack,quit
-            rpc_vectors=hello-request,hello-response,attached,send-request,send-response,event-fault-activated
+            rpc_vectors=hello-request,hello-response,attached,send-request,send-response,event-effect-applied
             plugin_io_wire_fuzz=phase2-protocol-codec-fuzz-run-qemu-plugin-io-wire-fuzz
             engine_abi_aggregate=true
             version_bump_rule=shmem+protocol+rpc-golden-corpora

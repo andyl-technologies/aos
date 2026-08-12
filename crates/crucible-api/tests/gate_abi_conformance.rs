@@ -81,7 +81,7 @@ fn assert_frozen_golden_vectors() {
             "send-response-breakpoint-firings",
             "send-response-rejected-not-found",
             "rpc-error-invalid-state",
-            "event-fault-activated",
+            "event-effect-applied",
         ],
     );
     assert_eq!(
