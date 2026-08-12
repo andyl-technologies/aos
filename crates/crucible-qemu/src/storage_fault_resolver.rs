@@ -45,6 +45,81 @@ pub struct ResolvedVolatileCacheLoss {
     pub durable_frontier_after: u64,
 }
 
+/// Resolves a registered controller transition policy for a live block device.
+///
+/// # Errors
+///
+/// Returns [`StorageFaultResolutionError`] when `action` is not a controller
+/// lifecycle action or when its policy/result references are absent or have the
+/// wrong closed type.
+pub fn resolve_block_controller_transition(
+    world: &World,
+    action: &ResolvedBindingAction,
+) -> Result<ResolvedBlockControllerTransition, StorageFaultResolutionError> {
+    let EffectSpecification::Storage(StorageEffectSpecification::ControllerLifecycle {
+        transition,
+        transition_policy,
+        ..
+    }) = action.effect.specification()
+    else {
+        return Err(unsupported(action, "controller lifecycle boundary"));
+    };
+    let policy = world
+        .fault_topology()
+        .storage_policy_artifact(transition_policy)
+        .and_then(|artifact| match &artifact.artifact {
+            StoragePolicyArtifactKind::ControllerTransition(policy)
+                if policy.transition == *transition =>
+            {
+                Some(policy)
+            }
+            _ => None,
+        })
+        .ok_or_else(|| StorageFaultResolutionError::PolicyReference {
+            binding: action.binding.clone(),
+            reference: transition_policy.clone(),
+            expected: "matching controller_transition",
+        })?;
+    let failure_result = resolve_block_failure(world, &policy.failure_result).ok_or_else(|| {
+        StorageFaultResolutionError::PolicyReference {
+            binding: action.binding.clone(),
+            reference: policy.failure_result.clone(),
+            expected: "non-success block typed_result",
+        }
+    })?;
+    Ok(ResolvedBlockControllerTransition {
+        failure_result,
+        unadmitted: match policy.unadmitted {
+            StoragePolicyTransitionUnadmitted::Reject => BlockTransitionUnadmitted::Reject,
+            StoragePolicyTransitionUnadmitted::WaitForRecovery => {
+                BlockTransitionUnadmitted::WaitForRecovery
+            }
+        },
+        queued: resolve_transition_pending(policy.queued),
+        executing: resolve_transition_pending(policy.executing),
+        resolved: resolve_transition_resolved(policy.resolved),
+        completed_undelivered: resolve_transition_undelivered(policy.completed_undelivered),
+        controller_buffer: resolve_transition_state(policy.controller_buffer),
+        volatile_cache: resolve_transition_state(policy.volatile_cache),
+        request_ids: match policy.request_ids {
+            StoragePolicyTransitionRequestIds::PreserveMonotonic => {
+                BlockTransportRequestIds::PreserveMonotonic
+            }
+            StoragePolicyTransitionRequestIds::NewEpochFromZero => {
+                BlockTransportRequestIds::NewEpochFromZero
+            }
+        },
+        duplicate_history: resolve_transition_state(policy.duplicate_history),
+        topology: match policy.topology {
+            StoragePolicyTransitionTopology::Preserve => BlockTransitionTopology::Preserve,
+            StoragePolicyTransitionTopology::ReenumerateDeclared => {
+                BlockTransitionTopology::ReenumerateDeclared
+            }
+        },
+        recovery_nanos: policy.recovery_nanos.get(),
+    })
+}
+
 /// Replay policy for one atomic volatile-cache loss transition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VolatileCacheLossReplay {

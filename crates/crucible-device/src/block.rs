@@ -958,6 +958,39 @@ mod tests {
     }
 
     #[test]
+    fn asynchronous_controller_transition_advances_pristine_epoch_and_recovers() {
+        let mut dev = device(PAGE_SIZE);
+        let transition = ResolvedBlockControllerTransition {
+            failure_result: BlockFaultResult::Offline,
+            unadmitted: BlockTransitionUnadmitted::Reject,
+            queued: BlockTransitionPending::Fail,
+            executing: BlockTransitionPending::Fail,
+            resolved: BlockTransitionResolved::Fail,
+            completed_undelivered: BlockTransitionUndelivered::Fail,
+            controller_buffer: BlockTransitionState::Lose,
+            volatile_cache: BlockTransitionState::Lose,
+            request_ids: BlockTransportRequestIds::NewEpochFromZero,
+            duplicate_history: BlockTransitionState::Lose,
+            topology: BlockTransitionTopology::ReenumerateDeclared,
+            recovery_nanos: 25,
+        };
+
+        ok(dev.apply_storage_controller_transition(&transition, 100));
+        assert_eq!(dev.storage_fault_state().transport_epoch(), Some(1));
+        assert_eq!(dev.storage_fault_state().recovery_until_nanos(), Some(125));
+
+        let request = BlockRequest::get_length(9).with_identity(BlockRequestIdentity::new(1, 9));
+        let directive = ResolvedBlockFaultDirective::fault_free(&request, PAGE_SIZE as u64);
+        ok(dev.install_storage_fault_directive(request.identity(), directive));
+        ok(dev.submit(1, &request));
+        let deadline = dev.core().next_exact_local_event().unwrap_or(1);
+        ok(dev.advance_to(deadline));
+        let response = ok(dev.next_response()).unwrap_or_else(|| panic!("post-reset response"));
+        assert_eq!(response.status, BlockStatus::Ok);
+        assert_eq!(dev.storage_fault_state().recovery_until_nanos(), None);
+    }
+
+    #[test]
     fn queued_old_epoch_frames_receive_every_reset_disposition_after_backpressure() {
         let cases = [
             (BlockTransitionPending::Fail, BlockStatus::Error),

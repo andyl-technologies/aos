@@ -39,7 +39,8 @@ use super::fault::{
     BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRequestPersistenceOpportunity,
     BlockRetainedRelease, BlockRetainedReleaseOutcome, BlockStorageOutcome,
     ResolvedBlockDeliveryDirective, ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
-    ResolvedBlockPersistenceMediaDirective, ResolvedBlockRequestPersistenceDirective,
+    ResolvedBlockControllerTransition, ResolvedBlockPersistenceMediaDirective,
+    ResolvedBlockRequestPersistenceDirective,
 };
 use super::overlay::{BaseImage, CowOverlay};
 use super::service::BlockServiceCompletion;
@@ -582,6 +583,83 @@ impl BlockDevice {
     /// Returns [`DeviceError`] when any selected sequence is absent or repeated.
     pub fn lose_storage_controller(&mut self, sequences: &[u64]) -> Result<(), DeviceError> {
         self.storage_faults.lose_controller(sequences)
+    }
+
+    /// Applies an asynchronous controller transition at an authorized host boundary.
+    ///
+    /// Unlike a duplicate-completion reset, this transition is not caused by
+    /// delivery of one distinguished guest response. It atomically updates the
+    /// complete host-owned request lifecycle and rewrites every already-resolved
+    /// but undelivered response according to the declared transition policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] if the recovery coordinate is outside QEMU's
+    /// virtual-clock range, an epoch cannot advance, a lifecycle disposition
+    /// cannot be encoded, or the resulting responses exceed device bounds.
+    pub fn apply_storage_controller_transition(
+        &mut self,
+        transition: &ResolvedBlockControllerTransition,
+        boundary_nanos: u64,
+    ) -> Result<(), DeviceError> {
+        let qemu_virtual_limit = i64::MAX as u64;
+        if boundary_nanos > qemu_virtual_limit
+            || transition.recovery_nanos > qemu_virtual_limit
+            || boundary_nanos
+                .checked_add(transition.recovery_nanos)
+                .is_none_or(|deadline| deadline > qemu_virtual_limit)
+        {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "block transport recovery exceeds QEMU virtual-clock range",
+            });
+        }
+        let current_epoch = self.storage_faults.transport_epoch().unwrap_or(0);
+        let reset = transition.transport_reset(current_epoch)?;
+        let mut next_faults = self.storage_faults.clone();
+        let immediate = next_faults.apply_transport_reset(reset, boundary_nanos)?;
+        let mut next_core = self.core.clone();
+        next_core.check_response_sequence_capacity(immediate.len())?;
+        let mut inflight = next_core.take_inflight_from_snapshot();
+        if reset.completed_undelivered != BlockTransportUndelivered::Complete {
+            for pending in &mut inflight {
+                let response = BlockResponse::decode(&pending.response.payload)
+                    .map_err(DeviceError::Codec)?;
+                if matches!(response.status, BlockStatus::Ok | BlockStatus::Error) {
+                    let replacement = match reset.completed_undelivered {
+                        BlockTransportUndelivered::Complete => response,
+                        BlockTransportUndelivered::Fail => {
+                            BlockResponse::error_for(response.identity(), reset.failure_result)
+                        }
+                        BlockTransportUndelivered::RetryPreserveId => {
+                            BlockResponse::reset_disposition(
+                                response.identity(),
+                                BlockStatus::RetryPreserveId,
+                            )
+                        }
+                        BlockTransportUndelivered::RetryNewId => {
+                            BlockResponse::reset_disposition(
+                                response.identity(),
+                                BlockStatus::RetryNewId,
+                            )
+                        }
+                        BlockTransportUndelivered::DropCompletion => {
+                            BlockResponse::reset_disposition(
+                                response.identity(),
+                                BlockStatus::DropCompletion,
+                            )
+                        }
+                    };
+                    pending.response = block_response_to_uniform_device(&replacement)?;
+                }
+            }
+        }
+        next_core.replace_inflight(inflight);
+        for response in immediate {
+            next_core.schedule_response_now(response)?;
+        }
+        self.storage_faults = next_faults;
+        self.core = next_core;
+        Ok(())
     }
 
     /// Releases a stalled storage completion at the current scheduler icount.

@@ -66,7 +66,8 @@ use crucible_device::block::{
     BlockExternalDurabilityDependency, BlockFaultState, BlockPersistenceMediaOutcome,
     BlockPersistenceOpportunity, BlockRequestPersistenceOpportunity, BlockRetainedRelease,
     BlockRetainedReleaseOutcome, BlockServiceCompletion, BlockStorageOutcome,
-    ResolvedBlockDeliveryDirective, ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
+    ResolvedBlockControllerTransition, ResolvedBlockDeliveryDirective,
+    ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
     ResolvedBlockPersistenceMediaDirective, ResolvedBlockRequestPersistenceDirective,
     install_cross_device_misdirected_persistence,
 };
@@ -187,6 +188,42 @@ impl QemuSharedBlockDevice {
     /// authoritative device lock is poisoned.
     pub fn actual_durable_frontier(&self) -> Result<u64, QemuLiveBlockIoServicerError> {
         Ok(self.lock()?.storage_fault_state().actual_durable_frontier())
+    }
+
+    /// Applies one asynchronous controller transition to the live device.
+    ///
+    /// The complete device is staged before commit. Publication of a changed
+    /// completion horizon wakes the owning runtime; if publication fails, the
+    /// exact pre-transition device state is restored.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::DeviceLockPoisoned`] when the
+    /// authoritative device lock is poisoned, a notification error when the
+    /// owning runtime cannot be awakened, or
+    /// [`QemuLiveBlockIoServicerError::Device`] when the transition is invalid.
+    pub fn apply_storage_boundary_mutations(
+        &self,
+        volatile_sequences: &[u64],
+        controller_transitions: &[(ResolvedBlockControllerTransition, u64)],
+    ) -> Result<(), QemuLiveBlockIoServicerError> {
+        let mut device = self.lock()?;
+        let prior = device.clone();
+        let prior_deadline = prior.next_exact_local_event();
+        device
+            .lose_storage_volatile(volatile_sequences)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        for (transition, boundary_nanos) in controller_transitions {
+            device
+                .apply_storage_controller_transition(transition, *boundary_nanos)
+                .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        }
+        let deadline = device.next_exact_local_event();
+        if let Err(error) = self.publish_remote_mutation(deadline, prior_deadline) {
+            *device = prior;
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Returns whether this device has acknowledged an external dependency at
