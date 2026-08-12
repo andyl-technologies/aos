@@ -1695,6 +1695,11 @@ impl ProductionVmLifecycleLoop {
                     scheduler,
                     trigger_state: self.trigger_state.clone(),
                     assertion_state: self.assertion_evaluator.checkpoint(),
+                    terminal_verdict: self.terminal_verdict.clone(),
+                    initial_lifecycle_observations_pending: self
+                        .initial_lifecycle_observations_pending,
+                    branch: self.branch.clone(),
+                    recorded_controls: self.recorded_controls.clone(),
                     fault_checkpoint,
                     targets,
                     node_generations: self.node_generations.clone(),
