@@ -142,10 +142,14 @@ pub(crate) fn run_local_qemu_search_workflow(
             break;
         };
         let frontier = pending.remove(index);
+        let materialization_budget = match usize::try_from(plan.budget.max_states) {
+            Ok(max_states) => max_states,
+            Err(_) => usize::MAX,
+        };
         let search = graph
             .search_frontier(
                 &frontier,
-                MaterializationPolicy::with_budget(0),
+                MaterializationPolicy::with_budget(materialization_budget),
                 MaterializationTrigger::RepeatedForkSource,
             )
             .map_err(|error| backend_error(format!("QEMU live-frontier search failed: {error}")))?;
