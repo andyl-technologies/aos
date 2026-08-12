@@ -817,12 +817,13 @@ in {
         fi
         ${pkgs.systemd}/bin/bootctl set-default "''${stable##*/}"
 
-        # Restore the ESP's steady-state protection before publishing the
-        # transition as complete. If this remount fails, the durable pending
-        # state and runtime marker remain and the next boot retries the
-        # idempotent blessing/reconciliation path.
+        # Make the blessed/default view durable on every replica before
+        # publishing the transition as complete. A failed synchronization
+        # retains pending state so the idempotent commit path retries after the
+        # failed member is repaired.
         ${pkgs.util-linux}/bin/mount -o remount,ro /boot
         boot_writable=false
+        aos-sync-esps
 
         ${pkgs.jq}/bin/jq --argjson running "$running" \
           '.default = $running | .pending = null' "$state" > "''${state}.new"

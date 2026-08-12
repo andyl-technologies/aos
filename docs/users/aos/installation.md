@@ -131,13 +131,17 @@ produce RAID10-style storage. The encrypted pool contains mutable datasets and
 fixed-size zvols for both immutable EROFS roots and both dm-verity hash trees.
 There is no LUKS layer below ZFS.
 
-Create a deployment system module that imports an immutable, measured-boot
-server system, enables the profile, lists one ESP identity per target disk,
-and supplies deployment-owned Secure Boot and PCR-policy keys. For example:
+Create a deployment system module from the production server baseline, enable
+dm-verity and measured boot, enable the profile, list one ESP identity per
+target disk, and supply deployment-owned Secure Boot and PCR-policy keys. Do
+not import the checked-in Secure Boot or measured-boot system fixtures: those
+also select test-only packages and keys. For example:
 
 ```nix
 {
-  imports = [./systems/server-verity.nix];
+  imports = [./systems/server.nix];
+
+  aos.security.verity.enable = true;
 
   aos.profiles.bareMetalZfs = {
     enable = true;
@@ -151,22 +155,30 @@ and supplies deployment-owned Secure Boot and PCR-policy keys. For example:
     serverManagement = true;
   };
 
+  # These values must be Nix path values from a private deployment input or
+  # an isolated signing builder, not untracked absolute-path strings.
   aos.boot.secureBoot = {
-    dbKey = "/deployment/keys/db.key";
-    dbCert = "/deployment/keys/db.crt";
-    enrollAuthDir = "/deployment/keys/enrollment";
+    enable = true;
+    dbKey = toString ./private-signing/db.key;
+    dbCert = toString ./private-signing/db.crt;
+    enrollAuthDir = toString ./public-enrollment;
     measuredBoot = {
-      pcrPrivateKey = "/deployment/keys/pcr.key";
-      pcrPublicKey = "/deployment/keys/pcr.pem";
+      enable = true;
+      pcrPrivateKey = toString ./private-signing/pcr.key;
+      pcrPublicKey = toString ./public-signing/pcr.pem;
     };
   };
 }
 ```
 
-The paths above are placeholders. Private keys must come from the deployment
-build environment and must never be committed, published, or copied into the
-installed root. The repository's measured-boot systems are test fixtures with
-public keys; do not install them on a real machine.
+The private deployment input must be available to a controlled build sandbox;
+these are Nix path values so their contents are copied into that builder's
+store. Use a signing builder whose store, logs, and substituter outputs are not
+shared, then destroy its private-key-bearing store paths after the build. This
+repository does not yet provide an offline-signing protocol or key-custody
+service. Never commit or publish the private input. The repository's
+measured-boot systems are test fixtures with public keys; do not install them
+on a real machine.
 
 Build the module's `system.build.installBundle` output on x86 Linux. Run the
 bundle's `bin/aos-install-zfs` from a trusted AOS recovery environment that has the exact ZFS

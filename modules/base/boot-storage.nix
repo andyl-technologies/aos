@@ -229,24 +229,6 @@ in {
         }
         trap cleanup EXIT INT TERM
         mkdir -p "$esp"
-        credential=
-        for device in ${lib.concatMapStringsSep " " lib.escapeShellArg cfg.espDevices}; do
-          [ -e "$device" ] || continue
-          if mount -t vfat -o ro,noatime,fmask=0077,dmask=0077 "$device" "$esp"; then
-            mounted=true
-            if [ -r "$esp/${cfg.zfs.sealedKeyPath}" ]; then
-              credential="$esp/${cfg.zfs.sealedKeyPath}"
-              break
-            fi
-            umount "$esp"
-            mounted=false
-          fi
-        done
-        if [ -z "$credential" ]; then
-          echo "aos-zfs-unlock: sealed key is absent from every configured ESP" >&2
-          exit 1
-        fi
-
         signature=
         for candidate in /run/systemd/tpm2-pcr-signature.json \
           /.extra/tpm2-pcr-signature.json \
@@ -255,10 +237,31 @@ in {
         done
         signature_arg=
         [ -n "$signature" ] && signature_arg="--tpm2-signature=$signature"
-        systemd-creds decrypt --name=aos-zfs-key $signature_arg "$credential" "$key"
-        chmod 0400 "$key"
-        umount "$esp"
-        mounted=false
+        unlocked=false
+        for device in ${lib.concatMapStringsSep " " lib.escapeShellArg cfg.espDevices}; do
+          [ -e "$device" ] || continue
+          if mount -t vfat -o ro,noatime,fmask=0077,dmask=0077 "$device" "$esp"; then
+            mounted=true
+            if [ -r "$esp/${cfg.zfs.sealedKeyPath}" ]; then
+              rm -f "$key"
+              if systemd-creds decrypt --name=aos-zfs-key $signature_arg \
+                "$esp/${cfg.zfs.sealedKeyPath}" "$key"; then
+                chmod 0400 "$key"
+                unlocked=true
+                umount "$esp"
+                mounted=false
+                break
+              fi
+              rm -f "$key"
+            fi
+            umount "$esp"
+            mounted=false
+          fi
+        done
+        if [ "$unlocked" != true ]; then
+          echo "aos-zfs-unlock: no configured ESP supplied a usable sealed key" >&2
+          exit 1
+        fi
 
         zpool import -N -f ${lib.escapeShellArg cfg.zfs.poolName}
         zfs load-key -L "file://$key" ${lib.escapeShellArg cfg.zfs.encryptionRoot}
