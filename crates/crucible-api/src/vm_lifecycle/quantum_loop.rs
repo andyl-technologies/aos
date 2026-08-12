@@ -291,7 +291,10 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         Ok(events)
     }
 
-    fn capture_checkpoint(&mut self, configuration: &Configuration) -> Result<(), SchedulerError> {
+    fn capture_checkpoint(
+        &mut self,
+        configuration: &Configuration,
+    ) -> Result<Option<ContentHash>, SchedulerError> {
         if self.inner.loop_impl().configuration() != configuration {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
@@ -299,7 +302,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                 ),
             });
         }
-        self.capture_exact_checkpoint_set(configuration)
+        self.capture_exact_checkpoint_set(configuration).map(Some)
     }
 
     fn append_noncanonical_debug_event_log_entries(
@@ -1422,7 +1425,7 @@ impl ProductionVmLifecycleLoop {
     fn capture_exact_checkpoint_set(
         &mut self,
         configuration: &Configuration,
-    ) -> Result<(), SchedulerError> {
+    ) -> Result<ContentHash, SchedulerError> {
         let registry_key = (self.scenario.id(), configuration.id());
         if self.checkpoint_targets.contains_key(&configuration.id()) {
             return Err(SchedulerError::BoundaryViolation {
@@ -1669,6 +1672,23 @@ impl ProductionVmLifecycleLoop {
         match result {
             Ok(targets) => {
                 let checkpoint_set = ProductionVmExactCheckpointSet {
+                    identity: ContentHash::from_canonical_material(
+                        "crucible.production-vm-exact-checkpoint-set.v1",
+                        &format!(
+                            "scenario={}\nconfiguration={}\nfrontier={}\nfault={}\ntargets={:?}\ngenerations={:?}\nservices={:?}\ntrigger={:?}",
+                            self.scenario.id().to_hex(),
+                            configuration.id().to_hex(),
+                            self.inner.loop_impl().frontier().ticks,
+                            fault_checkpoint.id().to_hex(),
+                            targets
+                                .iter()
+                                .map(|(node, target)| (&node.name, target.manifest_identity))
+                                .collect::<Vec<_>>(),
+                            self.node_generations,
+                            self.node_service_states,
+                            self.trigger_state,
+                        ),
+                    ),
                     configuration: configuration.clone(),
                     scheduler: self.inner.loop_impl().clone(),
                     trigger_state: self.trigger_state.clone(),
@@ -1711,11 +1731,12 @@ impl ProductionVmLifecycleLoop {
                     snapshot_cleanup?;
                     return Err(error);
                 }
+                let checkpoint_set_identity = checkpoint_set.identity;
                 let replaced = self
                     .checkpoint_targets
                     .insert(configuration.id(), checkpoint_set);
                 debug_assert!(replaced.is_none());
-                Ok(())
+                Ok(checkpoint_set_identity)
             }
             Err(error) => {
                 self.rollback_exact_captures(&captured)?;

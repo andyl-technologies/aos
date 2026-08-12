@@ -901,6 +901,13 @@ pub struct Checkpoint {
     pub metadata: CheckpointMeta,
     /// Per-node VM-state blob references.
     pub node_blobs: BTreeMap<NodeId, NodeBlobRef>,
+    /// Content address of the concrete production continuation closure.
+    ///
+    /// This is distinct from [`Self::id`], which names model configuration.
+    /// Production resume requires this reference for the VMState, host-I/O,
+    /// scheduler, trigger, fault-runtime, and lifecycle-state closure. Pure
+    /// model checkpoints leave it absent.
+    pub execution_closure: Option<ContentHash>,
     /// Whether this is a fat or thin checkpoint.
     pub kind: CheckpointKind,
 }
@@ -953,6 +960,7 @@ impl Checkpoint {
             assertion_proximity_fingerprint: ContentHash::default(),
             metadata: CheckpointMeta::empty(),
             node_blobs,
+            execution_closure: None,
             kind,
         })
     }
@@ -978,6 +986,7 @@ impl Checkpoint {
             assertion_proximity_fingerprint: ContentHash::default(),
             metadata: CheckpointMeta::empty(),
             node_blobs,
+            execution_closure: None,
             kind,
         }
     }
@@ -991,6 +1000,13 @@ impl Checkpoint {
             CheckpointKind::Thin
         };
         self.state = state;
+        self
+    }
+
+    /// Attaches the concrete production continuation closure to this checkpoint.
+    #[must_use]
+    pub fn with_execution_closure(mut self, closure: ContentHash) -> Self {
+        self.execution_closure = Some(closure);
         self
     }
 

@@ -87,7 +87,9 @@ impl<L> Engine<L> {
     {
         let mut checkpoint = self.graph.save_checkpoint(&self.configuration)?;
         checkpoint.virtual_time = self.frontier;
-        self.quantum_loop.capture_checkpoint(&self.configuration)?;
+        if let Some(closure) = self.quantum_loop.capture_checkpoint(&self.configuration)? {
+            checkpoint = checkpoint.with_execution_closure(closure);
+        }
         Ok(checkpoint)
     }
 }

@@ -263,6 +263,7 @@ pub(super) fn write_checkpoint_binary(checkpoint: &Checkpoint, writer: &mut Scen
     writer.write_hash(checkpoint.coverage_fingerprint);
     writer.write_hash(checkpoint.assertion_proximity_fingerprint);
     write_checkpoint_metadata_binary(&checkpoint.metadata, writer);
+    write_optional_hash_binary(checkpoint.execution_closure, writer);
     write_node_blobs_binary(&checkpoint.node_blobs, writer);
 }
 
@@ -283,6 +284,7 @@ pub(super) fn read_checkpoint_binary(
     let coverage_fingerprint = reader.read_hash()?;
     let assertion_proximity_fingerprint = reader.read_hash()?;
     let metadata = read_checkpoint_metadata_binary(reader)?;
+    let execution_closure = read_optional_hash_binary(reader)?;
     let node_blobs = read_node_blobs_binary(reader)?;
     Ok(Checkpoint {
         id,
@@ -296,6 +298,7 @@ pub(super) fn read_checkpoint_binary(
         coverage_fingerprint,
         assertion_proximity_fingerprint,
         metadata,
+        execution_closure,
         node_blobs,
         kind,
     })
