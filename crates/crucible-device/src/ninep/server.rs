@@ -90,7 +90,7 @@ const IOUNIT_ANY: u32 = 0;
 /// enumeration of an opened directory is *not* stored here — it is recomputed
 /// deterministically from the tree on each `readdir`, so it survives
 /// snapshot/restore for free ([IO-19]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum FidState {
     /// The fid is bound to a path but not yet opened.
     Clunked,
@@ -102,7 +102,7 @@ pub enum FidState {
 ///
 /// The `path` is the component vector within the served tree (empty = root). The
 /// binding is the unit captured and restored by the snapshot ([IO-19]).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FidEntry {
     /// The canonical path within the served tree this fid names.
     pub path: Vec<String>,
@@ -117,7 +117,7 @@ pub struct FidEntry {
 /// tree and any open directory caches are *not* carried: the tree is the shared,
 /// content-addressed `World` and the caches are pure functions of it, so restore
 /// reconstructs them exactly from the supplied tree.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NinepServerSnapshot {
     /// The negotiated maximum message size.
     pub msize: u32,

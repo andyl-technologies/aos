@@ -13,7 +13,7 @@ use super::codec::{Message, TMessage};
 pub const HARD_NINEP_OBJECT_VERSIONS: usize = 1_048_576;
 
 /// Stable identity of one exact 9p request frame.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub struct NinepRequestIdentity {
     /// Exact request coordinate, which distinguishes repeated identical frames.
     pub request_icount: u64,
@@ -26,7 +26,7 @@ pub struct NinepRequestIdentity {
 }
 
 /// Closed operation class used by 9p signal bindings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub enum NinepOperation {
     /// Reads regular-file bytes.
     Read,
@@ -65,7 +65,7 @@ impl NinepOperation {
 }
 
 /// One immutable object version supplied by a scenario artifact.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NinepObjectVersion {
     /// Absolute canonical slash-separated path.
     pub path: String,
@@ -140,7 +140,7 @@ impl NinepObjectVersion {
 }
 
 /// Resolved result mutation for one exact request.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NinepResultDirective {
     /// Executes the ordinary server result against the visible view.
     Normal,
@@ -153,7 +153,7 @@ pub enum NinepResultDirective {
 }
 
 /// Complete resolve-phase decision for one exact 9p request.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedNinepRequestDirective {
     /// Exact request identity.
     pub identity: NinepRequestIdentity,
@@ -258,7 +258,7 @@ impl ResolvedNinepRequestDirective {
 }
 
 /// Exact request opportunity pinned from the request-ring head.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NinepRequestOpportunity {
     /// Exact request identity.
     pub identity: NinepRequestIdentity,
@@ -293,7 +293,7 @@ impl NinepRequestOpportunity {
 }
 
 /// Visibility scope for a committed object update.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NinepVisibilityScope {
     /// All sessions advance together.
     Global,
@@ -304,7 +304,7 @@ pub enum NinepVisibilityScope {
 }
 
 /// Complete namespace/data visibility policy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NinepVisibilityPolicy {
     /// Visibility scope.
     pub scope: NinepVisibilityScope,
@@ -315,7 +315,7 @@ pub struct NinepVisibilityPolicy {
 }
 
 /// Release condition for one committed update.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NinepVisibilityRelease {
     /// Becomes visible at this exact virtual-nanosecond coordinate.
     AtNanos(u64),
@@ -324,7 +324,7 @@ pub enum NinepVisibilityRelease {
 }
 
 /// One committed object update retained in checkpoint state.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NinepVisibilityUpdate {
     /// Stable authored update identity.
     pub update_id: [u8; 32],
@@ -343,7 +343,7 @@ pub struct NinepVisibilityUpdate {
 }
 
 /// Checkpointed committed-versus-visible 9p object continuation.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NinepVisibilityState {
     next_sequence: u64,
     session_metadata_frontiers: BTreeMap<u64, u64>,
@@ -353,7 +353,7 @@ pub struct NinepVisibilityState {
 }
 
 /// Layered visibility result for one canonical absolute path.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NinepVisibilityLookup {
     /// No visible update overrides the immutable base tree.
     Base,

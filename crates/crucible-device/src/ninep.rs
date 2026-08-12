@@ -53,7 +53,9 @@ pub use codec::{
     GetattrReply, HEADER_LEN, Message, NinepCodecError, PROTOCOL_VERSION, QID_LEN, Qid, QidType,
     StatfsReply, TMessage,
 };
-pub use device::{NinepDevice, NinepLatency, NinepSnapshot, NinepVirtualFid};
+pub use device::{
+    NinepDevice, NinepLatency, NinepSnapshot, NinepSnapshotCodecError, NinepVirtualFid,
+};
 pub use fault::*;
 pub use server::{FidEntry, FidState, MAX_MSIZE, MIN_MSIZE, NinepServer, NinepServerSnapshot};
 pub use tree::{
@@ -125,6 +127,21 @@ mod tests {
         let src = crucible_shmem::SLOT_9P_IO as u32;
         let core = ok(IoCore::new(8, src, 16, 16));
         NinepDevice::new(core, sample_tree(), NinepLatency::default())
+    }
+
+    #[test]
+    fn ninep_snapshot_codec_round_trips_complete_device_state() {
+        let device = device();
+        let snapshot = device.snapshot();
+        let bytes = ok(snapshot.to_canonical_bytes());
+        assert_eq!(ok(NinepSnapshot::from_canonical_bytes(&bytes)), snapshot);
+
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert_eq!(
+            NinepSnapshot::from_canonical_bytes(&trailing),
+            Err(NinepSnapshotCodecError::Noncanonical)
+        );
     }
 
     // ---- frame builders for the request side -----------------------------

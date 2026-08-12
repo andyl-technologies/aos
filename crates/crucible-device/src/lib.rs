@@ -109,7 +109,8 @@ pub use netlink::{
 pub use ninep::{
     FsTree, FsTreeDecodeError, NinepDevice, NinepLatency, NinepObjectVersion, NinepOperation,
     NinepRequestIdentity, NinepRequestOpportunity, NinepResultDirective, NinepServer,
-    NinepServerSnapshot, NinepSnapshot, NinepVirtualFid, NinepVisibilityLookup,
+    NinepServerSnapshot, NinepSnapshot, NinepSnapshotCodecError, NinepVirtualFid,
+    NinepVisibilityLookup,
     NinepVisibilityPolicy, NinepVisibilityRelease, NinepVisibilityScope, NinepVisibilityState,
     NinepVisibilityUpdate, Node, Qid, QidType, ResolvedNinepRequestDirective,
 };
