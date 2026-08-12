@@ -15,6 +15,7 @@ struct ClosureManifest {
     frontier: u64,
     scheduler: ContentHash,
     trigger_state: ContentHash,
+    assertion_state: ContentHash,
     fault_checkpoint: ContentHash,
     targets: Vec<TargetManifest>,
     node_generations: Vec<(String, u64)>,
@@ -38,6 +39,7 @@ struct ClosureObjects {
     schedule: Vec<u8>,
     scheduler: Vec<u8>,
     trigger_state: Vec<u8>,
+    assertion_state: Vec<u8>,
     fault_checkpoint: Vec<u8>,
     snapshots: BTreeMap<NodeId, Vec<u8>>,
 }
@@ -88,6 +90,11 @@ pub(super) fn persist_exact_checkpoint_set(
         &object_directory,
         manifest.trigger_state,
         &objects.trigger_state,
+    )?;
+    persist_object(
+        &object_directory,
+        manifest.assertion_state,
+        &objects.assertion_state,
     )?;
     persist_object(
         &object_directory,
@@ -189,6 +196,11 @@ pub(super) fn load_exact_checkpoint_set(
     let trigger_state =
         EventGraphState::from_compact_binary(&read_object(&root, manifest.trigger_state)?)
             .map_err(|error| loop_factory_error(format!("decode trigger continuation: {error}")))?;
+    let assertion_state = HostAssertionEvaluatorCheckpoint::from_canonical_bytes(&read_object(
+        &root,
+        manifest.assertion_state,
+    )?)
+    .map_err(|error| loop_factory_error(format!("decode assertion continuation: {error}")))?;
     let signal_plan = source.plan().fault_signals();
     let fault_checkpoint = ProductionFaultRuntimeCheckpoint::from_canonical_bytes(
         &read_object(&root, manifest.fault_checkpoint)?,
@@ -238,6 +250,7 @@ pub(super) fn load_exact_checkpoint_set(
         configuration,
         scheduler,
         trigger_state,
+        assertion_state,
         fault_checkpoint,
         targets,
         node_generations,
@@ -356,6 +369,10 @@ fn manifest_and_objects(
         .canonical_bytes()
         .map_err(|error| store_error(format!("encode scheduler continuation: {error}")))?;
     let trigger_state = checkpoint.trigger_state.to_compact_binary();
+    let assertion_state = checkpoint
+        .assertion_state
+        .canonical_bytes()
+        .map_err(|error| store_error(format!("encode assertion continuation: {error}")))?;
     let fault_checkpoint = checkpoint
         .fault_checkpoint
         .to_canonical_bytes()
@@ -388,6 +405,7 @@ fn manifest_and_objects(
         frontier: checkpoint.scheduler.frontier().ticks,
         scheduler: ContentHash::from_bytes(&scheduler),
         trigger_state: ContentHash::from_bytes(&trigger_state),
+        assertion_state: ContentHash::from_bytes(&assertion_state),
         fault_checkpoint: ContentHash::from_bytes(&fault_checkpoint),
         targets,
         node_generations: checkpoint
@@ -408,6 +426,7 @@ fn manifest_and_objects(
             schedule,
             scheduler,
             trigger_state,
+            assertion_state,
             fault_checkpoint,
             snapshots,
         },
@@ -422,6 +441,7 @@ fn closure_identity(manifest: &ClosureManifest) -> Result<ContentHash, Scheduler
         frontier: manifest.frontier,
         scheduler: manifest.scheduler,
         trigger_state: manifest.trigger_state,
+        assertion_state: manifest.assertion_state,
         fault_checkpoint: manifest.fault_checkpoint,
         targets: manifest
             .targets
@@ -703,6 +723,7 @@ mod tests {
             frontier: 0,
             scheduler: ContentHash::default(),
             trigger_state: ContentHash::default(),
+            assertion_state: ContentHash::default(),
             fault_checkpoint: ContentHash::default(),
             targets: Vec::new(),
             node_generations: Vec::new(),

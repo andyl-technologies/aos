@@ -31,12 +31,13 @@ use crucible::{
     DebugGdbEndpoint, DebugRetiredWorldCleanup, DebugRuntimeRepositionReport,
     DebugRuntimeRepositionRequest, Decision, EventFirings, EventGraph, EventGraphState,
     EventLogOffset, FingerprintSample, GdbAttachInfo, GdbListen, HostAssertionEvaluator,
-    HostAssertionOutcome, HostAssertionOutcomeKind, Icount, NodeId, NodeLifecycle, ObservableEvent,
-    QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, RuntimeState, ScenarioDef,
-    ScenarioDefForm, Schedule, SchedulerError, SchedulerEventLogAppend, SchedulerEventLogEntry,
-    SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerState, SearchFrontierChoices, Seed,
-    Shift, SimDuration, SimInstant, SimulationBackend, SingleScheduler, SingleSchedulerCheckpoint,
-    VirtualTime, VmArchitecture, World,
+    HostAssertionEvaluatorCheckpoint, HostAssertionOutcome, HostAssertionOutcomeKind, Icount,
+    NodeId, NodeLifecycle, ObservableEvent, QuantumLoop, QuantumOutcome, QuantumRequest,
+    QuantumTerminalVerdict, RuntimeState, ScenarioDef, ScenarioDefForm, Schedule, SchedulerError,
+    SchedulerEventLogAppend, SchedulerEventLogEntry, SchedulerLivenessScenario,
+    SchedulerNodeActivity, SchedulerState, SearchFrontierChoices, Seed, Shift, SimDuration,
+    SimInstant, SimulationBackend, SingleScheduler, SingleSchedulerCheckpoint, VirtualTime,
+    VmArchitecture, World,
 };
 use crucible_qemu::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
@@ -170,6 +171,7 @@ struct ProductionVmExactCheckpointSet {
     configuration: Configuration,
     scheduler: SingleSchedulerCheckpoint,
     trigger_state: EventGraphState,
+    assertion_state: HostAssertionEvaluatorCheckpoint,
     fault_checkpoint: ProductionFaultRuntimeCheckpoint,
     targets: BTreeMap<NodeId, ProductionVmExactCheckpointTarget>,
     node_generations: BTreeMap<NodeId, u64>,
@@ -1324,6 +1326,22 @@ pub fn build_production_vm_lifecycle_loop(
         debug_runtime_evidence: Vec::new(),
         _run_directory: run_directory,
     };
+    if let Some(checkpoint) = &restore_checkpoint {
+        let prefix = lifecycle
+            .inner
+            .loop_impl()
+            .condition_event_log_prefix()
+            .clone();
+        if let Err(error) = checkpoint
+            .assertion_state
+            .restore_into(&mut lifecycle.assertion_evaluator, &prefix)
+        {
+            let _ = lifecycle.inner.shutdown();
+            return Err(loop_factory_error(format!(
+                "restore host assertion continuation: {error}"
+            )));
+        }
+    }
     if let Err(error) = lifecycle.capture_debug_runtime_evidence() {
         let _ = lifecycle.inner.shutdown();
         return Err(loop_factory_error(format!(
