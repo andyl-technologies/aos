@@ -218,6 +218,7 @@ fn node_capabilities_with_register(register: WorldNodeRegister) -> WorldNodeFaul
         page_bytes: 4096,
         dram_geometry: WorldNodeDramGeometry::qemu_v1(),
         interrupts: Vec::new(),
+        hardware_errors: Vec::new(),
         clock_sources: vec![
             WorldNodeClockSource::qemu_x86_tsc_v1(id("x86-tsc-vcpu-0")),
             WorldNodeClockSource::qemu_x86_rtc_v1(id("x86-mc146818-rtc")),

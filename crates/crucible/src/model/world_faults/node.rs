@@ -618,6 +618,132 @@ pub enum WorldNodeArchitecture {
     Aarch64,
 }
 
+/// Closed guest-visible hardware-error record families.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorldNodeHardwareErrorRecordKind {
+    /// x86 machine-check architecture record.
+    X86MachineCheck,
+    /// AArch64 RAS synchronous abort or asynchronous SError record.
+    Aarch64Ras,
+    /// Platform or architecture memory-ECC record.
+    MemoryEcc,
+}
+
+/// Closed hardware-error severity and delivery classes.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorldNodeHardwareErrorClass {
+    /// Corrected error reported without an uncorrectable exception.
+    Corrected,
+    /// Uncorrectable error from which execution may recover.
+    Recoverable,
+    /// Fatal error whose architecture path terminates or resets the node.
+    Fatal,
+    /// AArch64 synchronous external abort.
+    Synchronous,
+    /// AArch64 asynchronous SError.
+    Asynchronous,
+}
+
+/// Closed hardware-error publication and delivery mechanisms.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorldNodeHardwareErrorMechanism {
+    /// x86 machine-check architecture banks and vector 18.
+    X86Mca,
+    /// ACPI APEI GHES platform memory-error record.
+    AcpiGhes,
+    /// AArch64 RAS synchronous abort or SError delivery.
+    Aarch64Ras,
+}
+
+/// One guest-observable consequence permitted by a hardware-error row.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorldNodeHardwareErrorVisibility {
+    /// Publishes an architecture or firmware telemetry record.
+    Telemetry,
+    /// Raises the corrected-error interrupt supported by the realized platform.
+    Interrupt,
+    /// Delivers the complete architecture exception described by the request.
+    Exception,
+}
+
+/// One exact hardware-error row exposed by the realized QEMU machine.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorldNodeHardwareError {
+    /// Stable row identity selected by a hardware-error fault.
+    pub id: SignalId,
+    /// Stable architecture bank or platform-record identity.
+    pub bank: SignalId,
+    /// Stable memory-channel identity.
+    pub channel: SignalId,
+    /// Stable memory-rank identity.
+    pub rank: SignalId,
+    /// Exact firmware or table prerequisite.
+    pub firmware: SignalId,
+    /// Exact resulting QEMU and guest-visible state contract.
+    pub state: SignalId,
+    /// Typed architecture or platform record family.
+    pub record_kind: WorldNodeHardwareErrorRecordKind,
+    /// Error severity or AArch64 delivery class.
+    pub error_class: WorldNodeHardwareErrorClass,
+    /// Architecture or platform publication mechanism.
+    pub mechanism: WorldNodeHardwareErrorMechanism,
+    /// Canonically ordered guest-visible consequences admitted by this row.
+    pub visibility: Vec<WorldNodeHardwareErrorVisibility>,
+    /// First numeric architecture bank or platform record.
+    pub bank_number: u32,
+    /// Number of consecutive banks or records in this row.
+    pub bank_count: u32,
+    /// Required architecture vector or exception class.
+    pub vector: u32,
+    /// Status bits that every request must set.
+    #[serde(
+        deserialize_with = "super::super::toml::deserialize_u64_toml_number_or_string",
+        serialize_with = "super::super::toml::serialize_u64_toml_number_or_string"
+    )]
+    pub status_required: u64,
+    /// Complete mask of status bits a request may set.
+    #[serde(
+        deserialize_with = "super::super::toml::deserialize_u64_toml_number_or_string",
+        serialize_with = "super::super::toml::serialize_u64_toml_number_or_string"
+    )]
+    pub status_allowed: u64,
+    /// Syndrome bits that every request must set.
+    #[serde(
+        deserialize_with = "super::super::toml::deserialize_u64_toml_number_or_string",
+        serialize_with = "super::super::toml::serialize_u64_toml_number_or_string"
+    )]
+    pub syndrome_required: u64,
+    /// Complete mask of syndrome bits a request may set.
+    #[serde(
+        deserialize_with = "super::super::toml::deserialize_u64_toml_number_or_string",
+        serialize_with = "super::super::toml::serialize_u64_toml_number_or_string"
+    )]
+    pub syndrome_allowed: u64,
+    /// Ordered model phases at which this row may apply.
+    pub model_phases: Vec<FaultPhase>,
+    /// Canonically ordered x86 CPLs or AArch64 exception levels (0 through 3).
+    pub privilege_levels: Vec<u8>,
+    /// Identifies a corrected rather than uncorrectable record.
+    pub corrected: bool,
+    /// Allows architecture masking to defer delivery.
+    pub maskable: bool,
+    /// Confirms that all resulting architecture and platform state has VMState coverage.
+    pub vmstate: bool,
+}
+
 impl WorldNodeArchitecture {
     /// Returns the canonical selector spelling used by resolved register targets.
     #[must_use]
@@ -664,6 +790,8 @@ pub struct WorldNodeFaultCapabilities {
     pub dram_geometry: WorldNodeDramGeometry,
     /// Exact routable interrupt manifest.
     pub interrupts: Vec<WorldNodeInterrupt>,
+    /// Exact architecture and platform hardware-error manifest.
+    pub hardware_errors: Vec<WorldNodeHardwareError>,
     /// Registered guest-visible clock sources.
     pub clock_sources: Vec<WorldNodeClockSource>,
     /// Registered accelerator devices.
@@ -864,6 +992,104 @@ impl WorldNodeFaultCapabilities {
                 "node interrupt delivery-drop state",
             )?;
         }
+        require(
+            !self
+                .hardware_errors
+                .windows(2)
+                .any(|pair| pair[0].id >= pair[1].id),
+            "node hardware-error manifest order",
+        )?;
+        for error in &self.hardware_errors {
+            let architecture_matches = matches!(
+                (self.architecture, error.record_kind, error.mechanism),
+                (
+                    WorldNodeArchitecture::X86_64,
+                    WorldNodeHardwareErrorRecordKind::X86MachineCheck,
+                    WorldNodeHardwareErrorMechanism::X86Mca
+                ) | (
+                    WorldNodeArchitecture::X86_64,
+                    WorldNodeHardwareErrorRecordKind::MemoryEcc,
+                    WorldNodeHardwareErrorMechanism::X86Mca
+                ) | (
+                    WorldNodeArchitecture::Aarch64,
+                    WorldNodeHardwareErrorRecordKind::Aarch64Ras,
+                    WorldNodeHardwareErrorMechanism::Aarch64Ras
+                ) | (
+                    WorldNodeArchitecture::Aarch64,
+                    WorldNodeHardwareErrorRecordKind::MemoryEcc,
+                    WorldNodeHardwareErrorMechanism::AcpiGhes
+                )
+            );
+            require(architecture_matches, "node hardware-error architecture")?;
+            require(
+                error.bank_count > 0
+                    && error.bank_number.checked_add(error.bank_count).is_some()
+                    && error.status_required & !error.status_allowed == 0
+                    && error.syndrome_required & !error.syndrome_allowed == 0,
+                "node hardware-error numeric contract",
+            )?;
+            require(
+                !error.visibility.is_empty()
+                    && !error.visibility.windows(2).any(|pair| pair[0] >= pair[1]),
+                "node hardware-error visibility",
+            )?;
+            require(
+                !error.model_phases.is_empty()
+                    && !error.model_phases.windows(2).any(|pair| pair[0] >= pair[1])
+                    && error
+                        .model_phases
+                        .iter()
+                        .all(|phase| match error.record_kind {
+                            WorldNodeHardwareErrorRecordKind::X86MachineCheck
+                            | WorldNodeHardwareErrorRecordKind::Aarch64Ras => matches!(
+                                phase,
+                                FaultPhase::BeforeInstruction | FaultPhase::AfterInstruction
+                            ),
+                            WorldNodeHardwareErrorRecordKind::MemoryEcc => matches!(
+                                phase,
+                                FaultPhase::Fetch
+                                    | FaultPhase::Load
+                                    | FaultPhase::Store
+                                    | FaultPhase::DmaRead
+                                    | FaultPhase::DmaWrite
+                                    | FaultPhase::PageTableWalk
+                                    | FaultPhase::Refresh
+                            ),
+                        }),
+                "node hardware-error model phases",
+            )?;
+            require(
+                !error.privilege_levels.is_empty()
+                    && error.privilege_levels.iter().all(|level| *level <= 3)
+                    && !error
+                        .privilege_levels
+                        .windows(2)
+                        .any(|pair| pair[0] >= pair[1]),
+                "node hardware-error privilege levels",
+            )?;
+            let corrected_visibility = error.visibility.iter().any(|visibility| {
+                matches!(
+                    visibility,
+                    WorldNodeHardwareErrorVisibility::Telemetry
+                        | WorldNodeHardwareErrorVisibility::Interrupt
+                )
+            }) && !error
+                .visibility
+                .contains(&WorldNodeHardwareErrorVisibility::Exception);
+            let uncorrectable_visibility =
+                error.visibility == [WorldNodeHardwareErrorVisibility::Exception];
+            require(
+                error.corrected == (error.error_class == WorldNodeHardwareErrorClass::Corrected)
+                    && if error.corrected {
+                        corrected_visibility
+                    } else {
+                        uncorrectable_visibility
+                    }
+                    && error.vmstate,
+                "node hardware-error delivery contract",
+            )?;
+        }
+        hard_count(&self.hardware_errors, "node hardware-error manifest", 4_096)?;
         require(!self.clock_sources.is_empty(), "node clock manifest")?;
         for source in &self.clock_sources {
             let architecture_matches = match self.architecture {
