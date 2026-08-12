@@ -1373,6 +1373,23 @@ fn network_transition_drop_clears_inflight_and_authenticates_frames() {
         .network_continuation_digest()
         .unwrap_or_else(|error| panic!("network state should encode: {error}"));
     let checkpoint = scheduler.network_checkpoint();
+    let checkpoint_bytes = checkpoint
+        .canonical_bytes()
+        .unwrap_or_else(|error| panic!("network checkpoint should encode: {error}"));
+    let checkpoint = SchedulerNetworkCheckpoint::from_canonical_bytes(&checkpoint_bytes)
+        .unwrap_or_else(|error| panic!("network checkpoint should decode: {error}"));
+    assert_eq!(
+        checkpoint
+            .canonical_bytes()
+            .unwrap_or_else(|error| panic!("decoded checkpoint should encode: {error}")),
+        checkpoint_bytes
+    );
+    let mut trailing = checkpoint_bytes;
+    trailing.push(0);
+    assert_eq!(
+        SchedulerNetworkCheckpoint::from_canonical_bytes(&trailing),
+        Err(SchedulerNetworkCheckpointCodecError::Noncanonical)
+    );
 
     let first = scheduler
         .drop_network_inflight_for_route(&source, &destination)
