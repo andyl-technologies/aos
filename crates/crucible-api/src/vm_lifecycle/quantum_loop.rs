@@ -1594,6 +1594,14 @@ impl ProductionVmLifecycleLoop {
                             ),
                         }
                     })?;
+                    let artifact_length = fs::metadata(&staged_artifact)
+                        .map_err(|error| SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "inspect staged QEMU artifact {}: {error}",
+                                staged_artifact.display()
+                            ),
+                        })?
+                        .len();
                     let source_vmstate = source_directory.join(PRODUCTION_VMSTATE_FILE_NAME);
                     let vmstate_name = format!("node-{index}-vmstate.qcow2");
                     let staged_vmstate = staging.path().join(&vmstate_name);
@@ -1614,6 +1622,14 @@ impl ProductionVmLifecycleLoop {
                             ),
                         }
                     })?;
+                    let vmstate_length = fs::metadata(&staged_vmstate)
+                        .map_err(|error| SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "inspect staged VMState artifact {}: {error}",
+                                staged_vmstate.display()
+                            ),
+                        })?
+                        .len();
                     let manifest_identity = crucible::ContentHash::from_canonical_material(
                         "crucible.production-vm-exact-checkpoint.v1",
                         &format!(
@@ -1634,10 +1650,22 @@ impl ProductionVmLifecycleLoop {
                             counter,
                             scheduler_time,
                             snapshot,
-                            overlay_artifact: checkpoint_root.join(artifact_name),
-                            overlay_hash: artifact_hash,
-                            vmstate_artifact: checkpoint_root.join(vmstate_name),
-                            vmstate_hash,
+                            overlay_artifact: ProductionCheckpointArtifact {
+                                source: ProductionCheckpointArtifactSource::File(
+                                    checkpoint_root.join(artifact_name),
+                                ),
+                                identity: artifact_hash,
+                                length: artifact_length,
+                                chunks: Vec::new(),
+                            },
+                            vmstate_artifact: ProductionCheckpointArtifact {
+                                source: ProductionCheckpointArtifactSource::File(
+                                    checkpoint_root.join(vmstate_name),
+                                ),
+                                identity: vmstate_hash,
+                                length: vmstate_length,
+                                chunks: Vec::new(),
+                            },
                             fault_checkpoint: fault_checkpoint.clone(),
                             manifest_identity,
                         },

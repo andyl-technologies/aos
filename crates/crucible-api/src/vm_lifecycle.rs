@@ -157,12 +157,24 @@ struct ProductionVmExactCheckpointTarget {
     counter: u64,
     scheduler_time: VirtualTime,
     snapshot: QemuVmSnapshot,
-    overlay_artifact: PathBuf,
-    overlay_hash: ContentHash,
-    vmstate_artifact: PathBuf,
-    vmstate_hash: ContentHash,
+    overlay_artifact: ProductionCheckpointArtifact,
+    vmstate_artifact: ProductionCheckpointArtifact,
     fault_checkpoint: ProductionFaultRuntimeCheckpoint,
     manifest_identity: crucible::ContentHash,
+}
+
+#[derive(Clone, Debug)]
+struct ProductionCheckpointArtifact {
+    source: ProductionCheckpointArtifactSource,
+    identity: ContentHash,
+    length: u64,
+    chunks: Vec<ContentHash>,
+}
+
+#[derive(Clone, Debug)]
+enum ProductionCheckpointArtifactSource {
+    File(PathBuf),
+    ChunkStore(PathBuf),
 }
 
 #[derive(Clone, Debug)]
@@ -179,20 +191,23 @@ struct ProductionVmExactCheckpointSet {
 }
 
 fn validate_exact_checkpoint_artifact(
-    path: &Path,
-    expected: ContentHash,
+    artifact: &ProductionCheckpointArtifact,
     role: &str,
 ) -> Result<(), LifecycleApiError> {
-    let observed = hash_file(path).map_err(|error| {
-        loop_factory_error(format!(
-            "read exact checkpoint {role} artifact {}: {error}",
-            path.display()
-        ))
-    })?;
-    if observed != expected {
+    let observed = match &artifact.source {
+        ProductionCheckpointArtifactSource::File(path) => hash_file(path).map_err(|error| {
+            loop_factory_error(format!(
+                "read exact checkpoint {role} artifact {}: {error}",
+                path.display()
+            ))
+        })?,
+        ProductionCheckpointArtifactSource::ChunkStore(directory) => {
+            checkpoint_store::validate_chunked_artifact(directory, artifact)?
+        }
+    };
+    if observed != artifact.identity {
         return Err(loop_factory_error(format!(
-            "exact checkpoint {role} artifact {} failed content authentication",
-            path.display()
+            "exact checkpoint {role} artifact failed content authentication"
         )));
     }
     Ok(())
@@ -202,12 +217,8 @@ fn validate_exact_checkpoint_target(
     node: &NodeId,
     target: &ProductionVmExactCheckpointTarget,
 ) -> Result<(), LifecycleApiError> {
-    validate_exact_checkpoint_artifact(
-        &target.overlay_artifact,
-        target.overlay_hash,
-        "root overlay",
-    )?;
-    validate_exact_checkpoint_artifact(&target.vmstate_artifact, target.vmstate_hash, "VMState")?;
+    validate_exact_checkpoint_artifact(&target.overlay_artifact, "root overlay")?;
+    validate_exact_checkpoint_artifact(&target.vmstate_artifact, "VMState")?;
     let observed = ContentHash::from_canonical_material(
         "crucible.production-vm-exact-checkpoint.v1",
         &format!(
@@ -218,8 +229,8 @@ fn validate_exact_checkpoint_target(
             target.scheduler_time.ticks,
             target.snapshot.id().to_hex(),
             target.fault_checkpoint.id().to_hex(),
-            target.overlay_hash.to_hex(),
-            target.vmstate_hash.to_hex(),
+            target.overlay_artifact.identity.to_hex(),
+            target.vmstate_artifact.identity.to_hex(),
         ),
     );
     if observed != target.manifest_identity {
@@ -232,19 +243,20 @@ fn validate_exact_checkpoint_target(
 }
 
 fn copy_exact_checkpoint_artifact(
-    source: &Path,
+    source: &ProductionCheckpointArtifact,
     destination: &Path,
-    expected: ContentHash,
     role: &str,
 ) -> Result<(), LifecycleApiError> {
-    fs::copy(source, destination).map_err(|error| {
-        loop_factory_error(format!(
-            "materialize exact checkpoint {role} {} as {}: {error}",
-            source.display(),
-            destination.display()
-        ))
-    })?;
-    validate_exact_checkpoint_artifact(destination, expected, role)
+    checkpoint_store::materialize_checkpoint_artifact(source, destination, role)?;
+    validate_exact_checkpoint_artifact(
+        &ProductionCheckpointArtifact {
+            source: ProductionCheckpointArtifactSource::File(destination.to_path_buf()),
+            identity: source.identity,
+            length: source.length,
+            chunks: Vec::new(),
+        },
+        role,
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -810,13 +822,11 @@ pub fn build_production_vm_lifecycle_loop(
             copy_exact_checkpoint_artifact(
                 &target.overlay_artifact,
                 &node_directory.join(PRODUCTION_ROOT_OVERLAY_FILE_NAME),
-                target.overlay_hash,
                 "root overlay",
             )?;
             copy_exact_checkpoint_artifact(
                 &target.vmstate_artifact,
                 &node_directory.join(PRODUCTION_VMSTATE_FILE_NAME),
-                target.vmstate_hash,
                 "VMState",
             )?;
         } else {
