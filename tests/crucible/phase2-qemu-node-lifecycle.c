@@ -1,5 +1,6 @@
-/* SPDX-License-Identifier: Apache-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
+#include <errno.h>
 #include <glib.h>
 #include <qemu-plugin.h>
 
@@ -7,12 +8,13 @@
 
 QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 
-#define LIFECYCLE_EVIDENCE_BYTES 288
+#define LIFECYCLE_EVIDENCE_BYTES 304
 
 static uint16_t architecture;
 static uint32_t volatile_policy;
 static uint32_t device_policy;
 static bool require_ready;
+static bool terminal_crash;
 static bool ready_observed;
 static bool finished;
 static uint8_t *payload;
@@ -61,6 +63,8 @@ static void fail(const char *message)
     abort();
 }
 
+#include "phase2-qemu-fault-manifest-bindings.h"
+
 static void append_field(GByteArray *bytes, uint16_t tag, uint16_t type,
                          const void *value, uint32_t length)
 {
@@ -102,7 +106,7 @@ static uint8_t *build_payload(size_t *length)
     put_u16(header + CRUCIBLE_NODE_FAULT_PAYLOAD_FIELD_COUNT_OFFSET, 5);
     g_byte_array_append(bytes, header, sizeof(header));
 
-    put_u32(transition, 3);
+    put_u32(transition, terminal_crash ? 2 : 3);
     append_field(bytes, CRUCIBLE_NODE_FAULT_FIELD_P1,
                  CRUCIBLE_NODE_FAULT_FIELD_TYPE_U32,
                  transition, sizeof(transition));
@@ -128,7 +132,7 @@ static uint8_t *build_payload(size_t *length)
 static void validate_event(void)
 {
     struct qemu_plugin_crucible_fault_event event;
-    uint8_t evidence[LIFECYCLE_EVIDENCE_BYTES];
+    uint8_t evidence[LIFECYCLE_EVIDENCE_BYTES] = { 0 };
     size_t evidence_len = 0;
     int status;
 
@@ -140,13 +144,14 @@ static void validate_event(void)
         event.outcome != CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED ||
         evidence_len != sizeof(evidence) ||
         memcmp(evidence, "CRUCLIF1", 8) != 0 ||
-        get_u16(evidence + 8) != 3 ||
-        get_u16(evidence + 10) != 3 ||
+        get_u16(evidence + 8) != 4 ||
+        get_u16(evidence + 10) != (terminal_crash ? 2 : 3) ||
         get_u32(evidence + 12) != volatile_policy ||
         get_u32(evidence + 16) != device_policy ||
         get_u32(evidence + 20) !=
-            ((volatile_policy == 1 ? 1U : 0U) |
-             (device_policy == 1 ? 2U : 0U)) ||
+            (terminal_crash ? 0U :
+             ((volatile_policy == 1 ? 1U : 0U) |
+              (device_policy == 1 ? 2U : 0U))) ||
         get_u64(evidence + 40) != 32 ||
         get_u64(evidence + 96) - get_u64(evidence + 32) != 32 ||
         get_u64(evidence + 48) == 0 || get_u64(evidence + 56) == 0 ||
@@ -160,10 +165,19 @@ static void validate_event(void)
         (require_ready && get_u64(evidence + 216) == UINT64_MAX)) {
         fail("boot policy evidence was absent or malformed");
     }
-    for (size_t index = 256; index < sizeof(evidence); index++) {
-        if (evidence[index] != 0) {
-            fail("nonterminal reset published a terminal pre-exit fingerprint");
-        }
+    if (!terminal_crash &&
+        (get_u32(evidence + 288) != 3 ||
+         get_u32(evidence + 292) != 0 ||
+         get_u32(evidence + 296) != 0 ||
+         get_u32(evidence + 300) != 0)) {
+        fail("nonterminal reset published malformed effective-transition fields");
+    }
+    if (terminal_crash &&
+        (get_u32(evidence + 288) != 2 ||
+         get_u32(evidence + 292) != 1 ||
+         get_u32(evidence + 296) != 3 ||
+         get_u32(evidence + 300) != 0)) {
+        fail("terminal crash omitted its pre-exit decision fields");
     }
     if ((volatile_policy == 1 && get_u64(evidence + 104) != 0) ||
         (volatile_policy == 2 && get_u64(evidence + 104) == 0)) {
@@ -174,7 +188,7 @@ static void validate_event(void)
 static void completion(void *opaque)
 {
     struct qemu_plugin_crucible_fault_result result;
-    uint8_t result_payload[256];
+    uint8_t result_payload[512];
     size_t result_len = 0;
     int status;
 
@@ -197,7 +211,6 @@ static void completion(void *opaque)
                 &command, payload, payload_len) != 0) {
             fail("prepared lifecycle commit was rejected");
         }
-        qemu_plugin_force_vcpu_exit();
         return;
     }
     if (result.status != CRUCIBLE_FAULT_STATUS_APPLIED ||
@@ -208,6 +221,22 @@ static void completion(void *opaque)
     }
     validate_event();
     finished = true;
+    if (terminal_crash) {
+        if (qemu_plugin_crucible_lifecycle_set_process_generation(2) !=
+            -EALREADY) {
+            fail("QEMU allowed process-generation mutation after terminal staging");
+        }
+        g_printerr("CRUCIBLE_TERMINAL_LIFECYCLE_LIVE_PASS action_sha256=");
+        for (size_t index = 0; index < 32; index++) {
+            g_printerr("41");
+        }
+        g_printerr(" evidence_sha256=");
+        for (size_t index = 0; index < sizeof(result.evidence_hash); index++) {
+            g_printerr("%02x", result.evidence_hash[index]);
+        }
+        g_printerr(" process_generation=1\n");
+        return;
+    }
     g_printerr("CRUCIBLE_NODE_LIFECYCLE_LIVE_PASS architecture=%u volatile_policy=%u device_policy=%u\n",
                architecture, volatile_policy, device_policy);
     qemu_plugin_request_shutdown(0);
@@ -275,6 +304,19 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     bool found = false;
 
     (void)info;
+    if (qemu_plugin_crucible_lifecycle_set_process_generation(1) != 0) {
+        fail("QEMU rejected the launch-time process generation");
+    }
+    if (qemu_plugin_crucible_lifecycle_set_process_generation(1) !=
+            -EALREADY ||
+        qemu_plugin_crucible_lifecycle_set_process_generation(0) !=
+            -EINVAL) {
+        fail("QEMU did not enforce one immutable nonzero process generation");
+    }
+    const char *binding_error = crucible_test_bind_all_fault_manifests();
+    if (binding_error) {
+        fail(binding_error);
+    }
     if (argc != 3 && argc != 4) {
         fail("expected architecture, state policies, and optional boot policy");
     }
@@ -282,11 +324,14 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     volatile_policy = parse_u64_arg(argv[1], "volatile_policy=");
     device_policy = parse_u64_arg(argv[2], "device_policy=");
     if (argc == 4) {
-        if (strcmp(argv[3], "boot_policy=require_ready") != 0) {
+        if (strcmp(argv[3], "boot_policy=require_ready") == 0) {
+            require_ready = true;
+            qemu_plugin_register_vcpu_tb_trans_cb(id, ready_tb_translate);
+        } else if (strcmp(argv[3], "terminal=crash") == 0) {
+            terminal_crash = true;
+        } else {
             fail("optional boot policy is invalid");
         }
-        require_ready = true;
-        qemu_plugin_register_vcpu_tb_trans_cb(id, ready_tb_translate);
     }
     if (architecture < QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64 ||
         architecture > QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_AARCH64 ||

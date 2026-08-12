@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: Apache-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #include <glib.h>
 #include <qemu-plugin.h>
@@ -8,7 +8,9 @@
 
 QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 
-#define HANG_EVIDENCE_BYTES 256
+#define HANG_EVIDENCE_BUFFER_BYTES 512
+#define HANG_EVIDENCE_BYTES 192
+#define LIFECYCLE_EVIDENCE_BYTES 304
 #define WATCHDOG_TIMEOUT_NANOS 32
 #define WATCHDOG_DOWNTIME_NANOS 8
 
@@ -74,6 +76,8 @@ static void fail(const char *message)
     g_printerr("Crucible node hang live test failed: %s\n", message);
     abort();
 }
+
+#include "phase2-qemu-fault-manifest-bindings.h"
 
 static void append_field(GByteArray *bytes, uint16_t tag, uint16_t type,
                          const void *value, uint32_t length)
@@ -181,7 +185,7 @@ static uint8_t *build_payload(uint16_t operation, bool selected_vcpu,
     return g_byte_array_free(g_steal_pointer(&bytes), false);
 }
 
-static void poll_event(uint8_t evidence[HANG_EVIDENCE_BYTES],
+static void poll_event(uint8_t evidence[HANG_EVIDENCE_BUFFER_BYTES],
                        struct qemu_plugin_crucible_fault_event *event)
 {
     size_t evidence_len = 0;
@@ -189,11 +193,12 @@ static void poll_event(uint8_t evidence[HANG_EVIDENCE_BYTES],
 
     memset(event, 0, sizeof(*event));
     status = qemu_plugin_crucible_fault_event_poll(
-        event, evidence, HANG_EVIDENCE_BYTES, &evidence_len);
+        event, evidence, HANG_EVIDENCE_BUFFER_BYTES, &evidence_len);
     if (status != 1 ||
         event->command_kind != CRUCIBLE_FAULT_COMMAND_NODE_HANG ||
         event->outcome != CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED ||
-        (evidence_len != 192 && evidence_len != HANG_EVIDENCE_BYTES)) {
+        (evidence_len != HANG_EVIDENCE_BYTES &&
+         evidence_len != LIFECYCLE_EVIDENCE_BYTES)) {
         fprintf(stderr,
                 "hang event poll: status=%d kind=%u outcome=%u "
                 "evidence_len=%zu magic=%.8s observed=%" PRIu64 "\n",
@@ -210,7 +215,7 @@ static void validate_activation(uint32_t expected_scope,
                                 uint64_t *raw_icount)
 {
     struct qemu_plugin_crucible_fault_event event;
-    uint8_t evidence[HANG_EVIDENCE_BYTES];
+    uint8_t evidence[HANG_EVIDENCE_BUFFER_BYTES];
 
     poll_event(evidence, &event);
     if (memcmp(evidence, "CRUCHNG1", 8) != 0 ||
@@ -227,7 +232,7 @@ static void validate_activation(uint32_t expected_scope,
 static void validate_watchdog(void)
 {
     struct qemu_plugin_crucible_fault_event event;
-    uint8_t evidence[HANG_EVIDENCE_BYTES];
+    uint8_t evidence[HANG_EVIDENCE_BUFFER_BYTES];
 
     poll_event(evidence, &event);
     if (memcmp(evidence, "CRUCLIF1", 8) != 0 ||
@@ -246,7 +251,7 @@ static void validate_recovery(uint32_t expected_scope,
                               uint64_t expected_timeout)
 {
     struct qemu_plugin_crucible_fault_event event;
-    uint8_t evidence[HANG_EVIDENCE_BYTES];
+    uint8_t evidence[HANG_EVIDENCE_BUFFER_BYTES];
 
     poll_event(evidence, &event);
     if (memcmp(evidence, "CRUCHNG1", 8) != 0 ||
@@ -260,7 +265,7 @@ static void validate_recovery(uint32_t expected_scope,
 static void validate_composition(void)
 {
     struct qemu_plugin_crucible_fault_event event;
-    uint8_t evidence[HANG_EVIDENCE_BYTES];
+    uint8_t evidence[HANG_EVIDENCE_BUFFER_BYTES];
 
     poll_event(evidence, &event);
     composition_observed_icount = event.observed_icount;
@@ -279,7 +284,7 @@ static void validate_composition(void)
 static void validate_composed_lifecycle(void)
 {
     struct qemu_plugin_crucible_fault_event event;
-    uint8_t evidence[HANG_EVIDENCE_BYTES];
+    uint8_t evidence[HANG_EVIDENCE_BUFFER_BYTES];
     uint16_t transition;
     uint32_t volatile_policy;
     uint32_t device_policy;
@@ -310,7 +315,7 @@ static void validate_composed_lifecycle(void)
 static void validate_no_event(void)
 {
     struct qemu_plugin_crucible_fault_event event;
-    uint8_t evidence[HANG_EVIDENCE_BYTES];
+    uint8_t evidence[HANG_EVIDENCE_BUFFER_BYTES];
     size_t unused = 0;
 
     if (qemu_plugin_crucible_fault_event_poll(
@@ -564,6 +569,13 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     bool found = false;
 
     (void)info;
+    if (qemu_plugin_crucible_lifecycle_set_process_generation(1) != 0) {
+        fail("QEMU rejected the launch-time process generation");
+    }
+    const char *binding_error = crucible_test_bind_all_fault_manifests();
+    if (binding_error) {
+        fail(binding_error);
+    }
     if (argc != 1 && argc != 3) {
         fail("expected architecture or architecture/scope/time arguments");
     }

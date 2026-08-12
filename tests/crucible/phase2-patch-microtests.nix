@@ -402,6 +402,41 @@
         patchName = "0063-crucible-plugin-vmstop.patch";
       };
     }
+    {
+      patch = "0064-crucible-terminal-lifecycle-completion.patch";
+      check = import ./phase2-qemu-terminal-lifecycle.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0064-crucible-terminal-lifecycle-completion.patch";
+      };
+    }
+    {
+      patch = "0065-crucible-authenticated-terminal-lifecycle.patch";
+      check = import ./phase2-qemu-terminal-lifecycle.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0065-crucible-authenticated-terminal-lifecycle.patch";
+      };
+    }
+    {
+      patch = "0066-crucible-immutable-process-generation.patch";
+      check = import ./phase2-qemu-terminal-lifecycle.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0066-crucible-immutable-process-generation.patch";
+      };
+    }
+    {
+      patch = "0067-crucible-serialize-and-harden-core-fault-state.patch";
+      check = import ./phase2-qemu-fault-vmstate.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0067-crucible-serialize-and-harden-core-fault-state.patch";
+      };
+    }
+    {
+      patch = "0068-crucible-guest-clock-faults.patch";
+      check = import ./phase2-qemu-fault-vmstate.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0068-crucible-guest-clock-faults.patch";
+      };
+    }
   ];
 
   microtestPatchNames =

@@ -1,3 +1,154 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index 5617692..a47e73e 100644
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -218,6 +218,21 @@ static bool rr_crucible_sim_all_vcpus_halted(void)
+     return true;
+ }
+ 
++static bool rr_crucible_sim_stop_or_unplug_pending(void)
++{
++    CPUState *cpu;
++
++    if (!rr_crucible_sim_mode()) {
++        return false;
++    }
++    CPU_FOREACH(cpu) {
++        if (cpu->stop || cpu->unplug) {
++            return true;
++        }
++    }
++    return false;
++}
++
+ static void rr_crucible_sim_sync_vcpu_halt_callbacks(void)
+ {
+     CPUState *cpu;
+@@ -405,6 +420,24 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+                     qemu_cond_wait_bql(first_cpu->halt_cond);
+                     return true;
+                 }
++                /*
++                 * A completion callback may enqueue the commit half of a
++                 * prepared transaction at a later instruction boundary.  The
++                 * budget that brought us to the prepare boundary is zero, so
++                 * replenish it before looking at the new deadline.  Falling
++                 * out to rr_wait_io_event() here would strand an otherwise
++                 * runnable guest: no external event is required to reach the
++                 * newly queued boundary.
++                 */
++                if (!crucible_sim_shmem_dispatch_registered() &&
++                    !crucible_sim_observer_registered() &&
++                    qemu_crucible_fault_next_icount(
++                        CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY) >
++                        current_icount &&
++                    !rr_crucible_sim_boundary_deadline_due()) {
++                    rr_crucible_sim_refresh_batch_budget(cpu_budget);
++                    continue;
++                }
+                 return false;
+             }
+         }
+@@ -558,10 +591,11 @@ static void rr_wait_io_event(void)
+         return;
+     }
+ 
+-    while (all_cpu_threads_idle() ||
+-           (rr_crucible_sim_mode() &&
+-            (rr_crucible_sim_all_vcpus_halted() ||
+-             qemu_plugin_time_advance_is_pending()))) {
++    while (!rr_crucible_sim_stop_or_unplug_pending() &&
++           (all_cpu_threads_idle() ||
++            (rr_crucible_sim_mode() &&
++             (rr_crucible_sim_all_vcpus_halted() ||
++              qemu_plugin_time_advance_is_pending())))) {
+ 
+         rr_stop_kick_timer();
+         if (qemu_plugin_time_advance_is_pending()) {
+@@ -578,6 +612,9 @@ static void rr_wait_io_event(void)
+             if (qemu_plugin_crucible_vmstop_pending()) {
+                 return;
+             }
++            if (rr_crucible_sim_stop_or_unplug_pending()) {
++                break;
++            }
+             qemu_cond_wait_bql(first_cpu->halt_cond);
+             continue;
+         }
+@@ -596,6 +633,9 @@ static void rr_wait_io_event(void)
+             if (qemu_plugin_crucible_vmstop_pending()) {
+                 return;
+             }
++            if (rr_crucible_sim_stop_or_unplug_pending()) {
++                break;
++            }
+             if (!rr_crucible_sim_all_vcpus_halted()) {
+                 break;
+             }
+@@ -757,6 +797,16 @@ static void *rr_cpu_thread_fn(void *arg)
+             cpu = first_cpu;
+         }
+         cpu = rr_crucible_sim_loop_cpu(cpu);
++        if (rr_crucible_sim_mode() && cpu && cpu->exit_request &&
++            cpu_work_list_empty(cpu) && !cpu->stop && !cpu->unplug &&
++            cpu_can_run(cpu) &&
++            qemu_crucible_fault_next_icount(
++                CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY) >
++                qemu_plugin_icount_raw() &&
++            qemu_crucible_fault_next_icount(
++                CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY) != UINT64_MAX) {
++            rr_crucible_sim_reset_exit_request(cpu);
++        }
+ 
+         while (cpu && cpu_work_list_empty(cpu) && !cpu->exit_request) {
+             /* Store rr_current_cpu before evaluating cpu_can_run().  */
+@@ -835,6 +885,18 @@ static void *rr_cpu_thread_fn(void *arg)
+                         (dispatch_due || !observer_due)) {
+                         qemu_cond_wait_bql(first_cpu->halt_cond);
+                     }
++                    if (!crucible_sim_shmem_dispatch_registered() &&
++                        !crucible_sim_observer_registered() &&
++                        qemu_crucible_fault_next_icount(
++                            CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY) >
++                            current_icount &&
++                        qemu_crucible_fault_next_icount(
++                            CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY) != UINT64_MAX) {
++                        rr_crucible_sim_refresh_batch_budget(&cpu_budget);
++                        if (cpu_budget > 0) {
++                            continue;
++                        }
++                    }
+                     break;
+                 }
+             }
+@@ -883,6 +945,27 @@ static void *rr_cpu_thread_fn(void *arg)
+          */
+         rr_crucible_sim_advance_stalled_deadline();
+ 
++        /*
++         * Re-enter the run loop when a boundary callback queued later work
++         * for a runnable guest.  Reaching an exact icount boundary may leave
++         * CPUState::exit_request set and exhaust the current CPU iterator;
++         * after clearing that request above, rr_wait_io_event() would wait
++         * forever because advancing to the next fault is itself the only
++         * remaining source of progress.
++         */
++        if (rr_crucible_sim_mode() &&
++            !rr_crucible_sim_stop_or_unplug_pending() &&
++            cpu && cpu_work_list_empty(cpu) &&
++            !rr_crucible_sim_all_vcpus_halted() &&
++            qemu_crucible_fault_next_icount(
++                CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY) >
++                qemu_plugin_icount_raw() &&
++            qemu_crucible_fault_next_icount(
++                CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY) != UINT64_MAX) {
++            cpu = first_cpu;
++            continue;
++        }
++
+         if (icount_enabled() && all_cpu_threads_idle()) {
+             /*
+              * When all cpus are sleeping (e.g in WFI), to avoid a deadlock
 diff --git a/hw/acpi/core.c b/hw/acpi/core.c
 index 58f8964..41fe09c 100644
 --- a/hw/acpi/core.c
@@ -1446,7 +1597,7 @@ index d727879..74a207c 100644
  
      s->suspend_notifier.notify = rtc_notify_suspend;
 diff --git a/hw/rtc/pl031.c b/hw/rtc/pl031.c
-index 29c87a3..b2ce8d0 100644
+index 29c87a3..ab11a64 100644
 --- a/hw/rtc/pl031.c
 +++ b/hw/rtc/pl031.c
 @@ -21,6 +21,8 @@
@@ -1467,7 +1618,7 @@ index 29c87a3..b2ce8d0 100644
  static void pl031_update(PL031State *s)
  {
      uint32_t flags = s->is & s->im;
-@@ -52,31 +56,171 @@ static void pl031_interrupt(void * opaque)
+@@ -52,31 +56,155 @@ static void pl031_interrupt(void * opaque)
  {
      PL031State *s = (PL031State *)opaque;
  
@@ -1538,26 +1689,11 @@ index 29c87a3..b2ce8d0 100644
 -    ticks = s->mr - pl031_get_count(s);
 +    ticks = s->mr - pl031_get_count(s, false);
      trace_pl031_set_alarm(ticks);
-     if (ticks == 0) {
+-    if (ticks == 0) {
++    if (ticks == 0 && !fault_active) {
 +        s->crucible_guest_deadline_ns = 0;
 +        s->crucible_transform_generation = 0;
          timer_del(s->timer);
-+        if (fault_active &&
-+            !qemu_crucible_fault_clock_timer_arm(
-+                &s->crucible_timer_arm_sequence)) {
-+            qemu_crucible_fault_clock_event_terminal();
-+            return;
-+        }
-+        if (fault_active && old_generation != 0 &&
-+            !qemu_crucible_fault_clock_timer_transition(
-+                QEMU_CRUCIBLE_CLOCK_ARM_RTC, s->crucible_instance,
-+                QEMU_CRUCIBLE_CLOCK_TIMER_ALARM, 0,
-+                s->crucible_timer_arm_sequence,
-+                old_guest_deadline, old_scheduler_deadline, old_generation,
-+                0, UINT64_MAX, 0,
-+                QEMU_CRUCIBLE_CLOCK_TIMER_FIRE_AT_BOUNDARY)) {
-+            qemu_crucible_fault_clock_event_terminal();
-+        }
          pl031_interrupt(s);
      } else {
          int64_t now = qemu_clock_get_ns(rtc_clock);
@@ -1642,7 +1778,7 @@ index 29c87a3..b2ce8d0 100644
      }
  }
  
-@@ -88,7 +232,7 @@ static uint64_t pl031_read(void *opaque, hwaddr offset,
+@@ -88,7 +216,7 @@ static uint64_t pl031_read(void *opaque, hwaddr offset,
  
      switch (offset) {
      case RTC_DR:
@@ -1651,7 +1787,7 @@ index 29c87a3..b2ce8d0 100644
          break;
      case RTC_MR:
          r = s->mr;
-@@ -142,7 +286,7 @@ static void pl031_write(void * opaque, hwaddr offset,
+@@ -142,7 +270,7 @@ static void pl031_write(void * opaque, hwaddr offset,
          struct tm tm;
  
          s->lr = value;
@@ -1660,7 +1796,7 @@ index 29c87a3..b2ce8d0 100644
  
          qemu_get_timedate(&tm, s->tick_offset);
          qapi_event_send_rtc_change(qemu_timedate_diff(&tm), qom_path);
-@@ -187,10 +331,43 @@ static const MemoryRegionOps pl031_ops = {
+@@ -187,10 +315,43 @@ static const MemoryRegionOps pl031_ops = {
      .endianness = DEVICE_NATIVE_ENDIAN,
  };
  
@@ -1704,7 +1840,7 @@ index 29c87a3..b2ce8d0 100644
      struct tm tm;
  
      memory_region_init_io(&s->iomem, obj, &pl031_ops, s, "pl031", 0x1000);
-@@ -202,6 +379,38 @@ static void pl031_init(Object *obj)
+@@ -202,6 +363,38 @@ static void pl031_init(Object *obj)
          qemu_clock_get_ns(rtc_clock) / NANOSECONDS_PER_SECOND;
  
      s->timer = timer_new_ns(rtc_clock, pl031_interrupt, s);
@@ -1743,7 +1879,7 @@ index 29c87a3..b2ce8d0 100644
  }
  
  static void pl031_finalize(Object *obj)
-@@ -297,6 +506,26 @@ static const VMStateDescription vmstate_pl031_tick_offset = {
+@@ -297,6 +490,26 @@ static const VMStateDescription vmstate_pl031_tick_offset = {
      }
  };
  
@@ -1770,7 +1906,7 @@ index 29c87a3..b2ce8d0 100644
  static const VMStateDescription vmstate_pl031 = {
      .name = "pl031",
      .version_id = 1,
-@@ -315,6 +544,7 @@ static const VMStateDescription vmstate_pl031 = {
+@@ -315,6 +528,7 @@ static const VMStateDescription vmstate_pl031 = {
      },
      .subsections = (const VMStateDescription * const []) {
          &vmstate_pl031_tick_offset,
@@ -1779,7 +1915,7 @@ index 29c87a3..b2ce8d0 100644
      }
  };
 diff --git a/hw/timer/hpet.c b/hw/timer/hpet.c
-index 14dafd9..e7af5b4 100644
+index 14dafd9..c4d7aa2 100644
 --- a/hw/timer/hpet.c
 +++ b/hw/timer/hpet.c
 @@ -25,9 +25,10 @@
@@ -1928,7 +2064,7 @@ index 14dafd9..e7af5b4 100644
  static const VMStateDescription vmstate_hpet = {
      .name = "hpet",
      .version_id = 2,
-@@ -344,6 +425,7 @@ static const VMStateDescription vmstate_hpet = {
+@@ -344,13 +425,42 @@ static const VMStateDescription vmstate_hpet = {
      .subsections = (const VMStateDescription * const []) {
          &vmstate_hpet_rtc_irq_level,
          &vmstate_hpet_offset,
@@ -1936,10 +2072,11 @@ index 14dafd9..e7af5b4 100644
          NULL
      }
  };
-@@ -351,6 +433,13 @@ static const VMStateDescription vmstate_hpet = {
+ 
  static void hpet_arm(HPETTimer *t, uint64_t tick)
  {
-     uint64_t ns = hpet_get_ns(t->state, tick);
+-    uint64_t ns = hpet_get_ns(t->state, tick);
++    uint64_t ns;
 +    bool fault_active = qemu_crucible_fault_clock_source_active(
 +        QEMU_CRUCIBLE_CLOCK_X86_HPET, t->state->hpet_id);
 +    uint64_t old_guest_deadline = t->crucible_guest_deadline_ns;
@@ -1947,21 +2084,45 @@ index 14dafd9..e7af5b4 100644
 +    uint64_t old_scheduler_deadline = timer_pending(t->qemu_timer) ?
 +        timer_expire_time_ns(t->qemu_timer) : UINT64_MAX;
 +    uint32_t overdue = QEMU_CRUCIBLE_CLOCK_TIMER_UNREACHABLE;
++
++    if (!ticks_to_ns_checked(tick, &ns)) {
++        t->crucible_guest_deadline_ns = 0;
++        t->crucible_transform_generation = 0;
++        t->crucible_timer_armed = false;
++        timer_del(t->qemu_timer);
++        if (fault_active &&
++            (!qemu_crucible_fault_clock_timer_arm(
++                 &t->crucible_timer_arm_sequence) ||
++             !qemu_crucible_fault_clock_timer_transition(
++                QEMU_CRUCIBLE_CLOCK_X86_HPET, t->state->hpet_id,
++                QEMU_CRUCIBLE_CLOCK_TIMER_PRIMARY, t->tn,
++                t->crucible_timer_arm_sequence,
++                old_guest_deadline, old_scheduler_deadline, old_generation,
++                0, UINT64_MAX, 0,
++                QEMU_CRUCIBLE_CLOCK_TIMER_UNREACHABLE))) {
++            qemu_crucible_fault_clock_event_terminal();
++        }
++        return;
++    }
++    ns -= t->state->hpet_offset;
  
      /* Clamp period to reasonable min value (1 us) */
      if (timer_is_periodic(t) && ns - t->last < 1000) {
-@@ -358,7 +447,56 @@ static void hpet_arm(HPETTimer *t, uint64_t tick)
+@@ -358,7 +468,59 @@ static void hpet_arm(HPETTimer *t, uint64_t tick)
      }
  
      t->last = ns;
 +    if (fault_active) {
-+        uint64_t guest_ns = ticks_to_ns(tick);
-+        uint64_t period_ns = ticks_to_ns(t->period);
++        uint64_t guest_ns;
++        uint64_t period_ns = 0;
 +        uint64_t generation;
-+        uint64_t effective_guest_ns = guest_ns;
++        uint64_t effective_guest_ns = 0;
 +        int64_t deadline;
 +
-+        if (!qemu_crucible_fault_clock_deadline_ns(
++        if (!ticks_to_ns_checked(tick, &guest_ns) ||
++            (timer_is_periodic(t) &&
++             !ticks_to_ns_checked(t->period, &period_ns)) ||
++            !qemu_crucible_fault_clock_deadline_ns(
 +                QEMU_CRUCIBLE_CLOCK_X86_HPET,
 +                t->state->hpet_id, guest_ns,
 +                QEMU_CRUCIBLE_CLOCK_TIMER_PRIMARY, t->tn,
@@ -2007,7 +2168,7 @@ index 14dafd9..e7af5b4 100644
  }
  
  /*
-@@ -368,7 +506,22 @@ static void hpet_timer(void *opaque)
+@@ -368,7 +530,22 @@ static void hpet_timer(void *opaque)
  {
      HPETTimer *t = opaque;
      uint64_t period = t->period;
@@ -2031,7 +2192,7 @@ index 14dafd9..e7af5b4 100644
  
      if (timer_is_periodic(t) && period != 0) {
          while (hpet_time_after(cur_tick, t->cmp64)) {
-@@ -389,7 +542,7 @@ static void hpet_timer(void *opaque)
+@@ -389,7 +566,7 @@ static void hpet_timer(void *opaque)
  
  static void hpet_set_timer(HPETTimer *t)
  {
@@ -2040,7 +2201,7 @@ index 14dafd9..e7af5b4 100644
  
      t->wrap_flag = 0;
      t->cmp64 = hpet_calculate_cmp64(t, cur_tick, t->cmp);
-@@ -410,7 +563,26 @@ static void hpet_set_timer(HPETTimer *t)
+@@ -410,7 +587,26 @@ static void hpet_set_timer(HPETTimer *t)
  static void hpet_del_timer(HPETTimer *t)
  {
      HPETState *s = t->state;
@@ -2067,7 +2228,7 @@ index 14dafd9..e7af5b4 100644
  
      if (s->isr & (1 << t->tn)) {
          /* For level-triggered interrupt, this leaves ISR set but lowers irq.  */
-@@ -456,9 +628,21 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
+@@ -456,9 +652,21 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
              return s->config >> shift;
          case HPET_COUNTER:
              if (hpet_enabled(s)) {
@@ -2090,7 +2251,7 @@ index 14dafd9..e7af5b4 100644
              }
              trace_hpet_ram_read_reading_counter(addr & 4, cur_tick);
              return cur_tick >> shift;
-@@ -560,9 +744,23 @@ static void hpet_ram_write(void *opaque, hwaddr addr,
+@@ -560,9 +768,23 @@ static void hpet_ram_write(void *opaque, hwaddr addr,
              new_val = hpet_fixup_reg(new_val, old_val, HPET_CFG_WRITE_MASK);
              s->config = new_val;
              if (activating_bit(old_val, new_val, HPET_CFG_ENABLE)) {
@@ -2115,7 +2276,7 @@ index 14dafd9..e7af5b4 100644
                  for (i = 0; i < s->num_timers; i++) {
                      if (timer_enabled(&s->timer[i]) && (s->isr & (1 << i))) {
                          update_irq(&s->timer[i], 1);
-@@ -571,7 +769,7 @@ static void hpet_ram_write(void *opaque, hwaddr addr,
+@@ -571,7 +793,7 @@ static void hpet_ram_write(void *opaque, hwaddr addr,
                  }
              } else if (deactivating_bit(old_val, new_val, HPET_CFG_ENABLE)) {
                  /* Halt main counter and disable interrupt generation. */
@@ -2124,7 +2285,7 @@ index 14dafd9..e7af5b4 100644
                  for (i = 0; i < s->num_timers; i++) {
                      hpet_del_timer(&s->timer[i]);
                  }
-@@ -682,6 +880,52 @@ static void hpet_init(Object *obj)
+@@ -682,6 +904,52 @@ static void hpet_init(Object *obj)
      sysbus_init_mmio(sbd, &s->iomem);
  }
  
@@ -2177,7 +2338,7 @@ index 14dafd9..e7af5b4 100644
  static void hpet_realize(DeviceState *dev, Error **errp)
  {
      SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
-@@ -727,6 +971,38 @@ static void hpet_realize(DeviceState *dev, Error **errp)
+@@ -727,6 +995,38 @@ static void hpet_realize(DeviceState *dev, Error **errp)
  
      qdev_init_gpio_in(dev, hpet_handle_legacy_irq, 2);
      qdev_init_gpio_out(dev, &s->pit_enabled, 1);
@@ -2636,7 +2797,7 @@ index 1761deb..94130ea 100644
  
  struct PITCommonState {
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index a706e82..53254ea 100644
+index a706e82..0f0fee9 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -75,6 +75,11 @@ int qemu_crucible_fault_vmstate_enable(void);
@@ -2662,7 +2823,19 @@ index a706e82..53254ea 100644
  QemuCrucibleFaultEventReservation *
  qemu_crucible_fault_event_reserve(size_t count);
  void qemu_crucible_fault_event_reservation_consume(
-@@ -311,6 +320,120 @@ bool qemu_crucible_fault_hardware_exception_delivered(
+@@ -233,10 +242,7 @@ size_t qemu_crucible_fault_event_reservation_remaining(
+     const QemuCrucibleFaultEventReservation *reservation);
+ QemuCrucibleFaultEventReservation *
+ qemu_crucible_fault_event_reservation_restore(size_t remaining);
+-int qemu_plugin_crucible_lifecycle_complete_terminal_exit(
+-    const char *action_sha256, const char *evidence_sha256,
+-    uint64_t process_generation, bool *already_authorized,
+-    int *exit_code);
++int qemu_plugin_crucible_vmstop_admit_internal(void);
+ 
+ int qemu_crucible_fault_register_validate(const QemuCrucibleFaultRule *rule);
+ bool qemu_crucible_fault_register_ensure_registered(void);
+@@ -311,6 +317,123 @@ bool qemu_crucible_fault_hardware_exception_delivered(
      bool has_fault_address, uint64_t fault_address);
  void qemu_crucible_fault_hardware_error_event_terminal(void);
  
@@ -2750,6 +2923,9 @@ index a706e82..53254ea 100644
 +    uint16_t source_kind, uint32_t instance);
 +bool qemu_crucible_fault_clock_source_rebase(
 +    uint16_t source_kind, uint32_t instance, uint64_t raw_ns);
++bool qemu_crucible_fault_clock_source_discontinuity(
++    uint16_t source_kind, uint32_t instance,
++    uint64_t old_raw_ns, uint64_t new_raw_ns);
 +bool qemu_crucible_fault_clock_timer_arm(uint64_t *timer_arm_sequence);
 +bool qemu_crucible_fault_clock_read_ticks(
 +    uint16_t source_kind, uint32_t instance, uint64_t raw_ticks,
@@ -2837,12 +3013,61 @@ index 6486f49..3584c8d 100644
  /** Bind one public hardware-error row and its memory topology identities. */
  QEMU_PLUGIN_API
  int qemu_plugin_crucible_fault_hardware_error_bind(
+diff --git a/migration/savevm.c b/migration/savevm.c
+index 238a29e..dc27b91 100644
+--- a/migration/savevm.c
++++ b/migration/savevm.c
+@@ -264,7 +264,8 @@ static uint32_t crucible_lifecycle_state_domain(const SaveStateEntry *se)
+     if (!se->obj) {
+         if (strcmp(name, "globalstate") == 0 ||
+             strcmp(name, "replay") == 0 ||
+-            strcmp(name, "crucible-shmem") == 0) {
++            strcmp(name, "crucible-shmem") == 0 ||
++            strcmp(name, "crucible-fault") == 0) {
+             return QEMU_CRUCIBLE_LIFECYCLE_STATE_CONTROL;
+         }
+         if (strcmp(name, "cpu") == 0 ||
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+index fa09645..134ff9f 100644
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -345,13 +345,11 @@ enum {
+     QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED,
+ };
+ 
+-int qemu_plugin_request_vmstop(void)
++int qemu_plugin_crucible_vmstop_admit_internal(void)
+ {
+     int status;
+ 
+-    if (!current_cpu ||
+-        qemu_plugin_crucible_exact_boundary_depth == 0 ||
+-        icount_enabled() != ICOUNT_PRECISE ||
++    if (icount_enabled() != ICOUNT_PRECISE ||
+         !qemu_plugin_crucible_single_threaded_rr()) {
+         return -EPERM;
+     }
+@@ -378,6 +376,14 @@ int qemu_plugin_request_vmstop(void)
+     return status;
+ }
+ 
++int qemu_plugin_request_vmstop(void)
++{
++    if (!current_cpu || qemu_plugin_crucible_exact_boundary_depth == 0) {
++        return -EPERM;
++    }
++    return qemu_plugin_crucible_vmstop_admit_internal();
++}
++
+ void qemu_plugin_crucible_exact_boundary_enter(void)
+ {
+     g_assert(qemu_plugin_crucible_exact_boundary_depth < UINT_MAX);
 diff --git a/plugins/crucible-fault-clock.c b/plugins/crucible-fault-clock.c
 new file mode 100644
-index 0000000..95ce81a
+index 0000000..8cf6f51
 --- /dev/null
 +++ b/plugins/crucible-fault-clock.c
-@@ -0,0 +1,4303 @@
+@@ -0,0 +1,4327 @@
 +/*
 + * Crucible deterministic guest-clock fault transforms
 + *
@@ -3988,7 +4213,12 @@ index 0000000..95ce81a
 +    CrucibleClockSource *source, CrucibleClockRuleState *state,
 +    uint64_t raw_ns)
 +{
++    size_t advances = 0;
++
 +    do {
++        if (advances++ == CRUCIBLE_CLOCK_MAX_TABLE) {
++            return false;
++        }
 +        if (!crucible_clock_wander_advance_one(source, state, raw_ns)) {
 +            return false;
 +        }
@@ -4128,7 +4358,9 @@ index 0000000..95ce81a
 +                return;
 +            }
 +            due = (raw_ns - state->wander_next_ns) / step + 1;
-+            if (due > SIZE_MAX - transition_count) {
++            if (due > CRUCIBLE_CLOCK_MAX_TABLE ||
++                due > SIZE_MAX - transition_count ||
++                transition_count + due > CRUCIBLE_CLOCK_MAX_TABLE) {
 +                qemu_crucible_fault_clock_event_terminal();
 +                return;
 +            }
@@ -4765,7 +4997,6 @@ index 0000000..95ce81a
 +    uint8_t before_hash[32];
 +    uint64_t selected_opportunity;
 +    size_t event_count;
-+    bool wander_changed = false;
 +    uint16_t wrap_action = 0;
 +
 +    if (!value_ns || !value_architectural || !read_error) {
@@ -4801,13 +5032,16 @@ index 0000000..95ce81a
 +        }
 +    }
 +    crucible_clock_source_digest(source, before_hash);
++    /*
++     * The dedicated virtual-time wander timer is the sole mutation and
++     * evidence path.  A read at or beyond a pending boundary means timer
++     * dispatch ordering was violated; silently catching up here would mutate
++     * an unbounded number of transitions without reserving or emitting their
++     * evidence.
++     */
 +    for (guint i = 0; source->rules && i < source->rules->len; i++) {
 +        CrucibleClockRuleState *state = &g_array_index(
 +            source->rules, CrucibleClockRuleState, i);
-+        int64_t old_offset = state->wander_offset;
-+        int64_t old_rate = state->wander_rate_ppb;
-+        uint64_t old_next = state->wander_next_ns;
-+        uint64_t old_sequence = state->wander_sequence;
 +        uint32_t kind;
 +
 +        if (!crucible_clock_u32(state->rule,
@@ -4815,26 +5049,12 @@ index 0000000..95ce81a
 +            crucible_clock_release_events(reservation);
 +            return false;
 +        }
-+        if (kind == 6 && !crucible_clock_wander_advance(
-+                source, state, raw_ns)) {
-+            crucible_clock_release_events(reservation);
-+            return false;
-+        }
-+        wander_changed |= kind == 6 &&
-+            (old_offset != state->wander_offset ||
-+             old_rate != state->wander_rate_ppb ||
-+             old_next != state->wander_next_ns ||
-+             old_sequence != state->wander_sequence);
-+    }
-+    if (wander_changed) {
-+        if (source->transform_generation == UINT64_MAX) {
++        if (kind == 6 && state->wander_next_ns != UINT64_MAX &&
++            raw_ns >= state->wander_next_ns) {
 +            crucible_clock_release_events(reservation);
 +            qemu_crucible_fault_clock_event_terminal();
 +            return false;
 +        }
-+        source->transform_generation++;
-+        crucible_clock_rearm_source(source);
-+        crucible_clock_wander_timer_rearm(source);
 +    }
 +    if (source->read_sequence == UINT64_MAX) {
 +        crucible_clock_release_events(reservation);
@@ -4941,6 +5161,34 @@ index 0000000..95ce81a
 +    }
 +    source->anchor_raw_ns = base;
 +    source->anchor_value_ns = base;
++    source->has_last_value = false;
++    source->synchronizing = false;
++    source->synchronization_remaining_ns = 0;
++    source->transform_generation++;
++    crucible_clock_rearm_source(source);
++    return true;
++}
++
++bool qemu_crucible_fault_clock_source_discontinuity(
++    uint16_t source_kind, uint32_t instance,
++    uint64_t old_raw_ns, uint64_t new_raw_ns)
++{
++    CrucibleClockSource *source =
++        crucible_clock_source_by_kind(source_kind, instance);
++    uint64_t old_value;
++    bool read_error;
++
++    if (!qemu_crucible_fault_clock_source_active(source_kind, instance)) {
++        return true;
++    }
++    if (!source || source->transform_generation == UINT64_MAX ||
++        !crucible_clock_source_value(
++            source, old_raw_ns, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
++            0, false, &old_value, &read_error) || read_error) {
++        return false;
++    }
++    source->anchor_raw_ns = new_raw_ns;
++    source->anchor_value_ns = old_value;
 +    source->has_last_value = false;
 +    source->synchronizing = false;
 +    source->synchronization_remaining_ns = 0;
@@ -6629,7 +6877,8 @@ index 0000000..95ce81a
 +         source->timer_old_scheduler_deadline_ns > INT64_MAX) ||
 +        (source->timer_new_scheduler_deadline_ns != UINT64_MAX &&
 +         source->timer_new_scheduler_deadline_ns > INT64_MAX) ||
-+        (source->timer_old_transform_generation == 0 &&
++        (source->timer_transition_sequence != 0 &&
++         source->timer_old_transform_generation == 0 &&
 +         (source->timer_old_guest_deadline_ns != 0 ||
 +          source->timer_old_scheduler_deadline_ns != UINT64_MAX)) ||
 +        source->timer_old_transform_generation >
@@ -7146,6 +7395,87 @@ index 0000000..95ce81a
 +}
 +
 +type_init(crucible_clock_register)
+diff --git a/plugins/crucible-fault-interrupt.c b/plugins/crucible-fault-interrupt.c
+index cd1a116..f2f7e08 100644
+--- a/plugins/crucible-fault-interrupt.c
++++ b/plugins/crucible-fault-interrupt.c
+@@ -924,9 +924,9 @@ int qemu_crucible_fault_interrupt_validate(const QemuCrucibleFaultRule *rule)
+ {
+     const uint8_t *controller, *source, *data;
+     uint32_t controller_len, source_len, length;
+-    uint32_t target_vcpu, vector, replacement;
+-    uint32_t disposition, copies;
+-    uint64_t delay_ns, gap_ns;
++    uint32_t target_vcpu, vector, replacement = 0;
++    uint32_t disposition = 0, copies = 0;
++    uint64_t delay_ns = 0, gap_ns = 0;
+     uint16_t storm_priority;
+     bool storm_retain_pending;
+     uint32_t storm_burst, storm_total;
+diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
+index 73cffb6..7f4c1ad 100644
+--- a/plugins/crucible-fault-lifecycle.c
++++ b/plugins/crucible-fault-lifecycle.c
+@@ -20,6 +20,7 @@
+ #include "qemu/crucible-fault.h"
+ #include "qemu/error-report.h"
+ #include "qemu/module.h"
++#include "qemu/plugin.h"
+ #include "qemu/qemu-plugin.h"
+ #include "qemu/units.h"
+ #include "qobject/qlist.h"
+@@ -133,6 +134,7 @@ static bool crucible_lifecycle_node_hung;
+ static GArray *crucible_lifecycle_vcpu_hung;
+ static GPtrArray *crucible_lifecycle_hangs;
+ static uint64_t crucible_lifecycle_next_watchdog_ns = UINT64_MAX;
++static bool crucible_lifecycle_watchdog_transition_active;
+ static uint32_t crucible_lifecycle_terminal_transition;
+ static bool crucible_lifecycle_terminal_exit_requested;
+ static uint8_t crucible_lifecycle_terminal_action_sha256[32];
+@@ -211,6 +213,11 @@ static void crucible_lifecycle_stage_terminal(
+     crucible_lifecycle_sha256(
+         evidence, evidence_len,
+         crucible_lifecycle_terminal_evidence_sha256);
++    if (qemu_plugin_crucible_vmstop_admit_internal() != 0) {
++        error_report("Crucible terminal lifecycle could not stop at its "
++                     "authorized boundary");
++        abort();
++    }
+ }
+ 
+ int qemu_plugin_crucible_lifecycle_set_process_generation(
+@@ -1628,6 +1635,8 @@ static void crucible_lifecycle_watchdog_boundary(
+     resolved.maximum_attempts = winner_plan.maximum_attempts;
+     resolved.retry_delay = winner_plan.retry_delay;
+     resolved.exhausted_transition = winner_plan.exhausted_transition;
++    g_assert(!crucible_lifecycle_watchdog_transition_active);
++    crucible_lifecycle_watchdog_transition_active = true;
+     crucible_hang_digest(crucible_lifecycle_hangs, hang_before_hash);
+     for (guint index = 0; index < due->len; index++) {
+         CrucibleHangState *state = g_ptr_array_index(due, index);
+@@ -1671,9 +1680,11 @@ static void crucible_lifecycle_watchdog_boundary(
+             winner->rule, observed_icount, &resolved, false,
+             before_hash, after_hash, evidence, &outcome,
+             &winner->watchdog_reservation);
++        crucible_lifecycle_watchdog_transition_active = false;
+         if (status != 0 &&
+             status != QEMU_CRUCIBLE_FAULT_IMPULSE_DEFERRED) {
+-            error_report("Crucible prepared watchdog transition failed");
++            error_report("Crucible prepared watchdog transition failed: %d",
++                         status);
+             abort();
+         }
+         if (status == 0) {
+@@ -1826,7 +1837,8 @@ static int crucible_lifecycle_vmstate_save(GByteArray *payload)
+ 
+         if (activation > UINT32_MAX || watchdog > UINT32_MAX ||
+             recovery > UINT32_MAX ||
+-            (hang->watchdog_fired && watchdog != 0) ||
++            (hang->watchdog_fired && watchdog != 0 &&
++             !crucible_lifecycle_watchdog_transition_active) ||
+             (!hang->watchdog_enabled && watchdog != 0)) {
+             return -EINVAL;
+         }
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
 index e75bc75..8f215a7 100644
 --- a/plugins/crucible-fault-node.c
@@ -7314,7 +7644,7 @@ index e75bc75..8f215a7 100644
  qemu_crucible_fault_event_reserve(size_t count)
  {
 diff --git a/plugins/crucible-fault-vmstate.c b/plugins/crucible-fault-vmstate.c
-index 629eb40..c949ed7 100644
+index 629eb40..486b17a 100644
 --- a/plugins/crucible-fault-vmstate.c
 +++ b/plugins/crucible-fault-vmstate.c
 @@ -43,6 +43,7 @@ static bool crucible_fault_vmstate_has_expected_reservations;
@@ -7325,8 +7655,32 @@ index 629eb40..c949ed7 100644
      "command",
      "cpu",
      "hardware-error",
+@@ -427,6 +428,9 @@ static int crucible_fault_vmstate_load(QEMUFile *file, void *opaque,
+             status = item->section->prepare(item->payload, item->payload_len,
+                                             &item->state);
+             if (status != 0) {
++                error_report("Crucible fault VMState section '%s' rejected "
++                             "restore: %d",
++                             item->section->name, status);
+                 goto cleanup;
+             }
+         }
+@@ -437,6 +441,13 @@ static int crucible_fault_vmstate_load(QEMUFile *file, void *opaque,
+             crucible_fault_vmstate_counted_reservations ||
+         crucible_fault_vmstate_expected_deferred !=
+             crucible_fault_vmstate_counted_deferred) {
++        error_report("Crucible fault VMState reservation accounting "
++                     "mismatch: expected=%zu counted=%zu "
++                     "deferred-expected=%zu deferred-counted=%zu",
++                     crucible_fault_vmstate_expected_reservations,
++                     crucible_fault_vmstate_counted_reservations,
++                     crucible_fault_vmstate_expected_deferred,
++                     crucible_fault_vmstate_counted_deferred);
+         status = -EINVAL;
+         goto cleanup;
+     }
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
-index 67071aa..b1a7c04 100644
+index 67071aa..4e95b1d 100644
 --- a/plugins/crucible-fault.c
 +++ b/plugins/crucible-fault.c
 @@ -547,7 +547,8 @@ size_t qemu_plugin_crucible_fault_capabilities(
@@ -7339,6 +7693,35 @@ index 67071aa..b1a7c04 100644
          return 0;
      }
      qemu_crucible_fault_registry_seal();
+@@ -719,6 +720,7 @@ void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
+         }
+         QTAILQ_REMOVE(&crucible_pending_faults, pending, link);
+         crucible_pending_count--;
++        g_mutex_unlock(&crucible_fault_lock);
+         result_payload = g_byte_array_new();
+         memset(&result, 0, sizeof(result));
+         result.command_kind = pending->command.command_kind;
+@@ -751,9 +753,6 @@ void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
+                     &result, result_payload);
+                 deferred = result.status ==
+                     QEMU_CRUCIBLE_FAULT_STATUS_DEFERRED_INTERNAL;
+-                if (deferred) {
+-                    crucible_deferred_count++;
+-                }
+                 if (!deferred &&
+                     (result.status != CRUCIBLE_FAULT_STATUS_APPLIED ||
+                      result.applied_icount != observed_icount)) {
+@@ -768,6 +767,10 @@ void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
+             memcpy(result.after_hash, result.before_hash,
+                    sizeof(result.after_hash));
+         }
++        g_mutex_lock(&crucible_fault_lock);
++        if (deferred) {
++            crucible_deferred_count++;
++        }
+         if (!deferred) {
+             crucible_fault_queue_result(&result, result_payload);
+             result_payload = NULL;
 diff --git a/plugins/meson.build b/plugins/meson.build
 index c02bdf7..a100e60 100644
 --- a/plugins/meson.build
@@ -7402,10 +7785,10 @@ index c06dd6f..3dcf011 100644
          return;
      }
 diff --git a/target/arm/cpu.c b/target/arm/cpu.c
-index 95680db..0cb8118 100644
+index 95680db..b75f4d7 100644
 --- a/target/arm/cpu.c
 +++ b/target/arm/cpu.c
-@@ -2673,6 +2673,39 @@ static void arm_cpu_realizefn(DeviceState *dev, Error **errp)
+@@ -2673,6 +2673,46 @@ static void arm_cpu_realizefn(DeviceState *dev, Error **errp)
      cpu_reset(cs);
  
      acc->parent_realize(dev, errp);
@@ -7422,8 +7805,15 @@ index 95680db..0cb8118 100644
 +            .monotonicity = QEMU_CRUCIBLE_CLOCK_CLAMP_MONOTONIC,
 +            .width_bits = 64,
 +            .flags = 0,
-+            .frequency_numerator = cpu->gt_cntfrq_hz,
-+            .frequency_denominator = 1,
++            /*
++             * QEMU's generic timer advances in the integral nanosecond
++             * period returned by gt_cntfrq_period_ns(), including for board
++             * frequencies that do not divide one second.  Advertise that
++             * effective coordinate so Crucible read projection and deadline
++             * inversion use the same clock QEMU actually implements.
++             */
++            .frequency_numerator = NANOSECONDS_PER_SECOND,
++            .frequency_denominator = gt_cntfrq_period_ns(cpu),
 +            .model_phase_mask =
 +                UINT64_C(1) << (QEMU_CRUCIBLE_MODEL_PHASE_CLOCK_READ - 1) |
 +                UINT64_C(1) << (QEMU_CRUCIBLE_MODEL_PHASE_ARM - 1) |
@@ -7918,3 +8308,57 @@ index 2b5f092..970cd9a 100644
      env->regs[R_EAX] = (uint32_t)(val);
      env->regs[R_EDX] = (uint32_t)(val >> 32);
  }
+diff --git a/target/i386/tcg/system/svm_helper.c b/target/i386/tcg/system/svm_helper.c
+index f9982b7..ead3000 100644
+--- a/target/i386/tcg/system/svm_helper.c
++++ b/target/i386/tcg/system/svm_helper.c
+@@ -19,6 +19,8 @@
+ 
+ #include "qemu/osdep.h"
+ #include "qemu/log.h"
++#include "qemu/crucible-fault.h"
++#include "qemu/error-report.h"
+ #include "cpu.h"
+ #include "exec/helper-proto.h"
+ #include "exec/cputlb.h"
+@@ -303,8 +305,19 @@ void helper_vmrun(CPUX86State *env, int aflag, int next_eip_addend)
+     /* enable intercepts */
+     env->hflags |= HF_GUEST_MASK;
+ 
+-    env->tsc_offset = x86_ldq_phys(cs, env->vm_vmcb +
+-                               offsetof(struct vmcb, control.tsc_offset));
++    {
++        uint64_t old_tsc = cpu_get_tsc(env) + env->tsc_offset;
++        uint64_t new_offset = x86_ldq_phys(
++            cs, env->vm_vmcb + offsetof(struct vmcb, control.tsc_offset));
++
++        env->tsc_offset = new_offset;
++        if (!qemu_crucible_fault_clock_source_discontinuity(
++                QEMU_CRUCIBLE_CLOCK_X86_TSC, cs->cpu_index,
++                old_tsc, cpu_get_tsc(env) + env->tsc_offset)) {
++            error_report("Crucible x86 TSC nested-entry rebase failed");
++            abort();
++        }
++    }
+ 
+     new_cr0 = x86_ldq_phys(cs, env->vm_vmcb + offsetof(struct vmcb, save.cr0));
+     if (new_cr0 & SVM_CR0_RESERVED_MASK) {
+@@ -828,7 +841,17 @@ void do_vmexit(CPUX86State *env)
+     env->int_ctl = 0;
+ 
+     /* Clears the TSC_OFFSET inside the processor. */
+-    env->tsc_offset = 0;
++    {
++        uint64_t old_tsc = cpu_get_tsc(env) + env->tsc_offset;
++
++        env->tsc_offset = 0;
++        if (!qemu_crucible_fault_clock_source_discontinuity(
++                QEMU_CRUCIBLE_CLOCK_X86_TSC, cs->cpu_index,
++                old_tsc, cpu_get_tsc(env))) {
++            error_report("Crucible x86 TSC nested-exit rebase failed");
++            abort();
++        }
++    }
+ 
+     env->gdt.base  = x86_ldq_phys(cs, env->vm_hsave + offsetof(struct vmcb,
+                                                        save.gdtr.base));

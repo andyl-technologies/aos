@@ -300,6 +300,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0056-crucible-node-lifecycle-faults.patch" = {
+      kind = "interface";
+      symbols = ["qemu_plugin_crucible_fault_ready_marker"];
+    };
     "0060-crucible-block-typed-errors.patch" = {
       kind = "recorded";
       symbols = [];
@@ -315,6 +319,30 @@
     "0063-crucible-plugin-vmstop.patch" = {
       kind = "interface";
       symbols = ["qemu_plugin_request_vmstop"];
+    };
+    "0064-crucible-terminal-lifecycle-completion.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0065-crucible-authenticated-terminal-lifecycle.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0066-crucible-immutable-process-generation.patch" = {
+      kind = "interface";
+      symbols = ["qemu_plugin_crucible_lifecycle_set_process_generation"];
+    };
+    "0067-crucible-serialize-and-harden-core-fault-state.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0068-crucible-guest-clock-faults.patch" = {
+      kind = "interface";
+      symbols = [
+        "qemu_plugin_crucible_fault_clock_manifest"
+        "qemu_plugin_crucible_fault_clock_bind"
+        "qemu_plugin_crucible_fault_clock_bindings_seal"
+      ];
     };
   };
 

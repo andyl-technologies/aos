@@ -70,8 +70,8 @@ static void probe_manifest(unsigned int cpu_index, void *opaque)
             !nonempty_ascii(row->firmware) || !nonempty_ascii(row->state) ||
             row->bank_count == 0 || row->model_phase_mask == 0 ||
             row->privilege_mask == 0 ||
-            /* Patch 0059 promotes this only after every state owner migrates. */
-            row->vmstate ||
+            /* Patch 0067 serializes every hardware-error state owner. */
+            !row->vmstate ||
             row->reserved0 != 0 || row->reserved1 != 0 ||
             row->status_required & ~row->status_allowed ||
             row->syndrome_required & ~row->syndrome_allowed ||

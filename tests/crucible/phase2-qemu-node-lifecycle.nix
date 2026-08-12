@@ -63,6 +63,7 @@ in
             "$CC" -shared -fPIC -Wall -Wextra -Werror \
               -I${qemuPackage}/include/qemu \
               -I${qemuPackage}/include \
+              -I${./.} \
               $(pkg-config --cflags glib-2.0) \
               ${./phase2-qemu-node-lifecycle.c} \
               -o crucible-node-lifecycle.so \
@@ -70,6 +71,7 @@ in
             "$CC" -shared -fPIC -Wall -Wextra -Werror \
               -I${qemuPackage}/include/qemu \
               -I${qemuPackage}/include \
+              -I${./.} \
               $(pkg-config --cflags glib-2.0) \
               ${./phase2-qemu-node-hang.c} \
               -o crucible-node-hang.so \
@@ -117,7 +119,7 @@ in
                 plugin_args="$plugin_args,boot_policy=require_ready"
               fi
               log="logs/$architecture-$volatile_policy-$device_policy-$boot_policy.log"
-              if ! timeout 120 "$qemu_binary" \
+              if ! timeout --kill-after=5 120 "$qemu_binary" \
                   $machine_args \
                   -accel sim \
                   -icount shift=0,rr_switch_quantum=256 \
@@ -194,7 +196,7 @@ in
                   ;;
               esac
               log="logs/$architecture-hang-$scope.log"
-              if ! timeout 120 "$qemu_binary" \
+              if ! timeout --kill-after=5 120 "$qemu_binary" \
                   $machine_args \
                   -accel sim \
                   -icount shift=0,rr_switch_quantum=256 \
