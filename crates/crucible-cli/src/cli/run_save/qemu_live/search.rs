@@ -48,8 +48,7 @@ fn search_finding_reproduction_artifact_bytes(
         }
     };
     let status = status_from_outcome(Some(outcome))?;
-    let (fault_choice_indices, network_choice_indices) =
-        replay_choice_indices(model.artifact.schedule());
+    let network_choice_indices = replay_choice_indices(model.artifact.schedule());
     let live = LiveQemuArtifactEvidence {
         contract: LiveQemuReplayContract {
             producer: String::from("search"),
@@ -67,7 +66,6 @@ fn search_finding_reproduction_artifact_bytes(
             coverage: plan.engine_strategy == crucible::SearchStrategy::CoverageGuided,
             fingerprint_scope: LiveQemuFingerprintScope::TerminalAllNodes,
             branch: LiveQemuReplayBranch::None,
-            fault_choice_indices,
             network_choice_indices,
             startup_controls: Vec::new(),
             initial_controls: Vec::new(),

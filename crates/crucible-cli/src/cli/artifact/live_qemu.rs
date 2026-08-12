@@ -6,7 +6,7 @@
 
 use super::*;
 
-const LIVE_QEMU_REPLAY_CONTRACT_SCHEMA: &str = "crucible.live-qemu-replay-contract.v2";
+const LIVE_QEMU_REPLAY_CONTRACT_SCHEMA: &str = "crucible.live-qemu-replay-contract.v3";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LiveQemuReplayContract {
@@ -25,7 +25,6 @@ pub(crate) struct LiveQemuReplayContract {
     pub(crate) coverage: bool,
     pub(crate) fingerprint_scope: LiveQemuFingerprintScope,
     pub(crate) branch: LiveQemuReplayBranch,
-    pub(crate) fault_choice_indices: Vec<u64>,
     pub(crate) network_choice_indices: Vec<u64>,
     pub(crate) startup_controls: Vec<LiveQemuReplayControl>,
     pub(crate) initial_controls: Vec<LiveQemuReplayControl>,
@@ -156,9 +155,6 @@ impl LiveQemuReplayContract {
                 ],
             ),
         }
-        for index in &self.fault_choice_indices {
-            artifact_line(&mut text, &["choice", "fault", &index.to_string()]);
-        }
         for index in &self.network_choice_indices {
             artifact_line(&mut text, &["choice", "network", &index.to_string()]);
         }
@@ -184,7 +180,6 @@ impl LiveQemuReplayContract {
         let mut lifecycle = None;
         let mut fingerprint_scope = None;
         let mut branch = None;
-        let mut fault_choice_indices = Vec::new();
         let mut network_choice_indices = Vec::new();
         let mut startup_controls = Vec::new();
         let mut initial_controls = Vec::new();
@@ -269,7 +264,6 @@ impl LiveQemuReplayContract {
                     require_field_count(line_index, tag, &fields, 3)?;
                     let index = parse_u64(line_index, tag, &fields[2])?;
                     match fields[1].as_str() {
-                        "fault" => fault_choice_indices.push(index),
                         "network" => network_choice_indices.push(index),
                         other => {
                             return Err(artifact_line_error(
@@ -349,7 +343,6 @@ impl LiveQemuReplayContract {
             })?,
             branch: branch
                 .ok_or_else(|| artifact_error("live-QEMU replay contract has no branch"))?,
-            fault_choice_indices,
             network_choice_indices,
             startup_controls,
             initial_controls,
@@ -365,15 +358,14 @@ impl LiveQemuReplayContract {
     }
 
     fn validate_semantics(&self) -> Result<(), CliError> {
-        for (label, indices) in [
-            ("fault", self.fault_choice_indices.as_slice()),
-            ("network", self.network_choice_indices.as_slice()),
-        ] {
-            if indices.windows(2).any(|pair| pair[0] >= pair[1]) {
-                return Err(artifact_error(format!(
-                    "live-QEMU replay {label} choice indices must be unique and increasing"
-                )));
-            }
+        if self
+            .network_choice_indices
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(artifact_error(
+                "live-QEMU replay network choice indices must be unique and increasing",
+            ));
         }
         let fork_branch = !matches!(self.branch, LiveQemuReplayBranch::None);
         if (self.producer == "fork") != fork_branch {
@@ -388,9 +380,8 @@ impl LiveQemuReplayContract {
             | LiveQemuReplayBranch::PrefixOverrides { base_decisions, .. } => *base_decisions,
         };
         if self
-            .fault_choice_indices
+            .network_choice_indices
             .iter()
-            .chain(&self.network_choice_indices)
             .any(|index| *index < branch_start)
         {
             return Err(artifact_error(
