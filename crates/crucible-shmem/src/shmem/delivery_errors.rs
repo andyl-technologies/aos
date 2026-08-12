@@ -380,6 +380,13 @@ pub enum SpscRingError {
         #[source]
         source: GuestIntrospectionEntryError,
     },
+    /// An accelerator entry failed fixed-layout validation.
+    #[error("SPSC accelerator entry is malformed")]
+    InvalidAcceleratorEntry {
+        /// Entry validation failure.
+        #[source]
+        source: AcceleratorEntryError,
+    },
     /// A directional guest-introspection publication sequence is discontinuous.
     #[error("SPSC guest-introspection sequence mismatch: expected {expected}, actual {actual}")]
     GuestIntrospectionSequenceMismatch {

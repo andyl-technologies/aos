@@ -5,6 +5,17 @@ mod node_slot;
 use node_slot::emit_node_slot;
 
 use crate::{
+    ACCELERATOR_COMPLETION_RING_OFFSET, ACCELERATOR_ENTRY_ALIGN,
+    ACCELERATOR_ENTRY_CLASS_OFFSET, ACCELERATOR_ENTRY_DATA_BYTES,
+    ACCELERATOR_ENTRY_DATA_LEN_OFFSET, ACCELERATOR_ENTRY_DATA_OFFSET,
+    ACCELERATOR_ENTRY_DEVICE_ID_OFFSET, ACCELERATOR_ENTRY_FLAGS_OFFSET,
+    ACCELERATOR_ENTRY_GENERATION_OFFSET, ACCELERATOR_ENTRY_JOB_KIND_OFFSET,
+    ACCELERATOR_ENTRY_PROTOCOL_VERSION_OFFSET, ACCELERATOR_ENTRY_QUEUE_ID_OFFSET,
+    ACCELERATOR_ENTRY_RESERVED_OFFSET, ACCELERATOR_ENTRY_SEQUENCE_OFFSET,
+    ACCELERATOR_ENTRY_SERVICE_UNITS_OFFSET, ACCELERATOR_ENTRY_SIZE,
+    ACCELERATOR_ENTRY_STATUS_OFFSET, ACCELERATOR_PROTOCOL_VERSION,
+    ACCELERATOR_QUEUE_CAPACITY, ACCELERATOR_REQUEST_RING_OFFSET,
+    ACCELERATOR_RINGS_PER_VM,
     ABI_VERSION, COVERAGE_ENTRY_ALIGN, COVERAGE_ENTRY_BLOCK_LEN_OFFSET,
     COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET, COVERAGE_ENTRY_GUEST_PC_OFFSET,
     COVERAGE_ENTRY_MAP_INDEX_OFFSET, COVERAGE_ENTRY_RESERVED_OFFSET, COVERAGE_ENTRY_SIZE,
@@ -81,6 +92,7 @@ pub fn generated_c_header() -> String {
     crate::emit_fault_event_c_header(&mut out);
     emit_guest_introspection_geometry_helpers(&mut out);
     emit_guest_introspection_entry(&mut out);
+    emit_accelerator_entry(&mut out);
     emit_footer(&mut out);
     out
 }
@@ -149,6 +161,12 @@ fn emit_constants(out: &mut String) {
         "CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_DATA_BYTES",
         GUEST_INTROSPECTION_ENTRY_DATA_BYTES,
     );
+    emit_define_u32(out, "CRUCIBLE_SHMEM_ACCELERATOR_QUEUE_CAPACITY", ACCELERATOR_QUEUE_CAPACITY);
+    emit_define_u32(out, "CRUCIBLE_SHMEM_ACCELERATOR_RINGS_PER_VM", ACCELERATOR_RINGS_PER_VM);
+    emit_define_u32(out, "CRUCIBLE_SHMEM_ACCELERATOR_REQUEST_RING_OFFSET", ACCELERATOR_REQUEST_RING_OFFSET);
+    emit_define_u32(out, "CRUCIBLE_SHMEM_ACCELERATOR_COMPLETION_RING_OFFSET", ACCELERATOR_COMPLETION_RING_OFFSET);
+    emit_define_usize(out, "CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_DATA_BYTES", ACCELERATOR_ENTRY_DATA_BYTES);
+    emit_define_u32(out, "CRUCIBLE_SHMEM_ACCELERATOR_PROTOCOL_VERSION", u32::from(ACCELERATOR_PROTOCOL_VERSION));
     emit_define_usize(out, "CRUCIBLE_SHMEM_MAX_NODES", MAX_NODES);
     emit_define_usize(out, "CRUCIBLE_SHMEM_RESERVED_SLOTS", RESERVED_SLOTS);
     emit_define_usize(out, "CRUCIBLE_SHMEM_MAX_VM_NODES", MAX_VM_NODES);
@@ -439,6 +457,11 @@ fn emit_guest_introspection_geometry_helpers(out: &mut String) {
     uint64_t ring_hdr_off;
     uint64_t ring_data_off;
     uint64_t entry_stride;
+    uint32_t accelerator_ring_count;
+    uint32_t accelerator_queue_capacity;
+    uint64_t accelerator_ring_hdr_off;
+    uint64_t accelerator_ring_data_off;
+    uint64_t accelerator_entry_stride;
     uint64_t region_size;
 } crucible_shmem_guest_introspection_layout;
 
@@ -524,8 +547,12 @@ static inline int crucible_shmem_guest_introspection_layout_compute(
     uint64_t fault_event_data_end;
     uint64_t guest_hdr_off;
     uint64_t guest_data_off;
+    uint64_t guest_data_end;
+    uint64_t accelerator_hdr_off;
+    uint64_t accelerator_data_off;
     uint64_t computed_region_size;
     uint32_t guest_ring_count;
+    uint32_t accelerator_ring_count;
 
     if (out == NULL
         || vm_node_count > CRUCIBLE_SHMEM_MAX_VM_NODES
@@ -598,7 +625,17 @@ static inline int crucible_shmem_guest_introspection_layout_compute(
         || crucible_shmem_u64_checked_add(guest_hdr_off, byte_len, &guest_data_off) != 0
         || crucible_shmem_u64_checked_mul(guest_ring_count, CRUCIBLE_SHMEM_GUEST_INTROSPECTION_QUEUE_CAPACITY, &count) != 0
         || crucible_shmem_u64_checked_mul(count, CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_SIZE, &byte_len) != 0
-        || crucible_shmem_u64_checked_add(guest_data_off, byte_len, &computed_region_size) != 0
+        || crucible_shmem_u64_checked_add(guest_data_off, byte_len, &guest_data_end) != 0
+        || crucible_shmem_u64_checked_align_up(guest_data_end, CRUCIBLE_SHMEM_RING_HEADER_ALIGN, &accelerator_hdr_off) != 0
+        || vm_node_count > UINT32_MAX / CRUCIBLE_SHMEM_ACCELERATOR_RINGS_PER_VM) {
+        return -1;
+    }
+    accelerator_ring_count = vm_node_count * CRUCIBLE_SHMEM_ACCELERATOR_RINGS_PER_VM;
+    if (crucible_shmem_u64_checked_mul(accelerator_ring_count, CRUCIBLE_SHMEM_RING_HEADER_SIZE, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(accelerator_hdr_off, byte_len, &accelerator_data_off) != 0
+        || crucible_shmem_u64_checked_mul(accelerator_ring_count, CRUCIBLE_SHMEM_ACCELERATOR_QUEUE_CAPACITY, &count) != 0
+        || crucible_shmem_u64_checked_mul(count, CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_SIZE, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(accelerator_data_off, byte_len, &computed_region_size) != 0
         || computed_region_size != advertised_region_size) {
         return -1;
     }
@@ -608,6 +645,11 @@ static inline int crucible_shmem_guest_introspection_layout_compute(
     out->ring_hdr_off = guest_hdr_off;
     out->ring_data_off = guest_data_off;
     out->entry_stride = CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_SIZE;
+    out->accelerator_ring_count = accelerator_ring_count;
+    out->accelerator_queue_capacity = CRUCIBLE_SHMEM_ACCELERATOR_QUEUE_CAPACITY;
+    out->accelerator_ring_hdr_off = accelerator_hdr_off;
+    out->accelerator_ring_data_off = accelerator_data_off;
+    out->accelerator_entry_stride = CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_SIZE;
     out->region_size = computed_region_size;
     return 0;
 }
@@ -799,6 +841,72 @@ fn emit_guest_introspection_entry(out: &mut String) {
             ("sequence", "SEQUENCE"),
             ("len", "LEN"),
             ("pad", "PAD"),
+            ("data", "DATA"),
+            ("reserved", "RESERVED"),
+        ],
+    );
+}
+
+fn emit_accelerator_entry(out: &mut String) {
+    emit_layout_constant_group(
+        out,
+        "ACCELERATOR_ENTRY",
+        ACCELERATOR_ENTRY_SIZE,
+        ACCELERATOR_ENTRY_ALIGN,
+        &[
+            ("SEQUENCE", ACCELERATOR_ENTRY_SEQUENCE_OFFSET),
+            ("GENERATION", ACCELERATOR_ENTRY_GENERATION_OFFSET),
+            ("DEVICE_ID", ACCELERATOR_ENTRY_DEVICE_ID_OFFSET),
+            ("CLASS", ACCELERATOR_ENTRY_CLASS_OFFSET),
+            ("JOB_KIND", ACCELERATOR_ENTRY_JOB_KIND_OFFSET),
+            ("QUEUE_ID", ACCELERATOR_ENTRY_QUEUE_ID_OFFSET),
+            ("STATUS", ACCELERATOR_ENTRY_STATUS_OFFSET),
+            ("PROTOCOL_VERSION", ACCELERATOR_ENTRY_PROTOCOL_VERSION_OFFSET),
+            ("FLAGS", ACCELERATOR_ENTRY_FLAGS_OFFSET),
+            ("DATA_LEN", ACCELERATOR_ENTRY_DATA_LEN_OFFSET),
+            ("SERVICE_UNITS", ACCELERATOR_ENTRY_SERVICE_UNITS_OFFSET),
+            ("DATA", ACCELERATOR_ENTRY_DATA_OFFSET),
+            ("RESERVED", ACCELERATOR_ENTRY_RESERVED_OFFSET),
+        ],
+    );
+    emit_define_usize(
+        out,
+        "CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_RESERVED_LEN",
+        ACCELERATOR_ENTRY_SIZE - ACCELERATOR_ENTRY_RESERVED_OFFSET,
+    );
+    out.push_str(&format!(
+        "typedef struct CRUCIBLE_SHMEM_ALIGNED({ACCELERATOR_ENTRY_ALIGN}) crucible_shmem_accelerator_entry {{\n"
+    ));
+    out.push_str("    uint64_t sequence;\n");
+    out.push_str("    uint64_t generation;\n");
+    out.push_str("    uint8_t device_id[32];\n");
+    out.push_str("    uint16_t class_id;\n");
+    out.push_str("    uint16_t job_kind;\n");
+    out.push_str("    uint16_t queue_id;\n");
+    out.push_str("    uint16_t status;\n");
+    out.push_str("    uint16_t protocol_version;\n");
+    out.push_str("    uint16_t flags;\n");
+    out.push_str("    uint32_t data_len;\n");
+    out.push_str("    uint64_t service_units;\n");
+    out.push_str("    uint8_t data[CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_DATA_BYTES];\n");
+    out.push_str("    uint8_t reserved[CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_RESERVED_LEN];\n");
+    out.push_str("} crucible_shmem_accelerator_entry;\n\n");
+    emit_static_asserts(
+        out,
+        "crucible_shmem_accelerator_entry",
+        "ACCELERATOR_ENTRY",
+        &[
+            ("sequence", "SEQUENCE"),
+            ("generation", "GENERATION"),
+            ("device_id", "DEVICE_ID"),
+            ("class_id", "CLASS"),
+            ("job_kind", "JOB_KIND"),
+            ("queue_id", "QUEUE_ID"),
+            ("status", "STATUS"),
+            ("protocol_version", "PROTOCOL_VERSION"),
+            ("flags", "FLAGS"),
+            ("data_len", "DATA_LEN"),
+            ("service_units", "SERVICE_UNITS"),
             ("data", "DATA"),
             ("reserved", "RESERVED"),
         ],
