@@ -509,7 +509,9 @@ mod tests {
             .unwrap_or_else(|| panic!("source delivery opportunity should be available"));
         let dependency = delivery
             .resolved
-            .external_durability_dependency
+            .external_durability_dependencies
+            .first()
+            .copied()
             .unwrap_or_else(|| panic!("source completion carries destination dependency"));
         assert_eq!(dependency.destination_device, [7; 32]);
         assert_eq!(

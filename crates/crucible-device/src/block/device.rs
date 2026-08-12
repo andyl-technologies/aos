@@ -35,7 +35,8 @@ use super::codec::{
 };
 use super::codec::{BlockStatus, BlockTransportReset, BlockTransportUndelivered};
 use super::fault::{
-    BlockDeliveryOpportunity, BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
+    BlockCompletionDurability, BlockDeliveryOpportunity, BlockDurabilityConfig,
+    BlockExecutionOpportunity, BlockFaultState,
     BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRequestPersistenceOpportunity,
     BlockRetainedRelease, BlockRetainedReleaseOutcome, BlockStorageOutcome,
     ResolvedBlockDeliveryDirective, ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
@@ -218,7 +219,7 @@ pub fn install_cross_device_misdirected_persistence(
         required_durability: destination_durability,
         required_frontier: destination_frontier,
     };
-    resolved.directive.external_durability_dependency = Some(dependency);
+    resolved.directive.external_durability_dependencies = vec![dependency];
     next_source.install_storage_request_persistence_directive(resolved)?;
     *source = next_source;
     *destination = next_destination;
@@ -226,6 +227,35 @@ pub fn install_cross_device_misdirected_persistence(
 }
 
 impl BlockDevice {
+    /// Applies one exact logical write from a multi-device storage frontend.
+    ///
+    /// The destination uses its own geometry, cache, persistence graph, and
+    /// completion-durability policy. This method does not schedule a guest
+    /// response; the logical frontend remains the sole response owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] when the range or request geometry is invalid,
+    /// the destination cannot admit the bytes, or durability mutation fails.
+    pub fn apply_storage_external_write(
+        &mut self,
+        request_id: u32,
+        request_sequence: u64,
+        admitted_nanos: u64,
+        destination_offset: u64,
+        bytes: Vec<u8>,
+    ) -> Result<(BlockCompletionDurability, u64), DeviceError> {
+        self.storage_faults.apply_external_write(
+            &self.base,
+            &mut self.overlay,
+            request_id,
+            request_sequence,
+            admitted_nanos,
+            destination_offset,
+            bytes,
+        )
+    }
+
     /// Inspects exact currently visible bytes for an externally misdirected read.
     ///
     /// This controller-side inspection does not alter cache replacement state.
