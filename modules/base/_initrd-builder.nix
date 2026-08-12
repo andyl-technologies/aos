@@ -460,7 +460,7 @@ in
               echo "initrd-builder: external module package ${package} has no module tree" >&2
               exit 1
             fi
-            chmod u+w root/lib/modules root/lib/modules/*
+            chmod -R u+w root/lib/modules
             cp -a ${package}/lib/modules/. root/lib/modules/
           '') kernelModulePackages}
           for module_dir in root/lib/modules/*; do
