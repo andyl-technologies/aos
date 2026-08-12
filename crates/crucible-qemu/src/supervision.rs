@@ -5,6 +5,7 @@
 //! boundary: its members map shared memory and bound child liveness with host
 //! time, but never fold host timing into virtual-time ordering state.
 
+mod accelerator_io_servicer;
 mod block_io_gate;
 mod block_io_servicer;
 mod block_node_gate;
@@ -17,6 +18,10 @@ mod ninep_io_gate;
 mod ninep_io_servicer;
 mod node_step_gate;
 
+pub use accelerator_io_servicer::{
+    QemuLiveAcceleratorCheckpoint, QemuLiveAcceleratorServiceStep, QemuLiveAcceleratorServicer,
+    QemuLiveAcceleratorServicerError,
+};
 pub use block_io_gate::{
     BlockIoAdvanceOutcome, QemuLiveBlockIoGateConfig, QemuLiveBlockIoGateError,
     QemuLiveBlockIoReport, run_qemu_live_block_io_gate,

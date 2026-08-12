@@ -103,6 +103,8 @@ pub const QEMU_PLUGIN_REGISTER_BLK_EVENT_CB_SYMBOL: &str = "qemu_plugin_register
 pub const QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL: &str = "qemu_plugin_register_blk_wait_cb";
 /// QEMU plugin API symbol used to register shmem 9p burst/submit/poll callbacks.
 pub const QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL: &str = "qemu_plugin_register_9p_cb";
+/// QEMU accelerator callback registration export.
+pub const QEMU_PLUGIN_REGISTER_ACCELERATOR_CB_SYMBOL: &str = "qemu_plugin_register_accelerator_cb";
 /// QEMU plugin API symbol used to register the standard vCPU-init callback.
 pub const QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL: &str = "qemu_plugin_register_vcpu_init_cb";
 /// QEMU plugin API symbol used to register Crucible all-idle/resume callbacks.
@@ -145,6 +147,8 @@ const QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_blk_c
 const QEMU_PLUGIN_REGISTER_BLK_EVENT_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_blk_event_cb\0";
 const QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_blk_wait_cb\0";
 const QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_9p_cb\0";
+const QEMU_PLUGIN_REGISTER_ACCELERATOR_CB_SYMBOL_C: &[u8] =
+    b"qemu_plugin_register_accelerator_cb\0";
 const QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_vcpu_init_cb\0";
 const QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL_C: &[u8] =
     b"qemu_plugin_register_vcpu_idle_resume_cb\0";
@@ -377,6 +381,34 @@ pub type QemuRegisterNinePCbFn = extern "C" fn(
     Option<QemuNinePSubmitCbFn>,
     Option<QemuNinePPollCbFn>,
     Option<QemuNinePBurstCbFn>,
+    *mut c_void,
+);
+/// Accelerator submit callback body passed to QEMU's deterministic device.
+pub type QemuAcceleratorSubmitCbFn = extern "C" fn(
+    u64,
+    *const u8,
+    u16,
+    u16,
+    u16,
+    u64,
+    *const u8,
+    usize,
+    usize,
+    *mut c_void,
+) -> c_int;
+/// Accelerator completion callback body passed to QEMU's deterministic device.
+pub type QemuAcceleratorPollCbFn = extern "C" fn(u64, *mut u16, *mut u8, usize, *mut c_void) -> i64;
+/// Accelerator wait notification passed to QEMU's deterministic device.
+pub type QemuAcceleratorWaitCbFn = extern "C" fn(u64, *mut c_void);
+/// Accelerator pending-request restore callback.
+pub type QemuAcceleratorRestoreCbFn =
+    extern "C" fn(u64, *const u8, u16, u16, u16, u64, usize, *mut c_void) -> c_int;
+/// QEMU deterministic accelerator callback registration export.
+pub type QemuRegisterAcceleratorCbFn = extern "C" fn(
+    Option<QemuAcceleratorSubmitCbFn>,
+    Option<QemuAcceleratorPollCbFn>,
+    Option<QemuAcceleratorWaitCbFn>,
+    Option<QemuAcceleratorRestoreCbFn>,
     *mut c_void,
 );
 /// Standard QEMU vCPU lifecycle callback body.
@@ -1787,6 +1819,33 @@ pub const fn resolve_qemu_register_blk_wait_cb_symbol() -> Option<QemuRegisterBl
     None
 }
 
+/// Resolves QEMU's deterministic accelerator registration export.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_register_accelerator_cb_symbol() -> Option<QemuRegisterAcceleratorCbFn> {
+    // SAFETY: the static name is NUL terminated; patch 0069 exports the exact
+    // C declaration represented by `QemuRegisterAcceleratorCbFn`.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_REGISTER_ACCELERATOR_CB_SYMBOL_C.as_ptr().cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: the resolved non-null symbol has the exact patched-QEMU ABI.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuRegisterAcceleratorCbFn>(symbol) })
+    }
+}
+
+/// Reports that accelerator registration is unavailable off Unix.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_register_accelerator_cb_symbol() -> Option<QemuRegisterAcceleratorCbFn> {
+    None
+}
+
 /// Resolves QEMU's shmem 9p callback registration export from the loaded process.
 #[cfg(unix)]
 #[must_use]
@@ -2087,6 +2146,7 @@ fn install_owned_boundary(
     let register_block_event = resolve_qemu_register_blk_event_cb_symbol();
     let register_block_wait = resolve_qemu_register_blk_wait_cb_symbol();
     let register_ninep = resolve_qemu_register_9p_cb_symbol();
+    let register_accelerator = resolve_qemu_register_accelerator_cb_symbol();
     let fault_commands = crate::fault_command::QemuFaultCommandApis::resolve()
         .map_err(|source| QemuPluginAbiError::FaultCommandCapability { source })?;
     let state = install_required_runtime_api_scaffold(
@@ -2148,6 +2208,7 @@ fn install_owned_boundary(
         register_block_event,
         register_block_wait,
         register_ninep,
+        register_accelerator,
         fault_commands,
     };
     let callback_registrar = crate::runtime::FailClosedOwnedCallbackRegistrar::production(

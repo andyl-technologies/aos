@@ -155,12 +155,12 @@ use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 pub use abi_header::generated_c_header;
 #[cfg(unix)]
 pub use mapped_setup_region::{
-    DetachedPluginGuestIntrospectionRings, MappedAcceleratorConsumerRingMut,
-    MappedAcceleratorProducerRingMut, MappedCoverageRingMut, MappedDirectedRingMut,
-    MappedFaultCommandTransportMut, MappedFaultEventTransportMut, MappedFaultResultTransportMut,
-    MappedGuestIntrospectionConsumerRingMut, MappedGuestIntrospectionProducerRingMut,
-    MappedHostGuestIntrospectionRingsMut, MappedNodeRingPairMut,
-    MappedHostAcceleratorRingsMut, MappedPluginAcceleratorRingsMut,
+    DetachedPluginAcceleratorRings, DetachedPluginGuestIntrospectionRings,
+    MappedAcceleratorConsumerRingMut, MappedAcceleratorProducerRingMut, MappedCoverageRingMut,
+    MappedDirectedRingMut, MappedFaultCommandTransportMut, MappedFaultEventTransportMut,
+    MappedFaultResultTransportMut, MappedGuestIntrospectionConsumerRingMut,
+    MappedGuestIntrospectionProducerRingMut, MappedHostAcceleratorRingsMut,
+    MappedHostGuestIntrospectionRingsMut, MappedNodeRingPairMut, MappedPluginAcceleratorRingsMut,
     MappedPluginGuestIntrospectionRingsMut, MappedSetupRegion, MappedSetupRegionAccessError,
     MappedWhiteboxMarkerRingMut, SetupRegionMapError, mmap_setup_region,
 };
@@ -263,10 +263,10 @@ mod fingerprint_sample;
 mod frame_node;
 #[path = "shmem/region.rs"]
 mod region;
-#[path = "shmem/ring_coverage.rs"]
-mod ring_coverage;
 #[path = "shmem/ring_accelerator.rs"]
 mod ring_accelerator;
+#[path = "shmem/ring_coverage.rs"]
+mod ring_coverage;
 #[path = "shmem/ring_guest_introspection.rs"]
 mod ring_guest_introspection;
 #[path = "shmem/ring_whitebox_marker.rs"]
@@ -287,7 +287,7 @@ pub use fault_terminal_evidence::*;
 pub use fingerprint_sample::*;
 pub use frame_node::*;
 pub use region::*;
-pub use ring_coverage::*;
 pub use ring_accelerator::*;
+pub use ring_coverage::*;
 pub use ring_guest_introspection::*;
 pub use ring_whitebox_marker::*;

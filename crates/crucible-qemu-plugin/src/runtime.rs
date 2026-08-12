@@ -129,8 +129,10 @@ impl OwnedCallbackRegistrationMask {
     const NETWORK: u16 = 1 << 1;
     const BLOCK: u16 = 1 << 2;
     const NINEP: u16 = 1 << 3;
-    const WHITEBOX: u16 = 1 << 4;
-    const BASE_REQUIRED: u16 = Self::VCPU | Self::NETWORK | Self::BLOCK | Self::NINEP;
+    const ACCELERATOR: u16 = 1 << 4;
+    const WHITEBOX: u16 = 1 << 5;
+    const BASE_REQUIRED: u16 =
+        Self::VCPU | Self::NETWORK | Self::BLOCK | Self::NINEP | Self::ACCELERATOR;
 
     const fn base_required() -> Self {
         Self {
@@ -251,6 +253,7 @@ impl OwnedCallbackRuntimeState {
         exact_deadline: crate::ExactDeadlineReader,
         queued_idle_advance: crate::QueuedIdleAdvance,
         network_rx: crate::QemuLosslessNetworkRxQueue,
+        process_generation: u64,
         fault_command_apis: crate::fault_command::QemuFaultCommandApis,
         fingerprint: Option<crate::PluginFingerprintSampling>,
         fingerprint_oracle: bool,
@@ -328,7 +331,21 @@ impl OwnedCallbackRuntimeState {
             .node_directed_ring_pair_mut(slot_index, slot_index, ninep_slot, ninep_slot, slot_index)
             .map_err(|source| LiveVcpuTimeCallbackError::MappedNodeSlot { source })?;
         let ninep_rings = live_callbacks::LiveDirectedRingPair::new(mapped.first, mapped.second)?;
-        let callback_state = callback_state.attach_devices(slot_index, block_rings, ninep_rings)?;
+        let accelerator_rings = state
+            .setup
+            .mapped_region_mut()
+            .plugin_accelerator_rings_mut(slot_index)
+            .map_err(|source| LiveVcpuTimeCallbackError::MappedNodeSlot { source })?;
+        // SAFETY: the pinned runtime retains this unique plugin role and its
+        // owning mapping for every QEMU callback.
+        let accelerator_rings = unsafe { accelerator_rings.detach_for_mapping_lifetime() };
+        let callback_state = callback_state.attach_devices(
+            slot_index,
+            block_rings,
+            ninep_rings,
+            process_generation,
+            accelerator_rings,
+        )?;
         let callback_state = match fingerprint {
             Some(sampling) => {
                 let slot = state
@@ -826,6 +843,7 @@ pub(crate) struct LiveInstallCapabilities {
     pub(crate) register_block_event: Option<crate::QemuRegisterBlkEventCbFn>,
     pub(crate) register_block_wait: Option<crate::QemuRegisterBlkWaitCbFn>,
     pub(crate) register_ninep: Option<crate::QemuRegisterNinePCbFn>,
+    pub(crate) register_accelerator: Option<crate::QemuRegisterAcceleratorCbFn>,
     pub(crate) fault_commands: crate::fault_command::QemuFaultCommandApis,
 }
 
@@ -1027,6 +1045,7 @@ impl FailClosedOwnedCallbackRegistrar {
                     register_block_event: capabilities.register_block_event,
                     register_block_wait: capabilities.register_block_wait,
                     register_ninep: capabilities.register_ninep,
+                    register_accelerator: capabilities.register_accelerator,
                     fault_commands: capabilities.fault_commands,
                     request_shutdown: capabilities.request_shutdown,
                 },

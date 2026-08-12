@@ -100,31 +100,40 @@ pub const ACCELERATOR_ENTRY_SIZE: usize = core::mem::size_of::<AcceleratorEntry>
 /// Wire alignment of one [`AcceleratorEntry`].
 pub const ACCELERATOR_ENTRY_ALIGN: usize = core::mem::align_of::<AcceleratorEntry>();
 /// Byte offset of the sequence field.
-pub const ACCELERATOR_ENTRY_SEQUENCE_OFFSET: usize = core::mem::offset_of!(AcceleratorEntry, sequence);
+pub const ACCELERATOR_ENTRY_SEQUENCE_OFFSET: usize =
+    core::mem::offset_of!(AcceleratorEntry, sequence);
 /// Byte offset of the process generation.
-pub const ACCELERATOR_ENTRY_GENERATION_OFFSET: usize = core::mem::offset_of!(AcceleratorEntry, generation);
+pub const ACCELERATOR_ENTRY_GENERATION_OFFSET: usize =
+    core::mem::offset_of!(AcceleratorEntry, generation);
 /// Byte offset of the device digest.
-pub const ACCELERATOR_ENTRY_DEVICE_ID_OFFSET: usize = core::mem::offset_of!(AcceleratorEntry, device_id);
+pub const ACCELERATOR_ENTRY_DEVICE_ID_OFFSET: usize =
+    core::mem::offset_of!(AcceleratorEntry, device_id);
 /// Byte offset of the class field.
 pub const ACCELERATOR_ENTRY_CLASS_OFFSET: usize = core::mem::offset_of!(AcceleratorEntry, class);
 /// Byte offset of the job-kind field.
-pub const ACCELERATOR_ENTRY_JOB_KIND_OFFSET: usize = core::mem::offset_of!(AcceleratorEntry, job_kind);
+pub const ACCELERATOR_ENTRY_JOB_KIND_OFFSET: usize =
+    core::mem::offset_of!(AcceleratorEntry, job_kind);
 /// Byte offset of the queue ID.
-pub const ACCELERATOR_ENTRY_QUEUE_ID_OFFSET: usize = core::mem::offset_of!(AcceleratorEntry, queue_id);
+pub const ACCELERATOR_ENTRY_QUEUE_ID_OFFSET: usize =
+    core::mem::offset_of!(AcceleratorEntry, queue_id);
 /// Byte offset of the status field.
 pub const ACCELERATOR_ENTRY_STATUS_OFFSET: usize = core::mem::offset_of!(AcceleratorEntry, status);
 /// Byte offset of the protocol version.
-pub const ACCELERATOR_ENTRY_PROTOCOL_VERSION_OFFSET: usize = core::mem::offset_of!(AcceleratorEntry, protocol_version);
+pub const ACCELERATOR_ENTRY_PROTOCOL_VERSION_OFFSET: usize =
+    core::mem::offset_of!(AcceleratorEntry, protocol_version);
 /// Byte offset of the flags field.
 pub const ACCELERATOR_ENTRY_FLAGS_OFFSET: usize = core::mem::offset_of!(AcceleratorEntry, flags);
 /// Byte offset of the data length.
-pub const ACCELERATOR_ENTRY_DATA_LEN_OFFSET: usize = core::mem::offset_of!(AcceleratorEntry, data_len);
+pub const ACCELERATOR_ENTRY_DATA_LEN_OFFSET: usize =
+    core::mem::offset_of!(AcceleratorEntry, data_len);
 /// Byte offset of deterministic service units.
-pub const ACCELERATOR_ENTRY_SERVICE_UNITS_OFFSET: usize = core::mem::offset_of!(AcceleratorEntry, service_units);
+pub const ACCELERATOR_ENTRY_SERVICE_UNITS_OFFSET: usize =
+    core::mem::offset_of!(AcceleratorEntry, service_units);
 /// Byte offset of job or result bytes.
 pub const ACCELERATOR_ENTRY_DATA_OFFSET: usize = core::mem::offset_of!(AcceleratorEntry, data);
 /// Byte offset of the reserved tail.
-pub const ACCELERATOR_ENTRY_RESERVED_OFFSET: usize = core::mem::offset_of!(AcceleratorEntry, _reserved);
+pub const ACCELERATOR_ENTRY_RESERVED_OFFSET: usize =
+    core::mem::offset_of!(AcceleratorEntry, _reserved);
 
 const _: () = assert!(core::mem::offset_of!(AcceleratorEntry, sequence) == 0);
 const _: () = assert!(core::mem::offset_of!(AcceleratorEntry, generation) == 8);
@@ -192,39 +201,57 @@ impl AcceleratorEntry {
 
     /// Returns the publication sequence.
     #[must_use]
-    pub const fn sequence(self) -> u64 { self.sequence }
+    pub const fn sequence(self) -> u64 {
+        self.sequence
+    }
 
     /// Returns the immutable process generation.
     #[must_use]
-    pub const fn generation(self) -> u64 { self.generation }
+    pub const fn generation(self) -> u64 {
+        self.generation
+    }
 
     /// Returns the stable device identity digest.
     #[must_use]
-    pub const fn device_id(self) -> [u8; 32] { self.device_id }
+    pub const fn device_id(self) -> [u8; 32] {
+        self.device_id
+    }
 
     /// Returns the encoded accelerator class.
     #[must_use]
-    pub const fn class(self) -> u16 { self.class }
+    pub const fn class(self) -> u16 {
+        self.class
+    }
 
     /// Returns the class-specific job kind.
     #[must_use]
-    pub const fn job_kind(self) -> u16 { self.job_kind }
+    pub const fn job_kind(self) -> u16 {
+        self.job_kind
+    }
 
     /// Returns the device queue identifier.
     #[must_use]
-    pub const fn queue_id(self) -> u16 { self.queue_id }
+    pub const fn queue_id(self) -> u16 {
+        self.queue_id
+    }
 
     /// Returns the completion status, or zero for requests.
     #[must_use]
-    pub const fn status(self) -> u16 { self.status }
+    pub const fn status(self) -> u16 {
+        self.status
+    }
 
     /// Returns deterministic service units for the job.
     #[must_use]
-    pub const fn service_units(self) -> u64 { self.service_units }
+    pub const fn service_units(self) -> u64 {
+        self.service_units
+    }
 
     /// Returns whether this record is a completion.
     #[must_use]
-    pub const fn is_completion(self) -> bool { self.flags == 1 }
+    pub const fn is_completion(self) -> bool {
+        self.flags == 1
+    }
 
     /// Returns the owned job or result bytes.
     ///
@@ -248,14 +275,19 @@ impl AcceleratorEntry {
     }
 
     fn validate_ref(&self) -> Result<(), AcceleratorEntryError> {
-        if self.sequence == 0 || self.generation == 0 ||
-            self.device_id.iter().all(|byte| *byte == 0) {
+        if self.sequence == 0
+            || self.generation == 0
+            || self.device_id.iter().all(|byte| *byte == 0)
+        {
             return Err(AcceleratorEntryError::InvalidIdentity);
         }
-        if self.protocol_version != ACCELERATOR_PROTOCOL_VERSION ||
-            !matches!(self.class, 1..=3) || self.job_kind == 0 ||
-            self.service_units == 0 || self.flags > 1 ||
-            (self.flags == 0 && self.status != 0) {
+        if self.protocol_version != ACCELERATOR_PROTOCOL_VERSION
+            || !matches!(self.class, 1..=3)
+            || self.job_kind == 0
+            || self.service_units == 0
+            || self.flags > 1
+            || (self.flags == 0 && self.status != 0)
+        {
             return Err(AcceleratorEntryError::InvalidJob);
         }
         let len = self.data_len as usize;
@@ -265,8 +297,9 @@ impl AcceleratorEntry {
                 capacity: ACCELERATOR_ENTRY_DATA_BYTES,
             });
         }
-        if self.data[len..].iter().any(|byte| *byte != 0) ||
-            self._reserved.iter().any(|byte| *byte != 0) {
+        if self.data[len..].iter().any(|byte| *byte != 0)
+            || self._reserved.iter().any(|byte| *byte != 0)
+        {
             return Err(AcceleratorEntryError::NonzeroReservedBytes);
         }
         Ok(())
@@ -302,12 +335,24 @@ mod tests {
     #[test]
     fn accelerator_entry_round_trips_and_rejects_tail_bytes() {
         let entry = AcceleratorEntry::new(
-            1, 2, [3; 32], AcceleratorClass::Gpu, 1, 0, 0, false, 4,
+            1,
+            2,
+            [3; 32],
+            AcceleratorClass::Gpu,
+            1,
+            0,
+            0,
+            false,
+            4,
             &[1, 2, 3, 4],
-        ).unwrap_or_else(|error| panic!("entry should build: {error}"));
+        )
+        .unwrap_or_else(|error| panic!("entry should build: {error}"));
         assert_eq!(entry.data(), Ok(&[1, 2, 3, 4][..]));
         let mut malformed = entry;
         malformed.data[4] = 1;
-        assert_eq!(malformed.validate(), Err(AcceleratorEntryError::NonzeroReservedBytes));
+        assert_eq!(
+            malformed.validate(),
+            Err(AcceleratorEntryError::NonzeroReservedBytes)
+        );
     }
 }

@@ -934,8 +934,7 @@ impl RegionLayout {
     /// Returns the number of accelerator entry slots.
     #[must_use]
     pub fn accelerator_entry_count(&self) -> u64 {
-        u64::from(self.accelerator_ring_count)
-            * u64::from(self.accelerator_queue_capacity)
+        u64::from(self.accelerator_ring_count) * u64::from(self.accelerator_queue_capacity)
     }
 }
 

@@ -9,8 +9,8 @@ use crate::runtime::callback_quiescence::LiveCallbackQuiescence;
 use super::*;
 
 use crucible_shmem::{
-    DirectedRing, KIND_VM, MappedDirectedRingMut, RegionConfig, RegionHeader, RegionLayout,
-    SLOT_9P_IO, SLOT_BLK_IO, authorize_advance_ceiling,
+    AcceleratorEntry, DirectedRing, KIND_VM, MappedDirectedRingMut, RegionConfig, RegionHeader,
+    RegionLayout, SLOT_9P_IO, SLOT_BLK_IO, authorize_advance_ceiling,
 };
 
 static FORCE_VCPU_EXIT_CALLS: AtomicUsize = AtomicUsize::new(0);
@@ -63,6 +63,56 @@ fn typed_block_errors_map_to_stable_linux_errno_values() {
 }
 
 #[test]
+fn accelerator_adapter_round_trips_a_real_shared_memory_request() {
+    let slot = NodeSlot::new(KIND_VM);
+    let mut storage = DeviceRingStorage::new();
+    let block = storage.block_pair();
+    let ninep = storage.ninep_pair();
+    let accelerator = storage.accelerator_rings();
+    let mut devices = LiveDeviceCallbackState::new(0, block, ninep, 9, accelerator)
+        .unwrap_or_else(|error| panic!("live devices should bind: {error}"));
+    let device_id = [7_u8; 32];
+
+    devices
+        .submit_accelerator(&slot, 11, 41, device_id, 1, 1, 2, 8, &[1, 2, 3], 4)
+        .unwrap_or_else(|error| panic!("accelerator request should submit: {error}"));
+    assert_eq!(slot.snapshot().device_io_active, 1);
+    let request = storage
+        .accelerator_request_header
+        .dequeue_accelerator(&mut storage.accelerator_request_entries)
+        .unwrap_or_else(|error| panic!("host should dequeue request: {error}"))
+        .unwrap_or_else(|| panic!("request should be present"));
+    assert_eq!(request.sequence(), 41);
+    assert_eq!(request.data(), Ok(&[1, 2, 3][..]));
+    let completion = AcceleratorEntry::new(
+        41,
+        9,
+        device_id,
+        AcceleratorClass::Gpu,
+        1,
+        2,
+        0,
+        true,
+        8,
+        &[5, 6, 7, 8],
+    )
+    .unwrap_or_else(|error| panic!("completion should build: {error}"));
+    storage
+        .accelerator_completion_header
+        .enqueue_accelerator(&mut storage.accelerator_completion_entries, completion)
+        .unwrap_or_else(|error| panic!("host should enqueue completion: {error}"));
+    let mut output = [0_u8; 4];
+    assert_eq!(
+        devices
+            .poll_accelerator(&slot, 41, &mut output)
+            .unwrap_or_else(|error| panic!("completion should poll: {error}")),
+        (0, 4)
+    );
+    assert_eq!(output, [5, 6, 7, 8]);
+    assert_eq!(slot.snapshot().device_io_active, 0);
+}
+
+#[test]
 fn live_device_adapters_retain_tokens_and_complete_block_and_ninep() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)
@@ -72,7 +122,8 @@ fn live_device_adapters_retain_tokens_and_complete_block_and_ninep() {
     let mut storage = DeviceRingStorage::new();
     let block = storage.block_pair();
     let ninep = storage.ninep_pair();
-    let mut devices = LiveDeviceCallbackState::new(0, block, ninep)
+    let accelerator = storage.accelerator_rings();
+    let mut devices = LiveDeviceCallbackState::new(0, block, ninep, 1, accelerator)
         .unwrap_or_else(|error| panic!("live devices should bind fixed rings: {error}"));
 
     devices
@@ -147,7 +198,8 @@ fn live_block_event_poll_delivers_reset_without_losing_pre_reset_tokens() {
     let mut storage = DeviceRingStorage::new();
     let block = storage.block_pair();
     let ninep = storage.ninep_pair();
-    let mut devices = LiveDeviceCallbackState::new(0, block, ninep)
+    let accelerator = storage.accelerator_rings();
+    let mut devices = LiveDeviceCallbackState::new(0, block, ninep, 1, accelerator)
         .unwrap_or_else(|error| panic!("live devices should bind fixed rings: {error}"));
 
     devices
@@ -241,7 +293,8 @@ fn preserved_retry_authorization_survives_outbound_ring_backpressure() {
     let mut storage = DeviceRingStorage::new();
     let block = storage.block_pair();
     let ninep = storage.ninep_pair();
-    let mut devices = LiveDeviceCallbackState::new(0, block, ninep)
+    let accelerator = storage.accelerator_rings();
+    let mut devices = LiveDeviceCallbackState::new(0, block, ninep, 1, accelerator)
         .unwrap_or_else(|error| panic!("live devices should bind fixed rings: {error}"));
     let identity = crate::BlockRequestIdentity::new(0, 0);
 
@@ -341,7 +394,8 @@ fn transport_continuation_rejects_every_live_callback_continuation() {
     let mut storage = DeviceRingStorage::new();
     let block = storage.block_pair();
     let ninep = storage.ninep_pair();
-    let mut devices = LiveDeviceCallbackState::new(0, block, ninep)
+    let accelerator = storage.accelerator_rings();
+    let mut devices = LiveDeviceCallbackState::new(0, block, ninep, 1, accelerator)
         .unwrap_or_else(|error| panic!("live devices should bind fixed rings: {error}"));
 
     let continuation_len = devices
@@ -441,7 +495,8 @@ fn live_device_preflight_rejects_qemu_request_id_drift_without_mutation() {
     let mut storage = DeviceRingStorage::new();
     let block = storage.block_pair();
     let ninep = storage.ninep_pair();
-    let mut devices = LiveDeviceCallbackState::new(0, block, ninep)
+    let accelerator = storage.accelerator_rings();
+    let mut devices = LiveDeviceCallbackState::new(0, block, ninep, 1, accelerator)
         .unwrap_or_else(|error| panic!("live devices should bind fixed rings: {error}"));
 
     assert_eq!(
@@ -494,7 +549,7 @@ fn live_device_callback_reentry_is_rejected_before_ring_or_freeze_mutation() {
         Arc::new(LiveCallbackQuiescence::new()),
         teardown_sender,
     )
-    .and_then(|state| state.attach_devices(0, block, ninep))
+    .and_then(|state| state.attach_devices(0, block, ninep, 1, storage.accelerator_rings()))
     .unwrap_or_else(|error| panic!("test live state should attach devices: {error}"));
     let devices = state
         .devices
@@ -551,7 +606,7 @@ fn live_ninep_burst_release_is_legal_while_idle_advance_retires() {
         Arc::new(LiveCallbackQuiescence::new()),
         teardown_sender,
     )
-    .and_then(|state| state.attach_devices(0, block, ninep))
+    .and_then(|state| state.attach_devices(0, block, ninep, 1, storage.accelerator_rings()))
     .unwrap_or_else(|error| panic!("test live state should attach devices: {error}"));
 
     state
@@ -613,7 +668,7 @@ fn live_block_event_poll_consumes_the_wake_during_idle_advance() {
         Arc::new(LiveCallbackQuiescence::new()),
         teardown_sender,
     )
-    .and_then(|state| state.attach_devices(0, block, ninep))
+    .and_then(|state| state.attach_devices(0, block, ninep, 1, storage.accelerator_rings()))
     .unwrap_or_else(|error| panic!("test live state should attach devices: {error}"));
 
     state
@@ -732,7 +787,7 @@ fn live_device_submits_during_idle_completion_use_the_advance_target() {
         Arc::new(LiveCallbackQuiescence::new()),
         teardown_sender,
     )
-    .and_then(|state| state.attach_devices(0, block, ninep))
+    .and_then(|state| state.attach_devices(0, block, ninep, 1, storage.accelerator_rings()))
     .unwrap_or_else(|error| panic!("test live state should attach devices: {error}"));
     let pending = advance
         .enqueue(10)
@@ -782,6 +837,10 @@ struct DeviceRingStorage {
     ninep_out_entries: Vec<FrameEntry>,
     ninep_in_header: RingHeader,
     ninep_in_entries: Vec<FrameEntry>,
+    accelerator_request_header: RingHeader,
+    accelerator_request_entries: Vec<AcceleratorEntry>,
+    accelerator_completion_header: RingHeader,
+    accelerator_completion_entries: Vec<AcceleratorEntry>,
 }
 
 impl DeviceRingStorage {
@@ -795,6 +854,10 @@ impl DeviceRingStorage {
             ninep_out_entries: vec![FrameEntry::default(); 4],
             ninep_in_header: RingHeader::new(),
             ninep_in_entries: vec![FrameEntry::default(); 4],
+            accelerator_request_header: RingHeader::new(),
+            accelerator_request_entries: vec![AcceleratorEntry::default(); 4],
+            accelerator_completion_header: RingHeader::new(),
+            accelerator_completion_entries: vec![AcceleratorEntry::default(); 4],
         }
     }
 
@@ -822,6 +885,22 @@ impl DeviceRingStorage {
             &self.ninep_in_header,
             &mut self.ninep_in_entries,
         )
+    }
+
+    fn accelerator_rings(&mut self) -> DetachedPluginAcceleratorRings {
+        // SAFETY: this fixture retains the four allocations for the complete
+        // handle lifetime and creates only one plugin role per test.
+        unsafe {
+            DetachedPluginAcceleratorRings::from_raw_parts(
+                &self.accelerator_request_header,
+                self.accelerator_request_entries.as_mut_ptr(),
+                self.accelerator_request_entries.len(),
+                &self.accelerator_completion_header,
+                self.accelerator_completion_entries.as_mut_ptr(),
+                self.accelerator_completion_entries.len(),
+            )
+        }
+        .unwrap_or_else(|| panic!("accelerator test rings should be nonempty"))
     }
 }
 

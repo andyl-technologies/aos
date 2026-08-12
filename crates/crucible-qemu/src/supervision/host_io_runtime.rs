@@ -35,6 +35,7 @@ use crucible_shmem::{
 };
 use thiserror::Error;
 
+use super::accelerator_io_servicer::QemuLiveAcceleratorServicer;
 use super::block_io_servicer::{BlockIoDiagnostics, QemuLiveBlockIoServicer};
 use super::ninep_io_servicer::{NinepIoDiagnostics, QemuLive9pIoServicer};
 use crate::quantum::idle_state_from_snapshot;
@@ -71,6 +72,7 @@ pub struct QemuLiveHostIoRuntime {
     advance_wait_deadline: AdvanceWaitDeadline,
     block: Option<BlockIoServicing>,
     ninep: Option<NinepIoServicing>,
+    accelerator: Option<QemuLiveAcceleratorServicer>,
 }
 
 /// The participant half of the runtime: a block servicer plus its diagnostic sink.
@@ -203,6 +205,7 @@ impl QemuLiveHostIoRuntime {
             advance_wait_deadline: AdvanceWaitDeadline::default(),
             block: None,
             ninep: None,
+            accelerator: None,
         })
     }
 
@@ -251,6 +254,13 @@ impl QemuLiveHostIoRuntime {
             diagnostics,
             coordinator: None,
         });
+        self
+    }
+
+    /// Attaches the production deterministic accelerator adapter.
+    #[must_use]
+    pub fn with_accelerator_servicer(mut self, servicer: QemuLiveAcceleratorServicer) -> Self {
+        self.accelerator = Some(servicer);
         self
     }
 
@@ -354,6 +364,8 @@ impl QemuLiveHostIoRuntime {
             // lets the advance make progress.
             self.service_block_io(&snapshot)?;
             self.service_ninep_io(&snapshot)?;
+            self.service_accelerator_io(&snapshot)?;
+            self.publish_device_completion_deadline()?;
             let idle = idle_state_from_snapshot(snapshot);
             match classify_quantum_boundary(&idle, snapshot.max_advance_icount) {
                 QuantumBoundary::Reached { .. } | QuantumBoundary::Paused { .. } => {
@@ -489,6 +501,54 @@ impl QemuLiveHostIoRuntime {
         }
         Ok(())
     }
+
+    fn service_accelerator_io(
+        &mut self,
+        snapshot: &crucible_shmem::NodeSlotSnapshot,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let Some(accelerator) = &mut self.accelerator else {
+            return Ok(());
+        };
+        let serviced = accelerator
+            .service(snapshot.current_icount)
+            .map_err(|source| {
+                QemuAsyncDriverRuntimeError::new("service accelerator io", source.to_string())
+            })?;
+        if serviced.processed > 0 || serviced.delivered > 0 {
+            self.signal_wake()?;
+        }
+        Ok(())
+    }
+
+    /// Publishes the earliest exact completion across every attached host device.
+    fn publish_device_completion_deadline(&self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let block = self
+            .block
+            .as_ref()
+            .map(|block| block.servicer.next_completion_icount())
+            .transpose()
+            .map_err(|source| {
+                QemuAsyncDriverRuntimeError::new(
+                    "inspect block completion deadline",
+                    source.to_string(),
+                )
+            })?
+            .flatten();
+        let ninep = self
+            .ninep
+            .as_ref()
+            .and_then(|ninep| ninep.servicer.next_completion_icount());
+        let accelerator = self
+            .accelerator
+            .as_ref()
+            .and_then(QemuLiveAcceleratorServicer::next_completion_icount);
+        let deadline = [block, ninep, accelerator].into_iter().flatten().min();
+        self.region
+            .node_slot(self.vm_slot)
+            .map_err(map_slot_error)?
+            .store_device_completion_deadline_icount(deadline.unwrap_or(0));
+        Ok(())
+    }
 }
 
 impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
@@ -589,10 +649,15 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
             .map_err(|source| {
                 QemuAsyncDriverRuntimeError::new("checkpoint host 9p I/O", source.to_string())
             })?;
+        let accelerator = self
+            .accelerator
+            .as_ref()
+            .map(QemuLiveAcceleratorServicer::checkpoint);
         Ok(QemuHostIoCheckpoint::with_devices(
             execution_binding,
             block,
             ninep,
+            accelerator,
         ))
     }
 
@@ -637,6 +702,21 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
             _ => Err(QemuAsyncDriverRuntimeError::new(
                 "validate host-I/O checkpoint",
                 "captured 9p topology does not match the live host-I/O runtime",
+            )),
+        }?;
+        match (self.accelerator.as_ref(), checkpoint.accelerator.as_ref()) {
+            (Some(accelerator), Some(checkpoint)) => accelerator
+                .validate_checkpoint(checkpoint)
+                .map_err(|source| {
+                    QemuAsyncDriverRuntimeError::new(
+                        "validate host accelerator checkpoint",
+                        source.to_string(),
+                    )
+                }),
+            (None, None) => Ok(()),
+            _ => Err(QemuAsyncDriverRuntimeError::new(
+                "validate host-I/O checkpoint",
+                "captured accelerator topology does not match the live host-I/O runtime",
             )),
         }
     }
@@ -706,6 +786,22 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
             }
             return Err(error);
         }
+        match (self.accelerator.as_mut(), checkpoint.accelerator.as_ref()) {
+            (Some(accelerator), Some(checkpoint)) => accelerator
+                .restore_checkpoint(checkpoint)
+                .map_err(|source| {
+                    QemuAsyncDriverRuntimeError::new(
+                        "restore host accelerator checkpoint",
+                        source.to_string(),
+                    )
+                }),
+            (None, None) => Ok(()),
+            _ => Err(QemuAsyncDriverRuntimeError::new(
+                "restore host-I/O checkpoint",
+                "validated accelerator topology changed before commit",
+            )),
+        }?;
+        self.publish_device_completion_deadline()?;
         Ok(())
     }
 

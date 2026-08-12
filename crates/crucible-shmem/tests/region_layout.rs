@@ -314,7 +314,8 @@ fn region_layout_computes_offsets_and_directed_rings() {
         layout.accelerator_ring_hdr_off,
         (layout.guest_introspection_ring_data_off
             + layout.guest_introspection_entry_count() * layout.guest_introspection_entry_stride)
-            .div_ceil(RING_HEADER_ALIGN as u64) * RING_HEADER_ALIGN as u64
+            .div_ceil(RING_HEADER_ALIGN as u64)
+            * RING_HEADER_ALIGN as u64
     );
     assert_eq!(layout.accelerator_ring_count, 2 * layout.vm_node_count);
     assert_eq!(

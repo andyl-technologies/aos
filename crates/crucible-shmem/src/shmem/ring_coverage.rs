@@ -203,7 +203,8 @@ impl RingHeader {
             return Err(SpscRingError::QueueFull { capacity });
         }
         entries[(tail & (capacity - 1)) as usize] = entry;
-        self.write_idx.store(tail.wrapping_add(1), Ordering::Release);
+        self.write_idx
+            .store(tail.wrapping_add(1), Ordering::Release);
         Ok(())
     }
 
