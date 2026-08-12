@@ -63,10 +63,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crucible::ContentHash;
 use crucible_device::block::BlockFaultWriteDisposition;
 use crucible_device::block::{
-    BlockDeliveryOpportunity, BlockDurabilityConfig, BlockExecutionOpportunity,
-    BlockExternalDurabilityDependency, BlockFaultState, BlockPersistenceMediaOutcome,
-    BlockPersistenceOpportunity, BlockRequestPersistenceOpportunity, BlockRetainedRelease,
-    BlockRetainedReleaseOutcome, BlockServiceCompletion, BlockStorageOutcome,
+    BlockArrayDirtyRange, BlockDeliveryOpportunity, BlockDurabilityConfig,
+    BlockExecutionOpportunity, BlockExternalDurabilityDependency, BlockFaultState,
+    BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRequestPersistenceOpportunity,
+    BlockRetainedRelease, BlockRetainedReleaseOutcome, BlockServiceCompletion, BlockStorageOutcome,
     ResolvedBlockControllerTransition, ResolvedBlockDeliveryDirective,
     ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
     ResolvedBlockPersistenceMediaDirective, ResolvedBlockRequestPersistenceDirective,
@@ -189,6 +189,134 @@ impl QemuSharedBlockDevice {
     /// authoritative device lock is poisoned.
     pub fn storage_length(&self) -> Result<u64, QemuLiveBlockIoServicerError> {
         Ok(self.lock()?.length())
+    }
+
+    /// Resolves the logical bytes produced by this device's discard contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns a lock error or the authoritative device's range/alignment error.
+    pub fn storage_array_discard_replacement(
+        &self,
+        request: &BlockRequest,
+    ) -> Result<Option<Vec<u8>>, QemuLiveBlockIoServicerError> {
+        self.lock()?
+            .storage_array_discard_replacement(request)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
+    }
+
+    /// Schedules or returns this logical device's next array rebuild chunk.
+    ///
+    /// # Errors
+    ///
+    /// Returns a lock error or an invalid rebuild-service error.
+    pub fn next_storage_array_rebuild_opportunity(
+        &self,
+        now_nanos: u64,
+        chunk_bytes: u64,
+        bytes_per_second: u64,
+        operations_per_second: Option<u64>,
+    ) -> Result<
+        Option<crucible_device::block::BlockArrayRebuildOpportunity>,
+        QemuLiveBlockIoServicerError,
+    > {
+        self.lock()?
+            .next_storage_array_rebuild_opportunity(
+                now_nanos,
+                chunk_bytes,
+                bytes_per_second,
+                operations_per_second,
+            )
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
+    }
+
+    /// Retires one evaluated failed rebuild attempt while preserving its bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a lock error or a stale rebuild-opportunity error.
+    pub fn defer_storage_array_rebuild(
+        &self,
+        opportunity: &crucible_device::block::BlockArrayRebuildOpportunity,
+    ) -> Result<(), QemuLiveBlockIoServicerError> {
+        self.lock()?
+            .defer_storage_array_rebuild(opportunity)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
+    }
+
+    /// Pauses one scheduled rebuild while its member or path is unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Returns a lock error or a stale rebuild-opportunity error.
+    pub fn pause_storage_array_rebuild(
+        &self,
+        now_nanos: u64,
+        opportunity: &crucible_device::block::BlockArrayRebuildOpportunity,
+    ) -> Result<(), QemuLiveBlockIoServicerError> {
+        self.lock()?
+            .pause_storage_array_rebuild(now_nanos, opportunity)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
+    }
+
+    /// Atomically writes one evaluated rebuild chunk to its member and retires it.
+    ///
+    /// # Errors
+    ///
+    /// Returns identity, lock, notification, member-mutation, or stale-cursor
+    /// errors without committing either device.
+    pub fn install_storage_array_rebuild(
+        &self,
+        source_id: ContentHash,
+        destination: &Self,
+        destination_id: ContentHash,
+        opportunity: &crucible_device::block::BlockArrayRebuildOpportunity,
+    ) -> Result<(), QemuLiveBlockIoServicerError> {
+        if source_id == destination_id || self.ptr_eq(destination) {
+            return Err(QemuLiveBlockIoServicerError::CrossDeviceIdentityMismatch);
+        }
+        let mut handles = [
+            (source_id, self.clone()),
+            (destination_id, destination.clone()),
+        ];
+        handles.sort_by_key(|(id, _)| *id);
+        let mut devices = handles
+            .iter()
+            .map(|(_, handle)| handle.lock())
+            .collect::<Result<Vec<_>, _>>()?;
+        let prior = devices
+            .iter()
+            .map(|device| (*device).clone())
+            .collect::<Vec<_>>();
+        let mut staged = prior.clone();
+        let source_index = usize::from(handles[0].0 != source_id);
+        let destination_index = 1 - source_index;
+        let prior_deadline = prior[destination_index].next_exact_local_event();
+        staged[destination_index]
+            .apply_storage_external_mutation(
+                opportunity.sequence,
+                opportunity.ready_nanos,
+                BlockRequest::write(
+                    u32::try_from(opportunity.sequence).unwrap_or(u32::MAX),
+                    opportunity.start_byte,
+                    opportunity.bytes.clone(),
+                ),
+            )
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        staged[source_index]
+            .complete_storage_array_rebuild(opportunity)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        let deadline = staged[destination_index].next_exact_local_event();
+        for (device, next) in devices.iter_mut().zip(staged) {
+            **device = next;
+        }
+        if let Err(error) = destination.publish_remote_mutation(deadline, prior_deadline) {
+            for (device, before) in devices.iter_mut().zip(prior) {
+                **device = before;
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Returns the destination's actual durable cache frontier.
@@ -329,13 +457,14 @@ impl QemuSharedBlockDevice {
         Ok(dependency)
     }
 
-    /// Atomically persists one logical write across an ordered device set.
+    /// Atomically applies one logical array mutation across an ordered device set.
     ///
-    /// `destinations` contains `(device identity, handle, ordered writes)` and
-    /// must be in unique identity order. Each write is `(offset, bytes)` and a
-    /// device's offsets must be strictly increasing. Every complete device is cloned while
+    /// `destinations` contains `(device identity, handle, ordered requests)` and
+    /// must be in unique identity order. A destination's requests must all have
+    /// the logical operation and strictly increasing offsets, except that flush
+    /// has exactly one zero-range request. Every complete device is cloned while
     /// all locks are held; the logical source and all destinations commit only
-    /// after every destination accepts its exact write. Runtime notifications
+    /// after every destination accepts its exact mutation. Runtime notifications
     /// are then published for every changed destination. A notification failure
     /// restores every device and republishes the prior horizons.
     ///
@@ -345,10 +474,11 @@ impl QemuSharedBlockDevice {
     /// for aliases or noncanonical destination order, a lock/notification error
     /// for host ownership failures, or [`QemuLiveBlockIoServicerError::Device`]
     /// when any real block device rejects the transaction.
-    pub fn install_multi_device_persistence(
+    pub fn install_multi_device_mutation(
         &self,
         source_id: ContentHash,
-        destinations: &[(ContentHash, QemuSharedBlockDevice, Vec<(u64, Vec<u8>)>)],
+        destinations: &[(ContentHash, QemuSharedBlockDevice, Vec<BlockRequest>)],
+        dirty_writes: &[BlockArrayDirtyRange],
         mut resolved: ResolvedBlockRequestPersistenceDirective,
     ) -> Result<Vec<BlockExternalDurabilityDependency>, QemuLiveBlockIoServicerError> {
         if destinations.is_empty()
@@ -391,24 +521,41 @@ impl QemuSharedBlockDevice {
         let source_index = handles
             .binary_search_by_key(&source_id, |(id, _)| *id)
             .map_err(|_| QemuLiveBlockIoServicerError::CrossDeviceIdentityMismatch)?;
+        if dirty_writes.windows(2).any(|pair| {
+            (pair[0].member_ordinal, pair[0].start_byte)
+                >= (pair[1].member_ordinal, pair[1].start_byte)
+        }) {
+            return Err(QemuLiveBlockIoServicerError::CrossDeviceIdentityMismatch);
+        }
         let mut dependencies = Vec::with_capacity(destinations.len());
-        for (destination_id, _, writes) in destinations {
+        for (destination_id, _, requests) in destinations {
             let destination_index = handles
                 .binary_search_by_key(destination_id, |(id, _)| *id)
                 .map_err(|_| QemuLiveBlockIoServicerError::CrossDeviceIdentityMismatch)?;
-            if writes.is_empty() || writes.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+            let logical_op = resolved.opportunity.request.op;
+            if requests.is_empty()
+                || requests.iter().any(|request| {
+                    request.op != logical_op
+                        && !(logical_op == crucible_device::block::BlockOp::Discard
+                            && request.op == crucible_device::block::BlockOp::Write)
+                })
+                || (resolved.opportunity.request.op == crucible_device::block::BlockOp::Flush
+                    && requests.len() != 1)
+                || (resolved.opportunity.request.op != crucible_device::block::BlockOp::Flush
+                    && requests
+                        .windows(2)
+                        .any(|pair| pair[0].offset >= pair[1].offset))
+            {
                 return Err(QemuLiveBlockIoServicerError::CrossDeviceIdentityMismatch);
             }
             let mut required_durability = None;
             let mut required_frontier = 0_u64;
-            for (offset, bytes) in writes {
+            for request in requests {
                 let (durability, frontier) = staged[destination_index]
-                    .apply_storage_external_write(
-                        resolved.opportunity.request.request_id,
+                    .apply_storage_external_mutation(
                         resolved.directive.request_sequence,
                         resolved.opportunity.ready_nanos,
-                        *offset,
-                        bytes.clone(),
+                        request.clone(),
                     )
                     .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
                 required_durability = Some(durability);
@@ -421,8 +568,29 @@ impl QemuSharedBlockDevice {
                 required_frontier,
             });
         }
-        resolved.directive.write_disposition = BlockFaultWriteDisposition::Lost;
+        match resolved.opportunity.request.op {
+            crucible_device::block::BlockOp::Write | crucible_device::block::BlockOp::Discard => {
+                resolved.directive.write_disposition = BlockFaultWriteDisposition::Lost;
+            }
+            crucible_device::block::BlockOp::Flush => {
+                resolved.directive.flush_disposition =
+                    crucible_device::block::BlockFaultFlushDisposition::Lie;
+            }
+            crucible_device::block::BlockOp::Read | crucible_device::block::BlockOp::GetLength => {
+                return Err(QemuLiveBlockIoServicerError::CrossDeviceIdentityMismatch);
+            }
+        }
         resolved.directive.external_durability_dependencies = dependencies.clone();
+        for dirty in dirty_writes {
+            staged[source_index]
+                .record_storage_array_dirty_range(
+                    dirty.member_ordinal,
+                    dirty.start_byte,
+                    dirty.bytes.clone(),
+                    resolved.opportunity.ready_nanos,
+                )
+                .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        }
         staged[source_index]
             .install_storage_request_persistence_directive(resolved)
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
@@ -2433,20 +2601,21 @@ mod tests {
         let mut directive = staged_persistence(&source, now_nanos);
         directive.directive.write_disposition = BlockFaultWriteDisposition::Apply;
         let dependencies = source
-            .install_multi_device_persistence(
+            .install_multi_device_mutation(
                 ContentHash { bytes: [1; 32] },
                 &[
                     (
                         ContentHash { bytes: [2; 32] },
                         first.clone(),
-                        vec![(0, vec![0xa5; 512])],
+                        vec![BlockRequest::write(31, 0, vec![0xa5; 512])],
                     ),
                     (
                         ContentHash { bytes: [3; 32] },
                         second.clone(),
-                        vec![(512, vec![0x5a; 512])],
+                        vec![BlockRequest::write(31, 512, vec![0x5a; 512])],
                     ),
                 ],
+                &[],
                 directive,
             )
             .unwrap_or_else(|error| panic!("commit multi-device write: {error}"));

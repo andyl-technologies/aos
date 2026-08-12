@@ -592,15 +592,13 @@ impl BlockFaultState {
                     ResolvedBlockDuplicateCompletion::Reset {
                         gap_nanos,
                         transition,
-                    } => {
-                        (
-                            *gap_nanos,
-                            block_response_to_uniform(&BlockResponse::transport_reset(
-                                request.identity(),
-                                transition.transport_reset(request.epoch)?,
-                            ))?,
-                        )
-                    }
+                    } => (
+                        *gap_nanos,
+                        block_response_to_uniform(&BlockResponse::transport_reset(
+                            request.identity(),
+                            transition.transport_reset(request.epoch)?,
+                        ))?,
+                    ),
                 };
                 Ok(AdditionalCompletion {
                     gap_nanos,
@@ -662,6 +660,53 @@ impl BlockFaultState {
                     .config
                     .volatile_cache_bytes
                     .saturating_sub(self.volatile_bytes),
+            }),
+        }
+    }
+
+    /// Applies one externally owned array mutation without a guest completion.
+    pub(in crate::block) fn apply_external_mutation(
+        &mut self,
+        base: &BaseImage,
+        durable: &mut CowOverlay,
+        request_sequence: u64,
+        admitted_nanos: u64,
+        request: BlockRequest,
+    ) -> Result<(BlockCompletionDurability, u64), DeviceError> {
+        if !matches!(
+            request.op,
+            BlockOp::Write | BlockOp::Discard | BlockOp::Flush
+        ) {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "external array mutation must be write, discard, or flush",
+            });
+        }
+        let mut directive =
+            ResolvedBlockFaultDirective::fault_free(&request, self.config.length_bytes);
+        directive.request_sequence = request_sequence;
+        directive.execution_nanos = admitted_nanos;
+        directive.persistence_admitted_nanos = admitted_nanos;
+        directive.validate_for(&request, &self.config)?;
+        if !request_in_capacity(&request, self.config.length_bytes)
+            || u64::from(request.count) > self.config.maximum_request_bytes
+        {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "external array mutation exceeds member capacity or request geometry",
+            });
+        }
+        let (response, _wait_nanos) = self.execute_wire(base, durable, &request, &directive)?;
+        if response.status != BlockStatus::Ok {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "external array mutation was rejected by the member",
+            });
+        }
+        match request.op {
+            BlockOp::Write | BlockOp::Discard => {
+                Ok((self.config.completion_durability, self.next_cache_sequence))
+            }
+            BlockOp::Flush => Ok((BlockCompletionDurability::Durable, self.next_cache_sequence)),
+            BlockOp::Read | BlockOp::GetLength => Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "external array mutation operation changed during execution",
             }),
         }
     }

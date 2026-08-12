@@ -1419,4 +1419,133 @@ mod tests {
         let r2 = ok(dev.next_response()).unwrap_or_else(|| panic!("resp"));
         assert_eq!(r2.status, BlockStatus::Error);
     }
+
+    #[test]
+    fn array_dirty_ranges_coalesce_and_survive_checkpoint_restore() {
+        let mut dev = device(PAGE_SIZE * 2);
+        ok(dev.record_storage_array_dirty_range(1, 512, vec![0; 512], 20));
+        ok(dev.record_storage_array_dirty_range(1, 1024, vec![0; 512], 30));
+        ok(dev.record_storage_array_dirty_range(2, 0, vec![0; 512], 40));
+        assert_eq!(
+            dev.storage_fault_state().array_dirty_ranges(),
+            vec![
+                BlockArrayDirtyRange {
+                    member_ordinal: 1,
+                    start_byte: 512,
+                    bytes: vec![0; 1024],
+                    generation: 1,
+                    dirty_nanos: 20,
+                },
+                BlockArrayDirtyRange {
+                    member_ordinal: 2,
+                    start_byte: 0,
+                    bytes: vec![0; 512],
+                    generation: 2,
+                    dirty_nanos: 40,
+                },
+            ]
+        );
+        assert_eq!(
+            dev.storage_fault_state()
+                .array_rebuild_cursor()
+                .next_sequence,
+            3
+        );
+
+        let snapshot = dev.snapshot();
+        let restored = ok(BlockDevice::restore(
+            &snapshot,
+            ramp_base(PAGE_SIZE * 2),
+            None,
+        ));
+        assert_eq!(
+            restored.storage_fault_state().array_dirty_ranges(),
+            dev.storage_fault_state().array_dirty_ranges()
+        );
+        assert_eq!(
+            restored.storage_fault_state().array_rebuild_cursor(),
+            dev.storage_fault_state().array_rebuild_cursor()
+        );
+    }
+
+    #[test]
+    fn array_rebuild_is_rate_scheduled_authenticated_and_retryable() {
+        let mut dev = device(PAGE_SIZE * 2);
+        ok(dev.record_storage_array_dirty_range(1, 512, vec![7; 1024], 20));
+
+        assert_eq!(
+            ok(dev.next_storage_array_rebuild_opportunity(100, 512, 512, None)),
+            None
+        );
+        assert_eq!(
+            dev.storage_fault_state()
+                .array_rebuild_cursor()
+                .next_ready_nanos,
+            Some(1_000_000_100)
+        );
+        let opportunity =
+            ok(dev.next_storage_array_rebuild_opportunity(1_000_000_100, 512, 512, None))
+                .unwrap_or_else(|| panic!("scheduled rebuild must be ready at its deadline"));
+        assert_eq!(opportunity.start_byte, 512);
+        assert_eq!(opportunity.bytes, vec![7; 512]);
+
+        ok(dev.defer_storage_array_rebuild(&opportunity));
+        assert_eq!(dev.next_exact_local_event(), None);
+        assert_eq!(
+            ok(dev.next_storage_array_rebuild_opportunity(1_000_000_100, 512, 512, None,)),
+            None
+        );
+        let retry = ok(dev.next_storage_array_rebuild_opportunity(2_000_000_100, 512, 512, None))
+            .unwrap_or_else(|| {
+                panic!("failed rebuild must become retryable after another service")
+            });
+        assert_ne!(retry.sequence, opportunity.sequence);
+        ok(dev.complete_storage_array_rebuild(&retry));
+        assert_eq!(
+            dev.storage_fault_state().array_dirty_ranges(),
+            vec![BlockArrayDirtyRange {
+                member_ordinal: 1,
+                start_byte: 1024,
+                bytes: vec![7; 512],
+                generation: 0,
+                dirty_nanos: 20,
+            }]
+        );
+
+        let snapshot = dev.snapshot();
+        let restored = ok(BlockDevice::restore(
+            &snapshot,
+            ramp_base(PAGE_SIZE * 2),
+            None,
+        ));
+        assert_eq!(
+            restored.storage_fault_state().array_dirty_ranges(),
+            dev.storage_fault_state().array_dirty_ranges()
+        );
+        assert_eq!(
+            restored.storage_fault_state().array_rebuild_cursor(),
+            dev.storage_fault_state().array_rebuild_cursor()
+        );
+    }
+
+    #[test]
+    fn external_array_discard_and_flush_mutate_real_member_state() {
+        let mut dev = device(PAGE_SIZE);
+        let mut config = BlockDurabilityConfig::write_through(PAGE_SIZE as u64);
+        config.discard_granularity_bytes = 512;
+        ok(dev.configure_storage_faults(config, false));
+        let discard = BlockRequest::discard(7, 0, 512);
+        let replacement = ok(dev.storage_array_discard_replacement(&discard))
+            .unwrap_or_else(|| panic!("zeroing discard must return replacement bytes"));
+        assert_eq!(replacement, vec![0; 512]);
+        ok(dev.apply_storage_external_mutation(1, 10, discard));
+        assert_eq!(ok(dev.inspect_storage_visible(0, 512)), vec![0; 512]);
+
+        let before = dev.storage_fault_state().actual_durable_frontier();
+        let (durability, frontier) =
+            ok(dev.apply_storage_external_mutation(2, 20, BlockRequest::flush(8)));
+        assert_eq!(durability, BlockCompletionDurability::Durable);
+        assert!(frontier >= before);
+        assert!(dev.storage_fault_state().actual_durable_frontier() >= frontier);
+    }
 }
