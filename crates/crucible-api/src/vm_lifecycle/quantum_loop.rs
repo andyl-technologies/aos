@@ -1656,51 +1656,26 @@ impl ProductionVmLifecycleLoop {
             })();
         match result {
             Ok(targets) => {
-                let checkpoint_set = ProductionVmExactCheckpointSet {
-                    identity: ContentHash::from_canonical_material(
-                        "crucible.production-vm-exact-checkpoint-set.v1",
-                        &format!(
-                            "scenario={}\nconfiguration={}\nfrontier={}\nfault={}\ntargets={:?}\ngenerations={:?}\nservices={:?}\ntrigger={:?}",
-                            self.scenario.id().to_hex(),
-                            configuration.id().to_hex(),
-                            self.inner.loop_impl().frontier().ticks,
-                            fault_checkpoint.id().to_hex(),
-                            targets
-                                .iter()
-                                .map(|(node, target)| (&node.name, target.manifest_identity))
-                                .collect::<Vec<_>>(),
-                            self.node_generations,
-                            self.node_service_states,
-                            self.trigger_state,
-                        ),
-                    ),
+                let scheduler = self.inner.loop_impl().checkpoint().map_err(|error| {
+                    SchedulerError::BoundaryViolation {
+                        message: format!("capture exact scheduler continuation: {error}"),
+                    }
+                })?;
+                let mut checkpoint_set = ProductionVmExactCheckpointSet {
+                    identity: ContentHash::default(),
                     configuration: configuration.clone(),
-                    scheduler: self.inner.loop_impl().clone(),
+                    scheduler,
                     trigger_state: self.trigger_state.clone(),
                     fault_checkpoint,
                     targets,
                     node_generations: self.node_generations.clone(),
                     node_service_states: self.node_service_states.clone(),
                 };
-                let publish_result = production_checkpoint_registry()
-                    .lock()
-                    .map_err(|_| SchedulerError::BoundaryViolation {
-                        message: String::from("production checkpoint registry lock is poisoned"),
-                    })
-                    .and_then(|mut registry| match registry.entry(checkpoint_set.identity) {
-                        std::collections::btree_map::Entry::Vacant(entry) => {
-                            entry.insert(checkpoint_set.clone());
-                            Ok(())
-                        }
-                        std::collections::btree_map::Entry::Occupied(_) => {
-                            Err(SchedulerError::BoundaryViolation {
-                                message: format!(
-                                    "concrete exact checkpoint closure {} is already registered",
-                                    checkpoint_set.identity.to_hex()
-                                ),
-                            })
-                        }
-                    });
+                let publish_result = persist_exact_checkpoint_set(
+                    &self.config.run_state_root,
+                    self.scenario.id(),
+                    &mut checkpoint_set,
+                );
                 if let Err(error) = publish_result {
                     let artifact_cleanup =
                         fs::remove_dir_all(&checkpoint_root).map_err(|cleanup| {

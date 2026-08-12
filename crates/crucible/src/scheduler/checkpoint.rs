@@ -200,6 +200,47 @@ impl From<&SearchRuntimeFrontier> for SearchRuntimeFrontierWire {
 }
 
 impl SingleSchedulerCheckpoint {
+    /// Reconstructs the checkpoint configuration against an authenticated scenario.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SingleSchedulerCheckpointError::Configuration`] when `scenario`
+    /// has another identity or the recorded schedule is malformed.
+    pub fn configuration_for(
+        &self,
+        scenario: &ScenarioDef,
+    ) -> Result<Configuration, SingleSchedulerCheckpointError> {
+        if self.wire.scenario != scenario.id() {
+            return Err(SingleSchedulerCheckpointError::Configuration);
+        }
+        let schedule = Schedule::from_compact_binary(&self.wire.schedule)
+            .map_err(|_| SingleSchedulerCheckpointError::Configuration)?;
+        Ok(Configuration {
+            def: scenario.clone(),
+            schedule,
+        })
+    }
+
+    /// Returns the exact restored scheduler frontier.
+    #[must_use]
+    pub const fn frontier(&self) -> VirtualTime {
+        VirtualTime {
+            ticks: self.wire.frontier,
+        }
+    }
+
+    /// Returns the seed owning all future scheduler decision streams.
+    #[must_use]
+    pub fn future_decision_seed(&self) -> Seed {
+        Seed::from_bytes(self.wire.decision_seed)
+    }
+
+    /// Returns the future decision-stream cursor map.
+    #[must_use]
+    pub const fn future_decision_rng_state(&self) -> &DecisionRngState {
+        &self.wire.decision_rng_cursor
+    }
+
     /// Encodes the complete scheduler continuation canonically.
     ///
     /// # Errors
