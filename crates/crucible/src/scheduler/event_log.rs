@@ -1342,6 +1342,7 @@ impl fmt::Debug for EventLogSegmentStore {
 #[derive(Clone, Debug)]
 pub struct EventLog {
     pub(super) segment_store: EventLogSegmentStore,
+    pub(super) segment_dependencies: Vec<ContentHash>,
     pub(super) prefix: ContentHash,
     pub(super) offset: EventLogOffset,
     pub(super) bytes: u64,
@@ -1399,6 +1400,7 @@ impl EventLog {
         let prefix = scheduler_event_log_prefix_for_resume(offset);
         Self {
             segment_store,
+            segment_dependencies: Vec::new(),
             prefix,
             offset,
             bytes: offset.bytes,
@@ -1529,6 +1531,7 @@ impl EventLog {
         .with_event_log_offset(current_offset);
 
         self.prefix = prefix;
+        self.segment_dependencies.push(segment_hash);
         self.offset = current_offset;
         self.bytes = bytes;
         self.events = events;

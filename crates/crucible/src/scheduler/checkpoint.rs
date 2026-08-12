@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 
-const MAGIC: &[u8] = b"crucible.single-scheduler-continuation.v1\0";
+const MAGIC: &[u8] = b"crucible.single-scheduler-continuation.v2\0";
 const MAX_BYTES: usize = 1_610_612_736;
 
 /// Complete mutable continuation of one admitted scheduler.
@@ -68,6 +68,7 @@ struct RuntimeNodeWire {
 struct EventLogWire {
     prefix: ContentHash,
     appended_segment: Option<ContentHash>,
+    segment_dependencies: Vec<ContentHash>,
     bytes: u64,
     events: u64,
     condition_entries: Vec<SchedulerEventLogEntry>,
@@ -151,6 +152,33 @@ impl SingleScheduler {
             },
         })
     }
+
+    /// Reads and authenticates every event-log segment required by the current prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SingleSchedulerCheckpointError::EventLog`] when a retained
+    /// segment is missing or its bytes no longer match its content identity.
+    pub fn event_log_dependency_objects(
+        &self,
+    ) -> Result<Vec<(ContentHash, Vec<u8>)>, SingleSchedulerCheckpointError> {
+        self.event_log
+            .segment_dependencies
+            .iter()
+            .map(|identity| {
+                let bytes = self
+                    .event_log
+                    .segment_store
+                    .store
+                    .get(identity)
+                    .map_err(|_| SingleSchedulerCheckpointError::EventLog)?;
+                if ContentHash::from_bytes(&bytes) != *identity {
+                    return Err(SingleSchedulerCheckpointError::EventLog);
+                }
+                Ok((*identity, bytes))
+            })
+            .collect()
+    }
 }
 
 impl From<&RuntimeSchedulerNode> for RuntimeNodeWire {
@@ -173,6 +201,7 @@ impl From<&EventLog> for EventLogWire {
         Self {
             prefix: log.offset.prefix,
             appended_segment: log.offset.appended_segment,
+            segment_dependencies: log.segment_dependencies.clone(),
             bytes: log.offset.bytes,
             events: log.offset.events,
             condition_entries: log.condition_entries.clone(),
@@ -248,6 +277,12 @@ impl SingleSchedulerCheckpoint {
     #[must_use]
     pub const fn future_decision_rng_state(&self) -> &DecisionRngState {
         &self.wire.decision_rng_cursor
+    }
+
+    /// Returns the ordered event-log segment identities retained by this continuation.
+    #[must_use]
+    pub fn event_log_segment_dependencies(&self) -> &[ContentHash] {
+        &self.wire.event_log.segment_dependencies
     }
 
     /// Encodes the complete scheduler continuation canonically.
@@ -497,6 +532,11 @@ fn restore_event_log(
         bytes: checkpoint.bytes,
         events: checkpoint.events,
     };
+    if checkpoint.appended_segment != checkpoint.segment_dependencies.last().copied()
+        && !(checkpoint.appended_segment.is_none() && checkpoint.segment_dependencies.is_empty())
+    {
+        return Err(SingleSchedulerCheckpointError::EventLog);
+    }
     let condition_prefix = if checkpoint.condition_entries.is_empty() {
         ConditionEventLogPrefix::genesis().with_event_log_offset(offset)
     } else {
@@ -508,6 +548,7 @@ fn restore_event_log(
         .with_event_log_offset(offset)
     };
     log.prefix = scheduler_event_log_prefix_for_resume(offset);
+    log.segment_dependencies = checkpoint.segment_dependencies.clone();
     log.offset = offset;
     log.bytes = offset.bytes;
     log.events = offset.events;

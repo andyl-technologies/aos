@@ -1688,6 +1688,15 @@ impl ProductionVmLifecycleLoop {
             })();
         match result {
             Ok(targets) => {
+                let event_log_objects = self
+                    .inner
+                    .loop_impl()
+                    .event_log_dependency_objects()
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: format!("capture exact event-log closure: {error}"),
+                    })?
+                    .into_iter()
+                    .collect();
                 let scheduler = self.inner.loop_impl().checkpoint().map_err(|error| {
                     SchedulerError::BoundaryViolation {
                         message: format!("capture exact scheduler continuation: {error}"),
@@ -1697,6 +1706,7 @@ impl ProductionVmLifecycleLoop {
                     identity: ContentHash::default(),
                     configuration: configuration.clone(),
                     scheduler,
+                    event_log_objects,
                     trigger_state: self.trigger_state.clone(),
                     assertion_state: self.assertion_evaluator.checkpoint(),
                     terminal_verdict: self.terminal_verdict.clone(),
