@@ -220,7 +220,7 @@ fn qemu_node_realization_executor_loads_probe_without_runtime_admission()
     let snapshot = QemuVmSnapshot::diskless(
         checkpoint_for_config("probe", &config, &node, 0, CheckpointKind::Fat)?,
         QemuReplayOracleValidation::NotRun,
-    );
+    )?;
     let runtime_id = hash("runtime", "probe");
     let launcher = scripted_launcher(Rc::clone(&log), runtime_id, 0);
     let mut executor = QemuNodeRealizationExecutor::new(node, launcher);

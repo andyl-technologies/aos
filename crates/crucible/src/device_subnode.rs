@@ -55,6 +55,9 @@ use crate::{
     WorldDeviceKind, WorldIoNodeKind,
 };
 
+mod checkpoint;
+pub use checkpoint::{DeviceSchedulingSubNodeCheckpoint, DeviceSchedulingSubNodeCheckpointError};
+
 /// Default physical request-ring capacity selected at instantiation time.
 pub const DEFAULT_WORLD_IO_INBOX_CAPACITY: u64 = 256;
 
@@ -1175,5 +1178,51 @@ mod tests {
             })
         ));
         assert!(disk.next_exact_local_event().is_none());
+    }
+
+    #[test]
+    fn block_sub_node_checkpoint_round_trips_pending_completion() {
+        let seed = Seed::from_u64(0xd15c);
+        let mut disk = fresh_disk(seed);
+        disk.submit(41, &read_request(7, 0, 8))
+            .unwrap_or_else(|error| panic!("submit should succeed: {error}"));
+        let checkpoint = disk.checkpoint();
+        let bytes = checkpoint
+            .canonical_bytes()
+            .unwrap_or_else(|error| panic!("sub-node checkpoint should encode: {error}"));
+        let decoded = DeviceSchedulingSubNodeCheckpoint::from_canonical_bytes(&bytes)
+            .unwrap_or_else(|error| panic!("sub-node checkpoint should decode: {error}"));
+        let mut restored = fresh_disk(seed);
+        restored
+            .restore_checkpoint(&decoded)
+            .unwrap_or_else(|error| panic!("sub-node checkpoint should restore: {error}"));
+
+        assert_eq!(restored.checkpoint(), checkpoint);
+        assert_eq!(
+            decoded
+                .canonical_bytes()
+                .unwrap_or_else(|error| panic!("decoded checkpoint should encode: {error}")),
+            bytes
+        );
+    }
+
+    #[test]
+    fn ninep_sub_node_checkpoint_round_trips_protocol_state() {
+        let seed = Seed::from_u64(0x9f5);
+        let mut fs = fresh_ninep(seed);
+        fs.submit_ninep_frame(19, &tversion(3, 4096, codec::PROTOCOL_VERSION))
+            .unwrap_or_else(|error| panic!("9p submit should succeed: {error}"));
+        let checkpoint = fs.checkpoint();
+        let bytes = checkpoint
+            .canonical_bytes()
+            .unwrap_or_else(|error| panic!("9p sub-node checkpoint should encode: {error}"));
+        let decoded = DeviceSchedulingSubNodeCheckpoint::from_canonical_bytes(&bytes)
+            .unwrap_or_else(|error| panic!("9p sub-node checkpoint should decode: {error}"));
+        let mut restored = fresh_ninep(seed);
+        restored
+            .restore_checkpoint(&decoded)
+            .unwrap_or_else(|error| panic!("9p sub-node checkpoint should restore: {error}"));
+
+        assert_eq!(restored.checkpoint(), checkpoint);
     }
 }

@@ -13,7 +13,9 @@ use super::codec::{Message, TMessage};
 pub const HARD_NINEP_OBJECT_VERSIONS: usize = 1_048_576;
 
 /// Stable identity of one exact 9p request frame.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct NinepRequestIdentity {
     /// Exact request coordinate, which distinguishes repeated identical frames.
     pub request_icount: u64,
@@ -26,7 +28,9 @@ pub struct NinepRequestIdentity {
 }
 
 /// Closed operation class used by 9p signal bindings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum NinepOperation {
     /// Reads regular-file bytes.
     Read,

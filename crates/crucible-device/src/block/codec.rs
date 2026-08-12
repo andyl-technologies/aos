@@ -54,7 +54,19 @@ pub const RESPONSE_HEADER_LEN: usize = 20;
 /// Request IDs are scoped to an epoch so a controller reset may restart its
 /// counter without allowing a delayed pre-reset completion to alias a new
 /// request.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct BlockRequestIdentity {
     /// Monotone controller generation.
     pub epoch: u64,
@@ -930,7 +942,9 @@ fn u64_le(buf: &[u8], offset: usize) -> u64 {
 ///
 /// Every variant is a pure function of the input bytes; decoding hostile input
 /// always lands here rather than panicking ([IO-8], `gate:abi-conformance`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, thiserror::Error, serde::Serialize, serde::Deserialize,
+)]
 pub enum BlockCodecError {
     /// The buffer is shorter than the fixed header for its message kind.
     #[error("block message header truncated: need {needed} bytes, got {got}")]

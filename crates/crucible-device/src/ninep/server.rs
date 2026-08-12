@@ -90,7 +90,9 @@ const IOUNIT_ANY: u32 = 0;
 /// enumeration of an opened directory is *not* stored here — it is recomputed
 /// deterministically from the tree on each `readdir`, so it survives
 /// snapshot/restore for free ([IO-19]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum FidState {
     /// The fid is bound to a path but not yet opened.
     Clunked,

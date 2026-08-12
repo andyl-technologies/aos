@@ -84,9 +84,9 @@ pub use backpressure::{BackpressureState, BoundedQueue, PushError};
 pub use block::{
     BLOCK_ABI_VERSION, BaseImage, BlockCodecError, BlockDevice, BlockErrorCode, BlockLatency,
     BlockOp, BlockRequest, BlockRequestIdentity, BlockResponse, BlockSnapshot,
-    BlockSnapshotCodecError, BlockStatus,
-    BlockTransportPending, BlockTransportRequestIds, BlockTransportReset, BlockTransportResolved,
-    BlockTransportUnadmitted, BlockTransportUndelivered, CowOverlay, OverlayDelta, PAGE_SIZE,
+    BlockSnapshotCodecError, BlockStatus, BlockTransportPending, BlockTransportRequestIds,
+    BlockTransportReset, BlockTransportResolved, BlockTransportUnadmitted,
+    BlockTransportUndelivered, CowOverlay, OverlayDelta, PAGE_SIZE,
     install_cross_device_misdirected_persistence,
 };
 pub use clock::{VirtualClock, ceil_ns_to_icount};
@@ -110,9 +110,8 @@ pub use ninep::{
     FsTree, FsTreeDecodeError, NinepDevice, NinepLatency, NinepObjectVersion, NinepOperation,
     NinepRequestIdentity, NinepRequestOpportunity, NinepResultDirective, NinepServer,
     NinepServerSnapshot, NinepSnapshot, NinepSnapshotCodecError, NinepVirtualFid,
-    NinepVisibilityLookup,
-    NinepVisibilityPolicy, NinepVisibilityRelease, NinepVisibilityScope, NinepVisibilityState,
-    NinepVisibilityUpdate, Node, Qid, QidType, ResolvedNinepRequestDirective,
+    NinepVisibilityLookup, NinepVisibilityPolicy, NinepVisibilityRelease, NinepVisibilityScope,
+    NinepVisibilityState, NinepVisibilityUpdate, Node, Qid, QidType, ResolvedNinepRequestDirective,
 };
 pub use request::{
     AdditionalCompletion, AffineLatency, ComputedResponse, LatencyModel, Request, RequestId,
