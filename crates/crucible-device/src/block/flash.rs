@@ -90,8 +90,10 @@ impl ResolvedBlockFlashRule {
         if self.erase_block_bytes == 0
             || self.program_page_bytes == 0
             || self.endurance_cycles == 0
-            || self.erase_block_bytes % self.program_page_bytes != 0
-            || device_length % self.erase_block_bytes != 0
+            || !self
+                .erase_block_bytes
+                .is_multiple_of(self.program_page_bytes)
+            || !device_length.is_multiple_of(self.erase_block_bytes)
             || self.retention.minimum_age_nanos == 0
             || self.read_disturb.read_threshold == 0
             || self.retention.maximum_changed_bits == 0
@@ -383,6 +385,10 @@ impl BlockFlashState {
     ///
     /// Returns [`DeviceError`] for invalid geometry/ranges, noncanonical
     /// contributors, overflow, or sparse-state exhaustion.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a registered erase fragment authenticates independent request, fragment, time, geometry, and contributor inputs"
+    )]
     pub fn erase_fragment_registered(
         &mut self,
         operation_sequence: u64,

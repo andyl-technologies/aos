@@ -474,6 +474,10 @@ impl NinepDevice {
     /// # Errors
     ///
     /// Propagates any [`DeviceError`] from [`IoCore::process_inbox`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the detached 9p server node borrows each independently owned device state field"
+    )]
     fn process_pending(
         core: &mut IoCore,
         server: &mut NinepServer,

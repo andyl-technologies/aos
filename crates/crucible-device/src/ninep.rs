@@ -562,8 +562,7 @@ mod tests {
             codec::TLOCK,
             codec::TGETLOCK,
         ];
-        let mut t = 2;
-        for (i, &mt) in mutating.iter().enumerate() {
+        for (t, (i, &mt)) in (2..).zip(mutating.iter().enumerate()) {
             let req = frame(mt, 100 + i as u16, &[0u8; 8]);
             let (_, reply) = round_trip(&mut dev, t, &req);
             assert_eq!(
@@ -576,7 +575,6 @@ mod tests {
                 errno::EROFS,
                 "mutating type {mt} must be EROFS"
             );
-            t += 1;
         }
     }
 
