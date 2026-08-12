@@ -190,6 +190,22 @@ fn replay_live_qemu_evidence(
             .map_err(|error| artifact_error(format!("decode resolved-effect trace: {error}")))
         })
         .transpose()?;
+    match (
+        scenario.plan().fault_signals().programs().is_empty(),
+        resolved_effect_trace.is_some(),
+    ) {
+        (false, false) => {
+            return Err(artifact_error(
+                "live-QEMU replay of a signal fault plan requires a resolved-effect trace",
+            ));
+        }
+        (true, true) => {
+            return Err(artifact_error(
+                "live-QEMU replay artifact carries a resolved-effect trace for an inert fault plan",
+            ));
+        }
+        (true, false) | (false, true) => {}
+    }
     let model_bytes = required_single_component_payload(
         artifact,
         MODEL_REPRODUCTION_ARTIFACT_MEDIA_TYPE,
