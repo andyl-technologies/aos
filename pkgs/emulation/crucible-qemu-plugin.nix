@@ -2,7 +2,7 @@
 {
   lib,
   mkCargoPackage,
-  fetchCargoDeps,
+  fetchCargoVendor,
   glib,
   pkg-config,
   qemu-crucible,
@@ -14,10 +14,11 @@ in
     pname = "crucible-qemu-plugin";
     inherit version src;
 
-    cargoDeps = fetchCargoDeps {
+    cargoDeps = fetchCargoVendor {
       inherit src;
+      name = "crucible-vendor-${version}";
       sourceRoot = "source/crates";
-      hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
+      hash = "sha256-byK2knHIciv8rLm+TLiOfTXNU9m/u7idWbSsvG6mIys=";
     };
 
     cargoFlags = "-p crucible-qemu-plugin";
@@ -139,7 +140,7 @@ in
       cat > "$out/nix-support/crucible-qemu-plugin-build-info" <<INFO
       package=crucible-qemu-plugin
       build_system=mkCargoPackage
-      cargo_deps=fetchCargoDeps
+      cargo_deps=fetchCargoVendor
       qemu_package=qemu-crucible
       qemu_build_id=${qemu-crucible.passthru.qemuBuildIdentity}
       qemu_sim_capability_marker=${qemu-crucible}/share/aos/crucible/qemu-build-identity.env

@@ -4,7 +4,7 @@
   stdenv,
   mkDerivation,
   mkCargoPackage,
-  fetchCargoDeps,
+  fetchCargoVendor,
   rust,
   openssl,
   pkg-config,
@@ -36,7 +36,7 @@
     if stdenv.hostPlatform.system == "x86_64-linux"
     then "x86_64"
     else "aarch64";
-  cargoDepsHash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
+  cargoDepsHash = "sha256-byK2knHIciv8rLm+TLiOfTXNU9m/u7idWbSsvG6mIys=";
   liveDebuggerMatrixScript = ../../../examples/codex-skills/crucible-debugger/scripts/live-matrix.sh;
   src = import ./_source.nix {inherit lib;};
   packages = import ./_packages.nix;
@@ -100,8 +100,9 @@
     pname = "crucible-controller";
     inherit version src;
 
-    cargoDeps = fetchCargoDeps {
+    cargoDeps = fetchCargoVendor {
       inherit src;
+      name = "crucible-vendor-${version}";
       sourceRoot = "source/crates";
       hash = cargoDepsHash;
     };
@@ -211,7 +212,7 @@
       component=controller
       component_license=Apache-2.0
       build_system=mkCargoPackage
-      cargo_deps=fetchCargoDeps
+      cargo_deps=fetchCargoVendor
       cargo_workspace=crates
       cargo_workspace_flags=${workspaceCargoFlags}
       cargo_member_flags=${packageFlags}
@@ -243,8 +244,9 @@
     pname = "crucible-debug-gateway";
     inherit version src;
 
-    cargoDeps = fetchCargoDeps {
+    cargoDeps = fetchCargoVendor {
       inherit src;
+      name = "crucible-vendor-${version}";
       sourceRoot = "source/crates";
       hash = cargoDepsHash;
     };

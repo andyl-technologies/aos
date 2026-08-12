@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  fetchCargoDeps,
+  fetchCargoVendor,
   lib,
   qemu-crucible,
 }: let
@@ -32,9 +32,10 @@
       # characterization store paths.
       && !lib.hasPrefix characterizationGoldens pathString;
   };
-  cargoDepsHash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
-  crucibleCargoDeps = fetchCargoDeps {
+  cargoDepsHash = "sha256-byK2knHIciv8rLm+TLiOfTXNU9m/u7idWbSsvG6mIys=";
+  crucibleCargoDeps = fetchCargoVendor {
     src = crucibleSource;
+    name = "crucible-vendor-${version}";
     sourceRoot = "source/crates";
     hash = cargoDepsHash;
   };
