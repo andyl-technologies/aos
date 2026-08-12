@@ -437,6 +437,13 @@
         patchName = "0068-crucible-guest-clock-faults.patch";
       };
     }
+    {
+      patch = "0069-crucible-accelerator-fault-device.patch";
+      check = import ./phase2-qemu-fault-vmstate.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0069-crucible-accelerator-fault-device.patch";
+      };
+    }
   ];
 
   microtestPatchNames =
