@@ -6,7 +6,7 @@
 use super::*;
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct NetworkCustodyApplication {
+pub(in super::super) struct NetworkCustodyApplication {
     pub(super) defer_until: Option<u64>,
     pub(super) repeat_phase_on_resume: bool,
 }
@@ -197,7 +197,7 @@ pub(super) struct NetworkContactRouteLabel {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct NetworkContactRouteReservation {
+pub(in super::super) struct NetworkContactRouteReservation {
     first_start_nanos: u64,
     finish_nanos: u64,
     contacts: Vec<FaultObjectId>,
@@ -1589,7 +1589,7 @@ pub(in super::super) fn apply_network_frame_action(
     Ok(())
 }
 
-pub(super) trait NetworkEffectContext {
+pub(in super::super) trait NetworkEffectContext {
     fn binding(&self) -> &FaultObjectId;
     fn effect_kind(&self) -> crucible::model::EffectKind;
 }
