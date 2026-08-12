@@ -291,6 +291,17 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         Ok(events)
     }
 
+    fn capture_checkpoint(&mut self, configuration: &Configuration) -> Result<(), SchedulerError> {
+        if self.inner.loop_impl().configuration() != configuration {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "production checkpoint configuration differs from the scheduler boundary",
+                ),
+            });
+        }
+        self.capture_exact_checkpoint_set(configuration)
+    }
+
     fn append_noncanonical_debug_event_log_entries(
         &mut self,
         entries: Vec<crucible::SchedulerEventLogEntry>,
@@ -1468,7 +1479,10 @@ impl ProductionVmLifecycleLoop {
 
         let mut captured: Vec<(NodeId, QemuVmSnapshot)> = Vec::new();
         let result =
-            (|| -> Result<BTreeMap<NodeId, ProductionVmExactCheckpointTarget>, SchedulerError> {
+            (|| -> Result<
+                BTreeMap<(ContentHash, NodeId), ProductionVmExactCheckpointTarget>,
+                SchedulerError,
+            > {
                 let mut targets = BTreeMap::new();
                 for (node, counter, scheduler_time) in boundaries {
                     let parent = if configuration.schedule.is_empty() {
@@ -1574,7 +1588,7 @@ impl ProductionVmLifecycleLoop {
                         ),
                     );
                     targets.insert(
-                        node,
+                        (configuration.id(), node),
                         ProductionVmExactCheckpointTarget {
                             configuration: configuration.clone(),
                             counter,
