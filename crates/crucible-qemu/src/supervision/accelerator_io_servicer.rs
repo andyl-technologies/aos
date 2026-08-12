@@ -239,6 +239,146 @@ impl QemuLiveAcceleratorServicer {
     }
 }
 
+const ACCELERATOR_CHECKPOINT_MAGIC: &[u8] = b"crucible.accelerator-checkpoint.v1\0";
+
+impl QemuLiveAcceleratorCheckpoint {
+    /// Encodes all pending accelerator completions canonically.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveAcceleratorServicerError`] if a retained entry is
+    /// malformed or the queue violates its protocol capacity.
+    pub fn to_canonical_bytes(&self) -> Result<Vec<u8>, QemuLiveAcceleratorServicerError> {
+        if self.pending.len() > crucible_shmem::ACCELERATOR_QUEUE_CAPACITY as usize {
+            return Err(QemuLiveAcceleratorServicerError::InvalidCheckpoint);
+        }
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(ACCELERATOR_CHECKPOINT_MAGIC);
+        bytes.extend_from_slice(&self.vm_slot.to_le_bytes());
+        bytes.extend_from_slice(&(self.pending.len() as u32).to_le_bytes());
+        for ((generation, sequence), pending) in &self.pending {
+            if (*generation, *sequence)
+                != (
+                    pending.completion.generation(),
+                    pending.completion.sequence(),
+                )
+                || !pending.completion.is_completion()
+            {
+                return Err(QemuLiveAcceleratorServicerError::InvalidCheckpoint);
+            }
+            bytes.extend_from_slice(&pending.due_icount.to_le_bytes());
+            let entry = pending
+                .completion
+                .canonical_bytes()
+                .map_err(|source| QemuLiveAcceleratorServicerError::Entry { source })?;
+            bytes.extend_from_slice(&(entry.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&entry);
+        }
+        Ok(bytes)
+    }
+
+    /// Decodes and validates all pending accelerator completions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveAcceleratorServicerError`] for unsupported, malformed,
+    /// over-capacity, duplicate, noncanonical, or trailing state.
+    pub fn from_canonical_bytes(
+        bytes: &[u8],
+    ) -> Result<Self, QemuLiveAcceleratorServicerError> {
+        let payload = bytes
+            .strip_prefix(ACCELERATOR_CHECKPOINT_MAGIC)
+            .ok_or(QemuLiveAcceleratorServicerError::InvalidCheckpoint)?;
+        let mut reader = AcceleratorCheckpointReader::new(payload);
+        let vm_slot = reader.u32()?;
+        let count = reader.u32()? as usize;
+        if count > crucible_shmem::ACCELERATOR_QUEUE_CAPACITY as usize {
+            return Err(QemuLiveAcceleratorServicerError::InvalidCheckpoint);
+        }
+        let mut pending = BTreeMap::new();
+        for _ in 0..count {
+            let due_icount = reader.u64()?;
+            let entry = crucible_shmem::AcceleratorEntry::from_canonical_bytes(reader.blob()?)
+                .map_err(|source| QemuLiveAcceleratorServicerError::Entry { source })?;
+            if !entry.is_completion()
+                || pending
+                    .insert(
+                        (entry.generation(), entry.sequence()),
+                        PendingAcceleratorCompletion {
+                            due_icount,
+                            completion: entry,
+                        },
+                    )
+                    .is_some()
+            {
+                return Err(QemuLiveAcceleratorServicerError::InvalidCheckpoint);
+            }
+        }
+        reader.finish()?;
+        let checkpoint = Self { vm_slot, pending };
+        if checkpoint.to_canonical_bytes()?.as_slice() != bytes {
+            return Err(QemuLiveAcceleratorServicerError::InvalidCheckpoint);
+        }
+        Ok(checkpoint)
+    }
+}
+
+struct AcceleratorCheckpointReader<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> AcceleratorCheckpointReader<'a> {
+    const fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, offset: 0 }
+    }
+
+    fn take(&mut self, count: usize) -> Result<&'a [u8], QemuLiveAcceleratorServicerError> {
+        let end = self
+            .offset
+            .checked_add(count)
+            .ok_or(QemuLiveAcceleratorServicerError::InvalidCheckpoint)?;
+        let selected = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or(QemuLiveAcceleratorServicerError::InvalidCheckpoint)?;
+        self.offset = end;
+        Ok(selected)
+    }
+
+    fn u32(&mut self) -> Result<u32, QemuLiveAcceleratorServicerError> {
+        let bytes = self
+            .take(4)?
+            .try_into()
+            .map_err(|_| QemuLiveAcceleratorServicerError::InvalidCheckpoint)?;
+        Ok(u32::from_le_bytes(bytes))
+    }
+
+    fn u64(&mut self) -> Result<u64, QemuLiveAcceleratorServicerError> {
+        let bytes = self
+            .take(8)?
+            .try_into()
+            .map_err(|_| QemuLiveAcceleratorServicerError::InvalidCheckpoint)?;
+        Ok(u64::from_le_bytes(bytes))
+    }
+
+    fn blob(&mut self) -> Result<&'a [u8], QemuLiveAcceleratorServicerError> {
+        let length = self.u32()? as usize;
+        if length > crucible_shmem::ACCELERATOR_ENTRY_DATA_BYTES + 128 {
+            return Err(QemuLiveAcceleratorServicerError::InvalidCheckpoint);
+        }
+        self.take(length)
+    }
+
+    fn finish(self) -> Result<(), QemuLiveAcceleratorServicerError> {
+        if self.offset == self.bytes.len() {
+            Ok(())
+        } else {
+            Err(QemuLiveAcceleratorServicerError::InvalidCheckpoint)
+        }
+    }
+}
+
 fn same_job_envelope(request: AcceleratorEntry, completion: AcceleratorEntry) -> bool {
     request.device_id() == completion.device_id()
         && request.class() == completion.class()
@@ -442,6 +582,9 @@ pub enum QemuLiveAcceleratorServicerError {
     /// A checkpoint belonged to another VM slot.
     #[error("accelerator checkpoint VM-slot binding mismatch")]
     CheckpointBindingMismatch,
+    /// A durable accelerator continuation was malformed or noncanonical.
+    #[error("accelerator checkpoint is invalid")]
+    InvalidCheckpoint,
 }
 
 #[cfg(test)]
@@ -475,5 +618,41 @@ mod tests {
         );
         tpu.push(0);
         assert_eq!(execute_tpu_i8_matmul(&tpu, 4).0, STATUS_MALFORMED_JOB);
+    }
+
+    #[test]
+    fn accelerator_checkpoint_codec_round_trips_pending_completion() {
+        let completion = AcceleratorEntry::new(
+            2,
+            3,
+            [4; 32],
+            AcceleratorClass::Gpu,
+            1,
+            0,
+            0,
+            true,
+            10,
+            8,
+            &[1, 2, 3, 4],
+        )
+        .unwrap_or_else(|error| panic!("valid completion: {error}"));
+        let checkpoint = QemuLiveAcceleratorCheckpoint {
+            vm_slot: 7,
+            pending: BTreeMap::from([(
+                (3, 2),
+                PendingAcceleratorCompletion {
+                    due_icount: 99,
+                    completion,
+                },
+            )]),
+        };
+        let bytes = checkpoint
+            .to_canonical_bytes()
+            .unwrap_or_else(|error| panic!("encode checkpoint: {error}"));
+        assert_eq!(
+            QemuLiveAcceleratorCheckpoint::from_canonical_bytes(&bytes)
+                .unwrap_or_else(|error| panic!("decode checkpoint: {error}")),
+            checkpoint
+        );
     }
 }

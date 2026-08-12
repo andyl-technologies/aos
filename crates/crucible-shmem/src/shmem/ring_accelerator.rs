@@ -342,6 +342,155 @@ impl AcceleratorEntry {
         Ok(self)
     }
 
+    /// Encodes one validated accelerator record without native padding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AcceleratorEntryError`] if this copied record is malformed.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, AcceleratorEntryError> {
+        self.validate_ref()?;
+        let data = self.data()?;
+        let mut bytes = Vec::with_capacity(78 + data.len());
+        bytes.extend_from_slice(b"crucible.accelerator-entry.v1\0");
+        bytes.extend_from_slice(&self.sequence.to_le_bytes());
+        bytes.extend_from_slice(&self.generation.to_le_bytes());
+        bytes.extend_from_slice(&self.device_id);
+        bytes.extend_from_slice(&self.class.to_le_bytes());
+        bytes.extend_from_slice(&self.job_kind.to_le_bytes());
+        bytes.extend_from_slice(&self.queue_id.to_le_bytes());
+        bytes.extend_from_slice(&self.status.to_le_bytes());
+        bytes.extend_from_slice(&self.flags.to_le_bytes());
+        bytes.extend_from_slice(&self.service_units.to_le_bytes());
+        bytes.extend_from_slice(&self.output_capacity.to_le_bytes());
+        bytes.extend_from_slice(&self.data_len.to_le_bytes());
+        bytes.extend_from_slice(data);
+        Ok(bytes)
+    }
+
+    /// Decodes and validates one padding-independent accelerator record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AcceleratorEntryError`] for unsupported, truncated,
+    /// over-limit, trailing, or otherwise noncanonical bytes.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, AcceleratorEntryError> {
+        const MAGIC: &[u8] = b"crucible.accelerator-entry.v1\0";
+        let payload = bytes
+            .strip_prefix(MAGIC)
+            .ok_or(AcceleratorEntryError::CanonicalDecode)?;
+        const FIXED: usize = 8 + 8 + 32 + 2 + 2 + 2 + 2 + 2 + 8 + 4 + 4;
+        if payload.len() < FIXED {
+            return Err(AcceleratorEntryError::CanonicalDecode);
+        }
+        let mut offset: usize = 0;
+        let mut take = |count: usize| {
+            let end = offset.checked_add(count)?;
+            let selected = payload.get(offset..end)?;
+            offset = end;
+            Some(selected)
+        };
+        let sequence = u64::from_le_bytes(
+            take(8)
+                .and_then(|field| field.try_into().ok())
+                .ok_or(AcceleratorEntryError::CanonicalDecode)?,
+        );
+        let generation = u64::from_le_bytes(
+            take(8)
+                .and_then(|field| field.try_into().ok())
+                .ok_or(AcceleratorEntryError::CanonicalDecode)?,
+        );
+        let device_id = take(32)
+            .and_then(|field| field.try_into().ok())
+            .ok_or(AcceleratorEntryError::CanonicalDecode)?;
+        let class = u16::from_le_bytes(
+            take(2)
+                .and_then(|field| field.try_into().ok())
+                .ok_or(AcceleratorEntryError::CanonicalDecode)?,
+        );
+        let job_kind = u16::from_le_bytes(
+            take(2)
+                .and_then(|field| field.try_into().ok())
+                .ok_or(AcceleratorEntryError::CanonicalDecode)?,
+        );
+        let queue_id = u16::from_le_bytes(
+            take(2)
+                .and_then(|field| field.try_into().ok())
+                .ok_or(AcceleratorEntryError::CanonicalDecode)?,
+        );
+        let status = u16::from_le_bytes(
+            take(2)
+                .and_then(|field| field.try_into().ok())
+                .ok_or(AcceleratorEntryError::CanonicalDecode)?,
+        );
+        let flags = u16::from_le_bytes(
+            take(2)
+                .and_then(|field| field.try_into().ok())
+                .ok_or(AcceleratorEntryError::CanonicalDecode)?,
+        );
+        let service_units = u64::from_le_bytes(
+            take(8)
+                .and_then(|field| field.try_into().ok())
+                .ok_or(AcceleratorEntryError::CanonicalDecode)?,
+        );
+        let output_capacity = u32::from_le_bytes(
+            take(4)
+                .and_then(|field| field.try_into().ok())
+                .ok_or(AcceleratorEntryError::CanonicalDecode)?,
+        );
+        let data_len = u32::from_le_bytes(
+            take(4)
+                .and_then(|field| field.try_into().ok())
+                .ok_or(AcceleratorEntryError::CanonicalDecode)?,
+        ) as usize;
+        if data_len > ACCELERATOR_ENTRY_DATA_BYTES || payload.len() != FIXED + data_len {
+            return Err(AcceleratorEntryError::CanonicalDecode);
+        }
+        let data = payload
+            .get(offset..)
+            .ok_or(AcceleratorEntryError::CanonicalDecode)?;
+        let class = match class {
+            1 => AcceleratorClass::Gpu,
+            2 => AcceleratorClass::Tpu,
+            3 => AcceleratorClass::Fpga,
+            _ => return Err(AcceleratorEntryError::CanonicalDecode),
+        };
+        let entry = if flags == ACCELERATOR_ENTRY_FLAG_CANCELLATION {
+            if status != 0 || !data.is_empty() {
+                return Err(AcceleratorEntryError::CanonicalDecode);
+            }
+            Self::cancellation(
+                sequence,
+                generation,
+                device_id,
+                class,
+                job_kind,
+                queue_id,
+                service_units,
+                output_capacity,
+            )?
+        } else if flags <= 1 {
+            Self::new(
+                sequence,
+                generation,
+                device_id,
+                class,
+                job_kind,
+                queue_id,
+                status,
+                flags == 1,
+                service_units,
+                output_capacity,
+                data,
+            )?
+        } else {
+            return Err(AcceleratorEntryError::CanonicalDecode);
+        };
+        if entry.canonical_bytes()?.as_slice() != bytes {
+            return Err(AcceleratorEntryError::CanonicalDecode);
+        }
+        Ok(entry)
+    }
+
     fn validate_ref(&self) -> Result<(), AcceleratorEntryError> {
         if self.sequence == 0
             || self.generation == 0
@@ -384,6 +533,9 @@ impl AcceleratorEntry {
 /// Invalid accelerator shared-memory record.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum AcceleratorEntryError {
+    /// The padding-independent durable encoding was malformed or noncanonical.
+    #[error("accelerator entry canonical encoding is invalid")]
+    CanonicalDecode,
     /// Sequence, generation, or device identity was zero.
     #[error("accelerator entry identity is invalid")]
     InvalidIdentity,
