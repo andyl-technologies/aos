@@ -23,7 +23,6 @@ impl From<&SessionCommand> for SessionCommandKind {
             SessionCommand::Step {
                 mode: StepMode::Duration(_),
             } => Self::StepDuration,
-            SessionCommand::Snapshot => Self::Snapshot,
             SessionCommand::Fork { .. } => Self::Fork,
             SessionCommand::SetBreakpoint { .. } => Self::SetBreakpoint,
             SessionCommand::RemoveBreakpoint { .. } => Self::RemoveBreakpoint,

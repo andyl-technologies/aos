@@ -272,7 +272,7 @@ pub const API_METHOD_MAPPINGS: [ApiMethodMapping; 9] = [
 ];
 
 /// API command mapping table covering the complete session command vocabulary.
-pub const API_COMMAND_MAPPINGS: [ApiCommandMapping; 22] = [
+pub const API_COMMAND_MAPPINGS: [ApiCommandMapping; 21] = [
     ApiCommandMapping {
         command_name: "start",
         command_kind: SessionCommandKind::Start,
@@ -332,10 +332,6 @@ pub const API_COMMAND_MAPPINGS: [ApiCommandMapping; 22] = [
     ApiCommandMapping {
         command_name: "query",
         command_kind: SessionCommandKind::Query,
-    },
-    ApiCommandMapping {
-        command_name: "snapshot",
-        command_kind: SessionCommandKind::Snapshot,
     },
     ApiCommandMapping {
         command_name: "attach-gdb",

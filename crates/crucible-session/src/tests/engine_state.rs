@@ -243,7 +243,6 @@ fn lifecycle_state_reason_outcome_and_command_sets_are_closed() {
             SessionCommandKind::CreateSavepoint,
             SessionCommandKind::Fork,
             SessionCommandKind::Query,
-            SessionCommandKind::Snapshot,
             SessionCommandKind::AttachGdb,
             SessionCommandKind::DebugGoto,
             SessionCommandKind::DebugReverseStep,

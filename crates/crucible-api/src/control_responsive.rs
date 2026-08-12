@@ -17,19 +17,14 @@ use tokio::sync::mpsc;
 pub const CONTROL_RESPONSIVE_QUANTUM_BOUND: u64 = 1;
 
 /// Running-session control operations that the responsiveness gate must observe.
-pub const CONTROL_RESPONSIVE_REQUIRED_OPERATIONS: [ControlOperationKind; 3] = [
-    ControlOperationKind::Pause,
-    ControlOperationKind::Snapshot,
-    ControlOperationKind::Query,
-];
+pub const CONTROL_RESPONSIVE_REQUIRED_OPERATIONS: [ControlOperationKind; 2] =
+    [ControlOperationKind::Pause, ControlOperationKind::Query];
 
 /// A control operation class measured by `gate:control-responsive`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ControlOperationKind {
     /// Pause a running session at the next quantum boundary.
     Pause,
-    /// Read or materialize a point-in-time session snapshot.
-    Snapshot,
     /// Fork a child session from a deterministic checkpoint or prefix boundary.
     Fork,
     /// Read the current session state without mutating the run.
@@ -279,7 +274,6 @@ impl From<crucible_session::LiveStateKind> for ControlSessionState {
 fn session_command_for(operation: ControlOperationKind) -> SessionCommand {
     match operation {
         ControlOperationKind::Pause => SessionCommand::Pause,
-        ControlOperationKind::Snapshot => SessionCommand::Snapshot,
         ControlOperationKind::Fork => SessionCommand::fork_current(),
         ControlOperationKind::Query => SessionCommand::query_snapshot(),
     }
@@ -289,7 +283,7 @@ fn session_command_for(operation: ControlOperationKind) -> SessionCommand {
 ///
 /// The validator requires each record to be issued while the session is running,
 /// rejects backward quantum counters, enforces the supplied quantum bound, and
-/// requires coverage of pause, snapshot, and query operations.
+/// requires coverage of pause and query operations.
 ///
 /// # Errors
 ///

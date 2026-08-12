@@ -198,7 +198,7 @@
       }
       {
         label = "session gate covers snapshot";
-        needle = "SessionCommand::Snapshot";
+        needle = "SessionCommand::query_snapshot()";
       }
       {
         label = "session gate covers query";

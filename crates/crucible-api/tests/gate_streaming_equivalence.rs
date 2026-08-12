@@ -418,7 +418,6 @@ const fn command_index(command: SessionCommandKind) -> u64 {
         SessionCommandKind::CreateSavepoint => 13,
         SessionCommandKind::Fork => 14,
         SessionCommandKind::Query => 15,
-        SessionCommandKind::Snapshot => 16,
         SessionCommandKind::AttachGdb => 17,
         SessionCommandKind::DebugGoto => 18,
         SessionCommandKind::DebugReverseStep => 19,

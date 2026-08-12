@@ -50,10 +50,7 @@ async fn gate_control_responsive_accepts_required_ops_within_quantum_bound() {
     let acknowledgements = fixture.issue_required_operations().await;
     assert_eq!(
         fixture.observed_control_operations(),
-        vec![
-            SchedulerControlOperationKind::Snapshot,
-            SchedulerControlOperationKind::Query,
-        ]
+        vec![SchedulerControlOperationKind::Query]
     );
 
     let report =
@@ -63,8 +60,8 @@ async fn gate_control_responsive_accepts_required_ops_within_quantum_bound() {
             });
 
     assert_eq!(report.bound_quanta, 1);
-    assert_eq!(report.observations, 3);
-    assert_eq!(report.required_operations_observed, 3);
+    assert_eq!(report.observations, 2);
+    assert_eq!(report.required_operations_observed, 2);
     assert!(report.max_acknowledgement_delta_quanta <= 1);
 
     fixture.stop().await;
@@ -112,7 +109,7 @@ fn gate_control_responsive_requires_running_session_and_all_operation_classes() 
         }
     );
 
-    let missing_query = &applied_acknowledgements()[..2];
+    let missing_query = &applied_acknowledgements()[..1];
     let error = validate_control_responsiveness(missing_query, CONTROL_RESPONSIVE_QUANTUM_BOUND)
         .expect_err("missing query coverage must fail the gate");
     assert_eq!(
@@ -127,7 +124,7 @@ fn gate_control_responsive_requires_running_session_and_all_operation_classes() 
 fn gate_control_responsive_requires_required_operations_to_apply() {
     let mut acknowledgements = applied_acknowledgements();
     acknowledgements[0] = ControlOperationAcknowledgement::new(
-        ControlOperationKind::Snapshot,
+        ControlOperationKind::Pause,
         ControlSessionState::Running,
         12,
         12,
@@ -140,7 +137,7 @@ fn gate_control_responsive_requires_required_operations_to_apply() {
     assert_eq!(
         error,
         ControlResponsivenessError::RequiredOperationRejected {
-            operation: ControlOperationKind::Snapshot,
+            operation: ControlOperationKind::Pause,
             status: ControlAcknowledgementStatus::Rejected,
         }
     );
@@ -202,15 +199,8 @@ async fn gate_control_plane_event_log_stream_api_subscribes_without_mutation() {
     }
 }
 
-fn applied_acknowledgements() -> [ControlOperationAcknowledgement; 3] {
+fn applied_acknowledgements() -> [ControlOperationAcknowledgement; 2] {
     [
-        ControlOperationAcknowledgement::new(
-            ControlOperationKind::Snapshot,
-            ControlSessionState::Running,
-            10,
-            10,
-            ControlAcknowledgementStatus::Applied,
-        ),
         ControlOperationAcknowledgement::new(
             ControlOperationKind::Pause,
             ControlSessionState::Running,
@@ -272,11 +262,7 @@ impl RunningSimDoubleControlPlane {
 
     async fn issue_required_operations(&self) -> Vec<ControlOperationAcknowledgement> {
         let mut acknowledgements = Vec::new();
-        for operation in [
-            ControlOperationKind::Snapshot,
-            ControlOperationKind::Query,
-            ControlOperationKind::Pause,
-        ] {
+        for operation in [ControlOperationKind::Query, ControlOperationKind::Pause] {
             let acknowledgement = self
                 .probe
                 .issue_against_running_session(operation)

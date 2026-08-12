@@ -368,9 +368,7 @@ impl DebugInvocationPlan {
             && self.session_commands.iter().all(|command| {
                 matches!(
                     command,
-                    SessionCommand::Query { .. }
-                        | SessionCommand::Snapshot
-                        | SessionCommand::Fork { .. }
+                    SessionCommand::Query { .. } | SessionCommand::Fork { .. }
                 )
             })
     }

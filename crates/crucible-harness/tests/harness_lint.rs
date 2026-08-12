@@ -95,6 +95,8 @@ fn retired_fault_surfaces_cannot_reenter_executable_or_user_documentation_paths(
         &["SessionCommand", "Inject"],
         &["SessionCommandKind", "Inject"],
         &["ControlOperationKind", "Inject"],
+        &["SessionCommand", "Snapshot"],
+        &["SessionCommandKind", "Snapshot"],
     ];
     let snake_fragments: &[&[&str]] = &[
         &["active", "faults"],

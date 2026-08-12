@@ -7,7 +7,7 @@
 use std::sync::{Arc, Mutex};
 
 use crucible::{
-    BackendEffect, BackendInput, Checkpoint, CheckpointKind, Configuration,
+    BackendEffect, Checkpoint, CheckpointKind, Configuration,
     ControlOperationKind as SchedulerControlOperationKind, Decision, DeliveryOrderDecision,
     EventKey, GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef,
     SchedulerError, SchedulerEventLogEntry, SchedulerNodeId, SchedulingNodeKind, Seed, SimDouble,
@@ -50,12 +50,7 @@ async fn gate_control_responsive_daemon_routes_use_api_quantum_bound() {
     let route = DaemonControlResponsiveRoute::new(fixture.probe.clone());
     let mut acknowledgements = Vec::new();
 
-    for operation in [
-        ControlOperationKind::Snapshot,
-        ControlOperationKind::Inject,
-        ControlOperationKind::Query,
-        ControlOperationKind::Pause,
-    ] {
+    for operation in [ControlOperationKind::Query, ControlOperationKind::Pause] {
         let acknowledgement = route
             .issue_against_running_session(operation)
             .await
@@ -66,11 +61,7 @@ async fn gate_control_responsive_daemon_routes_use_api_quantum_bound() {
     }
     assert_eq!(
         fixture.observed_control_operations(),
-        vec![
-            SchedulerControlOperationKind::Snapshot,
-            SchedulerControlOperationKind::Inject,
-            SchedulerControlOperationKind::Query,
-        ]
+        vec![SchedulerControlOperationKind::Query]
     );
 
     let report = validate_daemon_control_responsiveness(&acknowledgements)
@@ -79,7 +70,7 @@ async fn gate_control_responsive_daemon_routes_use_api_quantum_bound() {
     assert_eq!(DAEMON_CONTROL_RESPONSIVE_QUANTUM_BOUND, 1);
     assert_eq!(report.bound_quanta, DAEMON_CONTROL_RESPONSIVE_QUANTUM_BOUND);
     assert_eq!(report.observations, acknowledgements.len());
-    assert_eq!(report.required_operations_observed, 4);
+    assert_eq!(report.required_operations_observed, 2);
     assert!(report.max_acknowledgement_delta_quanta <= 1);
 
     fixture.stop().await;
@@ -88,16 +79,14 @@ async fn gate_control_responsive_daemon_routes_use_api_quantum_bound() {
 #[test]
 fn gate_control_responsive_daemon_rejects_required_operation_rejection() {
     let acknowledgements = [
-        applied_acknowledgement(ControlOperationKind::Snapshot, 10),
         ControlOperationAcknowledgement::new(
-            ControlOperationKind::Inject,
+            ControlOperationKind::Pause,
             ControlSessionState::Running,
             12,
             12,
             ControlAcknowledgementStatus::Rejected,
         ),
         applied_acknowledgement(ControlOperationKind::Query, 13),
-        applied_acknowledgement(ControlOperationKind::Pause, 14),
     ];
 
     let error = validate_daemon_control_responsiveness(&acknowledgements)
@@ -105,7 +94,7 @@ fn gate_control_responsive_daemon_rejects_required_operation_rejection() {
     assert_eq!(
         error,
         ControlResponsivenessError::RequiredOperationRejected {
-            operation: ControlOperationKind::Inject,
+            operation: ControlOperationKind::Pause,
             status: ControlAcknowledgementStatus::Rejected,
         }
     );
@@ -253,18 +242,6 @@ impl SimDoubleQuantumLoop {
                 SchedulerControlOperationKind::Query => {
                     let _fingerprint =
                         SimulationBackend::fingerprint(&mut self.backend, control_node().node)?;
-                }
-                SchedulerControlOperationKind::Inject => {
-                    let input = BackendInput {
-                        node: control_node().node,
-                        payload: b"daemon-control-inject".to_vec(),
-                    };
-                    let now = SimulationBackend::now(&self.backend);
-                    SimulationBackend::apply(
-                        &mut self.backend,
-                        &BackendEffect::DeliverInput(input),
-                        now,
-                    )?;
                 }
                 SchedulerControlOperationKind::Pause
                 | SchedulerControlOperationKind::Resume

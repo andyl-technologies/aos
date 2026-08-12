@@ -330,8 +330,6 @@ pub enum SessionCommand {
         /// The requested bounded step mode.
         mode: StepMode,
     },
-    /// Capture a boundary snapshot.
-    Snapshot,
     /// Add a predicate-based breakpoint.
     SetBreakpoint {
         /// Breakpoint predicate, disposition, and fire policy.
@@ -484,7 +482,6 @@ impl SessionCommand {
         match self {
             Self::Acknowledge { command, .. } => command.is_read_only(),
             Self::Query { .. }
-            | Self::Snapshot
             | Self::AttachGdb { .. }
             | Self::DebugGoto { .. }
             | Self::DebugReverseStep { .. }
@@ -507,7 +504,7 @@ impl SessionCommand {
     pub(super) const fn is_terminal_accepted(&self) -> bool {
         match self {
             Self::Acknowledge { command, .. } => command.is_terminal_accepted(),
-            Self::Snapshot | Self::Fork { .. } | Self::Query { .. } => true,
+            Self::Fork { .. } | Self::Query { .. } => true,
             Self::Start
             | Self::Continue
             | Self::Pause
@@ -530,7 +527,6 @@ impl SessionCommand {
         match self {
             Self::Acknowledge { command, .. } => command.is_control_acknowledged(),
             Self::Pause
-            | Self::Snapshot
             | Self::Fork { .. }
             | Self::SetBreakpoint { .. }
             | Self::RemoveBreakpoint { .. }
@@ -551,7 +547,7 @@ impl SessionCommand {
     pub(super) const fn requires_running_quantum_ack(&self) -> bool {
         match self {
             Self::Acknowledge { command, .. } => command.requires_running_quantum_ack(),
-            Self::Snapshot | Self::Query { .. } => true,
+            Self::Query { .. } => true,
             Self::Start
             | Self::Continue
             | Self::Pause
@@ -581,7 +577,6 @@ impl SessionCommand {
             | Self::GuestIntrospection { .. } => true,
             Self::Start
             | Self::Pause
-            | Self::Snapshot
             | Self::CreateSavepoint { .. }
             | Self::Fork { .. }
             | Self::Stop
@@ -618,7 +613,6 @@ impl SessionCommand {
             | Self::Step { .. }
             | Self::Stop
             | Self::ExhaustBudget => {}
-            Self::Snapshot => {}
         }
     }
 }
@@ -656,8 +650,6 @@ pub enum SessionCommandKind {
     Fork,
     /// Query the session.
     Query,
-    /// Capture a boundary snapshot through the current implementation shim.
-    Snapshot,
     /// Attach an out-of-band debugger gdbstub.
     AttachGdb,
     /// Move an attached debugger to a coordinate.
@@ -675,10 +667,8 @@ pub enum SessionCommandKind {
 impl SessionCommandKind {
     /// The lifecycle command-kind set.
     ///
-    /// This covers the RFC §4 command surface plus the current implementation's
-    /// boundary `Snapshot` shim. T-SESS-4 replaces that shim with the
-    /// reply-carrying command payloads.
-    pub const ALL: [Self; 22] = [
+    /// This covers the complete RFC §4 command surface.
+    pub const ALL: [Self; 21] = [
         Self::Start,
         Self::Continue,
         Self::Pause,
@@ -694,7 +684,6 @@ impl SessionCommandKind {
         Self::CreateSavepoint,
         Self::Fork,
         Self::Query,
-        Self::Snapshot,
         Self::AttachGdb,
         Self::DebugGoto,
         Self::DebugReverseStep,
@@ -720,7 +709,6 @@ impl SessionCommandKind {
             Self::CreateSavepoint => "create-savepoint",
             Self::Fork => "fork",
             Self::Query => "query",
-            Self::Snapshot => "snapshot",
             Self::AttachGdb => "attach-gdb",
             Self::DebugGoto => "debug-goto",
             Self::DebugReverseStep => "debug-reverse-step",
@@ -773,7 +761,6 @@ impl SessionCommandKind {
             },
             Self::Fork => SessionCommand::fork_current(),
             Self::Query => SessionCommand::query_snapshot(),
-            Self::Snapshot => SessionCommand::Snapshot,
             Self::AttachGdb
             | Self::DebugGoto
             | Self::DebugReverseStep
@@ -809,10 +796,9 @@ pub const fn lifecycle_transition(
 
     match (state, command) {
         (State::Loaded, Command::Start) => Accepted { to: State::Paused },
-        (
-            State::Loaded,
-            Command::SetBreakpoint | Command::RemoveBreakpoint | Command::Query | Command::Snapshot,
-        ) => Accepted { to: State::Loaded },
+        (State::Loaded, Command::SetBreakpoint | Command::RemoveBreakpoint | Command::Query) => {
+            Accepted { to: State::Loaded }
+        }
         (State::Loaded, Command::Stop | Command::ExhaustBudget) => Accepted { to: State::Stopped },
         (
             State::Loaded,
@@ -854,7 +840,6 @@ pub const fn lifecycle_transition(
         (
             State::Paused,
             Command::Pause
-            | Command::Snapshot
             | Command::Fork
             | Command::SetBreakpoint
             | Command::RemoveBreakpoint
@@ -879,8 +864,7 @@ pub const fn lifecycle_transition(
         ) => Accepted { to: State::Paused },
         (
             State::Running,
-            Command::Snapshot
-            | Command::SetBreakpoint
+            Command::SetBreakpoint
             | Command::RemoveBreakpoint
             | Command::CreateSavepoint
             | Command::Query,
@@ -891,9 +875,7 @@ pub const fn lifecycle_transition(
         (State::Paused, Command::Stop | Command::ExhaustBudget) => Accepted { to: State::Stopped },
         (State::Paused, Command::Start) => Rejected,
 
-        (State::Stopped, Command::Snapshot | Command::Fork | Command::Query) => {
-            Accepted { to: State::Stopped }
-        }
+        (State::Stopped, Command::Fork | Command::Query) => Accepted { to: State::Stopped },
         (
             State::Stopped,
             Command::Start

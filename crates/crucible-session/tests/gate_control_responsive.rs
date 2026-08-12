@@ -79,7 +79,7 @@ async fn gate_control_responsive_reads_live_snapshot_without_mailbox_roundtrip()
     assert!(last.event_log_len >= last.quanta_stepped);
 
     let snapshot_acknowledged =
-        acknowledge_operation(&sender, &live, SessionCommand::Snapshot, "snapshot").await;
+        acknowledge_operation(&sender, &live, SessionCommand::query_snapshot(), "snapshot").await;
     assert_eq!(snapshot_acknowledged.state_kind, LiveStateKind::Running);
     assert_eq!(
         live.query(LiveQueryKind::Status),
@@ -95,7 +95,7 @@ async fn gate_control_responsive_reads_live_snapshot_without_mailbox_roundtrip()
     );
     assert_eq!(
         observed_control_operations(&observed_control),
-        vec![ControlOperationKind::Snapshot]
+        vec![ControlOperationKind::Query]
     );
 
     let paused = acknowledge_operation(&sender, &live, SessionCommand::Pause, "pause").await;
@@ -209,7 +209,13 @@ async fn gate_control_plane_streams_event_log_entries_from_cursor_without_mutati
         .unwrap_or_else(|| panic!("future cursor stream should deliver live entries"));
     assert_eq!(future_frame.cursor, EventLogCursor::default());
 
-    acknowledge_operation(&sender, &live, SessionCommand::Snapshot, "stream-snapshot").await;
+    acknowledge_operation(
+        &sender,
+        &live,
+        SessionCommand::query_snapshot(),
+        "stream-snapshot",
+    )
+    .await;
     send_command(&sender, SessionCommand::Pause).await;
 
     let mut streamed = Vec::new();
