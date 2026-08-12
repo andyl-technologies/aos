@@ -68,7 +68,7 @@
     }
   ];
 in {
-  name = "rfc-0011-degraded-boot";
+  name = "config-degraded-boot";
   timeout = 1200;
   # First boot provisions a multi-gigabyte /var; the test then publishes and
   # evaluates three image-bundled fixtures. Leave headroom for slower KVM
@@ -169,16 +169,16 @@ in {
       # metadata. Keeping those trust paths distinct is load-bearing.
       degraded.succeed(textwrap.dedent(r"""
           set -eu
-          export HOME=/tmp/rfc0011-publisher
+          export HOME=/tmp/config-degraded-publisher
           export GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@test
           export GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@test
           export NIX_REMOTE=""
-          export NIX_CONF_DIR=/tmp/rfc0011-nix-conf
+          export NIX_CONF_DIR=/tmp/config-degraded-nix-conf
           mkdir -p "$NIX_CONF_DIR"
           printf 'experimental-features = nix-command\nsandbox = false\nbuild-users-group =\n' \
             > "$NIX_CONF_DIR/nix.conf"
 
-          KEYGEN=$(${pkgs.aos}/bin/apr keys generate release --registry rfc0011-reg 2>&1)
+          KEYGEN=$(${pkgs.aos}/bin/apr keys generate release --registry config-degraded-reg 2>&1)
           printf '%s\n' "$KEYGEN"
           PUBKEY=
           while IFS= read -r line; do
@@ -189,16 +189,16 @@ in {
           $KEYGEN
           EOF
           test -n "$PUBKEY"
-          KEY=$HOME/.config/apm/keys/rfc0011-reg-release.key
-          ${pkgs.aos}/bin/apr create rfc0011-reg \
+          KEY=$HOME/.config/apm/keys/config-degraded-reg-release.key
+          ${pkgs.aos}/bin/apr create config-degraded-reg \
             --trust-key "$PUBKEY" \
             --trust-key-id release \
             --key "$KEY"
-          REG_DIR=$HOME/.local/share/apm/registries/rfc0011-reg
+          REG_DIR=$HOME/.local/share/apm/registries/config-degraded-reg
           mkdir -p "$HOME/.config/apm/registries.d"
-          cat > "$HOME/.config/apm/registries.d/rfc0011-reg.toml" <<EOF
+          cat > "$HOME/.config/apm/registries.d/config-degraded-reg.toml" <<EOF
           [registry]
-          name = "rfc0011-reg"
+          name = "config-degraded-reg"
           url = "file://$REG_DIR"
 
           [registry.signing_keys]
@@ -219,7 +219,7 @@ in {
               --expose-manifest "$expose/manifest.json" \
               --config-module "$config" \
               --config-base-lib '${degradedSystem.config.aos.config.evalAtBoot.baseLib}' \
-              --registry rfc0011-reg \
+              --registry config-degraded-reg \
               --key-id release
           }
           publish desired-config-test \
@@ -235,25 +235,25 @@ in {
             '${pkgs.test-http-server.expose}' \
             '${pkgs.test-http-server.config}'
 
-          mkdir -p /var/lib/rfc0011-cache
+          mkdir -p /var/lib/config-degraded-cache
           ${pkgs.aos}/bin/apr release 1.0.0 \
-            --registry rfc0011-reg \
+            --registry config-degraded-reg \
             --key-id release \
-            --cache-url file:///var/lib/rfc0011-cache \
-            --upload-url file:///var/lib/rfc0011-cache
+            --cache-url file:///var/lib/config-degraded-cache \
+            --upload-url file:///var/lib/config-degraded-cache
           HOME=/tmp USER=root ${pkgs.aos}/bin/apm registry --system add \
             "file://$REG_DIR" \
-            --name rfc0011-reg \
+            --name config-degraded-reg \
             --version '=1.0.0' \
             --trust-key "$PUBKEY"
           HOME=/tmp USER=root ${pkgs.aos}/bin/apm update \
-            --system --registry rfc0011-reg
+            --system --registry config-degraded-reg
       """), timeout=1200)
 
       # Drive the porcelain through the same evaluator, graph compiler, fetch,
       # render, and activation implementations used by the boot units.
       degraded.succeed(textwrap.dedent(r"""
-          cat > /run/rfc0011-degraded-host.nix <<'EOF'
+          cat > /run/config-degraded-host.nix <<'EOF'
           {
             aos.provisioning.storage.partitions.var.sizeMin = "2G";
             aos.apm.desiredPackages = [
@@ -265,8 +265,8 @@ in {
           }
           EOF
           ${pkgs.aos}/bin/apm switch \
-            --from /run/rfc0011-degraded-host.nix \
-            --eval-root /run/rfc0011-degraded-eval
+            --from /run/config-degraded-host.nix \
+            --eval-root /run/config-degraded-eval
       """), timeout=600)
 
       degraded.succeed("systemctl is-active --quiet desired-config-test.service")

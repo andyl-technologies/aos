@@ -17,17 +17,19 @@
 
   system = aos.mkSystem {
     modules = [../../systems/server.nix];
-    operatorModules = [{
-      environment.etc."rfc0011/materialized.conf" = {
-        text = "host-owned\n";
-        mode = "0644";
-      };
-      systemd.services.rfc0011-materialized = {
-        wantedBy = [ "multi-user.target" ];
-        serviceConfig.Type = "oneshot";
-        script = "printf materialized > /run/rfc0011-materialized";
-      };
-    }];
+    operatorModules = [
+      {
+        environment.etc."runtime-config/materialized.conf" = {
+          text = "host-owned\n";
+          mode = "0644";
+        };
+        systemd.services.runtime-config-materialized = {
+          wantedBy = ["multi-user.target"];
+          serviceConfig.Type = "oneshot";
+          script = "printf materialized > /run/runtime-config-materialized";
+        };
+      }
+    ];
   };
 
   # Exercise the same resolver-controlled `operatorModules` provenance arm
@@ -74,7 +76,7 @@ in
 
           # Host-owned text lands as a real file. Image-owned base artifacts
           # stay in the image lower and must not be duplicated in this lower.
-          runtime_file="$etc_root/rfc0011/materialized.conf"
+          runtime_file="$etc_root/runtime-config/materialized.conf"
           [ -f "$runtime_file" ] || fail "host-owned text entry not materialized"
           ${pkgs.grep}/bin/grep -qx 'host-owned' "$runtime_file" \
             || fail "host-owned text content missing"

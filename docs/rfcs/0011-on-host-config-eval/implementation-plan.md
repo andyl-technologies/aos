@@ -45,7 +45,7 @@ below by the production behavior that superseded them.
       typed `host.facts.*`, unique shared scalars, and foreign-enable/
       contribution-surface restrictions from resolver-assigned provenance.
       Evidence: `checks.eval`, `checks.module-enforcement`, and
-      `checks.rfc-0011-provenance`.
+      `checks.config-provenance`.
 
 ## Native resolution and evaluation
 
@@ -94,10 +94,10 @@ below by the production behavior that superseded them.
       each current generation, serializes config pruning with activation,
       journals state-first deletion, reconciles base-library roots, and releases
       pruned `cfg/`/`cfgsrc/` roots for `apm gc`.
-      Evidence: `checks.rfc-0011-cfgsrc-gc`,
-      `checks.fleet.rfc-0011-two-axis-gen`,
-      `checks.fleet.rfc-0011-image-rollback`, and
-      `checks.fleet.rfc-0011-gc-roots`.
+      Evidence: `checks.config-source-gc`,
+      `checks.fleet.config-image-generation-axes`,
+      `checks.fleet.system-image-rollback`, and
+      `checks.fleet.config-generation-gc-roots`.
 
 ## Provisioning and orchestration
 
@@ -125,7 +125,7 @@ below by the production behavior that superseded them.
       the dependency-closed manifest and record exact drop reasons.
       Evidence: `checks.fleet.provisioning-boot`,
       `checks.fleet.apm-desired-sequencing`, and
-      `checks.fleet.rfc-0011-degraded-boot`.
+      `checks.fleet.config-degraded-boot`.
 
 ## Image/host boundary, trust, and secrets
 
@@ -133,7 +133,7 @@ below by the production behavior that superseded them.
       server/edge roles from authenticated `host.nix`; feature tools stay out
       of the interactive package set while their referenced store closure is
       manifest-owned and pinned. Evidence:
-      `checks.fleet.rfc-0011-runtime-role`.
+      `checks.fleet.runtime-config-role`.
 - [x] Move runtime hostname, networking, users, SSH/chrony, firewall, audit,
       journald, PAM, monitoring, PKI, registry routing, units, and desired
       packages into manifest materialization while retaining kernel/initrd,
@@ -159,7 +159,7 @@ below by the production behavior that superseded them.
       credential targets and refuses the config pointer and activation proof.
       Early boot resolves or rejects interrupted credential journals before admitting the
       retained configuration lower and its consumers. Evidence:
-      `checks.systemd-credentials` and `checks.fleet.rfc-0011-secret-ref`.
+      `checks.systemd-credentials` and `checks.fleet.config-secret-reference`.
 - [x] Produce `aos.gen-attestation/v1`, make crash retries idempotent by durable
       activation identity, and give every later activation or rollback a fresh
       CEL event, PCR 15 extension, and PCR 7/11/12/15 quote over the exact
@@ -188,17 +188,14 @@ below by the production behavior that superseded them.
 These are commands to run; this document does not claim their current result.
 
 ```sh
-nix-build -A checks.rfc-0011-all --no-out-link
-nix-build -A checks.fleet.rfc-0011-all --no-out-link
+nix-build -A checks.runtime-config-all --no-out-link
+nix-build -A checks.fleet.runtime-config-all --no-out-link
 ```
 
-`checks.rfc-0011-all` is the complete non-KVM gate: it builds `pkgs.aos` and
+`checks.runtime-config-all` is the complete non-KVM gate: it builds `pkgs.aos` and
 the evaluation, lint, module, package configuration, focused system-structure,
 materialization, parity, provenance, GC-root, and systemd contract checks.
 
-`checks.fleet.rfc-0011-all` is assembled in `default.nix` from every discovered
-`tests/fleet/rfc-0011-*.nix` plus `apm-desired-sequencing`,
-`apm-system-activation-fail`, `apm-system-upgrade`, `install-from-image`,
-`measured-boot`, `package-attestation-quote`, and `provisioning-boot`. It
-therefore includes newly added RFC-prefixed fleet tests without a second manual
-list.
+`checks.fleet.runtime-config-all` is assembled in `default.nix` from an explicit
+list of the configuration, activation, image-transition, measured-boot,
+attestation, and provisioning fleet checks that collectively cover this RFC.

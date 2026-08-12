@@ -19,8 +19,7 @@
   ];
 
   failurePreStart = ''read -r cmdline < /proc/cmdline; case " $cmdline " in *" systemd.verity_root_data=/dev/disk/by-partlabel/root-b "*) if [ ! -e /var/lib/aos-test/allow-eval ]; then exit 1; fi ;; esac'';
-  bootCommitCondition =
-    "${pkgs.bash}/bin/bash -c ${lib.escapeShellArg "read -r cmdline < /proc/cmdline; case \" $cmdline \" in *\" systemd.verity_root_data=/dev/disk/by-partlabel/root-b \"*) test -e /var/lib/aos-test/allow-image-commit ;; esac"}";
+  bootCommitCondition = "${pkgs.bash}/bin/bash -c ${lib.escapeShellArg "read -r cmdline < /proc/cmdline; case \" $cmdline \" in *\" systemd.verity_root_data=/dev/disk/by-partlabel/root-b \"*) test -e /var/lib/aos-test/allow-image-commit ;; esac"}";
   candidateAgentUnit = pkgs.writeTextFile {
     name = "aos-fleet-test-agent-runtime-unit";
     destination = "/aos-test-agent.service";
@@ -66,7 +65,7 @@
     ../../systems/server-verity.nix
     initrdControlFallback
     {
-      aos.system.version = "9999.0.0-rfc0011";
+      aos.system.version = "9999.0.0-image-rollback";
       # The fleet machine module bakes deterministic interface naming into the
       # initial UKI. Preserve that test-machine ABI in the independently built
       # candidate and seed its fleet address so first-boot evaluation can run
@@ -139,7 +138,7 @@
     }
   ];
 in {
-  name = "rfc-0011-image-rollback";
+  name = "system-image-rollback";
   timeout = 5400;
   bootTimeout = 600;
 
@@ -488,7 +487,7 @@ in {
 
           if ! ${pkgs.aos}/bin/apr --json publish '${candidateTop}' \\
             --name aos \\
-            --version 9999.0.0-rfc0011 \\
+            --version 9999.0.0-image-rollback \\
             --description 'A/B lifecycle fixture' \\
             --license MIT \\
             --maintainer test \\

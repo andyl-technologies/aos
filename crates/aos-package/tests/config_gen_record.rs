@@ -3,7 +3,7 @@
 use serde_json::json;
 
 #[test]
-fn rfc_0011_config_generation_record_keeps_all_replay_identities() {
+fn config_generation_record_keeps_all_replay_identities() {
     let fixture: serde_json::Value =
         serde_json::from_str(include_str!("fixtures/config_manifest/manifest.json"))
             .expect("parse manifest fixture");

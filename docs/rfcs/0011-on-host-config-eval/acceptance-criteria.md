@@ -38,7 +38,7 @@ specification.
 - [x] Authority is derived from authenticated fetch/selection metadata, never
       from a module's self-reported `_file` value.
   - Gates for this section: `checks.eval`, `checks.module-enforcement`, and
-    `checks.rfc-0011-provenance`.
+    `checks.config-provenance`.
 
 ## Native evaluator and resolver
 
@@ -83,8 +83,8 @@ specification.
       later barriers remains fail-closed for rescue diagnostics.
   - Gates: `checks.config-materialize`,
     `checks.fleet.apm-desired-sequencing`,
-    `checks.fleet.rfc-0011-degraded-boot`, and
-    `checks.fleet.rfc-0011-on-host-eval`.
+    `checks.fleet.config-degraded-boot`, and
+    `checks.fleet.on-host-config-eval`.
 
 ## Provisioning and metadata
 
@@ -120,8 +120,8 @@ specification.
 - [x] Exhausted counted UKIs cannot be selected or blessed. Boot blessing
       requires matching image, activation, generation-attestation, and measured
       evidence.
-  - Gates: `checks.fleet.rfc-0011-two-axis-gen`,
-    `checks.fleet.rfc-0011-image-rollback`, and
+  - Gates: `checks.fleet.config-image-generation-axes`,
+    `checks.fleet.system-image-rollback`, and
     `checks.fleet.measured-boot`.
 
 ## Retention and garbage collection
@@ -141,8 +141,8 @@ specification.
 - [x] After pruning and `apm gc`, retained outputs and cross-ABI inputs survive,
       pruned-only roots are collectable, and retained rollback still materializes
       the expected `/etc`.
-  - Gates: `checks.rfc-0011-cfgsrc-gc` and
-    `checks.fleet.rfc-0011-gc-roots`.
+  - Gates: `checks.config-source-gc` and
+    `checks.fleet.config-generation-gc-roots`.
 
 ## Image/host policy boundary
 
@@ -157,7 +157,7 @@ specification.
       login package set.
 - [x] Kernel/initrd, immutable root, dm-verity, measured boot, module ABI, and
       initial trust anchors remain image-owned.
-  - Gates: `checks.fleet.rfc-0011-runtime-role` and
+  - Gates: `checks.fleet.runtime-config-role` and
     `checks.system-structure`.
 
 ## Secrets and attestation
@@ -187,7 +187,7 @@ specification.
       verifier reconstructs signed release membership and realization rather
       than trusting host-reported fields.
   - Gates: `checks.systemd-credentials`,
-    `checks.fleet.rfc-0011-secret-ref`,
+    `checks.fleet.config-secret-reference`,
     `checks.fleet.measured-boot`, and
     `checks.fleet.package-attestation-quote`.
 
@@ -203,7 +203,7 @@ specification.
 - [x] User documentation describes runtime host activation, A/B rollback,
       secrets, pruning, and remaining early-preview/product-distribution limits
       without describing implemented paths as absent.
-  - Gates: `checks.config-eval`, `checks.fleet.rfc-0011-on-host-eval`, and the
+  - Gates: `checks.config-eval`, `checks.fleet.on-host-config-eval`, and the
     documentation review in the RFC pull request.
 
 ## Aggregate release gates
@@ -212,16 +212,15 @@ Run all of the following on a Linux builder. These targets are definitions of
 acceptance, not a claim about the current run result:
 
 ```sh
-nix-build -A checks.rfc-0011-all --no-out-link
-nix-build -A checks.fleet.rfc-0011-all --no-out-link
+nix-build -A checks.runtime-config-all --no-out-link
+nix-build -A checks.fleet.runtime-config-all --no-out-link
 ```
 
-`checks.rfc-0011-all` is the complete non-KVM gate: it builds `pkgs.aos` and
+`checks.runtime-config-all` is the complete non-KVM gate: it builds `pkgs.aos` and
 the evaluation, lint, module, package configuration, focused system-structure,
 materialization, parity, provenance, GC-root, and systemd contract checks.
 
 `default.nix` discovers every regular `tests/fleet/*.nix` file. The fleet
-aggregate includes every discovered name beginning with `rfc-0011-` plus
-`apm-desired-sequencing`, `apm-system-activation-fail`, `apm-system-upgrade`,
-`install-from-image`, `measured-boot`, `package-attestation-quote`, and
-`provisioning-boot`.
+aggregate selects an explicit capability-based list of the configuration,
+activation, image-transition, measured-boot, attestation, and provisioning
+checks that collectively define acceptance.

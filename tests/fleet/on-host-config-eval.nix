@@ -33,7 +33,7 @@
     ""
   ];
 in {
-  name = "rfc-0011-on-host-eval";
+  name = "on-host-config-eval";
   timeout = 1500;
   # This test waits for the evaluator/graph transaction explicitly and emits
   # focused unit diagnostics on failure.
@@ -55,32 +55,32 @@ in {
         aos.networking.hostName = "runtime-one";
         aos.apm.desiredPackages = [ "aos-test-agent" ];
 
-        environment.etc."rfc0011/runtime.conf" = {
+        environment.etc."runtime-config/runtime.conf" = {
           text = "generation=one\n";
           mode = "0644";
         };
 
-        aos.users.groups.rfc0011 = {
+        aos.users.groups.runtime-config = {
           gid = 976;
           members = [];
         };
-        aos.users.users.rfc0011 = {
+        aos.users.users.runtime-config = {
           uid = 976;
-          group = "rfc0011";
-          home = "/var/lib/rfc0011";
+          group = "runtime-config";
+          home = "/var/lib/runtime-config";
           shell = "/bin/bash";
           description = "Runtime-configured host user";
           extraGroups = [];
         };
 
-        systemd.services.rfc0011-host = {
+        systemd.services.runtime-config-host = {
           description = "Runtime-configured host service";
           wantedBy = [ "multi-user.target" ];
           serviceConfig = {
             Type = "oneshot";
             RemainAfterExit = true;
           };
-          script = "printf one > /run/rfc0011-host-service";
+          script = "printf one > /run/runtime-config-host-service";
         };
       }
     '';
@@ -192,12 +192,12 @@ in {
               print(runtime.succeed("cat /proc/mounts 2>&1 || true"))
               raise
           runtime.succeed(
-              f"test \"$(cat /etc/rfc0011/runtime.conf)\" = generation={value}"
+              f"test \"$(cat /etc/runtime-config/runtime.conf)\" = generation={value}"
           )
-          runtime.succeed("test \"$(id -u rfc0011)\" = 976")
-          runtime.succeed("test \"$(id -g rfc0011)\" = 976")
-          runtime.succeed("systemctl is-active --quiet rfc0011-host.service")
-          runtime.succeed(f"test \"$(cat /run/rfc0011-host-service)\" = {value}")
+          runtime.succeed("test \"$(id -u runtime-config)\" = 976")
+          runtime.succeed("test \"$(id -g runtime-config)\" = 976")
+          runtime.succeed("systemctl is-active --quiet runtime-config-host.service")
+          runtime.succeed(f"test \"$(cat /run/runtime-config-host-service)\" = {value}")
           runtime.succeed("systemctl is-active --quiet aos-test-agent.service")
 
 
@@ -205,12 +205,12 @@ in {
       image_default.succeed("test ! -e /run/aos-metadata/host.nix")
       default_preview = json.loads(image_default.succeed(f"""
           {APM} --json switch --dry-run \
-            --eval-root /run/rfc0011-image-default-preview
+            --eval-root /run/runtime-config-image-default-preview
       """, timeout=300))
       assert default_preview["etc_diff"] == [], default_preview
       assert default_preview["unit_actions"] == [], default_preview
       image_default.succeed(f"""
-          {APM} switch --eval-root /run/rfc0011-image-default-switch
+          {APM} switch --eval-root /run/runtime-config-image-default-switch
       """, timeout=300)
       image_default.succeed("systemctl is-active --quiet aos-config.target")
 
@@ -273,12 +273,12 @@ in {
       ):
           assert isinstance(manifest[field], expected_type), field
       assert manifest["etc"]["hostname"]["text"] == "runtime-one\n"
-      assert manifest["etc"]["rfc0011/runtime.conf"]["text"] == "generation=one\n"
-      assert "rfc0011-host.service" in manifest["units"]
+      assert manifest["etc"]["runtime-config/runtime.conf"]["text"] == "generation=one\n"
+      assert "runtime-config-host.service" in manifest["units"]
       assert any(
-          key.startswith("rfc0011-host.service:") for key in manifest["jobScripts"]
+          key.startswith("runtime-config-host.service:") for key in manifest["jobScripts"]
       ), manifest["jobScripts"].keys()
-      assert any(user["name"] == "rfc0011" for user in manifest["users"])
+      assert any(user["name"] == "runtime-config" for user in manifest["users"])
       assert "aos-test-agent" in manifest["packages"], manifest["packages"]
       assert manifest["inputs"]["host_nix"]["trust_mode"] == "platform"
       assert manifest["inputs"]["host_nix"]["store_path"].startswith("/nix/store/")
@@ -314,23 +314,23 @@ in {
       """
       conflict_encoded = base64.b64encode(conflict_host.encode()).decode()
       runtime.succeed(
-          f"printf '%s' {conflict_encoded} | base64 -d > /run/rfc0011-conflict.nix"
+          f"printf '%s' {conflict_encoded} | base64 -d > /run/runtime-config-conflict.nix"
       )
       live_manifest_hash = runtime.succeed(
           "sha256sum /run/aos/manifest.json"
       ).split()[0]
-      runtime.succeed("rm -rf /run/rfc0011-conflict-eval")
+      runtime.succeed("rm -rf /run/runtime-config-conflict-eval")
       runtime.succeed(f"""
           set -eu
           if {APM} switch \
-            --from /run/rfc0011-conflict.nix \
-            --eval-root /run/rfc0011-conflict-eval \
-            > /run/rfc0011-conflict.out 2>&1; then
+            --from /run/runtime-config-conflict.nix \
+            --eval-root /run/runtime-config-conflict-eval \
+            > /run/runtime-config-conflict.out 2>&1; then
             echo 'conflicting host configuration unexpectedly succeeded' >&2
             exit 1
           fi
       """, timeout=300)
-      conflict_output = runtime.succeed("cat /run/rfc0011-conflict.out")
+      conflict_output = runtime.succeed("cat /run/runtime-config-conflict.out")
       assert "config-eval.class=conflict" in conflict_output, conflict_output
       assert current_generation() == first
       assert runtime.succeed(
@@ -348,23 +348,23 @@ in {
             if [ "$key" = AOS_MODULE_ABI ]; then module_abi="$value"; fi
           done < /aos-toplevel/os-release
           test -n "$module_abi"
-          rm -rf /run/rfc0011-eval-one /run/rfc0011-eval-two
-          mkdir -p /run/rfc0011-eval-one /run/rfc0011-eval-two
+          rm -rf /run/runtime-config-eval-one /run/runtime-config-eval-two
+          mkdir -p /run/runtime-config-eval-one /run/runtime-config-eval-two
           {APM} __eval \
             --host-nix /run/aos-metadata/host.nix \
             --base-lib "$base_lib" \
             --facts /run/aos-metadata/facts.json \
             --module-abi "$module_abi" \
-            --out /run/rfc0011-eval-one/manifest.json \
-            --eval-root /run/rfc0011-eval-one
+            --out /run/runtime-config-eval-one/manifest.json \
+            --eval-root /run/runtime-config-eval-one
           {APM} __eval \
             --host-nix /run/aos-metadata/host.nix \
             --base-lib "$base_lib" \
             --facts /run/aos-metadata/facts.json \
             --module-abi "$module_abi" \
-            --out /run/rfc0011-eval-two/manifest.json \
-            --eval-root /run/rfc0011-eval-two
-          {CMP} /run/rfc0011-eval-one/manifest.json /run/rfc0011-eval-two/manifest.json
+            --out /run/runtime-config-eval-two/manifest.json \
+            --eval-root /run/runtime-config-eval-two
+          {CMP} /run/runtime-config-eval-one/manifest.json /run/runtime-config-eval-two/manifest.json
       """, timeout=300)
 
       # Create a second same-ABI configuration through `apm switch`, then prove
@@ -374,42 +374,42 @@ in {
         aos.networking.hostName = \"runtime-two\";
         aos.apm.desiredPackages = [ \"aos-test-agent\" ];
         aos.security.pki.certificates = [ ${builtins.toJSON testCertificate} ];
-        environment.etc.\"rfc0011/runtime.conf\" = {
+        environment.etc.\"runtime-config/runtime.conf\" = {
           text = \"generation=two\\n\";
           mode = \"0644\";
         };
-        aos.users.groups.rfc0011 = { gid = 976; members = []; };
-        aos.users.users.rfc0011 = {
+        aos.users.groups.runtime-config = { gid = 976; members = []; };
+        aos.users.users.runtime-config = {
           uid = 976;
-          group = \"rfc0011\";
-          home = \"/var/lib/rfc0011\";
+          group = \"runtime-config\";
+          home = \"/var/lib/runtime-config\";
           shell = \"/bin/bash\";
           description = \"Runtime-configured host user\";
           extraGroups = [];
         };
-        systemd.services.rfc0011-host = {
+        systemd.services.runtime-config-host = {
           description = \"Runtime-configured host service\";
           wantedBy = [ \"multi-user.target\" ];
           serviceConfig = { Type = \"oneshot\"; RemainAfterExit = true; };
-          script = \"printf two > /run/rfc0011-host-service\";
+          script = \"printf two > /run/runtime-config-host-service\";
         };
       }
       """
       encoded = base64.b64encode(second_host.encode()).decode()
-      runtime.succeed(f"printf '%s' {encoded} | base64 -d > /run/rfc0011-host-two.nix")
+      runtime.succeed(f"printf '%s' {encoded} | base64 -d > /run/runtime-config-host-two.nix")
 
       # The porcelain defaults derive the running base library, module ABI,
       # current retained manifest, and normalized facts automatically. The
       # JSON dry-run is the oracle for the real switch and must be a clean
       # no-op on both the generation pointer and live files.
-      runtime.succeed("rm -rf /run/rfc0011-dry-run")
+      runtime.succeed("rm -rf /run/runtime-config-dry-run")
       dry_run = json.loads(runtime.succeed(f"""
           {APM} --json switch --dry-run \
-            --from /run/rfc0011-host-two.nix \
-            --eval-root /run/rfc0011-dry-run
+            --from /run/runtime-config-host-two.nix \
+            --eval-root /run/runtime-config-dry-run
       """, timeout=300))
       assert any(
-          change["path"] in ("hostname", "rfc0011/runtime.conf")
+          change["path"] in ("hostname", "runtime-config/runtime.conf")
           for change in dry_run["etc_diff"]
       ), dry_run
       for ca_path in (
@@ -422,7 +422,7 @@ in {
               dry_run,
           )
       assert any(
-          action["unit"] == "rfc0011-host.service"
+          action["unit"] == "runtime-config-host.service"
           for action in dry_run["unit_actions"]
       ), dry_run
       assert isinstance(dry_run["fetch_plan"], list), dry_run
@@ -430,12 +430,12 @@ in {
       assert current_generation() == first
       assert_live("one")
 
-      runtime.succeed("rm -rf /run/rfc0011-switch")
+      runtime.succeed("rm -rf /run/runtime-config-switch")
       runtime.succeed(f"""
           set -eu
           {APM} switch \
-            --from /run/rfc0011-host-two.nix \
-            --eval-root /run/rfc0011-switch
+            --from /run/runtime-config-host-two.nix \
+            --eval-root /run/runtime-config-switch
       """, timeout=300)
       second = current_generation()
       assert second != first, (first, second)

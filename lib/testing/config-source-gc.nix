@@ -9,10 +9,10 @@
   pkgs,
   lib ? null,
 }: let
-  fixture = ./fixtures/rfc-0011-cfgsrc-gc;
+  fixture = ./fixtures/config-source-gc;
 in
   pkgs.mkDerivation {
-    pname = "rfc-0011-cfgsrc-gc";
+    pname = "config-source-gc";
     version = "0";
     src = null;
     buildDeps = [
@@ -30,7 +30,7 @@ in
         script = ''
           set -eu
 
-          work="$TMPDIR/rfc-0011-cfgsrc-gc"
+          work="$TMPDIR/config-source-gc"
           aos_root="$work/aos-root"
           store_uri="local?root=$aos_root"
           store_dir="$aos_root/nix/store"
