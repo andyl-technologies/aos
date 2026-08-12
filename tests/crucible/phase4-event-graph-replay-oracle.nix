@@ -79,7 +79,7 @@
       }
       {
         label = "plan-carried graph replay";
-        needle = "plan should carry the event graph under replay";
+        needle = "scenario_form.plan().event_graph().clone()";
       }
       {
         label = "self-contained reproduction artifact";
