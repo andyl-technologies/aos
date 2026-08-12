@@ -905,7 +905,8 @@ impl QemuFaultCapabilityRequirement {
                 .exact_register_manifest
                 .as_ref()
                 .is_some_and(|required| required != manifest)
-            || required_target.exact_interrupt_manifest.as_ref() != interrupt_manifest
+            || (self.world_bound
+                && required_target.exact_interrupt_manifest.as_ref() != interrupt_manifest)
             || (self.world_bound
                 && required_target.exact_hardware_error_manifest.as_ref()
                     != hardware_error_manifest)
