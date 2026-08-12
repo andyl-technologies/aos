@@ -1068,12 +1068,18 @@ impl QemuFaultCommandApis {
 extern "C" fn test_system_manifest(_out: *mut QemuFaultSystemManifest) -> c_int {
     static CAPABILITY: &[u8] = b"qemu.fault-system.complete.v1\0";
     static VMSTATE: &[u8] = b"qemu.fault-vmstate.v1\0";
-    static DIGEST: &[u8] = b"1111111111111111111111111111111111111111111111111111111111111111\0";
+    static BUILD_ID: std::sync::OnceLock<std::ffi::CString> = std::sync::OnceLock::new();
+    static PATCH_SERIES_HASH: std::sync::OnceLock<std::ffi::CString> = std::sync::OnceLock::new();
+    static SHMEM_HEADER_HASH: std::sync::OnceLock<std::ffi::CString> = std::sync::OnceLock::new();
     if _out.is_null() {
         return -libc::EINVAL;
     }
+    let build_id = test_system_identity(&BUILD_ID, EXPECTED_QEMU_BUILD_ID);
+    let patch_series_hash =
+        test_system_identity(&PATCH_SERIES_HASH, EXPECTED_QEMU_PATCH_SERIES_HASH);
+    let shmem_header_hash = test_system_identity(&SHMEM_HEADER_HASH, EXPECTED_SHMEM_HEADER_HASH);
     // SAFETY: the test caller provides one writable row and all referenced
-    // strings have static NUL-terminated storage.
+    // strings have process-lifetime NUL-terminated storage.
     unsafe {
         *_out = QemuFaultSystemManifest {
             semantic_version: 1,
@@ -1083,12 +1089,28 @@ extern "C" fn test_system_manifest(_out: *mut QemuFaultSystemManifest) -> c_int 
             vmstate_sections_sha256: [1; 32],
             system_capability: CAPABILITY.as_ptr().cast(),
             vmstate_capability: VMSTATE.as_ptr().cast(),
-            qemu_build_id: DIGEST.as_ptr().cast(),
-            qemu_patch_series_hash: DIGEST.as_ptr().cast(),
-            shmem_header_hash: DIGEST.as_ptr().cast(),
+            qemu_build_id: build_id.as_ptr(),
+            qemu_patch_series_hash: patch_series_hash.as_ptr(),
+            shmem_header_hash: shmem_header_hash.as_ptr(),
         };
     }
     0
+}
+
+#[cfg(test)]
+fn test_system_identity(
+    storage: &'static std::sync::OnceLock<std::ffi::CString>,
+    packaged_identity: Option<&'static str>,
+) -> &'static std::ffi::CStr {
+    storage
+        .get_or_init(|| {
+            std::ffi::CString::new(
+                packaged_identity
+                    .unwrap_or("1111111111111111111111111111111111111111111111111111111111111111"),
+            )
+            .unwrap_or_else(|error| panic!("test system identity must be valid C text: {error}"))
+        })
+        .as_c_str()
 }
 
 #[cfg(test)]
