@@ -1810,12 +1810,6 @@ where
             .find(|generation| generation.number == number)
             .cloned()
     }) {
-        if pending.toplevel != package.store_path {
-            bail!(
-                "image generation {} is already pending; refusing to replace it",
-                pending.number
-            );
-        }
         // A crash may occur after the authenticated pending record is durable
         // but before its UKI is published. In that case, fall through and
         // reconstruct the same slot transaction instead of requiring an entry
@@ -1823,10 +1817,19 @@ where
         if let Ok(pending_entry) =
             resolve_installed_uki_entry(&layout.boot_root, &pending.uki_path)
         {
+            if pending.toplevel != package.store_path {
+                bail!(
+                    "image generation {} is already published and pending; refusing to replace it",
+                    pending.number
+                );
+            }
             select_image_default_with(profile, &mut state, pending.number, &pending_entry, select)?;
             cleanup_replaced_slot_ukis(layout, &state, pending.slot, &pending.uki_path)?;
             replicate_boot_partitions(layout)?;
             return Ok(pending);
+        }
+        if pending.toplevel != package.store_path {
+            abort_unpublished_image_selection(profile, &mut state, pending.number)?;
         }
     }
 
@@ -1924,6 +1927,27 @@ where
     cleanup_replaced_slot_ukis(layout, &state, target_slot, &installed_uki)?;
     replicate_boot_partitions(layout)?;
     Ok(generation)
+}
+
+/// Clears a durable selection intent whose UKI was never published.
+fn abort_unpublished_image_selection(
+    profile: &Path,
+    state: &mut ImageGenerationState,
+    target: u32,
+) -> Result<()> {
+    if state.pending != Some(target) {
+        bail!("cannot abort image generation {target}: it is not pending");
+    }
+    // Removing the intent first is crash-safe: the authenticated pending
+    // record still prevents an unknown image from being blessed, while a
+    // retry can repeat this cleanup. This path is called only after proving
+    // that no firmware-discoverable candidate exists.
+    remove_file_durable(&profile.join(IMAGE_TRANSITION_INTENT))?;
+    state.pending = None;
+    write_atomic_durable(
+        &profile.join(IMAGE_STATE_FILE),
+        &serde_json::to_vec_pretty(state)?,
+    )
 }
 
 fn replicate_boot_partitions(layout: &ImageSlotLayout) -> Result<()> {
@@ -5646,6 +5670,31 @@ mod tests {
             serde_json::from_slice(&std::fs::read(tmp.path().join(IMAGE_STATE_FILE)).unwrap())
                 .unwrap();
         assert_eq!(durable.pending, Some(2));
+    }
+
+    #[test]
+    fn unpublished_image_selection_can_be_aborted_for_a_corrected_retry() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut state = ImageGenerationState {
+            running: 1,
+            default: 1,
+            pending: None,
+            generations: Vec::new(),
+        };
+        prepare_image_selection(tmp.path(), &mut state, 2, "aos-2+3.efi").unwrap();
+
+        abort_unpublished_image_selection(tmp.path(), &mut state, 2).unwrap();
+
+        assert_eq!(state.default, 1);
+        assert_eq!(state.pending, None);
+        assert!(!tmp.path().join(IMAGE_TRANSITION_INTENT).exists());
+        let durable: ImageGenerationState =
+            serde_json::from_slice(&std::fs::read(tmp.path().join(IMAGE_STATE_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(durable.pending, None);
+
+        prepare_image_selection(tmp.path(), &mut state, 3, "aos-3+3.efi").unwrap();
+        assert_eq!(state.pending, Some(3));
     }
 
     #[test]

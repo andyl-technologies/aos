@@ -43,6 +43,7 @@ secure_boot_var=/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e
 }
 
 resolved_disks=()
+disk_sizes=()
 expected_esps=(@esp_devices@)
 index=0
 for disk in "${disks[@]}"; do
@@ -57,6 +58,9 @@ for disk in "${disks[@]}"; do
     }
   done
   resolved_disks+=("$resolved")
+  disk_bytes=$(lsblk -bndo SIZE "$disk")
+  case "$disk_bytes" in ''|*[!0-9]*) echo "cannot determine disk capacity: $disk" >&2; exit 1 ;; esac
+  disk_sizes+=("$disk_bytes")
   [ -z "$(lsblk -nrpo MOUNTPOINTS "$disk" | tr -d '[:space:]')" ] || {
     echo "refusing disk with a mounted filesystem: $disk" >&2
     exit 1
@@ -79,10 +83,41 @@ for disk in "${disks[@]}"; do
 done
 
 bundle=$(cd "$(dirname "$0")/.." && pwd -P)
-esp_payload_bytes=$(du -sk "$bundle/payload/esp" | cut -f1)
+esp_payload_bytes=$(du -skL "$bundle/payload/esp" | cut -f1)
 # Leave ample FAT metadata, temporary update, and future UKI headroom.
 [ "$esp_payload_bytes" -le 786432 ] || {
   echo "EFI payload exceeds the 768 MiB budget for a 1 GiB ESP" >&2
+  exit 1
+}
+root_bytes=$(stat -Lc %s "$bundle/payload/root.img")
+verity_bytes=$(stat -Lc %s "$bundle/payload/root.verity")
+root_size=$(( @root_slot_size@ * 1073741824 ))
+verity_size=$(( @verity_slot_size@ * 1048576 ))
+[ "$root_bytes" -le "$root_size" ] || { echo "root image exceeds configured zvol capacity" >&2; exit 1; }
+[ "$verity_bytes" -le "$verity_size" ] || { echo "verity image exceeds configured zvol capacity" >&2; exit 1; }
+
+# Partitioning consumes 1 GiB plus the leading alignment gap on every disk.
+# A striped set of adjacent mirrors has the capacity of the smaller member of
+# each pair. Validate the complete zvol allocation before touching a GPT.
+partition_overhead=$(( 1025 * 1048576 ))
+usable_pool_bytes=0
+index=0
+while [ "$index" -lt "${#disk_sizes[@]}" ]; do
+  first=${disk_sizes[$index]}
+  second=${disk_sizes[$((index + 1))]}
+  [ "$first" -gt "$partition_overhead" ] && [ "$second" -gt "$partition_overhead" ] || {
+    echo "disk pair $((index / 2 + 1)) is too small for the ESP and ZFS partition" >&2
+    exit 1
+  }
+  if [ "$first" -lt "$second" ]; then pair_bytes=$first; else pair_bytes=$second; fi
+  usable_pool_bytes=$((usable_pool_bytes + pair_bytes - partition_overhead))
+  index=$((index + 2))
+done
+required_zvol_bytes=$(( 2 * root_size + 2 * verity_size ))
+pool_headroom=$(( (${#disk_sizes[@]} / 2) * 1073741824 ))
+required_pool_bytes=$((required_zvol_bytes + pool_headroom))
+[ "$usable_pool_bytes" -ge "$required_pool_bytes" ] || {
+  echo "RAID10 pool is too small for the configured immutable zvol slots" >&2
   exit 1
 }
 key=$(mktemp /run/aos-zfs-key.XXXXXX)
@@ -134,12 +169,6 @@ zfs create -o mountpoint=legacy -o canmount=noauto @pool@/var
 zfs create -o mountpoint=legacy @pool@/var/log
 zfs create -o mountpoint=legacy @pool@/var/lib
 
-root_bytes=$(stat -c %s "$bundle/payload/root.img")
-verity_bytes=$(stat -c %s "$bundle/payload/root.verity")
-root_size=$(( @root_slot_size@ * 1073741824 ))
-verity_size=$(( @verity_slot_size@ * 1048576 ))
-[ "$root_bytes" -le "$root_size" ] || { echo "root image exceeds configured zvol capacity" >&2; exit 1; }
-[ "$verity_bytes" -le "$verity_size" ] || { echo "verity image exceeds configured zvol capacity" >&2; exit 1; }
 for slot in a b; do
   zfs create -V "$root_size" -o volblocksize=16K -o compression=off @pool@/@dataset@/root-$slot
   zfs create -V "$verity_size" -o volblocksize=16K -o compression=off @pool@/@dataset@/root-$slot-hash
