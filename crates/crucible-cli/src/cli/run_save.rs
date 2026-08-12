@@ -369,7 +369,7 @@ pub(super) fn run_local_qemu_resume_workflow(
         resume_plan,
         report,
     )?;
-    append_qemu_control_plane_execution_proof(&mut outcome, backend, "resume-thin-replay");
+    append_qemu_control_plane_execution_proof(&mut outcome, backend, "resume-exact-checkpoint");
     Ok(outcome)
 }
 

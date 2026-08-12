@@ -193,7 +193,7 @@ impl ProductionVmLifecycleLoop {
         &self,
         request: &DebugRuntimeRepositionRequest,
     ) -> Result<ProductionVmLifecycleLoop, SchedulerError> {
-        let replay_config = self.config.clone().for_thin_replay();
+        let replay_config = self.config.clone();
         let mut replay =
             build_production_vm_lifecycle_loop(&self.scenario, &self.source, &replay_config)
                 .map_err(|error| SchedulerError::BoundaryViolation {

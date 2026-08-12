@@ -286,10 +286,6 @@ impl ProductionVmLifecycleConfig {
         self
     }
 
-    pub(super) fn for_thin_replay(self) -> Self {
-        self
-    }
-
     /// Returns a conservative bound for driving through the configured budget.
     ///
     /// The scheduler budget is already a count of authoritative quanta. The
