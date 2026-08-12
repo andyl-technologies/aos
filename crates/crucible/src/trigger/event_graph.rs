@@ -696,6 +696,96 @@ impl EventGraphState {
         self.last_firing.get(event).copied()
     }
 
+    /// Encodes the complete event-graph continuation in a versioned format.
+    #[must_use]
+    pub fn to_compact_binary(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"crucible.event-graph-state.v1\0");
+        write_event_graph_state_count(&mut bytes, self.consumed_once.len());
+        for event in &self.consumed_once {
+            write_event_graph_state_bytes(&mut bytes, event.name.as_bytes());
+        }
+        write_event_graph_state_count(&mut bytes, self.previous_truth.len());
+        for (event, truth) in &self.previous_truth {
+            write_event_graph_state_bytes(&mut bytes, event.name.as_bytes());
+            bytes.push(u8::from(*truth));
+        }
+        write_event_graph_state_count(&mut bytes, self.last_firing.len());
+        for (event, at) in &self.last_firing {
+            write_event_graph_state_bytes(&mut bytes, event.name.as_bytes());
+            bytes.extend_from_slice(&at.ticks.to_le_bytes());
+        }
+        write_event_graph_state_count(&mut bytes, self.once_latches.len());
+        for condition in &self.once_latches {
+            write_event_graph_state_bytes(&mut bytes, &condition.to_compact_binary());
+        }
+        bytes
+    }
+
+    /// Decodes and validates an event-graph continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] for an unsupported version, malformed or
+    /// truncated fields, duplicate map/set keys, invalid predicates, excessive
+    /// collections, or trailing bytes.
+    pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
+        const MAGIC: &[u8] = b"crucible.event-graph-state.v1\0";
+        if !bytes.starts_with(MAGIC) {
+            return Err(event_graph_state_decode_error("binary magic mismatch"));
+        }
+        let mut reader = EventGraphStateReader {
+            bytes,
+            offset: MAGIC.len(),
+        };
+        let mut consumed_once = BTreeSet::new();
+        for _ in 0..reader.count("consumed event")? {
+            let event = EventId::from_name(reader.string("consumed event")?);
+            if !consumed_once.insert(event) {
+                return Err(event_graph_state_decode_error("duplicate consumed event"));
+            }
+        }
+        let mut previous_truth = BTreeMap::new();
+        for _ in 0..reader.count("truth entry")? {
+            let event = EventId::from_name(reader.string("truth event")?);
+            let truth = match reader.byte("truth value")? {
+                0 => false,
+                1 => true,
+                _ => return Err(event_graph_state_decode_error("invalid truth value")),
+            };
+            if previous_truth.insert(event, truth).is_some() {
+                return Err(event_graph_state_decode_error("duplicate truth event"));
+            }
+        }
+        let mut last_firing = BTreeMap::new();
+        for _ in 0..reader.count("firing entry")? {
+            let event = EventId::from_name(reader.string("firing event")?);
+            let at = VirtualTime {
+                ticks: reader.u64("firing time")?,
+            };
+            if last_firing.insert(event, at).is_some() {
+                return Err(event_graph_state_decode_error("duplicate firing event"));
+            }
+        }
+        let mut once_latches = Vec::new();
+        for _ in 0..reader.count("once latch")? {
+            let condition = Predicate::from_compact_binary(reader.bytes("once latch")?)?;
+            if once_latches.contains(&condition) {
+                return Err(event_graph_state_decode_error("duplicate once latch"));
+            }
+            once_latches.push(condition);
+        }
+        if reader.offset != bytes.len() {
+            return Err(event_graph_state_decode_error("trailing binary bytes"));
+        }
+        Ok(Self {
+            consumed_once,
+            previous_truth,
+            last_firing,
+            once_latches,
+        })
+    }
+
     /// Evaluates every event in declared order and returns fired actions.
     ///
     /// `evaluator` is the deterministic predicate evaluator for non-entrypoint
@@ -745,6 +835,104 @@ impl EventGraphState {
             }
         }
         EventFirings::new(point, event_log_offset, timer_fires, firings)
+    }
+}
+
+#[cfg(test)]
+mod event_graph_state_codec_tests {
+    use super::*;
+
+    #[test]
+    fn event_graph_state_codec_round_trips_complete_state() {
+        let consumed = EventId::from_name("consumed");
+        let repeatable = EventId::from_name("repeatable");
+        let condition = Predicate::once(Predicate::named("latched"));
+        let state = EventGraphState {
+            consumed_once: BTreeSet::from([consumed]),
+            previous_truth: BTreeMap::from([(repeatable.clone(), true)]),
+            last_firing: BTreeMap::from([(repeatable, VirtualTime { ticks: 91 })]),
+            once_latches: vec![condition],
+        };
+        let bytes = state.to_compact_binary();
+        let restored = EventGraphState::from_compact_binary(&bytes)
+            .unwrap_or_else(|error| panic!("event graph state should decode: {error}"));
+        assert_eq!(restored, state);
+        assert_eq!(restored.to_compact_binary(), bytes);
+    }
+
+    #[test]
+    fn event_graph_state_codec_rejects_trailing_bytes() {
+        let mut bytes = EventGraphState::new().to_compact_binary();
+        bytes.push(0);
+        assert!(EventGraphState::from_compact_binary(&bytes).is_err());
+    }
+}
+
+const EVENT_GRAPH_STATE_MAX_ENTRIES: usize = 1 << 20;
+
+fn write_event_graph_state_count(bytes: &mut Vec<u8>, count: usize) {
+    bytes.extend_from_slice(&(count as u64).to_le_bytes());
+}
+
+fn write_event_graph_state_bytes(bytes: &mut Vec<u8>, value: &[u8]) {
+    write_event_graph_state_count(bytes, value.len());
+    bytes.extend_from_slice(value);
+}
+
+fn event_graph_state_decode_error(message: impl Into<String>) -> EngineError {
+    EngineError::ScenarioSerialization {
+        reason: format!("event graph state: {}", message.into()),
+    }
+}
+
+struct EventGraphStateReader<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> EventGraphStateReader<'a> {
+    fn take(&mut self, length: usize, role: &str) -> Result<&'a [u8], EngineError> {
+        let end = self
+            .offset
+            .checked_add(length)
+            .ok_or_else(|| event_graph_state_decode_error(format!("{role} offset overflow")))?;
+        let value = self.bytes.get(self.offset..end).ok_or_else(|| {
+            event_graph_state_decode_error(format!("truncated {role} at byte {}", self.offset))
+        })?;
+        self.offset = end;
+        Ok(value)
+    }
+
+    fn byte(&mut self, role: &str) -> Result<u8, EngineError> {
+        Ok(self.take(1, role)?[0])
+    }
+
+    fn u64(&mut self, role: &str) -> Result<u64, EngineError> {
+        let mut fixed = [0_u8; 8];
+        fixed.copy_from_slice(self.take(8, role)?);
+        Ok(u64::from_le_bytes(fixed))
+    }
+
+    fn count(&mut self, role: &str) -> Result<usize, EngineError> {
+        let count = usize::try_from(self.u64(role)?)
+            .map_err(|_| event_graph_state_decode_error(format!("{role} count overflow")))?;
+        if count > EVENT_GRAPH_STATE_MAX_ENTRIES {
+            return Err(event_graph_state_decode_error(format!(
+                "{role} count exceeds {}",
+                EVENT_GRAPH_STATE_MAX_ENTRIES
+            )));
+        }
+        Ok(count)
+    }
+
+    fn bytes(&mut self, role: &str) -> Result<&'a [u8], EngineError> {
+        let length = self.count(role)?;
+        self.take(length, role)
+    }
+
+    fn string(&mut self, role: &str) -> Result<String, EngineError> {
+        String::from_utf8(self.bytes(role)?.to_vec())
+            .map_err(|_| event_graph_state_decode_error(format!("{role} is not UTF-8")))
     }
 }
 
