@@ -626,7 +626,11 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
             .map_err(|source| {
                 QemuAsyncDriverRuntimeError::new("inspect pending 9p I/O", source.to_string())
             })?;
-        Ok(block || ninep)
+        let accelerator = self
+            .accelerator
+            .as_ref()
+            .is_some_and(|accelerator| accelerator.next_completion_icount().is_some());
+        Ok(block || ninep || accelerator)
     }
 
     fn checkpoint_host_io(
