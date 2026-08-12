@@ -1,4 +1,4 @@
-From 5c8031ff78718263eb9b8218249f49b9a47ff6d1 Mon Sep 17 00:00:00 2001
+From 78405df9432088f0ac3f4fdbd7953739a5f23a32 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Tue, 11 Aug 2026 19:29:49 -0700
 Subject: [PATCH] crucible: add deterministic accelerator device
@@ -12,10 +12,10 @@ Signed-off-by: Dylan Plecki <dylan@andyl.com>
  .../hw/virtio/virtio-crucible-accelerator.h   |   58 +
  include/qemu/crucible-fault.h                 |   29 +
  include/qemu/qemu-plugin.h                    |   82 +
- plugins/crucible-fault-accelerator.c          | 1561 +++++++++++++++++
+ plugins/crucible-fault-accelerator.c          | 1563 +++++++++++++++++
  plugins/crucible-fault-node.c                 |   33 +-
  plugins/meson.build                           |    1 +
- 10 files changed, 2340 insertions(+), 1 deletion(-)
+ 10 files changed, 2342 insertions(+), 1 deletion(-)
  create mode 100644 hw/virtio/virtio-crucible-accelerator-pci.c
  create mode 100644 hw/virtio/virtio-crucible-accelerator.c
  create mode 100644 include/hw/virtio/virtio-crucible-accelerator.h
@@ -866,10 +866,10 @@ index 3584c8d..c3a4ee7 100644
  int qemu_plugin_crucible_fault_clock_bind(
 diff --git a/plugins/crucible-fault-accelerator.c b/plugins/crucible-fault-accelerator.c
 new file mode 100644
-index 0000000..9de6ec4
+index 0000000..61b8623
 --- /dev/null
 +++ b/plugins/crucible-fault-accelerator.c
-@@ -0,0 +1,1561 @@
+@@ -0,0 +1,1563 @@
 +/*
 + * Crucible deterministic accelerator fault device integration
 + *
@@ -1397,6 +1397,7 @@ index 0000000..9de6ec4
 +    memcpy(record + 72, before_hash, 32);
 +    memcpy(record + 104, after_hash, 32);
 +    memcpy(record + 136, qemu_crucible_fault_rule_binding_hash(rule), 32);
++    accelerator_sha256(transform, transform_len, record + 168);
 +    g_byte_array_append(evidence, record, sizeof(record));
 +    *outcome = CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED;
 +    return 0;
@@ -1862,6 +1863,7 @@ index 0000000..9de6ec4
 +        stq_le_p(evidence + 88, overlap_end - overlap_start);
 +        memcpy(evidence + 104, before_hash, 32);
 +        memcpy(evidence + 136, after_hash, 32);
++        accelerator_sha256(transform, transform_len, evidence + 168);
 +        if (!accelerator_event_emit_reserved(rule, reservation, evidence,
 +                                             before_hash, after_hash)) {
 +            goto memory_failure;

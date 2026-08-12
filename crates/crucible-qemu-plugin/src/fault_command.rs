@@ -36,7 +36,7 @@ use crucible_shmem::{
     MappedSetupRegionAccessError, NodeFaultOperationV1, NodeFaultPayloadV1, NodeFaultTargetKindV1,
     RingHeader, can_enqueue_fault_event, can_enqueue_fault_result, dequeue_fault_command,
     encode_fault_capability_manifest, enqueue_fault_event, enqueue_fault_result,
-    fault_capability_manifest_digest, fault_register_cpu_model_digest_v1,
+    fault_capability_manifest_digest, fault_object_id_hash_v1, fault_register_cpu_model_digest_v1,
     fault_register_manifest_digest_v1, node_fault_field,
 };
 use sha2::Digest as _;
@@ -1555,6 +1555,18 @@ struct ClockCommandExpectation {
 }
 
 #[derive(Clone)]
+struct AcceleratorCommandExpectation {
+    operation: NodeFaultOperationV1,
+    command_kind: u16,
+    binding_hash: [u8; 32],
+    generation: u64,
+    action_hash: [u8; 32],
+    target_hash: [u8; 32],
+    model_phase: u16,
+    fields: BTreeMap<u16, Vec<u8>>,
+}
+
+#[derive(Clone)]
 enum ClockCommandParameters {
     Remove,
     Transform {
@@ -1778,6 +1790,8 @@ pub(crate) struct FaultCommandBridge {
     memory_ecc_commands: BTreeMap<u64, MemoryEccCommandExpectation>,
     clock_commands: BTreeMap<u64, ClockCommandExpectation>,
     active_clock_bindings: BTreeMap<[u8; 32], u64>,
+    accelerator_commands: BTreeMap<u64, AcceleratorCommandExpectation>,
+    active_accelerator_bindings: BTreeMap<[u8; 32], u64>,
     pending_command: Option<DequeuedFaultCommand>,
 }
 
@@ -1982,6 +1996,8 @@ impl FaultCommandBridge {
             memory_ecc_commands: BTreeMap::new(),
             clock_commands: BTreeMap::new(),
             active_clock_bindings: BTreeMap::new(),
+            accelerator_commands: BTreeMap::new(),
+            active_accelerator_bindings: BTreeMap::new(),
             pending_command: None,
         })
     }
@@ -2221,6 +2237,21 @@ impl FaultCommandBridge {
         } else {
             None
         };
+        let accelerator_expectation = if matches!(
+            header.command_kind,
+            FaultCommandKind::AcceleratorLifecycle
+                | FaultCommandKind::AcceleratorResultTransform
+                | FaultCommandKind::AcceleratorMemoryEvent
+                | FaultCommandKind::AcceleratorService
+        ) {
+            Some(accelerator_command_expectation(
+                payload,
+                header.binding_hash,
+                header.command_kind,
+            )?)
+        } else {
+            None
+        };
         let Some(target_icount) = header.target_icount.checked_sub(logical_icount_offset) else {
             return self.publish_local_rejection(
                 header.command_kind as u16,
@@ -2289,6 +2320,10 @@ impl FaultCommandBridge {
         }
         if let Some(expectation) = clock_expectation {
             self.clock_commands
+                .insert(header.command_sequence, expectation);
+        }
+        if let Some(expectation) = accelerator_expectation {
+            self.accelerator_commands
                 .insert(header.command_sequence, expectation);
         }
         Ok(())
@@ -2517,6 +2552,44 @@ impl FaultCommandBridge {
                     self.clock_commands.remove(&result.command_sequence);
                 }
             }
+            if matches!(
+                result.command_kind,
+                value if value == FaultCommandKind::AcceleratorLifecycle as u16
+                    || value == FaultCommandKind::AcceleratorResultTransform as u16
+                    || value == FaultCommandKind::AcceleratorMemoryEvent as u16
+                    || value == FaultCommandKind::AcceleratorService as u16
+            ) {
+                let command = self
+                    .accelerator_commands
+                    .get(&result.command_sequence)
+                    .cloned()
+                    .ok_or(FaultCommandBridgeError::AcceleratorEvidence)?;
+                if result.status == FaultResultStatus::Applied as u16 {
+                    match command.operation {
+                        NodeFaultOperationV1::Upsert => {
+                            if let Some(prior) = self
+                                .active_accelerator_bindings
+                                .insert(command.binding_hash, result.command_sequence)
+                                && prior != result.command_sequence
+                            {
+                                self.accelerator_commands.remove(&prior);
+                            }
+                        }
+                        NodeFaultOperationV1::Remove => {
+                            if let Some(prior) = self
+                                .active_accelerator_bindings
+                                .remove(&command.binding_hash)
+                            {
+                                self.accelerator_commands.remove(&prior);
+                            }
+                            self.accelerator_commands.remove(&result.command_sequence);
+                        }
+                        NodeFaultOperationV1::Apply => {}
+                    }
+                } else {
+                    self.accelerator_commands.remove(&result.command_sequence);
+                }
+            }
         }
     }
 
@@ -2617,6 +2690,10 @@ impl FaultCommandBridge {
                 .clock_commands
                 .get(&event.rule_command_sequence)
                 .cloned();
+            let accelerator_command = self
+                .accelerator_commands
+                .get(&event.rule_command_sequence)
+                .cloned();
             let instruction_terminal = event.command_kind
                 == FaultCommandKind::CpuInstructionTransform as u16
                 && FaultTerminalEvidenceV1::has_magic(&payload);
@@ -2708,6 +2785,23 @@ impl FaultCommandBridge {
                             .as_ref()
                             .ok_or(FaultCommandBridgeError::ClockEvidence)?,
                     )?
+                } else if matches!(
+                    event.command_kind,
+                    value if value == FaultCommandKind::AcceleratorLifecycle as u16
+                        || value == FaultCommandKind::AcceleratorResultTransform as u16
+                        || value == FaultCommandKind::AcceleratorMemoryEvent as u16
+                        || value == FaultCommandKind::AcceleratorService as u16
+                ) {
+                    translate_accelerator_evidence(
+                        &payload,
+                        &event,
+                        self.accelerator_manifest_payload
+                            .as_deref()
+                            .ok_or(FaultCommandBridgeError::AcceleratorEvidence)?,
+                        accelerator_command
+                            .as_ref()
+                            .ok_or(FaultCommandBridgeError::AcceleratorEvidence)?,
+                    )?
                 } else {
                     payload
                 };
@@ -2764,6 +2858,13 @@ impl FaultCommandBridge {
                 .is_some_and(|command| command.operation == NodeFaultOperationV1::Apply)
             {
                 self.clock_commands.remove(&event.rule_command_sequence);
+            }
+            if accelerator_command
+                .as_ref()
+                .is_some_and(|command| command.operation == NodeFaultOperationV1::Apply)
+            {
+                self.accelerator_commands
+                    .remove(&event.rule_command_sequence);
             }
         }
     }
@@ -3475,6 +3576,30 @@ fn clock_command_expectation(
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| FaultCommandBridgeError::ClockEvidence)?,
         parameters,
+    })
+}
+
+fn accelerator_command_expectation(
+    payload: &[u8],
+    binding_hash: [u8; 32],
+    command_kind: FaultCommandKind,
+) -> Result<AcceleratorCommandExpectation, FaultCommandBridgeError> {
+    let decoded = NodeFaultPayloadV1::decode(payload)
+        .map_err(|_| FaultCommandBridgeError::AcceleratorEvidence)?;
+    let fields = decoded
+        .fields
+        .into_iter()
+        .map(|field| (field.tag, field.value))
+        .collect();
+    Ok(AcceleratorCommandExpectation {
+        operation: decoded.operation,
+        command_kind: command_kind as u16,
+        binding_hash,
+        generation: decoded.generation,
+        action_hash: decoded.action_hash,
+        target_hash: decoded.target_hash,
+        model_phase: decoded.model_phase,
+        fields,
     })
 }
 
@@ -5433,6 +5558,233 @@ fn raw_u64(bytes: &[u8], offset: usize) -> Result<u64, FaultCommandBridgeError> 
         .ok_or(FaultCommandBridgeError::RegisterEvidence)
 }
 
+fn accelerator_field(
+    expectation: &AcceleratorCommandExpectation,
+    tag: u16,
+) -> Result<&[u8], FaultCommandBridgeError> {
+    expectation
+        .fields
+        .get(&tag)
+        .map(Vec::as_slice)
+        .ok_or(FaultCommandBridgeError::AcceleratorEvidence)
+}
+
+fn accelerator_u32(
+    expectation: &AcceleratorCommandExpectation,
+    tag: u16,
+) -> Result<u32, FaultCommandBridgeError> {
+    accelerator_field(expectation, tag)?
+        .try_into()
+        .map(u32::from_le_bytes)
+        .map_err(|_| FaultCommandBridgeError::AcceleratorEvidence)
+}
+
+fn accelerator_u64(
+    expectation: &AcceleratorCommandExpectation,
+    tag: u16,
+) -> Result<u64, FaultCommandBridgeError> {
+    accelerator_field(expectation, tag)?
+        .try_into()
+        .map(u64::from_le_bytes)
+        .map_err(|_| FaultCommandBridgeError::AcceleratorEvidence)
+}
+
+fn accelerator_bool(
+    expectation: &AcceleratorCommandExpectation,
+    tag: u16,
+) -> Result<bool, FaultCommandBridgeError> {
+    match accelerator_field(expectation, tag)? {
+        [0] => Ok(false),
+        [1] => Ok(true),
+        _ => Err(FaultCommandBridgeError::AcceleratorEvidence),
+    }
+}
+
+fn translate_accelerator_evidence(
+    raw: &[u8],
+    event: &QemuFaultEvent,
+    manifest_payload: &[u8],
+    expectation: &AcceleratorCommandExpectation,
+) -> Result<Vec<u8>, FaultCommandBridgeError> {
+    use node_fault_field::*;
+
+    if raw.len() != 256
+        || event.command_kind != expectation.command_kind
+        || event.binding_hash != expectation.binding_hash
+        || event.generation != expectation.generation
+        || event.action_hash != expectation.action_hash
+        || event.target_hash != expectation.target_hash
+        || event.model_phase != expectation.model_phase
+        || event.outcome != FaultEventOutcomeV1::Applied as u16
+    {
+        return Err(FaultCommandBridgeError::AcceleratorEvidence);
+    }
+    let manifest = FaultAcceleratorCapabilityManifestV1::decode(manifest_payload)
+        .map_err(|_| FaultCommandBridgeError::AcceleratorEvidence)?;
+    let device = accelerator_field(expectation, T1)?;
+    let row = manifest
+        .rows
+        .iter()
+        .find(|row| fault_object_id_hash_v1(&row.id).as_slice() == device)
+        .ok_or(FaultCommandBridgeError::AcceleratorEvidence)?;
+    let common = |before_at: usize, after_at: usize, binding_at: usize| {
+        if raw.get(before_at..before_at + 32) != Some(event.before_hash.as_slice())
+            || raw.get(after_at..after_at + 32) != Some(event.after_hash.as_slice())
+            || raw.get(binding_at..binding_at + 32) != Some(expectation.binding_hash.as_slice())
+        {
+            Err(FaultCommandBridgeError::AcceleratorEvidence)
+        } else {
+            Ok(())
+        }
+    };
+    match raw.get(..8) {
+        Some(b"CRUCALE1")
+            if expectation.command_kind == FaultCommandKind::AcceleratorLifecycle as u16 =>
+        {
+            if raw_u32(raw, 16)? != accelerator_u32(expectation, P2)?
+                || raw_u32(raw, 20)? != accelerator_u32(expectation, P3)?
+                || raw_u32(raw, 24)? != accelerator_u32(expectation, P4)?
+                || raw.get(64..96) != Some(device)
+            {
+                return Err(FaultCommandBridgeError::AcceleratorEvidence);
+            }
+            common(96, 128, 200)?;
+        }
+        Some(b"CRUCAMI1")
+            if expectation.command_kind == FaultCommandKind::AcceleratorMemoryEvent as u16 =>
+        {
+            let transform = accelerator_field(expectation, P8)?;
+            if raw_u64(raw, 16)? != accelerator_u64(expectation, P1)?
+                || raw_u64(raw, 24)? != accelerator_u64(expectation, P2)?
+                || raw_u32(raw, 32)? != accelerator_u32(expectation, P4)?
+                || raw_u32(raw, 36)? != u32::from(accelerator_bool(expectation, P5)?)
+                || raw_u64(raw, 40)? != accelerator_u64(expectation, P6)?
+                || raw.get(168..200) != Some(sha2::Sha256::digest(transform).as_slice())
+            {
+                return Err(FaultCommandBridgeError::AcceleratorEvidence);
+            }
+            common(72, 104, 136)?;
+        }
+        Some(b"CRUCAME1")
+            if expectation.command_kind == FaultCommandKind::AcceleratorMemoryEvent as u16 =>
+        {
+            let transform = accelerator_field(expectation, P8)?;
+            if raw_u64(raw, 24)? != accelerator_u64(expectation, P1)?
+                || raw_u64(raw, 32)? != accelerator_u64(expectation, P2)?
+                || raw_u32(raw, 40)? != accelerator_u32(expectation, P4)?
+                || raw_u32(raw, 44)? != u32::from(accelerator_bool(expectation, P5)?)
+                || raw_u64(raw, 48)? != accelerator_u64(expectation, P6)?
+                || raw.get(168..200) != Some(sha2::Sha256::digest(transform).as_slice())
+            {
+                return Err(FaultCommandBridgeError::AcceleratorEvidence);
+            }
+            common(104, 136, 200)?;
+        }
+        Some(b"CRUCARE1")
+            if expectation.command_kind == FaultCommandKind::AcceleratorResultTransform as u16 =>
+        {
+            let selector = policy_json(accelerator_field(expectation, P1)?, true)?;
+            let mutation = policy_json(accelerator_field(expectation, P2)?, true)?;
+            let offset = mutation
+                .get("offset")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or(FaultCommandBridgeError::AcceleratorEvidence)?;
+            let mask = mutation
+                .get("mask")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|value| hex::decode(value).ok())
+                .ok_or(FaultCommandBridgeError::AcceleratorEvidence)?;
+            let value = mutation
+                .get("value")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|value| hex::decode(value).ok())
+                .ok_or(FaultCommandBridgeError::AcceleratorEvidence)?;
+            let class_id = raw_u16(raw, 8)?;
+            let expected_job = match class_id {
+                1 if row.class_mask & 1 != 0 => "vector-add",
+                2 if row.class_mask & 2 != 0 => "matrix-multiply",
+                3 if row.class_mask & 4 != 0 => "lookup-table",
+                _ => return Err(FaultCommandBridgeError::AcceleratorEvidence),
+            };
+            let queue_id = u64::from(raw_u16(raw, 12)?);
+            if raw_u64(raw, 24)? != offset
+                || raw_u64(raw, 32)? != mask.len() as u64
+                || selector.get("job_kind").and_then(serde_json::Value::as_str)
+                    != Some(expected_job)
+                || selector
+                    .get("queue")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some_and(|queue| queue != queue_id)
+                || queue_id < u64::from(row.queue_start)
+                || queue_id > u64::from(row.queue_end)
+                || raw_u64(raw, 40)? > u64::from(row.maximum_output_bytes)
+                || raw.get(112..144) != Some(sha2::Sha256::digest(&mask).as_slice())
+                || raw.get(144..176) != Some(sha2::Sha256::digest(&value).as_slice())
+            {
+                return Err(FaultCommandBridgeError::AcceleratorEvidence);
+            }
+            common(48, 80, 200)?;
+        }
+        Some(b"CRUCASE1")
+            if expectation.command_kind == FaultCommandKind::AcceleratorService as u16 =>
+        {
+            let class_id = raw_u16(raw, 8)?;
+            let ratio = accelerator_field(expectation, P1)?;
+            let thermal = policy_json(accelerator_field(expectation, P6)?, true)?;
+            if !(1..=3).contains(&class_id)
+                || row.class_mask & (1 << (class_id - 1)) == 0
+                || raw_u16(raw, 12)? < row.queue_start
+                || raw_u16(raw, 12)? > row.queue_end
+                || raw_u64(raw, 152)? > u64::from(row.maximum_input_bytes)
+                || raw_u64(raw, 160)? > u64::from(row.maximum_output_bytes)
+                || raw.get(40..56) != Some(ratio)
+                || raw_u64(raw, 56)?
+                    != if accelerator_bool(expectation, P2)? {
+                        accelerator_u64(expectation, P3)?
+                    } else {
+                        u64::MAX
+                    }
+                || raw_u64(raw, 64)?
+                    != if accelerator_bool(expectation, P4)? {
+                        accelerator_u64(expectation, P5)?
+                    } else {
+                        u64::MAX
+                    }
+                || thermal
+                    .get("temperature_millikelvin")
+                    .and_then(serde_json::Value::as_u64)
+                    != Some(raw_u64(raw, 136)?)
+                || thermal
+                    .get("power_milliwatts")
+                    .and_then(serde_json::Value::as_u64)
+                    != Some(raw_u64(raw, 144)?)
+            {
+                return Err(FaultCommandBridgeError::AcceleratorEvidence);
+            }
+            common_hashes(raw, event, 88, 168)?;
+            if raw.get(168..200) != Some(expectation.binding_hash.as_slice()) {
+                return Err(FaultCommandBridgeError::AcceleratorEvidence);
+            }
+        }
+        _ => return Err(FaultCommandBridgeError::AcceleratorEvidence),
+    }
+    Ok(raw.to_vec())
+}
+
+fn common_hashes(
+    raw: &[u8],
+    event: &QemuFaultEvent,
+    before_len: usize,
+    after_len: usize,
+) -> Result<(), FaultCommandBridgeError> {
+    if sha2::Sha256::digest(&raw[..before_len]).as_slice() != event.before_hash
+        || sha2::Sha256::digest(&raw[..after_len]).as_slice() != event.after_hash
+    {
+        return Err(FaultCommandBridgeError::AcceleratorEvidence);
+    }
+    Ok(())
+}
+
 fn boundary_phase(value: u16) -> Result<FaultBoundaryPhase, FaultCommandBridgeError> {
     match value {
         1 => Ok(FaultBoundaryPhase::NodeBoundary),
@@ -5581,6 +5933,9 @@ pub enum FaultCommandBridgeError {
     /// QEMU returned malformed or manifest-inconsistent guest-clock evidence.
     #[error("QEMU guest-clock evidence is invalid")]
     ClockEvidence,
+    /// QEMU returned accelerator evidence inconsistent with its admitted rule.
+    #[error("QEMU accelerator evidence is invalid")]
+    AcceleratorEvidence,
     /// QEMU rejected one public hardware-error identity binding.
     #[error("QEMU rejected hardware-error binding for row {row_index}: status {status}")]
     HardwareErrorManifestBind {
@@ -6000,6 +6355,8 @@ mod tests {
             memory_ecc_commands: BTreeMap::new(),
             clock_commands: BTreeMap::new(),
             active_clock_bindings: BTreeMap::new(),
+            accelerator_commands: BTreeMap::new(),
+            active_accelerator_bindings: BTreeMap::new(),
             pending_command: None,
         };
         let command = |kind, sequence, node_hash| FaultCommandHeaderV1 {

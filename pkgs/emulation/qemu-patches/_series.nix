@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "4a664bbdb5b80497a2f3c2129277b0aa718ce786d7d258b72be270bda860dc1b";
+  patchBranchBundleSha256 = "32355c881cf20243664aedc364838a45248e9efe79fe409e481b41b1096f5ed9";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "5c8031ff78718263eb9b8218249f49b9a47ff6d1";
+  patchBranchHeadCommit = "78405df9432088f0ac3f4fdbd7953739a5f23a32";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -619,8 +619,8 @@ let
     {
       file = "0069-crucible-accelerator-fault-device.patch";
       branchSubject = "crucible: add deterministic accelerator device";
-      branchCommit = "5c8031ff78718263eb9b8218249f49b9a47ff6d1";
-      branchTree = "b7dd420654a010a86226cfe8f2fd5e32b4e6ec49";
+      branchCommit = "78405df9432088f0ac3f4fdbd7953739a5f23a32";
+      branchTree = "1f5e012c12363d11e2601130ce629b28256c97cd";
       catalogName = "crucible-accelerator-fault-device";
       class = "D";
       enforces = "QFP-ACCEL-1,QFP-ACCEL-2,FAULT-ORDER";
