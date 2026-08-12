@@ -251,6 +251,13 @@
       placeholder = false;
     }
     {
+      gate = "gate:signal-fault-system";
+      package = "crucible";
+      testTarget = "gate_signal_fault_system";
+      requiredFeatures = [];
+      placeholder = false;
+    }
+    {
       gate = "gate:perf-bench";
       package = "crucible-harness";
       testTarget = "gate_perf_bench";
@@ -278,6 +285,7 @@
     "gate:perf-bench"
     "gate:fleet-equivalence"
     "gate:campaign-continuity"
+    "gate:signal-fault-system"
   ];
 
   crucibleTestDoubleGates = [

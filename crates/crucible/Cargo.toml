@@ -69,3 +69,7 @@ required-features = ["test-double"]
 name = "gate_fleet_equivalence"
 path = "tests/gate_fleet_equivalence.rs"
 required-features = ["test-double"]
+
+[[test]]
+name = "gate_signal_fault_system"
+path = "tests/gate_signal_fault_system.rs"
