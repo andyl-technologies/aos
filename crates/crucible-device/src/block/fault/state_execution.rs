@@ -626,6 +626,10 @@ impl BlockFaultState {
     ///
     /// Returns [`DeviceError`] for destination range, atomicity, cache, retained
     /// version, or durable-overlay failures.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the atomic cross-device write carries independent request identity, time, range, and bytes"
+    )]
     pub(in crate::block) fn apply_external_write(
         &mut self,
         base: &BaseImage,

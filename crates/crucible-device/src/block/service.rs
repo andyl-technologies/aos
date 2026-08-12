@@ -614,10 +614,10 @@ mod tests {
         let mut state = BlockServiceState::default();
         let service = rule(BlockServiceDiscipline::StrictPriority);
         state
-            .admit(job(1, BlockOp::Read, 10), &[service.clone()])
+            .admit(job(1, BlockOp::Read, 10), std::slice::from_ref(&service))
             .unwrap_or_else(|error| panic!("active read should admit: {error}"));
         state
-            .admit(job(2, BlockOp::Read, 1), &[service.clone()])
+            .admit(job(2, BlockOp::Read, 1), std::slice::from_ref(&service))
             .unwrap_or_else(|error| panic!("queued read should admit: {error}"));
         state
             .admit(job(3, BlockOp::Write, 1), &[service])
@@ -636,7 +636,7 @@ mod tests {
         let mut state = BlockServiceState::default();
         let service = rule(BlockServiceDiscipline::WeightedRoundRobin);
         state
-            .admit(job(0, BlockOp::Write, 1), &[service.clone()])
+            .admit(job(0, BlockOp::Write, 1), std::slice::from_ref(&service))
             .unwrap_or_else(|error| panic!("active seed should admit: {error}"));
         for (sequence, operation) in [
             (1, BlockOp::Read),
@@ -645,7 +645,7 @@ mod tests {
             (4, BlockOp::Write),
         ] {
             state
-                .admit(job(sequence, operation, 1), &[service.clone()])
+                .admit(job(sequence, operation, 1), std::slice::from_ref(&service))
                 .unwrap_or_else(|error| panic!("queued job should admit: {error}"));
         }
         let completed = state.advance_to(10).unwrap_or_default();

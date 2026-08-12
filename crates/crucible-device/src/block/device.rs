@@ -1195,10 +1195,7 @@ impl BlockDevice {
         limit: u64,
     ) -> Result<usize, DeviceError> {
         let mut delivered = 0;
-        loop {
-            let Some(head) = core.next_pending_response().cloned() else {
-                break;
-            };
+        while let Some(head) = core.next_pending_response().cloned() {
             if head.delivery_icount() > limit {
                 break;
             }
@@ -1243,10 +1240,7 @@ impl BlockDevice {
     ) -> Result<ShmemDeliveryResult, DeviceError> {
         let mut delivered = 0;
         let mut consumer_wake = None;
-        loop {
-            let Some(head) = core.next_pending_response().cloned() else {
-                break;
-            };
+        while let Some(head) = core.next_pending_response().cloned() {
             if head.delivery_icount() > limit {
                 break;
             }
