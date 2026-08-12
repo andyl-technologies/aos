@@ -235,7 +235,7 @@ impl QemuFaultCapabilityRequirement {
         }) {
             row.phase_mask = instruction_phases;
         }
-        rows.push(capability_row(
+        let mut register_row = capability_row(
             FaultCommandKind::CpuRegisterTransform,
             scope,
             register_name,
@@ -243,7 +243,9 @@ impl QemuFaultCapabilityRequirement {
             HARD_FAULT_PAYLOAD_BYTES,
             DEFAULT_FAULT_COMMAND_CAPACITY,
             FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION,
-        ));
+        );
+        register_row.phase_mask = instruction_phases;
+        rows.push(register_row);
         let (interrupt_name, storm_name): (&[u8], &[u8]) = match architecture {
             LivePluginGuestArchitecture::X86_64 => (
                 b"qemu.interrupt.control.x86_64.v1",
