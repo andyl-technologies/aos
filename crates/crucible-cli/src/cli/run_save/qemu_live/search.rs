@@ -13,6 +13,7 @@ struct QemuSearchFinding {
     snapshot: crucible_session::EngineSnapshot,
     event_frames: Vec<Vec<u8>>,
     fingerprints: Vec<crucible::FingerprintSample>,
+    resolved_effect_trace: Option<Vec<u8>>,
 }
 
 fn search_finding_reproduction_artifact_bytes(
@@ -74,7 +75,7 @@ fn search_finding_reproduction_artifact_bytes(
         event_stream: canonical_verify_log_stream_bytes(&[], &finding.event_frames),
         fingerprint_stream: verify_fingerprint_stream_bytes(&fingerprints),
         fingerprint_samples: fingerprints.clone(),
-        resolved_effect_trace: None,
+        resolved_effect_trace: finding.resolved_effect_trace.clone(),
     };
     let mut payloads = model_reproduction_artifact_payloads(&model.artifact, model.replay.state);
     payloads.extend(live_qemu_artifact_payloads(&live));
@@ -488,6 +489,11 @@ async fn qemu_search_realize(
     } else {
         Vec::new()
     };
+    let resolved_effect_trace = if terminal_snapshot.is_some() {
+        qemu_search_query_resolved_effect_trace(&control, &mut command_id).await?
+    } else {
+        None
+    };
     let terminal_failure = terminal_snapshot
         .as_ref()
         .map(|snapshot| {
@@ -498,6 +504,7 @@ async fn qemu_search_realize(
                 &coverage,
                 max_quanta,
                 &terminal_fingerprints,
+                resolved_effect_trace,
             )
         })
         .transpose()?
@@ -522,6 +529,7 @@ fn qemu_search_terminal_finding(
     coverage: &crucible::EventLogCoverageFeedback,
     configured_quanta: u64,
     fingerprints: &[crucible::FingerprintSample],
+    resolved_effect_trace: Option<Vec<u8>>,
 ) -> Result<Option<QemuSearchFinding>, CliError> {
     let Some(failure) = qemu_search_terminal_failure(scenario, snapshot)? else {
         return Ok(None);
@@ -574,7 +582,33 @@ fn qemu_search_terminal_finding(
         snapshot: snapshot.clone(),
         event_frames: streamed_frames.to_vec(),
         fingerprints: fingerprints.to_vec(),
+        resolved_effect_trace,
     }))
+}
+
+async fn qemu_search_query_resolved_effect_trace(
+    control: &crucible_api::ClientControlStream,
+    command_id: &mut u64,
+) -> Result<Option<Vec<u8>>, CliError> {
+    let response = qemu_search_command(
+        control,
+        command_id,
+        SessionCommand::Query {
+            kind: QueryKind::ResolvedEffectTrace,
+            reply: CommandReply::discard(),
+        },
+        "resolved-effect trace query",
+    )
+    .await?;
+    match response.query_result {
+        Some(QueryResult::ResolvedEffectTrace(trace)) => Ok(trace),
+        Some(other) => Err(backend_error(format!(
+            "QEMU search resolved-effect trace query returned unexpected payload: {other:?}"
+        ))),
+        None => Err(backend_error(
+            "QEMU search resolved-effect trace query returned no payload",
+        )),
+    }
 }
 
 async fn qemu_search_query_fingerprints(
