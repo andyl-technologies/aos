@@ -857,6 +857,12 @@ impl WorldFaultTopology {
                 &fault_domains,
                 "storage array fault domain",
             )?;
+            require(
+                storage_device_contracts
+                    .get(array.device.as_str())
+                    .is_some_and(|device| device.kind == WorldStorageKind::Block),
+                "storage array logical device",
+            )?;
             require(!array.members.is_empty(), "storage array members")?;
             hard_count(&array.members, "storage array members", 4_096)?;
             require(
@@ -872,7 +878,8 @@ impl WorldFaultTopology {
             )?;
             for member in &array.members {
                 require(
-                    storage_devices.contains(&member.device)
+                    member.device != array.device
+                        && storage_devices.contains(&member.device)
                         && storage_device_contracts
                             .get(member.device.as_str())
                             .is_some_and(|device| device.kind == WorldStorageKind::Block),
@@ -2277,6 +2284,8 @@ impl WorldStorageArrayMember {
 pub struct WorldStorageArray {
     /// Stable array ID.
     pub id: SignalId,
+    /// Guest-visible logical block-device node backed by this array.
+    pub device: SignalId,
     /// Exact array state-machine and parity semantic version.
     pub semantic_version: u16,
     /// Array layout.

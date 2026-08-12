@@ -1005,6 +1005,7 @@ fn validate_storage_effect_policy_references(
             selection_policy,
             rebuild_service,
             consistency_policy,
+            failure_result,
         } => {
             let array = topology
                 .storage_arrays
@@ -1086,6 +1087,30 @@ fn validate_storage_effect_policy_references(
                 &[StoragePolicyArtifactClass::ArrayConsistency],
                 "consistency_policy",
             )?;
+            require(
+                failure_result,
+                &[StoragePolicyArtifactClass::TypedResult],
+                "failure_result",
+            )?;
+            let block_failure = topology
+                .storage_policy_artifact(failure_result)
+                .is_some_and(|artifact| {
+                    matches!(
+                        artifact.artifact,
+                        StoragePolicyArtifactKind::TypedResult(StoragePolicyTypedResult::Block {
+                            result
+                        }) if result != StoragePolicyResult::Success
+                    )
+                });
+            if !block_failure {
+                return Err(FaultSignalAuthoringError::InvalidStoragePolicyReference {
+                    binding: binding.id().as_str().to_owned(),
+                    reference: failure_result.as_str().to_owned(),
+                    field: "failure_result",
+                    expected: String::from("non-success block typed_result"),
+                    actual: Some(StoragePolicyArtifactClass::TypedResult.as_str()),
+                });
+            }
         }
         StorageEffectSpecification::NinePResult {
             kind,
