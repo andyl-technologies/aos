@@ -885,6 +885,15 @@ impl WorldFaultTopology {
                     && usize::from(array.write_quorum) <= array.members.len(),
                 "storage array quorum",
             )?;
+            let member_devices = array
+                .members
+                .iter()
+                .map(|member| member.device.clone())
+                .collect::<BTreeSet<_>>();
+            require(
+                member_devices.len() == array.members.len(),
+                "storage array backing devices",
+            )?;
             for member in &array.members {
                 require(
                     member.device != array.device
@@ -907,6 +916,32 @@ impl WorldFaultTopology {
                         .enumerate()
                         .all(|(expected, ordinal)| usize::from(*ordinal) == expected),
                 "storage array member ordinal",
+            )?;
+            let logical_length = storage_device_contracts
+                .get(array.device.as_str())
+                .map(|device| device.persistence.length_bytes)
+                .ok_or_else(|| invalid("storage array logical capacity"))?;
+            let minimum_member_length = array
+                .members
+                .iter()
+                .filter_map(|member| storage_device_contracts.get(member.device.as_str()))
+                .map(|device| device.persistence.length_bytes)
+                .min()
+                .ok_or_else(|| invalid("storage array member capacity"))?;
+            let data_members = match array.layout {
+                WorldStorageArrayLayout::Mirror => 1_u64,
+                WorldStorageArrayLayout::Stripe => array.members.len() as u64,
+                WorldStorageArrayLayout::SingleParity => array.members.len() as u64 - 1,
+                WorldStorageArrayLayout::DualParity => array.members.len() as u64 - 2,
+            };
+            let stripe_capacity = minimum_member_length
+                .checked_div(array.chunk_bytes)
+                .and_then(|chunks| chunks.checked_mul(array.chunk_bytes))
+                .and_then(|member_bytes| member_bytes.checked_mul(data_members))
+                .ok_or_else(|| invalid("storage array capacity overflow"))?;
+            require(
+                logical_length <= stripe_capacity,
+                "storage array logical capacity",
             )?;
             for path in &array.paths {
                 require(path.queue_depth > 0, "storage array path queue depth")?;
