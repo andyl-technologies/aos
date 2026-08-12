@@ -583,7 +583,7 @@ impl QemuLiveBlockHostWorkPool {
         directive: ResolvedBlockExecutionDirective,
     ) -> Result<(), QemuLiveBlockHostWorkPoolError> {
         self.require_storage_device_bound()?;
-        self.mutate(StorageMutation::InstallExecution(directive))
+        self.mutate(StorageMutation::InstallExecution(Box::new(directive)))
     }
 
     /// Drops exact volatile-cache entries on the worker-owned live device.
@@ -707,7 +707,7 @@ impl QemuLiveBlockHostWorkPool {
         }
         self.pinned = None;
         self.commands
-            .send(WorkerCommand::Mutate(mutation))
+            .send(WorkerCommand::Mutate(Box::new(mutation)))
             .map_err(|_| QemuLiveBlockHostWorkPoolError::WorkerDisconnected)?;
         match self
             .replies
@@ -801,7 +801,7 @@ enum WorkerCommand {
         delay: QemuDeviceHostWorkDelay,
         directive: Option<(BlockRequestIdentity, ResolvedBlockFaultDirective)>,
     },
-    Mutate(StorageMutation),
+    Mutate(Box<StorageMutation>),
     InspectStorageState,
     StorageEvents {
         now_nanos: u64,
@@ -819,7 +819,7 @@ enum StorageMutation {
     LoseVolatile(Vec<u64>),
     LoseController(Vec<u64>),
     InstallPersistenceMedia(ResolvedBlockPersistenceMediaDirective),
-    InstallExecution(ResolvedBlockExecutionDirective),
+    InstallExecution(Box<ResolvedBlockExecutionDirective>),
     ReleaseCompletion {
         identity: BlockRequestIdentity,
         release: BlockRetainedRelease,
@@ -831,8 +831,8 @@ enum WorkerReply {
     Serviced(Result<QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicerError>),
     Checkpoint(Box<Result<QemuLiveBlockIoServicerCheckpoint, QemuLiveBlockIoServicerError>>),
     Mutated(Result<(), QemuLiveBlockIoServicerError>),
-    StorageState(Result<BlockFaultState, QemuLiveBlockIoServicerError>),
-    StorageEvents(Result<QemuLiveBlockStorageEvents, QemuLiveBlockIoServicerError>),
+    StorageState(Box<Result<BlockFaultState, QemuLiveBlockIoServicerError>>),
+    StorageEvents(Box<Result<QemuLiveBlockStorageEvents, QemuLiveBlockIoServicerError>>),
     VolatileLoss(Result<ResolvedVolatileCacheLoss, VolatileLossWorkerError>),
 }
 
@@ -865,7 +865,7 @@ fn worker_loop(
                     .and_then(|()| servicer.service(guest_icount));
                 WorkerReply::Serviced(result)
             }
-            WorkerCommand::Mutate(mutation) => WorkerReply::Mutated(match mutation {
+            WorkerCommand::Mutate(mutation) => WorkerReply::Mutated(match *mutation {
                 StorageMutation::LoseVolatile(sequences) => {
                     servicer.lose_storage_volatile(&sequences)
                 }
@@ -876,28 +876,30 @@ fn worker_loop(
                     servicer.install_storage_persistence_media_directive(directive)
                 }
                 StorageMutation::InstallExecution(directive) => {
-                    servicer.install_storage_execution_directive(directive)
+                    servicer.install_storage_execution_directive(*directive)
                 }
                 StorageMutation::ReleaseCompletion { identity, release } => servicer
                     .release_storage_completion(identity, release)
                     .map(|_| ()),
             }),
             WorkerCommand::InspectStorageState => {
-                WorkerReply::StorageState(servicer.storage_fault_state())
+                WorkerReply::StorageState(Box::new(servicer.storage_fault_state()))
             }
-            WorkerCommand::StorageEvents { now_nanos } => WorkerReply::StorageEvents((|| {
-                Ok(QemuLiveBlockStorageEvents {
-                    execution_opportunity: servicer
-                        .next_storage_execution_opportunity(now_nanos)?,
-                    request_persistence_opportunity: servicer
-                        .next_storage_request_persistence_opportunity(now_nanos)?,
-                    persistence_opportunity: servicer
-                        .next_storage_persistence_opportunity(now_nanos)?,
-                    persistence_outcomes: servicer.drain_storage_persistence_media_outcomes()?,
-                    service_outcomes: servicer.drain_storage_service_outcomes()?,
-                })
-            })(
-            )),
+            WorkerCommand::StorageEvents { now_nanos } => {
+                WorkerReply::StorageEvents(Box::new((|| {
+                    Ok(QemuLiveBlockStorageEvents {
+                        execution_opportunity: servicer
+                            .next_storage_execution_opportunity(now_nanos)?,
+                        request_persistence_opportunity: servicer
+                            .next_storage_request_persistence_opportunity(now_nanos)?,
+                        persistence_opportunity: servicer
+                            .next_storage_persistence_opportunity(now_nanos)?,
+                        persistence_outcomes: servicer
+                            .drain_storage_persistence_media_outcomes()?,
+                        service_outcomes: servicer.drain_storage_service_outcomes()?,
+                    })
+                })()))
+            }
             WorkerCommand::ResolveVolatileLoss {
                 target,
                 context,

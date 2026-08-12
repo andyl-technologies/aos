@@ -315,10 +315,6 @@ fn node_id(name: impl Into<String>) -> NodeId {
     NodeId { name: name.into() }
 }
 
-fn time(ticks: u64) -> VirtualTime {
-    VirtualTime { ticks }
-}
-
 fn ready_sim_double() -> SimDouble {
     let mut backend = SimDouble::new(SimDoubleConfig::default())
         .unwrap_or_else(|error| panic!("SimDouble fleet backend should build: {error}"));

@@ -92,23 +92,23 @@ pub const REGION_HEADER_SIZE: usize = core::mem::size_of::<RegionHeader>();
 /// Wire alignment of one [`RegionHeader`].
 pub const REGION_HEADER_ALIGN: usize = core::mem::align_of::<RegionHeader>();
 
-pub(super) const _: () = assert!(REGION_HEADER_MAGIC_OFFSET == 0);
-pub(super) const _: () = assert!(REGION_HEADER_ABI_VERSION_OFFSET == 8);
-pub(super) const _: () = assert!(REGION_HEADER_NODE_COUNT_OFFSET == 12);
-pub(super) const _: () = assert!(REGION_HEADER_QUEUE_CAPACITY_OFFSET == 16);
-pub(super) const _: () = assert!(REGION_HEADER_RING_COUNT_OFFSET == 20);
-pub(super) const _: () = assert!(REGION_HEADER_RING_HDR_OFF_OFFSET == 24);
-pub(super) const _: () = assert!(REGION_HEADER_RING_DATA_OFF_OFFSET == 32);
-pub(super) const _: () = assert!(REGION_HEADER_ENTRY_STRIDE_OFFSET == 40);
-pub(super) const _: () = assert!(REGION_HEADER_REGION_SIZE_OFFSET == 48);
-pub(super) const _: () = assert!(REGION_HEADER_ICOUNT_SHIFT_OFFSET == 56);
-pub(super) const _: () = assert!(REGION_HEADER_PAUSE_REQUESTED_OFFSET == 60);
-pub(super) const _: () = assert!(REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET == 61);
-pub(super) const _: () = assert!(REGION_HEADER_CONTROL_PADDING_OFFSET == 62);
-pub(super) const _: () = assert!(REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET == 64);
-pub(super) const _: () = assert!(REGION_HEADER_RESERVED_OFFSET == 68);
-pub(super) const _: () = assert!(REGION_HEADER_SIZE == 256);
-pub(super) const _: () = assert!(REGION_HEADER_ALIGN == 128);
+const _: () = assert!(REGION_HEADER_MAGIC_OFFSET == 0);
+const _: () = assert!(REGION_HEADER_ABI_VERSION_OFFSET == 8);
+const _: () = assert!(REGION_HEADER_NODE_COUNT_OFFSET == 12);
+const _: () = assert!(REGION_HEADER_QUEUE_CAPACITY_OFFSET == 16);
+const _: () = assert!(REGION_HEADER_RING_COUNT_OFFSET == 20);
+const _: () = assert!(REGION_HEADER_RING_HDR_OFF_OFFSET == 24);
+const _: () = assert!(REGION_HEADER_RING_DATA_OFF_OFFSET == 32);
+const _: () = assert!(REGION_HEADER_ENTRY_STRIDE_OFFSET == 40);
+const _: () = assert!(REGION_HEADER_REGION_SIZE_OFFSET == 48);
+const _: () = assert!(REGION_HEADER_ICOUNT_SHIFT_OFFSET == 56);
+const _: () = assert!(REGION_HEADER_PAUSE_REQUESTED_OFFSET == 60);
+const _: () = assert!(REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET == 61);
+const _: () = assert!(REGION_HEADER_CONTROL_PADDING_OFFSET == 62);
+const _: () = assert!(REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET == 64);
+const _: () = assert!(REGION_HEADER_RESERVED_OFFSET == 68);
+const _: () = assert!(REGION_HEADER_SIZE == 256);
+const _: () = assert!(REGION_HEADER_ALIGN == 128);
 
 impl RegionHeader {
     /// Builds a zero-reserved region header from a computed layout.

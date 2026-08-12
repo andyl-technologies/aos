@@ -126,13 +126,13 @@ impl QemuLiveAcceleratorServicer {
             let Some(request) = request else { break };
             let identity = (request.generation(), request.sequence());
             if request.is_cancellation() {
-                if let Some(pending) = self.pending.get(&identity) {
-                    if !same_job_envelope(request, pending.completion) {
-                        return Err(QemuLiveAcceleratorServicerError::CancellationMismatch {
-                            generation: identity.0,
-                            sequence: identity.1,
-                        });
-                    }
+                if let Some(pending) = self.pending.get(&identity)
+                    && !same_job_envelope(request, pending.completion)
+                {
+                    return Err(QemuLiveAcceleratorServicerError::CancellationMismatch {
+                        generation: identity.0,
+                        sequence: identity.1,
+                    });
                 }
                 let completion = completion_for(request, ACCELERATOR_STATUS_CANCELLED, &[])?;
                 self.pending.insert(

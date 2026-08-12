@@ -1155,6 +1155,10 @@ fn select_volatile_cache_loss(
 /// device, is a removal action, carries a non-storage effect, references a
 /// missing or wrong-shaped World artifact, overflows a checked sum, or selects
 /// storage semantics that have no complete live implementation.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "storage resolution authenticates independent world, request, phase, coordinate, sequence, and action inputs"
+)]
 pub fn resolve_block_fault_directive<'a>(
     world: &World,
     target: &ResolvedFaultTarget,

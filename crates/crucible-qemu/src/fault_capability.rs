@@ -832,7 +832,7 @@ impl QemuFaultCapabilityRequirement {
 }
 
 fn decode_lower_hex(value: &str) -> Result<Vec<u8>, FaultAbiError> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err(FaultAbiError::CapabilityInvariant);
     }
     value

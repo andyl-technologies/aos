@@ -165,7 +165,7 @@ impl QemuNodeSet {
     ) -> Result<QemuNodeTerminalReplacementPlan, BackendError> {
         let mut staged = BTreeSet::new();
         for node in replacements {
-            if !self.nodes.contains_key(&node) {
+            if !self.nodes.contains_key(node) {
                 return Err(BackendError::Rejected {
                     message: format!(
                         "terminal replacement has no authoritative node `{}`",
