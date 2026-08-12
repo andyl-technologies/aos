@@ -344,6 +344,17 @@
         "qemu_plugin_crucible_fault_clock_bindings_seal"
       ];
     };
+    "0069-crucible-accelerator-fault-device.patch" = {
+      kind = "interface";
+      symbols = [
+        "qemu_plugin_register_accelerator_cb"
+        "qemu_plugin_crucible_fault_accelerator_manifest"
+      ];
+    };
+    "0070-crucible-fault-vmstate.patch" = {
+      kind = "interface";
+      symbols = ["qemu_plugin_crucible_fault_system_manifest"];
+    };
   };
 
   unclassified =
