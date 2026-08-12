@@ -81,9 +81,13 @@ impl<L> Engine<L> {
         Ok(())
     }
 
-    pub(super) fn save_current_checkpoint(&mut self) -> Result<Checkpoint, SessionError> {
+    pub(super) fn save_current_checkpoint(&mut self) -> Result<Checkpoint, SessionError>
+    where
+        L: QuantumLoop,
+    {
         let mut checkpoint = self.graph.save_checkpoint(&self.configuration)?;
         checkpoint.virtual_time = self.frontier;
+        self.quantum_loop.capture_checkpoint(&self.configuration)?;
         Ok(checkpoint)
     }
 }

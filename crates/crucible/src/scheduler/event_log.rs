@@ -264,6 +264,21 @@ pub trait QuantumLoop {
         Ok(Vec::new())
     }
 
+    /// Captures concrete backend state for a graph checkpoint at this boundary.
+    ///
+    /// Pure model loops have no out-of-graph state and use the no-op default.
+    /// Production backends override this hook to atomically retain every
+    /// execution component needed to restore `configuration`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when concrete checkpoint capture fails or the
+    /// backend is not at the supplied configuration boundary.
+    fn capture_checkpoint(&mut self, configuration: &Configuration) -> Result<(), SchedulerError> {
+        let _ = configuration;
+        Ok(())
+    }
+
     /// Appends non-canonical debugger metadata to the scheduler-owned log.
     ///
     /// The session and scheduler must advance from the same dense offset before

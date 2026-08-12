@@ -456,7 +456,10 @@ impl<L> Engine<L> {
         &mut self,
         from: CheckpointRef,
         child_quantum_loop: C,
-    ) -> Result<SessionFork<C>, SessionError> {
+    ) -> Result<SessionFork<C>, SessionError>
+    where
+        L: QuantumLoop,
+    {
         let parent_state = self.state.clone();
         if !matches!(
             parent_state,
@@ -1060,7 +1063,10 @@ impl<L> Engine<L> {
     pub(super) fn resolve_fork_checkpoint(
         &mut self,
         from: CheckpointRef,
-    ) -> Result<Checkpoint, SessionError> {
+    ) -> Result<Checkpoint, SessionError>
+    where
+        L: QuantumLoop,
+    {
         match from {
             CheckpointRef::Current => self.save_current_checkpoint(),
             CheckpointRef::Checkpoint(checkpoint) => self

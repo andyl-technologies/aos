@@ -295,7 +295,7 @@ pub struct ProductionVmLifecycleLoop {
     scenario: ScenarioDef,
     source: ScenarioDefForm,
     config: ProductionVmLifecycleConfig,
-    checkpoint_targets: BTreeMap<NodeId, ProductionVmExactCheckpointTarget>,
+    checkpoint_targets: BTreeMap<(ContentHash, NodeId), ProductionVmExactCheckpointTarget>,
     recorded_controls: Vec<ProductionVmRecordedControl>,
     debug_backend_paths: BTreeMap<NodeId, PathBuf>,
     debug_gateway: Option<DebugGatewayProcess>,
