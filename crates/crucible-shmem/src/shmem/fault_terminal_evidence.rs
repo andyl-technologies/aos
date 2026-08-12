@@ -266,6 +266,7 @@ fn u64_at(bytes: &[u8], offset: usize) -> Result<u64, FaultAbiError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

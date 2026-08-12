@@ -560,6 +560,7 @@ pub(crate) fn emit_fault_event_c_header(out: &mut String) {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

@@ -213,6 +213,13 @@ pub struct MappedSetupRegion {
     region_len: u64,
 }
 
+type AcceleratorRingPairMut<'a> = (
+    &'a RingHeader,
+    &'a mut [AcceleratorEntry],
+    &'a RingHeader,
+    &'a mut [AcceleratorEntry],
+);
+
 /// A mutable view of one mapped directed ring.
 pub struct MappedDirectedRingMut<'a> {
     /// Directed ring descriptor from the validated region topology.
@@ -1133,15 +1140,7 @@ impl MappedSetupRegion {
     fn accelerator_ring_pair_mut(
         &mut self,
         vm_slot: u32,
-    ) -> Result<
-        (
-            &RingHeader,
-            &mut [AcceleratorEntry],
-            &RingHeader,
-            &mut [AcceleratorEntry],
-        ),
-        MappedSetupRegionAccessError,
-    > {
+    ) -> Result<AcceleratorRingPairMut<'_>, MappedSetupRegionAccessError> {
         let layout = self
             .layout()
             .map_err(|source| MappedSetupRegionAccessError::Header { source })?;

@@ -290,7 +290,7 @@ impl NodeFaultFieldV1 {
             NodeFaultFieldTypeV1::Bytes => !self.value.is_empty(),
             NodeFaultFieldTypeV1::HashSet => {
                 !self.value.is_empty()
-                    && self.value.len() % 32 == 0
+                    && self.value.len().is_multiple_of(32)
                     && self.value.len() / 32 <= NODE_FAULT_MAX_HASH_SET_V1
                     && !self
                         .value
@@ -847,7 +847,7 @@ impl NodeFaultPayloadV1 {
             FaultCommandKind::ClockTransform => {
                 let kind = self.u32_field(P2)?;
                 let process_is_sentinel = self.field_with_tag(P6)?.value == [0];
-                if matches!(kind, 4 | 5 | 6) == process_is_sentinel {
+                if matches!(kind, 4..=6) == process_is_sentinel {
                     Err(NodeFaultPayloadError::FieldValue { tag: P6 })
                 } else {
                     Ok(())
@@ -900,13 +900,12 @@ impl NodeFaultPayloadV1 {
                 self.validate_sentinel(P4)?;
             }
         }
-        if self.command_kind == FaultCommandKind::MemoryAccessTransform {
-            if self.u32_field(P3)? == 5 {
-                self.validate_policy_json(P6)?;
-            }
+        if self.command_kind == FaultCommandKind::MemoryAccessTransform && self.u32_field(P3)? == 5
+        {
+            self.validate_policy_json(P6)?;
         }
         if self.command_kind == FaultCommandKind::ClockTransform {
-            if matches!(self.u32_field(P2)?, 4 | 5 | 6) {
+            if matches!(self.u32_field(P2)?, 4..=6) {
                 self.validate_policy_json(P6)?;
             } else {
                 self.validate_sentinel(P6)?;
@@ -1331,6 +1330,7 @@ pub(crate) fn emit_fault_node_c_header(out: &mut String) {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::type_complexity)]
 mod tests {
     use super::*;
 
