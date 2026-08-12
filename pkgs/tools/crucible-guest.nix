@@ -16,7 +16,7 @@ in
       inherit src;
       name = "crucible-guest-vendor-${version}";
       sourceRoot = "source/crates";
-      hash = "sha256-CHxtW0lBAN3Ux2p9SGkWlcc9iHhCUiWWDCEmrRWb76I=";
+      hash = "sha256-fyzTqIKN9jBtjjXtcMM5/uF3oitow3NgiOovjRweuMc=";
     };
 
     cargoFlags = "-p crucible-guest --bin crucible-guest";

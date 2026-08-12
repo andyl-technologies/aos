@@ -6,7 +6,7 @@
   grep,
 }: let
   version = "0.1.0";
-  cargoDepsHash = "sha256-CHxtW0lBAN3Ux2p9SGkWlcc9iHhCUiWWDCEmrRWb76I=";
+  cargoDepsHash = "sha256-fyzTqIKN9jBtjjXtcMM5/uF3oitow3NgiOovjRweuMc=";
   src = import ./crucible/_source.nix {inherit lib;};
 in
   mkCargoPackage {
