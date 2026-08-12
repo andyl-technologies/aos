@@ -659,7 +659,7 @@ impl QemuLive9pIoServicer {
                     },
                 ),
             )
-            .filter(|(_, (_, authorized))| **authorized)
+            .filter(|(_, (_, authorized))| *authorized)
             .map(|((completion, _), (opportunity, _))| (*completion, opportunity.clone()))
             .collect::<Vec<_>>();
         if self
