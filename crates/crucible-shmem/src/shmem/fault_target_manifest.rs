@@ -159,8 +159,7 @@ impl FaultSystemCapabilityManifestV1 {
                 self.qemu_patch_series_hash,
                 self.shmem_header_hash,
             ]
-            .iter()
-            .any(|digest| *digest == [0; 32])
+            .contains(&[0; 32])
         {
             return Err(FaultAbiError::CapabilityInvariant);
         }

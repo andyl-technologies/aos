@@ -897,6 +897,7 @@ fn put_u64(bytes: &mut [u8], offset: usize, value: u64) {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
