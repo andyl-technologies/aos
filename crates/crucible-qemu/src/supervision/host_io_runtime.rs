@@ -628,8 +628,16 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
             })?;
         let accelerator = self
             .accelerator
-            .as_ref()
-            .is_some_and(|accelerator| accelerator.next_completion_icount().is_some());
+            .as_mut()
+            .map(QemuLiveAcceleratorServicer::has_pending_work)
+            .transpose()
+            .map(Option::unwrap_or_default)
+            .map_err(|source| {
+                QemuAsyncDriverRuntimeError::new(
+                    "inspect pending accelerator I/O",
+                    source.to_string(),
+                )
+            })?;
         Ok(block || ninep || accelerator)
     }
 
