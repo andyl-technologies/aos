@@ -117,6 +117,6 @@ pub use request::{
     Response, ResponseStatus,
 };
 pub use subnode::{
-    IoCore, IoCoreSnapshot, IoSubNode, ShmemDeliveryFailure, ShmemDeliveryResult,
-    ShmemDequeueResult, ShmemInboxProcess,
+    IoCore, IoCoreSnapshot, IoCoreSnapshotCodecError, IoSubNode, ShmemDeliveryFailure,
+    ShmemDeliveryResult, ShmemDequeueResult, ShmemInboxProcess,
 };
