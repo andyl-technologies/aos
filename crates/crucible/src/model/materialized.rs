@@ -569,6 +569,28 @@ impl SchedulerState {
     pub fn apply_decision(&mut self, decision: &Decision) {
         let _ = decision;
     }
+
+    /// Serializes this materialized scheduler continuation canonically.
+    #[must_use]
+    pub fn to_compact_binary(&self) -> Vec<u8> {
+        let mut writer = ScenarioBinaryWriter::new(SCHEDULER_STATE_BINARY_MAGIC);
+        write_scheduler_state_binary(self, &mut writer);
+        writer.finish()
+    }
+
+    /// Parses one complete materialized scheduler continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] for an unsupported
+    /// version, malformed or over-limit collections, invalid nested values, or
+    /// trailing bytes.
+    pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
+        let mut reader = ScenarioBinaryReader::new(bytes, SCHEDULER_STATE_BINARY_MAGIC)?;
+        let state = read_scheduler_state_binary(&mut reader)?;
+        reader.finish()?;
+        Ok(state)
+    }
 }
 
 /// Harness decision-RNG cursor state captured at a checkpoint.
