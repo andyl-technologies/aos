@@ -179,6 +179,46 @@ impl<L> Engine<L> {
         }
     }
 
+    /// Builds a paused engine from one checkpoint already recorded in `graph`.
+    ///
+    /// The temporal graph remains the authority for reconstructing the model
+    /// runtime. `quantum_loop` must already own the corresponding concrete
+    /// backend continuation; this constructor does not replay or instantiate a
+    /// second execution backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::Engine`] when `checkpoint` or its configuration
+    /// is absent from `graph`, or when the graph cannot realize its runtime.
+    pub fn from_recorded_checkpoint(
+        mut graph: TemporalGraph,
+        quantum_loop: L,
+        checkpoint: ContentHash,
+    ) -> Result<Self, SessionError> {
+        let checkpoint_record =
+            graph
+                .checkpoint_record(checkpoint)
+                .cloned()
+                .ok_or(SessionError::Engine(EngineError::CheckpointNotRecorded {
+                    checkpoint,
+                }))?;
+        let configuration =
+            graph
+                .checkpoint_configuration(checkpoint)
+                .cloned()
+                .ok_or(SessionError::Engine(EngineError::CheckpointNotRecorded {
+                    checkpoint,
+                }))?;
+        let resumed = graph.resume_checkpoint(checkpoint)?;
+        Ok(Self::from_realized_checkpoint(
+            configuration,
+            graph,
+            quantum_loop,
+            resumed.runtime,
+            &checkpoint_record,
+        ))
+    }
+
     /// Returns the current engine state.
     #[must_use]
     pub fn state(&self) -> &EngineState {
