@@ -1308,6 +1308,44 @@ fn test_scheduler(
 }
 
 #[test]
+fn single_scheduler_checkpoint_round_trips_complete_device_and_event_state() {
+    let node = test_scenario_node(
+        "a",
+        11,
+        SchedulerNodeActivity::Runnable,
+        NetworkLookahead::Infinite,
+        ExactLocalEvent::NoArmedTimer,
+    );
+    let consumer = node.id.clone();
+    let producer = scheduler_node("peer", SchedulingNodeKind::Vm);
+    let pending = event(17, &consumer, &producer, 0, b"pending-input");
+    let mut scheduler = test_scheduler(vec![node.clone()], vec![pending.clone()]);
+    scheduler = scheduler.with_device_sub_node(disk_with_reads("a", "disk-a", &[(11, 8)]));
+    let checkpoint = scheduler
+        .checkpoint()
+        .unwrap_or_else(|error| panic!("scheduler checkpoint should capture: {error}"));
+    let bytes = checkpoint
+        .canonical_bytes()
+        .unwrap_or_else(|error| panic!("scheduler checkpoint should encode: {error}"));
+    let decoded = SingleSchedulerCheckpoint::from_canonical_bytes(&bytes)
+        .unwrap_or_else(|error| panic!("scheduler checkpoint should decode: {error}"));
+
+    let mut restored = test_scheduler(vec![node], vec![pending]);
+    restored = restored.with_device_sub_node(disk_with_reads("a", "disk-a", &[]));
+    decoded
+        .restore_into(&mut restored)
+        .unwrap_or_else(|error| panic!("scheduler checkpoint should restore: {error}"));
+
+    assert_eq!(
+        restored
+            .checkpoint()
+            .and_then(|checkpoint| checkpoint.canonical_bytes())
+            .unwrap_or_else(|error| panic!("restored scheduler should encode: {error}")),
+        bytes
+    );
+}
+
+#[test]
 fn network_transition_drop_clears_inflight_and_authenticates_frames() {
     let source = NodeId {
         name: String::from("a"),

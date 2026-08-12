@@ -12,7 +12,7 @@ pub enum FirePolicy {
 }
 
 /// What an event does when it fires.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Action {
     /// Arm a named virtual-time timer.
     ArmTimer {
@@ -132,7 +132,7 @@ impl Action {
 }
 
 /// Diagnostic level for an [`Action::Log`] payload.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum LogLevel {
     /// Fine-grained diagnostic output.
     Debug,
@@ -566,7 +566,7 @@ pub enum EventEvaluationKind {
 }
 
 /// One action fired by the event graph at an evaluation point.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EventFiring {
     event: EventId,
     at: VirtualTime,

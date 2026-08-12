@@ -320,7 +320,7 @@ pub(super) fn concurrent_completion_order_key(
     Ok(VirtualTime { ticks: key.nanos })
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct NodeAdvance {
     pub(super) node: SchedulerNodeId,
     pub(super) before: NodeCounter,

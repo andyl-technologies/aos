@@ -8,7 +8,7 @@
 use crate::{NodeCounter, Shift, SimInstant, TimeConversionError};
 
 /// Anchored mapping from one node's backend counter to scheduler logical time.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct NodeTimeMapping {
     /// Backend counter at the mapping anchor.
     pub anchor_counter: NodeCounter,

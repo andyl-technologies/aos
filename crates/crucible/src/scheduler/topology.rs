@@ -5,7 +5,9 @@ use super::*;
 pub const SCHEDULER_CONTROL_RESPONSE_BOUND_QUANTA: u64 = 1;
 
 /// A control-plane operation admitted only at a quantum boundary.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct ControlOperation {
     /// The session-local sequence number for this control operation.
     pub sequence: u64,
@@ -14,7 +16,9 @@ pub struct ControlOperation {
 }
 
 /// A session control action that can be handled between quanta.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum ControlOperationKind {
     /// Pause after the current boundary.
     Pause,
@@ -31,7 +35,7 @@ pub enum ControlOperationKind {
 }
 
 /// Evidence that one scheduler control operation applied at a quantum boundary.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SchedulerControlApplication {
     /// Monotone scheduler-local control application sequence.
     pub sequence: u64,
@@ -51,7 +55,7 @@ pub struct SchedulerControlApplication {
     pub event_key: ScheduledEventKey,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct SchedulerControlAdmission {
     pub(super) operation: ControlOperation,
     pub(super) accepted_after_quanta: u64,
@@ -189,7 +193,7 @@ pub fn authorize_conservative_advance(
 }
 
 /// Conservative network lookahead for one scheduler node.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum NetworkLookahead {
     /// The node has at least one inbound live network edge.
     Finite(SimDuration),
@@ -504,7 +508,9 @@ impl NodeTimelineProjection {
 }
 
 /// Canonical key for shared-timeline scheduler ordering.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct SharedTimelineKey {
     /// The icount-derived point on the shared virtual timeline.
     pub virtual_time: SimInstant,
@@ -530,7 +536,7 @@ pub fn ordered_timeline_keys(keys: &[SharedTimelineKey]) -> Vec<&SharedTimelineK
 /// simultaneity with the producer node before the sequence number. This preserves
 /// the same-icount producer tie-break while making the scheduler event order
 /// explicitly depend on `(virtual_time, consumer node, producer node, sequence)`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ScheduledEventKey {
     /// The shared-timeline consumer ordering key.
     pub timeline: SharedTimelineKey,
@@ -640,7 +646,7 @@ pub fn next_scheduled_event_key(
 }
 
 /// A due event resolved by the scheduler.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ScheduledEvent {
     /// The canonical ordering key.
     pub key: ScheduledEventKey,
@@ -649,7 +655,7 @@ pub struct ScheduledEvent {
 }
 
 /// The RESOLVE payload class for a scheduled event.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ScheduledEventResolveClass {
     /// A deterministic frame or backend input delivery.
     FrameDelivery,
@@ -727,7 +733,7 @@ pub fn scheduled_event_resolve_class(event: &ScheduledEvent) -> ScheduledEventRe
 }
 
 /// Payload carried by a scheduler-resolved event.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ScheduledEventPayload {
     /// A backend input delivered at the scheduler-selected point.
     BackendInput(BackendInput),
@@ -738,7 +744,7 @@ pub enum ScheduledEventPayload {
 }
 
 /// A deterministic I/O completion emitted by a scheduling sub-node.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct IoCompletion {
     /// The sub-node that produced the completion.
     pub sub_node: SchedulerNodeId,
@@ -751,7 +757,7 @@ pub struct IoCompletion {
 }
 
 /// A node-local exact event supplied by host-held scheduler state.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ExactLocalEvent {
     /// The node has no exact local wakeup.
     NoArmedTimer,
@@ -1110,7 +1116,9 @@ impl SchedulerRendezvous {
 }
 
 /// The only scheduler-visible purposes that may use a global rendezvous.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum SchedulerRendezvousPurpose {
     /// Drains the assertion engine at a globally consistent virtual time.
     AssertionDrain,
@@ -1123,7 +1131,7 @@ pub enum SchedulerRendezvousPurpose {
 }
 
 /// One active node observed at a scheduler rendezvous.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SchedulerRendezvousNode {
     /// The scheduler graph node participating in the rendezvous.
     pub node: SchedulerNodeId,
@@ -1132,7 +1140,7 @@ pub struct SchedulerRendezvousNode {
 }
 
 /// Evidence that an allowed scheduler rendezvous occurred.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SchedulerRendezvousRecord {
     /// Monotone scheduler-local rendezvous record sequence.
     pub sequence: u64,

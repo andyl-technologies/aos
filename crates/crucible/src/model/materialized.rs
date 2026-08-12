@@ -5,7 +5,9 @@ mod seed;
 pub use seed::{Seed, SeededRngStream};
 
 /// A deterministic decision-stream identifier.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct RngStreamId {
     /// The stable stream domain.
     pub domain: String,
@@ -53,21 +55,25 @@ impl RngStreamId {
 }
 
 /// A scheduling point identifier used by override decisions.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct SchedulingPoint {
     /// The canonical scheduling-point key.
     pub key: String,
 }
 
 /// An override choice identifier used by exploration.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct ChoiceTag {
     /// The canonical choice name.
     pub name: String,
 }
 
 /// A delivery-order decision payload.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct DeliveryOrderDecision {
     /// The virtual time at which the ordering was resolved.
     pub at: VirtualTime,
@@ -76,7 +82,7 @@ pub struct DeliveryOrderDecision {
 }
 
 /// A decision-stream draw payload.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RngDecision {
     /// The stream that produced the value.
     pub stream: RngStreamId,
@@ -85,7 +91,7 @@ pub struct RngDecision {
 }
 
 /// A search or fuzzing override payload.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct OverrideDecision {
     /// The scheduling point being overridden.
     pub point: SchedulingPoint,
@@ -94,7 +100,7 @@ pub struct OverrideDecision {
 }
 
 /// A vCPU-switch or interrupt-preemption payload.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct PreemptionDecision {
     /// The node whose execution is preempted.
     pub node: NodeId,
@@ -138,7 +144,7 @@ impl PreemptionDecision {
 }
 
 /// The kind of a preemption decision.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum PreemptionKind {
     /// A multi-vCPU round-robin switch.
     VcpuSwitch {
@@ -157,7 +163,7 @@ pub enum PreemptionKind {
 }
 
 /// An application-requested random draw payload.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct AppRandomDecision {
     /// The requesting node.
     pub node: NodeId,
@@ -204,7 +210,9 @@ impl DeviceId {
 }
 
 /// A deterministic RNG stream cursor.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct RngStreamPosition {
     /// Number of draws already consumed from the stream.
     pub draws: u64,
@@ -504,7 +512,9 @@ impl EventSequenceState {
 }
 
 /// A timer identifier inside the scheduler state.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct TimerId {
     /// The canonical timer name.
     pub name: String,
@@ -627,7 +637,7 @@ impl SchedulerState {
 }
 
 /// Harness decision-RNG cursor state captured at a checkpoint.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct DecisionRngState {
     /// Per-stream cursor positions.
     pub positions: BTreeMap<RngStreamId, RngStreamPosition>,

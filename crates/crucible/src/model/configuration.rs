@@ -229,7 +229,7 @@ impl Configuration {
 }
 
 /// One resolved nondeterministic choice at a scheduling point.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Decision {
     /// A deterministic or recorded ordering of events at one virtual time.
     DeliveryOrder(DeliveryOrderDecision),

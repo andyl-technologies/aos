@@ -581,7 +581,7 @@ impl BackendNetworkFaultContinuation {
 /// This payload represents backend delivery for model-controlled inputs, not a
 /// host-side workload generator. Application workload traffic must originate
 /// from guest execution and cross modeled devices as ordinary guest/device I/O.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct BackendInput {
     /// The target node.
     pub node: NodeId,

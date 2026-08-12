@@ -56,7 +56,8 @@ pub use decision::{DecisionRecordError, DecisionRecorder};
 pub use device::{LinkEmitDecisionRecord, NetworkLinkDirection, device_overlay, device_stream_id};
 pub use device_subnode::{
     DEFAULT_WORLD_IO_INBOX_CAPACITY, DEFAULT_WORLD_IO_OUTBOX_CAPACITY, DeviceDelivery,
-    DeviceSchedulingSubNode, DeviceSubNodeBindingError, WorldIoInstantiationError,
+    DeviceSchedulingSubNode, DeviceSchedulingSubNodeCheckpoint,
+    DeviceSchedulingSubNodeCheckpointError, DeviceSubNodeBindingError, WorldIoInstantiationError,
     WorldIoInstantiationLayout, WorldIoLayoutError, WorldIoLayoutPolicy, WorldIoRuntimeLayout,
     instantiate_world_io_sub_nodes,
 };

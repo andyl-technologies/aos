@@ -23,7 +23,9 @@ pub enum HostAssertionOutcomeKind {
 }
 
 /// Assertion quantifier or marker flavor attached to outcomes and violations.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum AssertionQuantifierKind {
     /// Host-side invariant over every evaluated point.
     Always,

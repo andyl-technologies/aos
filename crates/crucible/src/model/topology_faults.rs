@@ -12,7 +12,9 @@ pub struct NodeId {
 }
 
 /// A scheduler graph node, including VM nodes and deterministic I/O sub-nodes.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct SchedulerNodeId {
     /// The scenario node that owns this scheduler node.
     pub node: NodeId,
@@ -21,7 +23,9 @@ pub struct SchedulerNodeId {
 }
 
 /// The kind of node participating in the scheduler graph.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum SchedulingNodeKind {
     /// A VM backend node.
     Vm,
@@ -630,21 +634,47 @@ impl NodeBlobRef {
 }
 
 /// A vCPU identifier within one node.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct VcpuId {
     /// The zero-based vCPU index.
     pub index: u32,
 }
 
 /// An interrupt vector identifier.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct IrqVector {
     /// The interrupt vector number.
     pub vector: u32,
 }
 
 /// A deterministic event key recorded by delivery-order decisions.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct EventKey {
     /// The virtual time at which the event was delivered.
     pub virtual_time: VirtualTime,

@@ -2,7 +2,7 @@
 
 use super::*;
 /// Determinism class for a scheduler event-log entry.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SchedulerEventLogClass {
     /// Causal entries participate in deterministic replay comparison.
     Causal,
@@ -11,7 +11,7 @@ pub enum SchedulerEventLogClass {
 }
 
 /// Deterministic scheduler boundary that may trigger condition evaluation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SchedulerEvaluationBoundaryKind {
     /// A quantum boundary keyed by virtual time / icount.
     Quantum,
@@ -20,7 +20,7 @@ pub enum SchedulerEvaluationBoundaryKind {
 }
 
 /// Observational diagnostic payload used as the open-set escape hatch.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EventDiagnosticPayload {
     /// Stable diagnostic name.
     pub name: String,
@@ -53,7 +53,7 @@ impl EventDiagnosticPayload {
 }
 
 /// Payload variants emitted by the scheduler EMIT phase.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SchedulerEventLogPayload {
     /// A resolved scheduler happening made visible this quantum.
     ResolvedHappening(ScheduledEvent),
@@ -74,7 +74,7 @@ pub enum SchedulerEventLogPayload {
 }
 
 /// Scheduler-owned state produced by deterministic trigger action application.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TriggerActionState {
     /// Every non-group action applied by triggers in deterministic application order.
     pub applications: Vec<TriggerActionApplication>,
@@ -153,7 +153,7 @@ impl TriggerActionState {
 }
 
 /// One deterministic non-group trigger action application.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TriggerActionApplication {
     /// Monotone scheduler-local trigger action sequence.
     pub sequence: u64,
@@ -176,7 +176,7 @@ impl TriggerActionApplication {
 }
 
 /// One trigger request to label a temporal graph boundary.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TriggerLabelRecord {
     /// Trigger action sequence that raised the request.
     pub sequence: u64,
@@ -189,7 +189,7 @@ pub struct TriggerLabelRecord {
 }
 
 /// A trigger-sourced pass/fail verdict request.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TriggerVerdict {
     /// Trigger action sequence that raised the verdict.
     pub sequence: u64,
@@ -320,7 +320,7 @@ pub enum ComposedRunVerdictFailure {
 }
 
 /// One observational diagnostic emitted by a trigger log action.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TriggerDiagnosticRecord {
     /// Trigger action sequence that emitted the diagnostic.
     pub sequence: u64,
@@ -350,7 +350,7 @@ pub struct SchedulerEventLogAppend {
 }
 
 /// The single max-advance ceiling published for one RUN phase.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SchedulerRunCeilingPublication {
     /// Monotone index of this publication in the scheduler's publication log.
     pub sequence: u64,
@@ -369,7 +369,9 @@ pub struct SchedulerRunCeilingPublication {
 }
 
 /// Deterministic vCPU RR policy for one scheduler node.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct SchedulerRunSubdivisionPolicy {
     /// Scheduler node whose RUN budget is subdivided internally.
     pub node: SchedulerNodeId,
@@ -401,7 +403,7 @@ impl SchedulerRunSubdivisionPolicy {
 }
 
 /// One plugin-internal vCPU slice inside a node-level RUN.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SchedulerRunSubdivisionSlice {
     /// vCPU selected for this slice.
     pub vcpu: VcpuId,
@@ -412,7 +414,7 @@ pub struct SchedulerRunSubdivisionSlice {
 }
 
 /// Evidence that a node-level RUN used deterministic RR subdivision internally.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SchedulerRunSubdivisionRecord {
     /// Monotone scheduler-local subdivision record sequence.
     pub sequence: u64,
@@ -427,7 +429,7 @@ pub struct SchedulerRunSubdivisionRecord {
 }
 
 /// Evidence that an explorer-supplied preemption was applied by RESOLVE.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SchedulerPreemptionApplication {
     /// Monotone scheduler-local preemption application sequence.
     pub sequence: u64,
@@ -448,7 +450,9 @@ pub struct SchedulerPreemptionApplication {
 }
 
 /// One vCPU's scheduler-visible idle snapshot inside an N-vCPU VM node.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct SchedulerVcpuIdleState {
     /// The vCPU described by this snapshot.
     pub vcpu: VcpuId,
@@ -516,7 +520,9 @@ pub enum SchedulerEffectiveClockSource {
 }
 
 /// The scheduler-side cause for a boundary topology recompute.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum SchedulerTopologyChangeTrigger {
     /// Directed edges were removed from the effective topology.
     EdgeRemoval,
@@ -628,7 +634,7 @@ pub(super) fn topology_change_order(
 }
 
 /// One node lookahead value recomputed by a topology change.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SchedulerTopologyLookaheadUpdate {
     /// The scheduler node whose network lookahead was recomputed.
     pub node: SchedulerNodeId,
@@ -639,7 +645,7 @@ pub struct SchedulerTopologyLookaheadUpdate {
 }
 
 /// Evidence that a topology change was applied at a quantum boundary.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SchedulerTopologyChangeApplication {
     /// Monotone scheduler topology epoch after this application.
     pub topology_epoch: u64,
@@ -654,7 +660,7 @@ pub struct SchedulerTopologyChangeApplication {
 }
 
 /// Scheduler-side checkpoint anchor for one VM node.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SchedulerNodeCheckpoint {
     /// The checkpointed VM node.
     pub node: NodeId,
