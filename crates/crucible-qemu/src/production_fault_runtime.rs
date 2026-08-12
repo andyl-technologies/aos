@@ -1775,15 +1775,23 @@ fn production_checkpoint_identity(
         }
     }
     for (node, fingerprint) in qemu_fingerprints {
-        material.extend_from_slice(node.name.as_bytes());
-        material.push(0);
+        append_length_prefixed(&mut material, node.name.as_bytes())?;
         material.extend_from_slice(&fingerprint.bytes);
-        if let Some(sequence) = qemu_fault_sequences.get(node) {
-            material.extend_from_slice(&sequence.to_be_bytes());
-        }
-        if let Some(sequence) = qemu_fault_event_sequences.get(node) {
-            material.extend_from_slice(&sequence.to_be_bytes());
-        }
+        let command_sequence = qemu_fault_sequences
+            .get(node)
+            .ok_or(FaultExecutionError::CheckpointPresence)?;
+        let event_sequence = qemu_fault_event_sequences
+            .get(node)
+            .ok_or(FaultExecutionError::CheckpointPresence)?;
+        material.extend_from_slice(&command_sequence.to_be_bytes());
+        material.extend_from_slice(&event_sequence.to_be_bytes());
+    }
+    if qemu_fault_sequences.keys().ne(qemu_fingerprints.keys())
+        || qemu_fault_event_sequences
+            .keys()
+            .ne(qemu_fingerprints.keys())
+    {
+        return Err(FaultExecutionError::CheckpointPresence.into());
     }
     for (identity, action) in qemu_issued_actions {
         material.extend_from_slice(&identity.bytes);
