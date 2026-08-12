@@ -1,12 +1,15 @@
 //! Durable content-addressed closure store for exact production checkpoints.
 
 use super::*;
+use crucible::model::FaultResourceLimits;
+use std::collections::BTreeSet;
+use std::io::Read as _;
 
 const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v1\0";
 const MANIFEST_FILE: &str = "manifest.cbor";
 const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ClosureManifest {
     scenario: ContentHash,
@@ -23,7 +26,7 @@ struct ClosureManifest {
     identity: ContentHash,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TargetManifest {
     node: String,
@@ -47,12 +50,23 @@ struct ClosureObjects {
 pub(super) fn persist_exact_checkpoint_set(
     run_state_root: &Path,
     scenario: ContentHash,
+    resource_limits: FaultResourceLimits,
     checkpoint: &mut ProductionVmExactCheckpointSet,
 ) -> Result<(), SchedulerError> {
     validate_checkpoint_set(scenario, checkpoint)?;
     let (mut manifest, objects) = manifest_and_objects(scenario, checkpoint)?;
     manifest.identity = closure_identity(&manifest)?;
     checkpoint.identity = manifest.identity;
+    let manifest_bytes = encode_manifest(&manifest)?;
+    enforce_persist_limits(
+        run_state_root,
+        scenario,
+        resource_limits,
+        &manifest,
+        &objects,
+        checkpoint,
+        manifest_bytes.len(),
+    )?;
 
     let closure_parent = closure_parent(run_state_root, scenario);
     fs::create_dir_all(&closure_parent).map_err(|error| {
@@ -63,10 +77,9 @@ pub(super) fn persist_exact_checkpoint_set(
     })?;
     let destination = closure_parent.join(manifest.identity.to_hex());
     if destination.exists() {
-        return Err(store_error(format!(
-            "exact checkpoint closure {} already exists",
-            manifest.identity.to_hex()
-        )));
+        authenticate_existing_publication(&destination, &manifest, &objects, checkpoint)?;
+        install_published_artifact_paths(&destination, &manifest, checkpoint)?;
+        return Ok(());
     }
     let staging = tempfile::Builder::new()
         .prefix(".closure-")
@@ -119,7 +132,6 @@ pub(super) fn persist_exact_checkpoint_set(
     }
     sync_directory(&object_directory)?;
 
-    let manifest_bytes = encode_manifest(&manifest)?;
     persist_file_bytes(&staging.path().join(MANIFEST_FILE), &manifest_bytes)?;
     sync_directory(staging.path())?;
     fs::rename(staging.path(), &destination).map_err(|error| {
@@ -130,15 +142,7 @@ pub(super) fn persist_exact_checkpoint_set(
     })?;
     sync_directory(&closure_parent)?;
 
-    for (node, target) in &mut checkpoint.targets {
-        let manifest_target = manifest
-            .targets
-            .iter()
-            .find(|candidate| candidate.node == node.name)
-            .ok_or_else(|| store_error("published closure target disappeared"))?;
-        target.overlay_artifact = object_path(&destination, manifest_target.overlay);
-        target.vmstate_artifact = object_path(&destination, manifest_target.vmstate);
-    }
+    install_published_artifact_paths(&destination, &manifest, checkpoint)?;
     Ok(())
 }
 
@@ -149,12 +153,16 @@ pub(super) fn load_exact_checkpoint_set(
     identity: ContentHash,
 ) -> Result<ProductionVmExactCheckpointSet, LifecycleApiError> {
     let root = closure_parent(run_state_root, scenario.id()).join(identity.to_hex());
-    let manifest_bytes = fs::read(root.join(MANIFEST_FILE)).map_err(|error| {
-        loop_factory_error(format!(
-            "read exact checkpoint closure {}: {error}",
-            identity.to_hex()
-        ))
-    })?;
+    let limits = source.plan().fault_signals().resource_limits();
+    let mut budget = CheckpointReadBudget::new(limits.fat_checkpoint_bytes);
+    let manifest_bytes = read_bounded_file(&root.join(MANIFEST_FILE), MAX_MANIFEST_BYTES as u64)
+        .map_err(|error| {
+            loop_factory_error(format!(
+                "read exact checkpoint closure {}: {error}",
+                identity.to_hex()
+            ))
+        })?;
+    budget.reserve(manifest_bytes.len() as u64)?;
     let manifest = decode_manifest(&manifest_bytes).map_err(|message| {
         loop_factory_error(format!("decode exact checkpoint closure: {message}"))
     })?;
@@ -168,8 +176,9 @@ pub(super) fn load_exact_checkpoint_set(
         ));
     }
 
-    let schedule = Schedule::from_compact_binary(&read_object(&root, manifest.schedule)?)
-        .map_err(|error| loop_factory_error(format!("decode checkpoint schedule: {error}")))?;
+    let schedule =
+        Schedule::from_compact_binary(&read_object(&root, manifest.schedule, &mut budget)?)
+            .map_err(|error| loop_factory_error(format!("decode checkpoint schedule: {error}")))?;
     let configuration = Configuration {
         def: scenario.clone(),
         schedule,
@@ -182,6 +191,7 @@ pub(super) fn load_exact_checkpoint_set(
     let scheduler = SingleSchedulerCheckpoint::from_canonical_bytes(&read_object(
         &root,
         manifest.scheduler,
+        &mut budget,
     )?)
     .map_err(|error| loop_factory_error(format!("decode scheduler continuation: {error}")))?;
     if scheduler.configuration_for(scenario).map_err(|error| {
@@ -193,17 +203,21 @@ pub(super) fn load_exact_checkpoint_set(
             "exact checkpoint scheduler continuation does not match its manifest",
         ));
     }
-    let trigger_state =
-        EventGraphState::from_compact_binary(&read_object(&root, manifest.trigger_state)?)
-            .map_err(|error| loop_factory_error(format!("decode trigger continuation: {error}")))?;
+    let trigger_state = EventGraphState::from_compact_binary(&read_object(
+        &root,
+        manifest.trigger_state,
+        &mut budget,
+    )?)
+    .map_err(|error| loop_factory_error(format!("decode trigger continuation: {error}")))?;
     let assertion_state = HostAssertionEvaluatorCheckpoint::from_canonical_bytes(&read_object(
         &root,
         manifest.assertion_state,
+        &mut budget,
     )?)
     .map_err(|error| loop_factory_error(format!("decode assertion continuation: {error}")))?;
     let signal_plan = source.plan().fault_signals();
     let fault_checkpoint = ProductionFaultRuntimeCheckpoint::from_canonical_bytes(
-        &read_object(&root, manifest.fault_checkpoint)?,
+        &read_object(&root, manifest.fault_checkpoint, &mut budget)?,
         signal_plan,
         scenario.id(),
     )
@@ -214,13 +228,17 @@ pub(super) fn load_exact_checkpoint_set(
         let node = NodeId {
             name: target.node.clone(),
         };
-        let snapshot = QemuVmSnapshot::from_canonical_bytes(&read_object(&root, target.snapshot)?)
-            .map_err(|error| {
-                loop_factory_error(format!(
-                    "decode QEMU snapshot for `{}`: {error}",
-                    target.node
-                ))
-            })?;
+        let snapshot = QemuVmSnapshot::from_canonical_bytes(&read_object(
+            &root,
+            target.snapshot,
+            &mut budget,
+        )?)
+        .map_err(|error| {
+            loop_factory_error(format!(
+                "decode QEMU snapshot for `{}`: {error}",
+                target.node
+            ))
+        })?;
         let restored = ProductionVmExactCheckpointTarget {
             configuration: configuration.clone(),
             counter: target.counter,
@@ -235,6 +253,8 @@ pub(super) fn load_exact_checkpoint_set(
             fault_checkpoint: fault_checkpoint.clone(),
             manifest_identity: target.manifest_identity,
         };
+        budget.reserve_file_once(&restored.overlay_artifact, restored.overlay_hash)?;
+        budget.reserve_file_once(&restored.vmstate_artifact, restored.vmstate_hash)?;
         validate_exact_checkpoint_target(&node, &restored)?;
         if targets.insert(node, restored).is_some() {
             return Err(loop_factory_error(
@@ -355,6 +375,160 @@ fn validate_restored_node_sets(
         return Err(loop_factory_error(
             "exact checkpoint closure has an incomplete World node set",
         ));
+    }
+    Ok(())
+}
+
+fn enforce_persist_limits(
+    run_state_root: &Path,
+    scenario: ContentHash,
+    limits: FaultResourceLimits,
+    manifest: &ClosureManifest,
+    objects: &ClosureObjects,
+    checkpoint: &ProductionVmExactCheckpointSet,
+    manifest_bytes: usize,
+) -> Result<(), SchedulerError> {
+    let parent = closure_parent(run_state_root, scenario);
+    let destination = parent.join(manifest.identity.to_hex());
+    if !destination.exists() && parent.exists() {
+        let count = fs::read_dir(&parent)
+            .map_err(|error| store_error(format!("count exact checkpoint closures: {error}")))?
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .count();
+        limits
+            .reserve(
+                "checkpoint_count",
+                u64::try_from(count)
+                    .map_err(|_| store_error("checkpoint count is not representable"))?,
+                1,
+            )
+            .map_err(|error| store_error(error.to_string()))?;
+    }
+
+    let mut identities = BTreeSet::new();
+    let mut bytes = u64::try_from(manifest_bytes)
+        .map_err(|_| store_error("checkpoint manifest size is not representable"))?;
+    for (identity, size) in [
+        (manifest.schedule, objects.schedule.len()),
+        (manifest.scheduler, objects.scheduler.len()),
+        (manifest.trigger_state, objects.trigger_state.len()),
+        (manifest.assertion_state, objects.assertion_state.len()),
+        (manifest.fault_checkpoint, objects.fault_checkpoint.len()),
+    ] {
+        if identities.insert(identity) {
+            bytes = add_checkpoint_bytes(bytes, size as u64)?;
+        }
+    }
+    for target in &manifest.targets {
+        let node = NodeId {
+            name: target.node.clone(),
+        };
+        let snapshot = objects
+            .snapshots
+            .get(&node)
+            .ok_or_else(|| store_error("closure snapshot object disappeared"))?;
+        if identities.insert(target.snapshot) {
+            bytes = add_checkpoint_bytes(bytes, snapshot.len() as u64)?;
+        }
+        let source = checkpoint
+            .targets
+            .get(&node)
+            .ok_or_else(|| store_error("closure target disappeared"))?;
+        for (identity, path) in [
+            (target.overlay, source.overlay_artifact.as_path()),
+            (target.vmstate, source.vmstate_artifact.as_path()),
+        ] {
+            if identities.insert(identity) {
+                let size = fs::metadata(path)
+                    .map_err(|error| {
+                        store_error(format!(
+                            "inspect checkpoint artifact {}: {error}",
+                            path.display()
+                        ))
+                    })?
+                    .len();
+                bytes = add_checkpoint_bytes(bytes, size)?;
+            }
+        }
+    }
+    limits
+        .reserve("fat_checkpoint_bytes", 0, bytes)
+        .map_err(|error| store_error(error.to_string()))
+}
+
+fn add_checkpoint_bytes(current: u64, requested: u64) -> Result<u64, SchedulerError> {
+    current
+        .checked_add(requested)
+        .ok_or_else(|| store_error("checkpoint byte accounting overflow"))
+}
+
+fn authenticate_existing_publication(
+    destination: &Path,
+    expected: &ClosureManifest,
+    objects: &ClosureObjects,
+    checkpoint: &ProductionVmExactCheckpointSet,
+) -> Result<(), SchedulerError> {
+    let bytes = read_bounded_file(&destination.join(MANIFEST_FILE), MAX_MANIFEST_BYTES as u64)
+        .map_err(|error| store_error(format!("read existing checkpoint manifest: {error}")))?;
+    let observed = decode_manifest(&bytes).map_err(store_error)?;
+    if &observed != expected {
+        return Err(store_error(
+            "existing exact checkpoint publication has different authenticated content",
+        ));
+    }
+    for (identity, bytes) in [
+        (expected.schedule, objects.schedule.as_slice()),
+        (expected.scheduler, objects.scheduler.as_slice()),
+        (expected.trigger_state, objects.trigger_state.as_slice()),
+        (expected.assertion_state, objects.assertion_state.as_slice()),
+        (
+            expected.fault_checkpoint,
+            objects.fault_checkpoint.as_slice(),
+        ),
+    ] {
+        if ContentHash::from_bytes(bytes) != identity {
+            return Err(store_error("checkpoint object changed before retry"));
+        }
+        validate_file_hash(&object_path(destination, identity), identity)?;
+    }
+    for target in &expected.targets {
+        let node = NodeId {
+            name: target.node.clone(),
+        };
+        let snapshot = objects
+            .snapshots
+            .get(&node)
+            .ok_or_else(|| store_error("closure snapshot object disappeared"))?;
+        if ContentHash::from_bytes(snapshot) != target.snapshot {
+            return Err(store_error("checkpoint snapshot changed before retry"));
+        }
+        for identity in [target.snapshot, target.overlay, target.vmstate] {
+            validate_file_hash(&object_path(destination, identity), identity)?;
+        }
+        let source = checkpoint
+            .targets
+            .get(&node)
+            .ok_or_else(|| store_error("closure target disappeared"))?;
+        validate_file_hash(&source.overlay_artifact, target.overlay)?;
+        validate_file_hash(&source.vmstate_artifact, target.vmstate)?;
+    }
+    Ok(())
+}
+
+fn install_published_artifact_paths(
+    destination: &Path,
+    manifest: &ClosureManifest,
+    checkpoint: &mut ProductionVmExactCheckpointSet,
+) -> Result<(), SchedulerError> {
+    for (node, target) in &mut checkpoint.targets {
+        let manifest_target = manifest
+            .targets
+            .iter()
+            .find(|candidate| candidate.node == node.name)
+            .ok_or_else(|| store_error("published closure target disappeared"))?;
+        target.overlay_artifact = object_path(destination, manifest_target.overlay);
+        target.vmstate_artifact = object_path(destination, manifest_target.vmstate);
     }
     Ok(())
 }
@@ -595,9 +769,24 @@ fn persist_file_bytes(path: &Path, bytes: &[u8]) -> Result<(), SchedulerError> {
         })
 }
 
-fn read_object(root: &Path, expected: ContentHash) -> Result<Vec<u8>, LifecycleApiError> {
+fn read_object(
+    root: &Path,
+    expected: ContentHash,
+    budget: &mut CheckpointReadBudget,
+) -> Result<Vec<u8>, LifecycleApiError> {
     let path = object_path(root, expected);
-    let bytes = fs::read(&path).map_err(|error| {
+    let size = fs::metadata(&path)
+        .map_err(|error| {
+            loop_factory_error(format!(
+                "inspect checkpoint object {}: {error}",
+                path.display()
+            ))
+        })?
+        .len();
+    if budget.identities.insert(expected) {
+        budget.reserve(size)?;
+    }
+    let bytes = read_bounded_file(&path, size).map_err(|error| {
         loop_factory_error(format!(
             "read checkpoint object {}: {error}",
             path.display()
@@ -608,6 +797,70 @@ fn read_object(root: &Path, expected: ContentHash) -> Result<Vec<u8>, LifecycleA
             "checkpoint object {} failed content authentication",
             expected.to_hex()
         )));
+    }
+    Ok(bytes)
+}
+
+struct CheckpointReadBudget {
+    limit: u64,
+    used: u64,
+    identities: BTreeSet<ContentHash>,
+}
+
+impl CheckpointReadBudget {
+    const fn new(limit: u64) -> Self {
+        Self {
+            limit,
+            used: 0,
+            identities: BTreeSet::new(),
+        }
+    }
+
+    fn reserve(&mut self, requested: u64) -> Result<(), LifecycleApiError> {
+        self.used = self
+            .used
+            .checked_add(requested)
+            .ok_or_else(|| loop_factory_error("exact checkpoint byte accounting overflow"))?;
+        if self.used > self.limit {
+            return Err(loop_factory_error(format!(
+                "exact checkpoint closure exceeds fat_checkpoint_bytes limit {}",
+                self.limit
+            )));
+        }
+        Ok(())
+    }
+
+    fn reserve_file_once(
+        &mut self,
+        path: &Path,
+        identity: ContentHash,
+    ) -> Result<(), LifecycleApiError> {
+        if !self.identities.insert(identity) {
+            return Ok(());
+        }
+        let size = fs::metadata(path)
+            .map_err(|error| {
+                loop_factory_error(format!(
+                    "inspect checkpoint artifact {}: {error}",
+                    path.display()
+                ))
+            })?
+            .len();
+        self.reserve(size)
+    }
+}
+
+fn read_bounded_file(path: &Path, limit: u64) -> Result<Vec<u8>, std::io::Error> {
+    let capacity = usize::try_from(fs::metadata(path)?.len().min(limit)).unwrap_or(usize::MAX);
+    let mut bytes = Vec::with_capacity(capacity);
+    File::open(path)?
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "file exceeds its checkpoint read limit",
+        ));
     }
     Ok(bytes)
 }

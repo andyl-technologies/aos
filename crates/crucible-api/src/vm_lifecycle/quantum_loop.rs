@@ -1675,6 +1675,7 @@ impl ProductionVmLifecycleLoop {
                 let publish_result = persist_exact_checkpoint_set(
                     &self.config.run_state_root,
                     self.scenario.id(),
+                    self.source.plan().fault_signals().resource_limits(),
                     &mut checkpoint_set,
                 );
                 if let Err(error) = publish_result {
