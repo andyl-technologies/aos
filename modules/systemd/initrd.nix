@@ -3,8 +3,8 @@
 ##! Declares the typed `boot.initrd.systemd.*` option tree for the
 ##! systemd-based initrd and produces `system.build.initrd` by
 ##! rendering the options through the stage-1 `*-ToUnit` helpers in
-##! `lib/modules/systemd/lib.nix` and piping the result through
-##! `generateUnits` and then into the cpio assembler in
+##! `lib/modules/systemd/lib.nix`, flattening the pure `generateUnits`
+##! result, and materializing it for the cpio assembler in
 ##! `../base/initrd-builder.nix`.
 ##!
 ##! Uses the `stage1*` option + type variants from
@@ -22,8 +22,8 @@
 ##!
 ##! Outputs (wired by the `config` block below):
 ##!   * `system.build.systemdInitrdUnits` — directory matching
-##!     `/etc/systemd/system/` for the initrd, produced by
-##!     `generateUnits`. Consumed by the initrd builder.
+##!     `/etc/systemd/system/` for the initrd, materialized from the pure
+##!     unit plan. Consumed by the initrd builder.
 ##!   * `system.build.initrd` — the final gzip+cpio initramfs
 ##!     derivation produced by `../base/initrd-builder.nix`.
 {
@@ -47,13 +47,7 @@
   # Mirrors `modules/systemd/system.nix`'s stage-2 pattern but without
   # the `globalEnvironment` pre-merge — initrd services don't need it.
   #
-  # The *-ToUnit renderers return `{ name; text; wantedBy; ...; }`
-  # without a `.unit` attribute; stage-2 relies on the `systemd.units`
-  # submodule type to run each entry through `makeUnit` and populate
-  # `.unit`. The initrd has no matching option tree so we call
-  # `makeUnit` ourselves — generateUnits reads `.unit` below.
-  withUnitDrv = entry: entry // {unit = systemdLib.makeUnit entry.name entry;};
-  withName = cfgToUnit: c: lib.nameValuePair c.name (withUnitDrv (cfgToUnit c));
+  withName = cfgToUnit: c: lib.nameValuePair c.name (cfgToUnit c);
   renderedInitrdUnits =
     lib.mapAttrs' (_: withName systemdLib.serviceToUnit) cfg.services
     // lib.mapAttrs' (_: withName systemdLib.targetToUnit) cfg.targets
@@ -63,6 +57,21 @@
     // lib.mapAttrs' (_: withName systemdLib.sliceToUnit) cfg.slices
     // lib.listToAttrs (map (withName systemdLib.mountToUnit) cfg.mounts)
     // lib.listToAttrs (map (withName systemdLib.automountToUnit) cfg.automounts);
+
+  pureInitrdUnits = systemdLib.generateUnits {
+    type = "initrd";
+    units = renderedInitrdUnits;
+    upstreamUnits = [];
+    upstreamWants = [];
+    packages = [];
+  };
+  initrdJobScripts = lib.listToAttrs (builtins.map (job:
+    lib.nameValuePair job.key {
+      text = job.body;
+      inherit (job) mode;
+      name = job.scriptName;
+    })
+  (lib.concatLists (lib.mapAttrsToList (_: service: service.jobScripts) cfg.services)));
 
   # Render the typed `boot.initrd.systemd.network` tree to a directory of
   # `<name>.network` files. These are networkd config (not units), so they
@@ -164,9 +173,9 @@ in {
     type = lib.types.package;
     description = ''
       Derivation whose output is an assembled `/etc/systemd/system/`
-      directory for the initrd — produced by `generateUnits` over the
-      rendered `boot.initrd.systemd.*` option tree. Consumed by the
-      cpio assembler in `modules/base/initrd-builder.nix`.
+      directory for the initrd, materialized from `generateUnits`' pure
+      rendering of the `boot.initrd.systemd.*` option tree. Consumed by
+      the cpio assembler in `modules/base/initrd-builder.nix`.
     '';
   };
 
@@ -213,17 +222,10 @@ in {
         };
       };
 
-    system.build.systemdInitrdUnits = systemdLib.generateUnits {
+    system.build.systemdInitrdUnits = systemdLib.materializeUnits {
       type = "initrd";
-      units = renderedInitrdUnits;
-      # AOS stage-1 symlinks upstream systemd units inside the cpio
-      # builder itself (it reads them directly from
-      # `${systemd}/lib/systemd/system/`). `generateUnits` would look
-      # under `$package/example/systemd/`, which AOS does not
-      # populate — see the TODO at `lib/modules/systemd/lib.nix:510`.
-      upstreamUnits = [];
-      upstreamWants = [];
-      packages = [];
+      etc = systemdLib.unitsToEtc pureInitrdUnits;
+      jobScripts = initrdJobScripts;
     };
 
     system.build.initrd = import ../base/_initrd-builder.nix {

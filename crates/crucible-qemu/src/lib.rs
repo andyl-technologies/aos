@@ -41,6 +41,7 @@ mod async_driver;
 #[cfg(target_os = "linux")]
 mod block_realization_gate;
 mod checkpoint;
+mod console_observation;
 mod coverage;
 mod crash_detection;
 mod determinism_boundary;

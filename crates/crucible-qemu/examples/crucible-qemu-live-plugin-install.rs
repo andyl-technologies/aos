@@ -119,6 +119,12 @@ fn run() -> Result<(), String> {
             .map_or_else(|| "not-observed".to_owned(), |icount| icount.to_string())
     );
     println!(
+        "whitebox_last_marker_icount={}",
+        report
+            .whitebox_last_marker_icount
+            .map_or_else(|| "not-observed".to_owned(), |icount| icount.to_string())
+    );
+    println!(
         "whitebox_marker_point={}",
         report
             .whitebox_marker_point

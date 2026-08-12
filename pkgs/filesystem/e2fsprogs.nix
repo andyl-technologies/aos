@@ -6,7 +6,7 @@
   pkg-config,
   util-linux,
 }: let
-  version = "1.47.3";
+  version = "1.47.4";
 in
   mkDerivation {
     pname = "e2fsprogs";
@@ -16,7 +16,7 @@ in
       urls = [
         "https://downloads.sourceforge.net/e2fsprogs/e2fsprogs-${version}.tar.gz"
       ];
-      hash = "sha256-L1Fk5k3X2R6t0eDop32SwG3Xg3uxnx2Ric4ZObNj0rQ=";
+      hash = "sha256-LOwF85wg7mIfFJJhlWZOZuYBcZCsjku9sW2GCC5Dxdo=";
     };
 
     buildDeps = [

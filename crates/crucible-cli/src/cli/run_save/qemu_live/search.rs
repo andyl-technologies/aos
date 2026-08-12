@@ -31,7 +31,7 @@ fn search_finding_reproduction_artifact_bytes(
             index: index as u64,
             instruction: sample.at.ticks,
             node: sample.node.name.clone(),
-            digest: format_content_hash_ref(sample.fingerprint.hash),
+            digest: cli_digest_from_engine_hash(sample.fingerprint.hash),
         })
         .collect::<Vec<_>>();
     if fingerprints.is_empty() {

@@ -139,7 +139,7 @@
       }
       {
         label = "aarch64 doorbell trap";
-        needle = "Aarch64Hlt";
+        needle = "Aarch64Hint";
       }
       {
         label = "guest memory range";

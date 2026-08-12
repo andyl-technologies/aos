@@ -1,35 +1,30 @@
-##! modules/profiles/edge.nix — Edge/IoT device profile
+##! modules/profiles/edge.nix — host-selectable edge/IoT runtime role
 ##!
-##! Configures the system for edge and IoT deployments (Jetson Nano,
-##! Raspberry Pi, small appliances): ext4 root (no ZFS), signed host
-##! first-boot provisioning, chrony NTP, SSH, and conservative resource
-##! usage.
+##! Configures runtime policy for edge and IoT deployments (Jetson Nano,
+##! Raspberry Pi, small appliances): chrony NTP, SSH, standard security, and
+##! conservative resource usage. Golden-image storage and boot integrity are
+##! deliberately owned by systems/edge.nix instead.
 {
   config,
-  pkgs,
   lib,
   ...
 }: let
-  cfg = config.aos.profiles.edge;
+  cfg = config.aos.roles.edge;
 in {
-  options.aos.profiles.edge = {
+  options.aos.roles.edge = {
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
       description = ''
-        Enable the edge/IoT profile. Configures ext4 storage (no ZFS),
-        signed first-boot host configuration, chrony, SSH, and
-        conservative resource defaults suitable for resource-constrained
-        devices.
+        Enable the edge/IoT runtime role from host.nix. Configures chrony,
+        SSH, standard security policy, and conservative resource defaults
+        suitable for resource-constrained devices. Golden-image storage and
+        boot-integrity capabilities are defined by the system variant.
       '';
     };
   };
 
   config = lib.mkIf cfg.enable {
-    # Storage: ext4 only — ZFS is too heavy for edge devices
-    aos.filesystems.zfs.enable = lib.mkDefault false;
-    aos.filesystems.rootFsType = lib.mkDefault "ext4";
-
     # Time sync
     aos.services.chrony.enable = lib.mkDefault true;
 
@@ -40,9 +35,7 @@ in {
     aos.security.level = lib.mkDefault "standard";
 
     # Conservative kernel tunables for low-memory devices
-    aos.kernel.sysctl = {
-      "vm.swappiness" = "10";
-      "vm.vfs_cache_pressure" = "200";
-    };
+    aos.kernel.sysctl."vm.swappiness" = lib.mkDefault "10";
+    aos.kernel.sysctl."vm.vfs_cache_pressure" = lib.mkDefault "200";
   };
 }

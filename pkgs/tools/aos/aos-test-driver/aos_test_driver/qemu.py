@@ -469,11 +469,28 @@ class QemuMachine(Machine):
                     f"[{self.name}] extra disk {index} has invalid serial"
                 )
             drive_id = f"extra{index}"
-            argv += [
-                "-drive", f"id={drive_id},file={path},format=raw,if=none",
-                "-device",
-                f"virtio-blk-pci,drive={drive_id},serial={serial}",
-            ]
+            interface = disk.get("interface", "virtio")
+            argv += ["-drive", f"id={drive_id},file={path},format=raw,if=none"]
+            if interface == "virtio":
+                argv += [
+                    "-device",
+                    f"virtio-blk-pci,drive={drive_id},serial={serial}",
+                ]
+            elif interface == "scsi":
+                controller_id = f"extra_scsi{index}"
+                scsi_device = (
+                    f"scsi-hd,drive={drive_id},bus={controller_id}.0,serial={serial}"
+                )
+                argv += [
+                    "-device",
+                    f"virtio-scsi-pci,id={controller_id}",
+                    "-device",
+                    scsi_device,
+                ]
+            else:
+                raise RuntimeError(
+                    f"[{self.name}] extra disk {index} has invalid interface"
+                )
 
         # Attach native provisioning input for either boot shape. The initrd
         # probes the `aos-metadata` filesystem label before cloud DMI routing.

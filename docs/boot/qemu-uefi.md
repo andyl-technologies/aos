@@ -11,3 +11,10 @@ signed configuration, first-boot storage, drift, and diagnostics.
 AOS images are self-booting UEFI disk images. Do not pass a separate kernel,
 initrd, or kernel command line. The current provisioning interface consumes
 literal `host.nix`; it does not use Ignition or the CoreOS `fw_cfg` key.
+
+The golden disk contains `root-a` and `root-b` plus slot-specific UKIs. First
+boot commits storage intent in the initrd, then stage 2 evaluates `host.nix`,
+fetches and renders authenticated package configuration, resolves credential
+references, and atomically activates an EROFS-backed configuration generation.
+QEMU qualification should verify both the A/B image state and the matching
+configuration activation record, not only that `multi-user.target` was reached.

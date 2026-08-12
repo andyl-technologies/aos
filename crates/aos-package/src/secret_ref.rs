@@ -100,7 +100,7 @@ pub struct SecretRef {
     pub encrypted: bool,
     /// Optional resolver discriminator. Absent ⇒ inferred (build-spec §2.1).
     #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
-    pub resolver: Option<ResolverKind>,
+    pub resolver: Option<String>,
 }
 
 /// `skip_serializing_if` helper mirroring [`CredentialMeta`]'s.
@@ -139,6 +139,26 @@ impl From<&SecretRef> for CredentialMeta {
 }
 
 impl SecretRef {
+    /// Validates the stable resolver reference and all handle identifiers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid credential name, a non-credstore
+    /// destination, an unsupported resolver, or plaintext-style resolver data.
+    pub fn validate_reference(&self) -> anyhow::Result<()> {
+        validate_credential_name(&self.name)?;
+        if let Some(source) = self.source.as_deref()
+            && !is_credstore_source(source)
+        {
+            anyhow::bail!(
+                "secretRef '{}' source must be beneath /etc, /run, or /usr credstore",
+                self.name
+            );
+        }
+        let _ = self.resolver_kind()?;
+        Ok(())
+    }
+
     /// The resolver this reference selects, applying the inference rule when no
     /// explicit `ref` is set (build-spec §2.1).
     ///
@@ -146,23 +166,41 @@ impl SecretRef {
     /// [`ResolverKind::Tpm2Credstore`] (image-sealed); a `source` under
     /// `/etc/credstore*` or `/run/credstore*` ⇒ [`ResolverKind::DesiredToml`];
     /// otherwise [`ResolverKind::SystemCredential`].
-    pub fn resolver_kind(&self) -> ResolverKind {
-        if let Some(explicit) = self.resolver {
-            return explicit;
+    pub fn resolver_kind(&self) -> anyhow::Result<ResolverKind> {
+        if let Some(explicit) = self.resolver.as_deref() {
+            let discriminator = explicit.split_once(':').map_or(explicit, |(kind, _)| kind);
+            return match discriminator {
+                "tpm2-credstore" => Ok(ResolverKind::Tpm2Credstore),
+                "desired-toml" => Ok(ResolverKind::DesiredToml),
+                "system-credential" => Ok(ResolverKind::SystemCredential),
+                "vault" => Ok(ResolverKind::Vault),
+                "aws-sm" => Ok(ResolverKind::AwsSm),
+                other => anyhow::bail!("unsupported secretRef resolver {other:?}"),
+            };
         }
         if self.ciphertext.is_some() {
-            return ResolverKind::Tpm2Credstore;
+            return Ok(ResolverKind::Tpm2Credstore);
         }
         match self.source.as_deref() {
-            Some(source) if is_credstore_source(source) => ResolverKind::DesiredToml,
-            _ => ResolverKind::SystemCredential,
+            Some(source) if is_credstore_source(source) => Ok(ResolverKind::DesiredToml),
+            _ => Ok(ResolverKind::SystemCredential),
         }
+    }
+
+    /// Returns the optional resolver-local handle after the discriminator.
+    pub(crate) fn resolver_handle(&self) -> Option<&str> {
+        self.resolver
+            .as_deref()?
+            .split_once(':')
+            .map(|(_, handle)| handle)
     }
 }
 
 /// Whether `source` is a credstore path (`/etc/credstore*` or `/run/credstore*`).
 fn is_credstore_source(source: &str) -> bool {
-    source.starts_with("/etc/credstore") || source.starts_with("/run/credstore")
+    source.starts_with("/etc/credstore")
+        || source.starts_with("/run/credstore")
+        || source.starts_with("/usr/lib/credstore")
 }
 
 /// The mockable activation seam: encrypt, write, and restart (build-spec §2.3
@@ -255,11 +293,14 @@ pub fn resolve_secret_ref(
         )
     })?;
 
-    // Step 3: validate the source is provisionable (reuses the existing guard).
-    let meta = CredentialMeta::from(sr);
-    crate::credential_artifact::validate_provisionable_source(package, &meta, source)?;
+    let kind = sr.resolver_kind()?;
 
-    let kind = sr.resolver_kind();
+    // Step 3: validate writable destinations. Image-sealed references already
+    // live in the immutable/generated credstore and are intentionally a no-op.
+    let meta = CredentialMeta::from(sr);
+    if kind != ResolverKind::Tpm2Credstore {
+        crate::credential_artifact::validate_provisionable_source(package, &meta, source)?;
+    }
 
     // Step 4: obtain plaintext by resolver. tpm2-credstore is already present.
     let plaintext = sink.obtain(sr, kind)?;
@@ -383,7 +424,7 @@ mod tests {
     #[test]
     fn serde_round_trip_with_ref() {
         let sr = SecretRef {
-            resolver: Some(ResolverKind::DesiredToml),
+            resolver: Some("desired-toml".to_string()),
             ..secret(
                 "join-token",
                 Some("/etc/credstore.encrypted/web/join-token"),
@@ -408,7 +449,7 @@ mod tests {
     #[test]
     fn manifest_projection_drops_only_the_resolver_hint() {
         let sr = SecretRef {
-            resolver: Some(ResolverKind::DesiredToml),
+            resolver: Some("desired-toml".to_string()),
             ..secret(
                 "join-token",
                 Some("/etc/credstore.encrypted/web/join-token"),
@@ -430,22 +471,22 @@ mod tests {
         // inline ciphertext ⇒ image-sealed.
         let mut sr = secret("t", None);
         sr.ciphertext = Some("c".to_string());
-        assert_eq!(sr.resolver_kind(), ResolverKind::Tpm2Credstore);
+        assert_eq!(sr.resolver_kind().unwrap(), ResolverKind::Tpm2Credstore);
 
         // /etc/credstore source ⇒ desired-toml.
         let sr = secret("t", Some("/etc/credstore.encrypted/web/t"));
-        assert_eq!(sr.resolver_kind(), ResolverKind::DesiredToml);
+        assert_eq!(sr.resolver_kind().unwrap(), ResolverKind::DesiredToml);
 
         // other source ⇒ system-credential.
         let sr = secret("t", Some("/var/lib/web/t"));
-        assert_eq!(sr.resolver_kind(), ResolverKind::SystemCredential);
+        assert_eq!(sr.resolver_kind().unwrap(), ResolverKind::SystemCredential);
 
         // explicit ref overrides inference.
         let sr = SecretRef {
-            resolver: Some(ResolverKind::SystemCredential),
+            resolver: Some("system-credential".to_string()),
             ..secret("t", Some("/etc/credstore.encrypted/web/t"))
         };
-        assert_eq!(sr.resolver_kind(), ResolverKind::SystemCredential);
+        assert_eq!(sr.resolver_kind().unwrap(), ResolverKind::SystemCredential);
     }
 
     #[test]
@@ -470,7 +511,7 @@ mod tests {
     fn tpm2_credstore_is_a_noop_materialization() {
         let sink = MockSink::new(None);
         let mut sr = secret("blob", Some("/etc/credstore.encrypted/web/blob"));
-        sr.resolver = Some(ResolverKind::Tpm2Credstore);
+        sr.resolver = Some("tpm2-credstore".to_string());
         let outcome = resolve_secret_ref("web", &sr, &sink).expect("resolve");
         assert_eq!(outcome.kind, ResolverKind::Tpm2Credstore);
         assert!(!outcome.changed);

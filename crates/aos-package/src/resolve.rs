@@ -343,10 +343,9 @@ pub fn collect_unique_metas(closures: &[ResolvedClosure]) -> Vec<&PackageMeta> {
 
 /// One config module presented to the [`module_abi`] resolver gate.
 ///
-/// The full fixpoint resolver is not yet built; this carries the
-/// minimum a gate needs — the package identity and its declared
-/// [`ModuleAbiCompat`] band — so the gate can be wired ahead of the loop and
-/// tested in isolation.
+/// This carries the minimum the pre-evaluation gate needs — the package
+/// identity and its declared [`ModuleAbiCompat`] band. The configuration
+/// fixpoint constructs these inputs before evaluating any selected module.
 ///
 /// [`module_abi`]: enforce_module_abi_compat
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

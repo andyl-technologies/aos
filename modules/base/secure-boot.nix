@@ -25,6 +25,10 @@
   ...
 }: let
   cfg = config.aos.boot.secureBoot;
+  enrollAuthDir =
+    if cfg.enrollAuthDir == null
+    then "/nonexistent/aos-secure-boot-auth"
+    else cfg.enrollAuthDir;
 
   # Lockdown deployment kernel (phase 2). The reproducible base kernel
   # deliberately omits lockdown + module signing (they require a
@@ -57,7 +61,8 @@
   # begins enforcing. efi-updatevar shells out to `mount -l` to locate
   # efivarfs, so util-linux must be on PATH; other paths are baked as
   # absolute store paths.
-  enrollScript = pkgs.writeShellScriptBin "aos-sb-enroll" ''
+  enrollScript = config.aos.config.artifacts.secure-boot-enroll;
+  enrollScriptSource = pkgs.writeShellScriptBin "aos-sb-enroll" ''
     set -eu
     export PATH=${pkgs.util-linux}/bin:${pkgs.coreutils}/bin:$PATH
     if [ ! -d /sys/firmware/efi/efivars ]; then
@@ -65,32 +70,19 @@
       exit 1
     fi
     uv=${pkgs.efitools}/bin/efi-updatevar
-    "$uv" -f ${cfg.enrollAuthDir}/db.auth  db
-    "$uv" -f ${cfg.enrollAuthDir}/KEK.auth KEK
-    "$uv" -f ${cfg.enrollAuthDir}/PK.auth  PK
+    "$uv" -f ${enrollAuthDir}/db.auth  db
+    "$uv" -f ${enrollAuthDir}/KEK.auth KEK
+    "$uv" -f ${enrollAuthDir}/PK.auth  PK
     echo "aos-sb-enroll: enrolled db, KEK, PK (now in User Mode)"
   '';
 
   # The PCR-policy public key must live inside the initrd: first-boot
   # sealing of /var reads it pre-switch-root. The initrd copies a fixed
-  # package set, not the whole toplevel closure, so wrap the key in a
-  # minimal derivation and add it via aos.boot.initrd.extraPackages.
-  # Lazy: only forced (and thus only requires a non-null key) when the
-  # measuredBoot config branch below is active.
-  pcrKeyForInitrd = pkgs.mkDerivation {
-    pname = "aos-pcr-pubkey";
-    version = "1";
-    src = null;
-    phases = [
-      {
-        name = "install";
-        script = ''
-          mkdir -p $out
-          cp ${toString cfg.measuredBoot.pcrPublicKey} $out/pcr.pem
-        '';
-      }
-    ];
-  };
+  # package set, not the whole toplevel closure, so the measured-boot branch
+  # registers a minimal image-fixed artifact and adds it via
+  # aos.boot.initrd.extraPackages. The frozen artifact path keeps this module
+  # evaluable on-host without exposing a derivation builder.
+  pcrKeyForInitrd = config.aos.config.artifacts.pcr-public-key;
 in {
   options.aos.boot.secureBoot = {
     enable = lib.mkOption {
@@ -243,6 +235,16 @@ in {
   };
 
   config = lib.mkMerge [
+    {
+      # This command is image-fixed. Preserve its stage-1 store path in the
+      # base library so a stage-2 evaluation never calls a builder that is
+      # intentionally absent from the frozen package set.
+      aos.config._artifactSources.secure-boot-enroll =
+        if config.aos.config.frozenArtifacts ? "secure-boot-enroll"
+        then null
+        else enrollScriptSource;
+    }
+
     (lib.mkIf cfg.enable {
       assertions = [
         {
@@ -284,6 +286,28 @@ in {
     })
 
     (lib.mkIf cfg.measuredBoot.enable {
+      # This is an image-fixed input, not a host-config build. Capture its
+      # stage-1 store path in the base library so the on-host evaluator can
+      # reuse it without requiring mkDerivation in the frozen package set.
+      aos.config._artifactSources.pcr-public-key =
+        if config.aos.config.frozenArtifacts ? "pcr-public-key"
+        then null
+        else
+          pkgs.mkDerivation {
+            pname = "aos-pcr-pubkey";
+            version = "1";
+            src = null;
+            phases = [
+              {
+                name = "install";
+                script = ''
+                  mkdir -p $out
+                  cp ${toString cfg.measuredBoot.pcrPublicKey} $out/pcr.pem
+                '';
+              }
+            ];
+          };
+
       assertions = [
         {
           assertion = cfg.enable;
@@ -310,7 +334,7 @@ in {
       # mount-var (which mounts /dev/mapper/var).
       boot.initrd.systemd.services."aos-var-crypt" = {
         description = "Encrypt and TPM2-seal /var (measured boot)";
-        wantedBy = ["initrd-fs.target"];
+        requiredBy = ["initrd-fs.target"];
         before = ["mount-var.service" "initrd-fs.target"];
         # Only ORDER after the disk carver (aos-repart), don't Require it: on a
         # reboot (var already provisioned) repart is a no-op. No
@@ -414,12 +438,25 @@ in {
             # up a temporary PLAIN ext4 /var so the system reaches
             # multi-user and an operator/test can enroll PK/KEK/db; the
             # first enforcing boot below replaces it with the sealed volume.
-            # The measured-boot repart plan leaves /var raw, so create the
-            # temporary filesystem here.
-            # -F forces past any stale signature in the freshly-carved
-            # partition.
-            klog "SB not enforcing yet — formatting plain ext4 /var (sealed once enforcing)"
-            "$mkfs" -qF -L var "$dev"
+            # The measured-boot repart plan initially leaves /var raw. Format
+            # it once and preserve it across further Setup Mode boots so key
+            # enrollment can complete without repeated formatting. This
+            # plaintext state remains disposable: the first enforcing boot
+            # replaces it with the sealed volume below.
+            fs_type=$(${pkgs.util-linux}/sbin/blkid -p -s TYPE -o value "$dev" 2>/dev/null || true)
+            case "$fs_type" in
+              "")
+                klog "SB not enforcing yet — formatting plain ext4 /var (sealed once enforcing)"
+                "$mkfs" -q -L var "$dev"
+                ;;
+              ext4)
+                klog "SB not enforcing yet — preserving existing plain ext4 /var"
+                ;;
+              *)
+                klog "SB not enforcing yet — refusing unexpected /var filesystem type: $fs_type"
+                exit 1
+                ;;
+            esac
             exit 0
           fi
 

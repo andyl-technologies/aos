@@ -7,15 +7,15 @@
 ##! `system.build.systemdSystemUnits` — a derivation whose output is a
 ##! directory matching `/etc/systemd/system/`.
 ##!
-##! `modules/base/build.nix` pulls the produced directory into the
-##! toplevel with one `ln -s ${config.system.build.systemdSystemUnits}
-##! $out/etc/systemd/system` line. The previous untyped `renderUnit` /
-##! `renderTimer` heredoc pipeline has been deleted as part of spec v3.1
-##! stage 4.
+##! `generateUnits` returns a pure unit-data map. `modules/base/build.nix`
+##! folds its flattened `/etc` entries into `system.build.configManifest`, and
+##! the thin `materializeUnits` adapter reconstructs the builder-side unit
+##! directory from that manifest for `system.build.toplevel`.
 {
   config,
   lib,
   pkgs,
+  provenance,
   ...
 }: let
   systemdLib = import ../../lib/modules/systemd/lib.nix {inherit lib pkgs;};
@@ -86,7 +86,10 @@ in {
         Their unit files are symlinked into `/etc/systemd/system/` at
         image build time by `generateUnits`. This is how a module
         registers an upstream-provided unit without re-declaring it
-        via `systemd.services.<name>`.
+        via `systemd.services.<name>`. Package recipes expose the relative
+        leaves through `passthru.systemdUnitInventory.<type>`; this inventory
+        is frozen into the image base library so on-host evaluation never
+        enumerates a derivation output.
       '';
     };
 
@@ -204,6 +207,30 @@ in {
     '';
   };
 
+  options.system.build.systemdEtcEntries = lib.mkOption {
+    type = lib.types.attrsOf lib.types.attrs;
+    internal = true;
+    default = {};
+    description = ''
+      Pure manifest entries below `/etc/systemd/system`, flattened from
+      `systemdUnitBodies` by the shared systemd layout renderer.
+    '';
+  };
+
+  options.system.build.systemdMaterializationData = lib.mkOption {
+    type = lib.types.attrs;
+    internal = true;
+    default = {
+      etc = config.system.build.systemdEtcEntries;
+      jobScripts = config.system.build.systemdJobScripts;
+    };
+    description = ''
+      Manifest-shaped `{ etc; jobScripts; }` data consumed by the builder-side
+      unit materializer. The base build module binds this to configManifest;
+      the default keeps the standalone systemd module testable.
+    '';
+  };
+
   # Every job script's text, keyed `"<unit>:<slot>.<index>"`,
   # folded across all services. Consumed by `system.build.configManifest`
   # (`manifest.jobScripts`); the materializer writes each `text` to a
@@ -220,6 +247,20 @@ in {
     description = "Job-script texts keyed by `<unit>:<slot>.<index>`.";
   };
 
+  options.system.build.systemdUnitOwners = lib.mkOption {
+    type = lib.types.attrsOf lib.types.str;
+    internal = true;
+    readOnly = true;
+    description = "Resolver-authenticated owner of each rendered systemd unit.";
+  };
+
+  options.system.build.systemdUnitActions = lib.mkOption {
+    type = lib.types.attrsOf lib.types.attrs;
+    internal = true;
+    readOnly = true;
+    description = "Pure per-unit reconcile records for the config manifest.";
+  };
+
   config = let
     # --- X-* contract eval-time guards (spec §7.3) ---------------------
     #
@@ -231,6 +272,146 @@ in {
     # directly in serviceConfig, or via the `reload` option (which sets
     # serviceConfig.ExecReload through a mkDefault in serviceOptions).
     hasExecReload = svc: (svc.serviceConfig ? ExecReload) || ((svc.reload or "") != "");
+
+    pureSystemUnits = systemdLib.generateUnits {
+      type = "system";
+      units = config.systemd.units;
+      upstreamUnits = [];
+      upstreamWants = [];
+      packages = config.systemd.packages;
+      package = config.systemd.package;
+      packageOwners = builtins.listToAttrs (builtins.map (package:
+        lib.nameValuePair
+        (builtins.unsafeDiscardStringContext (builtins.toString package))
+        (provenance.ownerOfListAttr
+          ["systemd" "packages"]
+          "outPath"
+          package.outPath))
+      config.systemd.packages);
+    };
+
+    artifactOwner = path: name: let
+      owners = provenance.dependencyOwnersOfAttr path name;
+    in
+      if builtins.length owners == 1
+      then builtins.head owners
+      else if owners == []
+      then "@base"
+      else throw "systemd artifact ${name} depends on multiple owners: ${lib.concatStringsSep ", " owners}";
+    ownedAttrUnits = path: units:
+      lib.mapAttrs' (name: unit:
+        lib.nameValuePair unit.name (artifactOwner path name))
+      units;
+    ownedListUnits = path: units:
+      let
+        records = builtins.map (unit:
+          lib.nameValuePair unit.name
+          (provenance.ownerOfListAttr path "where" unit.where))
+        units;
+        names = builtins.map (record: record.name) records;
+        duplicates = builtins.filter
+          (name: builtins.length (builtins.filter (candidate: candidate == name) names) > 1)
+          (lib.unique names);
+      in
+        if duplicates == []
+        then builtins.listToAttrs records
+        else throw "list-backed systemd definitions collide at final unit name(s): ${lib.concatStringsSep ", " duplicates}";
+    typedOwnerSets = [
+      (ownedAttrUnits ["systemd" "services"] cfg.services)
+      (ownedAttrUnits ["systemd" "targets"] cfg.targets)
+      (ownedAttrUnits ["systemd" "sockets"] cfg.sockets)
+      (ownedAttrUnits ["systemd" "timers"] cfg.timers)
+      (ownedAttrUnits ["systemd" "paths"] cfg.paths)
+      (ownedAttrUnits ["systemd" "slices"] cfg.slices)
+      (ownedListUnits ["systemd" "mounts"] cfg.mounts)
+      (ownedListUnits ["systemd" "automounts"] cfg.automounts)
+    ];
+    typedNames = lib.concatLists (builtins.map builtins.attrNames typedOwnerSets);
+    duplicateTypedNames = builtins.filter
+      (name: builtins.length (builtins.filter (candidate: candidate == name) typedNames) > 1)
+      (lib.unique typedNames);
+    typedUnitOwners =
+      if duplicateTypedNames != []
+      then throw "typed systemd definitions collide at final unit name(s): ${lib.concatStringsSep ", " duplicateTypedNames}"
+      else builtins.foldl' (acc: owners: acc // owners) {} typedOwnerSets;
+    rawUnitNames = builtins.attrNames
+      (builtins.removeAttrs cfg.units (builtins.attrNames typedUnitOwners));
+    rawUnitOwners = builtins.listToAttrs (builtins.map (name:
+      lib.nameValuePair name
+      (provenance.ownerOfAttr ["systemd" "units"] name))
+    rawUnitNames);
+    typedRawCollisionCheck = builtins.foldl' (checked: name: let
+      allDefs = provenance.definitionsOfAttr ["systemd" "units"] name;
+      # `config.systemd.units = renderedUnits` contributes exactly one
+      # synthetic @base definition for every typed unit. Remove exactly one
+      # such record; every remaining definition is a genuine raw-unit source,
+      # including a second @base definition from another image module.
+      stripped = builtins.foldl' (state: definition:
+        if !state.removed && definition.owner == "@base"
+        then state // {removed = true;}
+        else state // {definitions = state.definitions ++ [definition];}) {
+        removed = false;
+        definitions = [];
+      }
+      allDefs;
+      rawDefs = stripped.definitions;
+      rawOwners = lib.unique (builtins.map (definition: definition.owner) rawDefs);
+      typedOwner = typedUnitOwners.${name};
+    in
+      if rawDefs == []
+      then checked
+      else throw "raw systemd unit ${name} collides with typed owner ${typedOwner}; raw owner(s): ${lib.concatStringsSep ", " rawOwners}")
+    true
+    (builtins.attrNames typedUnitOwners);
+    unitOwners = builtins.seq typedRawCollisionCheck (typedUnitOwners // rawUnitOwners);
+
+    asList = value:
+      if value == null
+      then []
+      else if builtins.isList value
+      then value
+      else [value];
+    credentialHandles = svc:
+      lib.unique (builtins.map
+        (entry: builtins.head (lib.splitString ":" (builtins.toString entry)))
+        (asList (svc.serviceConfig.LoadCredential or [])
+          ++ asList (svc.serviceConfig.LoadCredentialEncrypted or [])));
+    reconcileAction = kind: unit:
+      if kind == "target" || !unit.restartIfChanged
+      then "none"
+      else if unit.reloadIfChanged
+      then "reload"
+      else "restart";
+    attrActions = kind: units: lib.mapAttrs' (_: unit:
+      lib.nameValuePair unit.name {
+        action = reconcileAction kind unit;
+        credentials = if kind == "service" then credentialHandles unit else [];
+        enable = unit.enable;
+      })
+    units;
+    listActions = kind: units: builtins.listToAttrs (builtins.map (unit:
+      lib.nameValuePair unit.name {
+        action = reconcileAction kind unit;
+        credentials = [];
+        enable = unit.enable;
+      })
+    units);
+    typedUnitActions =
+      attrActions "service" cfg.services
+      // attrActions "target" cfg.targets
+      // attrActions "socket" cfg.sockets
+      // attrActions "timer" cfg.timers
+      // attrActions "path" cfg.paths
+      // attrActions "slice" cfg.slices
+      // listActions "mount" cfg.mounts
+      // listActions "automount" cfg.automounts;
+    rawUnitActions = builtins.listToAttrs (builtins.map (name:
+      lib.nameValuePair name {
+        action = "restart";
+        credentials = [];
+        enable = cfg.units.${name}.enable;
+      })
+    rawUnitNames);
 
     # `stopOnReconfiguration` is target-only (NixOS semantics). Flag it on
     # any non-target typed unit. attrset-keyed categories:
@@ -295,24 +476,8 @@ in {
       cfg.services
     );
   in {
-    # v1 doesn't model package-provided units (no IFD; we can't
-    # enumerate `$pkg/lib/systemd/system/` at eval time, which the
-    # `render-role.nix` drift assertion and `etc-merge-safety` check
-    # both depend on). Track as future work — spec v12 §10 item #2.
     assertions =
-      [
-        {
-          assertion = config.systemd.packages == [];
-          message = ''
-            systemd.packages is not yet supported with the composefs
-            /etc model (spec v12 §10 future-work #2). Re-introducing
-            package-provided units requires either accepting that the
-            merge-safety diff data source becomes incomplete or
-            generating the unit list at build time via a derivation.
-          '';
-        }
-      ]
-      ++ stopOnReconfAttrAsserts
+      stopOnReconfAttrAsserts
       ++ stopOnReconfListAsserts
       ++ targetReloadTriggerAsserts;
 
@@ -324,23 +489,13 @@ in {
     # the *-ToUnit renderers) in a single place.
     systemd.units = renderedUnits;
 
-    # Expose the /etc/systemd/system directory as a single derivation.
-    # Routed into the EROFS metadata image via `environment.etc`
-    # below; the composefs dump script (spec v12 §5.2) recurses into
-    # the directory so it lands as a real directory of symlinks
-    # rather than a single symlink (which would be shadowed by the
-    # per-generation config lower at runtime).
-    system.build.systemdSystemUnits = systemdLib.generateUnits {
+    # Materialize the builder-side directory from the same manifest emitted by
+    # the on-host evaluator. No independently assembled systemd derivation path
+    # remains: byte layout and job-script substitution are driven by
+    # `configManifest.etc` and `configManifest.jobScripts`.
+    system.build.systemdSystemUnits = systemdLib.materializeUnits {
       type = "system";
-      units = config.systemd.units;
-      # AOS stage-2: systemd finds upstream units at
-      # /lib/systemd/system/ natively (see spec §5.5 + the
-      # `0001-remove-usr-lib-unit-lookup-paths.patch` in
-      # `pkgs/system/systemd.nix`). Empty lists are fine here.
-      upstreamUnits = [];
-      upstreamWants = [];
-      packages = config.systemd.packages;
-      package = config.systemd.package;
+      inherit (config.system.build.systemdMaterializationData) etc jobScripts;
     };
 
     # --- Pure render values ---------------------------------------------
@@ -362,25 +517,12 @@ in {
         })
       allJobScripts);
 
-    # `config.systemd.units.<u>.text` carries the
-    # `#aos-jobscript:<key>#` placeholders natively (the `Exec*=` directives
-    # embed the placeholder, not the build-side store path — see
-    # `lib/modules/systemd/unit-options.nix`). So the manifest body is just
-    # `u.text` verbatim: no `replaceStrings` over job-script paths, and crucially
-    # nothing here forces a job-script derivation. That is what lets the on-host
-    # eval-only evaluator compute these bodies under a `pkgs` with no builder
-    # functions during on-host evaluation. The build-side `systemdSystemUnits`
-    # derivation restores the real paths in `makeUnit`, so it stays
-    # byte-for-byte identical.
-    system.build.systemdUnitBodies =
-      lib.mapAttrs (_unitName: u: {
-        inherit (u) text enable;
-        aliases = u.aliases or [];
-        wantedBy = u.wantedBy or [];
-        requiredBy = u.requiredBy or [];
-        upheldBy = u.upheldBy or [];
-      })
-      config.systemd.units;
+    # The renderer returns no derivations. Job scripts appear only as keys and
+    # placeholders here; their text lives in `systemdJobScripts`.
+    system.build.systemdUnitBodies = pureSystemUnits;
+    system.build.systemdEtcEntries = systemdLib.unitsToEtc pureSystemUnits;
+    system.build.systemdUnitOwners = unitOwners;
+    system.build.systemdUnitActions = typedUnitActions // rawUnitActions;
 
     # Route the rendered unit directory through environment.etc so
     # the EROFS image carries it as a real directory of symlinks (the

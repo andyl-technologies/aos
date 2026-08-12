@@ -1,9 +1,9 @@
 # Manage packages with APM
 
 `apm` consumes signed registry metadata and manages generation-based package
-profiles. User packages, machine-wide runtime packages, and the OS sysroot are
-separate scopes. The distinction is important: `--system` does not simply make
-a normal user install global.
+profiles. User packages, machine-wide runtime packages, configuration
+generations, and A/B image generations are separate scopes. The distinction is
+important: `--system` does not simply make a normal user install global.
 
 ## Configure a trusted registry
 
@@ -42,7 +42,8 @@ trusted host configuration can materialize an empty higher-precedence
 seed is the other option.
 
 User and system scopes load different writable configuration. A user-scope
-registry does not configure machine-wide packages or OS generations.
+registry does not configure machine-wide packages, configuration generations,
+or image generations.
 
 ## Manage user packages
 
@@ -137,15 +138,27 @@ removed during reconciliation, including packages made unreachable by that
 change. To remove `nginx`, delete it from `packages` and run the same command
 again. There is no `apm remove --system` command.
 
-The desired format can also carry package configuration and credentials. APM
-checks those inputs before mutating the package profile. Treat the file as
-deployment configuration and protect any credentials it contains.
+The desired format can also carry package configuration and credential input.
+APM checks those inputs before mutating the package profile. Prefer systemd
+system-credential references; if a separately managed desired file contains
+bytes, protect it as secret state. Evaluated `host.nix` contains only opaque
+`secretRef` handles, never those bytes.
 
 Machine-wide runtime package generations are stored separately from the OS:
 
 ```text
 /var/lib/profiles/system-packages
 ```
+
+Prune old machine-wide package and configuration generations together with:
+
+```sh
+apm clean --system --generations --keep 3
+apm gc
+```
+
+The latest keep window and the active generation of each independent profile
+are retained. Image generations are not affected.
 
 ## Distinguish a sysroot install
 
@@ -155,9 +168,10 @@ This command has a narrower meaning than its spelling suggests:
 apm install aos --system --registry acme
 ```
 
-It selects exactly one registry package marked `sysroot = true`, installs it as
-an OS generation, and activates that generation. It is not the command for
-installing an ordinary package globally.
+It selects exactly one registry package marked `sysroot = true`, verifies its
+authenticated OTA payload, and stages it as the next A/B image generation. It
+is not the command for installing an ordinary package globally, and it does not
+replace the running root before reboot.
 
 Always preview a selected sysroot install:
 
@@ -166,10 +180,11 @@ apm install aos --system --registry acme --dry-run
 apm install aos --system --registry acme --yes
 ```
 
-The sysroot profile is:
+Image and configuration state are separate:
 
 ```text
-/var/lib/profiles/system
+/var/lib/profiles/image    A/B image generations
+/var/lib/profiles/system   configuration generations
 ```
 
 For ordinary OS rollout, use the controlled update and rollback procedure in
@@ -191,7 +206,7 @@ package name over the `all` form when a recovery procedure requires it.
 
 | State | User scope | System scope |
 | --- | --- | --- |
-| Profile | `/var/lib/profiles/per-user/$USER` | Runtime packages: `/var/lib/profiles/system-packages`; OS: `/var/lib/profiles/system` |
+| Profile | `/var/lib/profiles/per-user/$USER` | Runtime packages: `/var/lib/profiles/system-packages`; configuration: `/var/lib/profiles/system`; image: `/var/lib/profiles/image` |
 | Registry clones | `~/.local/share/apm/registries` | `/var/lib/apm/registries` |
 | Synchronized metadata | `~/.local/share/apm/remote` | `/var/lib/apm/remote` |
 | NAR and cache data | `~/.cache/apm` | `/var/lib/apm/cache` |

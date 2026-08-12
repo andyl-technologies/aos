@@ -79,7 +79,7 @@ fn gate_abi_conformance_covers_whitebox_doorbell_instruction_abi() -> Result<(),
     assert_contains(&protocol_lib, "WhiteboxDoorbellTrapAbi");
     assert_contains(
         &protocol_doorbell,
-        "pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = 3;",
+        "pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = 4;",
     );
     assert_contains(
         &protocol_doorbell,
@@ -87,16 +87,16 @@ fn gate_abi_conformance_covers_whitebox_doorbell_instruction_abi() -> Result<(),
     );
     assert_contains(
         &protocol_doorbell,
-        "pub const WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE: u16 = 0x04c1;",
+        "pub const WHITEBOX_DOORBELL_AARCH64_RESERVED_HINT: u8 = 0x4c;",
     );
-    assert_contains(&protocol_doorbell, "WhiteboxDoorbellTrapAbi::Aarch64Hlt");
+    assert_contains(&protocol_doorbell, "WhiteboxDoorbellTrapAbi::Aarch64Hint");
     assert_contains(
         &protocol_doorbell,
         "doorbell_abi_x86_64_vector_freezes_out_imm8_al",
     );
     assert_contains(
         &protocol_doorbell,
-        "doorbell_abi_aarch64_vector_freezes_hlt_immediate",
+        "doorbell_abi_aarch64_vector_freezes_inert_hint",
     );
 
     assert_contains(&plugin_lib, "WHITEBOX_DOORBELL_ABIS");
@@ -105,7 +105,7 @@ fn gate_abi_conformance_covers_whitebox_doorbell_instruction_abi() -> Result<(),
         &plugin_whitebox,
         "pub const fn from_abi(trap: WhiteboxDoorbellTrapAbi)",
     );
-    assert_contains(&plugin_whitebox, "WhiteboxDoorbellTrap::Aarch64Hlt");
+    assert_contains(&plugin_whitebox, "WhiteboxDoorbellTrap::Aarch64Hint");
     assert!(
         !plugin_whitebox.contains("pub const fn new(\n        mode: PluginSwitch"),
         "doorbell state must not expose an arbitrary public trap constructor"
@@ -118,7 +118,7 @@ fn gate_abi_conformance_covers_whitebox_doorbell_instruction_abi() -> Result<(),
     assert_contains(&phase_check, "gate=gate:abi-conformance");
     assert_contains(&guest_host_spec, "- [x] **T-GHC-5**");
     assert_contains(&guest_host_spec, "x86_64   out 0xe7,al");
-    assert_contains(&guest_host_spec, "aarch64  hlt #0x04c1");
+    assert_contains(&guest_host_spec, "aarch64  hint #0x4c");
 
     run_doorbell_abi_unit_targets(&root)?;
 

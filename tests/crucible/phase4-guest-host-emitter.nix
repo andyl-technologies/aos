@@ -108,8 +108,8 @@
         needle = "libc::ioperm";
       }
       {
-        label = "aarch64 trap instruction";
-        needle = "\"hlt #0x04c1\"";
+        label = "aarch64 inert instruction";
+        needle = "\"hint #0x4c\"";
       }
       {
         label = "app-random reply buffer";
@@ -184,6 +184,10 @@
       {
         label = "instruction ABI architectures";
         needle = "instruction_abi_architectures=x86_64,aarch64";
+      }
+      {
+        label = "instruction ABI version";
+        needle = "doorbell_instruction_abi_version=4";
       }
       {
         label = "single-source ABI source";
@@ -297,6 +301,10 @@ in
             case "$build_info_content" in
               *"abi_source=crucible-protocol::doorbell_abi::WHITEBOX_DOORBELL_ABIS"*) ;;
               *) echo "crucible-guest package missing ABI source proof" >&2; exit 1 ;;
+            esac
+            case "$build_info_content" in
+              *"doorbell_instruction_abi_version=4"*) ;;
+              *) echo "crucible-guest package missing instruction ABI version" >&2; exit 1 ;;
             esac
             if patchelf --print-interpreter "${pkgs.crucible-guest}/bin/crucible-guest" \
               > "$TMPDIR/crucible-guest-package.interpreter" 2>/dev/null; then

@@ -153,6 +153,31 @@ impl KeyStore {
         keys
     }
 
+    /// Returns the fingerprints explicitly masked as revoked for `registry`.
+    pub fn revoked_fingerprints(&self, registry: &str) -> Vec<String> {
+        let mut fingerprints = Vec::new();
+        for dir in &self.trusted_dirs {
+            let path = dir.join(format!("{registry}.pub"));
+            if let Ok(content) = fs::read_to_string(path) {
+                for line in content.lines().map(str::trim) {
+                    let Some(key_line) = parse_revoked_line(line) else {
+                        continue;
+                    };
+                    let Ok((key_registry, _, public_key)) = parse_signing_key(&key_line) else {
+                        continue;
+                    };
+                    if key_registry == registry {
+                        let fingerprint = key_fingerprint(&public_key);
+                        if !fingerprints.contains(&fingerprint) {
+                            fingerprints.push(fingerprint);
+                        }
+                    }
+                }
+            }
+        }
+        fingerprints
+    }
+
     /// Persist a trusted key to the first (writable) directory.
     ///
     /// Creates the directory if it does not exist. `# revoked:` exclusion
@@ -1286,6 +1311,10 @@ mod tests {
             "{lines:?}"
         );
         assert!(lines.contains(&"core:Ed25519:BBBB".to_string()));
+        assert_eq!(
+            store.revoked_fingerprints("core"),
+            vec![key_fingerprint("AAAA")]
+        );
     }
 
     #[test]

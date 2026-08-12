@@ -58,9 +58,10 @@ implementation code out of the base library.
 
 ## Split mixed profiles
 
-Profiles that currently mix image mechanics and runtime policy must be split.
-For example, the current server profile combines immutable erofs-root choices
-with SSH, chrony, users, security level, and package declarations.
+Profiles that mixed image mechanics and runtime policy have been split. The
+server and edge system variants retain immutable root and boot capabilities;
+their corresponding role modules own SSH, chrony, users, security level, and
+package policy.
 
 The target shape is:
 
@@ -84,6 +85,17 @@ for example:
 Production images never enable a debug role or passwordless console autologin.
 An initrd recovery shell, when intentionally shipped, remains an image
 capability because `host.nix` cannot alter the initrd already executing.
+
+The production `server` and `edge` variants therefore contain an immutable
+EROFS root authenticated with dm-verity, but do not preselect their matching
+runtime roles. An edge host selects its service and low-memory policy after
+the input has been authenticated:
+
+```nix
+{
+  aos.roles.edge.enable = true;
+}
+```
 
 ## Package policy
 

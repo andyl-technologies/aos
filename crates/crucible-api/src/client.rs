@@ -19,8 +19,9 @@ use crucible::{
 use crucible_session::{
     BreakpointDisposition, BreakpointFiring, BreakpointId, BreakpointPolicy, DebugClientId,
     DebugControllerLease, EngineSnapshot, EngineState, LifecycleStateKind, LiveSnapshot,
-    LiveStateKind, Outcome, OutcomeKind, PauseReason, QueryKind, QueryResult, SavepointInfo,
-    SessionCommand, SessionCommandKind, StepMode,
+    LiveStateKind, Outcome, OutcomeKind, PauseReason, QueryKind, QueryResult,
+    SESSION_EVENT_LOG_BROADCAST_CAPACITY, SavepointInfo, SessionCommand, SessionCommandKind,
+    StepMode,
 };
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
@@ -65,20 +66,16 @@ const WATCH_ATTACH_RPC_PATH: &str = "/crucible.rpc/watch";
 const SEND_COMMAND_RPC_PATH: &str = "/crucible.rpc/send";
 const RPC_CONTENT_TYPE: &str = "application/vnd.crucible.rpc";
 const RPC_STREAM_EVENT_CHANNEL_CAPACITY: usize = 16;
-const RPC_STREAM_PENDING_FRAME_CAPACITY: usize = 16;
+const RPC_STREAM_PENDING_FRAME_CAPACITY: usize = SESSION_EVENT_LOG_BROADCAST_CAPACITY;
 
 /// Boxed asynchronous result returned by [`ControlClient`] methods.
 pub type ControlClientFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, ControlClientError>> + Send + 'a>>;
 
-type InProcessLifecycleCommandSend = Arc<
-    dyn Fn(
-            SendRequest,
-        ) -> Pin<
-            Box<dyn Future<Output = Result<SendResponse, ControlClientError>> + Send + 'static>,
-        > + Send
-        + Sync,
->;
+type InProcessLifecycleCommandFuture =
+    Pin<Box<dyn Future<Output = Result<SendResponse, ControlClientError>> + Send + 'static>>;
+type InProcessLifecycleCommandSend =
+    Arc<dyn Fn(SendRequest) -> InProcessLifecycleCommandFuture + Send + Sync>;
 
 /// Attached bidirectional `Control` stream returned by a [`ControlClient`].
 pub enum ClientControlStream {

@@ -9,7 +9,7 @@ use crucible_guest::{
     CRUCIBLE_GUEST_DEFAULT_RANDOM_REQUEST_ID, CRUCIBLE_GUEST_DEFAULT_RANDOM_STREAM_TAG,
     CRUCIBLE_GUEST_STATIC_RUSTFLAGS, CRUCIBLE_GUEST_SUPPORTED_ARCHITECTURES, DoorbellTransport,
     GuestCommand, GuestCommandOutcome, GuestEmitterError, WHITEBOX_DOORBELL_AARCH64_ABI,
-    WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE, WHITEBOX_DOORBELL_ABIS,
+    WHITEBOX_DOORBELL_AARCH64_RESERVED_HINT, WHITEBOX_DOORBELL_ABIS,
     WHITEBOX_DOORBELL_RANDOM_REQUEST_MAX_WIDTH_BYTES, WHITEBOX_DOORBELL_X86_64_ABI,
     WHITEBOX_DOORBELL_X86_64_RESERVED_PORT, WhiteboxAssertionMarkerBody,
     WhiteboxAssertionMarkerFlavor, WhiteboxCoverageMarkerBody, WhiteboxDoorbellArchitecture,
@@ -139,8 +139,8 @@ fn guest_emitter_uses_single_source_doorbell_abi_table() {
     );
     assert_eq!(
         WHITEBOX_DOORBELL_ABIS[1].trap(),
-        WhiteboxDoorbellTrapAbi::Aarch64Hlt {
-            immediate: WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE,
+        WhiteboxDoorbellTrapAbi::Aarch64Hint {
+            immediate: WHITEBOX_DOORBELL_AARCH64_RESERVED_HINT,
         }
     );
 }

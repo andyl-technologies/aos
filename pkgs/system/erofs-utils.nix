@@ -15,6 +15,8 @@
   automake,
   libtool,
   m4,
+  bash,
+  gcc-libs,
   util-linux,
   zstd,
 }: let
@@ -54,7 +56,7 @@ in
       m4
       zstd
     ];
-    runtimeDeps = [util-linux zstd];
+    runtimeDeps = [bash gcc-libs util-linux zstd];
     propagatedDeps = [util-linux zstd];
 
     phases = [
@@ -117,6 +119,49 @@ in
         name = "install";
         script = ''
           make install
+
+          # glibc lazily dlopen()s libgcc_s while worker threads exit. A
+          # DT_RUNPATH on mkfs.erofs does not participate in that lookup, so
+          # make the AOS-built unwind runtime explicit for every caller. Use
+          # an exact path so an ambient host LD_LIBRARY_PATH cannot leak in.
+          mv "$out/bin/mkfs.erofs" "$out/bin/.mkfs.erofs-unwrapped"
+          cat > "$out/bin/mkfs.erofs" <<EOF
+          #!${bash}/bin/bash
+          export LD_LIBRARY_PATH="${gcc-libs}/lib"
+          exec "$out/bin/.mkfs.erofs-unwrapped" "\$@"
+          EOF
+          chmod +x "$out/bin/mkfs.erofs"
+        '';
+      }
+      {
+        name = "check";
+        script = ''
+          mkdir -p "$TMPDIR/erofs-smoke/root"
+          dd if=/dev/zero of="$TMPDIR/erofs-smoke/root/worker-payload" \
+            bs=1M count=17 status=none
+          printf 'multithreaded erofs smoke test\n' > "$TMPDIR/erofs-smoke/root/payload"
+          env -i "$out/bin/mkfs.erofs" --all-root -T0 \
+            -U bdfb6fc9-0000-4000-8000-000000000001 \
+            --workers=1 -z zstd \
+            "$TMPDIR/erofs-smoke/image-one-worker.erofs" \
+            "$TMPDIR/erofs-smoke/root"
+          env -i "$out/bin/mkfs.erofs" --all-root -T0 \
+            -U bdfb6fc9-0000-4000-8000-000000000001 \
+            --workers=2 -z zstd \
+            "$TMPDIR/erofs-smoke/image-two-workers.erofs" \
+            "$TMPDIR/erofs-smoke/root"
+          cmp \
+            "$TMPDIR/erofs-smoke/image-one-worker.erofs" \
+            "$TMPDIR/erofs-smoke/image-two-workers.erofs"
+          "$out/bin/fsck.erofs" \
+            --extract="$TMPDIR/erofs-smoke/extracted" \
+            "$TMPDIR/erofs-smoke/image-two-workers.erofs" >/dev/null
+          cmp \
+            "$TMPDIR/erofs-smoke/root/worker-payload" \
+            "$TMPDIR/erofs-smoke/extracted/worker-payload"
+          cmp \
+            "$TMPDIR/erofs-smoke/root/payload" \
+            "$TMPDIR/erofs-smoke/extracted/payload"
         '';
       }
     ];
