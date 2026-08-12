@@ -52,7 +52,7 @@ pub mod response;
 
 pub use fault::{
     LinkCorruptionStrategy, LinkFaults, Probability, corrupt_payload, jitter_shift_ns,
-    reorder_shift_ns, serialization_delay_ns,
+    reorder_shift_ns,
 };
 pub use ipv4::{Ipv4FragmentationError, Ipv4FragmentationOutcome, fragment_ethernet_ipv4};
 pub use link::{
@@ -317,7 +317,7 @@ mod tests {
         let mut faults = LinkFaults::none();
         // 256 bytes per icount-ns scale: pick a rate so a 256-byte frame adds a
         // round delay. 256 bytes at 1e9 B/s => 256 ns => +1 icount.
-        faults.bandwidth_bytes_per_sec = 1_000_000_000;
+        faults.bandwidth_bits_per_sec = vec![8_000_000_000];
         let mut l = link(faults.clone());
         let small = ok(l.emit(
             &Frame::new(0, 1, vec![0; 256]),
@@ -425,7 +425,7 @@ mod tests {
     fn corrupt_flips_exactly_the_seeded_bits() {
         let mut faults = LinkFaults::none();
         faults.corrupt = Probability::ALWAYS;
-        faults.corrupt_bit_flips = 2;
+        faults.corruption_strategies = vec![LinkCorruptionStrategy::BitFlip { max_bits: 2 }];
         let mut l = link(faults);
         let draws = FrameDraws {
             corrupt_bits: vec![0, 8], // bit 0 of byte 0, bit 0 of byte 1
@@ -440,7 +440,7 @@ mod tests {
         // Not-firing corrupt leaves the payload intact.
         let mut faults2 = LinkFaults::none();
         faults2.corrupt = Probability::new(1, 100);
-        faults2.corrupt_bit_flips = 2;
+        faults2.corruption_strategies = vec![LinkCorruptionStrategy::BitFlip { max_bits: 2 }];
         let mut l2 = link(faults2);
         let out2 = ok(l2.emit(
             &frame(vec![0; 4]),
@@ -621,15 +621,15 @@ mod tests {
             ("partitioned", |f| f.partitioned = true),
             ("jitter_window_ns", |f| f.jitter_window_ns = 100_000),
             ("reorder_window_ns", |f| f.reorder_window_ns = 100_000),
-            ("bandwidth_bytes_per_sec", |f| {
-                f.bandwidth_bytes_per_sec = 1_000
+            ("bandwidth_bits_per_sec", |f| {
+                f.bandwidth_bits_per_sec = vec![8_000]
             }),
             ("loss", |f| f.loss = Probability::ALWAYS),
             ("duplicate", |f| f.duplicate = Probability::ALWAYS),
             ("duplicate_gap_ns", |f| f.duplicate_gap_ns = 9_999),
             ("corrupt", |f| {
                 f.corrupt = Probability::ALWAYS;
-                f.corrupt_bit_flips = 3;
+                f.corruption_strategies = vec![LinkCorruptionStrategy::BitFlip { max_bits: 3 }];
             }),
         ];
         for (name, mutate) in non_bound_changes {
@@ -694,7 +694,7 @@ mod tests {
         faults.duplicate = Probability::new(1, 2);
         faults.duplicate_gap_ns = 512;
         faults.corrupt = Probability::new(1, 2);
-        faults.corrupt_bit_flips = 1;
+        faults.corruption_strategies = vec![LinkCorruptionStrategy::BitFlip { max_bits: 1 }];
         let mut l = link(faults);
 
         let frames = [
@@ -832,7 +832,7 @@ mod tests {
             duplicate: Probability::new(1, 3),
             duplicate_gap_ns: 1_024,
             corrupt: Probability::new(1, 2),
-            corrupt_bit_flips: 2,
+            corruption_strategies: vec![LinkCorruptionStrategy::BitFlip { max_bits: 2 }],
             ..LinkFaults::none()
         };
         let root = 0x0117_5eed_u64;

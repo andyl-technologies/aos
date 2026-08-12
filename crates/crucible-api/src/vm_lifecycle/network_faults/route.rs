@@ -1,8 +1,8 @@
 //! Ordered per-frame execution for signal-driven network effects.
 //!
 //! The route executor evaluates every declared target and phase, owns resumable
-//! queue continuations, and composes exact per-frame outcomes before the legacy-
-//! free link delivery model receives a frame.
+//! queue continuations, and composes exact per-frame outcomes before the
+//! fault-free link delivery model receives a frame.
 
 use super::*;
 

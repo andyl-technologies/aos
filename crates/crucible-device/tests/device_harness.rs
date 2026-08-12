@@ -25,7 +25,7 @@ use std::fmt::Debug;
 
 use crucible_device::block::codec::BlockRequest;
 use crucible_device::harness::adapters::LinkRequest;
-use crucible_device::netlink::fault::{LinkFaults, Probability};
+use crucible_device::netlink::fault::{LinkCorruptionStrategy, LinkFaults, Probability};
 use crucible_device::netlink::link::{Frame, FrameDraws, NetLink, PastDeliveryPolicy};
 use crucible_device::ninep::codec;
 use crucible_device::{
@@ -438,7 +438,7 @@ fn link_harness() -> NetLinkHarness {
     faults.duplicate = Probability::new(1, 2);
     faults.duplicate_gap_ns = 512;
     faults.corrupt = Probability::new(1, 2);
-    faults.corrupt_bit_flips = 1;
+    faults.corruption_strategies = vec![LinkCorruptionStrategy::BitFlip { max_bits: 1 }];
     let link = ok(NetLink::new(
         LINK_SHIFT,
         src,
