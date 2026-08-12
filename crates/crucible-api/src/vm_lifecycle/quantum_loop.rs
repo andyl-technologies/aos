@@ -1479,10 +1479,7 @@ impl ProductionVmLifecycleLoop {
 
         let mut captured: Vec<(NodeId, QemuVmSnapshot)> = Vec::new();
         let result =
-            (|| -> Result<
-                BTreeMap<(ContentHash, NodeId), ProductionVmExactCheckpointTarget>,
-                SchedulerError,
-            > {
+            (|| -> Result<BTreeMap<NodeId, ProductionVmExactCheckpointTarget>, SchedulerError> {
                 let mut targets = BTreeMap::new();
                 for (node, counter, scheduler_time) in boundaries {
                     let parent = if configuration.schedule.is_empty() {
@@ -1588,14 +1585,16 @@ impl ProductionVmLifecycleLoop {
                         ),
                     );
                     targets.insert(
-                        (configuration.id(), node),
+                        node,
                         ProductionVmExactCheckpointTarget {
                             configuration: configuration.clone(),
                             counter,
                             scheduler_time,
                             snapshot,
                             overlay_artifact: checkpoint_root.join(artifact_name),
+                            overlay_hash: artifact_hash,
                             vmstate_artifact: checkpoint_root.join(vmstate_name),
+                            vmstate_hash,
                             fault_checkpoint: fault_checkpoint.clone(),
                             manifest_identity,
                         },
@@ -1614,7 +1613,43 @@ impl ProductionVmLifecycleLoop {
             })();
         match result {
             Ok(targets) => {
-                self.checkpoint_targets.extend(targets);
+                let checkpoint_set = ProductionVmExactCheckpointSet {
+                    configuration: configuration.clone(),
+                    scheduler: self.inner.loop_impl().clone(),
+                    trigger_state: self.trigger_state.clone(),
+                    targets,
+                    node_generations: self.node_generations.clone(),
+                    node_service_states: self.node_service_states.clone(),
+                };
+                if self
+                    .checkpoint_targets
+                    .insert(configuration.id(), checkpoint_set.clone())
+                    .is_some()
+                {
+                    self.rollback_exact_captures(&captured)?;
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "exact checkpoint {} was already captured",
+                            configuration.id().to_hex()
+                        ),
+                    });
+                }
+                let mut registry = production_checkpoint_registry().lock().map_err(|_| {
+                    SchedulerError::BoundaryViolation {
+                        message: String::from("production checkpoint registry lock is poisoned"),
+                    }
+                })?;
+                let key = (self.scenario.id(), configuration.id());
+                if registry.insert(key, checkpoint_set).is_some() {
+                    self.checkpoint_targets.remove(&configuration.id());
+                    self.rollback_exact_captures(&captured)?;
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "exact checkpoint {} is already registered for this scenario",
+                            configuration.id().to_hex()
+                        ),
+                    });
+                }
                 Ok(())
             }
             Err(error) => {

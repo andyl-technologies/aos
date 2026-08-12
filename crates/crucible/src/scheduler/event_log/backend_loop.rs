@@ -114,6 +114,31 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
         }
     }
 
+    /// Builds an adapter from an authenticated concrete continuation.
+    ///
+    /// This constructor installs scheduler-owned pending network outputs in the
+    /// same operation as the restored interceptor and committed frontier. It is
+    /// intentionally distinct from the fresh-run constructor so a restore can
+    /// never briefly publish an empty pending-output queue.
+    #[must_use]
+    pub fn from_restored_network_state(
+        loop_impl: L,
+        backend: B,
+        network_output_interceptor: I,
+        pending_network_outputs: Vec<BackendNetworkOutput>,
+        committed_frontier: VirtualTime,
+    ) -> Self {
+        Self {
+            loop_impl,
+            backend,
+            network_output_interceptor,
+            pending_network_outputs,
+            pending_observations: Vec::new(),
+            committed_frontier,
+            network_settlement_poisoned: false,
+        }
+    }
+
     /// Returns the wrapped quantum loop.
     #[must_use]
     pub const fn loop_impl(&self) -> &L {
