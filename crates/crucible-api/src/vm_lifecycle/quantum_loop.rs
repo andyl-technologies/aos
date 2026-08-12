@@ -1426,25 +1426,10 @@ impl ProductionVmLifecycleLoop {
         &mut self,
         configuration: &Configuration,
     ) -> Result<ContentHash, SchedulerError> {
-        let registry_key = (self.scenario.id(), configuration.id());
         if self.checkpoint_targets.contains_key(&configuration.id()) {
             return Err(SchedulerError::BoundaryViolation {
                 message: format!(
                     "exact checkpoint {} was already captured by this lifecycle",
-                    configuration.id().to_hex()
-                ),
-            });
-        }
-        if production_checkpoint_registry()
-            .lock()
-            .map_err(|_| SchedulerError::BoundaryViolation {
-                message: String::from("production checkpoint registry lock is poisoned"),
-            })?
-            .contains_key(&registry_key)
-        {
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!(
-                    "exact checkpoint {} is already owned by another lifecycle",
                     configuration.id().to_hex()
                 ),
             });
@@ -1702,7 +1687,7 @@ impl ProductionVmLifecycleLoop {
                     .map_err(|_| SchedulerError::BoundaryViolation {
                         message: String::from("production checkpoint registry lock is poisoned"),
                     })
-                    .and_then(|mut registry| match registry.entry(registry_key) {
+                    .and_then(|mut registry| match registry.entry(checkpoint_set.identity) {
                         std::collections::btree_map::Entry::Vacant(entry) => {
                             entry.insert(checkpoint_set.clone());
                             Ok(())
@@ -1710,8 +1695,8 @@ impl ProductionVmLifecycleLoop {
                         std::collections::btree_map::Entry::Occupied(_) => {
                             Err(SchedulerError::BoundaryViolation {
                                 message: format!(
-                                    "exact checkpoint {} became owned by another lifecycle during capture",
-                                    configuration.id().to_hex()
+                                    "concrete exact checkpoint closure {} is already registered",
+                                    checkpoint_set.identity.to_hex()
                                 ),
                             })
                         }
