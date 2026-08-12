@@ -181,6 +181,16 @@ impl QemuSharedBlockDevice {
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
     }
 
+    /// Returns the authoritative guest-visible device length.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::DeviceLockPoisoned`] when the
+    /// authoritative device lock is poisoned.
+    pub fn storage_length(&self) -> Result<u64, QemuLiveBlockIoServicerError> {
+        Ok(self.lock()?.length())
+    }
+
     /// Returns the destination's actual durable cache frontier.
     ///
     /// # Errors
@@ -321,8 +331,9 @@ impl QemuSharedBlockDevice {
 
     /// Atomically persists one logical write across an ordered device set.
     ///
-    /// `destinations` contains `(device identity, handle, offset, bytes)` and
-    /// must be in unique identity order. Every complete device is cloned while
+    /// `destinations` contains `(device identity, handle, ordered writes)` and
+    /// must be in unique identity order. Each write is `(offset, bytes)` and a
+    /// device's offsets must be strictly increasing. Every complete device is cloned while
     /// all locks are held; the logical source and all destinations commit only
     /// after every destination accepts its exact write. Runtime notifications
     /// are then published for every changed destination. A notification failure
@@ -337,21 +348,21 @@ impl QemuSharedBlockDevice {
     pub fn install_multi_device_persistence(
         &self,
         source_id: ContentHash,
-        destinations: &[(ContentHash, QemuSharedBlockDevice, u64, Vec<u8>)],
+        destinations: &[(ContentHash, QemuSharedBlockDevice, Vec<(u64, Vec<u8>)>)],
         mut resolved: ResolvedBlockRequestPersistenceDirective,
     ) -> Result<Vec<BlockExternalDurabilityDependency>, QemuLiveBlockIoServicerError> {
         if destinations.is_empty()
             || destinations.windows(2).any(|pair| pair[0].0 >= pair[1].0)
             || destinations
                 .iter()
-                .any(|(id, handle, _, _)| *id == source_id || self.ptr_eq(handle))
+                .any(|(id, handle, _)| *id == source_id || self.ptr_eq(handle))
             || destinations
                 .iter()
                 .enumerate()
-                .any(|(index, (_, handle, _, _))| {
+                .any(|(index, (_, handle, _))| {
                     destinations[index + 1..]
                         .iter()
-                        .any(|(_, other, _, _)| handle.ptr_eq(other))
+                        .any(|(_, other, _)| handle.ptr_eq(other))
                 })
         {
             return Err(QemuLiveBlockIoServicerError::CrossDeviceIdentityMismatch);
@@ -361,7 +372,7 @@ impl QemuSharedBlockDevice {
         handles.extend(
             destinations
                 .iter()
-                .map(|(id, handle, _, _)| (*id, handle.clone())),
+                .map(|(id, handle, _)| (*id, handle.clone())),
         );
         handles.sort_by_key(|(id, _)| *id);
         let mut devices = handles
@@ -381,22 +392,32 @@ impl QemuSharedBlockDevice {
             .binary_search_by_key(&source_id, |(id, _)| *id)
             .map_err(|_| QemuLiveBlockIoServicerError::CrossDeviceIdentityMismatch)?;
         let mut dependencies = Vec::with_capacity(destinations.len());
-        for (destination_id, _, offset, bytes) in destinations {
+        for (destination_id, _, writes) in destinations {
             let destination_index = handles
                 .binary_search_by_key(destination_id, |(id, _)| *id)
                 .map_err(|_| QemuLiveBlockIoServicerError::CrossDeviceIdentityMismatch)?;
-            let (required_durability, required_frontier) = staged[destination_index]
-                .apply_storage_external_write(
-                    resolved.opportunity.request.request_id,
-                    resolved.directive.request_sequence,
-                    resolved.opportunity.ready_nanos,
-                    *offset,
-                    bytes.clone(),
-                )
-                .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+            if writes.is_empty() || writes.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+                return Err(QemuLiveBlockIoServicerError::CrossDeviceIdentityMismatch);
+            }
+            let mut required_durability = None;
+            let mut required_frontier = 0_u64;
+            for (offset, bytes) in writes {
+                let (durability, frontier) = staged[destination_index]
+                    .apply_storage_external_write(
+                        resolved.opportunity.request.request_id,
+                        resolved.directive.request_sequence,
+                        resolved.opportunity.ready_nanos,
+                        *offset,
+                        bytes.clone(),
+                    )
+                    .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+                required_durability = Some(durability);
+                required_frontier = required_frontier.max(frontier);
+            }
             dependencies.push(BlockExternalDurabilityDependency {
                 destination_device: destination_id.bytes,
-                required_durability,
+                required_durability: required_durability
+                    .ok_or(QemuLiveBlockIoServicerError::CrossDeviceIdentityMismatch)?,
                 required_frontier,
             });
         }
@@ -2418,14 +2439,12 @@ mod tests {
                     (
                         ContentHash { bytes: [2; 32] },
                         first.clone(),
-                        0,
-                        vec![0xa5; 512],
+                        vec![(0, vec![0xa5; 512])],
                     ),
                     (
                         ContentHash { bytes: [3; 32] },
                         second.clone(),
-                        512,
-                        vec![0x5a; 512],
+                        vec![(512, vec![0x5a; 512])],
                     ),
                 ],
                 directive,
