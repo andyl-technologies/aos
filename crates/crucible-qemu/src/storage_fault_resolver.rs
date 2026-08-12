@@ -295,7 +295,9 @@ pub fn resolve_block_persistence_media_directive<'a>(
     let expected_operation = match opportunity.operation {
         BlockOp::Write => FaultOperation::StorageWrite,
         BlockOp::Discard => FaultOperation::StorageDiscard,
-        _ => return Err(StorageFaultResolutionError::OpportunityMismatch),
+        BlockOp::Read | BlockOp::Flush | BlockOp::GetLength => {
+            return Err(StorageFaultResolutionError::OpportunityMismatch);
+        }
     };
     if fault_opportunity.target() != target
         || fault_opportunity.operation() != expected_operation
@@ -657,7 +659,39 @@ pub fn merge_block_fault_phase_directive(
                 })?;
             accumulated.duplicate_completions = partial.duplicate_completions;
         }
-        _ => return Err(StorageFaultResolutionError::OpportunityMismatch),
+        FaultPhase::Visibility
+        | FaultPhase::Transition
+        | FaultPhase::Boundary
+        | FaultPhase::Run
+        | FaultPhase::BeforeInstruction
+        | FaultPhase::AfterInstruction
+        | FaultPhase::BeforeRead
+        | FaultPhase::AfterRead
+        | FaultPhase::BeforeWrite
+        | FaultPhase::AfterWrite
+        | FaultPhase::Fetch
+        | FaultPhase::Load
+        | FaultPhase::Store
+        | FaultPhase::DmaRead
+        | FaultPhase::DmaWrite
+        | FaultPhase::PageTableWalk
+        | FaultPhase::Refresh
+        | FaultPhase::Raise
+        | FaultPhase::Route
+        | FaultPhase::Acknowledge
+        | FaultPhase::InterruptDeliver
+        | FaultPhase::Return
+        | FaultPhase::ClockRead
+        | FaultPhase::Arm
+        | FaultPhase::Fire
+        | FaultPhase::Synchronize
+        | FaultPhase::SourceSwitch
+        | FaultPhase::Submit
+        | FaultPhase::Execute
+        | FaultPhase::Complete
+        | FaultPhase::AcceleratorMemoryAccess => {
+            return Err(StorageFaultResolutionError::OpportunityMismatch);
+        }
     }
     accumulated.media_rules.sort_by_key(|rule| rule.contributor);
     Ok(())
@@ -1399,7 +1433,12 @@ fn apply_effect(
         | StorageEffectSpecification::MediaRange { .. }
         | StorageEffectSpecification::FlashState { .. }
         | StorageEffectSpecification::FlushDisposition { .. } => {}
-        _ => return Err(unsupported(action, effect.kind().as_str())),
+        StorageEffectSpecification::ControllerLifecycle { .. }
+        | StorageEffectSpecification::ArrayState { .. }
+        | StorageEffectSpecification::NinePResult { .. }
+        | StorageEffectSpecification::NinePVisibility { .. } => {
+            return Err(unsupported(action, effect.kind().as_str()));
+        }
     }
     Ok(())
 }
