@@ -3,14 +3,38 @@
 use super::*;
 
 /// A virtual time value used by the execution-model signatures.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct VirtualTime {
     /// The canonical virtual-time tick.
     pub ticks: u64,
 }
 
 /// An instruction-count value used by backend and preemption signatures.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct Icount {
     /// The retired-instruction count.
     pub retired: u64,
@@ -43,7 +67,19 @@ impl Icount {
 /// VM nodes construct this from retired guest instructions; deterministic I/O
 /// sub-nodes construct it from their model-owned completion counter. Both use
 /// the same `counter << shift` projection.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct NodeCounter {
     /// The node-local counter value.
     pub ticks: u64,
@@ -75,7 +111,19 @@ impl NodeCounter {
 }
 
 /// The fixed `-icount shift=N` scale.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct Shift {
     /// The number of low-order virtual-nanosecond bits per instruction.
     pub bits: u8,
@@ -96,7 +144,19 @@ impl Shift {
 }
 
 /// A point on the shared virtual timeline.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct VirtualInstant {
     /// Virtual nanoseconds since Crucible's fixed virtual epoch.
     pub nanos: u64,
@@ -175,7 +235,19 @@ impl ops::Add<SimDuration> for VirtualInstant {
 pub type SimInstant = VirtualInstant;
 
 /// An unsigned virtual-time span.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct SimDuration {
     /// Virtual nanoseconds in the span.
     pub nanos: u64,

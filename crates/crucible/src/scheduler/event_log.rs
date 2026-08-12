@@ -647,7 +647,7 @@ pub struct SchedulerConcurrentRunCandidate {
 }
 
 /// Per-node retired-instruction stamp attached to an event-log time.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EventLogIcountStamp {
     /// Node whose retired-instruction counter was sampled, when node-local.
     pub node: Option<NodeId>,
@@ -656,7 +656,7 @@ pub struct EventLogIcountStamp {
 }
 
 /// Virtual-time coordinate enriched with a deterministic icount stamp.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EventLogTime {
     /// Scheduler virtual time at which the entry occurred.
     pub virtual_time: VirtualTime,
@@ -691,7 +691,7 @@ impl EventLogTime {
 }
 
 /// Closed origin set for unified event-log entries.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum EventSource {
     /// A scenario-defined temporal event or fault.
     Scenario {
@@ -718,7 +718,7 @@ pub enum EventSource {
 }
 
 /// Display verbosity for an event-log entry.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum EventLevel {
     /// Highest-frequency internal state.
     Trace,
@@ -733,7 +733,7 @@ pub enum EventLevel {
 }
 
 /// Typed value carried by an open-set event payload attribute.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum EventAttributeValue {
     /// Boolean attribute.
     Bool(bool),
@@ -758,7 +758,7 @@ pub enum EventAttributeValue {
 }
 
 /// Open-set event payload read by observability projections.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EventPayload {
     pub(super) kind: String,
     pub(super) attributes: BTreeMap<String, EventAttributeValue>,
@@ -897,7 +897,7 @@ impl EventPayload {
 }
 
 /// One scheduler-emitted entry in the unified event log.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SchedulerEventLogEntry {
     /// Dense per-run sequence number assigned by the scheduler append path.
     pub(super) sequence: u64,
@@ -924,7 +924,7 @@ pub type LogEntry = SchedulerEventLogEntry;
 /// Compatibility name for the causal-vs-observational event class.
 pub type EventClass = SchedulerEventLogClass;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(super) struct SchedulerEventLogEntryProvenance;
 
 impl SchedulerEventLogEntry {

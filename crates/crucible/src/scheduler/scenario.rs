@@ -17,7 +17,7 @@ pub struct SchedulerScenarioNode {
 }
 
 /// The generated liveness activity state for one scheduler node.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SchedulerNodeActivity {
     /// The node has work and may be selected by PICK.
     Runnable,

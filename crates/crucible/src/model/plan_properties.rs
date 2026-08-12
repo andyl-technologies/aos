@@ -228,7 +228,9 @@ impl Plan {
 }
 
 /// A stable assertion identifier inside a [`Properties`] bundle.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct AssertionId {
     /// The canonical assertion name.
     pub name: String,
@@ -243,7 +245,9 @@ impl AssertionId {
 }
 
 /// A stable white-box marker identifier.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct MarkerId {
     /// The canonical marker name.
     pub name: String,
@@ -258,7 +262,9 @@ impl MarkerId {
 }
 
 /// Stable identity of an event inside an event graph.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct EventId {
     /// Canonical event name, unique within the graph.
     pub name: String,
@@ -273,7 +279,9 @@ impl EventId {
 }
 
 /// Stable identity of an observable network link.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct LinkId {
     /// Canonical link name.
     pub name: String,
@@ -502,7 +510,9 @@ pub enum MemoryCmp {
 }
 
 /// Observable I/O operation class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum IoEventKind {
     /// Match any deterministic I/O completion.
     Any,
@@ -519,7 +529,9 @@ pub enum IoEventKind {
 }
 
 /// Lifecycle state entered by a scenario node.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum NodeLifecycle {
     /// The node started or became runnable.
     Started,
@@ -532,7 +544,9 @@ pub enum NodeLifecycle {
 }
 
 /// Terminal assertion state visible to trigger steering.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum AssertionPhase {
     /// The assertion became satisfied.
     Satisfied,

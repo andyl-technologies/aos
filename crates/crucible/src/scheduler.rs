@@ -103,6 +103,7 @@ const EVENT_LOG_CLASS_OBSERVATIONAL: u8 = 1;
 
 mod backend_lifecycle;
 mod branch_exploration;
+mod checkpoint;
 mod control_state;
 mod event_codec;
 mod event_log;
@@ -113,6 +114,7 @@ mod single_scheduler_drive;
 mod single_scheduler_state;
 mod topology;
 
+pub use checkpoint::*;
 pub use control_state::*;
 pub(crate) use event_codec::*;
 pub(crate) use event_codec::{

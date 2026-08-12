@@ -144,7 +144,9 @@ impl ResolvedCodePoint {
 }
 
 /// Host-resolved guest memory or register coordinate.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum ResolvedMemPlace {
     /// Guest physical address sampled out of band.
     PhysicalAddress {

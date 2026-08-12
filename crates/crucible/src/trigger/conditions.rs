@@ -267,7 +267,7 @@ impl ObservableEvent {
 }
 
 /// Typed observable event payloads used by condition leaves.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ObservableEventPayload {
     /// A network frame was delivered at RESOLVE.
     NetworkDelivered {
@@ -432,7 +432,9 @@ impl ObservableEventPayload {
 }
 
 /// Assertion flavor carried by a white-box doorbell assertion marker.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum GuestAssertionKind {
     /// Invariant marker; any false observation violates the assertion.
     Always,
@@ -445,7 +447,9 @@ pub enum GuestAssertionKind {
 }
 
 /// One structured key/value detail carried by a guest assertion marker.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct GuestAssertionDetail {
     /// Stable detail key.
     pub key: String,
@@ -469,7 +473,7 @@ impl GuestAssertionDetail {
 /// The payload is observational: it is stored in the event log and can drive
 /// assertion finalization, but it does not feed scheduler decisions or node
 /// fingerprints.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct GuestAssertionMarker {
     /// Stable assertion id in the marker/assertion namespace.
     pub id: AssertionId,
