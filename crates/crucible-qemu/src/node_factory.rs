@@ -285,6 +285,7 @@ impl QemuWarmRestoreLaunchError {
 struct PreparedQemuNodeSetup {
     plugin_control: QemuHostPluginSetup,
     shmem_hot_path: QemuMappedQuantumShmemHotPath,
+    next_fault_command_sequence: u64,
     fault_capabilities: Vec<crucible_shmem::FaultCapabilityRowV1>,
     ready_markers: std::collections::BTreeSet<crucible::model::FaultObjectId>,
 }
@@ -913,6 +914,7 @@ where
 
     let fault_capabilities = setup.fault_capabilities().to_vec();
     let ready_markers = setup.ready_markers().clone();
+    let next_fault_command_sequence = setup.next_fault_command_sequence();
 
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
         .map_err(|source| QemuNodeFactoryError::SetupRegionMap { source })?;
@@ -922,6 +924,7 @@ where
     Ok(PreparedQemuNodeSetup {
         plugin_control: setup,
         shmem_hot_path,
+        next_fault_command_sequence,
         fault_capabilities,
         ready_markers,
     })
@@ -954,6 +957,7 @@ where
         async_policy,
         crash_detector,
         host_io_runtime,
+        prepared_setup.next_fault_command_sequence,
     )
     .with_fault_capabilities(prepared_setup.fault_capabilities)
     .with_ready_markers(prepared_setup.ready_markers)
