@@ -12,7 +12,7 @@ use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::vm_resume::{
@@ -82,6 +82,7 @@ pub struct ProductionVmLifecycleConfig {
     signal_artifacts: Option<Arc<dyn SignalArtifactProvider>>,
     fault_replay: Option<ResolvedEffectTrace>,
     world_artifacts: Option<Arc<dyn DagStore>>,
+    restore_checkpoint: Option<ProductionVmExactCheckpointSet>,
     validate_guest_asset_references: bool,
 }
 
@@ -112,6 +113,7 @@ impl std::fmt::Debug for ProductionVmLifecycleConfig {
                 "world_artifacts_configured",
                 &self.world_artifacts.is_some(),
             )
+            .field("restore_checkpoint", &self.restore_checkpoint.is_some())
             .finish()
     }
 }
@@ -153,9 +155,84 @@ struct ProductionVmExactCheckpointTarget {
     scheduler_time: VirtualTime,
     snapshot: QemuVmSnapshot,
     overlay_artifact: PathBuf,
+    overlay_hash: ContentHash,
     vmstate_artifact: PathBuf,
+    vmstate_hash: ContentHash,
     fault_checkpoint: ProductionFaultRuntimeCheckpoint,
     manifest_identity: crucible::ContentHash,
+}
+
+#[derive(Clone, Debug)]
+struct ProductionVmExactCheckpointSet {
+    configuration: Configuration,
+    scheduler: SingleScheduler,
+    trigger_state: EventGraphState,
+    targets: BTreeMap<NodeId, ProductionVmExactCheckpointTarget>,
+    node_generations: BTreeMap<NodeId, u64>,
+    node_service_states: BTreeMap<NodeId, ProductionNodeServiceState>,
+}
+
+type ProductionCheckpointRegistryKey = (ContentHash, ContentHash);
+
+fn production_checkpoint_registry()
+-> &'static Mutex<BTreeMap<ProductionCheckpointRegistryKey, ProductionVmExactCheckpointSet>> {
+    static REGISTRY: OnceLock<
+        Mutex<BTreeMap<ProductionCheckpointRegistryKey, ProductionVmExactCheckpointSet>>,
+    > = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn validate_exact_checkpoint_artifact(
+    path: &Path,
+    expected: ContentHash,
+    role: &str,
+) -> Result<(), LifecycleApiError> {
+    let observed = hash_file(path).map_err(|error| {
+        loop_factory_error(format!(
+            "read exact checkpoint {role} artifact {}: {error}",
+            path.display()
+        ))
+    })?;
+    if observed != expected {
+        return Err(loop_factory_error(format!(
+            "exact checkpoint {role} artifact {} failed content authentication",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_exact_checkpoint_target(
+    node: &NodeId,
+    target: &ProductionVmExactCheckpointTarget,
+) -> Result<(), LifecycleApiError> {
+    validate_exact_checkpoint_artifact(
+        &target.overlay_artifact,
+        target.overlay_hash,
+        "root overlay",
+    )?;
+    validate_exact_checkpoint_artifact(&target.vmstate_artifact, target.vmstate_hash, "VMState")?;
+    let observed = ContentHash::from_canonical_material(
+        "crucible.production-vm-exact-checkpoint.v1",
+        &format!(
+            "configuration={}\nnode={}\ncounter={}\nscheduler_time={}\nsnapshot={}\nfault={}\noverlay={}\nvmstate={}",
+            target.configuration.id().to_hex(),
+            node.name,
+            target.counter,
+            target.scheduler_time.ticks,
+            target.snapshot.id().to_hex(),
+            target.fault_checkpoint.id().to_hex(),
+            target.overlay_hash.to_hex(),
+            target.vmstate_hash.to_hex(),
+        ),
+    );
+    if observed != target.manifest_identity {
+        return Err(loop_factory_error(format!(
+            "exact checkpoint target for `{}` failed manifest authentication",
+            node.name
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -295,7 +372,7 @@ pub struct ProductionVmLifecycleLoop {
     scenario: ScenarioDef,
     source: ScenarioDefForm,
     config: ProductionVmLifecycleConfig,
-    checkpoint_targets: BTreeMap<(ContentHash, NodeId), ProductionVmExactCheckpointTarget>,
+    checkpoint_targets: BTreeMap<ContentHash, ProductionVmExactCheckpointSet>,
     recorded_controls: Vec<ProductionVmRecordedControl>,
     debug_backend_paths: BTreeMap<NodeId, PathBuf>,
     debug_gateway: Option<DebugGatewayProcess>,
@@ -542,6 +619,55 @@ use network_faults::{
 pub use search::production_vm_search_frontier;
 use storage_faults::{ProductionBlockFaultCoordinator, block_binding_for_vm, ninep_binding_for_vm};
 
+/// Builds a production lifecycle by directly restoring a registered fat checkpoint.
+///
+/// The checkpoint must have been captured by a live production lifecycle in
+/// this process. The durable artifact closure is authenticated again before any
+/// replacement process is published, and this path never falls back to replay.
+///
+/// # Errors
+///
+/// Returns [`LifecycleApiError::LoopFactory`] when no exact continuation is
+/// registered for the scenario/checkpoint pair or its authenticated artifacts
+/// and scheduler identity cannot be restored as one transaction.
+pub fn build_production_vm_lifecycle_loop_from_checkpoint(
+    scenario: &ScenarioDef,
+    source: &ScenarioDefForm,
+    config: &ProductionVmLifecycleConfig,
+    checkpoint: &Checkpoint,
+) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
+    if checkpoint.kind != CheckpointKind::Fat
+        || checkpoint.scenario_ref != scenario.id()
+        || checkpoint.configuration != checkpoint.id
+    {
+        return Err(loop_factory_error(
+            "production direct restore requires a matching recorded fat checkpoint",
+        ));
+    }
+    let key = (scenario.id(), checkpoint.id);
+    let restored = production_checkpoint_registry()
+        .lock()
+        .map_err(|_| loop_factory_error("production checkpoint registry lock is poisoned"))?
+        .get(&key)
+        .cloned()
+        .ok_or_else(|| {
+            loop_factory_error(format!(
+                "production fat checkpoint {} has no registered exact continuation",
+                checkpoint.id.to_hex()
+            ))
+        })?;
+    if restored.configuration.id() != checkpoint.configuration
+        || restored.scheduler.frontier() != checkpoint.virtual_time
+    {
+        return Err(loop_factory_error(
+            "registered production continuation does not match checkpoint model state",
+        ));
+    }
+    let mut restore_config = config.clone();
+    restore_config.restore_checkpoint = Some(restored);
+    build_production_vm_lifecycle_loop(scenario, source, &restore_config)
+}
+
 /// Builds a production local-QEMU lifecycle loop for `scenario`.
 ///
 /// Every World VM receives an independent QEMU process and writable overlay.
@@ -559,6 +685,16 @@ pub fn build_production_vm_lifecycle_loop(
     source: &ScenarioDefForm,
     config: &ProductionVmLifecycleConfig,
 ) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
+    let restore_checkpoint = config.restore_checkpoint.clone();
+    if let Some(checkpoint) = &restore_checkpoint {
+        if checkpoint.configuration.def.id != scenario.id()
+            || checkpoint.configuration.id() != checkpoint.scheduler.configuration().id()
+        {
+            return Err(loop_factory_error(
+                "production exact checkpoint does not match the requested scenario and scheduler configuration",
+            ));
+        }
+    }
     let nodes = source.world().vm_nodes();
     let first = nodes
         .first()
@@ -629,11 +765,44 @@ pub fn build_production_vm_lifecycle_loop(
                 node_directory.display()
             ))
         })?;
-        prepare_root_overlay(
-            &config.executable,
-            &guest_assets.root_image,
-            &node_directory,
-        )?;
+        let restore_target = restore_checkpoint
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.targets.get(&vm.id));
+        if restore_checkpoint.is_some() && restore_target.is_none() {
+            return Err(loop_factory_error(format!(
+                "production exact checkpoint has no target for `{}`",
+                vm.id.name
+            )));
+        }
+        if let Some(target) = restore_target {
+            validate_exact_checkpoint_target(&vm.id, target)?;
+            fs::copy(
+                &target.overlay_artifact,
+                node_directory.join(PRODUCTION_ROOT_OVERLAY_FILE_NAME),
+            )
+            .map_err(|error| {
+                loop_factory_error(format!(
+                    "materialize exact root overlay for `{}`: {error}",
+                    vm.id.name
+                ))
+            })?;
+            fs::copy(
+                &target.vmstate_artifact,
+                node_directory.join(PRODUCTION_VMSTATE_FILE_NAME),
+            )
+            .map_err(|error| {
+                loop_factory_error(format!(
+                    "materialize exact VMState for `{}`: {error}",
+                    vm.id.name
+                ))
+            })?;
+        } else {
+            prepare_root_overlay(
+                &config.executable,
+                &guest_assets.root_image,
+                &node_directory,
+            )?;
+        }
         let kernel_cmdline_prefix = production_kernel_cmdline_prefix(config, vm.arch, guest_assets);
         let kernel_cmdline = match kernel_cmdline_prefix {
             Some(prefix) if !prefix.trim().is_empty() => {
@@ -679,11 +848,23 @@ pub fn build_production_vm_lifecycle_loop(
             launch = launch.with_fault_capabilities(capabilities.clone());
         }
         if vm.white_box == crucible::WhiteBoxPolicy::Enabled {
-            launch = launch.with_app_random(production_app_random_launch_config(
-                scenario,
-                config.branch.as_ref(),
-                &vm.id,
-            ));
+            let app_random = if let Some(checkpoint) = &restore_checkpoint {
+                production_app_random_continuation_config(
+                    &checkpoint.scheduler,
+                    scenario,
+                    config.branch.as_ref(),
+                    &vm.id,
+                )
+                .map_err(|error| {
+                    loop_factory_error(format!(
+                        "restore app-random continuation for `{}`: {error}",
+                        vm.id.name
+                    ))
+                })?
+            } else {
+                production_app_random_launch_config(scenario, config.branch.as_ref(), &vm.id)
+            };
+            launch = launch.with_app_random(app_random);
         }
         if !source.world().links().is_empty() {
             launch = launch.with_shmem_network_mac(crucible::deterministic_node_mac_string(&vm.id));
@@ -732,20 +913,71 @@ pub fn build_production_vm_lifecycle_loop(
         launch_configs.insert(vm.id.clone(), launch.clone());
         node_indexes.insert(vm.id.clone(), index);
         node_run_directories.insert(vm.id.clone(), node_directory.clone());
-        node_generations.insert(vm.id.clone(), 1);
-        node_service_states.insert(vm.id.clone(), ProductionNodeServiceState::Running);
-        let mut backend = launch_production_live_node(
-            &launch,
-            &node_directory,
-            &vm.id.name,
-            "crucible-router",
-            &format!("lifecycle-{}", vm.id.name),
-        )
-        .map_err(|error| {
+        let generation = restore_checkpoint
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.node_generations.get(&vm.id))
+            .copied()
+            .unwrap_or(1);
+        let service_state = restore_checkpoint
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.node_service_states.get(&vm.id))
+            .copied()
+            .unwrap_or(ProductionNodeServiceState::Running);
+        node_generations.insert(vm.id.clone(), generation);
+        node_service_states.insert(vm.id.clone(), service_state);
+        let launched = match (restore_target, service_state) {
+            (Some(target), ProductionNodeServiceState::Running) => {
+                launch_production_live_node_exact_snapshot(
+                    &launch,
+                    &node_directory,
+                    &vm.id.name,
+                    "crucible-router",
+                    &format!("lifecycle-{}-generation-{generation}", vm.id.name),
+                    &target.snapshot,
+                )
+            }
+            (Some(target), ProductionNodeServiceState::PoweredOff) => {
+                launch_production_live_node_exact_snapshot_paused(
+                    &launch,
+                    &node_directory,
+                    &vm.id.name,
+                    "crucible-router",
+                    &format!("lifecycle-{}-generation-{generation}", vm.id.name),
+                    &target.snapshot,
+                )
+            }
+            (Some(_), ProductionNodeServiceState::PermanentlyFailed) => {
+                return Err(loop_factory_error(format!(
+                    "exact checkpoint for permanently failed node `{}` unexpectedly contains a live process target",
+                    vm.id.name
+                )));
+            }
+            (None, _) => launch_production_live_node(
+                &launch,
+                &node_directory,
+                &vm.id.name,
+                "crucible-router",
+                &format!("lifecycle-{}", vm.id.name),
+            ),
+        };
+        let mut backend = launched.map_err(|error| {
             loop_factory_error(format!("launch QEMU node `{}`: {error}", vm.id.name))
         })?;
         let observed = SimulationBackend::now(&backend).ticks;
-        if initial_ticks.is_some_and(|initial| initial != observed) {
+        if let Some(target) = restore_target {
+            let restored_configuration = restore_checkpoint
+                .as_ref()
+                .map(|checkpoint| checkpoint.configuration.id());
+            if Some(target.configuration.id()) != restored_configuration
+                || target.counter != observed
+            {
+                let _ = SimulationBackend::shutdown(&mut backend);
+                return Err(loop_factory_error(format!(
+                    "QEMU node `{}` restored at unauthenticated instruction boundary {observed}",
+                    vm.id.name
+                )));
+            }
+        } else if initial_ticks.is_some_and(|initial| initial != observed) {
             let _ = SimulationBackend::shutdown(&mut backend);
             return Err(loop_factory_error(format!(
                 "QEMU node `{}` primed at {observed}, expected {}",
@@ -753,7 +985,9 @@ pub fn build_production_vm_lifecycle_loop(
                 initial_ticks.unwrap_or_default()
             )));
         }
-        initial_ticks.get_or_insert(observed);
+        if restore_target.is_none() {
+            initial_ticks.get_or_insert(observed);
+        }
         let process_identity = backend.process_identity().map_err(|error| {
             loop_factory_error(format!(
                 "capture initial QEMU identity for `{}`: {error}",
@@ -781,7 +1015,7 @@ pub fn build_production_vm_lifecycle_loop(
     }
 
     let initial_ticks = initial_ticks.unwrap_or_default();
-    if config.run_ceiling_icount <= initial_ticks {
+    if restore_checkpoint.is_none() && config.run_ceiling_icount <= initial_ticks {
         return Err(loop_factory_error(format!(
             "QEMU run ceiling {} does not exceed primed boundary {initial_ticks}",
             config.run_ceiling_icount
@@ -814,21 +1048,28 @@ pub fn build_production_vm_lifecycle_loop(
             })
             .map_err(|error| loop_factory_error(format!("configure QEMU rendezvous: {error}")))?;
     }
-    let mut scheduler = SingleScheduler::new(runtime_scenario)
-        .map_err(|error| loop_factory_error(format!("construct QEMU scheduler: {error}")))?;
-    if let Some(branch) = &config.branch {
+    let mut scheduler = if let Some(checkpoint) = &restore_checkpoint {
+        checkpoint.scheduler.clone()
+    } else {
+        let mut scheduler = SingleScheduler::new(runtime_scenario)
+            .map_err(|error| loop_factory_error(format!("construct QEMU scheduler: {error}")))?;
+        if let Some(branch) = &config.branch {
+            scheduler
+                .set_branch_frontier_cap(branch.frontier)
+                .map_err(|error| {
+                    loop_factory_error(format!("cap QEMU branch frontier: {error}"))
+                })?;
+        }
         scheduler
-            .set_branch_frontier_cap(branch.frontier)
-            .map_err(|error| loop_factory_error(format!("cap QEMU branch frontier: {error}")))?;
-    }
-    scheduler
-        .attach_world_network_links(source.world())
-        .map_err(|error| loop_factory_error(format!("attach QEMU World network: {error}")))?;
-    scheduler
-        .install_branch_network_choices(config.branch_network_choices.clone())
-        .map_err(|error| {
-            loop_factory_error(format!("install QEMU network branch choices: {error}"))
-        })?;
+            .attach_world_network_links(source.world())
+            .map_err(|error| loop_factory_error(format!("attach QEMU World network: {error}")))?;
+        scheduler
+            .install_branch_network_choices(config.branch_network_choices.clone())
+            .map_err(|error| {
+                loop_factory_error(format!("install QEMU network branch choices: {error}"))
+            })?;
+        scheduler
+    };
     let trigger_graph = source
         .plan()
         .lower_to_event_graph_for_world(source.world())
@@ -844,27 +1085,88 @@ pub fn build_production_vm_lifecycle_loop(
             )
         })?)
     };
-    let mut fault_runtime = ProductionFaultRuntime::new(
-        signal_plan,
-        signal_artifacts,
-        SignalBoundarySnapshot::default(),
-        scenario.id(),
-        &backends,
-    )
-    .map_err(|error| loop_factory_error(format!("admit signal fault runtime: {error}")))?;
-    let fault_replay_installed = config.fault_replay.is_some();
-    if let Some(trace) = config.fault_replay.clone() {
-        fault_runtime
-            .install_replay(trace)
-            .map_err(|error| loop_factory_error(format!("install signal fault replay: {error}")))?;
-    }
-    let fault_runtime = Arc::new(std::sync::Mutex::new(fault_runtime));
-    let fault_evaluation_cursor: SharedProductionFaultEvaluationCursor = Arc::new(
-        std::sync::Mutex::new(ProductionFaultEvaluationCursor::default()),
-    );
     let storage_fault_observations = Arc::new(std::sync::Mutex::new(
         storage_faults::ProductionFaultObservationJournal::default(),
     ));
+    let (fault_runtime, fault_evaluation_cursor, network_interceptor, pending_network_outputs) =
+        if let Some(checkpoint) = &restore_checkpoint {
+            let mut targets = checkpoint.targets.values();
+            let first_target = targets.next().ok_or_else(|| {
+                loop_factory_error("production exact checkpoint has no QEMU targets")
+            })?;
+            if targets
+                .any(|target| target.fault_checkpoint.id() != first_target.fault_checkpoint.id())
+            {
+                return Err(loop_factory_error(
+                    "production exact checkpoint targets disagree on the fault continuation",
+                ));
+            }
+            for (node, target) in &checkpoint.targets {
+                let scheduler_time = scheduler.scheduler_time_for_node(node).map_err(|error| {
+                    loop_factory_error(format!(
+                        "read restored scheduler boundary for `{}`: {error}",
+                        node.name
+                    ))
+                })?;
+                if scheduler_time != target.scheduler_time {
+                    return Err(loop_factory_error(format!(
+                        "production exact checkpoint scheduler boundary differs for `{}`",
+                        node.name
+                    )));
+                }
+            }
+            let mut pending_outputs = Vec::new();
+            let interceptor = ProductionFaultNetworkInterceptor::restore(
+                signal_plan,
+                signal_artifacts,
+                scenario.id(),
+                first_target.fault_checkpoint.clone(),
+                &mut backends,
+                source.world().fault_topology().clone(),
+                source.world().links().to_vec(),
+                &mut scheduler,
+                &mut pending_outputs,
+                Arc::clone(&storage_fault_observations),
+            )
+            .map_err(|error| {
+                loop_factory_error(format!(
+                    "restore signal, network, and device continuation: {error}"
+                ))
+            })?;
+            (
+                interceptor.shared_runtime(),
+                interceptor.shared_cursor(),
+                interceptor,
+                pending_outputs,
+            )
+        } else {
+            let mut runtime = ProductionFaultRuntime::new(
+                signal_plan,
+                signal_artifacts,
+                SignalBoundarySnapshot::default(),
+                scenario.id(),
+                &backends,
+            )
+            .map_err(|error| loop_factory_error(format!("admit signal fault runtime: {error}")))?;
+            if let Some(trace) = config.fault_replay.clone() {
+                runtime.install_replay(trace).map_err(|error| {
+                    loop_factory_error(format!("install signal fault replay: {error}"))
+                })?;
+            }
+            let runtime = Arc::new(std::sync::Mutex::new(runtime));
+            let cursor: SharedProductionFaultEvaluationCursor = Arc::new(std::sync::Mutex::new(
+                ProductionFaultEvaluationCursor::default(),
+            ));
+            let interceptor = ProductionFaultNetworkInterceptor::with_shared_runtime(
+                Arc::clone(&runtime),
+                Arc::clone(&cursor),
+                Arc::clone(&storage_fault_observations),
+                source.world().fault_topology().clone(),
+                source.world().links().to_vec(),
+            );
+            (runtime, cursor, interceptor, Vec::new())
+        };
+    let fault_replay_installed = config.fault_replay.is_some();
     let mut block_device_map = BTreeMap::new();
     for (node, block) in &block_bindings {
         let handle = backends.shared_block_device(node).map_err(|error| {
@@ -928,26 +1230,36 @@ pub fn build_production_vm_lifecycle_loop(
             })?;
     }
 
-    let mut lifecycle = ProductionVmLifecycleLoop {
-        inner: BackendQuantumLoop::with_network_output_interceptor(
+    let committed_frontier = scheduler.frontier();
+    let inner = if restore_checkpoint.is_some() {
+        BackendQuantumLoop::from_restored_network_state(
             scheduler,
             backends,
-            ProductionFaultNetworkInterceptor::with_shared_runtime(
-                Arc::clone(&fault_runtime),
-                Arc::clone(&fault_evaluation_cursor),
-                Arc::clone(&storage_fault_observations),
-                source.world().fault_topology().clone(),
-                source.world().links().to_vec(),
-            ),
-        ),
+            network_interceptor,
+            pending_network_outputs,
+            committed_frontier,
+        )
+    } else {
+        BackendQuantumLoop::with_network_output_interceptor(
+            scheduler,
+            backends,
+            network_interceptor,
+        )
+    };
+    let mut lifecycle = ProductionVmLifecycleLoop {
+        inner,
         trigger_graph,
-        trigger_state: EventGraphState::default(),
+        trigger_state: restore_checkpoint
+            .as_ref()
+            .map_or_else(EventGraphState::default, |checkpoint| {
+                checkpoint.trigger_state.clone()
+            }),
         trigger_world: source.world().clone(),
         assertion_evaluator: HostAssertionEvaluator::new(source.properties())
             .with_world_white_box_policies(source.world()),
         assertion_oracle: BlackBoxHostOracle,
         terminal_verdict: None,
-        initial_lifecycle_observations_pending: true,
+        initial_lifecycle_observations_pending: restore_checkpoint.is_none(),
         branch: config.branch.clone(),
         launch_configs,
         block_bindings,

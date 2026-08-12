@@ -535,60 +535,6 @@ impl ProductionVmLifecycleLoop {
         Ok(evidence.scheduler_frontier(graph_fallback))
     }
 
-    fn app_random_continuation_config(
-        &self,
-        node: &NodeId,
-    ) -> Result<ProductionAppRandomConfig, SchedulerError> {
-        let scheduler = self.inner.loop_impl();
-        let streams = scheduler
-            .configuration()
-            .schedule
-            .decisions()
-            .iter()
-            .filter_map(|decision| match decision {
-                Decision::AppRandom(random) if random.node == *node => Some(random.stream.clone()),
-                _ => None,
-            })
-            .collect::<std::collections::BTreeSet<_>>();
-        let positions = scheduler
-            .future_decision_rng_state()
-            .positions
-            .iter()
-            .filter(|(stream, _position)| streams.contains(*stream))
-            .map(|(stream, position)| (stream.name.clone(), position.draws))
-            .collect::<BTreeMap<_, _>>();
-        let draw_offset = positions.values().try_fold(0_u64, |sum, draws| {
-            sum.checked_add(*draws)
-                .ok_or_else(|| SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "app-random continuation cursor overflow for `{}`",
-                        node.name
-                    ),
-                })
-        })?;
-        let mut config = ProductionAppRandomConfig::from_seed(
-            scheduler.future_decision_seed(),
-            self.scenario.app_random_draw_cap(),
-            node.name.clone(),
-        )
-        .with_continuation(draw_offset, positions);
-        if let Some(branch) = &self.branch
-            && let Some(seed) = branch.seed
-        {
-            let prefix_draws = branch
-                .base
-                .schedule
-                .decisions()
-                .iter()
-                .filter(|decision| {
-                    matches!(decision, Decision::AppRandom(random) if random.node == *node)
-                })
-                .count() as u64;
-            config = config.with_branch_seed(seed, prefix_draws);
-        }
-        Ok(config)
-    }
-
     pub(super) fn settle_trigger_graph(
         &mut self,
     ) -> Result<Vec<SchedulerEventLogAppend>, SchedulerError> {

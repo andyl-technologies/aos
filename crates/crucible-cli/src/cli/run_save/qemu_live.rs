@@ -874,6 +874,7 @@ pub(crate) fn production_qemu_control_plane(
     production_api::ProductionVmLifecycleLoop,
     production_api::LifecycleLoopFactory<production_api::ProductionVmLifecycleLoop>,
 > {
+    let resume_config = config.clone();
     let white_box_policies = source
         .world()
         .vm_nodes()
@@ -892,7 +893,14 @@ pub(crate) fn production_qemu_control_plane(
             production_api::build_production_vm_lifecycle_loop(scenario, source, &config)
         },
     )
-    .with_thin_replay_resume()
+    .with_fat_checkpoint_resume_factory(move |scenario, source, _seed, checkpoint| {
+        production_api::build_production_vm_lifecycle_loop_from_checkpoint(
+            scenario,
+            source,
+            &resume_config,
+            checkpoint,
+        )
+    })
     .with_white_box_policy_provider(move |_scenario| white_box_policies.clone())
 }
 

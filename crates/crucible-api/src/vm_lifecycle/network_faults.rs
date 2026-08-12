@@ -1408,6 +1408,16 @@ pub(super) struct ProductionFaultNetworkInterceptor {
 }
 
 impl ProductionFaultNetworkInterceptor {
+    /// Returns the restored runtime shared by non-network fault coordinators.
+    pub(super) fn shared_runtime(&self) -> Arc<Mutex<ProductionFaultRuntime>> {
+        Arc::clone(&self.runtime)
+    }
+
+    /// Returns the restored evaluation cursor shared by device coordinators.
+    pub(super) fn shared_cursor(&self) -> SharedProductionFaultEvaluationCursor {
+        Arc::clone(&self.cursor)
+    }
+
     #[cfg(test)]
     fn new(
         runtime: ProductionFaultRuntime,
