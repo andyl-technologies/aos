@@ -26,8 +26,19 @@
     "state_transition"
     "event_activated"
     "trigger_fired"
-    "fault_activated"
-    "fault_healed"
+    "signal_transition"
+    "signal_sample"
+    "signal_state_transition"
+    "binding_activation"
+    "binding_deactivation"
+    "fault_opportunity"
+    "effect_choice"
+    "effect_combined"
+    "effect_applied"
+    "effect_rejected"
+    "network_profile"
+    "association_transition"
+    "trace_alignment"
     "node_started"
     "node_crashed"
     "node_completed"
@@ -105,7 +116,7 @@
     ++ failuresFor "crates/crucible/src/event_catalog.rs" catalog [
       {
         label = "catalog version";
-        needle = "pub const EVENT_KIND_CATALOG_VERSION: u32 = 1;";
+        needle = "pub const EVENT_KIND_CATALOG_VERSION: u32 = 4;";
       }
       {
         label = "catalog entry type";

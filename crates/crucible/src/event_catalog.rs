@@ -9,7 +9,7 @@
 use crate::scheduler::SchedulerEventLogClass;
 
 /// Current event-kind catalog schema version.
-pub const EVENT_KIND_CATALOG_VERSION: u32 = 3;
+pub const EVENT_KIND_CATALOG_VERSION: u32 = 4;
 
 /// One open-set event kind known by this engine version.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -258,24 +258,6 @@ static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
         class: SchedulerEventLogClass::Causal,
         sources: &["scenario"],
         attributes: &["event", "summary"],
-    },
-    EventKindCatalogEntry {
-        kind: "fault_activated",
-        class: SchedulerEventLogClass::Causal,
-        sources: &["engine", "scenario"],
-        attributes: &["description", "kind", "tag", "targets"],
-    },
-    EventKindCatalogEntry {
-        kind: "fault_activation",
-        class: SchedulerEventLogClass::Causal,
-        sources: &["engine", "scenario"],
-        attributes: &["consumer", "fault", "producer", "sequence", "virtual_time"],
-    },
-    EventKindCatalogEntry {
-        kind: "fault_healed",
-        class: SchedulerEventLogClass::Causal,
-        sources: &["engine", "scenario"],
-        attributes: &["tag"],
     },
     EventKindCatalogEntry {
         kind: "fault_opportunity",
@@ -548,9 +530,6 @@ static EVENT_KIND_CATALOG_DEPENDENCIES: &[EventKindCatalogDependency] = &[
             "effect_rejected",
             "evaluation_boundary",
             "event_activated",
-            "fault_activated",
-            "fault_activation",
-            "fault_healed",
             "fault_opportunity",
             "fork",
             "io_completion",

@@ -91,6 +91,7 @@ fn retired_fault_surfaces_cannot_reenter_executable_or_user_documentation_paths(
         &["Fault", "BandwidthBitsPerSecond"],
         &["Fault", "SlowdownFactorBasisPoints"],
         &["NineP", "Errno"],
+        &["Fault", "Activation"],
     ];
     let snake_fragments: &[&[&str]] = &[
         &["active", "faults"],
@@ -102,6 +103,7 @@ fn retired_fault_surfaces_cannot_reenter_executable_or_user_documentation_paths(
         &["fault", "entry"],
         &["fault", "plan"],
         &["fault", "active"],
+        &["fault", "activation"],
     ];
     let retired = identifier_fragments
         .iter()

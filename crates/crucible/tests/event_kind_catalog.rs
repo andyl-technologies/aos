@@ -13,11 +13,11 @@ use crucible::{
 };
 
 const EXPECTED_CATALOG_HASH: &str =
-    "d2026bbadf42d4ad306174c96d5a908ddf04372ba666b5520bba07148fee5eee";
+    "596651525d500367440f93371d4783fc965854af1f2be6c8e8ac4fe4d1a28521";
 
 #[test]
 fn event_kind_catalog_is_versioned_sorted_and_single_source_for_classes() {
-    assert_eq!(EVENT_KIND_CATALOG_VERSION, 3);
+    assert_eq!(EVENT_KIND_CATALOG_VERSION, 4);
 
     let mut kinds = BTreeSet::new();
     let mut previous = "";
@@ -55,8 +55,6 @@ fn event_kind_catalog_contains_rfc_19_7_required_kinds() {
         ("trace_alignment", EventClass::Causal),
         ("event_activated", EventClass::Causal),
         ("trigger_fired", EventClass::Causal),
-        ("fault_activated", EventClass::Causal),
-        ("fault_healed", EventClass::Causal),
         ("node_started", EventClass::Causal),
         ("node_crashed", EventClass::Causal),
         ("node_completed", EventClass::Causal),

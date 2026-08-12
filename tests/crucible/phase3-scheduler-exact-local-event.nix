@@ -33,8 +33,8 @@
         needle = "IoCompletion";
       }
       {
-        label = "fault exact local variant";
-        needle = "FaultActivation";
+        label = "signal fault exact local variant";
+        needle = "SignalFaultEvaluation";
       }
       {
         label = "I/O completion bridge";
@@ -61,8 +61,8 @@
         needle = "SchedulerHorizonSource::ExactLocalIoCompletion";
       }
       {
-        label = "fault source horizon";
-        needle = "SchedulerHorizonSource::ExactLocalFault";
+        label = "signal fault source horizon";
+        needle = "SchedulerHorizonSource::SignalFaultEvaluation";
       }
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" libSource [
@@ -81,12 +81,8 @@
     ]
     ++ failuresFor "crates/crucible/tests/scheduler_exact_local_event.rs" exactLocalTest [
       {
-        label = "earliest timer/io/fault test";
-        needle = "next_exact_local_event_selects_earliest_timer_io_or_fault";
-      }
-      {
-        label = "fault earliest test";
-        needle = "next_exact_local_event_uses_fault_when_it_is_earliest";
+        label = "earliest timer/I/O test";
+        needle = "next_exact_local_event_selects_earliest_timer_or_io";
       }
       {
         label = "I/O shift conversion test";
@@ -109,16 +105,8 @@
         needle = "single_scheduler_uses_pending_io_completion_as_exact_local_horizon";
       }
       {
-        label = "scheduler fault horizon integration test";
-        needle = "single_scheduler_uses_pending_fault_as_exact_local_horizon";
-      }
-      {
         label = "I/O horizon source test";
         needle = "horizon_uses_io_completion_as_exact_local_source";
-      }
-      {
-        label = "fault horizon source test";
-        needle = "horizon_uses_fault_activation_as_exact_local_source";
       }
     ]
     ++ forbiddenFor "crates/crucible/tests/scheduler_exact_local_event.rs" exactLocalTest [
