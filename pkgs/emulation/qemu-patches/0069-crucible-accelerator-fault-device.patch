@@ -1,26 +1,3 @@
-From 78405df9432088f0ac3f4fdbd7953739a5f23a32 Mon Sep 17 00:00:00 2001
-From: Dylan Plecki <dylan@andyl.com>
-Date: Tue, 11 Aug 2026 19:29:49 -0700
-Subject: [PATCH] crucible: add deterministic accelerator device
-
-Signed-off-by: Dylan Plecki <dylan@andyl.com>
----
- hw/virtio/Kconfig                             |    5 +
- hw/virtio/meson.build                         |    2 +
- hw/virtio/virtio-crucible-accelerator-pci.c   |   77 +
- hw/virtio/virtio-crucible-accelerator.c       |  493 ++++++
- .../hw/virtio/virtio-crucible-accelerator.h   |   58 +
- include/qemu/crucible-fault.h                 |   29 +
- include/qemu/qemu-plugin.h                    |   82 +
- plugins/crucible-fault-accelerator.c          | 1563 +++++++++++++++++
- plugins/crucible-fault-node.c                 |   33 +-
- plugins/meson.build                           |    1 +
- 10 files changed, 2342 insertions(+), 1 deletion(-)
- create mode 100644 hw/virtio/virtio-crucible-accelerator-pci.c
- create mode 100644 hw/virtio/virtio-crucible-accelerator.c
- create mode 100644 include/hw/virtio/virtio-crucible-accelerator.h
- create mode 100644 plugins/crucible-fault-accelerator.c
-
 diff --git a/hw/virtio/Kconfig b/hw/virtio/Kconfig
 index 7648a2d..805bea4 100644
 --- a/hw/virtio/Kconfig
@@ -2523,5 +2500,3 @@ index a100e60..a9448a7 100644
 +system_ss.add(files('crucible-fault-accelerator.c'))
  
  common_ss.add(files('loader.c', 'api.c', 'core.c'))
--- 
-2.54.0
