@@ -34,33 +34,8 @@
       else cfg.devices.${name}
   ) defaultDevices;
   zfsPackage = pkgs.zfsForKernel config.system.build.kernel;
-  espSync = pkgs.runCommand "aos-sync-esps" {
-    buildDeps = [pkgs.coreutils pkgs.perl];
-  } ''
-    mkdir -p "$out/bin"
-    cp ${./sync-esps.sh.in} "$out/bin/aos-sync-esps"
-    substituteInPlace "$out/bin/aos-sync-esps" \
-      --replace-fail '@bash@' '${pkgs.bash}/bin/bash' \
-      --replace-fail '@coreutils@' '${pkgs.coreutils}' \
-      --replace-fail '@jq@' '${pkgs.jq}' \
-      --replace-fail '@rsync@' '${pkgs.rsync}' \
-      --replace-fail '@util_linux@' '${pkgs.util-linux}'
-    ${pkgs.bash}/bin/bash -n "$out/bin/aos-sync-esps"
-    chmod 0755 "$out/bin/aos-sync-esps"
-  '';
-  espMount = pkgs.runCommand "aos-mount-esp" {
-    buildDeps = [pkgs.coreutils pkgs.perl];
-  } ''
-    mkdir -p "$out/bin"
-    cp ${./mount-esp.sh.in} "$out/bin/aos-mount-esp"
-    substituteInPlace "$out/bin/aos-mount-esp" \
-      --replace-fail '@bash@' '${pkgs.bash}/bin/bash' \
-      --replace-fail '@coreutils@' '${pkgs.coreutils}' \
-      --replace-fail '@jq@' '${pkgs.jq}' \
-      --replace-fail '@util_linux@' '${pkgs.util-linux}'
-    ${pkgs.bash}/bin/bash -n "$out/bin/aos-mount-esp"
-    chmod 0755 "$out/bin/aos-mount-esp"
-  '';
+  espSync = config.aos.config.artifacts.esp-sync;
+  espMount = config.aos.config.artifacts.esp-mount;
   deviceOption = name:
     lib.mkOption {
       type = lib.types.nullOr lib.types.str;
@@ -144,6 +119,44 @@ in {
   };
 
   config = lib.mkMerge [{
+    aos.config._artifactSources = {
+      esp-sync =
+        if config.aos.config.frozenArtifacts ? "esp-sync"
+        then null
+        else
+          pkgs.runCommand "aos-sync-esps" {
+            buildDeps = [pkgs.coreutils pkgs.perl];
+          } ''
+            mkdir -p "$out/bin"
+            cp ${./sync-esps.sh.in} "$out/bin/aos-sync-esps"
+            substituteInPlace "$out/bin/aos-sync-esps" \
+              --replace-fail '@bash@' '${pkgs.bash}/bin/bash' \
+              --replace-fail '@coreutils@' '${pkgs.coreutils}' \
+              --replace-fail '@jq@' '${pkgs.jq}' \
+              --replace-fail '@rsync@' '${pkgs.rsync}' \
+              --replace-fail '@util_linux@' '${pkgs.util-linux}'
+            ${pkgs.bash}/bin/bash -n "$out/bin/aos-sync-esps"
+            chmod 0755 "$out/bin/aos-sync-esps"
+          '';
+      esp-mount =
+        if config.aos.config.frozenArtifacts ? "esp-mount"
+        then null
+        else
+          pkgs.runCommand "aos-mount-esp" {
+            buildDeps = [pkgs.coreutils pkgs.perl];
+          } ''
+            mkdir -p "$out/bin"
+            cp ${./mount-esp.sh.in} "$out/bin/aos-mount-esp"
+            substituteInPlace "$out/bin/aos-mount-esp" \
+              --replace-fail '@bash@' '${pkgs.bash}/bin/bash' \
+              --replace-fail '@coreutils@' '${pkgs.coreutils}' \
+              --replace-fail '@jq@' '${pkgs.jq}' \
+              --replace-fail '@util_linux@' '${pkgs.util-linux}'
+            ${pkgs.bash}/bin/bash -n "$out/bin/aos-mount-esp"
+            chmod 0755 "$out/bin/aos-mount-esp"
+          '';
+    };
+
     assertions = [
       {
         assertion = lib.all (device: lib.hasPrefix "/dev/" device) cfg.espDevices;
