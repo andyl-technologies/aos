@@ -677,6 +677,20 @@ extern "C" fn capture_ninep_registration(
     LIVE_NINEP_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
 }
 
+extern "C" fn capture_accelerator_registration(
+    submit: Option<crate::QemuAcceleratorSubmitCbFn>,
+    poll: Option<crate::QemuAcceleratorPollCbFn>,
+    wait: Option<crate::QemuAcceleratorWaitCbFn>,
+    restore: Option<crate::QemuAcceleratorRestoreCbFn>,
+    userdata: *mut std::ffi::c_void,
+) {
+    assert!(submit.is_some());
+    assert!(poll.is_some());
+    assert!(wait.is_some());
+    assert!(restore.is_some());
+    assert!(!userdata.is_null());
+}
+
 extern "C" fn live_network_send_ok(
     _payload: *const u8,
     _payload_len: usize,
@@ -888,6 +902,7 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
                 register_block_event: Some(capture_block_event_registration),
                 register_block_wait: Some(capture_block_wait_registration),
                 register_ninep: Some(capture_ninep_registration),
+                register_accelerator: Some(capture_accelerator_registration),
                 fault_commands: crate::fault_command::QemuFaultCommandApis::test_stub(),
                 request_shutdown: test_request_shutdown,
             },

@@ -77,6 +77,8 @@ pub struct QemuHostIoCheckpoint {
     pub(crate) execution_binding: ContentHash,
     pub(crate) block: Option<QemuLiveBlockIoServicerCheckpoint>,
     pub(crate) ninep: Option<QemuLive9pIoServicerCheckpoint>,
+    #[cfg(target_os = "linux")]
+    pub(crate) accelerator: Option<crate::QemuLiveAcceleratorCheckpoint>,
 }
 
 /// Scheduler-facing continuation owned by the Apache QEMU node wrapper.
@@ -136,6 +138,8 @@ impl QemuHostIoCheckpoint {
             execution_binding,
             block: None,
             ninep: None,
+            #[cfg(target_os = "linux")]
+            accelerator: None,
         }
     }
 
@@ -144,11 +148,13 @@ impl QemuHostIoCheckpoint {
         execution_binding: ContentHash,
         block: Option<QemuLiveBlockIoServicerCheckpoint>,
         ninep: Option<QemuLive9pIoServicerCheckpoint>,
+        accelerator: Option<crate::QemuLiveAcceleratorCheckpoint>,
     ) -> Self {
         Self {
             execution_binding,
             block,
             ninep,
+            accelerator,
         }
     }
 
@@ -168,5 +174,12 @@ impl QemuHostIoCheckpoint {
     #[must_use]
     pub const fn ninep(&self) -> Option<&QemuLive9pIoServicerCheckpoint> {
         self.ninep.as_ref()
+    }
+
+    /// Returns the accelerator continuation when the captured runtime owned one.
+    #[cfg(target_os = "linux")]
+    #[must_use]
+    pub const fn accelerator(&self) -> Option<&crate::QemuLiveAcceleratorCheckpoint> {
+        self.accelerator.as_ref()
     }
 }

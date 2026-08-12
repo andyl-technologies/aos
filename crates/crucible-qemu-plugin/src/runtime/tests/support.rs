@@ -243,6 +243,7 @@ pub(super) const fn test_capabilities() -> LiveInstallCapabilities {
         register_block_event: Some(test_register_block_event),
         register_block_wait: Some(test_register_block_wait),
         register_ninep: Some(test_register_ninep),
+        register_accelerator: Some(test_register_accelerator),
         fault_commands: crate::fault_command::QemuFaultCommandApis::test_stub(),
     }
 }
@@ -435,6 +436,15 @@ extern "C" fn test_register_ninep(
     _submit: Option<crate::QemuNinePSubmitCbFn>,
     _poll: Option<crate::QemuNinePPollCbFn>,
     _burst_done: Option<crate::QemuNinePBurstCbFn>,
+    _userdata: *mut std::ffi::c_void,
+) {
+}
+
+pub(super) extern "C" fn test_register_accelerator(
+    _submit: Option<crate::QemuAcceleratorSubmitCbFn>,
+    _poll: Option<crate::QemuAcceleratorPollCbFn>,
+    _wait: Option<crate::QemuAcceleratorWaitCbFn>,
+    _restore: Option<crate::QemuAcceleratorRestoreCbFn>,
     _userdata: *mut std::ffi::c_void,
 ) {
 }

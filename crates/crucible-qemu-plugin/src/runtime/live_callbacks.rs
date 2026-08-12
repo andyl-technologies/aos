@@ -79,6 +79,7 @@ pub(crate) struct LiveVcpuTimeCallbackCapabilities {
     pub(crate) register_block_event: Option<QemuRegisterBlkEventCbFn>,
     pub(crate) register_block_wait: Option<QemuRegisterBlkWaitCbFn>,
     pub(crate) register_ninep: Option<QemuRegisterNinePCbFn>,
+    pub(crate) register_accelerator: Option<crate::QemuRegisterAcceleratorCbFn>,
     pub(crate) fault_commands: QemuFaultCommandApis,
     pub(crate) request_shutdown: crate::QemuRequestShutdownFn,
 }
@@ -167,6 +168,11 @@ impl LiveVcpuTimeCallbackRegistrar {
                 symbol: QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL,
             },
         )?;
+        let register_accelerator = self.capabilities.register_accelerator.ok_or(
+            LiveVcpuTimeCallbackError::CapabilityUnavailable {
+                symbol: crate::QEMU_PLUGIN_REGISTER_ACCELERATOR_CB_SYMBOL,
+            },
+        )?;
         let whitebox = if args.whitebox().is_on() {
             Some(LiveWhiteboxApis::resolve().map_err(|source| {
                 LiveVcpuTimeCallbackError::WhiteboxCallback {
@@ -193,6 +199,7 @@ impl LiveVcpuTimeCallbackRegistrar {
             register_block_event,
             register_block_wait,
             register_ninep,
+            register_accelerator,
             fault_commands: self.capabilities.fault_commands,
             request_shutdown: self.capabilities.request_shutdown,
             whitebox,
@@ -248,6 +255,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                 capabilities.exact_deadline,
                 capabilities.queued_idle_advance,
                 capabilities.network_rx,
+                args.process_generation(),
                 capabilities.fault_commands,
                 fingerprint,
                 args.fingerprint_oracle().is_on(),
@@ -316,6 +324,13 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
             Some(devices::crucible_qemu_plugin_live_ninep_burst_done_cb),
             callback_state.cast(),
         );
+        (capabilities.register_accelerator)(
+            Some(devices::crucible_qemu_plugin_live_accelerator_submit_cb),
+            Some(devices::crucible_qemu_plugin_live_accelerator_poll_cb),
+            Some(devices::crucible_qemu_plugin_live_accelerator_wait_cb),
+            Some(devices::crucible_qemu_plugin_live_accelerator_restore_cb),
+            callback_state.cast(),
+        );
         let mut mask = OwnedCallbackRegistrationMask::base_required();
         if let Some(whitebox_apis) = capabilities.whitebox {
             let whitebox_state = state
@@ -366,6 +381,7 @@ struct RequiredLiveVcpuTimeCapabilities {
     register_block_event: QemuRegisterBlkEventCbFn,
     register_block_wait: QemuRegisterBlkWaitCbFn,
     register_ninep: QemuRegisterNinePCbFn,
+    register_accelerator: crate::QemuRegisterAcceleratorCbFn,
     fault_commands: QemuFaultCommandApis,
     request_shutdown: crate::QemuRequestShutdownFn,
     whitebox: Option<LiveWhiteboxApis>,
@@ -853,10 +869,18 @@ impl LiveVcpuTimeCallbackState {
         vm_slot: u32,
         block: LiveDirectedRingPair,
         ninep: LiveDirectedRingPair,
+        accelerator_generation: u64,
+        accelerator_rings: crucible_shmem::DetachedPluginAcceleratorRings,
     ) -> Result<Self, LiveVcpuTimeCallbackError> {
         self.devices = Some(Mutex::new(
-            LiveDeviceCallbackState::new(vm_slot, block, ninep)
-                .map_err(LiveVcpuTimeCallbackError::live_device)?,
+            LiveDeviceCallbackState::new(
+                vm_slot,
+                block,
+                ninep,
+                accelerator_generation,
+                accelerator_rings,
+            )
+            .map_err(LiveVcpuTimeCallbackError::live_device)?,
         ));
         Ok(self)
     }

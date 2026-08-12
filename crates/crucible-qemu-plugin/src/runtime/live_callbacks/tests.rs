@@ -973,6 +973,15 @@ extern "C" fn test_register_ninep(
 ) {
 }
 
+extern "C" fn test_register_accelerator(
+    _submit: Option<crate::QemuAcceleratorSubmitCbFn>,
+    _poll: Option<crate::QemuAcceleratorPollCbFn>,
+    _wait: Option<crate::QemuAcceleratorWaitCbFn>,
+    _restore: Option<crate::QemuAcceleratorRestoreCbFn>,
+    _userdata: *mut std::ffi::c_void,
+) {
+}
+
 extern "C" fn test_net_send(payload: *const u8, payload_len: usize) -> std::os::raw::c_int {
     if payload.is_null() && payload_len != 0 {
         return 1;

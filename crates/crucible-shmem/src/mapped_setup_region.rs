@@ -7,8 +7,7 @@ use std::ptr::NonNull;
 use thiserror::Error;
 
 use super::{
-    ACCELERATOR_ENTRY_ALIGN, ACCELERATOR_ENTRY_SIZE, AcceleratorEntry,
-    AcceleratorRingDirection,
+    ACCELERATOR_ENTRY_ALIGN, ACCELERATOR_ENTRY_SIZE, AcceleratorEntry, AcceleratorRingDirection,
     COVERAGE_ENTRY_ALIGN, COVERAGE_ENTRY_SIZE, CoverageEntry, DirectedRing,
     FAULT_COMMAND_SLOT_V1_BYTES, FAULT_EVENT_SLOT_V1_BYTES, FAULT_PAYLOAD_ARENA_HEADER_BYTES,
     FAULT_RESULT_SLOT_V1_BYTES, FINGERPRINT_SAMPLE_SLOT_ALIGN, FINGERPRINT_SAMPLE_SLOT_SIZE,
@@ -79,6 +78,108 @@ pub struct MappedHostAcceleratorRingsMut<'a> {
     pub requests: MappedAcceleratorConsumerRingMut<'a>,
     /// Completion producer.
     pub completions: MappedAcceleratorProducerRingMut<'a>,
+}
+
+/// Role-preserving process-lifetime handle for plugin accelerator rings.
+///
+/// The private addresses are process-local adapter state. They are never part
+/// of the public shared-memory ABI, and methods retain the plugin's sole
+/// request-producer and completion-consumer roles.
+pub struct DetachedPluginAcceleratorRings {
+    request_header: NonNull<RingHeader>,
+    request_entries: NonNull<AcceleratorEntry>,
+    request_capacity: usize,
+    completion_header: NonNull<RingHeader>,
+    completion_entries: NonNull<AcceleratorEntry>,
+    completion_capacity: usize,
+}
+
+impl MappedPluginAcceleratorRingsMut<'_> {
+    /// Detaches this role pair for a process-lifetime callback owner.
+    ///
+    /// # Safety
+    ///
+    /// The caller must retain the owning [`MappedSetupRegion`] without
+    /// unmapping it or creating another plugin role view until this handle is
+    /// dropped. Callback access must remain serialized by the SPSC contract.
+    #[must_use]
+    pub unsafe fn detach_for_mapping_lifetime(self) -> DetachedPluginAcceleratorRings {
+        // SAFETY: validated accelerator rings have fixed nonzero capacity.
+        let request_entries = unsafe { NonNull::new_unchecked(self.requests.entries.as_mut_ptr()) };
+        // SAFETY: the same invariant holds for the completion ring.
+        let completion_entries =
+            unsafe { NonNull::new_unchecked(self.completions.entries.as_mut_ptr()) };
+        DetachedPluginAcceleratorRings {
+            request_header: NonNull::from(self.requests.header),
+            request_entries,
+            request_capacity: self.requests.entries.len(),
+            completion_header: NonNull::from(self.completions.header),
+            completion_entries,
+            completion_capacity: self.completions.entries.len(),
+        }
+    }
+}
+
+impl DetachedPluginAcceleratorRings {
+    /// Builds a detached plugin role from validated process-local ring parts.
+    ///
+    /// # Safety
+    ///
+    /// Both headers and entry ranges must remain live and correctly aligned
+    /// until the handle is dropped. Each capacity must be nonzero, and no
+    /// other plugin producer/consumer may access the same roles concurrently.
+    #[must_use]
+    pub unsafe fn from_raw_parts(
+        request_header: *const RingHeader,
+        request_entries: *mut AcceleratorEntry,
+        request_capacity: usize,
+        completion_header: *const RingHeader,
+        completion_entries: *mut AcceleratorEntry,
+        completion_capacity: usize,
+    ) -> Option<Self> {
+        if request_capacity == 0 || completion_capacity == 0 {
+            return None;
+        }
+        Some(Self {
+            request_header: NonNull::new(request_header.cast_mut())?,
+            request_entries: NonNull::new(request_entries)?,
+            request_capacity,
+            completion_header: NonNull::new(completion_header.cast_mut())?,
+            completion_entries: NonNull::new(completion_entries)?,
+            completion_capacity,
+        })
+    }
+
+    /// Enqueues one accelerator request for the host adapter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] for malformed indices, records, or exhaustion.
+    pub fn enqueue_request(&mut self, entry: AcceleratorEntry) -> Result<(), SpscRingError> {
+        // SAFETY: the detach contract retains the unique producer range.
+        let entries = unsafe {
+            core::slice::from_raw_parts_mut(self.request_entries.as_ptr(), self.request_capacity)
+        };
+        // SAFETY: the mapping retains this validated header.
+        unsafe { self.request_header.as_ref() }.enqueue_accelerator(entries, entry)
+    }
+
+    /// Dequeues one validated completion from the host adapter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] for malformed indices or record bytes.
+    pub fn dequeue_completion(&mut self) -> Result<Option<AcceleratorEntry>, SpscRingError> {
+        // SAFETY: the detach contract retains the unique consumer range.
+        let entries = unsafe {
+            core::slice::from_raw_parts_mut(
+                self.completion_entries.as_ptr(),
+                self.completion_capacity,
+            )
+        };
+        // SAFETY: the mapping retains this validated header.
+        unsafe { self.completion_header.as_ref() }.dequeue_accelerator(entries)
+    }
 }
 
 /// An owned setup-time `mmap` of the shared-memory region descriptor.
@@ -1014,43 +1115,46 @@ impl MappedSetupRegion {
     fn accelerator_ring_pair_mut(
         &mut self,
         vm_slot: u32,
-    ) -> Result<(
-        &RingHeader,
-        &mut [AcceleratorEntry],
-        &RingHeader,
-        &mut [AcceleratorEntry],
-    ), MappedSetupRegionAccessError> {
-        let layout = self.layout().map_err(|source| {
-            MappedSetupRegionAccessError::Header { source }
-        })?;
+    ) -> Result<
+        (
+            &RingHeader,
+            &mut [AcceleratorEntry],
+            &RingHeader,
+            &mut [AcceleratorEntry],
+        ),
+        MappedSetupRegionAccessError,
+    > {
+        let layout = self
+            .layout()
+            .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
         if vm_slot >= layout.vm_node_count {
-            return Err(MappedSetupRegionAccessError::UnknownGuestIntrospectionRing {
-                vm_slot,
-                vm_node_count: layout.vm_node_count,
-            });
+            return Err(
+                MappedSetupRegionAccessError::UnknownGuestIntrospectionRing {
+                    vm_slot,
+                    vm_node_count: layout.vm_node_count,
+                },
+            );
         }
-        let request_index = AcceleratorRingDirection::Request.ring_index(vm_slot)
+        let request_index = AcceleratorRingDirection::Request
+            .ring_index(vm_slot)
             .ok_or(MappedSetupRegionAccessError::SegmentOffsetOverflow {
                 segment: "accelerator ring",
                 index: vm_slot,
             })?;
-        let completion_index = AcceleratorRingDirection::Completion.ring_index(vm_slot)
+        let completion_index = AcceleratorRingDirection::Completion
+            .ring_index(vm_slot)
             .ok_or(MappedSetupRegionAccessError::SegmentOffsetOverflow {
                 segment: "accelerator ring",
                 index: vm_slot,
             })?;
-        let request_header_offset = mapped_accelerator_ring_header_offset(
-            layout, self.len, request_index,
-        )?;
-        let completion_header_offset = mapped_accelerator_ring_header_offset(
-            layout, self.len, completion_index,
-        )?;
-        let request_entries_offset = mapped_accelerator_ring_entries_offset(
-            layout, self.len, request_index,
-        )?;
-        let completion_entries_offset = mapped_accelerator_ring_entries_offset(
-            layout, self.len, completion_index,
-        )?;
+        let request_header_offset =
+            mapped_accelerator_ring_header_offset(layout, self.len, request_index)?;
+        let completion_header_offset =
+            mapped_accelerator_ring_header_offset(layout, self.len, completion_index)?;
+        let request_entries_offset =
+            mapped_accelerator_ring_entries_offset(layout, self.len, request_index)?;
+        let completion_entries_offset =
+            mapped_accelerator_ring_entries_offset(layout, self.len, completion_index)?;
         let count = usize::try_from(layout.accelerator_queue_capacity).map_err(|_error| {
             MappedSetupRegionAccessError::SegmentOffsetOverflow {
                 segment: "accelerator entry",
@@ -1070,7 +1174,8 @@ impl MappedSetupRegion {
                 ),
                 &*base.add(completion_header_offset).cast::<RingHeader>(),
                 core::slice::from_raw_parts_mut(
-                    base.add(completion_entries_offset).cast::<AcceleratorEntry>(),
+                    base.add(completion_entries_offset)
+                        .cast::<AcceleratorEntry>(),
                     count,
                 ),
             )

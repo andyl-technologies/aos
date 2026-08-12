@@ -7,6 +7,7 @@
 
 mod canonical;
 mod control_channels;
+mod crucible_accelerator;
 mod crucible_shmem_9p;
 mod crucible_shmem_block;
 mod crucible_shmem_network;
@@ -24,6 +25,7 @@ use std::fmt;
 use canonical::{canonical_node_icount_shift_lines, validate_icount_shift};
 pub use control_channels::{QemuGdbstubChannelConfig, QemuQmpChannelConfig};
 use crucible::{ContentHash, SchedulerError, SchedulerNodeId, SchedulerRunSubdivisionPolicy, Seed};
+pub use crucible_accelerator::{CrucibleAcceleratorDevice, DEFAULT_CRUCIBLE_ACCELERATOR_DEVICE_ID};
 pub use crucible_shmem_9p::{
     CrucibleShmem9pDevice, CrucibleShmem9pFsdevBackend, DEFAULT_CRUCIBLE_SHMEM_9P_DEVICE_ID,
     DEFAULT_CRUCIBLE_SHMEM_9P_FSDEV_ID, DEFAULT_CRUCIBLE_SHMEM_9P_MOUNT_TAG,
@@ -915,6 +917,7 @@ pub struct QemuVmLaunchConfig {
     crucible_shmem_block: Option<CrucibleShmemBlockDevice>,
     crucible_shmem_9p: Option<CrucibleShmem9pDevice>,
     crucible_shmem_network: Option<CrucibleShmemNetworkDevice>,
+    crucible_accelerator: Option<CrucibleAcceleratorDevice>,
 }
 
 impl QemuVmLaunchConfig {
@@ -936,6 +939,7 @@ impl QemuVmLaunchConfig {
             crucible_shmem_block: None,
             crucible_shmem_9p: None,
             crucible_shmem_network: None,
+            crucible_accelerator: None,
         }
     }
 
@@ -961,6 +965,7 @@ impl QemuVmLaunchConfig {
             crucible_shmem_block: None,
             crucible_shmem_9p: None,
             crucible_shmem_network: None,
+            crucible_accelerator: None,
         }
     }
 
@@ -982,6 +987,7 @@ impl QemuVmLaunchConfig {
             crucible_shmem_block: None,
             crucible_shmem_9p: None,
             crucible_shmem_network: None,
+            crucible_accelerator: None,
         }
     }
 
@@ -1062,6 +1068,19 @@ impl QemuVmLaunchConfig {
     #[must_use]
     pub const fn crucible_shmem_network(&self) -> Option<&CrucibleShmemNetworkDevice> {
         self.crucible_shmem_network.as_ref()
+    }
+
+    /// Returns a config with a deterministic accelerator co-simulation device.
+    #[must_use]
+    pub fn with_crucible_accelerator(mut self, device: CrucibleAcceleratorDevice) -> Self {
+        self.crucible_accelerator = Some(device);
+        self
+    }
+
+    /// Returns the attached deterministic accelerator, if present.
+    #[must_use]
+    pub const fn crucible_accelerator(&self) -> Option<&CrucibleAcceleratorDevice> {
+        self.crucible_accelerator.as_ref()
     }
 
     /// Returns the static scenario node identifier.
@@ -1157,6 +1176,9 @@ impl QemuVmLaunchConfig {
         if let Some(device) = &self.crucible_shmem_network {
             device.append_hash_material(&mut lines);
         }
+        if let Some(device) = &self.crucible_accelerator {
+            device.append_hash_material(&mut lines);
+        }
         lines.join("\n")
     }
 
@@ -1199,6 +1221,9 @@ impl QemuVmLaunchConfig {
         if let Some(device) = &self.crucible_shmem_network {
             device.append_qemu_args(&mut args);
         }
+        if let Some(device) = &self.crucible_accelerator {
+            device.append_qemu_args(&mut args);
+        }
         args
     }
 
@@ -1227,6 +1252,9 @@ impl QemuVmLaunchConfig {
             device.validate()?;
         }
         if let Some(device) = &self.crucible_shmem_network {
+            device.validate()?;
+        }
+        if let Some(device) = &self.crucible_accelerator {
             device.validate()?;
         }
         Ok(())

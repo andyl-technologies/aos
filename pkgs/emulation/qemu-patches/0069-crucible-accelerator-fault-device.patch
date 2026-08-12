@@ -1,0 +1,607 @@
+From 4850f525b7c97dc58fcbd920c598af4a81df8a6f Mon Sep 17 00:00:00 2001
+From: Dylan Plecki <dylan@andyl.com>
+Date: Tue, 11 Aug 2026 19:29:49 -0700
+Subject: [PATCH] crucible: add deterministic accelerator device
+
+Signed-off-by: Dylan Plecki <dylan@andyl.com>
+---
+ hw/virtio/Kconfig                             |   5 +
+ hw/virtio/meson.build                         |   2 +
+ hw/virtio/virtio-crucible-accelerator-pci.c   |  77 ++++
+ hw/virtio/virtio-crucible-accelerator.c       | 339 ++++++++++++++++++
+ .../hw/virtio/virtio-crucible-accelerator.h   |  57 +++
+ include/qemu/qemu-plugin.h                    |  40 +++
+ 6 files changed, 520 insertions(+)
+ create mode 100644 hw/virtio/virtio-crucible-accelerator-pci.c
+ create mode 100644 hw/virtio/virtio-crucible-accelerator.c
+ create mode 100644 include/hw/virtio/virtio-crucible-accelerator.h
+
+diff --git a/hw/virtio/Kconfig b/hw/virtio/Kconfig
+index 7648a2d..805bea4 100644
+--- a/hw/virtio/Kconfig
++++ b/hw/virtio/Kconfig
+@@ -6,6 +6,11 @@ config VIRTIO_RNG
+     default y
+     depends on VIRTIO
+ 
++config VIRTIO_CRUCIBLE_ACCELERATOR
++    bool
++    default y
++    depends on VIRTIO
++
+ config VIRTIO_NSM
+    bool
+    depends on LIBCBOR && VIRTIO
+diff --git a/hw/virtio/meson.build b/hw/virtio/meson.build
+index 164f6fd..2a90eff 100644
+--- a/hw/virtio/meson.build
++++ b/hw/virtio/meson.build
+@@ -55,6 +55,7 @@ specific_virtio_ss.add(when: 'CONFIG_VIRTIO_PMEM', if_true: files('virtio-pmem.c
+ specific_virtio_ss.add(when: 'CONFIG_VHOST_VSOCK', if_true: files('vhost-vsock.c'))
+ specific_virtio_ss.add(when: 'CONFIG_VHOST_USER_VSOCK', if_true: files('vhost-user-vsock.c'))
+ specific_virtio_ss.add(when: 'CONFIG_VIRTIO_RNG', if_true: files('virtio-rng.c'))
++specific_virtio_ss.add(when: 'CONFIG_VIRTIO_CRUCIBLE_ACCELERATOR', if_true: files('virtio-crucible-accelerator.c'))
+ specific_virtio_ss.add(when: 'CONFIG_VIRTIO_NSM', if_true: [files('virtio-nsm.c', 'cbor-helpers.c'), libcbor])
+ specific_virtio_ss.add(when: 'CONFIG_VIRTIO_MEM', if_true: files('virtio-mem.c'))
+ specific_virtio_ss.add(when: 'CONFIG_VHOST_USER_SCMI', if_true: files('vhost-user-scmi.c'))
+@@ -72,6 +73,7 @@ virtio_pci_ss.add(when: 'CONFIG_VIRTIO_CRYPTO', if_true: files('virtio-crypto-pc
+ virtio_pci_ss.add(when: 'CONFIG_VIRTIO_INPUT_HOST', if_true: files('virtio-input-host-pci.c'))
+ virtio_pci_ss.add(when: 'CONFIG_VIRTIO_INPUT', if_true: files('virtio-input-pci.c'))
+ virtio_pci_ss.add(when: 'CONFIG_VIRTIO_RNG', if_true: files('virtio-rng-pci.c'))
++virtio_pci_ss.add(when: 'CONFIG_VIRTIO_CRUCIBLE_ACCELERATOR', if_true: files('virtio-crucible-accelerator-pci.c'))
+ virtio_pci_ss.add(when: 'CONFIG_VIRTIO_NSM', if_true: [files('virtio-nsm-pci.c', 'cbor-helpers.c'), libcbor])
+ virtio_pci_ss.add(when: 'CONFIG_VIRTIO_BALLOON', if_true: files('virtio-balloon-pci.c'))
+ virtio_pci_ss.add(when: 'CONFIG_VIRTIO_9P', if_true: files('virtio-9p-pci.c'))
+diff --git a/hw/virtio/virtio-crucible-accelerator-pci.c b/hw/virtio/virtio-crucible-accelerator-pci.c
+new file mode 100644
+index 0000000..63b8124
+--- /dev/null
++++ b/hw/virtio/virtio-crucible-accelerator-pci.c
+@@ -0,0 +1,77 @@
++/*
++ * Virtio Crucible accelerator PCI binding
++ *
++ * Copyright (C) 2026 ANDYL Technologies
++ *
++ * This work is licensed under the terms of the GNU GPL, version 2 or later.
++ * See the COPYING file in the top-level directory.
++ */
++
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "qemu/module.h"
++#include "hw/virtio/virtio-crucible-accelerator.h"
++#include "hw/virtio/virtio-pci.h"
++
++#define TYPE_VIRTIO_CRUCIBLE_ACCELERATOR_PCI \
++    "virtio-crucible-accelerator-pci-base"
++
++typedef struct VirtIOCrucibleAcceleratorPCI {
++    VirtIOPCIProxy parent_obj;
++    VirtIOCrucibleAccelerator vdev;
++} VirtIOCrucibleAcceleratorPCI;
++
++DECLARE_INSTANCE_CHECKER(VirtIOCrucibleAcceleratorPCI,
++                         VIRTIO_CRUCIBLE_ACCELERATOR_PCI,
++                         TYPE_VIRTIO_CRUCIBLE_ACCELERATOR_PCI)
++
++static void accelerator_pci_realize(VirtIOPCIProxy *proxy, Error **errp)
++{
++    VirtIOCrucibleAcceleratorPCI *dev =
++        VIRTIO_CRUCIBLE_ACCELERATOR_PCI(proxy);
++
++    if (proxy->nvectors == DEV_NVECTORS_UNSPECIFIED) {
++        proxy->nvectors = 2;
++    }
++    qdev_realize(DEVICE(&dev->vdev), BUS(&proxy->bus), errp);
++}
++
++static void accelerator_pci_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    VirtioPCIClass *vpc = VIRTIO_PCI_CLASS(klass);
++    PCIDeviceClass *pc = PCI_DEVICE_CLASS(klass);
++
++    vpc->realize = accelerator_pci_realize;
++    pc->vendor_id = PCI_VENDOR_ID_REDHAT_QUMRANET;
++    /* Private modern-only binding for experimental virtio device ID 65535. */
++    pc->device_id = 0x10ff;
++    pc->revision = VIRTIO_PCI_ABI_VERSION;
++    pc->class_id = PCI_CLASS_PROCESSOR_CO;
++    set_bit(DEVICE_CATEGORY_MISC, dc->categories);
++}
++
++static void accelerator_pci_instance_init(Object *object)
++{
++    VirtIOCrucibleAcceleratorPCI *dev =
++        VIRTIO_CRUCIBLE_ACCELERATOR_PCI(object);
++
++    virtio_instance_init_common(object, &dev->vdev, sizeof(dev->vdev),
++                                TYPE_VIRTIO_CRUCIBLE_ACCELERATOR);
++}
++
++static const VirtioPCIDeviceTypeInfo accelerator_pci_info = {
++    .base_name = TYPE_VIRTIO_CRUCIBLE_ACCELERATOR_PCI,
++    .generic_name = "virtio-crucible-accelerator-pci",
++    .non_transitional_name = "virtio-crucible-accelerator-pci-non-transitional",
++    .instance_size = sizeof(VirtIOCrucibleAcceleratorPCI),
++    .instance_init = accelerator_pci_instance_init,
++    .class_init = accelerator_pci_class_init,
++};
++
++static void accelerator_pci_register(void)
++{
++    virtio_pci_types_register(&accelerator_pci_info);
++}
++
++type_init(accelerator_pci_register)
+diff --git a/hw/virtio/virtio-crucible-accelerator.c b/hw/virtio/virtio-crucible-accelerator.c
+new file mode 100644
+index 0000000..d120ea4
+--- /dev/null
++++ b/hw/virtio/virtio-crucible-accelerator.c
+@@ -0,0 +1,339 @@
++/*
++ * Crucible deterministic accelerator co-simulation device
++ *
++ * Copyright (C) 2026 ANDYL Technologies
++ *
++ * This work is licensed under the terms of the GNU GPL, version 2 or later.
++ * See the COPYING file in the top-level directory.
++ */
++
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "qemu/iov.h"
++#include "qemu/module.h"
++#include "qemu/qemu-plugin.h"
++#include "hw/virtio/virtio-crucible-accelerator.h"
++#include "migration/qemu-file-types.h"
++#include "migration/qemu-file.h"
++#include "migration/vmstate.h"
++#include "system/crucible-plugin-wake.h"
++
++typedef struct VirtIOCrucibleAcceleratorRequest {
++    QTAILQ_ENTRY(VirtIOCrucibleAcceleratorRequest) link;
++    VirtQueueElement *element;
++    VirtIOCrucibleAcceleratorJob job;
++} VirtIOCrucibleAcceleratorRequest;
++
++static qemu_plugin_accelerator_submit_cb_t accelerator_submit_cb;
++static qemu_plugin_accelerator_poll_cb_t accelerator_poll_cb;
++static qemu_plugin_accelerator_wait_cb_t accelerator_wait_cb;
++static qemu_plugin_accelerator_restore_cb_t accelerator_restore_cb;
++static void *accelerator_userdata;
++
++void qemu_plugin_register_accelerator_cb(
++    qemu_plugin_accelerator_submit_cb_t submit_cb,
++    qemu_plugin_accelerator_poll_cb_t poll_cb,
++    qemu_plugin_accelerator_wait_cb_t wait_cb,
++    qemu_plugin_accelerator_restore_cb_t restore_cb, void *userdata)
++{
++    accelerator_submit_cb = submit_cb;
++    accelerator_poll_cb = poll_cb;
++    accelerator_wait_cb = wait_cb;
++    accelerator_restore_cb = restore_cb;
++    accelerator_userdata = userdata;
++}
++
++static bool accelerator_callbacks_ready(void)
++{
++    return accelerator_submit_cb && accelerator_poll_cb &&
++           accelerator_wait_cb && accelerator_restore_cb;
++}
++
++static bool accelerator_job_valid(const VirtIOCrucibleAcceleratorJob *job,
++                                  size_t out_bytes, size_t in_bytes)
++{
++    uint16_t class_id = le16_to_cpu(job->class_id);
++    uint32_t input_len = le32_to_cpu(job->input_len);
++    uint32_t output_capacity = le32_to_cpu(job->output_capacity);
++
++    return le16_to_cpu(job->protocol_version) == 1 && class_id >= 1 &&
++           class_id <= 3 && le16_to_cpu(job->job_kind) != 0 &&
++           le64_to_cpu(job->sequence) != 0 &&
++           le64_to_cpu(job->service_units) != 0 &&
++           input_len <= VIRTIO_CRUCIBLE_ACCELERATOR_DATA_MAX &&
++           output_capacity <= VIRTIO_CRUCIBLE_ACCELERATOR_DATA_MAX &&
++           out_bytes == sizeof(*job) + input_len &&
++           in_bytes >= sizeof(*job) + output_capacity &&
++           job->status == 0 && job->output_len == 0;
++}
++
++static void accelerator_complete(VirtIOCrucibleAccelerator *dev,
++                                 VirtIOCrucibleAcceleratorRequest *request,
++                                 uint16_t status, const uint8_t *output,
++                                 size_t output_len)
++{
++    VirtIODevice *vdev = VIRTIO_DEVICE(dev);
++    VirtIOCrucibleAcceleratorJob result = request->job;
++
++    result.status = cpu_to_le32(status);
++    result.output_len = cpu_to_le32(output_len);
++    iov_from_buf(request->element->in_sg, request->element->in_num,
++                 0, &result, sizeof(result));
++    if (output_len != 0) {
++        iov_from_buf(request->element->in_sg, request->element->in_num,
++                     sizeof(result), output, output_len);
++    }
++    virtqueue_push(dev->vq, request->element, sizeof(result) + output_len);
++    virtio_notify(vdev, dev->vq);
++    QTAILQ_REMOVE(&dev->pending, request, link);
++    dev->pending_count--;
++    g_free(request->element);
++    g_free(request);
++}
++
++static void accelerator_poll(VirtIOCrucibleAccelerator *dev)
++{
++    VirtIOCrucibleAcceleratorRequest *request, *next;
++    uint8_t output[VIRTIO_CRUCIBLE_ACCELERATOR_DATA_MAX];
++
++    QTAILQ_FOREACH_SAFE(request, &dev->pending, link, next) {
++        uint16_t status = 0;
++        int64_t len = accelerator_poll_cb(
++            le64_to_cpu(request->job.sequence), &status,
++            output, sizeof(output),
++            accelerator_userdata);
++
++        if (len == QEMU_PLUGIN_ACCELERATOR_POLL_PENDING) {
++            accelerator_wait_cb(le64_to_cpu(request->job.sequence),
++                                accelerator_userdata);
++            continue;
++        }
++        if (len < 0 || len > le32_to_cpu(request->job.output_capacity)) {
++            accelerator_complete(dev, request, 1, NULL, 0);
++        } else {
++            accelerator_complete(dev, request, status, output, len);
++        }
++    }
++}
++
++static void accelerator_handle_output(VirtIODevice *vdev, VirtQueue *vq)
++{
++    VirtIOCrucibleAccelerator *dev = VIRTIO_CRUCIBLE_ACCELERATOR(vdev);
++    VirtQueueElement *element;
++
++    if (!accelerator_callbacks_ready()) {
++        virtio_error(vdev, "accelerator transport callbacks are unavailable");
++        return;
++    }
++    accelerator_poll(dev);
++    while (dev->pending_count < VIRTIO_CRUCIBLE_ACCELERATOR_QUEUE_SIZE &&
++           (element = virtqueue_pop(vq, sizeof(*element)))) {
++        VirtIOCrucibleAcceleratorRequest *request;
++        VirtIOCrucibleAcceleratorJob job;
++        uint8_t input[VIRTIO_CRUCIBLE_ACCELERATOR_DATA_MAX];
++        size_t out_bytes = iov_size(element->out_sg, element->out_num);
++        size_t in_bytes = iov_size(element->in_sg, element->in_num);
++
++        if (out_bytes < sizeof(job) ||
++            iov_to_buf(element->out_sg, element->out_num, 0,
++                       &job, sizeof(job)) != sizeof(job) ||
++            !accelerator_job_valid(&job, out_bytes, in_bytes) ||
++            iov_to_buf(element->out_sg, element->out_num, sizeof(job),
++                       input, le32_to_cpu(job.input_len)) !=
++                           le32_to_cpu(job.input_len) ||
++            accelerator_submit_cb(le64_to_cpu(job.sequence),
++                                  dev->config.device_id,
++                                  le16_to_cpu(job.class_id),
++                                  le16_to_cpu(job.job_kind),
++                                  le16_to_cpu(job.queue_id),
++                                  le64_to_cpu(job.service_units), input,
++                                  le32_to_cpu(job.input_len),
++                                  le32_to_cpu(job.output_capacity),
++                                  accelerator_userdata) != 0) {
++            VirtIOCrucibleAcceleratorJob error = {
++                .status = cpu_to_le32(1),
++            };
++            iov_from_buf(element->in_sg, element->in_num, 0,
++                         &error, sizeof(error));
++            virtqueue_push(vq, element, sizeof(error));
++            virtio_notify(vdev, vq);
++            g_free(element);
++            continue;
++        }
++        request = g_new0(VirtIOCrucibleAcceleratorRequest, 1);
++        request->element = element;
++        request->job = job;
++        QTAILQ_INSERT_TAIL(&dev->pending, request, link);
++        dev->pending_count++;
++    }
++    accelerator_poll(dev);
++}
++
++static void accelerator_wake(Notifier *notifier, void *data)
++{
++    VirtIOCrucibleAccelerator *dev = container_of(
++        notifier, VirtIOCrucibleAccelerator, wake_notifier);
++
++    if ((QemuPluginWakeEvent)(intptr_t)data == QEMU_PLUGIN_WAKE_EVENT_FAILED) {
++        virtio_error(VIRTIO_DEVICE(dev),
++                     "accelerator scheduler wake descriptor failed");
++        return;
++    }
++    if ((QemuPluginWakeEvent)(intptr_t)data == QEMU_PLUGIN_WAKE_EVENT_DRAINED) {
++        accelerator_poll(dev);
++    }
++}
++
++static void accelerator_save(VirtIODevice *vdev, QEMUFile *f)
++{
++    VirtIOCrucibleAccelerator *dev = VIRTIO_CRUCIBLE_ACCELERATOR(vdev);
++    VirtIOCrucibleAcceleratorRequest *request;
++
++    qemu_put_be32(f, dev->pending_count);
++    QTAILQ_FOREACH(request, &dev->pending, link) {
++        qemu_put_buffer(f, (const uint8_t *)&request->job,
++                        sizeof(request->job));
++        qemu_put_virtqueue_element(vdev, f, request->element);
++    }
++}
++
++static int accelerator_load(VirtIODevice *vdev, QEMUFile *f, int version_id)
++{
++    VirtIOCrucibleAccelerator *dev = VIRTIO_CRUCIBLE_ACCELERATOR(vdev);
++    uint32_t count = qemu_get_be32(f);
++    uint32_t i;
++
++    if (count > VIRTIO_CRUCIBLE_ACCELERATOR_QUEUE_SIZE) {
++        return -EINVAL;
++    }
++    for (i = 0; i < count; i++) {
++        VirtIOCrucibleAcceleratorRequest *request = g_new0(
++            VirtIOCrucibleAcceleratorRequest, 1);
++        size_t out_bytes;
++        size_t in_bytes;
++
++        if (qemu_get_buffer(f, (uint8_t *)&request->job,
++                            sizeof(request->job)) != sizeof(request->job)) {
++            g_free(request);
++            return -EIO;
++        }
++        request->element = qemu_get_virtqueue_element_checked(
++            vdev, f, sizeof(*request->element));
++        if (!request->element) {
++            g_free(request);
++            return -EINVAL;
++        }
++        out_bytes = iov_size(request->element->out_sg,
++                             request->element->out_num);
++        in_bytes = iov_size(request->element->in_sg,
++                            request->element->in_num);
++        if (!accelerator_job_valid(&request->job, out_bytes, in_bytes)) {
++            g_free(request->element);
++            g_free(request);
++            return -EINVAL;
++        }
++        if (accelerator_restore_cb(
++                le64_to_cpu(request->job.sequence), dev->config.device_id,
++                le16_to_cpu(request->job.class_id),
++                le16_to_cpu(request->job.job_kind),
++                le16_to_cpu(request->job.queue_id),
++                le64_to_cpu(request->job.service_units),
++                le32_to_cpu(request->job.output_capacity),
++                accelerator_userdata) != 0) {
++            g_free(request->element);
++            g_free(request);
++            return -EINVAL;
++        }
++        QTAILQ_INSERT_TAIL(&dev->pending, request, link);
++        dev->pending_count++;
++    }
++    return 0;
++}
++
++static void accelerator_get_config(VirtIODevice *vdev, uint8_t *config)
++{
++    VirtIOCrucibleAccelerator *dev = VIRTIO_CRUCIBLE_ACCELERATOR(vdev);
++    memcpy(config, &dev->config, sizeof(dev->config));
++}
++
++static void accelerator_realize(DeviceState *device, Error **errp)
++{
++    VirtIOCrucibleAccelerator *dev = VIRTIO_CRUCIBLE_ACCELERATOR(device);
++    VirtIODevice *vdev = VIRTIO_DEVICE(device);
++    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    gsize digest_len = sizeof(dev->config.device_id);
++
++    if (!accelerator_callbacks_ready()) {
++        error_setg(errp, "Crucible accelerator callbacks must be registered");
++        return;
++    }
++    virtio_init(vdev, VIRTIO_ID_CRUCIBLE_ACCELERATOR,
++                sizeof(dev->config));
++    dev->vq = virtio_add_queue(vdev,
++                               VIRTIO_CRUCIBLE_ACCELERATOR_QUEUE_SIZE,
++                               accelerator_handle_output);
++    QTAILQ_INIT(&dev->pending);
++    dev->wake_notifier.notify = accelerator_wake;
++    qemu_plugin_wake_notifier_add(&dev->wake_notifier);
++    dev->wake_registered = true;
++    dev->config.protocol_version = cpu_to_le16(1);
++    dev->config.class_mask = cpu_to_le16(0x7);
++    dev->config.queue_depth = cpu_to_le32(
++        VIRTIO_CRUCIBLE_ACCELERATOR_QUEUE_SIZE);
++    dev->config.data_max = cpu_to_le32(VIRTIO_CRUCIBLE_ACCELERATOR_DATA_MAX);
++    g_checksum_update(checksum,
++                      (const guchar *)"virtio-crucible-accelerator-0", 29);
++    g_checksum_get_digest(checksum, dev->config.device_id, &digest_len);
++}
++
++static void accelerator_unrealize(DeviceState *device)
++{
++    VirtIOCrucibleAccelerator *dev = VIRTIO_CRUCIBLE_ACCELERATOR(device);
++    VirtIODevice *vdev = VIRTIO_DEVICE(device);
++
++    if (dev->wake_registered) {
++        qemu_plugin_wake_notifier_remove(&dev->wake_notifier);
++        dev->wake_registered = false;
++    }
++    g_assert(QTAILQ_EMPTY(&dev->pending));
++    virtio_del_queue(vdev, 0);
++    virtio_cleanup(vdev);
++}
++
++static const VMStateDescription vmstate_accelerator = {
++    .name = "virtio-crucible-accelerator",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .fields = (const VMStateField[]) {
++        VMSTATE_VIRTIO_DEVICE,
++        VMSTATE_END_OF_LIST()
++    },
++};
++
++static void accelerator_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    VirtioDeviceClass *vdc = VIRTIO_DEVICE_CLASS(klass);
++
++    dc->vmsd = &vmstate_accelerator;
++    set_bit(DEVICE_CATEGORY_MISC, dc->categories);
++    vdc->realize = accelerator_realize;
++    vdc->unrealize = accelerator_unrealize;
++    vdc->get_config = accelerator_get_config;
++    vdc->save = accelerator_save;
++    vdc->load = accelerator_load;
++}
++
++static const TypeInfo accelerator_info = {
++    .name = TYPE_VIRTIO_CRUCIBLE_ACCELERATOR,
++    .parent = TYPE_VIRTIO_DEVICE,
++    .instance_size = sizeof(VirtIOCrucibleAccelerator),
++    .class_init = accelerator_class_init,
++};
++
++static void accelerator_register_types(void)
++{
++    type_register_static(&accelerator_info);
++}
++
++type_init(accelerator_register_types)
+diff --git a/include/hw/virtio/virtio-crucible-accelerator.h b/include/hw/virtio/virtio-crucible-accelerator.h
+new file mode 100644
+index 0000000..cbea0d3
+--- /dev/null
++++ b/include/hw/virtio/virtio-crucible-accelerator.h
+@@ -0,0 +1,57 @@
++/*
++ * Crucible deterministic accelerator co-simulation device
++ *
++ * Copyright (C) 2026 ANDYL Technologies
++ *
++ * This work is licensed under the terms of the GNU GPL, version 2 or later.
++ * See the COPYING file in the top-level directory.
++ */
++
++#ifndef QEMU_VIRTIO_CRUCIBLE_ACCELERATOR_H
++#define QEMU_VIRTIO_CRUCIBLE_ACCELERATOR_H
++
++#include "hw/virtio/virtio.h"
++#include "qemu/notify.h"
++#include "qom/object.h"
++
++#define TYPE_VIRTIO_CRUCIBLE_ACCELERATOR "virtio-crucible-accelerator-device"
++OBJECT_DECLARE_SIMPLE_TYPE(VirtIOCrucibleAccelerator,
++                           VIRTIO_CRUCIBLE_ACCELERATOR)
++
++#define VIRTIO_ID_CRUCIBLE_ACCELERATOR 65535
++#define VIRTIO_CRUCIBLE_ACCELERATOR_QUEUE_SIZE 64
++#define VIRTIO_CRUCIBLE_ACCELERATOR_DATA_MAX 4608
++
++typedef struct VirtIOCrucibleAcceleratorConfig {
++    uint16_t protocol_version;
++    uint16_t class_mask;
++    uint32_t queue_depth;
++    uint32_t data_max;
++    uint32_t reserved;
++    uint8_t device_id[32];
++} QEMU_PACKED VirtIOCrucibleAcceleratorConfig;
++
++typedef struct VirtIOCrucibleAcceleratorJob {
++    uint16_t protocol_version;
++    uint16_t class_id;
++    uint16_t job_kind;
++    uint16_t queue_id;
++    uint64_t sequence;
++    uint64_t service_units;
++    uint32_t input_len;
++    uint32_t output_capacity;
++    uint32_t status;
++    uint32_t output_len;
++} QEMU_PACKED VirtIOCrucibleAcceleratorJob;
++
++struct VirtIOCrucibleAccelerator {
++    VirtIODevice parent_obj;
++    VirtQueue *vq;
++    VirtIOCrucibleAcceleratorConfig config;
++    QTAILQ_HEAD(, VirtIOCrucibleAcceleratorRequest) pending;
++    uint32_t pending_count;
++    Notifier wake_notifier;
++    bool wake_registered;
++};
++
++#endif
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index 3584c8d..9131e3b 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -324,6 +324,29 @@ typedef int (*qemu_plugin_blk_transport_restore_cb_t)(
+     const uint8_t *data, size_t len, uint64_t epoch,
+     uint32_t next_request_id, void *userdata);
+ 
++/** Accelerator job submission callback. */
++typedef int (*qemu_plugin_accelerator_submit_cb_t)(
++    uint64_t sequence, const uint8_t device_id[32], uint16_t class_id,
++    uint16_t job_kind, uint16_t queue_id, uint64_t service_units,
++    const uint8_t *data, size_t len, size_t output_capacity, void *userdata);
++
++/** Accelerator continuation restore callback. */
++typedef int (*qemu_plugin_accelerator_restore_cb_t)(
++    uint64_t sequence, const uint8_t device_id[32], uint16_t class_id,
++    uint16_t job_kind, uint16_t queue_id, uint64_t service_units,
++    size_t output_capacity, void *userdata);
++
++/** Accelerator completion poll callback. */
++typedef int64_t (*qemu_plugin_accelerator_poll_cb_t)(
++    uint64_t sequence, uint16_t *status, uint8_t *data, size_t capacity,
++    void *userdata);
++
++/** Accelerator device-wait callback. */
++typedef void (*qemu_plugin_accelerator_wait_cb_t)(uint64_t sequence,
++                                                  void *userdata);
++
++#define QEMU_PLUGIN_ACCELERATOR_POLL_PENDING (-2)
++
+ #define QEMU_PLUGIN_BLK_OP_READ 0u
+ #define QEMU_PLUGIN_BLK_OP_WRITE 1u
+ #define QEMU_PLUGIN_BLK_OP_FLUSH 2u
+@@ -1237,6 +1260,23 @@ QEMU_PLUGIN_API
+ void qemu_plugin_register_blk_wait_cb(qemu_plugin_blk_wait_cb_t wait_cb,
+                                       void *userdata);
+ 
++/**
++ * qemu_plugin_register_accelerator_cb() - register accelerator transport hooks
++ * @submit_cb: typed job submission callback
++ * @poll_cb: typed completion poll callback
++ * @wait_cb: callback fired before a guest job waits
++ * @userdata: opaque pointer passed to every callback
++ *
++ * The sim-only virtio-crucible-accelerator is inert unless all callbacks are
++ * registered. The callbacks cross only the public shared-memory protocol.
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_register_accelerator_cb(
++    qemu_plugin_accelerator_submit_cb_t submit_cb,
++    qemu_plugin_accelerator_poll_cb_t poll_cb,
++    qemu_plugin_accelerator_wait_cb_t wait_cb,
++    qemu_plugin_accelerator_restore_cb_t restore_cb, void *userdata);
++
+ /**
+  * qemu_plugin_register_9p_cb() - register shmem 9p callbacks
+  * @burst_start_cb: burst-start callback, or NULL to disable shmem forwarding
+-- 
+2.54.0
+
+
