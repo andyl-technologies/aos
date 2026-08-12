@@ -7,22 +7,27 @@
 use crucible::model::{
     FaultObjectId, FaultPhase, WorldNodeArchitecture, WorldNodeClockBaseDomain,
     WorldNodeClockMonotonicity, WorldNodeClockSourceKind, WorldNodeClockTimerRelationship,
-    WorldNodeFaultCapabilities, WorldNodeInterruptDeliveryDrop, WorldNodeInterruptFamily,
-    WorldNodeInterruptPolarity, WorldNodeInterruptTrigger, WorldNodeRegisterGroup,
-    WorldNodeRegisterSideEffect,
+    WorldNodeFaultCapabilities, WorldNodeHardwareErrorClass, WorldNodeHardwareErrorMechanism,
+    WorldNodeHardwareErrorRecordKind, WorldNodeHardwareErrorVisibility,
+    WorldNodeInterruptDeliveryDrop, WorldNodeInterruptFamily, WorldNodeInterruptPolarity,
+    WorldNodeInterruptTrigger, WorldNodeRegisterGroup, WorldNodeRegisterSideEffect,
 };
 use crucible_shmem::{
     DEFAULT_FAULT_COMMAND_CAPACITY, FAULT_CAPABILITY_FEATURE_GUEST_CLOCK,
-    FAULT_CAPABILITY_FEATURE_INTERRUPT, FAULT_CAPABILITY_FEATURE_MEMORY_ACCESS,
-    FAULT_CAPABILITY_FEATURE_MEMORY_MUTATION, FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION,
-    FAULT_COMMAND_SEMANTIC_VERSION, FAULT_REGISTER_CAPABILITY_IMPULSE,
+    FAULT_CAPABILITY_FEATURE_HARDWARE_ERROR, FAULT_CAPABILITY_FEATURE_INTERRUPT,
+    FAULT_CAPABILITY_FEATURE_MEMORY_ACCESS, FAULT_CAPABILITY_FEATURE_MEMORY_MUTATION,
+    FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION, FAULT_COMMAND_SEMANTIC_VERSION,
+    FAULT_HARDWARE_ERROR_VISIBILITY_EXCEPTION, FAULT_HARDWARE_ERROR_VISIBILITY_INTERRUPT,
+    FAULT_HARDWARE_ERROR_VISIBILITY_TELEMETRY, FAULT_REGISTER_CAPABILITY_IMPULSE,
     FAULT_REGISTER_CAPABILITY_PERSISTENT, FAULT_REGISTER_CAPABILITY_VMSTATE,
     FAULT_REGISTER_SIDE_EFFECT_CONTROL_FLOW, FAULT_REGISTER_SIDE_EFFECT_CPU_FLAGS,
     FAULT_REGISTER_SIDE_EFFECT_INTERRUPT, FAULT_REGISTER_SIDE_EFFECT_TB_FLUSH,
     FAULT_REGISTER_SIDE_EFFECT_TIMER, FAULT_REGISTER_SIDE_EFFECT_TLB_FLUSH,
     FAULT_TARGET_MANIFEST_QUERY_V1_BYTES, FaultAbiError, FaultAcceleratorCapabilityManifestV1,
     FaultBoundaryPhase, FaultCapabilityRowV1, FaultCapabilityScope, FaultClockCapabilityManifestV1,
-    FaultClockCapabilityRowV1, FaultCommandKind, FaultInterruptCapabilityManifestV1,
+    FaultClockCapabilityRowV1, FaultCommandKind, FaultHardwareErrorCapabilityManifestV1,
+    FaultHardwareErrorCapabilityRowV1, FaultHardwareErrorClassV1, FaultHardwareErrorMechanismV1,
+    FaultHardwareErrorRecordKindV1, FaultInterruptCapabilityManifestV1,
     FaultInterruptCapabilityRowV1, FaultInterruptDeliveryDropV1, FaultInterruptFamilyV1,
     FaultInterruptPolarityV1, FaultInterruptTriggerV1, FaultRegisterCapabilityManifestV1,
     FaultRegisterCapabilityRowV1, FaultRegisterGroupV1, HARD_FAULT_PAYLOAD_BYTES,
@@ -49,6 +54,7 @@ pub struct QemuTargetManifestRequirement {
     node_hash: [u8; 32],
     exact_register_manifest: Option<FaultRegisterCapabilityManifestV1>,
     exact_interrupt_manifest: Option<FaultInterruptCapabilityManifestV1>,
+    exact_hardware_error_manifest: Option<FaultHardwareErrorCapabilityManifestV1>,
     exact_clock_manifest: Option<FaultClockCapabilityManifestV1>,
     exact_accelerator_manifest: Option<FaultAcceleratorCapabilityManifestV1>,
 }
@@ -82,6 +88,14 @@ impl QemuTargetManifestRequirement {
     #[must_use]
     pub const fn exact_interrupt_manifest(&self) -> Option<&FaultInterruptCapabilityManifestV1> {
         self.exact_interrupt_manifest.as_ref()
+    }
+
+    /// Returns the exact canonical hardware-error manifest admitted by the World.
+    #[must_use]
+    pub const fn exact_hardware_error_manifest(
+        &self,
+    ) -> Option<&FaultHardwareErrorCapabilityManifestV1> {
+        self.exact_hardware_error_manifest.as_ref()
     }
 
     /// Returns the exact canonical guest-clock manifest admitted by the World.
@@ -264,6 +278,7 @@ impl QemuFaultCapabilityRequirement {
                 node_hash,
                 exact_register_manifest: None,
                 exact_interrupt_manifest: None,
+                exact_hardware_error_manifest: None,
                 exact_clock_manifest: None,
                 exact_accelerator_manifest: None,
             }),
@@ -474,6 +489,118 @@ impl QemuFaultCapabilityRequirement {
                 rows,
             })
         };
+        let hardware_error_manifest = {
+            let mut rows = node
+                .hardware_errors
+                .iter()
+                .map(|row| {
+                    let record_kind = match row.record_kind {
+                        WorldNodeHardwareErrorRecordKind::X86MachineCheck => {
+                            FaultHardwareErrorRecordKindV1::X86MachineCheck
+                        }
+                        WorldNodeHardwareErrorRecordKind::Aarch64Ras => {
+                            FaultHardwareErrorRecordKindV1::Aarch64Ras
+                        }
+                        WorldNodeHardwareErrorRecordKind::MemoryEcc => {
+                            FaultHardwareErrorRecordKindV1::MemoryEcc
+                        }
+                    };
+                    let error_class = match row.error_class {
+                        WorldNodeHardwareErrorClass::Corrected => {
+                            FaultHardwareErrorClassV1::Corrected
+                        }
+                        WorldNodeHardwareErrorClass::Recoverable => {
+                            FaultHardwareErrorClassV1::Recoverable
+                        }
+                        WorldNodeHardwareErrorClass::Fatal => FaultHardwareErrorClassV1::Fatal,
+                        WorldNodeHardwareErrorClass::Synchronous => {
+                            FaultHardwareErrorClassV1::Synchronous
+                        }
+                        WorldNodeHardwareErrorClass::Asynchronous => {
+                            FaultHardwareErrorClassV1::Asynchronous
+                        }
+                    };
+                    let mechanism = match row.mechanism {
+                        WorldNodeHardwareErrorMechanism::X86Mca => {
+                            FaultHardwareErrorMechanismV1::X86Mca
+                        }
+                        WorldNodeHardwareErrorMechanism::AcpiGhes => {
+                            FaultHardwareErrorMechanismV1::AcpiGhes
+                        }
+                        WorldNodeHardwareErrorMechanism::Aarch64Ras => {
+                            FaultHardwareErrorMechanismV1::Aarch64Ras
+                        }
+                    };
+                    let visibility_mask = row.visibility.iter().fold(0_u16, |mask, visibility| {
+                        mask | match visibility {
+                            WorldNodeHardwareErrorVisibility::Telemetry => {
+                                FAULT_HARDWARE_ERROR_VISIBILITY_TELEMETRY
+                            }
+                            WorldNodeHardwareErrorVisibility::Interrupt => {
+                                FAULT_HARDWARE_ERROR_VISIBILITY_INTERRUPT
+                            }
+                            WorldNodeHardwareErrorVisibility::Exception => {
+                                FAULT_HARDWARE_ERROR_VISIBILITY_EXCEPTION
+                            }
+                        }
+                    });
+                    let model_phase_mask = row.model_phases.iter().fold(0_u64, |mask, phase| {
+                        let tag = match phase {
+                            FaultPhase::Fetch => 9,
+                            FaultPhase::BeforeInstruction => 11,
+                            FaultPhase::AfterInstruction => 12,
+                            FaultPhase::Load => 17,
+                            FaultPhase::Store => 18,
+                            FaultPhase::DmaRead => 19,
+                            FaultPhase::DmaWrite => 20,
+                            FaultPhase::PageTableWalk => 21,
+                            FaultPhase::Refresh => 22,
+                            _ => 0,
+                        };
+                        if tag == 0 {
+                            mask
+                        } else {
+                            mask | (1_u64 << (tag - 1))
+                        }
+                    });
+                    let privilege_mask = row
+                        .privilege_levels
+                        .iter()
+                        .fold(0_u16, |mask, level| mask | (1_u16 << level));
+                    FaultHardwareErrorCapabilityRowV1 {
+                        id: row.id.as_str().to_owned(),
+                        bank: row.bank.as_str().to_owned(),
+                        channel: row.channel.as_str().to_owned(),
+                        rank: row.rank.as_str().to_owned(),
+                        firmware: row.firmware.as_str().to_owned(),
+                        state: row.state.as_str().to_owned(),
+                        record_kind,
+                        error_class,
+                        mechanism,
+                        visibility_mask,
+                        bank_number: row.bank_number,
+                        bank_count: row.bank_count,
+                        vector: row.vector,
+                        status_required: row.status_required,
+                        status_allowed: row.status_allowed,
+                        syndrome_required: row.syndrome_required,
+                        syndrome_allowed: row.syndrome_allowed,
+                        model_phase_mask,
+                        privilege_mask,
+                        corrected: row.corrected,
+                        maskable: row.maskable,
+                        vmstate: row.vmstate,
+                    }
+                })
+                .collect::<Vec<_>>();
+            rows.sort_by(|left, right| left.id.cmp(&right.id));
+            let manifest = FaultHardwareErrorCapabilityManifestV1 {
+                architecture: scope,
+                rows,
+            };
+            manifest.encode()?;
+            Some(manifest)
+        };
         let mut clock_rows = node
             .clock_sources
             .iter()
@@ -591,6 +718,7 @@ impl QemuFaultCapabilityRequirement {
             .ok_or(FaultAbiError::CapabilityInvariant)?;
         target.exact_register_manifest = Some(manifest.clone());
         target.exact_interrupt_manifest = interrupt_manifest.clone();
+        target.exact_hardware_error_manifest = hardware_error_manifest.clone();
         target.exact_clock_manifest = Some(clock_manifest.clone());
         target.exact_accelerator_manifest = accelerator_manifest.clone();
         if accelerator_manifest.is_some() {
@@ -643,6 +771,7 @@ impl QemuFaultCapabilityRequirement {
         requirement.rows = requirement.rows_for_manifests(
             Some(&manifest),
             interrupt_manifest.as_ref(),
+            hardware_error_manifest.as_ref(),
             Some(&clock_manifest),
             accelerator_manifest.as_ref(),
         )?;
@@ -762,6 +891,7 @@ impl QemuFaultCapabilityRequirement {
         &self,
         register_manifest: Option<&FaultRegisterCapabilityManifestV1>,
         interrupt_manifest: Option<&FaultInterruptCapabilityManifestV1>,
+        hardware_error_manifest: Option<&FaultHardwareErrorCapabilityManifestV1>,
         clock_manifest: Option<&FaultClockCapabilityManifestV1>,
         accelerator_manifest: Option<&FaultAcceleratorCapabilityManifestV1>,
     ) -> Result<Vec<FaultCapabilityRowV1>, FaultAbiError> {
@@ -776,6 +906,11 @@ impl QemuFaultCapabilityRequirement {
                 .as_ref()
                 .is_some_and(|required| required != manifest)
             || required_target.exact_interrupt_manifest.as_ref() != interrupt_manifest
+            || (self.world_bound
+                && required_target.exact_hardware_error_manifest.as_ref()
+                    != hardware_error_manifest)
+            || hardware_error_manifest
+                .is_some_and(|manifest| manifest.architecture != required_target.architecture)
             || required_target
                 .exact_clock_manifest
                 .as_ref()
@@ -800,6 +935,8 @@ impl QemuFaultCapabilityRequirement {
         query.scope = manifest.architecture;
         query.required_feature_bits = FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION
             | interrupt_manifest.map_or(0, |_manifest| FAULT_CAPABILITY_FEATURE_INTERRUPT)
+            | hardware_error_manifest
+                .map_or(0, |_manifest| FAULT_CAPABILITY_FEATURE_HARDWARE_ERROR)
             | clock_manifest.map_or(0, |_manifest| FAULT_CAPABILITY_FEATURE_GUEST_CLOCK);
         let interrupt_digest = interrupt_manifest
             .map(FaultInterruptCapabilityManifestV1::encode)
@@ -809,6 +946,10 @@ impl QemuFaultCapabilityRequirement {
             .map(FaultClockCapabilityManifestV1::encode)
             .transpose()?
             .map(|payload| *blake3::hash(&payload).as_bytes());
+        let hardware_error_digest = hardware_error_manifest
+            .map(FaultHardwareErrorCapabilityManifestV1::encode)
+            .transpose()?
+            .map(|payload| *blake3::hash(&payload).as_bytes());
         let accelerator_digest = accelerator_manifest
             .map(FaultAcceleratorCapabilityManifestV1::encode)
             .transpose()?
@@ -816,6 +957,7 @@ impl QemuFaultCapabilityRequirement {
         query.capability_hash = target_manifest_capability_hash(
             manifest_digest,
             interrupt_digest,
+            hardware_error_digest,
             clock_digest,
             accelerator_digest,
         );
@@ -857,6 +999,7 @@ const fn hex_nibble(value: u8) -> Option<u8> {
 fn target_manifest_capability_hash(
     register_manifest_digest: [u8; 32],
     interrupt_manifest_digest: Option<[u8; 32]>,
+    hardware_error_manifest_digest: Option<[u8; 32]>,
     clock_manifest_digest: Option<[u8; 32]>,
     accelerator_manifest_digest: Option<[u8; 32]>,
 ) -> [u8; 32] {
@@ -876,7 +1019,15 @@ fn target_manifest_capability_hash(
             hasher.update(&[0]);
         }
     }
-    hasher.update(&[0]);
+    match hardware_error_manifest_digest {
+        Some(digest) => {
+            hasher.update(&[1]);
+            hasher.update(&digest);
+        }
+        None => {
+            hasher.update(&[0]);
+        }
+    }
     match clock_manifest_digest {
         Some(digest) => {
             hasher.update(&[1]);
@@ -995,6 +1146,7 @@ mod tests {
             page_bytes: 4096,
             dram_geometry: WorldNodeDramGeometry::qemu_v1(),
             interrupts: Vec::new(),
+            hardware_errors: Vec::new(),
             clock_sources: vec![WorldNodeClockSource::qemu_x86_tsc_v1(id("x86-tsc-vcpu-0"))],
             accelerators: Vec::new(),
             ready_markers: Vec::new(),
@@ -1151,9 +1303,22 @@ mod tests {
             .and_then(QemuTargetManifestRequirement::exact_clock_manifest)
             .cloned()
             .unwrap_or_else(|| panic!("World requirement should retain its clock manifest"));
+        let hardware_error_manifest = requirement
+            .target_manifest()
+            .and_then(QemuTargetManifestRequirement::exact_hardware_error_manifest)
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!("World requirement should retain its hardware-error manifest")
+            });
         assert!(
             requirement
-                .rows_for_manifests(Some(&manifest), None, Some(&clock_manifest), None)
+                .rows_for_manifests(
+                    Some(&manifest),
+                    None,
+                    Some(&hardware_error_manifest),
+                    Some(&clock_manifest),
+                    None,
+                )
                 .is_ok()
         );
         assert!(requirement.ready_markers().contains(
@@ -1168,7 +1333,13 @@ mod tests {
         let mut changed = manifest.clone();
         changed.rows[0].name = "rbx".to_owned();
         assert_eq!(
-            requirement.rows_for_manifests(Some(&changed), None, Some(&clock_manifest), None),
+            requirement.rows_for_manifests(
+                Some(&changed),
+                None,
+                Some(&hardware_error_manifest),
+                Some(&clock_manifest),
+                None,
+            ),
             Err(FaultAbiError::CapabilityInvariant)
         );
     }

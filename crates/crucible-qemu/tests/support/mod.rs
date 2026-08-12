@@ -65,6 +65,7 @@ pub fn x86_fault_node(node_name: &str, realized_cpu_type: &str) -> WorldNodeFaul
         page_bytes: 4096,
         dram_geometry: WorldNodeDramGeometry::qemu_v1(),
         interrupts: Vec::new(),
+        hardware_errors: Vec::new(),
         clock_sources: vec![WorldNodeClockSource::qemu_x86_tsc_v1(id("x86-tsc-vcpu-0"))],
         accelerators: Vec::new(),
         ready_markers: Vec::new(),
