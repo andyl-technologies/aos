@@ -154,7 +154,7 @@ in {
 
       firmwarePackages = lib.mkOption {
         type = lib.types.listOf lib.types.package;
-        default = [pkgs.firmware];
+        default = [];
         description = ''
           Firmware packages required before switch-root. Runtime-only device
           firmware belongs in aos.kernel.firmwarePackages so it does not

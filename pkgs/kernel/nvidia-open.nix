@@ -40,6 +40,7 @@ in
         name = "build";
         script = ''
           export LD_LIBRARY_PATH="${elfutils}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export KCFLAGS="''${KCFLAGS:-} -ffile-prefix-map=${kernel.dev}=/build/kernel-sdk"
           make -j"$NIX_BUILD_CORES" modules \
             SYSSRC=${kernel.dev}/lib/modules/${kernel.version}/build \
             SYSOUT=${kernel.dev}/lib/modules/${kernel.version}/build \
@@ -56,6 +57,7 @@ in
             SYSOUT=${kernel.dev}/lib/modules/${kernel.version}/build \
             TARGET_ARCH=x86_64 ARCH=x86_64 \
             INSTALL_MOD_PATH="$out" \
+            INSTALL_MOD_STRIP=1 \
             NV_BUILD_USER=aos NV_BUILD_HOST=aos-builder
           find "$out/lib/modules" -type l -delete
         '';

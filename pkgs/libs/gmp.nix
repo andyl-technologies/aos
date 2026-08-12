@@ -57,6 +57,14 @@ in
         name = "install";
         script = ''
           make install
+
+          # GMP records the build compiler for diagnostic purposes. Keeping
+          # its store path here would retain the complete compiler toolchain
+          # in every runtime closure that uses libgmp.
+          sed -i \
+            -e 's|^#define __GMP_CC .*|#define __GMP_CC "cc"|' \
+            -e 's|^#define __GMP_CFLAGS .*|#define __GMP_CFLAGS ""|' \
+            "$out/include/gmp.h"
         '';
       }
     ];

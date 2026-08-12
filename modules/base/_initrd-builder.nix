@@ -84,7 +84,6 @@
     ]
     # Feature-specific closures injected by modules (e.g. the measured-boot
     # PCR-policy public key — RFC-0006 phase 3).
-    ++ firmwarePackages
     ++ initrdExtraPackages;
 
   # Short /bin/<name> symlinks. A binary only needs to appear here if an
@@ -456,13 +455,14 @@ in
             exit 1
           fi
           ${lib.concatMapStringsSep "\n" (package: ''
-            if [ ! -d ${package}/lib/modules ]; then
-              echo "initrd-builder: external module package ${package} has no module tree" >&2
-              exit 1
-            fi
-            chmod -R u+w root/lib/modules
-            cp -a ${package}/lib/modules/. root/lib/modules/
-          '') kernelModulePackages}
+              if [ ! -d ${package}/lib/modules ]; then
+                echo "initrd-builder: external module package ${package} has no module tree" >&2
+                exit 1
+              fi
+              chmod -R u+w root/lib/modules
+              cp -a ${package}/lib/modules/. root/lib/modules/
+            '')
+            kernelModulePackages}
           for module_dir in root/lib/modules/*; do
             # External module packages may restore the copied release
             # directory's read-only store mode after the kernel tree was
@@ -477,12 +477,13 @@ in
           # Firmware selected specifically for early storage, network, and TPM drivers.
           mkdir -p root/lib/firmware
           ${lib.concatMapStringsSep "\n" (package: ''
-            if [ ! -d ${package}/lib/firmware ]; then
-              echo "initrd-builder: firmware package ${package} has no firmware tree" >&2
-              exit 1
-            fi
-            cp -a ${package}/lib/firmware/. root/lib/firmware/
-          '') firmwarePackages}
+              if [ ! -d ${package}/lib/firmware ]; then
+                echo "initrd-builder: firmware package ${package} has no firmware tree" >&2
+                exit 1
+              fi
+              cp -a ${package}/lib/firmware/. root/lib/firmware/
+            '')
+            firmwarePackages}
 
           # ── 5. /etc skeleton ───────────────────────────────────────────
           cat > root/etc/modules-load.d/initrd.conf <<MODULES
