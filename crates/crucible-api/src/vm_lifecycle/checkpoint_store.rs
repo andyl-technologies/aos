@@ -1992,7 +1992,9 @@ mod tests {
         persist_object(directory.path(), identity, bytes).expect("reuse equal object");
         let dag_store = LocalDagStore::new(directory.path());
         assert_eq!(
-            dag_store.get(&identity).expect("read exact object as DAG object"),
+            dag_store
+                .get(&identity)
+                .expect("read exact object as DAG object"),
             bytes
         );
         assert!(!directory.path().join(identity.to_hex()).exists());

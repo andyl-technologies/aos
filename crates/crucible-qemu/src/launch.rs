@@ -443,6 +443,7 @@ impl NodeIcountShift {
 pub struct QemuLaunchCommand {
     executable: String,
     args: Vec<String>,
+    vmstate_size_mib: u64,
     vm_hash_material: String,
     gdbstub: Option<QemuGdbstubChannelConfig>,
     qmp: Option<QemuQmpChannelConfig>,
@@ -462,6 +463,12 @@ impl QemuLaunchCommand {
     #[must_use]
     pub fn args(&self) -> &[String] {
         &self.args
+    }
+
+    /// Returns the virtual size required for the exact-VMState qcow2 container.
+    #[must_use]
+    pub(crate) const fn vmstate_size_mib(&self) -> u64 {
+        self.vmstate_size_mib
     }
 
     /// Returns the world-derived VM launch material paired with this command.
@@ -742,6 +749,7 @@ impl QemuLaunchCommandBuilder {
             return Err(QemuLaunchCommandError::InvalidTranslationPrefetchReportPath);
         }
 
+        let vmstate_size_mib = u64::from(self.profile.memory_mib) + 512;
         let mut vm_hash_material = self.vm.launch_hash_material();
         if self.debug_guest_activation_endpoint {
             vm_hash_material.push_str("\ndebug_guest_activation_endpoint=fixed-inert-v1");
@@ -805,6 +813,7 @@ impl QemuLaunchCommandBuilder {
         Ok(QemuLaunchCommand {
             executable: self.executable,
             args,
+            vmstate_size_mib,
             vm_hash_material,
             gdbstub: self.gdbstub,
             qmp: self.qmp,

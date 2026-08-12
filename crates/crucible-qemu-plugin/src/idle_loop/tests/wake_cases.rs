@@ -6,7 +6,7 @@ use super::support::*;
 use crucible_shmem::{KIND_VM, STATUS_DONE, STATUS_IDLE, STATUS_RUNNING};
 
 #[cfg(target_os = "linux")]
-use std::{sync::Arc, thread, time::Duration};
+use std::sync::Arc;
 
 #[test]
 fn idle_loop_computes_wake_from_timer_inbound_and_ceiling() {

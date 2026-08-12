@@ -294,7 +294,7 @@ pub use single_vm_fingerprint::{
 #[cfg(target_os = "linux")]
 pub use spawn::{
     QemuSpawnError, QemuSpawnHostResources, QemuSpawnSetupResources, QemuSpawnedChild,
-    spawn_qemu_child_with_fds, spawn_qemu_child_with_fds_in_directory,
+    spawn_qemu_child_with_fds_in_directory,
 };
 pub use storage_array::{
     StorageArrayError, StorageArrayMemberWrite, StorageArrayWritePlan, plan_storage_array_write,
