@@ -294,6 +294,13 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         required_features: &[],
         placeholder: false,
     },
+    GateTargetSpec {
+        gate: "gate:signal-fault-system",
+        package: "crucible",
+        test_target: "gate_signal_fault_system",
+        required_features: &[],
+        placeholder: false,
+    },
     // The perf-bench regression gate runs the harness-owned cost-model
     // assertion pass (SS25.7.1 metrics) with no QEMU present.
     GateTargetSpec {
