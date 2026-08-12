@@ -1,6 +1,7 @@
 //! Durable content-addressed closure store for exact production checkpoints.
 
 use super::*;
+use crucible::LocalDagStore;
 use crucible::model::FaultResourceLimits;
 use std::collections::BTreeSet;
 use std::io::Read as _;
@@ -23,6 +24,7 @@ struct ClosureManifest {
     frontier: u64,
     scheduler: ContentHash,
     event_log_segments: Vec<ContentHash>,
+    signal_artifacts: Vec<ContentHash>,
     trigger_state: ContentHash,
     assertion_state: ContentHash,
     lifecycle_state: ContentHash,
@@ -57,6 +59,7 @@ struct ClosureObjects {
     schedule: Vec<u8>,
     scheduler: Vec<u8>,
     event_log_segments: BTreeMap<ContentHash, Vec<u8>>,
+    signal_artifacts: BTreeMap<ContentHash, Vec<u8>>,
     trigger_state: Vec<u8>,
     assertion_state: Vec<u8>,
     lifecycle_state: Vec<u8>,
@@ -154,12 +157,21 @@ pub(super) fn persist_exact_checkpoint_set(
         })?;
     persist_object(&object_directory, manifest.schedule, &objects.schedule)?;
     persist_object(&object_directory, manifest.scheduler, &objects.scheduler)?;
-    for identity in &manifest.event_log_segments {
-        let bytes = objects
-            .event_log_segments
-            .get(identity)
-            .ok_or_else(|| store_error("event-log closure object disappeared"))?;
+    let checkpoint_dag = checkpoint_dag_store(run_state_root, scenario);
+    for (identity, bytes) in objects
+        .event_log_segments
+        .iter()
+        .chain(objects.signal_artifacts.iter())
+    {
         persist_object(&object_directory, *identity, bytes)?;
+        let stored = checkpoint_dag
+            .put(bytes)
+            .map_err(|error| store_error(format!("persist checkpoint DAG object: {error}")))?;
+        if stored != *identity {
+            return Err(store_error(
+                "checkpoint DAG returned a different content identity",
+            ));
+        }
     }
     persist_object(
         &object_directory,
@@ -298,6 +310,34 @@ pub(super) fn load_exact_checkpoint_set(
             ));
         }
     }
+    let mut signal_artifact_objects = BTreeMap::new();
+    for identity in &manifest.signal_artifacts {
+        let bytes = read_object(
+            &object_directory,
+            *identity,
+            &mut budget,
+            LARGE_CONTINUATION_MAX_BYTES,
+        )?;
+        if signal_artifact_objects.insert(*identity, bytes).is_some() {
+            return Err(loop_factory_error(
+                "exact checkpoint contains duplicate signal artifact identities",
+            ));
+        }
+    }
+    let checkpoint_dag = checkpoint_dag_store(run_state_root, scenario.id());
+    for (identity, bytes) in event_log_objects
+        .iter()
+        .chain(signal_artifact_objects.iter())
+    {
+        let stored = checkpoint_dag.put(bytes).map_err(|error| {
+            loop_factory_error(format!("reconstruct checkpoint DAG object: {error}"))
+        })?;
+        if stored != *identity {
+            return Err(loop_factory_error(
+                "checkpoint DAG reconstructed a different content identity",
+            ));
+        }
+    }
     let trigger_state = EventGraphState::from_compact_binary(&read_object(
         &object_directory,
         manifest.trigger_state,
@@ -322,6 +362,13 @@ pub(super) fn load_exact_checkpoint_set(
         scenario,
     )?;
     let signal_plan = source.plan().fault_signals();
+    let expected_signal_artifacts =
+        collect_signal_artifact_objects(signal_plan, checkpoint_dag.as_ref())?;
+    if expected_signal_artifacts != signal_artifact_objects {
+        return Err(loop_factory_error(
+            "exact checkpoint signal-artifact closure is incomplete or contains unreferenced objects",
+        ));
+    }
     let fault_checkpoint = ProductionFaultRuntimeCheckpoint::from_canonical_bytes(
         &read_object(
             &object_directory,
@@ -396,6 +443,7 @@ pub(super) fn load_exact_checkpoint_set(
         configuration,
         scheduler,
         event_log_objects,
+        signal_artifact_objects,
         trigger_state,
         assertion_state,
         terminal_verdict: lifecycle.terminal,
@@ -445,6 +493,13 @@ fn validate_checkpoint_set(
         if ContentHash::from_bytes(bytes) != *identity {
             return Err(store_error(
                 "exact checkpoint event-log object failed content authentication",
+            ));
+        }
+    }
+    for (identity, bytes) in &checkpoint.signal_artifact_objects {
+        if ContentHash::from_bytes(bytes) != *identity {
+            return Err(store_error(
+                "exact checkpoint signal artifact failed content authentication",
             ));
         }
     }
@@ -601,6 +656,16 @@ fn enforce_persist_limits(
             )?;
         }
     }
+    for (identity, object) in &objects.signal_artifacts {
+        if identities.insert(*identity) {
+            bytes = add_checkpoint_bytes(
+                bytes,
+                u64::try_from(object.len()).map_err(|_| {
+                    store_error("signal checkpoint object size is not representable")
+                })?,
+            )?;
+        }
+    }
     for target in &manifest.targets {
         let node = NodeId {
             name: target.node.clone(),
@@ -679,6 +744,18 @@ fn authenticate_existing_publication(
         if ContentHash::from_bytes(bytes) != *identity {
             return Err(store_error(
                 "event-log checkpoint object changed before retry",
+            ));
+        }
+        validate_file_hash(&object_path(object_directory, *identity), *identity)?;
+    }
+    for identity in &expected.signal_artifacts {
+        let bytes = objects
+            .signal_artifacts
+            .get(identity)
+            .ok_or_else(|| store_error("signal-artifact closure object disappeared"))?;
+        if ContentHash::from_bytes(bytes) != *identity {
+            return Err(store_error(
+                "signal-artifact checkpoint object changed before retry",
             ));
         }
         validate_file_hash(&object_path(object_directory, *identity), *identity)?;
@@ -915,6 +992,7 @@ fn manifest_and_objects(
             .scheduler
             .event_log_segment_dependencies()
             .to_vec(),
+        signal_artifacts: checkpoint.signal_artifact_objects.keys().copied().collect(),
         trigger_state: ContentHash::from_bytes(&trigger_state),
         assertion_state: ContentHash::from_bytes(&assertion_state),
         lifecycle_state: ContentHash::from_bytes(&lifecycle_state),
@@ -938,6 +1016,7 @@ fn manifest_and_objects(
             schedule,
             scheduler,
             event_log_segments: checkpoint.event_log_objects.clone(),
+            signal_artifacts: checkpoint.signal_artifact_objects.clone(),
             trigger_state,
             assertion_state,
             lifecycle_state,
@@ -955,6 +1034,7 @@ fn closure_identity(manifest: &ClosureManifest) -> Result<ContentHash, Scheduler
         frontier: manifest.frontier,
         scheduler: manifest.scheduler,
         event_log_segments: manifest.event_log_segments.clone(),
+        signal_artifacts: manifest.signal_artifacts.clone(),
         trigger_state: manifest.trigger_state,
         assertion_state: manifest.assertion_state,
         lifecycle_state: manifest.lifecycle_state,
@@ -1017,9 +1097,19 @@ fn decode_manifest(bytes: &[u8]) -> Result<ClosureManifest, String> {
 
 fn validate_manifest_shape(manifest: &ClosureManifest) -> Result<(), String> {
     if !manifest
-        .targets
+        .signal_artifacts
         .windows(2)
-        .all(|pair| pair[0].node < pair[1].node)
+        .all(|pair| pair[0] < pair[1])
+        || manifest
+            .event_log_segments
+            .iter()
+            .collect::<BTreeSet<_>>()
+            .len()
+            != manifest.event_log_segments.len()
+        || !manifest
+            .targets
+            .windows(2)
+            .all(|pair| pair[0].node < pair[1].node)
         || !manifest
             .node_generations
             .windows(2)
@@ -1594,6 +1684,13 @@ fn object_parent(run_state_root: &Path, scenario: ContentHash) -> PathBuf {
         .join("checkpoint-objects")
 }
 
+pub(super) fn checkpoint_dag_store(
+    run_state_root: &Path,
+    scenario: ContentHash,
+) -> Arc<dyn DagStore> {
+    Arc::new(LocalDagStore::new(object_parent(run_state_root, scenario)))
+}
+
 fn object_path(root: &Path, identity: ContentHash) -> PathBuf {
     root.join(identity.to_hex())
 }
@@ -1637,6 +1734,7 @@ mod tests {
             frontier: 0,
             scheduler: ContentHash::default(),
             event_log_segments: Vec::new(),
+            signal_artifacts: Vec::new(),
             trigger_state: ContentHash::default(),
             assertion_state: ContentHash::default(),
             lifecycle_state: ContentHash::default(),

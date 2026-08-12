@@ -321,6 +321,7 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
         config,
         checkpoint_targets: BTreeMap::new(),
         recorded_controls: Vec::new(),
+        signal_artifact_objects: BTreeMap::new(),
         debug_backend_paths: BTreeMap::new(),
         debug_gateway: None,
         debug_attach: None,

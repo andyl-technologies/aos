@@ -1707,6 +1707,7 @@ impl ProductionVmLifecycleLoop {
                     configuration: configuration.clone(),
                     scheduler,
                     event_log_objects,
+                    signal_artifact_objects: self.signal_artifact_objects.clone(),
                     trigger_state: self.trigger_state.clone(),
                     assertion_state: self.assertion_evaluator.checkpoint(),
                     terminal_verdict: self.terminal_verdict.clone(),

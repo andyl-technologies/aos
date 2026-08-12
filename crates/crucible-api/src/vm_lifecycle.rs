@@ -23,7 +23,8 @@ use crate::vm_resume::{
     launch_production_live_node_exact_snapshot_paused,
 };
 use crucible::model::{
-    FaultCoordinate, ResolvedEffectTrace, SignalArtifactProvider, SignalBoundarySnapshot,
+    FaultCoordinate, OwnedDagSignalArtifactProvider, ResolvedEffectTrace, SignalArtifactProvider,
+    SignalBoundarySnapshot,
 };
 use crucible::{
     Action, AssertionPhase, BackendQuantumLoop, BlackBoxHostOracle, Checkpoint, CheckpointKind,
@@ -52,6 +53,8 @@ mod assets;
 use assets::*;
 mod checkpoint_store;
 use checkpoint_store::{load_exact_checkpoint_set, persist_exact_checkpoint_set};
+mod checkpoint_dependencies;
+use checkpoint_dependencies::collect_signal_artifact_objects;
 
 /// Default final icount available to one production CLI lifecycle session.
 const DEFAULT_RUN_CEILING_ICOUNT: u64 = 16_000_000;
@@ -82,7 +85,7 @@ pub struct ProductionVmLifecycleConfig {
     debug: Option<ProductionVmDebugConfig>,
     branch: Option<ProductionVmBranchConfig>,
     branch_network_choices: Vec<crucible::OverrideDecision>,
-    signal_artifacts: Option<Arc<dyn SignalArtifactProvider>>,
+    signal_artifacts: Option<Arc<dyn DagStore>>,
     fault_replay: Option<ResolvedEffectTrace>,
     world_artifacts: Option<Arc<dyn DagStore>>,
     restore_checkpoint: Option<ProductionVmExactCheckpointSet>,
@@ -183,6 +186,7 @@ struct ProductionVmExactCheckpointSet {
     configuration: Configuration,
     scheduler: SingleSchedulerCheckpoint,
     event_log_objects: BTreeMap<ContentHash, Vec<u8>>,
+    signal_artifact_objects: BTreeMap<ContentHash, Vec<u8>>,
     trigger_state: EventGraphState,
     assertion_state: HostAssertionEvaluatorCheckpoint,
     terminal_verdict: Option<QuantumTerminalVerdict>,
@@ -402,6 +406,7 @@ pub struct ProductionVmLifecycleLoop {
     config: ProductionVmLifecycleConfig,
     checkpoint_targets: BTreeMap<ContentHash, ContentHash>,
     recorded_controls: Vec<ProductionVmRecordedControl>,
+    signal_artifact_objects: BTreeMap<ContentHash, Vec<u8>>,
     debug_backend_paths: BTreeMap<NodeId, PathBuf>,
     debug_gateway: Option<DebugGatewayProcess>,
     debug_attach: Option<GdbAttachInfo>,
@@ -718,6 +723,8 @@ pub fn build_production_vm_lifecycle_loop(
     config: &ProductionVmLifecycleConfig,
 ) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
     let restore_checkpoint = config.restore_checkpoint.clone();
+    let checkpoint_dag =
+        checkpoint_store::checkpoint_dag_store(&config.run_state_root, scenario.id());
     if let Some(checkpoint) = &restore_checkpoint {
         if checkpoint.configuration.def.id() != scenario.id()
             || checkpoint.configuration.id()
@@ -1089,8 +1096,11 @@ pub fn build_production_vm_lifecycle_loop(
             })
             .map_err(|error| loop_factory_error(format!("configure QEMU rendezvous: {error}")))?;
     }
-    let mut scheduler = SingleScheduler::new(runtime_scenario)
-        .map_err(|error| loop_factory_error(format!("construct QEMU scheduler: {error}")))?;
+    let mut scheduler = SingleScheduler::new_with_event_log_segment_store(
+        runtime_scenario,
+        Arc::clone(&checkpoint_dag),
+    )
+    .map_err(|error| loop_factory_error(format!("construct QEMU scheduler: {error}")))?;
     if let Some(checkpoint) = &restore_checkpoint {
         scheduler
             .attach_world_network_links(source.world())
@@ -1124,15 +1134,33 @@ pub fn build_production_vm_lifecycle_loop(
         .map_err(|error| loop_factory_error(format!("lower scenario trigger plan: {error}")))?
         .into_event_graph();
     let signal_plan = source.plan().fault_signals().clone();
-    let signal_artifacts = if signal_plan.programs().is_empty() {
-        None
+    let signal_artifact_objects = if signal_plan.programs().is_empty() {
+        BTreeMap::new()
+    } else if let Some(checkpoint) = &restore_checkpoint {
+        checkpoint.signal_artifact_objects.clone()
     } else {
-        Some(config.signal_artifacts.clone().ok_or_else(|| {
+        let store = config.signal_artifacts.as_ref().ok_or_else(|| {
             loop_factory_error(
-                "a nonempty signal fault plan requires a production signal-artifact provider",
+                "a nonempty signal fault plan requires a production signal-artifact store",
             )
-        })?)
+        })?;
+        collect_signal_artifact_objects(&signal_plan, store.as_ref())?
     };
+    let signal_artifacts: Option<Arc<dyn SignalArtifactProvider>> =
+        if signal_plan.programs().is_empty() {
+            None
+        } else {
+            let store = if restore_checkpoint.is_some() {
+                Arc::clone(&checkpoint_dag)
+            } else {
+                config.signal_artifacts.clone().ok_or_else(|| {
+                    loop_factory_error(
+                        "a nonempty signal fault plan requires a production signal-artifact store",
+                    )
+                })?
+            };
+            Some(Arc::new(OwnedDagSignalArtifactProvider::new(store)))
+        };
     let storage_fault_observations = Arc::new(std::sync::Mutex::new(
         storage_faults::ProductionFaultObservationJournal::default(),
     ));
@@ -1339,6 +1367,7 @@ pub fn build_production_vm_lifecycle_loop(
         recorded_controls: restore_checkpoint
             .as_ref()
             .map_or_else(Vec::new, |checkpoint| checkpoint.recorded_controls.clone()),
+        signal_artifact_objects,
         debug_backend_paths,
         debug_gateway: None,
         debug_attach: None,
