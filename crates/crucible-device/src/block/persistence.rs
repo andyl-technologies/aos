@@ -16,7 +16,9 @@ pub const HARD_BLOCK_PERSISTENCE_EDGES: usize = 16_777_216;
 pub const HARD_BLOCK_PERSISTENCE_EVIDENCE: usize = 1_048_576;
 
 /// Stable identity of one atomic write fragment.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct BlockWriteFragmentId {
     /// Original guest request identity.
     pub request_id: u32,
@@ -696,7 +698,9 @@ impl BlockPersistenceGraph {
 }
 
 /// Canonical total-order key for one ready persistence node.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct BlockPersistenceReadyKey {
     dependency_depth: u32,
     transformed_primary: [u8; 32],

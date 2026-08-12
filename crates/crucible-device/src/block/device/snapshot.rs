@@ -124,8 +124,8 @@ impl BlockSnapshot {
         if payload.len() > MAX_BLOCK_SNAPSHOT_BYTES {
             return Err(BlockSnapshotCodecError::Limit);
         }
-        let wire: BlockSnapshotWire = ciborium::de::from_reader(payload)
-            .map_err(|_| BlockSnapshotCodecError::Malformed)?;
+        let wire: BlockSnapshotWire =
+            ciborium::de::from_reader(payload).map_err(|_| BlockSnapshotCodecError::Malformed)?;
         let snapshot = Self {
             core: IoCoreSnapshot::from_canonical_bytes(&wire.core)
                 .map_err(|_| BlockSnapshotCodecError::Nested)?,
@@ -190,8 +190,7 @@ fn encode_pages(pages: &BTreeMap<u64, [u8; PAGE_SIZE]>) -> Vec<(u64, Vec<u8>)> {
 fn decode_pages(
     pages: Vec<(u64, Vec<u8>)>,
 ) -> Result<BTreeMap<u64, [u8; PAGE_SIZE]>, BlockSnapshotCodecError> {
-    if pages.len() > MAX_BLOCK_SNAPSHOT_PAGES
-        || pages.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+    if pages.len() > MAX_BLOCK_SNAPSHOT_PAGES || pages.windows(2).any(|pair| pair[0].0 >= pair[1].0)
     {
         return Err(BlockSnapshotCodecError::Limit);
     }
@@ -219,9 +218,9 @@ fn validate_snapshot(snapshot: &BlockSnapshot) -> Result<(), BlockSnapshotCodecE
     for pages in [&snapshot.overlay_delta.pages, &snapshot.full_pages] {
         if pages.len() > MAX_BLOCK_SNAPSHOT_PAGES
             || u64::try_from(pages.len()).map_or(true, |count| count > maximum_pages)
-            || pages.keys().any(|offset| {
-                offset % PAGE_SIZE as u64 != 0 || *offset >= snapshot.device_length
-            })
+            || pages
+                .keys()
+                .any(|offset| offset % PAGE_SIZE as u64 != 0 || *offset >= snapshot.device_length)
         {
             return Err(BlockSnapshotCodecError::Invalid);
         }

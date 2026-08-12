@@ -569,6 +569,22 @@ impl NinepDevice {
             session_epoch: snapshot.session_epoch,
         })
     }
+
+    /// Replaces this device with an authenticated snapshot over its current tree.
+    ///
+    /// The immutable served tree remains owned by the admitted `World`; all
+    /// mutable protocol, visibility, fault, and completion state is restored
+    /// from `snapshot`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`NinepDevice::restore`] when the checkpoint
+    /// contains invalid core, directive, visibility, or session state.
+    pub fn restore_snapshot(&mut self, snapshot: &NinepSnapshot) -> Result<(), DeviceError> {
+        let restored = Self::restore(snapshot, self.server.tree().clone())?;
+        *self = restored;
+        Ok(())
+    }
 }
 
 /// The detached COMPUTE view a [`NinepDevice`] hands to [`IoCore::process_inbox`].
@@ -1133,8 +1149,8 @@ impl NinepSnapshot {
         if payload.len() > MAX_NINEP_SNAPSHOT_BYTES {
             return Err(NinepSnapshotCodecError::Limit);
         }
-        let wire: NinepSnapshotWire = ciborium::de::from_reader(payload)
-            .map_err(|_| NinepSnapshotCodecError::Malformed)?;
+        let wire: NinepSnapshotWire =
+            ciborium::de::from_reader(payload).map_err(|_| NinepSnapshotCodecError::Malformed)?;
         let snapshot = Self {
             core: IoCoreSnapshot::from_canonical_bytes(&wire.core)
                 .map_err(|_| NinepSnapshotCodecError::Nested)?,
@@ -1210,10 +1226,7 @@ fn validate_ninep_snapshot(snapshot: &NinepSnapshot) -> Result<(), NinepSnapshot
     }
     for (_, entry) in &snapshot.server.fids {
         if entry.path.iter().any(|component| {
-            component.is_empty()
-                || component == "."
-                || component == ".."
-                || component.contains('/')
+            component.is_empty() || component == "." || component == ".." || component.contains('/')
         }) {
             return Err(NinepSnapshotCodecError::Invalid);
         }
@@ -1224,8 +1237,8 @@ fn validate_ninep_snapshot(snapshot: &NinepSnapshot) -> Result<(), NinepSnapshot
         {
             return Err(NinepSnapshotCodecError::Invalid);
         }
-        if let NinepResultDirective::Stale(object)
-        | NinepResultDirective::Misdirected(object) = &directive.result
+        if let NinepResultDirective::Stale(object) | NinepResultDirective::Misdirected(object) =
+            &directive.result
         {
             object
                 .validate()

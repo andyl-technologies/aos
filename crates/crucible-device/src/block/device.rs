@@ -1589,6 +1589,23 @@ impl BlockDevice {
         })
     }
 
+    /// Replaces this device with an authenticated snapshot over its current base image.
+    ///
+    /// This is the process-independent restore seam used by an already-instantiated
+    /// scheduler: the immutable base remains owned by the admitted `World`, while
+    /// every mutable core, overlay, durability, fault, and latency field comes from
+    /// `snapshot`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`BlockDevice::restore`] if the snapshot does
+    /// not match the admitted base image or contains invalid device state.
+    pub fn restore_snapshot(&mut self, snapshot: &BlockSnapshot) -> Result<(), DeviceError> {
+        let restored = Self::restore(snapshot, self.base.clone(), None)?;
+        *self = restored;
+        Ok(())
+    }
+
     /// Restores while overriding the latency model from the `World`.
     ///
     /// Like [`BlockDevice::restore`] but takes the `latency` model explicitly.

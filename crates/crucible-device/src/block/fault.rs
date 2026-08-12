@@ -241,7 +241,9 @@ impl BlockDurabilityConfig {
 }
 
 /// One exact half-open request-relative byte span.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct BlockFaultByteSpan {
     /// First selected byte relative to the request.
     pub start: u64,
@@ -1430,8 +1432,8 @@ impl BlockFaultState {
         if payload.len() > MAX_BLOCK_FAULT_STATE_BYTES {
             return Err(BlockFaultStateCodecError::Limit);
         }
-        let state: Self = ciborium::de::from_reader(payload)
-            .map_err(|_| BlockFaultStateCodecError::Malformed)?;
+        let state: Self =
+            ciborium::de::from_reader(payload).map_err(|_| BlockFaultStateCodecError::Malformed)?;
         state
             .validate_restore(device_length)
             .map_err(|_| BlockFaultStateCodecError::Invalid)?;
