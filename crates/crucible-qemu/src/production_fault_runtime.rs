@@ -807,7 +807,10 @@ impl ProductionFaultRuntime {
         &self,
         nodes: &mut QemuNodeSet,
     ) -> Result<ProductionFaultRuntimeCheckpoint, ProductionFaultRuntimeError> {
-        if nodes.has_pending_fault_events()? || !self.pending_node_lifecycle.is_empty() {
+        if nodes.has_pending_fault_events()?
+            || !self.pending_node_lifecycle.is_empty()
+            || !self.pending_node_boot.is_empty()
+        {
             return Err(ProductionFaultRuntimeError::PendingQemuFaultEvents);
         }
         validate_production_event_state(
@@ -2291,6 +2294,33 @@ mod tests {
                 .update_qemu_action_ledger(std::slice::from_ref(&remove))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn checkpoint_rejects_unacknowledged_node_boot_edge() {
+        let plan = FaultSignalPlan::new(Vec::new(), Vec::new(), FaultResourceLimits::default())
+            .unwrap_or_else(|error| panic!("empty test plan should be valid: {error}"));
+        let mut nodes = QemuNodeSet::new();
+        let mut runtime = ProductionFaultRuntime::new(
+            plan,
+            None,
+            SignalBoundarySnapshot::default(),
+            ContentHash::from_bytes(b"pending-node-boot"),
+            &nodes,
+        )
+        .unwrap_or_else(|error| panic!("empty runtime should initialize: {error}"));
+        runtime
+            .pending_node_boot
+            .insert(NodeId { name: String::from("node-a") });
+
+        assert!(matches!(
+            runtime.checkpoint(&mut nodes),
+            Err(ProductionFaultRuntimeError::PendingQemuFaultEvents)
+        ));
+        runtime.acknowledge_node_boot_requests();
+        runtime
+            .checkpoint(&mut nodes)
+            .unwrap_or_else(|error| panic!("acknowledged boot edge should checkpoint: {error}"));
     }
 
     fn pending_qemu_observation() -> FaultObservation {
