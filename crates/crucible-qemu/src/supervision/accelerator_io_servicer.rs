@@ -385,34 +385,52 @@ fn execute_fpga_lut(input: &[u8], capacity: usize) -> (u16, Vec<u8>) {
 pub enum QemuLiveAcceleratorServicerError {
     /// The public shared-memory region could not be mapped.
     #[error("map accelerator shared-memory region: {source}")]
-    MapRegion { source: SetupRegionMapError },
+    MapRegion {
+        /// Mapping error returned by the shared-memory boundary.
+        source: SetupRegionMapError,
+    },
     /// A typed mapped segment was invalid.
     #[error("access accelerator shared-memory region: {source}")]
     RegionAccess {
+        /// Validation or access error for the mapped setup region.
         source: MappedSetupRegionAccessError,
     },
     /// A ring operation failed.
     #[error("accelerator ring operation failed: {source}")]
     Ring {
+        /// Typed SPSC ring error.
         source: crucible_shmem::SpscRingError,
     },
     /// A fixed accelerator entry was invalid.
     #[error("accelerator entry is invalid: {source}")]
     Entry {
+        /// Validation error for the fixed-width accelerator entry.
         source: crucible_shmem::AcceleratorEntryError,
     },
     /// The same generation/sequence appeared twice.
     #[error("duplicate accelerator request generation {generation} sequence {sequence}")]
-    DuplicateRequest { generation: u64, sequence: u64 },
+    DuplicateRequest {
+        /// VM generation that owns the duplicate request.
+        generation: u64,
+        /// Request sequence duplicated within the generation.
+        sequence: u64,
+    },
     /// A cancellation did not match the immutable envelope of its request.
     #[error(
         "accelerator cancellation generation {generation} sequence {sequence} does not match its request"
     )]
-    CancellationMismatch { generation: u64, sequence: u64 },
+    CancellationMismatch {
+        /// VM generation carried by the mismatched cancellation.
+        generation: u64,
+        /// Request sequence carried by the mismatched cancellation.
+        sequence: u64,
+    },
     /// Completion time overflowed the coordinate space.
     #[error("accelerator service coordinate overflow at {guest_icount} + {service_units}")]
     ServiceCoordinateOverflow {
+        /// Guest instruction count where service began.
         guest_icount: u64,
+        /// Deterministic service units added to the starting coordinate.
         service_units: u64,
     },
     /// A validated entry carried an unknown class.
