@@ -454,6 +454,41 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
             ),
         )
         .unwrap_or_else(|error| panic!("malformed fixture should authenticate outside: {error}"));
+    let mismatched_scheduler_before = restored_scheduler
+        .network_continuation_digest()
+        .unwrap_or_else(|error| panic!("scheduler should digest: {error}"));
+    let mut mismatched_pending = Vec::new();
+    let mismatch = ProductionFaultNetworkInterceptor::restore(
+        down_plan(segment.clone()),
+        Some(Arc::new(NoArtifacts)),
+        ContentHash::from_bytes(b"production-availability-drop"),
+        checkpoint.clone(),
+        &mut nodes,
+        world.fault_topology().clone(),
+        world.links().to_vec(),
+        &mut restored_scheduler,
+        &mut mismatched_pending,
+        Arc::new(Mutex::new(
+            super::storage_faults::ProductionFaultObservationJournal::default(),
+        )),
+    )
+    .err()
+    .unwrap_or_else(|| panic!("mismatched scheduler continuation should fail closed"));
+    assert!(
+        mismatch
+            .to_string()
+            .contains("scheduler and production-fault network continuations differ")
+    );
+    assert_eq!(
+        restored_scheduler
+            .network_continuation_digest()
+            .unwrap_or_else(|error| panic!("scheduler should digest: {error}")),
+        mismatched_scheduler_before
+    );
+    assert!(mismatched_pending.is_empty());
+    restored_scheduler
+        .restore_network_checkpoint(&scheduler.network_checkpoint())
+        .unwrap_or_else(|error| panic!("test scheduler continuation should restore: {error}"));
     let scheduler_before_rejection = restored_scheduler
         .network_continuation_digest()
         .unwrap_or_else(|error| panic!("scheduler should digest: {error}"));
