@@ -29,10 +29,16 @@ in
       hash = "sha256-e98T3gpx2VVUwOPkfV6PUHhsMNT0tjt8WTsdEa91ye4=";
     };
 
-    buildDeps = [
-      gnumake
-      pkg-config
-    ] ++ (if kernel == null then [] else [bash perl python3 kmod elfutils dwarves]);
+    buildDeps =
+      [
+        gnumake
+        pkg-config
+      ]
+      ++ (
+        if kernel == null
+        then []
+        else [bash perl python3 kmod elfutils dwarves]
+      );
     runtimeDeps = [
       util-linux
       openssl
@@ -59,7 +65,11 @@ in
           configure_args=(
             --prefix="$out"
             --sysconfdir="$out/etc"
-            --with-config=${if kernel == null then "user" else "all"}
+            --with-config=${
+            if kernel == null
+            then "user"
+            else "all"
+          }
             --with-mounthelperdir="$out/sbin"
             --with-udevdir="$out/lib/udev"
             --with-systemdunitdir="$out/lib/systemd/system"
@@ -67,12 +77,16 @@ in
             --enable-sysvinit=no
             --disable-static
           )
-          ${if kernel == null then "" else ''
-            configure_args+=(
-              --with-linux=${kernel.dev}/lib/modules/${kernel.version}/build
-              --with-linux-obj=${kernel.dev}/lib/modules/${kernel.version}/build
-            )
-          ''}
+          ${
+            if kernel == null
+            then ""
+            else ''
+              configure_args+=(
+                --with-linux=${kernel.dev}/lib/modules/${kernel.version}/build
+                --with-linux-obj=${kernel.dev}/lib/modules/${kernel.version}/build
+              )
+            ''
+          }
           if ! ./configure "''${configure_args[@]}"; then
             for probe_log in build/build.log*; do
               [ -f "$probe_log" ] || continue
@@ -87,6 +101,13 @@ in
         name = "build";
         script = ''
           export LD_LIBRARY_PATH="${elfutils}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          ${
+            if kernel == null
+            then ""
+            else ''
+              export KCFLAGS="''${KCFLAGS:-} -ffile-prefix-map=${kernel.dev}=/build/kernel-sdk"
+            ''
+          }
           make -j$NIX_BUILD_CORES
         '';
       }
@@ -95,11 +116,30 @@ in
         script = ''
           # Override hardcoded paths that would install outside the store
           make install \
-            ${if kernel == null then "" else ''INSTALL_MOD_PATH="$out"''} \
+            ${
+            if kernel == null
+            then ""
+            else ''INSTALL_MOD_PATH="$out"''
+          } \
+            ${
+            if kernel == null
+            then ""
+            else ''INSTALL_MOD_STRIP=1''
+          } \
             i_tdir=$out/share/initramfs-tools \
             initconfdir=$out/etc/default \
             dracutdir=$out/lib/dracut \
             bashcompletiondir=$out/share/bash-completion/completions
+
+          # The upstream install target includes its full functional test
+          # suite. It belongs in a dedicated test output, not on a production
+          # host, and its compiled fixtures retain compiler paths.
+          rm -rf "$out/share/zfs/zfs-tests"
+
+          # zvol_id is installed below lib/udev rather than bin/libexec, so the
+          # generic fixup pass does not recognize it as a runtime executable.
+          # Remove its compile-time include paths explicitly.
+          strip --strip-debug "$out/lib/udev/zvol_id"
         '';
       }
     ];
