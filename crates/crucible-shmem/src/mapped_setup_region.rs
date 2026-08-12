@@ -33,6 +33,15 @@ pub struct MappedAcceleratorProducerRingMut<'a> {
 }
 
 impl MappedAcceleratorProducerRingMut<'_> {
+    /// Returns the exact number of entries awaiting consumption.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when the ring geometry or indices are invalid.
+    pub fn live_len(&self) -> Result<u64, SpscRingError> {
+        self.header.live_accelerator_len(self.entries)
+    }
+
     /// Enqueues one validated accelerator record.
     ///
     /// # Errors
@@ -54,6 +63,15 @@ pub struct MappedAcceleratorConsumerRingMut<'a> {
 }
 
 impl MappedAcceleratorConsumerRingMut<'_> {
+    /// Returns the exact number of entries awaiting consumption.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when the ring geometry or indices are invalid.
+    pub fn live_len(&self) -> Result<u64, SpscRingError> {
+        self.header.live_accelerator_len(self.entries)
+    }
+
     /// Dequeues and validates one accelerator record.
     ///
     /// # Errors

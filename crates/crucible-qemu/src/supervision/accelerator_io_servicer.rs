@@ -78,6 +78,28 @@ impl QemuLiveAcceleratorServicer {
             .min()
     }
 
+    /// Reports whether any accelerator request, completion, or host job is live.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveAcceleratorServicerError`] when either shared-memory
+    /// ring has invalid geometry or corrupt producer/consumer indices.
+    pub fn has_pending_work(&mut self) -> Result<bool, QemuLiveAcceleratorServicerError> {
+        let rings = self
+            .region
+            .host_accelerator_rings_mut(self.vm_slot)
+            .map_err(|source| QemuLiveAcceleratorServicerError::RegionAccess { source })?;
+        let requests = rings
+            .requests
+            .live_len()
+            .map_err(|source| QemuLiveAcceleratorServicerError::Ring { source })?;
+        let completions = rings
+            .completions
+            .live_len()
+            .map_err(|source| QemuLiveAcceleratorServicerError::Ring { source })?;
+        Ok(!self.pending.is_empty() || requests != 0 || completions != 0)
+    }
+
     /// Drains requests and publishes completions due at `guest_icount`.
     ///
     /// # Errors

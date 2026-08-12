@@ -68,6 +68,20 @@ impl RingHeader {
         live_count(head, tail, capacity)
     }
 
+    /// Returns the exact number of live accelerator entries in this ring.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError::InvalidCapacity`] when `entries` is empty or not
+    /// power-of-two sized, or [`SpscRingError::CorruptIndices`] when the shared
+    /// producer/consumer indices describe an impossible live count.
+    pub fn live_accelerator_len(&self, entries: &[AcceleratorEntry]) -> Result<u64, SpscRingError> {
+        let capacity = validated_capacity(entries)?;
+        let tail = self.write_idx.load(Ordering::Acquire);
+        let head = self.read_idx.load(Ordering::Acquire);
+        live_count(head, tail, capacity)
+    }
+
     /// Enqueues one frame into producer-owned storage.
     ///
     /// The producer writes the frame bytes before publishing the new
