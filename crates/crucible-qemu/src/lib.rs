@@ -201,7 +201,8 @@ pub use node_factory::{
 pub use node_set::QemuNodeSetBlockBoundaryCheckpoint;
 pub use node_set::{QemuNodeSet, QemuNodeTerminalReplacementPlan};
 pub use production_fault_runtime::{
-    ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionFaultRuntimeError,
+    ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint,
+    ProductionFaultRuntimeCheckpointCodecError, ProductionFaultRuntimeError,
     ProductionNetworkStateCheckpoint, QemuNodeLifecycleDecision,
 };
 pub use production_fault_sink::ProductionFaultActionSink;

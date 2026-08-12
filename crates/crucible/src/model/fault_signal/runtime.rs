@@ -1010,7 +1010,9 @@ impl FaultRuntimeCheckpoint {
 }
 
 /// Stable event classes emitted by signal-driven fault execution.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum FaultObservationKind {
     /// A signal changed value.
     SignalTransition,
@@ -1063,7 +1065,7 @@ impl FaultObservationKind {
 }
 
 /// One stable typed fault-observation record.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct FaultObservation {
     /// Event schema semantic version.
     pub semantic_version: u16,
