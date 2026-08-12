@@ -784,6 +784,21 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                     source.to_string(),
                 )
             })?;
+        let prior_ninep = self
+            .ninep
+            .as_mut()
+            .map(|ninep| ninep.servicer.checkpoint(execution_binding))
+            .transpose()
+            .map_err(|source| {
+                QemuAsyncDriverRuntimeError::new(
+                    "capture 9p rollback checkpoint",
+                    source.to_string(),
+                )
+            })?;
+        let prior_accelerator = self
+            .accelerator
+            .as_ref()
+            .map(QemuLiveAcceleratorServicer::checkpoint);
         match (self.block.as_mut(), checkpoint.block.as_ref()) {
             (Some(block), Some(checkpoint)) => block
                 .servicer
@@ -832,7 +847,8 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
             }
             return Err(error);
         }
-        match (self.accelerator.as_mut(), checkpoint.accelerator.as_ref()) {
+        let accelerator_result = match (self.accelerator.as_mut(), checkpoint.accelerator.as_ref())
+        {
             (Some(accelerator), Some(checkpoint)) => accelerator
                 .restore_checkpoint(checkpoint)
                 .map_err(|source| {
@@ -846,7 +862,36 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 "restore host-I/O checkpoint",
                 "validated accelerator topology changed before commit",
             )),
-        }?;
+        };
+        if let Err(error) = accelerator_result {
+            let mut rollback_failures = Vec::new();
+            if let (Some(ninep), Some(prior)) = (self.ninep.as_mut(), prior_ninep.as_ref())
+                && let Err(rollback) = ninep.servicer.restore_checkpoint(execution_binding, prior)
+            {
+                rollback_failures.push(format!("9p: {rollback}"));
+            }
+            if let (Some(block), Some(prior)) = (self.block.as_mut(), prior_block.as_ref())
+                && let Err(rollback) = block.servicer.restore_checkpoint(execution_binding, prior)
+            {
+                rollback_failures.push(format!("block: {rollback}"));
+            }
+            if let (Some(accelerator), Some(prior)) =
+                (self.accelerator.as_mut(), prior_accelerator.as_ref())
+                && let Err(rollback) = accelerator.restore_checkpoint(prior)
+            {
+                rollback_failures.push(format!("accelerator: {rollback}"));
+            }
+            if rollback_failures.is_empty() {
+                return Err(error);
+            }
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "roll back aggregate host-I/O checkpoint",
+                format!(
+                    "accelerator restore failed: {error}; rollback failed: {}",
+                    rollback_failures.join(", ")
+                ),
+            ));
+        }
         self.publish_device_completion_deadline()?;
         Ok(())
     }
