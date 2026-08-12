@@ -540,6 +540,15 @@ pub trait QuantumLoop {
         None
     }
 
+    /// Observes a terminal verdict while preserving checkpoint ownership.
+    ///
+    /// The default consumes the verdict for loops whose checkpoint state does
+    /// not own terminal-trigger continuation. Production loops override this
+    /// hook to retain the verdict until the terminal checkpoint is captured.
+    fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
+        self.take_terminal_verdict()
+    }
+
     /// Shuts down scheduler/backend resources and returns final log entries.
     ///
     /// Implementations that own live backends should override this hook and

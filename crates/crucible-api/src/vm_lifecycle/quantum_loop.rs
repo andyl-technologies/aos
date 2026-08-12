@@ -476,6 +476,10 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         self.terminal_verdict.take()
     }
 
+    fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
+        self.terminal_verdict.clone()
+    }
+
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         self.reconcile_indeterminate_debug_ownership()?;
         let pending = self.inner.loop_impl().pending_branch_effect_choice_count();
@@ -1726,6 +1730,15 @@ impl ProductionVmLifecycleLoop {
                     snapshot_cleanup?;
                     return Err(error);
                 }
+                fs::remove_dir_all(&checkpoint_root).map_err(|error| {
+                    SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "remove chunked exact checkpoint staging copy {}: {error}",
+                            checkpoint_root.display()
+                        ),
+                    }
+                })?;
+                self.rollback_exact_captures(&captured)?;
                 let checkpoint_set_identity = checkpoint_set.identity;
                 let replaced = self
                     .checkpoint_targets
