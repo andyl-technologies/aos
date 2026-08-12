@@ -445,13 +445,25 @@ most 65,536 entries or 16 MiB of inline bytes in one declaration.
 | `retention` | positive minimum age, wear-age contribution, bit probability, bounded changed-bit count | `storage.flash_state.retention_rule` |
 | `read_disturb` | positive read threshold, bounded neighbor distance, bit probability, bounded changed-bit count | `storage.flash_state.read_disturb_rule` |
 | `program_erase` | normal program/erase and worn probabilities; explicit partial-program and partial-erase booleans | `storage.flash_state.program_erase_rule` |
-| `array_state` | selected World array has one explicit guest-visible logical block device plus distinct backing members; separate nonempty canonical member and path tables contain every and only its members/paths, with explicit online state | `storage.array_state.member_path_state` |
-| `array_selection` | `lowest_healthy/stable_hash/least_loaded` | `storage.array_state.selection_policy` |
-| `rebuild` | positive chunk bytes, bounded queue depth, positive byte rate | `storage.array_state.rebuild_service` |
-| `array_consistency` | `require_quorum/degraded_commit/atomic_stripe`; the effect separately references a non-success block `typed_result` for requests with no legal quorum | `storage.array_state.consistency_policy`, `storage.array_state.failure_result` |
+| `array_state` | selected World array has one explicit guest-visible logical block device plus distinct backing members; separate canonical member and path tables contain every and only its members/paths, with explicit online state | required `storage_array.member_path_state`; optionally replaced by `storage.array_state.member_path_state` while that state machine is active |
+| `array_selection` | `lowest_healthy/stable_hash/least_loaded` | required `storage_array.selection_policy`; optionally replaced by `storage.array_state.selection_policy` |
+| `rebuild` | positive chunk bytes, bounded queue depth, positive byte rate | required `storage_array.rebuild_service`; optionally replaced by `storage.array_state.rebuild_service` |
+| `array_consistency` | `require_quorum/degraded_commit/atomic_stripe`; the array and effect each reference a non-success block `typed_result` for requests with no legal quorum | required `storage_array.consistency_policy` and `storage_array.failure_result`; optionally replaced by the corresponding `storage.array_state` fields |
 | `ninep_visibility` | scope `global/per_session/writer_immediate`; `atomic_metadata_and_data`; `retain_deleted_objects`; `data_visibility_lag_nanos` absent for atomic visibility and required positive for non-atomic visibility | `ninep.visibility.visibility_policy` |
 | `ninep_object` | absolute canonical path including `/`; 32-bit 9p QID version sequence; Linux mode; bounded exact bytes; `deleted`; a deleted object requires zero mode and empty bytes, while live objects require directory, regular-file, or symlink mode and directories require empty bytes | stale or misdirected `ninep.result`; `ninep.visibility.update` |
 | `bytes` | nonempty bounded exact bytes | static stale block-read versions |
+
+Every `[[world.fault_topology.storage_array]]` row requires `device`,
+`semantic_version`, `layout`, `chunk_bytes`, `read_quorum`, `write_quorum`,
+canonical `members`, canonical `paths`, `member_path_state`, `selection_policy`,
+`rebuild_service`, `consistency_policy`, `failure_result`, and `fault_domains`.
+The logical `device` is distinct from every member device; backing devices are
+unique; ordinals are the contiguous sequence beginning at zero; the member/path
+state artifact is an exact table for the declaration; and member capacity after
+layout overhead covers the logical device. These required references form the
+fault-free baseline. An active `storage.array_state` action replaces the whole
+baseline policy atomically and reversion restores the baseline; fields never
+inherit piecemeal and there are no implicit defaults.
 
 Plan admission checks every reference's artifact class, nested typed-result
 references, namespace capacity/alignment against its exact device, path and

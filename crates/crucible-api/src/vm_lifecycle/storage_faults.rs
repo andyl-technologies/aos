@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use super::*;
 
 use crucible::model::{
-    ContentHash, EffectSpecification, FAULT_RUNTIME_STATE_VERSION, FaultCoordinate,
+    ContentHash, EffectSpecification, FAULT_RUNTIME_STATE_VERSION, FaultCoordinate, FaultObjectId,
     FaultObservation, FaultObservationKind, FaultOperation, FaultOpportunity, FaultPhase,
     FaultSignalPlan, NinePResultKind, OpportunityPayload, ResolvedBindingAction,
     ResolvedFaultTarget, StorageEffectSpecification, StoragePolicyArtifactKind,
@@ -40,7 +40,8 @@ use crucible_qemu::{
     block_request_persistence_fault_opportunity, merge_block_fault_phase_directive,
     plan_storage_array_write, read_storage_array, resolve_block_controller_transition,
     resolve_block_fault_directive, resolve_block_persistence_media_directive,
-    resolve_storage_array_policy, resolve_volatile_cache_loss, storage_recovery_event_key,
+    resolve_storage_array_baseline, resolve_storage_array_policy, resolve_volatile_cache_loss,
+    storage_recovery_event_key,
 };
 
 /// Maximum phase/device settle transitions performed during one host poll.
@@ -339,6 +340,7 @@ pub(super) struct ProductionBlockFaultCoordinator {
     target: ResolvedFaultTarget,
     opportunity_targets: Vec<ResolvedFaultTarget>,
     array_targets: Vec<ResolvedFaultTarget>,
+    baseline_array_id: Option<String>,
     context: StorageFaultResolutionContext,
     icount_shift: u8,
 }
@@ -376,6 +378,12 @@ impl ProductionBlockFaultCoordinator {
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
+        let baseline_array_id = world
+            .fault_topology()
+            .storage_arrays
+            .iter()
+            .find(|array| storage_array_attaches_device(&world, array, &target))
+            .map(|array| array.id.as_str().to_owned());
         Self {
             runtime,
             cursor,
@@ -385,6 +393,7 @@ impl ProductionBlockFaultCoordinator {
             target,
             opportunity_targets: opportunity_targets.into_iter().collect(),
             array_targets,
+            baseline_array_id,
             context: StorageFaultResolutionContext::new(scenario_seed),
             icount_shift,
         }
@@ -409,7 +418,16 @@ impl ProductionBlockFaultCoordinator {
         if policies.len() > 1 {
             return Err(StorageFaultResolutionError::UnsupportedTarget);
         }
-        Ok(policies.pop())
+        if let Some(policy) = policies.pop() {
+            return Ok(Some(policy));
+        }
+        self.baseline_array_id
+            .as_deref()
+            .map(FaultObjectId::parse)
+            .transpose()
+            .map_err(|_| StorageFaultResolutionError::UnsupportedTarget)?
+            .map(|array| resolve_storage_array_baseline(&self.world, &array))
+            .transpose()
     }
 
     fn evaluate_array_phase(
@@ -986,14 +1004,6 @@ impl ProductionBlockFaultCoordinator {
                     merge_block_fault_phase_directive(&mut directive, phase, partial),
                 )?;
             }
-            let array_policy = self.evaluate_array_phase(
-                &request,
-                observed.request_sequence,
-                observed.wire_digest,
-                phase,
-                coordinate,
-            )?;
-            self.compose_array_phase(&mut directive, array_policy.as_ref(), &request, phase)?;
         }
         directive.execution_nanos = request_nanos;
         self.after_evaluation(
@@ -1090,7 +1100,6 @@ impl ProductionBlockFaultCoordinator {
                     ),
                 };
                 let mut directive = opportunity.resolved.clone();
-                let mut array_policy = None;
                 for target in self.request_targets(&opportunity.request) {
                     let fault_opportunity = block_request_persistence_fault_opportunity(
                         target.clone(),
@@ -1122,6 +1131,7 @@ impl ProductionBlockFaultCoordinator {
                         ),
                     )?;
                 }
+                let mut array_actions = Vec::new();
                 for target in self.array_targets.clone() {
                     let fault_opportunity = block_request_persistence_fault_opportunity(
                         target,
@@ -1132,21 +1142,11 @@ impl ProductionBlockFaultCoordinator {
                         storage_error("construct storage array persist opportunity", error)
                     })?;
                     let evaluation = self.evaluate_phase(&fault_opportunity)?;
-                    let resolved = self
-                        .active_array_policy(&evaluation.actions)
-                        .map_err(|error| storage_error("resolve storage array policy", error))?;
-                    if let Some(resolved) = resolved {
-                        if let Some(existing) = &array_policy
-                            && existing != &resolved
-                        {
-                            return Err(storage_error(
-                                "resolve storage array policy",
-                                "multiple active array policies disagree",
-                            ));
-                        }
-                        array_policy = Some(resolved);
-                    }
+                    array_actions.extend(evaluation.actions);
                 }
+                let array_policy = self
+                    .active_array_policy(&array_actions)
+                    .map_err(|error| storage_error("resolve storage array policy", error))?;
                 directive.execution_nanos = opportunity.ready_nanos;
                 if !directive.persistence_transforms.is_empty() {
                     directive.persistence_admitted_nanos = opportunity.ready_nanos;
@@ -2375,11 +2375,31 @@ fn storage_array_target_attaches_device(
         .storage_arrays
         .iter()
         .find(|candidate| candidate.id.as_str() == array.as_str())
-        .is_some_and(|array| {
-            world.io_nodes().any(|node| {
-                node.id.name == array.device.as_str() && node.fault_target_hash() == attached
-            })
-        })
+        .is_some_and(|array| storage_array_attaches_hash(world, array, attached))
+}
+
+fn storage_array_attaches_device(
+    world: &World,
+    array: &crucible::model::WorldStorageArray,
+    attached: &ResolvedFaultTarget,
+) -> bool {
+    match attached {
+        ResolvedFaultTarget::BlockDevice { device }
+        | ResolvedFaultTarget::BlockRange { device, .. } => {
+            storage_array_attaches_hash(world, array, *device)
+        }
+        _ => false,
+    }
+}
+
+fn storage_array_attaches_hash(
+    world: &World,
+    array: &crucible::model::WorldStorageArray,
+    attached: ContentHash,
+) -> bool {
+    world
+        .io_nodes()
+        .any(|node| node.id.name == array.device.as_str() && node.fault_target_hash() == attached)
 }
 
 fn block_target_intersects_request(target: &ResolvedFaultTarget, request: &BlockRequest) -> bool {

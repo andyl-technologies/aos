@@ -847,6 +847,8 @@ impl WorldFaultTopology {
                 )?;
             }
         }
+        let mut array_logical_devices = BTreeSet::new();
+        let mut array_member_devices = BTreeSet::new();
         for array in &self.storage_arrays {
             require(
                 array.semantic_version == 1,
@@ -862,6 +864,10 @@ impl WorldFaultTopology {
                     .get(array.device.as_str())
                     .is_some_and(|device| device.kind == WorldStorageKind::Block),
                 "storage array logical device",
+            )?;
+            require(
+                array_logical_devices.insert(array.device.clone()),
+                "storage array logical device ownership",
             )?;
             require(!array.members.is_empty(), "storage array members")?;
             hard_count(&array.members, "storage array members", 4_096)?;
@@ -893,6 +899,12 @@ impl WorldFaultTopology {
             require(
                 member_devices.len() == array.members.len(),
                 "storage array backing devices",
+            )?;
+            require(
+                member_devices
+                    .iter()
+                    .all(|device| array_member_devices.insert(device.clone())),
+                "storage array backing device ownership",
             )?;
             for member in &array.members {
                 require(
@@ -950,7 +962,67 @@ impl WorldFaultTopology {
                     "storage array path policy",
                 )?;
             }
+            let state = self
+                .storage_policy_artifact(&array.member_path_state)
+                .ok_or_else(|| invalid("storage array member/path state"))?;
+            let StoragePolicyArtifactKind::ArrayState { members, paths } = &state.artifact else {
+                return Err(invalid("storage array member/path state"));
+            };
+            require(
+                members
+                    .iter()
+                    .map(|member| member.member.as_str())
+                    .eq(array.members.iter().map(|member| member.id.as_str()))
+                    && paths
+                        .iter()
+                        .map(|path| path.path.as_str())
+                        .eq(array.paths.iter().map(|path| path.id.as_str())),
+                "storage array complete member/path state",
+            )?;
+            require(
+                self.storage_policy_artifact(&array.selection_policy)
+                    .is_some_and(|artifact| {
+                        matches!(
+                            artifact.artifact,
+                            StoragePolicyArtifactKind::ArraySelection(_)
+                        )
+                    }),
+                "storage array selection policy",
+            )?;
+            require(
+                self.storage_policy_artifact(&array.rebuild_service)
+                    .is_some_and(|artifact| {
+                        matches!(artifact.artifact, StoragePolicyArtifactKind::Rebuild(_))
+                    }),
+                "storage array rebuild service",
+            )?;
+            require(
+                self.storage_policy_artifact(&array.consistency_policy)
+                    .is_some_and(|artifact| {
+                        matches!(
+                            artifact.artifact,
+                            StoragePolicyArtifactKind::ArrayConsistency(_)
+                        )
+                    }),
+                "storage array consistency policy",
+            )?;
+            require(
+                self.storage_policy_artifact(&array.failure_result)
+                    .is_some_and(|artifact| {
+                        matches!(
+                            artifact.artifact,
+                            StoragePolicyArtifactKind::TypedResult(
+                                StoragePolicyTypedResult::Block { result }
+                            ) if result != StoragePolicyResult::Success
+                        )
+                    }),
+                "storage array failure result",
+            )?;
         }
+        require(
+            array_logical_devices.is_disjoint(&array_member_devices),
+            "storage array logical and backing device roles",
+        )?;
         let mut declared_node_capabilities = BTreeSet::new();
         for capabilities in &self.node_capabilities {
             require(
@@ -2352,6 +2424,16 @@ pub struct WorldStorageArray {
     pub members: Vec<WorldStorageArrayMember>,
     /// Closed multipath declarations.
     pub paths: Vec<WorldStoragePath>,
+    /// Complete baseline member/path online-state artifact.
+    pub member_path_state: FaultObjectId,
+    /// Baseline deterministic member-selection artifact.
+    pub selection_policy: FaultObjectId,
+    /// Baseline bounded rebuild-service artifact.
+    pub rebuild_service: FaultObjectId,
+    /// Baseline partial-update consistency artifact.
+    pub consistency_policy: FaultObjectId,
+    /// Baseline typed non-success result for unavailable quorum.
+    pub failure_result: FaultObjectId,
     /// Fault-domain memberships.
     pub fault_domains: Vec<SignalId>,
 }
