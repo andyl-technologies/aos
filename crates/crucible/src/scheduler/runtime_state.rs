@@ -107,7 +107,7 @@ impl From<SchedulerError> for SchedulerLivenessError {
 }
 
 /// Deterministic quiescence evidence computed from scheduler-owned state.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SchedulerQuiescence {
     /// Authoritative scheduler-state reasons the system is not quiescent.
     pub blockers: Vec<SchedulerQuiescenceBlocker>,
@@ -122,7 +122,7 @@ impl SchedulerQuiescence {
 }
 
 /// One scheduler-owned state component that prevents quiescence.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SchedulerQuiescenceBlocker {
     /// A node is still runnable and may be selected by PICK.
     RunnableNode {

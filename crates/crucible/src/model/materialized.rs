@@ -654,7 +654,9 @@ impl DecisionRngState {
 }
 
 /// The shared event-log prefix position for a checkpoint.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct EventLogOffset {
     /// Content address of the shared event-log prefix.
     pub prefix: ContentHash,

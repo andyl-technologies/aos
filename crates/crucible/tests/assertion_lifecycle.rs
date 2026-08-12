@@ -181,6 +181,46 @@ fn lifecycle_states_progress_and_terminal_outcomes_distinguish_passed_from_satis
 }
 
 #[test]
+fn assertion_checkpoint_round_trip_preserves_temporal_continuation() {
+    let properties = properties(vec![assertion(
+        "eventually-open",
+        Property::Eventually {
+            trigger: Predicate::named("trigger"),
+            property: Predicate::named("done"),
+            deadline: time(5),
+        },
+    )]);
+    let first_prefix = prefix(1);
+    let final_prefix = prefix(3);
+    let mut original = HostAssertionEvaluator::new(&properties);
+    let mut original_oracle = linted_host_oracle(lifecycle_oracle);
+    original.observe_prefix(&first_prefix, &mut original_oracle);
+
+    let encoded = original
+        .checkpoint()
+        .canonical_bytes()
+        .expect("encode assertion continuation");
+    let checkpoint = crucible::HostAssertionEvaluatorCheckpoint::from_canonical_bytes(&encoded)
+        .expect("decode assertion continuation");
+    assert_eq!(
+        checkpoint
+            .canonical_bytes()
+            .expect("re-encode assertion continuation"),
+        encoded
+    );
+
+    let mut restored = HostAssertionEvaluator::new(&properties);
+    checkpoint
+        .restore_into(&mut restored, &first_prefix)
+        .expect("restore assertion continuation");
+    let mut restored_oracle = linted_host_oracle(lifecycle_oracle);
+    assert_eq!(
+        restored.finalize_prefix(&final_prefix, &mut restored_oracle),
+        original.finalize_prefix(&final_prefix, &mut original_oracle)
+    );
+}
+
+#[test]
 fn edge_outcomes_carry_lifecycle_and_verdict_disposition() {
     let properties = properties(vec![
         assertion(
