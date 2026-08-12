@@ -80,7 +80,7 @@ in
           grep -Fxq 'shmem_header_hash=${pkgs.qemu-crucible-source.passthru.shmemHeaderHash}' "$source_manifest"
           grep -Fxq 'plugin_cargo_deps_hash=${pkgs.qemu-crucible-source.passthru.cargoDepsHash}' "$source_manifest"
           grep -Fxq 'corresponding_source_scope=qemu-crucible,crucible-qemu-plugin' "$source_manifest"
-          grep -Fxq 'licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later' "$source_manifest"
+          grep -Fxq 'licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,BSD-2-Clause,BSD-3-Clause' "$source_manifest"
           grep -Fxq 'qemu_combined_work_license=GPL-2.0-only' "$source_manifest"
           grep -Fxq 'qemu_created_source_license=GPL-2.0-or-later' "$source_manifest"
 
@@ -145,6 +145,25 @@ in
           test -f "$source_root/plugin/workspace/crates/crucible-qemu-plugin/Cargo.toml"
           test -f "$source_root/plugin/workspace/pkgs/emulation/crucible-qemu-plugin.nix"
           test -n "$(find "$source_root/plugin/cargo-vendor" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          archived_workspace="$TMPDIR/archived-plugin-workspace"
+          archived_cargo_home="$TMPDIR/archived-plugin-cargo-home"
+          archived_target="$TMPDIR/archived-plugin-target"
+          cp -R "$source_root/plugin/workspace/crates" "$archived_workspace"
+          chmod -R u+w "$archived_workspace"
+          mkdir -p "$archived_cargo_home" "$archived_workspace/.cargo"
+          if [ -f "$source_root/plugin/cargo-vendor/.cargo/config.toml" ]; then
+            sed "s|@vendor@|$source_root/plugin/cargo-vendor|g" \
+              "$source_root/plugin/cargo-vendor/.cargo/config.toml" \
+              > "$archived_workspace/.cargo/config.toml"
+          else
+            printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "%s"\n\n' \
+              "$source_root/plugin/cargo-vendor" \
+              > "$archived_workspace/.cargo/config.toml"
+          fi
+          CARGO_HOME="$archived_cargo_home" cargo check --frozen --offline \
+            --manifest-path "$archived_workspace/Cargo.toml" \
+            --target-dir "$archived_target" \
+            -p crucible-qemu-plugin
           actual_patch_count=$(find "$source_root/patches" -name '[0-9][0-9][0-9][0-9]-*.patch' | wc -l)
           test "$actual_patch_count" -eq "$patch_count"
           cmp "$source_root/interfaces/crucible_shmem_abi.h" \
@@ -166,13 +185,13 @@ in
           suite_nix="$CRUCIBLE_GATE_SOURCE/pkgs/tools/crucible/crucible.nix"
           release_nix="$CRUCIBLE_GATE_SOURCE/pkgs/tools/crucible/_release-manifest.nix"
           grep -Fq 'runtimeDeps = [controller qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures];' "$suite_nix"
-          grep -Fq 'license = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later"];' "$suite_nix"
+          grep -Fq 'license = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later" "BSD-2-Clause" "BSD-3-Clause"];' "$suite_nix"
           grep -Fq 'correspondingSource = qemu-crucible-source;' "$suite_nix"
           grep -Fq 'standalone_release=false' "$CRUCIBLE_GATE_SOURCE/pkgs/emulation/qemu.nix"
           grep -Fq 'artifact_role=aggregate-release-root' "$suite_nix"
           grep -Fq 'processBoundary = "unix-socket-control+memfd-shared-memory-data";' "$release_nix"
           grep -Fq 'scope = ["qemu-crucible" "crucible-qemu-plugin"];' "$release_nix"
-          grep -Fq 'licenses = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later"];' "$release_nix"
+          grep -Fq 'licenses = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "BSD-2-Clause" "BSD-3-Clause"];' "$release_nix"
         '';
       }
       {
@@ -202,7 +221,7 @@ in
           controller_license=Apache-2.0
           qemu_corresponding_source_package=qemu-crucible-source
           qemu_corresponding_source_build_id=${pkgs.qemu-crucible-source.passthru.qemuBuildIdentity}
-          corresponding_source_reconstruction=patch-series-applied
+          corresponding_source_reconstruction=patch-series-applied,archived-plugin-offline-checked
           RESULT
         '';
       }

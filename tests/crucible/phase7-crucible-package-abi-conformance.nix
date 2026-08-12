@@ -64,11 +64,11 @@
       }
       {
         label = "scoped phase2 ABI gate wiring";
-        needle = "abiConformance = greenBeforeAdvance {\n        attrPath = \"checks.crucible.phase2.gates.abiConformance\";\n        # lint needle: abiConformance = import ./phase2-abi-conformance.nix\n        gate = import ./phase2-abi-conformance.nix {\n          inherit pkgs lib;\n          attrPath = \"checks.crucible.phase2.gates.abiConformance\";\n          taskIds = [\"T-HARN-17\" \"T-API-11\" \"T-API-12\" \"T-PAT-8\"];\n          dependencies = [\n            phase1.gates.harnessLint.rawGate\n            phase1.gates.layer0Determinism.rawGate";
+        needle = "abiConformance = greenBeforeAdvance {\n        attrPath = \"checks.crucible.phase2.gates.abiConformance\";\n        # lint needle: abiConformance = import ./phase2-abi-conformance.nix\n        gate = import ./phase2-abi-conformance.nix {\n          inherit pkgs lib;\n          attrPath = \"checks.crucible.phase2.gates.abiConformance\";\n          taskIds = [\"T-HARN-17\" \"T-API-11\" \"T-API-12\" \"T-PAT-8\"];\n          dependencies = [\n            phase1.gates.licenseBoundary.rawGate\n            phase1.gates.harnessLint.rawGate\n            phase1.gates.layer0Determinism.rawGate";
       }
       {
         label = "scoped phase2 ABI wrapper dependencies";
-        needle = "dependencies = [\n          phase1.gates.harnessLint\n          phase1.gates.layer0Determinism\n          phase1.gates.contentAddress\n          phase1.gates.replayOracle\n          phase1.gates.singleVmFingerprint\n          phase1.gates.divergenceBisect\n        ];";
+        needle = "dependencies = [\n          phase1.gates.licenseBoundary\n          phase1.gates.harnessLint\n          phase1.gates.layer0Determinism\n          phase1.gates.contentAddress\n          phase1.gates.replayOracle\n          phase1.gates.singleVmFingerprint\n          phase1.gates.divergenceBisect\n        ];";
       }
       {
         label = "phase7 package ABI conformance check imported";

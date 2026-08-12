@@ -108,7 +108,7 @@ in
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^plugin_path=${packages.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so$' \
               ${packages.crucible}/nix-support/crucible-build-info
-            grep -q '^component_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause$' \
+            grep -q '^component_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause,BSD-3-Clause$' \
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^gdb_package=gdb$' \
               ${packages.crucible}/nix-support/crucible-build-info
@@ -126,7 +126,7 @@ in
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^boundary_crates_license=MIT$' \
               ${packages.crucible}/nix-support/crucible-build-info
-            grep -q '^qemu_component_licenses=GPL-2.0-only,GPL-2.0-or-later,MIT$' \
+            grep -q '^qemu_component_licenses=GPL-2.0-only,GPL-2.0-or-later,MIT,BSD-2-Clause,BSD-3-Clause$' \
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^qemu_generated_boundary_header_license_option=MIT$' \
               ${packages.crucible}/nix-support/crucible-build-info

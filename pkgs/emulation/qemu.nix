@@ -480,6 +480,6 @@ in
     meta = {
       description = "qemu — machine emulator and virtualizer (minimal KVM build)";
       homepage = "https://www.qemu.org";
-      license = ["GPL-2.0-only" "GPL-2.0-or-later" "MIT"];
+      license = ["GPL-2.0-only" "GPL-2.0-or-later" "MIT" "BSD-2-Clause" "BSD-3-Clause"];
     };
   }

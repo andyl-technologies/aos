@@ -453,6 +453,7 @@ in rec {
           attrPath = "checks.crucible.phase2.gates.abiConformance";
           taskIds = ["T-HARN-17" "T-API-11" "T-API-12" "T-PAT-8"];
           dependencies = [
+            phase1.gates.licenseBoundary.rawGate
             phase1.gates.harnessLint.rawGate
             phase1.gates.layer0Determinism.rawGate
             phase1.gates.contentAddress.rawGate
@@ -462,6 +463,7 @@ in rec {
           ];
         };
         dependencies = [
+          phase1.gates.licenseBoundary
           phase1.gates.harnessLint
           phase1.gates.layer0Determinism
           phase1.gates.contentAddress
@@ -2748,9 +2750,9 @@ in rec {
           attrPath = "checks.crucible.phase7.gates.e2eDeterminism";
           taskIds = ["T-HARN-23"];
           openTaskIds = [];
-          dependencies = [perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];
+          dependencies = [phase1.gates.licenseBoundary.rawGate perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];
         };
-        dependencies = [perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];
+        dependencies = [phase1.gates.licenseBoundary perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];
       };
       fleetEquivalence = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.fleetEquivalence";
