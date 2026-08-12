@@ -30,6 +30,9 @@ in
     runtimeDeps = [qemu-crucible];
 
     preBuild = ''
+      export CRUCIBLE_QEMU_BUILD_ID=${qemu-crucible.passthru.qemuBuildIdentity}
+      export CRUCIBLE_QEMU_PATCH_SERIES_HASH=${qemu-crucible.passthru.patchSeriesHash}
+      export CRUCIBLE_SHMEM_HEADER_HASH=${qemu-crucible.passthru.shmemHeaderHash}
       header="${qemu-crucible}/include/qemu/qemu-plugin.h"
       test -f "$header"
       grep -q 'qemu_plugin_crucible_rr_switch_quantum' "$header"

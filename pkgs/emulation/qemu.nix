@@ -224,6 +224,8 @@
   # patch -p1 < ${./qemu-patches/0066-crucible-immutable-process-generation.patch}
   # patch -p1 < ${./qemu-patches/0067-crucible-serialize-and-harden-core-fault-state.patch}
   # patch -p1 < ${./qemu-patches/0068-crucible-guest-clock-faults.patch}
+  # patch -p1 < ${./qemu-patches/0069-crucible-accelerator-fault-device.patch}
+  # patch -p1 < ${./qemu-patches/0070-crucible-fault-vmstate.patch}
 in
   mkDerivation {
     inherit pname;
@@ -305,6 +307,7 @@ in
         name = "configure";
         script = ''
           export PYTHONPATH="${meson}/lib/python3/site-packages:${distlib}/lib/python3.14/site-packages:${setuptools}/lib/python3.14/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
+          export CFLAGS="''${CFLAGS:-} -DQEMU_CRUCIBLE_BUILD_ID=\\\"${qemuBuildIdentity}\\\" -DQEMU_CRUCIBLE_PATCH_SERIES_HASH=\\\"${patchSeriesHash}\\\" -DQEMU_CRUCIBLE_SHMEM_HEADER_HASH=\\\"${shmemHeaderHash}\\\""
 
           ./configure \
             --prefix=$out \

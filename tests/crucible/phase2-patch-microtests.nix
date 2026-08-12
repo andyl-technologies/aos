@@ -444,6 +444,13 @@
         patchName = "0069-crucible-accelerator-fault-device.patch";
       };
     }
+    {
+      patch = "0070-crucible-fault-vmstate.patch";
+      check = import ./phase2-qemu-fault-vmstate.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0070-crucible-fault-vmstate.patch";
+      };
+    }
   ];
 
   microtestPatchNames =

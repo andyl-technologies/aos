@@ -11,6 +11,14 @@ use std::collections::BTreeSet;
 
 use crate::{FaultAbiError, FaultCapabilityScope};
 
+fn array_32(bytes: &[u8], offset: usize) -> Result<[u8; 32], FaultAbiError> {
+    bytes
+        .get(offset..offset + 32)
+        .ok_or(FaultAbiError::HeaderLength)?
+        .try_into()
+        .map_err(|_| FaultAbiError::HeaderLength)
+}
+
 /// Magic prefix for a target-manifest query.
 pub const FAULT_TARGET_MANIFEST_QUERY_MAGIC_V1: [u8; 8] = *b"CRUCFTQ1";
 /// Encoded byte length of a target-manifest query.
@@ -55,6 +63,12 @@ pub const FAULT_ACCELERATOR_MANIFEST_VERSION_V1: u16 = 1;
 pub const FAULT_ACCELERATOR_MANIFEST_HEADER_V1_BYTES: usize = 56;
 /// Fixed accelerator row header length before its identities.
 pub const FAULT_ACCELERATOR_ROW_HEADER_V1_BYTES: usize = 64;
+/// Magic prefix for the final QEMU fault-system manifest.
+pub const FAULT_SYSTEM_MANIFEST_MAGIC_V1: [u8; 8] = *b"CRUCFSM1";
+/// Fault-system manifest codec version.
+pub const FAULT_SYSTEM_MANIFEST_VERSION_V1: u16 = 1;
+/// Exact encoded length of the fixed fault-system manifest.
+pub const FAULT_SYSTEM_MANIFEST_V1_BYTES: usize = 160;
 /// Maximum number of target rows returned by one QEMU process.
 pub const HARD_FAULT_TARGET_MANIFEST_ROWS: usize = 4_096;
 /// Maximum encoded target name or CPU-model identity length.
@@ -92,6 +106,8 @@ pub enum FaultTargetManifestKind {
     Clock = 4,
     /// Realized accelerator devices, queues, jobs, memory, and fault support.
     Accelerator = 5,
+    /// Complete QEMU build, patch-series, shared-memory, and VMState identity.
+    System = 6,
 }
 
 impl FaultTargetManifestKind {
@@ -102,8 +118,92 @@ impl FaultTargetManifestKind {
             3 => Ok(Self::HardwareError),
             4 => Ok(Self::Clock),
             5 => Ok(Self::Accelerator),
+            6 => Ok(Self::System),
             _ => Err(FaultAbiError::CapabilityInvariant),
         }
+    }
+}
+
+/// Final, immutable identity of one realized QEMU fault system.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FaultSystemCapabilityManifestV1 {
+    /// Semantic version of the complete fault system.
+    pub semantic_version: u32,
+    /// Aggregate fault VMState format version.
+    pub vmstate_format_version: u32,
+    /// Exact number of registered VMState sections.
+    pub vmstate_section_count: u32,
+    /// SHA-256 of ordered NUL-terminated section names and big-endian versions.
+    pub vmstate_sections_sha256: [u8; 32],
+    /// Immutable QEMU package build identity.
+    pub qemu_build_id: [u8; 32],
+    /// SHA-256 identity of the ordered carried QEMU patch bytes.
+    pub qemu_patch_series_hash: [u8; 32],
+    /// SHA-256 identity of the generated shared-memory ABI header.
+    pub shmem_header_hash: [u8; 32],
+}
+
+impl FaultSystemCapabilityManifestV1 {
+    /// Encodes the fixed, canonical fault-system identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultAbiError`] if a version, section count, or digest is invalid.
+    pub fn encode(self) -> Result<[u8; FAULT_SYSTEM_MANIFEST_V1_BYTES], FaultAbiError> {
+        if self.semantic_version != 1
+            || self.vmstate_format_version != 1
+            || !(9..=10).contains(&self.vmstate_section_count)
+            || [
+                self.vmstate_sections_sha256,
+                self.qemu_build_id,
+                self.qemu_patch_series_hash,
+                self.shmem_header_hash,
+            ]
+            .iter()
+            .any(|digest| *digest == [0; 32])
+        {
+            return Err(FaultAbiError::CapabilityInvariant);
+        }
+        let mut output = [0_u8; FAULT_SYSTEM_MANIFEST_V1_BYTES];
+        output[..8].copy_from_slice(&FAULT_SYSTEM_MANIFEST_MAGIC_V1);
+        output[8..10].copy_from_slice(&FAULT_SYSTEM_MANIFEST_VERSION_V1.to_le_bytes());
+        output[12..16].copy_from_slice(&(FAULT_SYSTEM_MANIFEST_V1_BYTES as u32).to_le_bytes());
+        output[16..20].copy_from_slice(&self.semantic_version.to_le_bytes());
+        output[20..24].copy_from_slice(&self.vmstate_format_version.to_le_bytes());
+        output[24..28].copy_from_slice(&self.vmstate_section_count.to_le_bytes());
+        output[32..64].copy_from_slice(&self.vmstate_sections_sha256);
+        output[64..96].copy_from_slice(&self.qemu_build_id);
+        output[96..128].copy_from_slice(&self.qemu_patch_series_hash);
+        output[128..160].copy_from_slice(&self.shmem_header_hash);
+        Ok(output)
+    }
+
+    /// Decodes and validates the fixed fault-system identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultAbiError`] for malformed framing, reserved bytes, or identity fields.
+    pub fn decode(bytes: &[u8]) -> Result<Self, FaultAbiError> {
+        if bytes.len() != FAULT_SYSTEM_MANIFEST_V1_BYTES
+            || bytes[..8] != FAULT_SYSTEM_MANIFEST_MAGIC_V1
+            || u16_at(bytes, 8)? != FAULT_SYSTEM_MANIFEST_VERSION_V1
+            || u16_at(bytes, 10)? != 0
+            || u32_at(bytes, 12)? != FAULT_SYSTEM_MANIFEST_V1_BYTES as u32
+            || u32_at(bytes, 28)? != 0
+        {
+            return Err(FaultAbiError::HeaderLength);
+        }
+        let manifest = Self {
+            semantic_version: u32_at(bytes, 16)?,
+            vmstate_format_version: u32_at(bytes, 20)?,
+            vmstate_section_count: u32_at(bytes, 24)?,
+            vmstate_sections_sha256: array_32(bytes, 32)?,
+            qemu_build_id: array_32(bytes, 64)?,
+            qemu_patch_series_hash: array_32(bytes, 96)?,
+            shmem_header_hash: array_32(bytes, 128)?,
+        };
+        manifest.encode()?;
+        Ok(manifest)
     }
 }
 
@@ -1991,6 +2091,10 @@ pub(crate) fn emit_fault_target_manifest_c_header(out: &mut String) {
         "CRUCIBLE_FAULT_TARGET_MANIFEST_KIND_ACCELERATOR",
         FaultTargetManifestKind::Accelerator as u16
     );
+    define!(
+        "CRUCIBLE_FAULT_TARGET_MANIFEST_KIND_SYSTEM",
+        FaultTargetManifestKind::System as u16
+    );
     define!("CRUCIBLE_FAULT_TARGET_MANIFEST_QUERY_MAGIC_OFFSET", 0);
     define!("CRUCIBLE_FAULT_TARGET_MANIFEST_QUERY_VERSION_OFFSET", 8);
     define!("CRUCIBLE_FAULT_TARGET_MANIFEST_QUERY_KIND_OFFSET", 10);
@@ -2990,6 +3094,44 @@ mod tests {
         assert_eq!(
             FaultAcceleratorCapabilityManifestV1::decode(&corrupt),
             Err(FaultAbiError::PayloadDigest)
+        );
+    }
+
+    #[test]
+    fn fault_system_manifest_is_fixed_authenticated_and_fail_closed() {
+        let manifest = FaultSystemCapabilityManifestV1 {
+            semantic_version: 1,
+            vmstate_format_version: 1,
+            vmstate_section_count: 10,
+            vmstate_sections_sha256: [1; 32],
+            qemu_build_id: [2; 32],
+            qemu_patch_series_hash: [3; 32],
+            shmem_header_hash: [4; 32],
+        };
+        let encoded = manifest
+            .encode()
+            .unwrap_or_else(|error| panic!("system manifest should encode: {error}"));
+        assert_eq!(
+            FaultSystemCapabilityManifestV1::decode(&encoded),
+            Ok(manifest)
+        );
+        let mut reserved = encoded;
+        reserved[28] = 1;
+        assert_eq!(
+            FaultSystemCapabilityManifestV1::decode(&reserved),
+            Err(FaultAbiError::HeaderLength)
+        );
+        let mut missing_identity = manifest;
+        missing_identity.qemu_build_id = [0; 32];
+        assert_eq!(
+            missing_identity.encode(),
+            Err(FaultAbiError::CapabilityInvariant)
+        );
+        let mut unknown_sections = manifest;
+        unknown_sections.vmstate_section_count = 11;
+        assert_eq!(
+            unknown_sections.encode(),
+            Err(FaultAbiError::CapabilityInvariant)
         );
     }
 

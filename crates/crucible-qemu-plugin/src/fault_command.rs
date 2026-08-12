@@ -30,14 +30,14 @@ use crucible_shmem::{
     FaultInterruptTriggerV1, FaultPayloadArenaHeader, FaultRegisterCapabilityManifestV1,
     FaultRegisterCapabilityRowV1, FaultRegisterGroupV1, FaultRegisterMutationEvidenceV1,
     FaultRegisterMutationKindV1, FaultResultHeaderV1, FaultResultSlotV1, FaultResultStatus,
-    FaultTargetManifestKind, FaultTargetManifestQueryV1, FaultTerminalEvidenceV1,
-    FaultTransportError, HARD_FAULT_PAYLOAD_BYTES, MappedFaultCommandTransportMut,
-    MappedFaultEventTransportMut, MappedFaultResultTransportMut, MappedSetupRegion,
-    MappedSetupRegionAccessError, NodeFaultOperationV1, NodeFaultPayloadV1, NodeFaultTargetKindV1,
-    RingHeader, can_enqueue_fault_event, can_enqueue_fault_result, dequeue_fault_command,
-    encode_fault_capability_manifest, enqueue_fault_event, enqueue_fault_result,
-    fault_capability_manifest_digest, fault_object_id_hash_v1, fault_register_cpu_model_digest_v1,
-    fault_register_manifest_digest_v1, node_fault_field,
+    FaultSystemCapabilityManifestV1, FaultTargetManifestKind, FaultTargetManifestQueryV1,
+    FaultTerminalEvidenceV1, FaultTransportError, HARD_FAULT_PAYLOAD_BYTES,
+    MappedFaultCommandTransportMut, MappedFaultEventTransportMut, MappedFaultResultTransportMut,
+    MappedSetupRegion, MappedSetupRegionAccessError, NodeFaultOperationV1, NodeFaultPayloadV1,
+    NodeFaultTargetKindV1, RingHeader, can_enqueue_fault_event, can_enqueue_fault_result,
+    dequeue_fault_command, encode_fault_capability_manifest, enqueue_fault_event,
+    enqueue_fault_result, fault_capability_manifest_digest, fault_object_id_hash_v1,
+    fault_register_cpu_model_digest_v1, fault_register_manifest_digest_v1, node_fault_field,
 };
 use sha2::Digest as _;
 use thiserror::Error;
@@ -104,6 +104,9 @@ pub const QEMU_PLUGIN_CRUCIBLE_FAULT_CLOCK_BINDINGS_SEAL_SYMBOL: &str =
 /// QEMU symbol that copies realized accelerator-device rows.
 pub const QEMU_PLUGIN_CRUCIBLE_FAULT_ACCELERATOR_MANIFEST_SYMBOL: &str =
     "qemu_plugin_crucible_fault_accelerator_manifest";
+/// QEMU symbol that returns the final build, patch, shmem, and VMState identity.
+pub const QEMU_PLUGIN_CRUCIBLE_FAULT_SYSTEM_MANIFEST_SYMBOL: &str =
+    "qemu_plugin_crucible_fault_system_manifest";
 
 const CAPABILITIES_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_capabilities\0";
 const SUBMIT_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_submit\0";
@@ -132,7 +135,12 @@ const CLOCK_MANIFEST_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_clock_manife
 const CLOCK_BIND_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_clock_bind\0";
 const CLOCK_BINDINGS_SEAL_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_clock_bindings_seal\0";
 const ACCELERATOR_MANIFEST_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_accelerator_manifest\0";
+const SYSTEM_MANIFEST_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_system_manifest\0";
 const CAPABILITY_HASH_DOMAIN: &[u8] = b"crucible.qemu-fault-capability.v1\0";
+const EXPECTED_QEMU_BUILD_ID: Option<&str> = option_env!("CRUCIBLE_QEMU_BUILD_ID");
+const EXPECTED_QEMU_PATCH_SERIES_HASH: Option<&str> =
+    option_env!("CRUCIBLE_QEMU_PATCH_SERIES_HASH");
+const EXPECTED_SHMEM_HEADER_HASH: Option<&str> = option_env!("CRUCIBLE_SHMEM_HEADER_HASH");
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -312,6 +320,21 @@ struct QemuFaultAcceleratorCapability {
     implementation: *const c_char,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct QemuFaultSystemManifest {
+    semantic_version: u32,
+    vmstate_format_version: u32,
+    vmstate_section_count: u32,
+    reserved: u32,
+    vmstate_sections_sha256: [u8; 32],
+    system_capability: *const c_char,
+    vmstate_capability: *const c_char,
+    qemu_build_id: *const c_char,
+    qemu_patch_series_hash: *const c_char,
+    shmem_header_hash: *const c_char,
+}
+
 type QemuFaultCapabilitiesFn = extern "C" fn(*mut QemuFaultCapability, usize) -> usize;
 type QemuFaultSubmitFn = extern "C" fn(*const QemuFaultCommand, *const u8, usize) -> c_int;
 type QemuFaultCancelFn = extern "C" fn(u64) -> c_int;
@@ -340,6 +363,7 @@ type QemuFaultClockBindFn = extern "C" fn(u32, *const u8) -> c_int;
 type QemuFaultClockBindingsSealFn = extern "C" fn(*const u8) -> c_int;
 type QemuFaultAcceleratorManifestFn =
     extern "C" fn(*mut QemuFaultAcceleratorCapability, usize) -> usize;
+type QemuFaultSystemManifestFn = extern "C" fn(*mut QemuFaultSystemManifest) -> c_int;
 
 /// Resolved, closed QEMU fault registry operations.
 #[derive(Clone, Copy)]
@@ -367,6 +391,7 @@ pub(crate) struct QemuFaultCommandApis {
     clock_bind: QemuFaultClockBindFn,
     clock_bindings_seal: QemuFaultClockBindingsSealFn,
     accelerator_manifest: QemuFaultAcceleratorManifestFn,
+    system_manifest: QemuFaultSystemManifestFn,
 }
 
 impl QemuFaultCommandApis {
@@ -449,6 +474,10 @@ impl QemuFaultCommandApis {
             accelerator_manifest: resolve_symbol(
                 ACCELERATOR_MANIFEST_SYMBOL_C,
                 QEMU_PLUGIN_CRUCIBLE_FAULT_ACCELERATOR_MANIFEST_SYMBOL,
+            )?,
+            system_manifest: resolve_symbol(
+                SYSTEM_MANIFEST_SYMBOL_C,
+                QEMU_PLUGIN_CRUCIBLE_FAULT_SYSTEM_MANIFEST_SYMBOL,
             )?,
         })
     }
@@ -881,6 +910,65 @@ impl QemuFaultCommandApis {
             .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })
     }
 
+    fn system_manifest(self) -> Result<FaultSystemCapabilityManifestV1, FaultCommandBridgeError> {
+        let mut raw = QemuFaultSystemManifest {
+            semantic_version: 0,
+            vmstate_format_version: 0,
+            vmstate_section_count: 0,
+            reserved: 0,
+            vmstate_sections_sha256: [0; 32],
+            system_capability: std::ptr::null(),
+            vmstate_capability: std::ptr::null(),
+            qemu_build_id: std::ptr::null(),
+            qemu_patch_series_hash: std::ptr::null(),
+            shmem_header_hash: std::ptr::null(),
+        };
+        let status = (self.system_manifest)(&mut raw);
+        if status != 0
+            || raw.reserved != 0
+            || capability_text(raw.system_capability, "system_capability")?
+                != "qemu.fault-system.complete.v1"
+            || capability_text(raw.vmstate_capability, "vmstate_capability")?
+                != "qemu.fault-vmstate.v1"
+        {
+            return Err(FaultCommandBridgeError::SystemManifest { status });
+        }
+        let qemu_build_id = capability_text(raw.qemu_build_id, "qemu_build_id")?;
+        let qemu_patch_series_hash =
+            capability_text(raw.qemu_patch_series_hash, "qemu_patch_series_hash")?;
+        let shmem_header_hash = capability_text(raw.shmem_header_hash, "shmem_header_hash")?;
+        let identity_matches = match (
+            EXPECTED_QEMU_BUILD_ID,
+            EXPECTED_QEMU_PATCH_SERIES_HASH,
+            EXPECTED_SHMEM_HEADER_HASH,
+        ) {
+            (Some(build), Some(patches), Some(shmem)) => {
+                build == qemu_build_id
+                    && patches == qemu_patch_series_hash
+                    && shmem == shmem_header_hash
+            }
+            _ => cfg!(test),
+        };
+        if !identity_matches {
+            return Err(FaultCommandBridgeError::SystemIdentityMismatch);
+        }
+        let manifest = FaultSystemCapabilityManifestV1 {
+            semantic_version: raw.semantic_version,
+            vmstate_format_version: raw.vmstate_format_version,
+            vmstate_section_count: raw.vmstate_section_count,
+            vmstate_sections_sha256: raw.vmstate_sections_sha256,
+            qemu_build_id: text_digest(qemu_build_id, "qemu_build_id")?,
+            qemu_patch_series_hash: text_digest(qemu_patch_series_hash, "qemu_patch_series_hash")?,
+            shmem_header_hash: text_digest(shmem_header_hash, "shmem_header_hash")?,
+        };
+        FaultSystemCapabilityManifestV1::decode(
+            &manifest
+                .encode()
+                .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?,
+        )
+        .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })
+    }
+
     fn bind_clock_manifest(
         self,
         manifest: &FaultClockCapabilityManifestV1,
@@ -971,8 +1059,36 @@ impl QemuFaultCommandApis {
             clock_bind: test_clock_bind,
             clock_bindings_seal: test_clock_bindings_seal,
             accelerator_manifest: test_accelerator_manifest,
+            system_manifest: test_system_manifest,
         }
     }
+}
+
+#[cfg(test)]
+extern "C" fn test_system_manifest(_out: *mut QemuFaultSystemManifest) -> c_int {
+    static CAPABILITY: &[u8] = b"qemu.fault-system.complete.v1\0";
+    static VMSTATE: &[u8] = b"qemu.fault-vmstate.v1\0";
+    static DIGEST: &[u8] = b"1111111111111111111111111111111111111111111111111111111111111111\0";
+    if _out.is_null() {
+        return -libc::EINVAL;
+    }
+    // SAFETY: the test caller provides one writable row and all referenced
+    // strings have static NUL-terminated storage.
+    unsafe {
+        *_out = QemuFaultSystemManifest {
+            semantic_version: 1,
+            vmstate_format_version: 1,
+            vmstate_section_count: 9,
+            reserved: 0,
+            vmstate_sections_sha256: [1; 32],
+            system_capability: CAPABILITY.as_ptr().cast(),
+            vmstate_capability: VMSTATE.as_ptr().cast(),
+            qemu_build_id: DIGEST.as_ptr().cast(),
+            qemu_patch_series_hash: DIGEST.as_ptr().cast(),
+            shmem_header_hash: DIGEST.as_ptr().cast(),
+        };
+    }
+    0
 }
 
 #[cfg(test)]
@@ -1421,6 +1537,14 @@ fn capability_text(
         .map_err(|_source| FaultCommandBridgeError::CapabilityStringUtf8 { field })
 }
 
+fn text_digest(text: &str, field: &'static str) -> Result<[u8; 32], FaultCommandBridgeError> {
+    let bytes =
+        hex::decode(text).map_err(|_source| FaultCommandBridgeError::CapabilityDigest { field })?;
+    bytes
+        .try_into()
+        .map_err(|_source| FaultCommandBridgeError::CapabilityDigest { field })
+}
+
 fn command_kind(value: u16) -> Result<FaultCommandKind, FaultCommandBridgeError> {
     FaultCommandKind::from_u16(value)
         .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })
@@ -1780,6 +1904,7 @@ pub(crate) struct FaultCommandBridge {
     hardware_error_manifest_payload: Option<Vec<u8>>,
     clock_manifest_payload: Option<Vec<u8>>,
     accelerator_manifest_payload: Option<Vec<u8>>,
+    system_manifest_payload: Vec<u8>,
     register_evidence_identity: Option<RegisterEvidenceIdentity>,
     instruction_evidence_identity: Option<InstructionEvidenceIdentity>,
     register_commands: BTreeMap<u64, RegisterCommandExpectation>,
@@ -1919,6 +2044,11 @@ impl FaultCommandBridge {
                 }
                 None => (None, None),
             };
+        let system_manifest_payload = apis
+            .system_manifest()?
+            .encode()
+            .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?
+            .to_vec();
         if let Some(register) = register_evidence_identity.as_ref() {
             rows.push(target_manifest_capability_row(
                 register.architecture,
@@ -1986,6 +2116,7 @@ impl FaultCommandBridge {
             hardware_error_manifest_payload,
             clock_manifest_payload,
             accelerator_manifest_payload,
+            system_manifest_payload,
             register_evidence_identity,
             instruction_evidence_identity,
             register_commands: BTreeMap::new(),
@@ -2061,6 +2192,7 @@ impl FaultCommandBridge {
                             .accelerator_manifest_payload
                             .as_ref()
                             .map_or(0, Vec::len),
+                        Some(FaultTargetManifestKind::System) => self.system_manifest_payload.len(),
                         None => 0,
                     }
                 }
@@ -2166,6 +2298,7 @@ impl FaultCommandBridge {
                 }
                 FaultTargetManifestKind::Clock => self.clock_manifest_payload.clone(),
                 FaultTargetManifestKind::Accelerator => self.accelerator_manifest_payload.clone(),
+                FaultTargetManifestKind::System => Some(self.system_manifest_payload.clone()),
             };
             let Some(result_payload) = result_payload else {
                 return self.publish_local_rejection(
@@ -5986,6 +6119,15 @@ pub enum FaultCommandBridgeError {
     /// A raw accelerator row contained invalid framing or identity state.
     #[error("QEMU accelerator manifest row has invalid raw framing")]
     AcceleratorManifestRow,
+    /// QEMU did not expose a complete realized fault-system identity.
+    #[error("QEMU fault-system manifest is incomplete: status {status}")]
+    SystemManifest {
+        /// Negative errno-style status returned by QEMU.
+        status: c_int,
+    },
+    /// The live QEMU identity differs from the one compiled into this plugin.
+    #[error("live QEMU fault-system identity does not match the plugin build identity")]
+    SystemIdentityMismatch,
     /// Register mutation was advertised without its required capability row.
     #[error("QEMU register manifest has no CPU register-transform capability")]
     RegisterCapabilityMissing,
@@ -6016,6 +6158,12 @@ pub enum FaultCommandBridgeError {
     /// A capability string was not valid UTF-8.
     #[error("QEMU fault capability field `{field}` is not UTF-8")]
     CapabilityStringUtf8 {
+        /// Invalid field.
+        field: &'static str,
+    },
+    /// A capability identity was not an exact lowercase SHA-256 digest.
+    #[error("QEMU fault capability field `{field}` is not a 32-byte hex digest")]
+    CapabilityDigest {
         /// Invalid field.
         field: &'static str,
     },
@@ -6345,6 +6493,7 @@ mod tests {
             hardware_error_manifest_payload: None,
             clock_manifest_payload: None,
             accelerator_manifest_payload: None,
+            system_manifest_payload: Vec::new(),
             register_evidence_identity: None,
             instruction_evidence_identity: None,
             register_commands: BTreeMap::new(),
