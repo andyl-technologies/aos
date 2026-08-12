@@ -447,14 +447,11 @@ impl ProductionFaultRuntime {
             .runtime
             .as_mut()
             .ok_or(FaultExecutionError::CheckpointPresence)?;
-        let mut evaluation = match runtime.evaluate_boundary_with_backend(
+        let mut evaluation = runtime.evaluate_boundary_with_backend(
             coordinate,
             same_coordinate_sequence,
             &mut sink,
-        ) {
-            Ok(evaluation) => evaluation,
-            Err(error) => return Err(error.into()),
-        };
+        )?;
         if evaluation.emitted_events != preview.emitted_events
             || evaluation.state_machine_events != preview.state_machine_events
         {
@@ -1716,6 +1713,10 @@ fn append_length_prefixed(
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the aggregate identity must receive every independently owned checkpoint component explicitly"
+)]
 fn production_checkpoint_identity(
     plan: ContentHash,
     runtime: Option<&FaultRuntimeCheckpoint>,
@@ -2309,9 +2310,9 @@ mod tests {
             &nodes,
         )
         .unwrap_or_else(|error| panic!("empty runtime should initialize: {error}"));
-        runtime
-            .pending_node_boot
-            .insert(NodeId { name: String::from("node-a") });
+        runtime.pending_node_boot.insert(NodeId {
+            name: String::from("node-a"),
+        });
 
         assert!(matches!(
             runtime.checkpoint(&mut nodes),
@@ -2831,8 +2832,10 @@ mod tests {
 
     #[test]
     fn production_event_limits_cover_all_retained_event_classes_in_aggregate() {
-        let mut limits = FaultResourceLimits::default();
-        limits.event_records = 1;
+        let limits = FaultResourceLimits {
+            event_records: 1,
+            ..FaultResourceLimits::default()
+        };
         let observations = vec![pending_qemu_observation(), pending_qemu_observation()];
 
         assert!(

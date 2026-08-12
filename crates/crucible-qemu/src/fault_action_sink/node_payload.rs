@@ -691,6 +691,10 @@ fn memory_access_mutation(
     })
 }
 
+#[allow(
+    clippy::type_complexity,
+    reason = "the tuple is the closed scalar/payload representation consumed immediately by the clock command encoder"
+)]
 fn clock_mutation(
     mutation: &ClockMutation,
 ) -> Result<(u32, i64, i64, u64, u64, Vec<u8>), NodeFaultPayloadError> {

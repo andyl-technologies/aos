@@ -552,20 +552,20 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                 ));
             }
             let observed_precondition = ContentHash::from_bytes(&evidence.before_sha256);
-            if let Some(expected) = prepared.action.expected_precondition {
-                if expected != observed_precondition {
-                    return Err(FaultActionCommitError::Rejected(Self::reject(
-                        Some(&prepared.action),
-                        FaultRuntimeError::ReplayPreconditionMismatch {
-                            action: prepared.action.id(),
-                            expected,
-                            observed: observed_precondition,
-                        },
-                        ContentHash::from_bytes(&evidence.encode().map_err(|_source| {
-                            FaultActionCommitError::Fatal(FaultRuntimeError::IncompleteAdapterState)
-                        })?),
-                    )));
-                }
+            if let Some(expected) = prepared.action.expected_precondition
+                && expected != observed_precondition
+            {
+                return Err(FaultActionCommitError::Rejected(Self::reject(
+                    Some(&prepared.action),
+                    FaultRuntimeError::ReplayPreconditionMismatch {
+                        action: prepared.action.id(),
+                        expected,
+                        observed: observed_precondition,
+                    },
+                    ContentHash::from_bytes(&evidence.encode().map_err(|_source| {
+                        FaultActionCommitError::Fatal(FaultRuntimeError::IncompleteAdapterState)
+                    })?),
+                )));
             }
             authorized_typed.push((prepared, evidence));
         }

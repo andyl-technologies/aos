@@ -602,9 +602,9 @@ where
 /// restore, when the setup memfd cannot be mapped, or when the mapped hot-path
 /// adapter rejects the completed region.
 pub fn build_qemu_node_from_restored_checkpoint<S, A, R>(
-    mut child: QemuNodeChild,
+    child: QemuNodeChild,
     setup: QemuHostPluginSetup,
-    mut qmp: QemuQmpVmStateControlChannel<S>,
+    qmp: QemuQmpVmStateControlChannel<S>,
     restore: QemuNodeRestorePlan<'_>,
     runtime: QemuNodeFactoryRuntime<A, R>,
 ) -> Result<QemuNode, QemuNodeFactoryError>
@@ -858,13 +858,13 @@ where
         crash_detector,
         host_io_runtime,
     );
-    if let Some(continuation) = node_continuation {
-        if let Err(source) = node.restore_node_continuation(continuation) {
-            let primary = QemuNodeFactoryError::NodeContinuationRestore {
-                message: source.to_string(),
-            };
-            return Err(reap_failed_restored_node(&mut node, primary));
-        }
+    if let Some(continuation) = node_continuation
+        && let Err(source) = node.restore_node_continuation(continuation)
+    {
+        let primary = QemuNodeFactoryError::NodeContinuationRestore {
+            message: source.to_string(),
+        };
+        return Err(reap_failed_restored_node(&mut node, primary));
     }
     if resume_guest && let Err(source) = node.resume_after_restore() {
         let primary = QemuNodeFactoryError::CheckpointResume {

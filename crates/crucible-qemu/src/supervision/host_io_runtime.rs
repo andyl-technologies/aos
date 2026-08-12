@@ -224,7 +224,6 @@ impl QemuLiveHostIoRuntime {
     ///
     /// Returns [`QemuLiveBlockIoServicerError`] when the device's remote-mutation
     /// notification channel is poisoned or was already attached to a runtime.
-    #[must_use]
     pub fn with_block_servicer(
         mut self,
         servicer: QemuLiveBlockIoServicer,

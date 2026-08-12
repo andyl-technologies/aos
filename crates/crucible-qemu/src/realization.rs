@@ -1454,14 +1454,14 @@ mod tests {
             &def,
             &mut store,
             &mut executor,
-            QemuExactSnapshotPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
         let resume = resume_qemu_vm(
             &world,
             &tip,
             &mut store,
             &mut executor,
-            QemuExactSnapshotPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
         let fork = fork_qemu_vm(
             &world,
@@ -1469,7 +1469,7 @@ mod tests {
             1,
             &mut store,
             &mut executor,
-            QemuExactSnapshotPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
 
         assert_eq!(start.operation, QemuVmRealizationOperation::Start);
@@ -1516,7 +1516,7 @@ mod tests {
             &def,
             &mut start_store,
             &mut start_executor,
-            QemuExactSnapshotPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
         let direct_start =
             direct_instantiate_for_test(&world, &def, &Configuration::genesis(def.clone()))?;
@@ -1525,7 +1525,7 @@ mod tests {
             &tip,
             &mut resume_store,
             &mut resume_executor,
-            QemuExactSnapshotPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
         let direct_resume = direct_instantiate_for_test(&world, &def, &tip)?;
         let fork = fork_qemu_vm(
@@ -1534,7 +1534,7 @@ mod tests {
             1,
             &mut fork_store,
             &mut fork_executor,
-            QemuExactSnapshotPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
         let direct_fork = direct_instantiate_for_test(&world, &def, &fork_prefix)?;
 
@@ -1574,7 +1574,7 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            QemuExactSnapshotPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
 
         assert_eq!(
@@ -1621,7 +1621,7 @@ mod tests {
             &genesis,
             &mut store,
             &mut executor,
-            QemuExactSnapshotPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
 
         assert_eq!(
@@ -1693,7 +1693,7 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            QemuExactSnapshotPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
 
         assert!(matches!(
@@ -1778,7 +1778,7 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            QemuExactSnapshotPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
 
         assert_eq!(
@@ -1825,7 +1825,7 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            QemuExactSnapshotPolicy::default(),
+            QemuExactSnapshotPolicy,
         );
 
         assert!(matches!(
@@ -1866,7 +1866,7 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            QemuExactSnapshotPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
 
         assert_eq!(
@@ -2178,7 +2178,7 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            QemuExactSnapshotPolicy::default(),
+            QemuExactSnapshotPolicy,
         );
 
         assert!(matches!(
@@ -2210,7 +2210,7 @@ mod tests {
             &target,
             &mut store,
             &mut executor,
-            QemuExactSnapshotPolicy::default(),
+            QemuExactSnapshotPolicy,
         );
 
         assert!(matches!(
@@ -2237,7 +2237,7 @@ mod tests {
             &genesis,
             &mut store,
             &mut executor,
-            QemuExactSnapshotPolicy::default(),
+            QemuExactSnapshotPolicy,
         );
 
         assert!(matches!(
@@ -2265,7 +2265,7 @@ mod tests {
             &genesis,
             &mut store,
             &mut executor,
-            QemuExactSnapshotPolicy::default(),
+            QemuExactSnapshotPolicy,
         );
 
         assert!(matches!(
@@ -2315,7 +2315,7 @@ mod tests {
             &genesis,
             &mut store,
             &mut executor,
-            QemuExactSnapshotPolicy::default(),
+            QemuExactSnapshotPolicy,
         );
 
         assert!(matches!(
@@ -2346,7 +2346,7 @@ mod tests {
             &requested_genesis,
             &mut store,
             &mut executor,
-            QemuExactSnapshotPolicy::default(),
+            QemuExactSnapshotPolicy,
         )?;
 
         assert_eq!(
@@ -2379,7 +2379,7 @@ mod tests {
             2,
             &mut tip_store,
             &mut tip_executor,
-            QemuExactSnapshotPolicy::default(),
+            QemuExactSnapshotPolicy,
         );
         let out_of_range = fork_qemu_vm(
             &world,
@@ -2387,7 +2387,7 @@ mod tests {
             3,
             &mut scripted_store(shared_log(), &world, &def),
             &mut scripted_executor(shared_log()),
-            QemuExactSnapshotPolicy::default(),
+            QemuExactSnapshotPolicy,
         );
 
         match tip_fork {
@@ -2455,7 +2455,7 @@ mod tests {
             config,
             &mut store,
             &mut executor,
-            QemuExactSnapshotPolicy::default(),
+            QemuExactSnapshotPolicy,
         )
     }
 

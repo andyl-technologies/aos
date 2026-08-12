@@ -122,6 +122,10 @@ pub fn linux_process_identity(
 /// Returns [`QemuNodeError`] when `/proc` cannot be validated, signaling fails,
 /// or the matching process remains present through `timeout`.
 #[cfg(target_os = "linux")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "host time bounds only process quarantine and never enters modeled state"
+)]
 pub fn quarantine_orphaned_qemu_process(
     expected: &QemuProcessIdentity,
     timeout: Duration,
@@ -1323,6 +1327,10 @@ impl QemuNode {
     /// Returns [`QemuNodeError`] when the child does not exit before the
     /// bounded supervision deadline, waitpid fails, the process is terminated
     /// by a signal, or its exit code differs from `expected_exit_code`.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "host time bounds child supervision and never enters modeled state"
+    )]
     pub fn await_intended_lifecycle_exit(
         &mut self,
         expected_exit_code: i32,

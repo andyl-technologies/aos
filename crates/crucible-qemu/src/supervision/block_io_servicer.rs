@@ -1356,7 +1356,6 @@ impl QemuLiveBlockIoServicer {
     }
 
     /// Returns the first request ready for resolve/persist evaluation.
-    #[must_use]
     pub fn next_storage_execution_opportunity(
         &self,
         now_nanos: u64,
@@ -1384,7 +1383,6 @@ impl QemuLiveBlockIoServicer {
     }
 
     /// Returns the next resolved request awaiting persist-phase evaluation.
-    #[must_use]
     pub fn next_storage_request_persistence_opportunity(
         &self,
         now_nanos: u64,
@@ -1412,7 +1410,6 @@ impl QemuLiveBlockIoServicer {
     }
 
     /// Returns the next computed completion ready for deliver-phase evaluation.
-    #[must_use]
     pub fn next_storage_delivery_opportunity(
         &self,
         now_nanos: u64,
@@ -1440,7 +1437,6 @@ impl QemuLiveBlockIoServicer {
     }
 
     /// Returns the complete deterministic storage-fault continuation.
-    #[must_use]
     pub fn storage_fault_state(&self) -> Result<BlockFaultState, QemuLiveBlockIoServicerError> {
         Ok(self.device.lock()?.storage_fault_state().clone())
     }
@@ -1455,7 +1451,6 @@ impl QemuLiveBlockIoServicer {
     }
 
     /// Returns the next physical persistence opportunity ready at `now_nanos`.
-    #[must_use]
     pub fn next_storage_persistence_opportunity(
         &self,
         now_nanos: u64,
@@ -1493,7 +1488,6 @@ impl QemuLiveBlockIoServicer {
     }
 
     /// Borrows completed physical-media outcomes without acknowledging them.
-    #[must_use]
     pub fn storage_persistence_media_outcomes(
         &self,
     ) -> Result<Vec<BlockPersistenceMediaOutcome>, QemuLiveBlockIoServicerError> {
@@ -1512,7 +1506,6 @@ impl QemuLiveBlockIoServicer {
     }
 
     /// Borrows integrated storage-service evidence without acknowledging it.
-    #[must_use]
     pub fn storage_service_outcomes(
         &self,
     ) -> Result<Vec<BlockServiceCompletion>, QemuLiveBlockIoServicerError> {
@@ -1724,7 +1717,6 @@ impl QemuLiveBlockIoServicer {
     /// This is the exact device horizon: a blocked guest cannot complete its
     /// request until virtual time reaches this icount, so a time-owning plugin
     /// must advance to it before the response can be delivered.
-    #[must_use]
     pub fn next_completion_icount(&self) -> Result<Option<u64>, QemuLiveBlockIoServicerError> {
         Ok(self.device.lock()?.next_exact_local_event())
     }
@@ -1749,7 +1741,7 @@ impl QemuLiveBlockIoServicer {
 }
 
 /// The per-call outcome of one [`QemuLiveBlockIoServicer::service`] step.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct QemuLiveBlockIoServiceStep {
     /// Request frames drained and COMPUTEd this call.
     pub processed: usize,
@@ -1763,19 +1755,6 @@ pub struct QemuLiveBlockIoServiceStep {
     pub computed_completion_icount: Option<u64>,
     /// The device's next completion icount after this call, when one is pending.
     pub next_completion_icount: Option<u64>,
-}
-
-impl Default for QemuLiveBlockIoServiceStep {
-    fn default() -> Self {
-        Self {
-            processed: 0,
-            write_frames_processed: 0,
-            delivered: 0,
-            first_request_icount: None,
-            computed_completion_icount: None,
-            next_completion_icount: None,
-        }
-    }
 }
 
 impl QemuLiveBlockIoServiceStep {
@@ -2340,12 +2319,13 @@ mod tests {
             .unwrap_or_else(|error| panic!("capture block checkpoint: {error}"));
         let before = checkpoint.clone();
 
-        let error = servicer
-            .restore_checkpoint(
-                ContentHash::from_bytes(b"execution-checkpoint-b"),
-                &checkpoint,
-            )
-            .unwrap_err();
+        let error = match servicer.restore_checkpoint(
+            ContentHash::from_bytes(b"execution-checkpoint-b"),
+            &checkpoint,
+        ) {
+            Ok(()) => panic!("a mismatched checkpoint binding must be rejected"),
+            Err(error) => error,
+        };
         assert!(matches!(
             error,
             QemuLiveBlockIoServicerError::CheckpointBindingMismatch

@@ -586,9 +586,8 @@ impl QemuLive9pIoServicer {
                     },
                 ),
             )
-            .filter_map(|((completion, _), (opportunity, authorized))| {
-                (!*authorized).then(|| (*completion, opportunity.clone()))
-            })
+            .filter(|(_, (_, authorized))| !*authorized)
+            .map(|((completion, _), (opportunity, _))| (*completion, opportunity.clone()))
             .collect()
     }
 
@@ -660,9 +659,8 @@ impl QemuLive9pIoServicer {
                     },
                 ),
             )
-            .filter_map(|((completion, _), (opportunity, authorized))| {
-                (*authorized).then(|| (*completion, opportunity.clone()))
-            })
+            .filter(|(_, (_, authorized))| **authorized)
+            .map(|((completion, _), (opportunity, _))| (*completion, opportunity.clone()))
             .collect::<Vec<_>>();
         if self
             .pending_fault_opportunities

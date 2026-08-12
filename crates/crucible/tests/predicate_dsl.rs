@@ -52,9 +52,7 @@ fn predicate_dsl_desugars_supported_world_predicates_and_preserves_host_extensio
                     world
                         .vm_nodes()
                         .iter()
-                        .map(|node| {
-                            Predicate::node_state(node.id.clone(), NodeLifecycle::Crashed)
-                        })
+                        .map(|node| Predicate::node_state(node.id.clone(), NodeLifecycle::Crashed))
                         .collect(),
                 ))),
             },
@@ -97,12 +95,8 @@ fn predicate_dsl_string_toml_parses_for_properties_and_triggers() {
         "id = \"blake3:{}\"\n\n[[assertion]]\nid = \"quiet\"\nmessage = \"world becomes quiescent\"\n\n[assertion.property]\nkind = \"always\"\npredicate = \"quiescent\"\n",
         expected.content_hash().to_hex()
     );
-    let parsed = Properties::from_canonical_toml_for_world_and_plan(
-        world,
-        &plan,
-        &properties_toml,
-    )
-    .expect("plan-aware TOML DSL should parse");
+    let parsed = Properties::from_canonical_toml_for_world_and_plan(world, &plan, &properties_toml)
+        .expect("plan-aware TOML DSL should parse");
     assert_eq!(parsed, expected);
 
     let graph = EventGraph::new_for_world(

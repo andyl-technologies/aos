@@ -108,6 +108,12 @@ impl QemuHostPluginSetup {
         self.clock_manifest.as_ref()
     }
 
+    /// Returns the immutable accelerator targets admitted before guest start.
+    #[must_use]
+    pub const fn accelerator_manifest(&self) -> Option<&FaultAcceleratorCapabilityManifestV1> {
+        self.accelerator_manifest.as_ref()
+    }
+
     /// Returns the live-admitted QEMU build, patch, shared-memory, and VMState identity.
     #[must_use]
     pub const fn system_manifest(&self) -> &FaultSystemCapabilityManifestV1 {
