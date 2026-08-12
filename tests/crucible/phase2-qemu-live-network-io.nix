@@ -134,6 +134,8 @@ in
           grep -Fxq 'orderly_child_exit=true' "$report"
 
           world_report="$TMPDIR/live-world-network.result"
+          world_run_dir="$TMPDIR/live-world-network-run"
+          mkdir -p "$world_run_dir"
           root_image=${pkgs.crucible-fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4
           timeout -k 15 590 \
             "$TMPDIR/live-network-io-target/debug/examples/crucible-qemu-live-world-network" \
@@ -142,6 +144,7 @@ in
             "$vmlinuz" \
             "$root_image" \
             "$GUEST_INITRD" \
+            "$world_run_dir" \
             > "$world_report"
 
           cat "$world_report"
@@ -153,6 +156,7 @@ in
           grep -Eq '^delivered_frames=[1-9][0-9]*$' "$world_report"
           grep -Fxq 'search_branch=loss-fire' "$world_report"
           grep -Fxq 'branch_decisions_match=true' "$world_report"
+          grep -Fxq 'exact_restore_next_quantum_match=true' "$world_report"
           grep -Fxq 'process_crash_stopped=true' "$world_report"
           grep -Fxq 'ready_point_process_relaunched=true' "$world_report"
           grep -Fxq 'stay_down_start_node_process_relaunched=true' "$world_report"
