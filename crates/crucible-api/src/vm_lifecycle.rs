@@ -898,7 +898,7 @@ pub fn build_production_vm_lifecycle_loop(
                 production_app_random_checkpoint_config(
                     &checkpoint.scheduler,
                     scenario,
-                    config.branch.as_ref(),
+                    checkpoint.branch.as_ref(),
                     &vm.id,
                 )
                 .map_err(|error| {

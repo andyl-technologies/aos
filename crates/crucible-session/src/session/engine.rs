@@ -1811,7 +1811,7 @@ impl<L: QuantumLoop> Engine<L> {
             };
             self.active_step = None;
         }
-        if let Some(verdict) = self.quantum_loop.take_terminal_verdict() {
+        if let Some(verdict) = self.quantum_loop.terminal_verdict_for_stop() {
             self.pending_control.clear();
             self.active_step = None;
             match verdict {

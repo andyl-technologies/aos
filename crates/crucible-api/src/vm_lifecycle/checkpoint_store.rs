@@ -11,6 +11,8 @@ const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 const MAX_MANIFEST_BYTES_U64: u64 = 64 * 1024 * 1024;
 const ARTIFACT_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 const ARTIFACT_CHUNK_BYTES_U64: u64 = 4 * 1024 * 1024;
+const SMALL_CONTINUATION_MAX_BYTES: u64 = 268_435_456;
+const LARGE_CONTINUATION_MAX_BYTES: u64 = 1_610_612_800;
 
 #[derive(PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -240,6 +242,7 @@ pub(super) fn load_exact_checkpoint_set(
         &object_directory,
         manifest.schedule,
         &mut budget,
+        SMALL_CONTINUATION_MAX_BYTES,
     )?)
     .map_err(|error| loop_factory_error(format!("decode checkpoint schedule: {error}")))?;
     let configuration = Configuration {
@@ -255,6 +258,7 @@ pub(super) fn load_exact_checkpoint_set(
         &object_directory,
         manifest.scheduler,
         &mut budget,
+        LARGE_CONTINUATION_MAX_BYTES,
     )?)
     .map_err(|error| loop_factory_error(format!("decode scheduler continuation: {error}")))?;
     if scheduler.configuration_for(scenario).map_err(|error| {
@@ -270,21 +274,33 @@ pub(super) fn load_exact_checkpoint_set(
         &object_directory,
         manifest.trigger_state,
         &mut budget,
+        SMALL_CONTINUATION_MAX_BYTES,
     )?)
     .map_err(|error| loop_factory_error(format!("decode trigger continuation: {error}")))?;
     let assertion_state = HostAssertionEvaluatorCheckpoint::from_canonical_bytes(&read_object(
         &object_directory,
         manifest.assertion_state,
         &mut budget,
+        SMALL_CONTINUATION_MAX_BYTES,
     )?)
     .map_err(|error| loop_factory_error(format!("decode assertion continuation: {error}")))?;
     let lifecycle = decode_lifecycle(
-        &read_object(&object_directory, manifest.lifecycle_state, &mut budget)?,
+        &read_object(
+            &object_directory,
+            manifest.lifecycle_state,
+            &mut budget,
+            SMALL_CONTINUATION_MAX_BYTES,
+        )?,
         scenario,
     )?;
     let signal_plan = source.plan().fault_signals();
     let fault_checkpoint = ProductionFaultRuntimeCheckpoint::from_canonical_bytes(
-        &read_object(&object_directory, manifest.fault_checkpoint, &mut budget)?,
+        &read_object(
+            &object_directory,
+            manifest.fault_checkpoint,
+            &mut budget,
+            LARGE_CONTINUATION_MAX_BYTES,
+        )?,
         signal_plan,
         scenario.id(),
     )
@@ -299,6 +315,7 @@ pub(super) fn load_exact_checkpoint_set(
             &object_directory,
             target.snapshot,
             &mut budget,
+            SMALL_CONTINUATION_MAX_BYTES,
         )?)
         .map_err(|error| {
             loop_factory_error(format!(
@@ -958,6 +975,38 @@ fn validate_manifest_shape(manifest: &ClosureManifest) -> Result<(), String> {
             "closure manifest contains an invalid node record",
         ));
     }
+    let snapshot_count = manifest
+        .targets
+        .iter()
+        .map(|target| target.snapshot)
+        .collect::<BTreeSet<_>>()
+        .len();
+    if snapshot_count != manifest.targets.len() {
+        return Err(String::from(
+            "closure manifest aliases a node-specific QEMU snapshot",
+        ));
+    }
+    for artifact in manifest
+        .targets
+        .iter()
+        .flat_map(|target| [&target.overlay, &target.vmstate])
+    {
+        let chunk_count = u64::try_from(artifact.chunks.len())
+            .map_err(|_| String::from("artifact chunk count is not representable"))?;
+        let minimum = chunk_count
+            .saturating_sub(1)
+            .checked_mul(ARTIFACT_CHUNK_BYTES_U64)
+            .and_then(|bytes| bytes.checked_add(u64::from(chunk_count != 0)))
+            .ok_or_else(|| String::from("artifact chunk geometry overflows"))?;
+        let maximum = chunk_count
+            .checked_mul(ARTIFACT_CHUNK_BYTES_U64)
+            .ok_or_else(|| String::from("artifact chunk geometry overflows"))?;
+        if artifact.length < minimum || artifact.length > maximum {
+            return Err(String::from(
+                "closure manifest contains invalid artifact chunk geometry",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -975,7 +1024,25 @@ fn persist_object(
     if destination.exists() {
         return validate_file_hash(&destination, expected);
     }
-    persist_file_bytes(&destination, bytes)
+    let mut staging = tempfile::Builder::new()
+        .prefix(".object-")
+        .tempfile_in(directory)
+        .map_err(|error| store_error(format!("stage checkpoint object: {error}")))?;
+    staging
+        .write_all(bytes)
+        .and_then(|()| staging.as_file().sync_all())
+        .map_err(|error| store_error(format!("flush staged checkpoint object: {error}")))?;
+    match staging.persist_noclobber(&destination) {
+        Ok(_) => Ok(()),
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            validate_file_hash(&destination, expected)
+        }
+        Err(error) => Err(store_error(format!(
+            "publish checkpoint object {}: {}",
+            expected.to_hex(),
+            error.error
+        ))),
+    }
 }
 
 fn persist_file_object(
@@ -988,17 +1055,31 @@ fn persist_file_object(
     if destination.exists() {
         return validate_file_hash(&destination, expected);
     }
-    if fs::hard_link(source, &destination).is_err() {
-        fs::copy(source, &destination).map_err(|error| {
-            store_error(format!(
-                "persist checkpoint object {}: {error}",
-                expected.to_hex()
-            ))
-        })?;
+    let staging = tempfile::Builder::new()
+        .prefix(".object-")
+        .tempfile_in(directory)
+        .map_err(|error| store_error(format!("stage checkpoint file object: {error}")))?;
+    fs::copy(source, staging.path()).map_err(|error| {
+        store_error(format!(
+            "copy checkpoint object {} into staging: {error}",
+            expected.to_hex()
+        ))
+    })?;
+    staging
+        .as_file()
+        .sync_all()
+        .map_err(|error| store_error(format!("flush staged checkpoint object: {error}")))?;
+    match staging.persist_noclobber(&destination) {
+        Ok(_) => validate_file_hash(&destination, expected),
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            validate_file_hash(&destination, expected)
+        }
+        Err(error) => Err(store_error(format!(
+            "publish checkpoint object {}: {}",
+            expected.to_hex(),
+            error.error
+        ))),
     }
-    File::open(&destination)
-        .and_then(|file| file.sync_all())
-        .map_err(|error| store_error(format!("flush checkpoint object: {error}")))
 }
 
 fn artifact_manifest(
@@ -1271,6 +1352,7 @@ fn read_object(
     root: &Path,
     expected: ContentHash,
     budget: &mut CheckpointReadBudget,
+    role_limit: u64,
 ) -> Result<Vec<u8>, LifecycleApiError> {
     let path = object_path(root, expected);
     let size = fs::metadata(&path)
@@ -1281,6 +1363,13 @@ fn read_object(
             ))
         })?
         .len();
+    if size > role_limit {
+        return Err(loop_factory_error(format!(
+            "checkpoint object {} exceeds its role-specific byte limit {}",
+            expected.to_hex(),
+            role_limit
+        )));
+    }
     if budget.identities.insert(expected) {
         budget.reserve(size)?;
     }
@@ -1551,6 +1640,29 @@ mod tests {
 
         persist_object(directory.path(), identity, bytes).expect("persist first object");
         persist_object(directory.path(), identity, bytes).expect("reuse equal object");
+    }
+
+    #[test]
+    fn concurrent_equal_object_publishers_converge_atomically() {
+        let directory = std::sync::Arc::new(tempfile::tempdir().expect("create object directory"));
+        let bytes = b"concurrent object".to_vec();
+        let identity = ContentHash::from_bytes(&bytes);
+        let publishers = (0..8)
+            .map(|_| {
+                let directory = std::sync::Arc::clone(&directory);
+                let bytes = bytes.clone();
+                std::thread::spawn(move || persist_object(directory.path(), identity, &bytes))
+            })
+            .collect::<Vec<_>>();
+
+        for publisher in publishers {
+            publisher
+                .join()
+                .expect("publisher thread should not panic")
+                .expect("equal publisher should converge");
+        }
+        validate_file_hash(&object_path(directory.path(), identity), identity)
+            .expect("published object should authenticate");
     }
 
     #[test]
