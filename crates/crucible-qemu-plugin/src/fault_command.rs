@@ -517,8 +517,19 @@ impl QemuFaultCommandApis {
             .into_iter()
             .map(capability_row)
             .collect::<Result<Vec<_>, _>>()?;
-        fault_capability_manifest_digest(&rows)
-            .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?;
+        fault_capability_manifest_digest(&rows).map_err(|source| {
+            let keys = rows
+                .iter()
+                .map(|row| {
+                    format!(
+                        "{}:{}:{}",
+                        row.command_kind as u16, row.semantic_version, row.scope as u16
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            FaultCommandBridgeError::CapabilityRegistryAbi { keys, source }
+        })?;
         Ok(rows)
     }
 
@@ -1402,8 +1413,19 @@ fn capability_row(
         required_feature_bits: raw.required_feature_bits,
         capability_hash: *hasher.finalize().as_bytes(),
     };
-    FaultCapabilityRowV1::decode(&row.encode())
-        .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })
+    FaultCapabilityRowV1::decode(&row.encode()).map_err(|source| {
+        FaultCommandBridgeError::CapabilityRowAbi {
+            name: name.to_owned(),
+            command_kind: raw.command_kind,
+            scope: raw.scope,
+            semantic_version: raw.semantic_version,
+            phase_mask: raw.phase_mask,
+            maximum_payload_bytes: raw.maximum_payload_bytes,
+            maximum_pending_commands: raw.maximum_pending_commands,
+            required_feature_bits: raw.required_feature_bits,
+            source,
+        }
+    })
 }
 
 fn register_capability_row(
@@ -2149,6 +2171,38 @@ pub enum FaultCommandBridgeError {
     /// A capability row violated the public ABI.
     #[error("QEMU fault capability ABI is invalid: {source}")]
     CapabilityAbi {
+        /// Public ABI validation failure.
+        source: FaultAbiError,
+    },
+    /// One QEMU registry row violated the public ABI contract.
+    #[error(
+        "QEMU fault capability row `{name}` is invalid: kind={command_kind} scope={scope} version={semantic_version} phase_mask={phase_mask:#x} max_payload={maximum_payload_bytes} max_pending={maximum_pending_commands} features={required_feature_bits:#x}: {source}"
+    )]
+    CapabilityRowAbi {
+        /// Stable QEMU capability name.
+        name: String,
+        /// Raw command-kind tag.
+        command_kind: u16,
+        /// Raw capability-scope tag.
+        scope: u16,
+        /// Raw semantic version.
+        semantic_version: u32,
+        /// Raw supported-phase bit mask.
+        phase_mask: u32,
+        /// Raw maximum command payload bytes.
+        maximum_payload_bytes: u32,
+        /// Raw maximum pending command count.
+        maximum_pending_commands: u32,
+        /// Raw required feature bit mask.
+        required_feature_bits: u64,
+        /// Public ABI validation failure.
+        source: FaultAbiError,
+    },
+    /// The complete QEMU registry was not in canonical key order.
+    #[error("QEMU fault capability registry keys [{keys}] are invalid: {source}")]
+    CapabilityRegistryAbi {
+        /// Ordered `kind:version:scope` keys returned by QEMU.
+        keys: String,
         /// Public ABI validation failure.
         source: FaultAbiError,
     },
