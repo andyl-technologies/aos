@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "d9cde09ef5eee58a9ac10b5a43665519044aced36d23dae57f4d0402a4d537bb";
+  patchBranchBundleSha256 = "1268b0c727d7cd23a87ad98c95e0ee63a67fafba3c9c1573e93890b28573af30";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "103e202b6e038782e5db8250f5848dc00e741283";
+  patchBranchHeadCommit = "b32459c4bd0dfed4c5823448dba304ab620f6822";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -609,8 +609,8 @@ let
     {
       file = "0068-crucible-guest-clock-faults.patch";
       branchSubject = "crucible: guest clock faults";
-      branchCommit = "103e202b6e038782e5db8250f5848dc00e741283";
-      branchTree = "da4a13012276c20344e0947e52b6757f24d65a70";
+      branchCommit = "b32459c4bd0dfed4c5823448dba304ab620f6822";
+      branchTree = "3494cecd178557ca9fc72b92ed490784ede111b6";
       catalogName = "crucible-guest-clock-faults";
       class = "D";
       enforces = "QFP-CLOCK-1,QFP-CLOCK-2,FAULT-ORDER";
