@@ -540,7 +540,7 @@ impl QemuFaultCommandApis {
         let mut cpu_model = std::ptr::null();
         let required =
             (self.register_manifest)(std::ptr::null_mut(), 0, &mut architecture, &mut cpu_model);
-        if required > crucible_shmem::HARD_FAULT_TARGET_MANIFEST_ROWS {
+        if required == 0 || required > crucible_shmem::HARD_FAULT_TARGET_MANIFEST_ROWS {
             return Err(FaultCommandBridgeError::RegisterManifestCount { required });
         }
         let empty = QemuFaultRegisterCapability {
@@ -1970,6 +1970,7 @@ pub(crate) struct FaultCommandBridge {
     accelerator_commands: BTreeMap<u64, AcceleratorCommandExpectation>,
     active_accelerator_bindings: BTreeMap<[u8; 32], u64>,
     pending_command: Option<DequeuedFaultCommand>,
+    initialized: bool,
 }
 
 mod accelerator_evidence;
@@ -1982,6 +1983,9 @@ use instruction_evidence::*;
 /// Failure of the lossless fault command bridge.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum FaultCommandBridgeError {
+    /// A command pump ran before the first realized vCPU admitted manifests.
+    #[error("QEMU fault bridge is not initialized by a realized vCPU")]
+    NotInitialized,
     /// Bridge initialization failed while admitting one named capability set.
     #[error("QEMU fault bridge initialization failed at {stage}: {source}")]
     InitializationStage {

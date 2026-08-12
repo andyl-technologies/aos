@@ -12,6 +12,63 @@ impl FaultCommandBridge {
         if target_node_hash == [0; 32] {
             return Err(FaultCommandBridgeError::ZeroTargetNodeHash);
         }
+        let commands = StableFaultCommandTransport::new(
+            region
+                .fault_command_transport_mut(vm_slot)
+                .map_err(|source| FaultCommandBridgeError::MappedTransport { source })?,
+        )?;
+        let results = StableFaultResultTransport::new(
+            region
+                .fault_result_transport_mut(vm_slot)
+                .map_err(|source| FaultCommandBridgeError::MappedTransport { source })?,
+        )?;
+        let events = StableFaultEventTransport::new(
+            region
+                .fault_event_transport_mut(vm_slot)
+                .map_err(|source| FaultCommandBridgeError::MappedTransport { source })?,
+        )?;
+        Ok(Self {
+            apis,
+            target_node_hash,
+            commands,
+            results,
+            events,
+            last_sequence: 0,
+            capability_payload: Vec::new(),
+            capability_queries: BTreeSet::new(),
+            register_manifest_payload: None,
+            interrupt_manifest_payload: None,
+            hardware_error_manifest_payload: None,
+            clock_manifest_payload: None,
+            accelerator_manifest_payload: None,
+            system_manifest_payload: Vec::new(),
+            register_evidence_identity: None,
+            instruction_evidence_identity: None,
+            register_commands: BTreeMap::new(),
+            active_register_bindings: BTreeMap::new(),
+            instruction_commands: BTreeMap::new(),
+            active_instruction_bindings: BTreeMap::new(),
+            exception_commands: BTreeMap::new(),
+            memory_ecc_commands: BTreeMap::new(),
+            clock_commands: BTreeMap::new(),
+            active_clock_bindings: BTreeMap::new(),
+            accelerator_commands: BTreeMap::new(),
+            active_accelerator_bindings: BTreeMap::new(),
+            pending_command: None,
+            initialized: false,
+        })
+    }
+
+    /// Admits the realized QEMU capability and target manifests exactly once.
+    ///
+    /// QEMU invokes its plugin installer before CPU objects are realized. The
+    /// first vCPU-init callback is therefore the earliest boundary at which an
+    /// architecture manifest can be both complete and immutable.
+    pub(crate) fn initialize(&mut self) -> Result<(), FaultCommandBridgeError> {
+        if self.initialized {
+            return Ok(());
+        }
+        let apis = self.apis;
         let mut rows = initialization_stage("capability registry", apis.capability_rows())?;
         let (register_manifest_payload, register_evidence_identity) = if rows.iter().any(|row| {
             row.command_kind == FaultCommandKind::CpuRegisterTransform
@@ -181,50 +238,18 @@ impl FaultCommandBridge {
         };
         let capability_payload = encode_fault_capability_manifest(&rows)
             .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?;
-        let commands = StableFaultCommandTransport::new(
-            region
-                .fault_command_transport_mut(vm_slot)
-                .map_err(|source| FaultCommandBridgeError::MappedTransport { source })?,
-        )?;
-        let results = StableFaultResultTransport::new(
-            region
-                .fault_result_transport_mut(vm_slot)
-                .map_err(|source| FaultCommandBridgeError::MappedTransport { source })?,
-        )?;
-        let events = StableFaultEventTransport::new(
-            region
-                .fault_event_transport_mut(vm_slot)
-                .map_err(|source| FaultCommandBridgeError::MappedTransport { source })?,
-        )?;
-        Ok(Self {
-            apis,
-            target_node_hash,
-            commands,
-            results,
-            events,
-            last_sequence: 0,
-            capability_payload,
-            capability_queries: BTreeSet::new(),
-            register_manifest_payload,
-            interrupt_manifest_payload,
-            hardware_error_manifest_payload,
-            clock_manifest_payload,
-            accelerator_manifest_payload,
-            system_manifest_payload,
-            register_evidence_identity,
-            instruction_evidence_identity,
-            register_commands: BTreeMap::new(),
-            active_register_bindings: BTreeMap::new(),
-            instruction_commands: BTreeMap::new(),
-            active_instruction_bindings: BTreeMap::new(),
-            exception_commands: BTreeMap::new(),
-            memory_ecc_commands: BTreeMap::new(),
-            clock_commands: BTreeMap::new(),
-            active_clock_bindings: BTreeMap::new(),
-            accelerator_commands: BTreeMap::new(),
-            active_accelerator_bindings: BTreeMap::new(),
-            pending_command: None,
-        })
+
+        self.capability_payload = capability_payload;
+        self.register_manifest_payload = register_manifest_payload;
+        self.interrupt_manifest_payload = interrupt_manifest_payload;
+        self.hardware_error_manifest_payload = hardware_error_manifest_payload;
+        self.clock_manifest_payload = clock_manifest_payload;
+        self.accelerator_manifest_payload = accelerator_manifest_payload;
+        self.system_manifest_payload = system_manifest_payload;
+        self.register_evidence_identity = register_evidence_identity;
+        self.instruction_evidence_identity = instruction_evidence_identity;
+        self.initialized = true;
+        Ok(())
     }
 
     /// Drains completed results, submits every published command, then drains
@@ -244,6 +269,9 @@ impl FaultCommandBridge {
         logical_icount_offset: u64,
         raw_icount: u64,
     ) -> Result<(), FaultCommandBridgeError> {
+        if !self.initialized {
+            return Err(FaultCommandBridgeError::NotInitialized);
+        }
         let logical_icount = raw_icount
             .checked_add(logical_icount_offset)
             .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;

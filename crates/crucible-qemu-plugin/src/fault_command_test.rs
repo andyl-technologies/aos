@@ -188,6 +188,7 @@ fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {
         accelerator_commands: BTreeMap::new(),
         active_accelerator_bindings: BTreeMap::new(),
         pending_command: None,
+        initialized: true,
     };
     let command = |kind, sequence, node_hash| FaultCommandHeaderV1 {
         abi_major: FAULT_COMMAND_ABI_MAJOR,
