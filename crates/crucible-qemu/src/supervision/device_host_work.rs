@@ -370,7 +370,7 @@ impl QemuLiveBlockHostWorkPool {
             .send(WorkerCommand::Service {
                 guest_icount,
                 delay,
-                directive,
+                directive: Box::new(directive),
             })
             .map_err(|_| QemuLiveBlockHostWorkPoolError::WorkerDisconnected)?;
         self.work_in_flight = true;
@@ -799,7 +799,7 @@ enum WorkerCommand {
     Service {
         guest_icount: u64,
         delay: QemuDeviceHostWorkDelay,
-        directive: Option<(BlockRequestIdentity, ResolvedBlockFaultDirective)>,
+        directive: Box<Option<(BlockRequestIdentity, ResolvedBlockFaultDirective)>>,
     },
     Mutate(Box<StorageMutation>),
     InspectStorageState,
@@ -858,7 +858,7 @@ fn worker_loop(
                 directive,
             } => {
                 delay.apply();
-                let result = directive
+                let result = (*directive)
                     .map_or(Ok(()), |(request_id, directive)| {
                         servicer.install_storage_fault_directive(request_id, directive)
                     })
