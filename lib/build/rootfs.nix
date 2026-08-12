@@ -300,6 +300,9 @@ in
                   cp -a ${package}/lib/modules/. rootfs/usr/lib/modules/
                 '') kernelModulePackages}
                 for module_dir in rootfs/usr/lib/modules/*; do
+                  # An external package can restore the copied release
+                  # directory's read-only store mode while merging modules.
+                  chmod u+w rootfs/usr/lib/modules "$module_dir"
                   rm -f "$module_dir/build" "$module_dir/source"
                   ${pkgs.kmod}/sbin/depmod -b rootfs "$(basename "$module_dir")"
                 done
