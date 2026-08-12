@@ -274,9 +274,12 @@ pub trait QuantumLoop {
     ///
     /// Returns [`SchedulerError`] when concrete checkpoint capture fails or the
     /// backend is not at the supplied configuration boundary.
-    fn capture_checkpoint(&mut self, configuration: &Configuration) -> Result<(), SchedulerError> {
+    fn capture_checkpoint(
+        &mut self,
+        configuration: &Configuration,
+    ) -> Result<Option<ContentHash>, SchedulerError> {
         let _ = configuration;
-        Ok(())
+        Ok(None)
     }
 
     /// Appends non-canonical debugger metadata to the scheduler-owned log.

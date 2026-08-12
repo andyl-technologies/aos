@@ -39,7 +39,7 @@ pub(super) const ACTION_BINARY_MAGIC: &[u8] = b"crucible.action.v1\0";
 pub(super) const CONTROL_OPERATION_KIND_BINARY_MAGIC: &[u8] =
     b"crucible.control-operation-kind.v1\0";
 pub(super) const SEED_BINARY_MAGIC: &[u8] = b"crucible.seed.v1\0";
-pub(super) const CHECKPOINT_BINARY_MAGIC: &[u8] = b"crucible.checkpoint.v2\0";
+pub(super) const CHECKPOINT_BINARY_MAGIC: &[u8] = b"crucible.checkpoint.v3\0";
 pub(super) const MAX_SCENARIO_BINARY_COLLECTION_ITEMS: usize = 1_000_000;
 pub(super) const MAX_SCENARIO_BINARY_STRING_BYTES: usize = 16 * 1024 * 1024;
 pub(super) const MAX_SCENARIO_BINARY_BLOB_BYTES: usize = 256 * 1024 * 1024;

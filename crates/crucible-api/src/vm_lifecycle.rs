@@ -164,6 +164,7 @@ struct ProductionVmExactCheckpointTarget {
 
 #[derive(Clone, Debug)]
 struct ProductionVmExactCheckpointSet {
+    identity: ContentHash,
     configuration: Configuration,
     scheduler: SingleScheduler,
     trigger_state: EventGraphState,
@@ -670,6 +671,9 @@ pub fn build_production_vm_lifecycle_loop_from_checkpoint(
             "production direct restore requires a matching recorded fat checkpoint",
         ));
     }
+    let closure = checkpoint.execution_closure.ok_or_else(|| {
+        loop_factory_error("production direct restore requires a concrete execution closure")
+    })?;
     let key = (scenario.id(), checkpoint.id);
     let restored = production_checkpoint_registry()
         .lock()
@@ -684,6 +688,7 @@ pub fn build_production_vm_lifecycle_loop_from_checkpoint(
         })?;
     if restored.configuration.id() != checkpoint.configuration
         || restored.scheduler.frontier() != checkpoint.virtual_time
+        || restored.identity != closure
     {
         return Err(loop_factory_error(
             "registered production continuation does not match checkpoint model state",
