@@ -56,8 +56,9 @@ pub use fault::{
 };
 pub use ipv4::{Ipv4FragmentationError, Ipv4FragmentationOutcome, fragment_ethernet_ipv4};
 pub use link::{
-    Delivery, Frame, FrameDraws, LINK_SLOT, LinkSnapshot, NetLink, PastDeliveryPolicy,
-    ResolveOutcome, ResolvedNetworkFrameEffects, ResolvedNetworkFrameEffectsError,
+    Delivery, Frame, FrameDraws, LINK_SLOT, LinkSnapshot, LinkSnapshotCodecError, NetLink,
+    PastDeliveryPolicy, ResolveOutcome, ResolvedNetworkFrameEffects,
+    ResolvedNetworkFrameEffectsError,
 };
 pub use response::{
     NetworkResponseError, NetworkResponseHeaders, NetworkResponseKind, NetworkResponseOutcome,
@@ -67,7 +68,7 @@ pub use response::{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::DeviceError;
+    use crate::{DeviceError, PendingResponse, Response, ResponseStatus};
 
     /// Unwraps a result in tests, panicking with the error on failure.
     fn ok<T, E: std::fmt::Debug>(result: Result<T, E>) -> T {
@@ -87,6 +88,51 @@ mod tests {
     /// A frame at emit icount 0 with a fixed 4-byte payload.
     fn frame(payload: Vec<u8>) -> Frame {
         Frame::new(0, 1, payload)
+    }
+
+    #[test]
+    fn link_snapshot_codec_round_trips_complete_state() {
+        let mut faults = LinkFaults {
+            partitioned: true,
+            added_latency_ns: 11,
+            jitter_window_ns: 12,
+            reorder_window_ns: 13,
+            bandwidth_bits_per_sec: vec![1_000, 2_000],
+            loss: Probability::new(1, 7),
+            additional_loss: vec![Probability::new(2, 9)],
+            duplicate: Probability::new(3, 11),
+            duplicate_gap_ns: 14,
+            corrupt: Probability::new(4, 13),
+            corruption_strategies: vec![
+                LinkCorruptionStrategy::BitFlip { max_bits: 3 },
+                LinkCorruptionStrategy::FieldMutation,
+                LinkCorruptionStrategy::Truncation { max_bytes: 5 },
+            ],
+        };
+        faults.partitioned = false;
+        let mut snapshot = link(faults).snapshot();
+        snapshot.current_icount = 20;
+        snapshot.next_seq = 7;
+        snapshot.lookahead_recompute_pending = true;
+        snapshot.rng_position = 19;
+        snapshot.inflight.push(PendingResponse::from_parts(
+            21,
+            snapshot.src_node,
+            6,
+            Response::new(44, ResponseStatus::Ok, vec![1, 2, 3]),
+        ));
+
+        let bytes = ok(snapshot.canonical_bytes());
+        let restored = ok(LinkSnapshot::from_canonical_bytes(&bytes));
+        assert_eq!(restored, snapshot);
+        assert_eq!(ok(restored.canonical_bytes()), bytes);
+
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert_eq!(
+            LinkSnapshot::from_canonical_bytes(&trailing),
+            Err(LinkSnapshotCodecError::Noncanonical)
+        );
     }
 
     // ---- construction: latency floor (IO-33) ----

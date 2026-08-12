@@ -100,8 +100,8 @@ pub use harness::{
 pub use inflight::{InflightQueue, PendingResponse};
 pub use netlink::{
     Delivery, Frame, FrameDraws, Ipv4FragmentationError, Ipv4FragmentationOutcome, LINK_SLOT,
-    LinkCorruptionStrategy, LinkFaults, LinkSnapshot, NetLink, NetworkResponseError,
-    NetworkResponseHeaders, NetworkResponseKind, NetworkResponseOutcome,
+    LinkCorruptionStrategy, LinkFaults, LinkSnapshot, LinkSnapshotCodecError, NetLink,
+    NetworkResponseError, NetworkResponseHeaders, NetworkResponseKind, NetworkResponseOutcome,
     NetworkResponseSpecification, PastDeliveryPolicy, ResolveOutcome, ResolvedNetworkFrameEffects,
     ResolvedNetworkFrameEffectsError, fragment_ethernet_ipv4, generate_network_response,
 };
