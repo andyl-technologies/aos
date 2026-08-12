@@ -16,7 +16,7 @@ use super::{BlockErrorCode, BlockOp, BlockRequest};
 pub const HARD_BLOCK_MEDIA_RULES: usize = 1_048_576;
 
 /// Closed physical-media state applied to one logical byte range.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockMediaRangeState {
     /// Applicable accesses fail immediately after activation.
     Bad,
@@ -29,7 +29,7 @@ pub enum BlockMediaRangeState {
 }
 
 /// One fully resolved stateful media-range contribution.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedBlockMediaRule {
     /// Stable resolved binding-action identity.
     pub contributor: [u8; 32],
@@ -101,7 +101,7 @@ impl ResolvedBlockMediaRule {
 }
 
 /// Checkpointed continuation of one media-range contributor.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockMediaRuleContinuation {
     /// Immutable resolved rule authenticated on every subsequent use.
     pub rule: ResolvedBlockMediaRule,
@@ -110,7 +110,7 @@ pub struct BlockMediaRuleContinuation {
 }
 
 /// Canonical checkpointed media overlay and threshold counters.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockMediaState {
     rules: BTreeMap<[u8; 32], BlockMediaRuleContinuation>,
 }

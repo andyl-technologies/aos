@@ -18,7 +18,7 @@ pub const HARD_BLOCK_FLASH_RULES: usize = 65_536;
 pub const HARD_BLOCK_FLASH_SPARSE_ENTRIES: usize = 4_194_304;
 
 /// A resolved retention transition policy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedBlockFlashRetention {
     /// Minimum programmed age before a cell is eligible.
     pub minimum_age_nanos: u64,
@@ -31,7 +31,7 @@ pub struct ResolvedBlockFlashRetention {
 }
 
 /// A resolved neighboring-page read-disturb policy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedBlockFlashReadDisturb {
     /// Reads of an aggressor page required for one disturbance transition.
     pub read_threshold: u64,
@@ -44,7 +44,7 @@ pub struct ResolvedBlockFlashReadDisturb {
 }
 
 /// A resolved program/erase failure policy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedBlockFlashProgramErase {
     /// Program failure probability before rated endurance.
     pub program_probability_millionths: u32,
@@ -59,7 +59,7 @@ pub struct ResolvedBlockFlashProgramErase {
 }
 
 /// One complete resolved flash-device contribution.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedBlockFlashRule {
     /// Stable resolved binding-action identity.
     pub contributor: [u8; 32],
@@ -111,7 +111,7 @@ impl ResolvedBlockFlashRule {
 }
 
 /// Sparse state for one touched erase block.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockFlashEraseBlockState {
     /// Successful erase transitions applied to this block.
     pub erase_count: u64,
@@ -120,7 +120,7 @@ pub struct BlockFlashEraseBlockState {
 }
 
 /// Sparse state for one touched program page.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockFlashPageState {
     /// Virtual time of the most recent successful program.
     pub programmed_nanos: u64,
@@ -129,7 +129,7 @@ pub struct BlockFlashPageState {
 }
 
 /// Checkpointed continuation for one flash rule.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockFlashContinuation {
     /// Immutable rule authenticated whenever it is observed again.
     pub rule: ResolvedBlockFlashRule,
@@ -146,7 +146,7 @@ pub struct BlockFlashContinuation {
 }
 
 /// Frozen result of one erase-block attempt shared by all request fragments.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockFlashEraseDecision {
     /// Bytes erased from the beginning of the physical block.
     pub applied_prefix_bytes: u64,
@@ -155,7 +155,7 @@ pub struct BlockFlashEraseDecision {
 }
 
 /// Exact result of a flash program or erase opportunity.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockFlashMutationOutcome {
     /// Fragment-relative spans that physically programmed or erased.
     pub spans: Vec<BlockFaultByteSpan>,
@@ -164,7 +164,7 @@ pub struct BlockFlashMutationOutcome {
 }
 
 /// Canonical sparse flash state owned by one block device.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockFlashState {
     continuations: BTreeMap<[u8; 32], BlockFlashContinuation>,
 }

@@ -16,3 +16,5 @@ thiserror = { workspace = true }
 blake3 = { workspace = true }
 crucible-sim = { path = "../crucible-sim" }
 crucible-shmem = { path = "../crucible-shmem" }
+serde = { workspace = true }
+ciborium = { workspace = true }

@@ -35,7 +35,8 @@ pub use codec::{
     BlockTransportUnadmitted, BlockTransportUndelivered, REQUEST_HEADER_LEN, RESPONSE_HEADER_LEN,
 };
 pub use device::{
-    BlockDevice, BlockLatency, BlockSnapshot, install_cross_device_misdirected_persistence,
+    BlockDevice, BlockLatency, BlockSnapshot, BlockSnapshotCodecError,
+    install_cross_device_misdirected_persistence,
 };
 pub use fault::*;
 pub use flash::*;
@@ -79,6 +80,21 @@ mod tests {
         let src = crucible_shmem::SLOT_BLK_IO as u32;
         let core = ok(IoCore::new(8, src, 16, 16));
         BlockDevice::new(core, ramp_base(base_len), latency)
+    }
+
+    #[test]
+    fn block_snapshot_codec_round_trips_complete_device_state() {
+        let device = device_with_latency(8_192, BlockLatency::new(1, 2, 3, 4, 5));
+        let snapshot = device.snapshot();
+        let bytes = ok(snapshot.to_canonical_bytes());
+        assert_eq!(ok(BlockSnapshot::from_canonical_bytes(&bytes)), snapshot);
+
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert_eq!(
+            BlockSnapshot::from_canonical_bytes(&trailing),
+            Err(BlockSnapshotCodecError::Noncanonical)
+        );
     }
 
     fn cached_fault_config(length_bytes: u64) -> BlockDurabilityConfig {

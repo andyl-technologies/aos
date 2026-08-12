@@ -54,7 +54,7 @@ pub const RESPONSE_HEADER_LEN: usize = 20;
 /// Request IDs are scoped to an epoch so a controller reset may restart its
 /// counter without allowing a delayed pre-reset completion to alias a new
 /// request.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub struct BlockRequestIdentity {
     /// Monotone controller generation.
     pub epoch: u64,
@@ -74,7 +74,7 @@ impl BlockRequestIdentity {
 ///
 /// The numeric values are part of the wire ABI and MUST NOT change without a
 /// version bump ([IO-8]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockOp {
     /// Read `count` bytes at `offset` (overlay over base).
     Read,
@@ -121,7 +121,7 @@ impl BlockOp {
 }
 
 /// The terminal status byte of a [`BlockResponse`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockStatus {
     /// The operation completed successfully.
     Ok,
@@ -142,7 +142,7 @@ pub enum BlockStatus {
 }
 
 /// Post-reset request-ID allocation visible to the guest transport.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockTransportRequestIds {
     /// Keeps the current epoch and monotone request-ID counter.
     PreserveMonotonic,
@@ -151,7 +151,7 @@ pub enum BlockTransportRequestIds {
 }
 
 /// Guest transport treatment of requests arriving during recovery.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockTransportUnadmitted {
     /// Rejects arrivals with `failure_result`.
     Reject,
@@ -160,7 +160,7 @@ pub enum BlockTransportUnadmitted {
 }
 
 /// Guest transport treatment of queued or executing requests.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockTransportPending {
     /// Fails the request.
     Fail,
@@ -171,7 +171,7 @@ pub enum BlockTransportPending {
 }
 
 /// Guest transport treatment of resolved requests.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockTransportResolved {
     /// Completes the existing result.
     Complete,
@@ -184,7 +184,7 @@ pub enum BlockTransportResolved {
 }
 
 /// Guest transport treatment of completed but undelivered requests.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockTransportUndelivered {
     /// Delivers the existing result.
     Complete,
@@ -199,7 +199,7 @@ pub enum BlockTransportUndelivered {
 }
 
 /// Guest-facing portion of one live controller reset transition.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockTransportReset {
     /// Epoch active after the reset completes.
     pub next_epoch: u64,
@@ -355,7 +355,7 @@ fn decode_bool(byte: u8, len: usize) -> Result<bool, BlockCodecError> {
 }
 
 /// Closed protocol-neutral block error carried by every failed response.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockErrorCode {
     /// The device is unavailable.
     Offline,
@@ -465,7 +465,7 @@ impl BlockStatus {
 /// Carries the operation, correlation id, and the read/write geometry. For a
 /// write, `data` holds exactly `count` bytes; for every other op `data` is empty
 /// and `count`/`offset` are zero by convention.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockRequest {
     /// The operation to perform.
     pub op: BlockOp,
@@ -671,7 +671,7 @@ impl BlockRequest {
 }
 
 /// A decoded, validated block response.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockResponse {
     /// The terminal status.
     pub status: BlockStatus,
@@ -930,7 +930,7 @@ fn u64_le(buf: &[u8], offset: usize) -> u64 {
 ///
 /// Every variant is a pure function of the input bytes; decoding hostile input
 /// always lands here rather than panicking ([IO-8], `gate:abi-conformance`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error, serde::Serialize, serde::Deserialize)]
 pub enum BlockCodecError {
     /// The buffer is shorter than the fixed header for its message kind.
     #[error("block message header truncated: need {needed} bytes, got {got}")]
