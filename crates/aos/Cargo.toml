@@ -50,6 +50,4 @@ libc = { workspace = true }
 ed25519-dalek = { workspace = true }
 url = { workspace = true }
 zeroize = { workspace = true }
-
-[dev-dependencies]
 tempfile = { workspace = true }

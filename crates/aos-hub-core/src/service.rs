@@ -1646,7 +1646,7 @@ fn normalize_instance_value(key: &str, value: &str) -> Result<Option<String>, Rp
                 _ => {
                     return Err(RpcError::invalid(format!(
                         "{key} must be one of on, off, true, false, 1, 0, yes, or no"
-                    )))
+                    )));
                 }
             };
             Ok(Some(if on { "on" } else { "off" }.to_string()))
@@ -2085,6 +2085,15 @@ impl RouteReservationKeyring for ConfiguredRouteReservationKeyring {
 /// flat/nested routes. Larger objects use multipart or direct-origin upload.
 pub const MAX_UPLOAD_BYTES: usize = 20 * 1024 * 1024;
 
+/// Maximum number of objects admitted by one registry publication manifest.
+pub const MAX_REGISTRY_PUBLICATION_OBJECTS: usize = 10_000;
+
+/// Maximum encoded length of one registry publication object key.
+pub const MAX_REGISTRY_PUBLICATION_PATH_BYTES: usize = 512;
+
+/// Maximum number of components in one registry publication object key.
+pub const MAX_REGISTRY_PUBLICATION_PATH_COMPONENTS: usize = 33;
+
 /// Bounded part size used by typed registry publication uploads.
 ///
 /// Eight MiB exceeds the five-MiB minimum imposed by S3-compatible stores and
@@ -2094,9 +2103,16 @@ const REGISTRY_PUBLICATION_PART_BYTES: usize = 8 * 1024 * 1024;
 struct RegistryPublicationUploadPlacement {
     placement: crate::db::SurfacePlacementRecord,
     writer: Box<dyn SurfaceWrite>,
-    upload_id: Option<String>,
-    parts: Vec<PartTag>,
-    completed: bool,
+}
+
+const REGISTRY_PUBLICATION_UPLOAD_TTL_SECS: i64 = 86_400;
+const MAX_REGISTRY_PUBLICATION_MULTIPART_PARTS: u64 = 10_000;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct RegistryPublicationMultipartBackend {
+    placement_id: i64,
+    placement_resource_version: i64,
+    backend_upload_id: String,
 }
 
 async fn collect_exact_publication_body(
@@ -2138,99 +2154,6 @@ fn verify_publication_bytes(
         ));
     }
     Ok(())
-}
-
-async fn upload_registry_publication_part(
-    object_key: &str,
-    part_number: u32,
-    bytes: &[u8],
-    uploads: &mut [RegistryPublicationUploadPlacement],
-) -> Result<(), RpcError> {
-    for upload in uploads {
-        let upload_id = upload.upload_id.as_deref().ok_or(RpcError::Internal)?;
-        let tag = upload
-            .writer
-            .upload_part(object_key, upload_id, part_number, bytes)
-            .await
-            .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
-        if tag.part_number != part_number {
-            return Err(RpcError::Unavailable(
-                "publication backend returned a mismatched part number".into(),
-            ));
-        }
-        upload.parts.push(tag);
-    }
-    Ok(())
-}
-
-async fn stream_registry_publication_parts(
-    body: axum::body::Body,
-    object: &crate::db::RegistryPublicationUploadObjectRecord,
-    uploads: &mut [RegistryPublicationUploadPlacement],
-) -> Result<(), RpcError> {
-    let mut stream = body.into_data_stream();
-    let mut hasher = Sha256::new();
-    let mut observed_size = 0_usize;
-    let expected_size = usize::try_from(object.expected_size)
-        .map_err(|_| RpcError::invalid("publication object size is out of range"))?;
-    let mut pending = Vec::with_capacity(REGISTRY_PUBLICATION_PART_BYTES);
-    let mut part_number = 1_u32;
-
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| RpcError::Unavailable(error.to_string()))?;
-        observed_size = observed_size
-            .checked_add(chunk.len())
-            .ok_or_else(|| RpcError::invalid("publication object size overflowed"))?;
-        if observed_size > expected_size {
-            return Err(RpcError::invalid(
-                "upload body exceeds the declared byte size",
-            ));
-        }
-        hasher.update(&chunk);
-        let mut remaining = chunk.as_ref();
-        while !remaining.is_empty() {
-            let take = (REGISTRY_PUBLICATION_PART_BYTES - pending.len()).min(remaining.len());
-            pending.extend_from_slice(&remaining[..take]);
-            remaining = &remaining[take..];
-            if pending.len() == REGISTRY_PUBLICATION_PART_BYTES {
-                upload_registry_publication_part(
-                    &object.object_key,
-                    part_number,
-                    &pending,
-                    uploads,
-                )
-                .await?;
-                part_number = part_number
-                    .checked_add(1)
-                    .ok_or_else(|| RpcError::invalid("publication has too many parts"))?;
-                pending.clear();
-            }
-        }
-    }
-    if observed_size != expected_size || hex::encode(hasher.finalize()) != object.expected_hash {
-        return Err(RpcError::invalid(
-            "upload bytes do not match the declared size and SHA-256",
-        ));
-    }
-    if !pending.is_empty() {
-        upload_registry_publication_part(&object.object_key, part_number, &pending, uploads)
-            .await?;
-    }
-    Ok(())
-}
-
-async fn abort_registry_publication_uploads(
-    object_key: &str,
-    uploads: &mut [RegistryPublicationUploadPlacement],
-) {
-    for upload in uploads {
-        if upload.completed {
-            continue;
-        }
-        if let Some(upload_id) = upload.upload_id.as_deref() {
-            let _ = upload.writer.abort_multipart(object_key, upload_id).await;
-        }
-    }
 }
 
 /// Upper bound on nodes returned by `CacheClosure`, so a pathological closure
@@ -2805,7 +2728,7 @@ impl RpcService {
             other => {
                 return Err(RpcError::internal(anyhow::anyhow!(
                     "persisted boundary has invalid trusted-ingress kind '{other}'"
-                )))
+                )));
             }
         };
         Ok(pb::NetworkBoundaryRevisionSpec {
@@ -4887,7 +4810,7 @@ impl RpcService {
             _ => {
                 return Err(RpcError::internal(anyhow::anyhow!(
                     "persisted endpoint has an invalid host variant"
-                )))
+                )));
             }
         };
         Ok(pb::EndpointHost { host: Some(host) })
@@ -4937,7 +4860,7 @@ impl RpcService {
             other => {
                 return Err(RpcError::internal(anyhow::anyhow!(
                     "persisted endpoint has invalid ingress kind '{other}'"
-                )))
+                )));
             }
         };
         let tls = if spec.tls_configuration == "{}" {
@@ -8864,7 +8787,7 @@ impl RpcService {
                 _ => {
                     return Err(RpcError::internal(anyhow::anyhow!(
                         "route replacement plan has an incomplete predecessor seal"
-                    )))
+                    )));
                 }
             };
             self.db
@@ -9298,7 +9221,7 @@ impl RpcService {
             _ => {
                 return Err(RpcError::invalid(
                     "accessClass must be git, nix_cache, or web",
-                ))
+                ));
             }
         };
         let mut decisions = vec![format!("mode={}", snapshot.spec.mode)];
@@ -9744,7 +9667,7 @@ impl RpcService {
             _ => {
                 return Err(RpcError::internal(anyhow::anyhow!(
                     "invalid domain plan payload"
-                )))
+                )));
             }
         }
         .map_err(|error| RpcError::FailedPrecondition(format!("apply domain config: {error:#}")))?;
@@ -12102,7 +12025,7 @@ impl RpcService {
                     _ => {
                         return Err(RpcError::internal(anyhow::anyhow!(
                             "invalid endpoint host kind"
-                        )))
+                        )));
                     }
                 };
                 Some(pb::StorageEndpoint {
@@ -12116,7 +12039,7 @@ impl RpcService {
             _ => {
                 return Err(RpcError::internal(anyhow::anyhow!(
                     "incomplete storage endpoint"
-                )))
+                )));
             }
         };
         let provider = match record.kind.as_str() {
@@ -12147,7 +12070,7 @@ impl RpcService {
             kind => {
                 return Err(RpcError::internal(anyhow::anyhow!(
                     "unknown storage provider kind '{kind}'"
-                )))
+                )));
             }
         };
         Ok(pb::StorageBindingSpec {
@@ -12531,12 +12454,12 @@ impl RpcService {
                 Some(pb::storage_binding_spec::Provider::DeploymentR2(_)) => {
                     return Err(RpcError::internal(anyhow::anyhow!(
                         "deployment R2 provider escaped plan validation"
-                    )))
+                    )));
                 }
                 None => {
                     return Err(RpcError::internal(anyhow::anyhow!(
                         "binding plan has no provider"
-                    )))
+                    )));
                 }
             };
         self.db
@@ -13961,7 +13884,7 @@ impl RpcService {
             None => {
                 return Err(RpcError::invalid(
                     "surface must select exactly one registrySlug or cacheSlug",
-                ))
+                ));
             }
         };
         match org_id {
@@ -14287,7 +14210,7 @@ impl RpcService {
                 return Err(RpcError::internal(anyhow::anyhow!(
                     "placement '{}' has an incomplete hash range",
                     placement.name
-                )))
+                )));
             }
         };
         let desired_writer = placement.authority_desired_placement_id == Some(placement.id);
@@ -14414,7 +14337,7 @@ impl RpcService {
             _ => {
                 return Err(RpcError::internal(anyhow::anyhow!(
                     "persisted placement-policy retry condition is invalid"
-                )))
+                )));
             }
         };
         Ok(value as i32)
@@ -14545,7 +14468,7 @@ impl RpcService {
             _ => {
                 return Err(RpcError::internal(anyhow::anyhow!(
                     "persisted placement policy kind is invalid"
-                )))
+                )));
             }
         };
         let retry_on = revision
@@ -14641,7 +14564,7 @@ impl RpcService {
                         _ => {
                             return Err(RpcError::invalid(
                                 "local-then-remote groups require local or remote accessClass",
-                            ))
+                            ));
                         }
                     };
                     normalized_groups.push((
@@ -14971,7 +14894,7 @@ impl RpcService {
                 _ => {
                     return Err(RpcError::invalid(
                         "accessClass must be git, nix_cache, or web",
-                    ))
+                    ));
                 }
             };
             if route.enabled
@@ -15668,7 +15591,7 @@ impl RpcService {
                     pb::AccessClass::Unspecified => {
                         return Err(RpcError::invalid(
                             "local-then-remote policy tests require accessClass",
-                        ))
+                        ));
                     }
                 },
                 "hash_partition" => {
@@ -16894,7 +16817,7 @@ impl RpcService {
             _ => {
                 return Err(RpcError::internal(anyhow::anyhow!(
                     "promotion plan has an inconsistent authority tuple"
-                )))
+                )));
             }
         }
         .map_err(Self::authority_mutation_error)?;
@@ -17208,7 +17131,7 @@ impl RpcService {
             _ => {
                 return Err(RpcError::invalid(
                     "reconciliation state must be ready or failed",
-                ))
+                ));
             }
         }
         .map_err(Self::authority_mutation_error)?;
@@ -17455,7 +17378,7 @@ impl RpcService {
                     return Err(RpcError::FailedPrecondition(
                         "the read-only plan is stale or authority is no longer reconciled"
                             .to_string(),
-                    ))
+                    ));
                 }
             }
         }
@@ -22779,7 +22702,7 @@ impl RpcService {
                 SurfaceWriteOutcome::Created | SurfaceWriteOutcome::Overwritten => registered += 1,
                 SurfaceWriteOutcome::BadPath(reason) => return Err(RpcError::invalid(reason)),
                 SurfaceWriteOutcome::TooLarge => {
-                    return Err(RpcError::invalid("narinfo too large"))
+                    return Err(RpcError::invalid("narinfo too large"));
                 }
                 SurfaceWriteOutcome::QuotaExceeded => {
                     return Err(RpcError::invalid("org storage quota exceeded"));
@@ -23594,6 +23517,11 @@ impl RpcService {
         if req.objects.is_empty() {
             return Err(RpcError::invalid("publication manifest must not be empty"));
         }
+        if req.objects.len() > MAX_REGISTRY_PUBLICATION_OBJECTS {
+            return Err(RpcError::invalid(format!(
+                "publication manifest exceeds the {MAX_REGISTRY_PUBLICATION_OBJECTS} object limit"
+            )));
+        }
         if req.generation.is_empty() || req.refs_digest.is_empty() {
             return Err(RpcError::invalid(
                 "publication generation and refs digest are required",
@@ -23607,6 +23535,8 @@ impl RpcService {
             }
             if !keymap::is_machine_path(&object.path)
                 || crate::url_guard::validate_http_surface_path(&object.path).is_err()
+                || object.path.len() > MAX_REGISTRY_PUBLICATION_PATH_BYTES
+                || object.path.split('/').count() > MAX_REGISTRY_PUBLICATION_PATH_COMPONENTS
             {
                 return Err(RpcError::invalid("publication object path is invalid"));
             }
@@ -23732,7 +23662,7 @@ impl RpcService {
                         return Err(RpcError::FailedPrecondition(format!(
                             "publication path '{}' conflicts with its existing object identity",
                             object.path
-                        )))
+                        )));
                     }
                     None => self
                         .db
@@ -23900,25 +23830,19 @@ impl RpcService {
             .await
     }
 
-    /// Stores one declared publication object on every required placement.
-    ///
-    /// The URL carries only the publication and object ids; the path, digest,
-    /// size, placement set, and mutability class all come from the frozen
-    /// manifest. Mutable uploads cannot begin until every immutable byte is
-    /// verified everywhere.
-    ///
-    /// # Errors
-    ///
-    /// Returns an authorization error, a manifest/body mismatch, a publication
-    /// ordering failure, or an unavailable error when a placement write or
-    /// exact read-after-write verification fails.
-    pub async fn upload_registry_publication_object(
+    async fn registry_publication_object_context(
         &self,
         auth: Option<&str>,
         publication_id: &str,
         surface_object_id: i64,
-        body: axum::body::Body,
-    ) -> Result<(), RpcError> {
+    ) -> Result<
+        (
+            crate::db::RegistryPublicationRecord,
+            crate::db::RegistryRecord,
+            crate::db::RegistryPublicationUploadObjectRecord,
+        ),
+        RpcError,
+    > {
         let claims = self.require_claims(auth)?;
         let publication = self
             .db
@@ -23941,58 +23865,79 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("publication object"))?;
+        Ok((publication, registry, object))
+    }
+
+    async fn prepare_registry_publication_object_upload(
+        &self,
+        publication: &crate::db::RegistryPublicationRecord,
+        registry: &crate::db::RegistryRecord,
+        object: &crate::db::RegistryPublicationUploadObjectRecord,
+    ) -> Result<(), RpcError> {
         if object.object_kind == "immutable" && publication.state != "preparing" {
             return Err(RpcError::FailedPrecondition(
                 "immutable upload phase is closed".into(),
             ));
         }
-        if object.object_kind == "mutable_pointer" {
-            if !self
+        if object.object_kind != "mutable_pointer" {
+            return Ok(());
+        }
+        if !self
+            .db
+            .registry_publication_class_is_complete(&publication.publication_id, "immutable")
+            .await
+            .map_err(RpcError::internal)?
+        {
+            return Err(RpcError::FailedPrecondition(
+                "all immutable objects must verify before pointer upload".into(),
+            ));
+        }
+        self.lease
+            .acquire(
+                registry.id,
+                &publication.publication_id,
+                clock::now_unix_secs(),
+            )
+            .await
+            .map_err(|holder| {
+                RpcError::FailedPrecondition(format!(
+                    "registry publication lease is held by {holder}"
+                ))
+            })?;
+        if publication.state == "preparing"
+            && !self
                 .db
-                .registry_publication_class_is_complete(publication_id, "immutable")
+                .advance_registry_publication(
+                    &publication.publication_id,
+                    "preparing",
+                    "writing_pointers",
+                    clock::now_unix_secs(),
+                )
                 .await
                 .map_err(RpcError::internal)?
-            {
-                return Err(RpcError::FailedPrecondition(
-                    "all immutable objects must verify before pointer upload".into(),
-                ));
-            }
-            self.lease
-                .acquire(registry.id, publication_id, clock::now_unix_secs())
-                .await
-                .map_err(|holder| {
-                    RpcError::FailedPrecondition(format!(
-                        "registry publication lease is held by {holder}"
-                    ))
-                })?;
-            if publication.state == "preparing"
-                && !self
-                    .db
-                    .advance_registry_publication(
-                        publication_id,
-                        "preparing",
-                        "writing_pointers",
-                        clock::now_unix_secs(),
-                    )
-                    .await
-                    .map_err(RpcError::internal)?
-            {
-                return Err(RpcError::FailedPrecondition(
-                    "publication pointer phase changed concurrently".into(),
-                ));
-            } else if !matches!(publication.state.as_str(), "preparing" | "writing_pointers") {
-                return Err(RpcError::FailedPrecondition(
-                    "publication no longer accepts pointer uploads".into(),
-                ));
-            }
+        {
+            return Err(RpcError::FailedPrecondition(
+                "publication pointer phase changed concurrently".into(),
+            ));
+        } else if !matches!(publication.state.as_str(), "preparing" | "writing_pointers") {
+            return Err(RpcError::FailedPrecondition(
+                "publication no longer accepts pointer uploads".into(),
+            ));
         }
+        Ok(())
+    }
 
+    async fn registry_publication_required_placements(
+        &self,
+        publication_id: &str,
+        object_kind: &str,
+    ) -> Result<Vec<crate::db::SurfacePlacementRecord>, RpcError> {
         let progress = self
             .db
             .registry_publication_placement_records(publication_id)
             .await
             .map_err(RpcError::internal)?;
-        let mut uploads = Vec::new();
+        let mut placements = Vec::new();
         for placement_progress in progress {
             if !placement_progress.required {
                 continue;
@@ -24003,7 +23948,7 @@ impl RpcService {
                 .await
                 .map_err(RpcError::internal)?
                 .ok_or_else(|| RpcError::FailedPrecondition("placement disappeared".into()))?;
-            if object.object_kind == "mutable_pointer" && placement_progress.state == "preparing" {
+            if object_kind == "mutable_pointer" && placement_progress.state == "preparing" {
                 let watermark_version = placement.watermark_resource_version.ok_or_else(|| {
                     RpcError::FailedPrecondition("placement has no publication watermark".into())
                 })?;
@@ -24019,79 +23964,703 @@ impl RpcService {
                     .await
                     .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
             }
+            placements.push(placement);
+        }
+        if placements.is_empty() {
+            return Err(RpcError::FailedPrecondition(
+                "publication has no required placements".into(),
+            ));
+        }
+        Ok(placements)
+    }
+
+    async fn registry_publication_multipart_context(
+        &self,
+        auth: Option<&str>,
+        upload_id: &str,
+    ) -> Result<
+        (
+            crate::db::RegistryPublicationMultipartUploadRecord,
+            crate::db::RegistryPublicationUploadObjectRecord,
+            Vec<RegistryPublicationMultipartBackend>,
+        ),
+        RpcError,
+    > {
+        let upload = self
+            .db
+            .registry_publication_multipart_upload(upload_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("publication multipart upload"))?;
+        if upload.state == "active" && upload.expires_at <= clock::now_unix_secs() {
+            return Err(RpcError::FailedPrecondition(
+                "publication multipart upload has expired".into(),
+            ));
+        }
+        let (publication, registry, object) = self
+            .registry_publication_object_context(
+                auth,
+                &upload.publication_id,
+                upload.surface_object_id,
+            )
+            .await?;
+        self.prepare_registry_publication_object_upload(&publication, &registry, &object)
+            .await?;
+        if upload.registry_id != registry.id {
+            return Err(RpcError::FailedPrecondition(
+                "publication multipart registry identity changed".into(),
+            ));
+        }
+        let mut backends = self
+            .db
+            .registry_publication_multipart_backends(&upload.upload_id)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(
+                |(placement_id, placement_resource_version, backend_upload_id)| {
+                    RegistryPublicationMultipartBackend {
+                        placement_id,
+                        placement_resource_version,
+                        backend_upload_id,
+                    }
+                },
+            )
+            .collect::<Vec<_>>();
+        backends.sort_by_key(|backend| backend.placement_id);
+        if backends.is_empty()
+            || backends
+                .windows(2)
+                .any(|pair| pair[0].placement_id == pair[1].placement_id)
+        {
+            return Err(RpcError::Internal);
+        }
+        let mut current = self
+            .registry_publication_required_placements(&upload.publication_id, &object.object_kind)
+            .await?;
+        current.sort_by_key(|placement| placement.id);
+        if current.len() != backends.len()
+            || current.iter().zip(&backends).any(|(placement, backend)| {
+                placement.id != backend.placement_id
+                    || placement.resource_version != backend.placement_resource_version
+            })
+        {
+            return Err(RpcError::FailedPrecondition(
+                "publication placement topology changed during multipart upload".into(),
+            ));
+        }
+        Ok((upload, object, backends))
+    }
+
+    async fn abort_registry_publication_multipart_record(
+        &self,
+        auth: Option<&str>,
+        upload: crate::db::RegistryPublicationMultipartUploadRecord,
+    ) -> Result<(), RpcError> {
+        let (_, registry, object) = self
+            .registry_publication_object_context(
+                auth,
+                &upload.publication_id,
+                upload.surface_object_id,
+            )
+            .await?;
+        if upload.registry_id != registry.id {
+            return Err(RpcError::FailedPrecondition(
+                "publication multipart registry identity changed".into(),
+            ));
+        }
+        if !matches!(upload.state.as_str(), "active" | "completing") {
+            return Err(RpcError::FailedPrecondition(
+                "publication multipart upload is not abortable".into(),
+            ));
+        }
+
+        let backends = self
+            .db
+            .registry_publication_multipart_backends(&upload.upload_id)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(
+                |(placement_id, placement_resource_version, backend_upload_id)| {
+                    RegistryPublicationMultipartBackend {
+                        placement_id,
+                        placement_resource_version,
+                        backend_upload_id,
+                    }
+                },
+            )
+            .collect::<Vec<_>>();
+        if backends.is_empty() {
+            return Err(RpcError::Internal);
+        }
+        let required = self
+            .registry_publication_required_placements(&upload.publication_id, &object.object_kind)
+            .await?;
+        if required.len() != backends.len() {
+            return Err(RpcError::FailedPrecondition(
+                "publication multipart backend creation is unresolved".into(),
+            ));
+        }
+        for backend in backends {
+            let placement = self
+                .db
+                .surface_placement(backend.placement_id)
+                .await
+                .map_err(RpcError::internal)?
+                .filter(|placement| {
+                    placement.resource_version == backend.placement_resource_version
+                })
+                .ok_or_else(|| {
+                    RpcError::FailedPrecondition(
+                        "publication placement changed before multipart cleanup".into(),
+                    )
+                })?;
             let writer = self
                 .surface_write
                 .placement_writer(&placement)
                 .await
                 .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
-            uploads.push(RegistryPublicationUploadPlacement {
-                placement,
+            match writer
+                .abort_multipart(&object.object_key, &backend.backend_upload_id)
+                .await
+                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?
+            {
+                crate::surface_write::MultipartAbortOutcome::Aborted
+                | crate::surface_write::MultipartAbortOutcome::Absent => {}
+                crate::surface_write::MultipartAbortOutcome::PossiblyCompleted => {
+                    return Err(RpcError::FailedPrecondition(
+                        "multipart abort could not exclude a completed object".into(),
+                    ));
+                }
+            }
+        }
+        self.db
+            .finish_registry_publication_multipart_upload(
+                &upload.upload_id,
+                "aborted",
+                clock::now_unix_secs(),
+            )
+            .await
+            .map_err(RpcError::internal)
+    }
+
+    /// Begins a durable, bounded multipart upload for one declared object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authorization, publication phase, object-size, placement, or
+    /// backend capability error.
+    pub async fn begin_registry_publication_multipart_upload(
+        &self,
+        auth: Option<&str>,
+        req: pb::BeginRegistryPublicationMultipartUploadRequest,
+    ) -> Result<pb::BeginRegistryPublicationMultipartUploadResponse, RpcError> {
+        let (publication, registry, object) = self
+            .registry_publication_object_context(auth, &req.publication_id, req.object_id)
+            .await?;
+        self.prepare_registry_publication_object_upload(&publication, &registry, &object)
+            .await?;
+        let expected_size = u64::try_from(object.expected_size)
+            .map_err(|_| RpcError::invalid("publication object size is out of range"))?;
+        if expected_size <= self.effective_max_upload_bytes().await as u64 {
+            return Err(RpcError::FailedPrecondition(
+                "publication object does not require multipart upload".into(),
+            ));
+        }
+        let part_count = expected_size.div_ceil(REGISTRY_PUBLICATION_PART_BYTES as u64);
+        if part_count > MAX_REGISTRY_PUBLICATION_MULTIPART_PARTS {
+            return Err(RpcError::ResourceExhausted(
+                "publication object exceeds the multipart part-count limit".into(),
+            ));
+        }
+        let now = clock::now_unix_secs();
+        if let Some(existing) = self
+            .db
+            .active_registry_publication_multipart_upload(
+                &publication.publication_id,
+                object.surface_object_id,
+            )
+            .await
+            .map_err(RpcError::internal)?
+        {
+            if existing.state == "active" && existing.expires_at <= now {
+                self.abort_registry_publication_multipart_record(auth, existing)
+                    .await?;
+            } else {
+                let state = existing.state.clone();
+                return Ok(pb::BeginRegistryPublicationMultipartUploadResponse {
+                    part_upload_url: format!(
+                        "{}/aos.hub.v1.PublishService/UploadPart/{}",
+                        self.external_url.trim_end_matches('/'),
+                        existing.upload_id
+                    ),
+                    upload_id: existing.upload_id,
+                    part_size: REGISTRY_PUBLICATION_PART_BYTES as u64,
+                    state,
+                });
+            }
+        }
+
+        let placements = self
+            .registry_publication_required_placements(
+                &publication.publication_id,
+                &object.object_kind,
+            )
+            .await?;
+        for placement in &placements {
+            let writer = self
+                .surface_write
+                .placement_writer(placement)
+                .await
+                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+            if writer.multipart_protocol_version() != Some(1) {
+                return Err(RpcError::FailedPrecondition(
+                    "a required publication placement does not support multipart uploads".into(),
+                ));
+            }
+        }
+        let upload_id = uuid::Uuid::new_v4().simple().to_string();
+        if let Err(error) = self
+            .db
+            .create_registry_publication_multipart_upload(
+                &upload_id,
+                &publication.publication_id,
+                registry.id,
+                object.surface_object_id,
+                now.saturating_add(REGISTRY_PUBLICATION_UPLOAD_TTL_SECS),
+                now,
+                &placements
+                    .iter()
+                    .map(|placement| (placement.id, placement.resource_version))
+                    .collect::<Vec<_>>(),
+            )
+            .await
+        {
+            if let Some(existing) = self
+                .db
+                .active_registry_publication_multipart_upload(
+                    &publication.publication_id,
+                    object.surface_object_id,
+                )
+                .await
+                .map_err(RpcError::internal)?
+                .filter(|existing| existing.expires_at > now && existing.state == "active")
+            {
+                return Ok(pb::BeginRegistryPublicationMultipartUploadResponse {
+                    part_upload_url: format!(
+                        "{}/aos.hub.v1.PublishService/UploadPart/{}",
+                        self.external_url.trim_end_matches('/'),
+                        existing.upload_id
+                    ),
+                    upload_id: existing.upload_id,
+                    part_size: REGISTRY_PUBLICATION_PART_BYTES as u64,
+                    state: "active".into(),
+                });
+            }
+            return Err(RpcError::internal(error));
+        }
+        let mut started: Vec<(RegistryPublicationMultipartBackend, Box<dyn SurfaceWrite>)> =
+            Vec::new();
+        for placement in placements {
+            let writer = self
+                .surface_write
+                .placement_writer(&placement)
+                .await
+                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+            let backend_upload_id = match writer.create_multipart(&object.object_key).await {
+                Ok(upload_id) => upload_id,
+                Err(error) => {
+                    for (backend, writer) in &mut started {
+                        let _ = writer
+                            .abort_multipart(&object.object_key, &backend.backend_upload_id)
+                            .await;
+                    }
+                    return Err(RpcError::Unavailable(format!("{error:#}")));
+                }
+            };
+            if let Err(error) = self
+                .db
+                .attach_registry_publication_multipart_backend(
+                    &upload_id,
+                    placement.id,
+                    &backend_upload_id,
+                )
+                .await
+            {
+                let _ = writer
+                    .abort_multipart(&object.object_key, &backend_upload_id)
+                    .await;
+                for (backend, writer) in &mut started {
+                    let _ = writer
+                        .abort_multipart(&object.object_key, &backend.backend_upload_id)
+                        .await;
+                }
+                return Err(RpcError::internal(error));
+            }
+            started.push((
+                RegistryPublicationMultipartBackend {
+                    placement_id: placement.id,
+                    placement_resource_version: placement.resource_version,
+                    backend_upload_id,
+                },
                 writer,
-                upload_id: None,
-                parts: Vec::new(),
-                completed: false,
+            ));
+        }
+        Ok(pb::BeginRegistryPublicationMultipartUploadResponse {
+            part_upload_url: format!(
+                "{}/aos.hub.v1.PublishService/UploadPart/{upload_id}",
+                self.external_url.trim_end_matches('/')
+            ),
+            upload_id,
+            part_size: REGISTRY_PUBLICATION_PART_BYTES as u64,
+            state: "active".into(),
+        })
+    }
+
+    /// Stores one exact bounded part on every frozen publication placement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authorization, upload lifecycle, part shape, topology, or
+    /// backend error.
+    pub async fn upload_registry_publication_multipart_part(
+        &self,
+        auth: Option<&str>,
+        upload_id: &str,
+        part_number: u32,
+        body: &[u8],
+    ) -> Result<pb::RegistryPublicationMultipartPart, RpcError> {
+        let (upload, object, backends) = self
+            .registry_publication_multipart_context(auth, upload_id)
+            .await?;
+        if upload.state != "active" {
+            return Err(RpcError::FailedPrecondition(
+                "publication multipart upload no longer accepts parts".into(),
+            ));
+        }
+        let expected_size = u64::try_from(object.expected_size)
+            .map_err(|_| RpcError::invalid("publication object size is out of range"))?;
+        let part_size = REGISTRY_PUBLICATION_PART_BYTES as u64;
+        let offset = u64::from(
+            part_number
+                .checked_sub(1)
+                .ok_or_else(|| RpcError::invalid("multipart part numbers are 1-based"))?,
+        )
+        .checked_mul(part_size)
+        .ok_or_else(|| RpcError::invalid("multipart part offset overflowed"))?;
+        if offset >= expected_size {
+            return Err(RpcError::invalid("multipart part exceeds the object size"));
+        }
+        let expected_part_size = (expected_size - offset).min(part_size);
+        if body.len() as u64 != expected_part_size {
+            return Err(RpcError::invalid(
+                "multipart part does not have its exact expected size",
+            ));
+        }
+
+        let mut placements = Vec::with_capacity(backends.len());
+        for backend in backends {
+            let placement = self
+                .db
+                .surface_placement(backend.placement_id)
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::FailedPrecondition("placement disappeared".into()))?;
+            let writer = self
+                .surface_write
+                .placement_writer(&placement)
+                .await
+                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+            let tag = writer
+                .upload_part(
+                    &object.object_key,
+                    &backend.backend_upload_id,
+                    part_number,
+                    body,
+                )
+                .await
+                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+            if tag.part_number != part_number {
+                return Err(RpcError::Unavailable(
+                    "publication backend returned a mismatched part number".into(),
+                ));
+            }
+            placements.push(pb::RegistryPublicationPlacementPart {
+                placement_id: backend.placement_id,
+                etag: tag.etag,
             });
         }
-        if uploads.is_empty() {
+        self.db
+            .record_registry_publication_multipart_part(
+                &upload.upload_id,
+                part_number,
+                &placements
+                    .iter()
+                    .map(|placement| (placement.placement_id, placement.etag.clone()))
+                    .collect::<Vec<_>>(),
+            )
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::RegistryPublicationMultipartPart {
+            part_number,
+            placements,
+        })
+    }
+
+    /// Completes and verifies a durable multipart publication object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authorization, part-manifest, topology, backend completion,
+    /// or exact read-after-write verification error.
+    pub async fn complete_registry_publication_multipart_upload(
+        &self,
+        auth: Option<&str>,
+        req: pb::CompleteRegistryPublicationMultipartUploadRequest,
+    ) -> Result<pb::RegistryPublicationMultipartUploadResponse, RpcError> {
+        let (upload, object, backends) = self
+            .registry_publication_multipart_context(auth, &req.upload_id)
+            .await?;
+        if !matches!(upload.state.as_str(), "active" | "completing") {
             return Err(RpcError::FailedPrecondition(
-                "publication has no required placements".into(),
+                "publication multipart upload is not completable".into(),
             ));
+        }
+        let expected_size = u64::try_from(object.expected_size)
+            .map_err(|_| RpcError::invalid("publication object size is out of range"))?;
+        let part_count = expected_size.div_ceil(REGISTRY_PUBLICATION_PART_BYTES as u64);
+        let durable_parts = self
+            .db
+            .registry_publication_multipart_parts(&req.upload_id)
+            .await
+            .map_err(RpcError::internal)?;
+        let mut parts =
+            std::collections::BTreeMap::<u32, Vec<pb::RegistryPublicationPlacementPart>>::new();
+        for part in durable_parts {
+            parts
+                .entry(part.part_number)
+                .or_default()
+                .push(pb::RegistryPublicationPlacementPart {
+                    placement_id: part.placement_id,
+                    etag: part.etag,
+                });
+        }
+        let parts = parts
+            .into_iter()
+            .map(
+                |(part_number, placements)| pb::RegistryPublicationMultipartPart {
+                    part_number,
+                    placements,
+                },
+            )
+            .collect::<Vec<_>>();
+        if parts.len() as u64 != part_count {
+            return Err(RpcError::invalid(
+                "multipart completion does not have every durable object part",
+            ));
+        }
+        if !req.parts.is_empty() && req.parts != parts {
+            return Err(RpcError::invalid(
+                "multipart completion differs from the durable part manifest",
+            ));
+        }
+        let backend_ids = backends
+            .iter()
+            .map(|backend| backend.placement_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut per_placement = std::collections::BTreeMap::<i64, Vec<PartTag>>::new();
+        for (index, part) in parts.iter().enumerate() {
+            if part.part_number != u32::try_from(index + 1).map_err(RpcError::internal)? {
+                return Err(RpcError::invalid(
+                    "multipart completion parts must be contiguous and ordered",
+                ));
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            for placement in &part.placements {
+                if !backend_ids.contains(&placement.placement_id)
+                    || !seen.insert(placement.placement_id)
+                    || placement.etag.is_empty()
+                {
+                    return Err(RpcError::invalid(
+                        "multipart completion placement tags are invalid",
+                    ));
+                }
+                per_placement
+                    .entry(placement.placement_id)
+                    .or_default()
+                    .push(PartTag {
+                        part_number: part.part_number,
+                        etag: placement.etag.clone(),
+                    });
+            }
+            if seen != backend_ids {
+                return Err(RpcError::invalid(
+                    "multipart completion omits a required placement tag",
+                ));
+            }
+        }
+        self.db
+            .begin_registry_publication_multipart_completion(&req.upload_id)
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+
+        for backend in &backends {
+            let placement = self
+                .db
+                .surface_placement(backend.placement_id)
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::FailedPrecondition("placement disappeared".into()))?;
+            let writer = self
+                .surface_write
+                .placement_writer(&placement)
+                .await
+                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+            let fetch = self
+                .surface
+                .placement_fetcher(&placement)
+                .await
+                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+            let already_complete = fetch
+                .inventory_evidence(&object.object_key)
+                .await
+                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?
+                .is_some_and(|evidence| {
+                    evidence.size == object.expected_size
+                        && hex::encode(evidence.sha256) == object.expected_hash
+                });
+            if !already_complete {
+                writer
+                    .complete_multipart(
+                        &object.object_key,
+                        &backend.backend_upload_id,
+                        per_placement
+                            .get(&backend.placement_id)
+                            .ok_or(RpcError::Internal)?,
+                    )
+                    .await
+                    .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+            }
+            let evidence = fetch
+                .inventory_evidence(&object.object_key)
+                .await
+                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?
+                .ok_or_else(|| RpcError::Unavailable("completed object is absent".into()))?;
+            let observed_hash = hex::encode(evidence.sha256);
+            if evidence.size != object.expected_size || observed_hash != object.expected_hash {
+                return Err(RpcError::Unavailable(
+                    "completed object failed exact read-after-write verification".into(),
+                ));
+            }
+            self.db
+                .record_registry_publication_object_presence(
+                    &upload.publication_id,
+                    object.surface_object_id,
+                    placement.id,
+                    &observed_hash,
+                    evidence.size,
+                    evidence.strong_etag.as_deref(),
+                    clock::now_unix_secs(),
+                )
+                .await
+                .map_err(RpcError::internal)?;
+            writer
+                .settle_multipart(&object.object_key, &backend.backend_upload_id)
+                .await
+                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+        }
+        self.db
+            .finish_registry_publication_multipart_upload(
+                &req.upload_id,
+                "completed",
+                clock::now_unix_secs(),
+            )
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::RegistryPublicationMultipartUploadResponse {
+            upload_id: req.upload_id,
+            state: "completed".into(),
+        })
+    }
+
+    /// Aborts every backend transaction for one incomplete multipart object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authorization, upload lifecycle, topology, or backend cleanup error.
+    pub async fn abort_registry_publication_multipart_upload(
+        &self,
+        auth: Option<&str>,
+        req: pb::AbortRegistryPublicationMultipartUploadRequest,
+    ) -> Result<pb::RegistryPublicationMultipartUploadResponse, RpcError> {
+        let upload = self
+            .db
+            .registry_publication_multipart_upload(&req.upload_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("publication multipart upload"))?;
+        self.abort_registry_publication_multipart_record(auth, upload)
+            .await?;
+        Ok(pb::RegistryPublicationMultipartUploadResponse {
+            upload_id: req.upload_id,
+            state: "aborted".into(),
+        })
+    }
+
+    /// Stores one declared publication object on every required placement.
+    ///
+    /// The URL carries only the publication and object ids; the path, digest,
+    /// size, placement set, and mutability class all come from the frozen
+    /// manifest. Mutable uploads cannot begin until every immutable byte is
+    /// verified everywhere.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authorization error, a manifest/body mismatch, a publication
+    /// ordering failure, or an unavailable error when a placement write or
+    /// exact read-after-write verification fails.
+    pub async fn upload_registry_publication_object(
+        &self,
+        auth: Option<&str>,
+        publication_id: &str,
+        surface_object_id: i64,
+        body: axum::body::Body,
+    ) -> Result<(), RpcError> {
+        let (publication, registry, object) = self
+            .registry_publication_object_context(auth, publication_id, surface_object_id)
+            .await?;
+        self.prepare_registry_publication_object_upload(&publication, &registry, &object)
+            .await?;
+
+        let mut uploads = Vec::new();
+        for placement in self
+            .registry_publication_required_placements(publication_id, &object.object_kind)
+            .await?
+        {
+            let writer = self
+                .surface_write
+                .placement_writer(&placement)
+                .await
+                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+            uploads.push(RegistryPublicationUploadPlacement { placement, writer });
         }
 
         let expected_size = usize::try_from(object.expected_size)
             .map_err(|_| RpcError::invalid("publication object size is out of range"))?;
-        if expected_size <= self.effective_max_upload_bytes().await {
-            let bytes = collect_exact_publication_body(body, expected_size).await?;
-            verify_publication_bytes(&object, &bytes)?;
-            for upload in &mut uploads {
-                upload
-                    .writer
-                    .write(&object.object_key, &bytes)
-                    .await
-                    .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
-                upload.completed = true;
-            }
-        } else {
-            for index in 0..uploads.len() {
-                if uploads[index].writer.multipart_protocol_version() != Some(1) {
-                    abort_registry_publication_uploads(&object.object_key, &mut uploads).await;
-                    return Err(RpcError::FailedPrecondition(
-                        "a required publication placement does not support multipart uploads"
-                            .into(),
-                    ));
-                }
-                match uploads[index]
-                    .writer
-                    .create_multipart(&object.object_key)
-                    .await
-                {
-                    Ok(upload_id) => uploads[index].upload_id = Some(upload_id),
-                    Err(error) => {
-                        abort_registry_publication_uploads(&object.object_key, &mut uploads).await;
-                        return Err(RpcError::Unavailable(format!("{error:#}")));
-                    }
-                }
-            }
-            if let Err(error) = stream_registry_publication_parts(body, &object, &mut uploads).await
-            {
-                abort_registry_publication_uploads(&object.object_key, &mut uploads).await;
-                return Err(error);
-            }
-            for index in 0..uploads.len() {
-                let completion = {
-                    let upload = &mut uploads[index];
-                    let upload_id = upload.upload_id.as_deref().ok_or(RpcError::Internal)?;
-                    upload
-                        .writer
-                        .complete_multipart(&object.object_key, upload_id, &upload.parts)
-                        .await
-                };
-                if let Err(error) = completion {
-                    abort_registry_publication_uploads(&object.object_key, &mut uploads).await;
-                    return Err(RpcError::Unavailable(format!("{error:#}")));
-                }
-                uploads[index].completed = true;
-            }
+        if expected_size > self.effective_max_upload_bytes().await {
+            return Err(RpcError::FailedPrecondition(
+                "publication object requires bounded multipart upload".into(),
+            ));
+        }
+        let bytes = collect_exact_publication_body(body, expected_size).await?;
+        verify_publication_bytes(&object, &bytes)?;
+        for upload in &mut uploads {
+            upload
+                .writer
+                .write(&object.object_key, &bytes)
+                .await
+                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
         }
 
         for upload in &mut uploads {
@@ -24125,13 +24694,6 @@ impl RpcService {
                 )
                 .await
                 .map_err(RpcError::internal)?;
-            if let Some(upload_id) = upload.upload_id.as_deref() {
-                upload
-                    .writer
-                    .settle_multipart(&object.object_key, upload_id)
-                    .await
-                    .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
-            }
         }
         Ok(())
     }
@@ -24297,6 +24859,15 @@ impl RpcService {
                 "only an incomplete publication can be aborted".into(),
             ));
         }
+        for upload in self
+            .db
+            .active_registry_publication_multipart_uploads(&req.publication_id)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            self.abort_registry_publication_multipart_record(auth, upload)
+                .await?;
+        }
         self.db
             .fail_registry_publication(&req.publication_id, clock::now_unix_secs())
             .await
@@ -24322,6 +24893,7 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("registry"))?;
+        let max_complete_upload = self.effective_max_upload_bytes().await as i64;
         let objects = self
             .db
             .registry_publication_upload_objects(publication_id)
@@ -24335,12 +24907,16 @@ impl RpcService {
                 byte_size: object.expected_size,
                 kind: object.object_kind,
                 media_type: publication_media_type(&object.object_key).into(),
-                upload_url: format!(
-                    "{}/aos.hub.v1.PublishService/UploadObject/{}/{}",
-                    self.external_url.trim_end_matches('/'),
-                    publication_id,
-                    object.surface_object_id
-                ),
+                upload_url: (object.expected_size <= max_complete_upload)
+                    .then(|| {
+                        format!(
+                            "{}/aos.hub.v1.PublishService/UploadObject/{}/{}",
+                            self.external_url.trim_end_matches('/'),
+                            publication_id,
+                            object.surface_object_id
+                        )
+                    })
+                    .unwrap_or_default(),
             })
             .collect();
         let mut placements = Vec::new();
@@ -25568,7 +26144,7 @@ impl RpcService {
             let placement = match self.db.surface_placement(ticket.placement_id).await {
                 Ok(Some(placement)) if placement.cache_id == Some(cache.id) => placement,
                 Ok(_) => {
-                    return SurfaceWriteOutcome::NotWritable("cache write placement disappeared")
+                    return SurfaceWriteOutcome::NotWritable("cache write placement disappeared");
                 }
                 Err(error) => return internal_write(error),
             };
@@ -25582,7 +26158,7 @@ impl RpcService {
                 Err(RpcError::FailedPrecondition(_)) | Err(RpcError::NotFound(_)) => {
                     return SurfaceWriteOutcome::NotWritable(
                         "cache has no reconciled write placement",
-                    )
+                    );
                 }
                 Err(error) => return internal_write(anyhow::anyhow!(error.message().to_string())),
             };
@@ -25618,7 +26194,7 @@ impl RpcService {
             {
                 Ok(ticket) => ticket,
                 Err(err) => {
-                    return internal_write(err.context("creating cache write observation fence"))
+                    return internal_write(err.context("creating cache write observation fence"));
                 }
             };
             (placement, observing)
@@ -26223,7 +26799,7 @@ impl RpcService {
                     Ok(None) => {
                         return SurfaceWriteOutcome::NotWritable(
                             "cache write placement disappeared",
-                        )
+                        );
                     }
                     Err(error) => return internal_write(error),
                 };
@@ -26233,7 +26809,7 @@ impl RpcService {
                         Ok(None) => {
                             return SurfaceWriteOutcome::NotWritable(
                                 "completed cache upload is absent",
-                            )
+                            );
                         }
                         Err(error) => return internal_write(error),
                     },
@@ -29804,7 +30380,7 @@ impl RpcService {
             _ => {
                 return Err(RpcError::internal(anyhow::anyhow!(
                     "operation selector invariant failed"
-                )))
+                )));
             }
         };
         let selector_digest = format!("{:x}", Sha256::digest(selector.as_bytes()));
@@ -29858,7 +30434,7 @@ impl RpcService {
             _ => {
                 return Err(RpcError::internal(anyhow::anyhow!(
                     "operation selector invariant failed"
-                )))
+                )));
             }
         }
         .map_err(|error| RpcError::invalid(format!("list operations: {error:#}")))?;
@@ -30158,7 +30734,7 @@ impl RpcService {
                     kind => {
                         return Err(RpcError::internal(anyhow::anyhow!(
                             "operation has unknown target kind '{kind}'"
-                        )))
+                        )));
                     }
                 };
                 Ok(pb::OperationTarget {
@@ -30361,7 +30937,7 @@ impl RpcService {
             Some("") => {
                 return Err(RpcError::invalid(
                     "expected_resource_version cannot be empty when present",
-                ))
+                ));
             }
             Some(value) => Some(parse_resource_version(value, 0)?),
             None => None,
@@ -32310,7 +32886,7 @@ impl RpcService {
             _ => {
                 return Err(RpcError::invalid(
                     "placement eviction requires a binary cache",
-                ))
+                ));
             }
         };
         let cache = self.binary_cache_or_not_found(cache_slug).await?;
@@ -32394,7 +32970,7 @@ impl RpcService {
             _ => {
                 return Err(RpcError::invalid(
                     "placement eviction requires a binary cache",
-                ))
+                ));
             }
         };
         let cache = self.binary_cache_or_not_found(cache_slug).await?;
