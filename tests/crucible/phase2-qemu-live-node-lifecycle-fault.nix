@@ -98,6 +98,7 @@ in
           grep -Fxq 'changed_state_precondition_rejected=true' "$report"
           grep -Fxq 'corrupt_result_rejected_with_valid_event=true' "$report"
           grep -Fxq 'corrupt_event_rejected_with_valid_result=true' "$report"
+          grep -Fxq 'cross_domain_actions_applied=true' "$report"
           grep -Fxq 'backend=production-qemu-signal-runtime' "$report"
           grep -Fxq 'effect=node.lifecycle' "$report"
           grep -Fxq 'transition=crash' "$report"
@@ -147,7 +148,7 @@ in
           cp "$report" "$out/result"
           cp "$without_result_stderr" "$out/without-typed-node-result.stderr"
           printf 'attr_path=%s\n' "$ATTR_PATH" >> "$out/result"
-          printf 'proven=typed-event,binding-evaluation,exact-capability-replay,shared-command-ring,safe-boundary,changed-state-precondition-rejection,typed-occurrence,authorized-process-exit,patch-0072-required\n' >> "$out/result"
+          printf 'proven=typed-event,binding-evaluation,cross-domain-atomic-commit,exact-capability-replay,shared-command-ring,safe-boundary,changed-state-precondition-rejection,typed-occurrence,authorized-process-exit,patch-0072-required\n' >> "$out/result"
         '';
       }
     ];

@@ -694,6 +694,8 @@ pub struct QemuLiveNodeLifecycleFaultReport {
     /// Corrupting the authentic occurrence event was rejected while the
     /// authentic command result remained independently valid.
     pub corrupt_event_rejected_with_valid_result: bool,
+    /// One event source atomically committed network, storage, and node actions.
+    pub cross_domain_actions_applied: bool,
 }
 
 /// Drives the first live [`QemuNode`] through a bounded busy-window step schedule.
@@ -847,7 +849,7 @@ pub fn run_qemu_live_node_lifecycle_fault_gate(
         ));
     }
 
-    let plan = lifecycle_crash_plan(GATE_NODE)?;
+    let plan = shared_power_crash_plan(GATE_NODE)?;
     let store: Arc<dyn crucible::model::DagStore> =
         Arc::new(crucible::model::MemoryDagStore::new());
     let artifacts: Arc<dyn crucible::model::SignalArtifactProvider> =
@@ -879,6 +881,25 @@ pub fn run_qemu_live_node_lifecycle_fault_gate(
             runtime.node_lifecycle_decisions().len()
         )));
     };
+    let decision = decision.clone();
+    let host_impulses = runtime.drain_host_impulses();
+    let cross_domain_actions_applied = evaluation.actions.len() == 3
+        && host_impulses.len() == 2
+        && host_impulses.iter().any(|action| {
+            action.effect.kind() == crucible::model::EffectKind::NetworkForwarderLifecycle
+        })
+        && host_impulses.iter().any(|action| {
+            action.effect.kind() == crucible::model::EffectKind::StorageVolatileCacheLoss
+        })
+        && evaluation
+            .actions
+            .iter()
+            .all(|action| action.coordinate.virtual_nanos == 1);
+    if !cross_domain_actions_applied {
+        return Err(fault_gate_invariant(
+            "shared power event did not atomically commit network, storage, and node actions",
+        ));
+    }
     if decision.requested_transition != crucible::model::NodeLifecycleTransition::Crash
         || decision.effective_transition != crucible::model::NodeLifecycleTransition::Crash
         || decision.observed_icount != observed_icount
@@ -905,11 +926,12 @@ pub fn run_qemu_live_node_lifecycle_fault_gate(
         action,
         evidence,
         exit_code,
-        signal_impulse_applied: evaluation.actions.len() == 1,
+        signal_impulse_applied: evaluation.actions.len() == 3,
         exact_manifest_replay_admitted: true,
         changed_state_precondition_rejected: true,
         corrupt_result_rejected_with_valid_event: true,
         corrupt_event_rejected_with_valid_result: true,
+        cross_domain_actions_applied,
     })
 }
 
@@ -1215,17 +1237,19 @@ fn lifecycle_gate_command(
     }
 }
 
-fn lifecycle_crash_plan(
+fn shared_power_crash_plan(
     node_name: &str,
 ) -> Result<crucible::model::FaultSignalPlan, QemuLiveNodeStepGateError> {
     use crucible::model::{
         BindingEventParent, BindingMapping, BindingObservabilityPolicy, BindingSampling,
         BindingSearchPolicy, EFFECT_SEMANTIC_VERSION, EffectLifetime, EffectRequest,
         EffectSpecification, FaultBinding, FaultObjectId, FaultPhase, FaultResourceLimits,
-        NodeBootPolicy, NodeEffectSpecification, NodeLifecycleTransition, NodeStatePolicy,
-        ResolvedFaultTarget, ResolvedTargetSet, SignalCoordinate, SignalDomain, SignalId,
-        SignalNode, SignalNodeKind, SignalPoint, SignalProgram, SignalResourceLimits, SignalShape,
-        SignalSourceSpecification, SignalUnit, SignalValue, SignalValueType, TargetSelector,
+        NetworkEffectSpecification, NetworkForwarderTransition, NetworkStatePolicy, NodeBootPolicy,
+        NodeEffectSpecification, NodeLifecycleTransition, NodeStatePolicy, ResolvedFaultTarget,
+        ResolvedTargetSet, SignalCoordinate, SignalDomain, SignalId, SignalNode, SignalNodeKind,
+        SignalPoint, SignalProgram, SignalResourceLimits, SignalShape, SignalSourceSpecification,
+        SignalUnit, SignalValue, SignalValueType, StorageEffectSpecification,
+        StorageVolatileCacheLossKind, StorageVolatileCacheLossSelector, TargetSelector,
     };
 
     let parse_signal = |value: &str| {
@@ -1267,16 +1291,61 @@ fn lifecycle_crash_plan(
         SignalResourceLimits::default(),
     )
     .map_err(|error| fault_gate_invariant(format!("event program: {error}")))?;
-    let targets = ResolvedTargetSet::new(
-        vec![ResolvedFaultTarget::Node {
+    let binding = |id: &str,
+                   target: ResolvedFaultTarget,
+                   specification: EffectSpecification|
+     -> Result<FaultBinding, QemuLiveNodeStepGateError> {
+        let targets = ResolvedTargetSet::new(vec![target], false)
+            .map_err(|error| fault_gate_invariant(format!("{id} target: {error}")))?;
+        let effect = EffectRequest::new(
+            EFFECT_SEMANTIC_VERSION,
+            EffectLifetime::Impulse,
+            specification,
+        )
+        .map_err(|error| fault_gate_invariant(format!("{id} effect: {error}")))?;
+        FaultBinding::new(
+            parse_object(id)?,
+            vec![output.clone()],
+            BindingSampling::AtEvent(BindingEventParent::VirtualTime),
+            BindingMapping::ImpulseOnEvent,
+            TargetSelector::Exact(targets),
+            [FaultPhase::Boundary].into_iter().collect(),
+            effect,
+            None,
+            BindingSearchPolicy::Fixed,
+            BindingObservabilityPolicy::default(),
+            &program,
+        )
+        .map_err(|error| fault_gate_invariant(format!("{id} binding: {error}")))
+    };
+    let network = binding(
+        "shared-power-forwarder-binding",
+        ResolvedFaultTarget::NetworkForwarder {
+            forwarder: parse_object("rack-forwarder")?,
+        },
+        EffectSpecification::Network(NetworkEffectSpecification::ForwarderLifecycle {
+            transition: NetworkForwarderTransition::PowerLoss,
+            downtime_nanos: crucible::model::PositiveU64::new("downtime_nanos", 1)
+                .map_err(|error| fault_gate_invariant(format!("network downtime: {error}")))?,
+            queue_policy: NetworkStatePolicy::Clear,
+            table_policy: NetworkStatePolicy::Clear,
+        }),
+    )?;
+    let storage = binding(
+        "shared-power-storage-binding",
+        ResolvedFaultTarget::BlockDevice {
+            device: ContentHash::from_bytes(b"rack-storage-device"),
+        },
+        EffectSpecification::Storage(StorageEffectSpecification::VolatileCacheLoss {
+            selector: StorageVolatileCacheLossSelector::All,
+            loss: StorageVolatileCacheLossKind::PowerLoss,
+        }),
+    )?;
+    let node = binding(
+        "shared-power-node-binding",
+        ResolvedFaultTarget::Node {
             node: parse_object(node_name)?,
-        }],
-        false,
-    )
-    .map_err(|error| fault_gate_invariant(format!("node target: {error}")))?;
-    let effect = EffectRequest::new(
-        EFFECT_SEMANTIC_VERSION,
-        EffectLifetime::Impulse,
+        },
         EffectSpecification::Node(NodeEffectSpecification::Lifecycle {
             transition: NodeLifecycleTransition::Crash,
             downtime_nanos: 1,
@@ -1284,28 +1353,13 @@ fn lifecycle_crash_plan(
             volatile_state_policy: NodeStatePolicy::Preserve,
             device_state_policy: NodeStatePolicy::Clear,
         }),
-    )
-    .map_err(|error| fault_gate_invariant(format!("lifecycle effect: {error}")))?;
-    let binding = FaultBinding::new(
-        parse_object("live-node-lifecycle-binding")?,
-        vec![output],
-        BindingSampling::AtEvent(BindingEventParent::VirtualTime),
-        BindingMapping::ImpulseOnEvent,
-        TargetSelector::Exact(targets),
-        [FaultPhase::Boundary].into_iter().collect(),
-        effect,
-        None,
-        BindingSearchPolicy::Fixed,
-        BindingObservabilityPolicy::default(),
-        &program,
-    )
-    .map_err(|error| fault_gate_invariant(format!("lifecycle binding: {error}")))?;
+    )?;
     crucible::model::FaultSignalPlan::new(
         vec![program],
-        vec![binding],
+        vec![network, storage, node],
         FaultResourceLimits::default(),
     )
-    .map_err(|error| fault_gate_invariant(format!("lifecycle plan: {error}")))
+    .map_err(|error| fault_gate_invariant(format!("shared power plan: {error}")))
 }
 
 fn fault_gate_invariant(reason: impl Into<String>) -> QemuLiveNodeStepGateError {
