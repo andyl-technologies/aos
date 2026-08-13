@@ -329,6 +329,26 @@ impl QemuSharedBlockDevice {
         Ok(self.lock()?.storage_fault_state().actual_durable_frontier())
     }
 
+    /// Returns the number and digest of live volatile-cache entries.
+    ///
+    /// This observation does not alter replacement order or any durability
+    /// frontier, so production evidence collection cannot perturb execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::DeviceLockPoisoned`] when the
+    /// authoritative device lock is poisoned.
+    pub fn volatile_cache_evidence(
+        &self,
+    ) -> Result<(usize, [u8; 32]), QemuLiveBlockIoServicerError> {
+        let device = self.lock()?;
+        let state = device.storage_fault_state();
+        Ok((
+            state.volatile_entries().len(),
+            state.volatile_entries_digest(),
+        ))
+    }
+
     /// Applies one asynchronous controller transition to the live device.
     ///
     /// The complete device is staged before commit. Publication of a changed

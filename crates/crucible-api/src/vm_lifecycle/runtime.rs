@@ -36,6 +36,124 @@ fn classify_recorded_control_boundary(
 }
 
 impl ProductionVmLifecycleLoop {
+    /// Captures read-only evidence from every production fault adapter.
+    ///
+    /// The snapshot is intended for gates, diagnostics, and artifact capture.
+    /// It does not checkpoint, drain, or otherwise advance any continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when a shared runtime or device lock is
+    /// poisoned, or the committed resolved-effect trace is invalid.
+    pub fn fault_evidence_snapshot(
+        &self,
+    ) -> Result<ProductionFaultEvidenceSnapshot, SchedulerError> {
+        let frontier = self.inner.loop_impl().frontier();
+        let runtime = self
+            .fault_runtime
+            .lock()
+            .map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("production fault runtime lock is poisoned"),
+            })?;
+        let resolved_effect_trace =
+            match runtime.recorded_trace(crucible::model::FaultReplayMode::RecomputedCause) {
+                Ok(trace) => Some(trace),
+                Err(crucible_qemu::ProductionFaultRuntimeError::Execution(
+                    crucible::model::FaultExecutionError::CheckpointPresence,
+                )) => None,
+                Err(error) => {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!("capture production resolved-effect trace: {error}"),
+                    });
+                }
+            };
+        let emitted_events = runtime.emitted_events().to_vec();
+        drop(runtime);
+
+        let network_outages = self
+            .inner
+            .network_output_interceptor()
+            .active_outages(frontier.ticks)
+            .into_iter()
+            .map(
+                |(target, unavailable_until_nanos)| ProductionNetworkOutageEvidence {
+                    target,
+                    unavailable_until_nanos,
+                },
+            )
+            .collect();
+        let devices = self
+            .block_devices
+            .lock()
+            .map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("production block-device map lock is poisoned"),
+            })?;
+        let mut block_devices = Vec::with_capacity(devices.len());
+        for (device, handle) in devices.iter() {
+            let (volatile_entries, volatile_entries_digest) = handle
+                .volatile_cache_evidence()
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("inspect production volatile cache: {error}"),
+                })?;
+            let actual_durable_frontier = handle.actual_durable_frontier().map_err(|error| {
+                SchedulerError::BoundaryViolation {
+                    message: format!("inspect production durable frontier: {error}"),
+                }
+            })?;
+            block_devices.push(ProductionBlockFaultEvidence {
+                device: *device,
+                volatile_entries,
+                volatile_entries_digest: ContentHash {
+                    bytes: volatile_entries_digest,
+                },
+                actual_durable_frontier,
+            });
+        }
+        drop(devices);
+
+        let nodes = self
+            .source
+            .world()
+            .vm_nodes()
+            .iter()
+            .map(|node| {
+                let generation = self
+                    .node_generations
+                    .get(&node.id)
+                    .copied()
+                    .ok_or_else(|| SchedulerError::BoundaryViolation {
+                        message: format!("production node `{}` has no generation", node.id.name),
+                    })?;
+                let service_state = match self.node_service_states.get(&node.id) {
+                    Some(ProductionNodeServiceState::Running) => "running",
+                    Some(ProductionNodeServiceState::PoweredOff) => "powered_off",
+                    Some(ProductionNodeServiceState::PermanentlyFailed) => "permanently_failed",
+                    None => {
+                        return Err(SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "production node `{}` has no service state",
+                                node.id.name
+                            ),
+                        });
+                    }
+                };
+                Ok(ProductionNodeFaultEvidence {
+                    node: node.id.clone(),
+                    generation,
+                    service_state,
+                })
+            })
+            .collect::<Result<Vec<_>, SchedulerError>>()?;
+        Ok(ProductionFaultEvidenceSnapshot {
+            frontier,
+            resolved_effect_trace,
+            emitted_events,
+            network_outages,
+            block_devices,
+            nodes,
+        })
+    }
+
     /// Returns the number of QEMU processes currently owned by this lifecycle.
     #[must_use]
     pub fn live_node_count(&self) -> usize {

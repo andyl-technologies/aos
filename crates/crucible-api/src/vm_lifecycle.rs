@@ -317,6 +317,56 @@ enum ProductionNodeServiceState {
     PermanentlyFailed,
 }
 
+/// Read-only evidence for one active production network outage.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProductionNetworkOutageEvidence {
+    /// Concrete World target whose route stages reject frames.
+    pub target: crucible::model::ResolvedFaultTarget,
+    /// Exclusive virtual-time end of the outage.
+    pub unavailable_until_nanos: u64,
+}
+
+/// Read-only evidence for one authoritative production block continuation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProductionBlockFaultEvidence {
+    /// Immutable World identity of the attached block device.
+    pub device: ContentHash,
+    /// Number of currently live volatile-cache fragments.
+    pub volatile_entries: usize,
+    /// Canonical digest of the complete volatile-cache entry set.
+    pub volatile_entries_digest: ContentHash,
+    /// Exclusive durable write frontier.
+    pub actual_durable_frontier: u64,
+}
+
+/// Read-only evidence for one production QEMU node continuation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProductionNodeFaultEvidence {
+    /// World node identity.
+    pub node: NodeId,
+    /// Monotone process generation, incremented by terminal replacement.
+    pub generation: u64,
+    /// Stable service-state spelling used in evidence artifacts.
+    pub service_state: &'static str,
+}
+
+/// Exact observable state of all production fault adapters at one boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProductionFaultEvidenceSnapshot {
+    /// Scheduler frontier at which the snapshot was collected.
+    pub frontier: VirtualTime,
+    /// Committed replay trace, including pass work items.
+    pub resolved_effect_trace: Option<ResolvedEffectTrace>,
+    /// Signal events emitted in authoritative evaluation order.
+    pub emitted_events: Vec<crucible::model::ReferencedSignalEvent>,
+    /// Network outages active at `frontier`.
+    pub network_outages: Vec<ProductionNetworkOutageEvidence>,
+    /// Authoritative live block continuations in device-identity order.
+    pub block_devices: Vec<ProductionBlockFaultEvidence>,
+    /// Live-QEMU service state in World node order.
+    pub nodes: Vec<ProductionNodeFaultEvidence>,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ProductionLifecycleJournalPhase {
