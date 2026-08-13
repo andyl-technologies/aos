@@ -680,8 +680,8 @@ pub struct QemuLiveNodeLifecycleFaultReport {
     pub evidence: ContentHash,
     /// Transition-specific QEMU process exit status.
     pub exit_code: i32,
-    /// The signal runtime emitted exactly one lifecycle impulse.
-    pub signal_impulse_applied: bool,
+    /// The signal runtime committed exactly one node-lifecycle impulse.
+    pub lifecycle_impulse_committed: bool,
     /// A separately launched QEMU process reproduced every discovered target
     /// manifest and derived capability row exactly before the fault ran.
     pub exact_manifest_replay_admitted: bool,
@@ -694,8 +694,13 @@ pub struct QemuLiveNodeLifecycleFaultReport {
     /// Corrupting the authentic occurrence event was rejected while the
     /// authentic command result remained independently valid.
     pub corrupt_event_rejected_with_valid_result: bool,
-    /// One event source atomically committed network, storage, and node actions.
-    pub cross_domain_actions_applied: bool,
+    /// One event source atomically committed network, storage, and node actions
+    /// into their production adapter ledgers.
+    ///
+    /// This is an adapter-routing and commit-order proof. The network and
+    /// storage impulses still require exact device opportunities before their
+    /// mutations become externally visible.
+    pub cross_adapter_actions_committed: bool,
 }
 
 /// Drives the first live [`QemuNode`] through a bounded busy-window step schedule.
@@ -883,7 +888,14 @@ pub fn run_qemu_live_node_lifecycle_fault_gate(
     };
     let decision = decision.clone();
     let host_impulses = runtime.drain_host_impulses();
-    let cross_domain_actions_applied = evaluation.actions.len() == 3
+    let lifecycle_impulse_committed = evaluation
+        .actions
+        .iter()
+        .filter(|action| action.effect.kind() == crucible::model::EffectKind::NodeLifecycle)
+        .count()
+        == 1;
+    let cross_adapter_actions_committed = lifecycle_impulse_committed
+        && evaluation.actions.len() == 3
         && host_impulses.len() == 2
         && host_impulses.iter().any(|action| {
             action.effect.kind() == crucible::model::EffectKind::NetworkForwarderLifecycle
@@ -895,7 +907,7 @@ pub fn run_qemu_live_node_lifecycle_fault_gate(
             .actions
             .iter()
             .all(|action| action.coordinate.virtual_nanos == 1);
-    if !cross_domain_actions_applied {
+    if !cross_adapter_actions_committed {
         return Err(fault_gate_invariant(
             "shared power event did not atomically commit network, storage, and node actions",
         ));
@@ -926,12 +938,12 @@ pub fn run_qemu_live_node_lifecycle_fault_gate(
         action,
         evidence,
         exit_code,
-        signal_impulse_applied: evaluation.actions.len() == 3,
+        lifecycle_impulse_committed,
         exact_manifest_replay_admitted: true,
         changed_state_precondition_rejected: true,
         corrupt_result_rejected_with_valid_event: true,
         corrupt_event_rejected_with_valid_result: true,
-        cross_domain_actions_applied,
+        cross_adapter_actions_committed,
     })
 }
 
