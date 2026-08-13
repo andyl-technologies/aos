@@ -4,6 +4,7 @@
   fetchurl,
   gnumake,
   m4,
+  cc,
 }: let
   version = "6.3.0";
 in
@@ -26,6 +27,7 @@ in
     ];
     runtimeDeps = [];
     propagatedDeps = [];
+    disallowedReferences = [cc];
 
     phases = [
       {

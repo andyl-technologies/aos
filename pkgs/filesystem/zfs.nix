@@ -1,5 +1,6 @@
 ##! ZFS — OpenZFS filesystem and volume manager
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -46,6 +47,7 @@ in
       libtirpc
     ];
     propagatedDeps = [];
+    disallowedReferences = lib.optional (kernel != null) kernel.dev;
 
     phases = [
       {

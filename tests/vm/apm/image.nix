@@ -50,7 +50,7 @@
 
   mkImage = {
     format,
-    sizeKiB ? 64,
+    sizeKiB ? 1024,
   }:
     pkgs.mkDerivation {
       pname = "apm-vm-image-${format}";
@@ -69,13 +69,13 @@
               then ''
                 filename=aos-test.img
                 printf 'AOSRAW\n' > "$out/$filename"
-                dd if=/dev/zero bs=1024 count=${builtins.toString sizeKiB} >> "$out/$filename" 2>/dev/null
+                truncate -s ${builtins.toString sizeKiB}KiB "$out/$filename"
               ''
               else if format == "qcow2"
               then ''
                 filename=aos-test.qcow2
                 printf 'QFI\373' > "$out/$filename"
-                dd if=/dev/zero bs=1024 count=${builtins.toString sizeKiB} >> "$out/$filename" 2>/dev/null
+                truncate -s ${builtins.toString sizeKiB}KiB "$out/$filename"
               ''
               else ''
                 filename="aos-test.${format}"
@@ -116,8 +116,9 @@
                 virtualSizeBytes: $byteSize,
                 sha256: $sha256, logicalDiskSha256: $logicalDiskSha256,
                 rootfsSha256: $rootfsSha256, compatibleTargets: $targets,
+                artifactBudgetsMiB: {root: 1, verity: 1, initrd: 1, uki: 1, esp: 34, runtimeClosure: 1},
                 partitionTable: "gpt", kernelParams: "",
-                partitions: [{number: 1, label: "root-a", type: "root", filesystem: "fake", sizeMiB: 0, offsetBytes: 0, sizeBytes: $byteSize}],
+                partitions: [{number: 1, label: "root-a", type: "root", filesystem: "fake", sizeMiB: 1, offsetBytes: 0, sizeBytes: 1048576}],
                 esp: {uki: $ukiEspPath, sdBoot: "EFI/systemd/systemd-bootx64.efi"},
                 uki: {filename: $ukiFilename, espPath: $ukiEspPath,
                   byteSize: $ukiSize, sha256: $ukiSha256, signed: false, measured: false}}' \

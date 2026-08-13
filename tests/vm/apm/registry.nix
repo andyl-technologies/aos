@@ -40,6 +40,7 @@
           mkdir -p "$out"
           filename=aos-server.img
           printf 'AOS registry publish image fixture\n' > "$out/$filename"
+          truncate -s 1MiB "$out/$filename"
           image_sha256=$(sha256sum "$out/$filename" | cut -d ' ' -f1)
           image_size=$(stat -c %s "$out/$filename")
           uki_sha256=$(sha256sum "$UKI_STORE_PATH/$UKI_FILENAME" | cut -d ' ' -f1)
@@ -61,8 +62,9 @@
               byteSize: $byteSize, virtualSizeBytes: $byteSize, sha256: $sha256,
               logicalDiskSha256: $logicalDiskSha256, rootfsSha256: $rootfsSha256,
               compatibleTargets: ["bare-metal"],
+              artifactBudgetsMiB: {root: 1, verity: 1, initrd: 1, uki: 1, esp: 34, runtimeClosure: 1},
               partitionTable: "gpt", kernelParams: "",
-              partitions: [{number: 1, label: "root-a", type: "root", filesystem: "fake", sizeMiB: 0, offsetBytes: 0, sizeBytes: $byteSize}],
+              partitions: [{number: 1, label: "root-a", type: "root", filesystem: "fake", sizeMiB: 1, offsetBytes: 0, sizeBytes: $byteSize}],
               esp: {uki: "EFI/Linux/aos-server.efi", sdBoot: "EFI/systemd/systemd-bootx64.efi"},
               uki: {filename: $ukiFilename, espPath: "EFI/Linux/aos-server.efi",
                 byteSize: $ukiSize, sha256: $ukiSha256, signed: false, measured: false}}' \

@@ -18,6 +18,14 @@
   # root is authenticated by the roothash carried in the signed/measured UKI.
   # Specialized writable-root test variants may override this mkDefault.
   aos.security.verity.enable = lib.mkDefault true;
+  aos.image.budgets = {
+    maxRootMiB = 512;
+    maxVerityMiB = 16;
+    maxInitrdMiB = 128;
+    maxUkiMiB = 160;
+    maxEspMiB = 384;
+    maxRuntimeClosureMiB = 768;
+  };
 
   # The service modules retain backwards-compatible enabled defaults. Keep
   # the golden image policy-neutral at a weaker priority so authenticated

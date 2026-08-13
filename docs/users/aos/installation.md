@@ -63,9 +63,14 @@ is required; do not pass a separate kernel or initrd.
 
 ## Size the target
 
-The build output is sized tightly around the EFI System Partition and
-immutable `root-a`/`root-b` slots. The target must provide trailing unallocated
-space for first-boot state:
+Each golden image declares maximum sizes for its root, verity tree, initrd,
+UKI, ESP, and runtime closure through `aos.image.budgets`. The root, verity,
+and ESP maxima are storage-format contracts: they determine the capacities of
+the A/B GPT partitions and encrypted ZFS zvols rather than following the size
+of one particular build. The per-image `image-budget` Nix check fails when an
+artifact or runtime closure crosses its declared maximum.
+
+The target must also provide trailing unallocated space for first-boot state:
 
 - `swap`: 2 GiB by default;
 - `/var`: 4 GiB minimum and grows to consume remaining space.
@@ -124,12 +129,13 @@ workflow, with its audit and confirmation controls.
 ## Install redundant encrypted ZFS storage
 
 The reusable `aos.profiles.bareMetalZfs` profile provides a different
-bare-metal layout. Every selected disk receives an independently bootable
-1 GiB ESP and a ZFS member. Adjacent members form mirrors, and the mirrors are
-striped by the pool, so two disks produce a mirror and four or more disks
-produce RAID10-style storage. The encrypted pool contains mutable datasets and
-fixed-size zvols for both immutable EROFS roots and both dm-verity hash trees.
-There is no LUKS layer below ZFS.
+bare-metal layout. Every selected disk receives an independently bootable ESP
+sized from the golden image's artifact contract and a ZFS member. Adjacent
+members form mirrors, and the mirrors are striped by the pool, so two disks
+produce a mirror and four or more disks produce RAID10-style storage. The
+encrypted pool contains mutable datasets and contract-sized zvols for both
+immutable EROFS roots and both dm-verity hash trees. There is no LUKS layer
+below ZFS.
 
 Create a deployment system module from the production server baseline, enable
 dm-verity and measured boot, enable the profile, list one ESP identity per

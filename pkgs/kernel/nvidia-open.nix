@@ -27,6 +27,7 @@ in
     buildDeps = [gnumake bash perl kmod elfutils dwarves];
     runtimeDeps = [];
     propagatedDeps = [];
+    disallowedReferences = [kernel.dev];
 
     phases = [
       {

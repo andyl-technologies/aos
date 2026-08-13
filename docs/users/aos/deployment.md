@@ -22,9 +22,12 @@ artifact to this deployment workflow.
 
 ## Size the target before first boot
 
-The target needs trailing unallocated space for swap, `/var`, the provisioning
-marker, and partition alignment. The stock policy needs more than 6 GiB beyond
-the built image; fleet tests use a 16 GiB disk.
+The integrity-bound `image-info.json` records the image's declared artifact
+budgets and exact GPT layout. Use that layout as the immutable-storage contract
+rather than deriving slot sizes from the current compressed payload. The target
+also needs trailing unallocated space for swap, `/var`, the provisioning marker,
+and partition alignment. The stock policy needs more than 6 GiB beyond the built
+image; fleet tests use a 16 GiB disk.
 
 When enlarging a raw image, relocate its backup GPT header before first boot:
 

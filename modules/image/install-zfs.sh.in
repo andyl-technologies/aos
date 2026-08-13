@@ -50,6 +50,11 @@ for disk in "${disks[@]}"; do
   index=$((index + 1))
   case "$disk" in /dev/disk/by-id/*) ;; *) echo "unsafe disk identity: $disk" >&2; exit 1 ;; esac
   [ -b "$disk" ] || { echo "not a block device: $disk" >&2; exit 1; }
+  device_type=$(lsblk -dno TYPE "$disk" | tr -d '[:space:]')
+  [ "$device_type" = disk ] || {
+    echo "refusing non-whole-disk device: $disk (type: $device_type)" >&2
+    exit 1
+  }
   resolved=$(readlink -f "$disk")
   for previous in "${resolved_disks[@]}"; do
     [ "$resolved" != "$previous" ] || {
@@ -69,6 +74,10 @@ for disk in "${disks[@]}"; do
     echo "refusing disk with an existing partition table: $disk" >&2
     exit 1
   }
+  [ -z "$(wipefs --noheadings --output TYPE "$disk")" ] || {
+    echo "refusing disk with an existing filesystem or storage signature: $disk" >&2
+    exit 1
+  }
   [ ! -e "${disk}-part1" ] && [ ! -e "${disk}-part2" ] || {
     echo "refusing disk with existing partitions: $disk" >&2
     exit 1
@@ -83,23 +92,31 @@ for disk in "${disks[@]}"; do
 done
 
 bundle=$(cd "$(dirname "$0")/.." && pwd -P)
-esp_payload_bytes=$(du -skL "$bundle/payload/esp" | cut -f1)
-# Leave ample FAT metadata, temporary update, and future UKI headroom.
-[ "$esp_payload_bytes" -le 786432 ] || {
-  echo "EFI payload exceeds the 768 MiB budget for a 1 GiB ESP" >&2
+esp_payload_kib=$(du -skL "$bundle/payload/esp" | cut -f1)
+# Reserve a second copy of the installed UKI for A/B staging, then leave 32 MiB
+# for FAT metadata and update bookkeeping.
+uki_candidates=("$bundle"/payload/esp/EFI/Linux/*.efi)
+[ "${#uki_candidates[@]}" -eq 1 ] && [ -f "${uki_candidates[0]}" ] || {
+  echo "installer bundle must contain exactly one initial UKI" >&2
+  exit 1
+}
+uki_bytes=$(stat -Lc %s "${uki_candidates[0]}")
+required_esp_kib=$(( esp_payload_kib + (uki_bytes + 1023) / 1024 + 32768 ))
+[ "$required_esp_kib" -le $(( @esp_size@ * 1024 )) ] || {
+  echo "EFI payload exceeds the configured @esp_size@ MiB partition capacity" >&2
   exit 1
 }
 root_bytes=$(stat -Lc %s "$bundle/payload/root.img")
 verity_bytes=$(stat -Lc %s "$bundle/payload/root.verity")
-root_size=$(( @root_slot_size@ * 1073741824 ))
+root_size=$(( @root_slot_size@ * 1048576 ))
 verity_size=$(( @verity_slot_size@ * 1048576 ))
 [ "$root_bytes" -le "$root_size" ] || { echo "root image exceeds configured zvol capacity" >&2; exit 1; }
 [ "$verity_bytes" -le "$verity_size" ] || { echo "verity image exceeds configured zvol capacity" >&2; exit 1; }
 
-# Partitioning consumes 1 GiB plus the leading alignment gap on every disk.
+# Partitioning consumes the configured ESP plus the leading alignment gap on every disk.
 # A striped set of adjacent mirrors has the capacity of the smaller member of
 # each pair. Validate the complete zvol allocation before touching a GPT.
-partition_overhead=$(( 1025 * 1048576 ))
+partition_overhead=$(( (@esp_size@ + 1) * 1048576 ))
 usable_pool_bytes=0
 index=0
 while [ "$index" -lt "${#disk_sizes[@]}" ]; do
@@ -140,7 +157,7 @@ index=0
 for disk in "${disks[@]}"; do
   index=$((index + 1))
   sgdisk --clear \
-    --new=1:1MiB:+1GiB --typecode=1:EF00 --change-name=1:"aos-esp-$index" \
+    --new=1:1MiB:+@esp_size@MiB --typecode=1:EF00 --change-name=1:"aos-esp-$index" \
     --new=2:0:0 --typecode=2:BF01 --change-name=2:"aos-zfs-$index" \
     "$disk"
 done

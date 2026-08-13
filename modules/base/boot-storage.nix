@@ -98,15 +98,15 @@ in {
         description = "Native-encryption root containing immutable zvols and mutable datasets.";
       };
 
-      rootSlotSizeGiB = lib.mkOption {
+      rootSlotSizeMiB = lib.mkOption {
         type = lib.types.addCheck lib.types.int (value: value > 0);
-        default = 16;
-        description = "Fixed capacity of each immutable root zvol in GiB.";
+        default = config.aos.image.budgets.maxRootMiB;
+        description = "Fixed capacity of each immutable root zvol in MiB.";
       };
 
       veritySlotSizeMiB = lib.mkOption {
         type = lib.types.addCheck lib.types.int (value: value > 0);
-        default = 1024;
+        default = config.aos.image.budgets.maxVerityMiB;
         description = "Fixed capacity of each dm-verity hash zvol in MiB.";
       };
 
@@ -169,6 +169,14 @@ in {
       {
         assertion = !lib.hasInfix ".." cfg.zfs.sealedKeyPath;
         message = "aos.boot.storage.zfs.sealedKeyPath must be a normalized path under aos/";
+      }
+      {
+        assertion = cfg.zfs.rootSlotSizeMiB >= config.aos.image.budgets.maxRootMiB;
+        message = "ZFS root slot capacity must be at least the image root artifact budget";
+      }
+      {
+        assertion = cfg.zfs.veritySlotSizeMiB >= config.aos.image.budgets.maxVerityMiB;
+        message = "ZFS verity slot capacity must be at least the image verity artifact budget";
       }
     ];
 
