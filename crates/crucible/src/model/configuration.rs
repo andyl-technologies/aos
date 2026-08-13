@@ -118,6 +118,22 @@ impl ScenarioDefForm {
         self.scenario_def().id()
     }
 
+    /// Rebuilds this scenario around a replacement validated plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when `plan` does not layer over the retained
+    /// world and properties.
+    pub fn with_plan(&self, plan: Plan) -> Result<Self, EngineError> {
+        Self::from_components_with_app_random_draw_cap(
+            &self.world,
+            &plan,
+            &self.properties,
+            self.seed,
+            self.app_random_draw_cap,
+        )
+    }
+
     /// Serializes this form as deterministic TOML.
     ///
     /// # Errors

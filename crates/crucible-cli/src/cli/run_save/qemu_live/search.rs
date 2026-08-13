@@ -100,6 +100,37 @@ pub(crate) fn run_local_qemu_search_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     plan: &SearchDriverPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
+    let store = crucible::LocalDagStore::new(plan.store_root.clone());
+    let mutation_plans = crucible::materialize_search_plans(
+        plan.scenario.scenario_form().plan().fault_signals(),
+        &store,
+    )
+    .map_err(|error| backend_error(format!("materialize fault search candidates: {error}")))?;
+    if !mutation_plans.is_empty() {
+        return run_local_qemu_mutation_search_workflow(
+            thin_plan,
+            backend_plan,
+            ergonomics_plan,
+            plan,
+            mutation_plans,
+        );
+    }
+    run_local_qemu_search_scenario(
+        thin_plan,
+        backend_plan,
+        ergonomics_plan,
+        plan,
+        plan.scenario.scenario_form(),
+    )
+}
+
+fn run_local_qemu_search_scenario(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    plan: &SearchDriverPlan,
+    scenario: &crucible::ScenarioDefForm,
+) -> Result<BackendCommandOutcome, CliError> {
     let backend = backend_plan
         .resolved_backend
         .as_ref()
@@ -117,7 +148,7 @@ pub(crate) fn run_local_qemu_search_workflow(
         .enable_all()
         .build()?;
     let (mut graph, root_configuration, root, mut discovered_findings) =
-        runtime.block_on(qemu_search_root(&config, plan.scenario.scenario_form()))?;
+        runtime.block_on(qemu_search_root(&config, scenario))?;
     let mut pending = root
         .as_ref()
         .map(|frontier| vec![frontier.configuration.clone()])
@@ -167,7 +198,7 @@ pub(crate) fn run_local_qemu_search_workflow(
             explored.insert(child.configuration.id());
             let (realized, failure) = runtime.block_on(qemu_search_realize(
                 &config,
-                plan.scenario.scenario_form(),
+                scenario,
                 &child.configuration,
                 branch_frontier
                     .as_ref()
@@ -344,6 +375,106 @@ pub(crate) fn run_local_qemu_search_workflow(
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
     append_qemu_control_plane_execution_proof(&mut outcome, backend, "search-live-branches");
     Ok(outcome)
+}
+
+fn run_local_qemu_mutation_search_workflow(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    plan: &SearchDriverPlan,
+    mutation_plans: Vec<crucible::MaterializedSearchPlan>,
+) -> Result<BackendCommandOutcome, CliError> {
+    let original = plan.scenario.scenario_form();
+    let total = mutation_plans.len();
+    let mut selected_outcome = None;
+    for (index, materialized) in mutation_plans.into_iter().enumerate() {
+        let materialized_plan = original
+            .plan()
+            .clone()
+            .with_fault_signals_for_world(original.world(), materialized.plan)
+            .map_err(|error| {
+                backend_error(format!("validate fault search candidate {index}: {error}"))
+            })?;
+        let form = original.with_plan(materialized_plan).map_err(|error| {
+            backend_error(format!("rebuild fault search candidate {index}: {error}"))
+        })?;
+        let mut materialized_driver = plan.clone();
+        materialized_driver.scenario = plan.scenario.with_form(form.clone());
+        let mut outcome = run_local_qemu_search_scenario(
+            thin_plan,
+            backend_plan,
+            ergonomics_plan,
+            &materialized_driver,
+            &form,
+        )?;
+        outcome.canonical_log.push(CanonicalLogEntry {
+            sequence: outcome.canonical_log.len() as u64,
+            virtual_time_ticks: outcome.canonical_log.len() as u64,
+            node: String::from("search"),
+            kind: String::from("signal_fault_mutation_case"),
+            summary: format!(
+                "candidate={} total={} provenance={} scenario={}",
+                index,
+                total,
+                format_content_hash_ref(materialized.provenance),
+                format_content_hash_ref(form.id())
+            ),
+        });
+        outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
+
+        merge_mutation_search_outcome(&mut selected_outcome, index, outcome);
+        if plan.on_violation == SearchOnViolationArg::Stop
+            && selected_outcome
+                .as_ref()
+                .is_some_and(|outcome| outcome.status.is_non_passing())
+        {
+            break;
+        }
+    }
+    selected_outcome.ok_or_else(|| backend_error("fault mutation search produced no candidates"))
+}
+
+fn merge_mutation_search_outcome(
+    aggregate: &mut Option<BackendCommandOutcome>,
+    candidate: usize,
+    mut outcome: BackendCommandOutcome,
+) {
+    let Some(current) = aggregate.as_mut() else {
+        *aggregate = Some(outcome);
+        return;
+    };
+    current.stdout.append(&mut outcome.stdout);
+    current.stderr.append(&mut outcome.stderr);
+    for mut entry in outcome.canonical_log {
+        entry.sequence = current.canonical_log.len() as u64;
+        current.canonical_log.push(entry);
+    }
+    if let Some(artifact) = outcome.reproduction_artifact {
+        current
+            .side_reproduction_artifacts
+            .push((format!("mutation-{candidate}-finding"), artifact));
+    }
+    current.side_reproduction_artifacts.extend(
+        outcome
+            .side_reproduction_artifacts
+            .into_iter()
+            .map(|(label, artifact)| (format!("mutation-{candidate}-{label}"), artifact)),
+    );
+    if mutation_outcome_rank(outcome.status) > mutation_outcome_rank(current.status) {
+        current.status = outcome.status;
+        current.exit_code = outcome.exit_code;
+        current.artifact_digest = outcome.artifact_digest;
+    }
+    current.canonical_log_digest = canonical_log_digest(&current.canonical_log);
+}
+
+const fn mutation_outcome_rank(status: BackendCommandStatus) -> u8 {
+    match status {
+        BackendCommandStatus::Passed => 0,
+        BackendCommandStatus::Timeout => 1,
+        BackendCommandStatus::Failed => 2,
+        BackendCommandStatus::Crashed => 3,
+    }
 }
 
 #[derive(Clone, Debug)]

@@ -522,6 +522,27 @@ impl RunScenarioRef {
             | Self::Stored { form, .. } => form,
         }
     }
+
+    pub(crate) fn with_form(&self, form: crucible::ScenarioDefForm) -> Self {
+        let scenario = form.scenario_def();
+        match self {
+            Self::BuiltInExample { name, .. } => Self::BuiltInExample {
+                name: name.clone(),
+                form,
+                scenario,
+            },
+            Self::File { path, .. } => Self::File {
+                path: path.clone(),
+                form,
+                scenario,
+            },
+            Self::Stored { reference, .. } => Self::Stored {
+                reference: *reference,
+                form,
+                scenario,
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -300,6 +300,19 @@ opportunity parent requires the ordinary opportunity filter. Search is
 `mutate_trace_window`, or `mutate_mapping`; non-fixed forms require a bounded
 `[plan.fault_binding.search_policy]` table.
 
+`mutate_trace_window` requires `start_nanos`, `end_nanos`,
+`maximum_mutations`, and a nonempty `candidates` array. Each candidate contains
+`trace_node` and a nonempty, strictly ordered `samples` array of
+`{ coordinate, event_sequence?, value }` replacements. Coordinates use mapped
+virtual nanoseconds and must already exist in the selected normalized trace.
+`mutate_mapping` requires `point_indices`, `maximum_mutations`, and a nonempty
+`candidates` array. Each candidate contains a nonempty, strictly index-ordered
+`points` array of `{ index, point = { input, output } }` replacements. Candidate
+values must have the exact admitted trace-channel or mapped-parameter type. The
+CLI enumerates the bounded Cartesian product and executes only the resulting
+fixed-policy scenarios; no runtime mutation callback or implicit value
+generator exists.
+
 Mapping schemas:
 
 | `kind` | Required fields | Output |
