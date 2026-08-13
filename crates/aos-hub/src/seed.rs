@@ -88,9 +88,15 @@ pub struct SeedRouteConfig<'a> {
 /// The demo release semver and channel.
 const DEMO_SEMVER: &str = "1.0.0";
 const DEMO_CHANNEL: &str = "stable";
+const DEMO_LOGICAL_RAW: &[u8] = b"AOS demo raw disk image bytes\n";
 
 /// A fixed Unix timestamp for the seeded commit/tag/partitions (deterministic).
 const SEED_WHEN: i64 = 1_770_000_000;
+
+/// Produces the exact compressed raw object referenced by the seeded catalog.
+fn demo_raw_delivery() -> Result<Vec<u8>> {
+    zstd::stream::encode_all(DEMO_LOGICAL_RAW, 1).context("compressing seeded raw image")
+}
 
 /// The outcome of a [`seed_dev`] run.
 #[derive(Debug, Clone)]
@@ -951,12 +957,11 @@ fn seed_system_images() -> Result<Vec<aos_registry_surface::manifest::ImageEntry
     };
     use sha2::{Digest as _, Sha256};
 
-    let logical_raw = b"AOS demo raw disk image bytes\n";
-    let raw = zstd::stream::encode_all(&logical_raw[..], 1)?;
+    let raw = demo_raw_delivery()?;
     let qcow2 = b"QFI\xfbAOS demo qcow2 disk image bytes\n";
     let raw_info = br#"{"schemaVersion":1,"format":"raw","target":"bare-metal"}"#;
     let qcow2_info = br#"{"schemaVersion":1,"format":"qcow2","targets":["qemu-kvm","openstack"]}"#;
-    let raw_sha = hex::encode(Sha256::digest(logical_raw));
+    let raw_sha = hex::encode(Sha256::digest(DEMO_LOGICAL_RAW));
     let uki = ImageUkiIdentity {
         filename: "aos.efi".to_string(),
         esp_path: "EFI/Linux/aos.efi".to_string(),
@@ -1048,6 +1053,7 @@ fn write_seed_image_objects(
     commit: Oid,
     images: &[aos_registry_surface::manifest::ImageEntry],
 ) -> Result<()> {
+    let raw = demo_raw_delivery()?;
     let objects = images
         .iter()
         .flat_map(|image| {
@@ -1070,7 +1076,7 @@ fn write_seed_image_objects(
     for image in images {
         let (disk, info): (&[u8], &[u8]) = match image.format.as_str() {
             "raw" => (
-                b"AOS demo raw disk image bytes\n",
+                raw.as_slice(),
                 br#"{"schemaVersion":1,"format":"raw","target":"bare-metal"}"#,
             ),
             "qcow2" => (
