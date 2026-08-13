@@ -54,7 +54,7 @@ use assets::*;
 mod checkpoint_store;
 use checkpoint_store::{load_exact_checkpoint_set, persist_exact_checkpoint_set};
 mod checkpoint_dependencies;
-use checkpoint_dependencies::collect_signal_artifact_objects;
+pub use checkpoint_dependencies::collect_signal_artifact_objects;
 
 /// Default final icount available to one production CLI lifecycle session.
 const DEFAULT_RUN_CEILING_ICOUNT: u64 = 16_000_000;

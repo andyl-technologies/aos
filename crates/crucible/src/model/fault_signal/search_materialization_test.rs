@@ -397,7 +397,7 @@ fn trace_mutation_rewrites_canonical_artifacts_and_program_identity() {
         raw,
         TraceImportOptions {
             channel: signal_id("channel-a"),
-            shape: SignalShape::new(SignalValueType::U64, SignalUnit::Dimensionless, 0)
+            shape: SignalShape::new(SignalValueType::U64, SignalUnit::VirtualNanoseconds, 0)
                 .unwrap_or_else(|error| panic!("invalid trace shape: {error}")),
             event_channel: false,
             time_basis: TraceTimeBasis::Nanoseconds,
@@ -437,7 +437,7 @@ fn trace_mutation_rewrites_canonical_artifacts_and_program_identity() {
             SignalNode {
                 id: output.clone(),
                 domain: SignalDomain::VirtualTime,
-                output: SignalShape::new(SignalValueType::U64, SignalUnit::Dimensionless, 0)
+                output: SignalShape::new(SignalValueType::U64, SignalUnit::VirtualNanoseconds, 0)
                     .unwrap_or_else(|error| panic!("invalid signal shape: {error}")),
                 inputs: Vec::new(),
                 kind: SignalNodeKind::Source(trace_source.clone()),
@@ -445,7 +445,7 @@ fn trace_mutation_rewrites_canonical_artifacts_and_program_identity() {
             SignalNode {
                 id: unrelated.clone(),
                 domain: SignalDomain::VirtualTime,
-                output: SignalShape::new(SignalValueType::U64, SignalUnit::Dimensionless, 0)
+                output: SignalShape::new(SignalValueType::U64, SignalUnit::VirtualNanoseconds, 0)
                     .unwrap_or_else(|error| panic!("invalid signal shape: {error}")),
                 inputs: Vec::new(),
                 kind: SignalNodeKind::Source(trace_source),
@@ -491,14 +491,17 @@ fn trace_mutation_rewrites_canonical_artifacts_and_program_identity() {
         BindingSearchPolicy::MutateTraceWindow {
             start_nanos: 101,
             end_nanos: 102,
-            candidates: vec![TraceWindowMaterialization {
-                trace_node: output.clone(),
-                samples: vec![TraceSampleMutation {
-                    coordinate: 101,
-                    event_sequence: None,
-                    value: SignalValue::U64(99),
-                }],
-            }],
+            candidates: [98_u64, 99]
+                .into_iter()
+                .map(|value| TraceWindowMaterialization {
+                    trace_node: output.clone(),
+                    samples: vec![TraceSampleMutation {
+                        coordinate: 101,
+                        event_sequence: None,
+                        value: SignalValue::U64(value),
+                    }],
+                })
+                .collect(),
             maximum_mutations: PositiveU64::new("maximum_mutations", 1)
                 .unwrap_or_else(|error| panic!("invalid mutation bound: {error}")),
         },
@@ -562,4 +565,103 @@ fn trace_mutation_rewrites_canonical_artifacts_and_program_identity() {
         .unwrap_or_else(|error| panic!("materialized trace failed to load: {error}"));
     assert_eq!(loaded.chunks[0].entries[0].value, SignalValue::U64(99));
     assert_ne!(materialized.provenance, ContentHash::default());
+
+    let mapping_effect = EffectRequest::new(
+        EFFECT_SEMANTIC_VERSION,
+        EffectLifetime::Persistent,
+        EffectSpecification::Network(NetworkEffectSpecification::PropagationDelay {
+            delay_nanos: Some(
+                PositiveU64::new("delay_nanos", 1)
+                    .unwrap_or_else(|error| panic!("invalid delay: {error}")),
+            ),
+            distance_velocity_lookup: None,
+        }),
+    )
+    .unwrap_or_else(|error| panic!("invalid mapping effect: {error}"));
+    let mapping_candidates = [40_u64, 50, 60]
+        .into_iter()
+        .map(|value| MappingMaterialization {
+            points: vec![MappingPointMutation {
+                index: 1,
+                point: BindingMapPoint {
+                    input: SignalValue::U64(100),
+                    output: SignalValue::DurationNanos(value),
+                },
+            }],
+        })
+        .collect();
+    let mapping_binding = FaultBinding::new(
+        object_id("binding-z-mapping-mutation"),
+        vec![signal_id("output")],
+        BindingSampling::AtBoundary,
+        BindingMapping::PiecewiseParameter {
+            parameter: MappedEffectParameter::DurationNanos,
+            points: vec![
+                BindingMapPoint {
+                    input: SignalValue::U64(0),
+                    output: SignalValue::DurationNanos(10),
+                },
+                BindingMapPoint {
+                    input: SignalValue::U64(100),
+                    output: SignalValue::DurationNanos(30),
+                },
+            ],
+            rounding: SignalRounding::NearestTiesToEven,
+            overflow: SignalOverflow::Error,
+        },
+        TargetSelector::Exact(
+            ResolvedTargetSet::new(
+                vec![ResolvedFaultTarget::NetworkSegment {
+                    segment: object_id("segment-a"),
+                    direction: FaultDirection::AToB,
+                }],
+                false,
+            )
+            .unwrap_or_else(|error| panic!("invalid mapping target: {error}")),
+        ),
+        [FaultPhase::Resolve].into_iter().collect(),
+        mapping_effect,
+        None,
+        BindingSearchPolicy::MutateMapping {
+            point_indices: vec![1],
+            candidates: mapping_candidates,
+            maximum_mutations: PositiveU64::new("maximum_mutations", 1)
+                .unwrap_or_else(|error| panic!("invalid mutation bound: {error}")),
+        },
+        BindingObservabilityPolicy {
+            samples: SampleObservation::ChangesAndEffects,
+            record_inactive_opportunities: false,
+            retain_mapped_values: true,
+        },
+        &program,
+    )
+    .unwrap_or_else(|error| panic!("invalid mapping binding: {error}"));
+    let plan = FaultSignalPlan::new(
+        vec![program],
+        vec![binding, mapping_binding],
+        FaultResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("invalid mixed mutation plan: {error}"));
+    let plans = materialize_search_plans(&plan, &store)
+        .unwrap_or_else(|error| panic!("mixed mutation space should materialize: {error}"));
+    assert_eq!(plans.len(), 6);
+    for plan in plans {
+        assert_eq!(plan.cases.len(), 2);
+        assert!(plan.plan.bindings().iter().all(|binding| {
+            matches!(binding.search(), BindingSearchPolicy::Fixed)
+                && binding.program() == plan.plan.programs()[0].id()
+        }));
+        assert_eq!(plan.artifacts, plan.cases[0].artifacts);
+        assert!(plan.cases[1].artifacts.is_empty());
+        let manifest = plan.cases[0]
+            .artifacts
+            .last()
+            .copied()
+            .unwrap_or_else(|| panic!("trace mutation must retain its manifest"));
+        assert!(matches!(
+            &plan.plan.programs()[0].nodes()[0].kind,
+            SignalNodeKind::Source(SignalSourceSpecification::Trace { artifact, .. })
+                if *artifact == manifest
+        ));
+    }
 }

@@ -831,7 +831,12 @@ schedules. A trace candidate names `trace_node` and exact existing sample
 coordinates with typed replacement values. A mapping candidate names exact
 point indices and complete typed replacement points. Crucible materializes the
 bounded Cartesian product into fixed-policy scenarios before starting QEMU; it
-never guesses mutation values.
+never guesses mutation values. `--max-states` is one global budget for that
+product: every materialized scenario root consumes one state, and every graph
+frontier expansion consumes another. It is not reset for each candidate.
+Finding artifacts embed the authenticated transitive signal-object closure and
+the exact ordered mutation recipe, so replay does not require the search
+store that produced the candidate.
 
 ### Target selector values
 
@@ -1093,9 +1098,13 @@ presentation formats. The event trace is distinct from diagnostic output; use
 
 The content-addressed store contains scenario forms, schedules, checkpoints,
 and related execution objects. A reproduction artifact records inputs and the
-schedule needed to reproduce a result. A savepoint handle names a checkpoint
-for `resume`, `fork`, and debugger attachment. Preserve every store object
-referenced by exported handles and artifacts.
+schedule needed to reproduce a result. Signal-fault reproduction artifacts
+also embed every reachable normalized trace/spatial/sampler object, authenticate
+each object while restoring it into an isolated in-memory store, and include
+mutation provenance when search changed a trace or mapping. A savepoint handle
+names a checkpoint for `resume`, `fork`, and debugger attachment. Preserve every
+store object referenced by exported handles; reproduction artifacts carry their
+own signal closure.
 
 | Status | Class |
 | ---: | --- |

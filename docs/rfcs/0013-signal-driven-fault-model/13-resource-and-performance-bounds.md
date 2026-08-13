@@ -176,9 +176,13 @@ decision, effect, and referenced full-value artifact required for explanation.
 | `mapping_mutation_points` | 65,536 | 262,144 |
 | `minimization_attempts` | 1,048,576 | 16,777,216 |
 
-Search strategies additionally declare a finite fuel count. Fuel decrements for
-state expansion, replay, minimization trial, and candidate generation. Exhausted
-fuel returns a complete bounded-search result, never silently switches strategy.
+Search strategies additionally declare a finite fuel count. For a finite
+mutation product, `search_states` is one global counter: materializing each
+candidate root consumes one state and expanding any frontier within that
+candidate consumes one more. The counter never resets between candidates.
+Replay, minimization trials, and candidate generation consume their separately
+declared finite bounds. Exhaustion returns a complete bounded-search result and
+never silently switches strategy.
 
 ## 13.9 Future sensor bounds
 

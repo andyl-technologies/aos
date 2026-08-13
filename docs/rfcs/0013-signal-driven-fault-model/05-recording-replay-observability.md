@@ -228,7 +228,13 @@ or leftover work item fails replay.
 Ambiguous matching is an error, not a “closest packet” guess.
 
 - **[REP-13]** Every reproduction artifact MUST name replay mode and the required
-  cause/effect artifacts.
+  cause/effect artifacts. A signal-fault finding MUST embed the authenticated
+  transitive closure of normalized trace, spatial, and sampler objects needed
+  by its fixed scenario. If search materialized a trace or mapping mutation, it
+  MUST additionally embed the ordered candidate recipe, original program and
+  binding identities, per-case provenance, and generated artifact identities.
+  Replay restores that closure into an isolated content-addressed store and
+  MUST remain valid after the producer's store is unavailable.
 - **[REP-14]** Locked replay MUST fail at the first mismatch with expected and
   observed opportunity context, not silently fall back to recomputation.
 - **[REP-15]** Every resolved record MUST carry the backend-observed before-state

@@ -14,6 +14,7 @@ pub(crate) fn run_live_qemu_artifact_replay(
     schedule: &crucible::Schedule,
     contract: &LiveQemuReplayContract,
     resolved_effect_trace: Option<crucible::ResolvedEffectTrace>,
+    signal_artifacts: Option<std::sync::Arc<crucible::MemoryDagStore>>,
 ) -> Result<(RunInvocationPlan, RunWorkflowReport), CliError> {
     let terminal_condition = match contract.terminal_condition.as_str() {
         "quiescence" => RunTerminalCondition::Quiescence,
@@ -82,6 +83,9 @@ pub(crate) fn run_live_qemu_artifact_replay(
     }
     if let Some(quantum_budget) = contract.lifecycle_quantum_budget {
         config = config.with_quantum_budget(quantum_budget);
+    }
+    if let Some(signal_artifacts) = signal_artifacts {
+        config = config.with_signal_artifacts(signal_artifacts);
     }
     let mut branch_evidence = None;
     match &contract.branch {

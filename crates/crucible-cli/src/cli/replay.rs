@@ -163,6 +163,13 @@ fn replay_live_qemu_evidence(
         LIVE_QEMU_RESOLVED_EFFECT_TRACE_MEDIA_TYPE,
         "live QEMU resolved-effect trace",
     )?;
+    let signal_artifact_bundle = optional_single_component_payload(
+        artifact,
+        SIGNAL_ARTIFACT_BUNDLE_MEDIA_TYPE,
+        "signal artifact bundle",
+    )?
+    .map(decode_signal_artifact_bundle)
+    .transpose()?;
     let contract = LiveQemuReplayContract::decode(contract_bytes)?;
     let top_level_fingerprints =
         verify_fingerprint_stream_bytes(&artifact_fingerprint_samples(artifact));
@@ -260,6 +267,7 @@ fn replay_live_qemu_evidence(
         model.schedule(),
         &contract,
         resolved_effect_trace,
+        signal_artifact_bundle,
     )?;
     let replay_events = canonical_verify_log_stream_bytes(&[], &report.streamed_event_frames);
     let replay_samples = match contract.fingerprint_scope {
