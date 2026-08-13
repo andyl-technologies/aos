@@ -1238,7 +1238,7 @@ mod entry {
         let route_http: Arc<dyn aos_hub_core::web::console::ports::HttpClient> =
             Arc::new(WorkerHttpClient::new(Arc::clone(&egress)));
         let mut controller = match aos_hub_core::topology_probe::DomainProbeController::new(
-            db,
+            Arc::clone(&db),
             Arc::clone(&route_http),
             tls_verifier,
             endpoint.to_string(),
@@ -1305,10 +1305,32 @@ mod entry {
             }
         };
         controller = controller.with_storage_credential_probe(Arc::new(
-            WorkerStorageCredentialProbeProvider::new(Arc::clone(&egress), secret_versions),
+            WorkerStorageCredentialProbeProvider::new(
+                Arc::clone(&egress),
+                Arc::clone(&secret_versions),
+            ),
         ));
         if let Err(error) = controller.run_due(25).await {
             worker::console_error!("domain probes: {error:#}");
+        }
+        match env.bucket(crate::handlers::bindings::R2) {
+            Ok(bucket) => {
+                let placement_scans = aos_hub_core::placement_scan::PlacementScanController::new(
+                    Arc::clone(&db),
+                    Arc::new(crate::surface::R2SurfaceProvider::new(
+                        bucket,
+                        Arc::clone(&db),
+                        secret_versions,
+                        Arc::clone(&egress),
+                    )),
+                );
+                if let Err(error) = placement_scans.run_due(5).await {
+                    worker::console_error!("placement scans: {error:#}");
+                }
+            }
+            Err(error) => {
+                worker::console_error!("placement scans: R2 binding missing: {error}");
+            }
         }
     }
 

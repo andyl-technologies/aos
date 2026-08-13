@@ -649,6 +649,17 @@ async fn main() -> Result<()> {
             if has_route_adapter {
                 controller = controller.with_route_observer(Arc::new(route_adapters));
             }
+            let placement_scans = aos_hub_core::placement_scan::PlacementScanController::new(
+                Arc::clone(&app_state.db),
+                Arc::new(
+                    aos_hub::coreports::HubSurfaceProvider::new(
+                        Arc::clone(&app_state.db),
+                        app_state.http.clone(),
+                        app_state.image_snapshots.clone(),
+                    )
+                    .with_credentials(Arc::clone(&app_state.secret_versions)),
+                ),
+            );
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
                 loop {
@@ -657,6 +668,12 @@ async fn main() -> Result<()> {
                         tracing::warn!(
                             error = %format!("{error:#}"),
                             "domain probe controller pass failed"
+                        );
+                    }
+                    if let Err(error) = placement_scans.run_due(5).await {
+                        tracing::warn!(
+                            error = %format!("{error:#}"),
+                            "placement scan controller pass failed"
                         );
                     }
                 }

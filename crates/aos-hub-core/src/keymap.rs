@@ -23,8 +23,15 @@
 //! ```
 
 /// The machine-surface directory prefixes (also valid as bare paths).
-const MACHINE_DIRS: [&str; 7] = [
-    "info", "objects", "channels", "releases", "nar", "web", "browse",
+const MACHINE_DIRS: [&str; 8] = [
+    "info",
+    "objects",
+    "channels",
+    "releases",
+    "publication-receipts",
+    "nar",
+    "web",
+    "browse",
 ];
 
 /// Cache-control for content-addressed (immutable) payloads.
@@ -53,10 +60,10 @@ pub fn is_machine_path(path: &str) -> bool {
 /// Classify a machine path into its `Cache-Control` header.
 ///
 /// Follows `classify_git_path` in `apr`'s `static_upload.rs`: under `objects/`
-/// only `objects/info/**` is mutable; `releases/**` and `nar/**` are
-/// content-addressed; under `web/` only `config.json`, `index.json`, and
-/// `packages/**` are mutable; everything else (refs, channel partitions,
-/// narinfos, server-info) revalidates.
+/// only objects/info is mutable; releases, publication receipts, and NARs are
+/// content-addressed; under web only config, index, and package pointers are
+/// mutable; everything else (refs, channel partitions, narinfos, server-info)
+/// revalidates.
 #[must_use]
 pub fn cache_control(path: &str) -> &'static str {
     let immutable = if let Some(rest) = path.strip_prefix("objects/") {
@@ -64,7 +71,10 @@ pub fn cache_control(path: &str) -> &'static str {
     } else if let Some(rest) = path.strip_prefix("web/") {
         rest != "config.json" && rest != "index.json" && !rest.starts_with("packages/")
     } else {
-        path.starts_with("releases/") || path.starts_with("nar/") || is_image_object_path(path)
+        path.starts_with("releases/")
+            || path.starts_with("publication-receipts/")
+            || path.starts_with("nar/")
+            || is_image_object_path(path)
     };
     if immutable {
         IMMUTABLE_CACHE_CONTROL
@@ -234,6 +244,7 @@ mod tests {
             "index.html",
             "web/index.json",
             "browse/curl.html",
+            "publication-receipts/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
             "images/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aos.img",
         ] {
             assert!(is_machine_path(path), "{path}");
@@ -256,6 +267,14 @@ mod tests {
         assert!(!is_machine_path("objectstore"), "prefixes must not bleed");
         assert!(!is_machine_path("images/latest/aos.img"));
         assert!(!is_machine_path("images/sha256/not-a-digest/aos.img"));
+    }
+
+    #[test]
+    fn publication_receipts_are_immutable_json_objects() {
+        let path =
+            "publication-receipts/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json";
+        assert_eq!(cache_control(path), IMMUTABLE_CACHE_CONTROL);
+        assert_eq!(content_type(path), "application/json");
     }
 
     #[test]

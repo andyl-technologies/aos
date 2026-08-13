@@ -29,13 +29,12 @@
 //! inventory and authorized placement lifecycle calls.
 
 use anyhow::{Context, Result};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::fmt;
-use std::path::Path;
 use std::str::FromStr;
 
-use aos_proto_types::{SurfaceRef, CONNECT_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION_HEADER};
+use aos_proto_types::{CONNECT_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION_HEADER, SurfaceRef};
 
 use crate::client::validate_base_url;
 
@@ -1656,7 +1655,14 @@ impl HubClient {
     ///
     /// Returns an error for a non-Hub URL, unreadable input, transport failure,
     /// or a non-success response from the Hub.
-    pub async fn upload_publication_object(&self, upload_url: &str, path: &Path) -> Result<()> {
+    pub async fn upload_publication_object(
+        &self,
+        upload_url: &str,
+        mut file: std::fs::File,
+        label: &str,
+    ) -> Result<()> {
+        use std::io::{Seek as _, SeekFrom};
+
         let base = url::Url::parse(&self.base).context("parsing configured Hub URL")?;
         let target = url::Url::parse(upload_url).context("parsing publication upload URL")?;
         anyhow::ensure!(
@@ -1670,13 +1676,13 @@ impl HubClient {
                     .starts_with("/aos.hub.v1.PublishService/UploadObject/"),
             "publication upload URL is outside the configured Hub origin"
         );
-        let file = tokio::fs::File::open(path)
-            .await
-            .with_context(|| format!("opening publication object {}", path.display()))?;
+        file.seek(SeekFrom::Start(0))
+            .with_context(|| format!("rewinding publication object {label}"))?;
+        let file = tokio::fs::File::from_std(file);
         let size = file
             .metadata()
             .await
-            .with_context(|| format!("reading publication object metadata {}", path.display()))?
+            .with_context(|| format!("reading publication object metadata {label}"))?
             .len();
         let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(file));
         let mut request = self
@@ -1853,7 +1859,7 @@ mod tests {
     use super::{HubClient, HubSurfaceRef, HubTopologyMethod};
     use aos_proto_types::surface_ref::Target;
     use aos_proto_types::{
-        PlanCreatePlacementRequest, PlanUpdatePlacementRequest, CONNECT_PROTOCOL_VERSION_HEADER,
+        CONNECT_PROTOCOL_VERSION_HEADER, PlanCreatePlacementRequest, PlanUpdatePlacementRequest,
     };
     use std::str::FromStr as _;
 
