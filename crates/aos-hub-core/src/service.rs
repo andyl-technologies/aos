@@ -23603,7 +23603,7 @@ impl RpcService {
             Some(req.parent_publication_id.clone())
         };
         let default_commit = (!req.default_commit.is_empty()).then(|| req.default_commit.clone());
-        if let Some(existing) = self
+        let publication_id = if let Some(existing) = self
             .db
             .registry_publication_by_generation(registry.id, &req.generation)
             .await
@@ -23618,29 +23618,38 @@ impl RpcService {
                     "publication generation already exists with different content".into(),
                 ));
             }
-            if matches!(existing.state.as_str(), "failed" | "retired") {
+            if existing.state == "retired" {
                 return Err(RpcError::FailedPrecondition(format!(
                     "publication generation is {} and cannot be resumed",
                     existing.state
                 )));
             }
-            return self
-                .registry_publication_response(&existing.publication_id)
-                .await;
-        }
-        let publication_id = uuid::Uuid::new_v4().simple().to_string();
-        self.db
-            .create_registry_publication(&crate::db::NewRegistryPublication {
-                publication_id: publication_id.clone(),
-                registry_id: registry.id,
-                generation: req.generation,
-                manifest_digest,
-                refs_digest: req.refs_digest,
-                default_commit,
-                parent_publication_id: parent,
-            })
-            .await
-            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+            if existing.state != "failed" {
+                return self
+                    .registry_publication_response(&existing.publication_id)
+                    .await;
+            }
+            self.db
+                .retry_failed_registry_publication(&existing.publication_id, clock::now_unix_secs())
+                .await
+                .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+            existing.publication_id
+        } else {
+            let publication_id = uuid::Uuid::new_v4().simple().to_string();
+            self.db
+                .create_registry_publication(&crate::db::NewRegistryPublication {
+                    publication_id: publication_id.clone(),
+                    registry_id: registry.id,
+                    generation: req.generation,
+                    manifest_digest,
+                    refs_digest: req.refs_digest,
+                    default_commit,
+                    parent_publication_id: parent,
+                })
+                .await
+                .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+            publication_id
+        };
 
         let admission: Result<(), RpcError> = async {
             for object in req.objects {

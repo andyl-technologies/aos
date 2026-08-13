@@ -5882,6 +5882,50 @@ impl Database {
             .context("created registry publication disappeared")
     }
 
+    /// Reopens an exact failed publication that has never become visible.
+    ///
+    /// The registry head must still equal the publication's frozen parent.
+    /// Object identities remain immutable; admission replays their idempotent
+    /// declarations after this state reset.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed id, stale parent, non-failed state, or
+    /// database failure.
+    pub async fn retry_failed_registry_publication(
+        &self,
+        publication_id: &str,
+        now: i64,
+    ) -> Result<RegistryPublicationRecord> {
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE registry_publications SET state = 'preparing',
+                       completed_at = NULL, retired_at = NULL
+                     WHERE publication_id = ?1 AND state = 'failed'
+                       AND EXISTS (SELECT 1 FROM registry_publication_state state
+                         WHERE state.registry_id = registry_publications.registry_id
+                           AND (state.current_publication_id = registry_publications.parent_publication_id
+                             OR (state.current_publication_id IS NULL
+                               AND registry_publications.parent_publication_id IS NULL)))",
+                    vals![publication_id],
+                )
+                .expecting(1),
+                Statement::new(
+                    "UPDATE registry_publication_placements
+                     SET state = 'preparing', observed_at = ?2
+                     WHERE publication_id = ?1 AND state = 'failed'",
+                    vals![publication_id, now],
+                )
+                .unchecked(),
+            ])
+            .await?;
+        self.registry_publication(publication_id)
+            .await?
+            .context("retried registry publication disappeared")
+    }
+
     /// Returns one registry publication by stable id.
     ///
     /// # Errors
@@ -28323,6 +28367,16 @@ source_nar_hash = ""
         assert_eq!(failed.records[0].publication_id, "publication-history-2");
         assert!(db
             .list_registry_publications_page(registry_id, Some("failed"), 10, Some(3))
+            .await
+            .is_err());
+
+        let retried = db
+            .retry_failed_registry_publication("publication-history-2", unix_now())
+            .await
+            .unwrap();
+        assert_eq!(retried.state, "preparing");
+        assert!(db
+            .retry_failed_registry_publication("publication-history-2", unix_now())
             .await
             .is_err());
     }
