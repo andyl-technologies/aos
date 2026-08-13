@@ -1611,6 +1611,8 @@ message RegistryPublicationObject {
   // Exact Hub proxy URL accepting the complete object. Empty when the object
   // requires bounded multipart admission.
   string upload_url = 7;
+  // True when every required placement already has exact verified bytes.
+  bool verified = 8;
 }
 
 message RegistryPublicationPlacement {

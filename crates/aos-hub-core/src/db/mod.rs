@@ -1708,6 +1708,8 @@ pub struct RegistryPublicationUploadObjectRecord {
     pub expected_hash: String,
     /// Exact byte size.
     pub expected_size: i64,
+    /// Whether every required publication placement has exact observed bytes.
+    pub verified: bool,
 }
 
 /// One durable multipart transaction for a declared publication object.
@@ -6111,7 +6113,23 @@ impl Database {
             .query(
                 "SELECT po.publication_id, po.registry_id, po.surface_object_id,
                         object.object_key, po.object_kind, po.expected_hash,
-                        po.expected_size
+                        po.expected_size,
+                        CASE WHEN EXISTS (
+                          SELECT 1 FROM registry_publication_placements required
+                          WHERE required.publication_id = po.publication_id
+                            AND required.required = 1)
+                        AND NOT EXISTS (
+                          SELECT 1 FROM registry_publication_placements required
+                          WHERE required.publication_id = po.publication_id
+                            AND required.required = 1
+                            AND NOT EXISTS (
+                              SELECT 1 FROM object_placements presence
+                              WHERE presence.surface_object_id = po.surface_object_id
+                                AND presence.placement_id = required.placement_id
+                                AND presence.state = 'present'
+                                AND presence.observed_hash = po.expected_hash
+                                AND presence.observed_size = po.expected_size))
+                        THEN 1 ELSE 0 END
                  FROM registry_publication_objects po
                  JOIN surface_objects object ON object.id = po.surface_object_id
                  WHERE po.publication_id = ?1
@@ -6130,6 +6148,7 @@ impl Database {
                     object_kind: row.get(4)?,
                     expected_hash: row.get(5)?,
                     expected_size: row.get(6)?,
+                    verified: row.get(7)?,
                 })
             })
             .collect()
@@ -28478,6 +28497,7 @@ source_nar_hash = ""
         assert_eq!(objects.len(), 2);
         assert_eq!(objects[0].object_kind, "immutable");
         assert_eq!(objects[1].object_kind, "mutable_pointer");
+        assert!(objects.iter().all(|object| !object.verified));
         assert!(!db
             .registry_publication_class_is_complete(publication_id, "immutable")
             .await
