@@ -8570,12 +8570,20 @@ fn publication_from_root(root: &std::path::Path, registry: &str) -> Result<Pinne
     let refs_object = objects
         .get("info/refs")
         .context("publication surface has no info/refs")?;
+    anyhow::ensure!(
+        refs_object.byte_size <= 4 * 1024 * 1024,
+        "publication info/refs exceeds its 4194304 byte limit"
+    );
     let refs_file = snapshot_publication_object(&root, refs_object)?;
     let refs = read_pinned_publication_file(refs_file, "info/refs", 4 * 1024 * 1024)?;
     let refs_digest = format!("{:x}", Sha256::digest(&refs));
     let head_object = objects
         .get("HEAD")
         .context("publication surface has no HEAD")?;
+    anyhow::ensure!(
+        head_object.byte_size <= 4096,
+        "publication HEAD exceeds its 4096 byte limit"
+    );
     let head_file = snapshot_publication_object(&root, head_object)?;
     let head = read_pinned_publication_file(head_file, "HEAD", 4096)?;
     let default_commit = publication_default_commit(&head, &refs)?;

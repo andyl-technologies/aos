@@ -6304,6 +6304,27 @@ impl Database {
             .collect()
     }
 
+    /// Returns whether a durable multipart transaction has unresolved backend creation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed upload id or database failure.
+    pub async fn registry_publication_multipart_has_creating_backend(
+        &self,
+        upload_id: &str,
+    ) -> Result<bool> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        Ok(self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM registry_publication_multipart_backends
+                 WHERE upload_id = ?1 AND state = 'creating' LIMIT 1",
+                &vals![upload_id],
+            )
+            .await?
+            .is_some())
+    }
+
     /// Advances an active multipart upload into its idempotent completion phase.
     ///
     /// # Errors
