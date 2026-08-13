@@ -3506,6 +3506,7 @@ fn validate_image_artifact_budgets(
 const MAX_IMAGE_INFO_BYTES: u64 = 1024 * 1024;
 const MAX_LOGICAL_DISK_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const CANONICAL_GPT_TAIL_BYTES: u64 = 1024 * 1024;
+const MAX_ZSTD_WINDOW_LOG: u32 = 27;
 
 /// Rejects decompression sizes that are unbounded or disagree with GPT geometry.
 fn validate_logical_disk_geometry(
@@ -4314,8 +4315,11 @@ fn decompress_raw_disk(
     destination: &mut impl std::io::Write,
     expected_size: u64,
 ) -> Result<()> {
-    let decoder =
+    let mut decoder =
         zstd::stream::read::Decoder::new(source).context("opening compressed raw disk")?;
+    decoder
+        .window_log_max(MAX_ZSTD_WINDOW_LOG)
+        .context("bounding compressed raw disk decode window")?;
     let copied = std::io::copy(
         &mut decoder.take(expected_size.saturating_add(1)),
         destination,
