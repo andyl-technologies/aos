@@ -218,7 +218,7 @@ in
           grep -Fxq 'changed_state_precondition_rejected=true' "$node_result"
           grep -Fxq 'corrupt_result_rejected_with_valid_event=true' "$node_result"
           grep -Fxq 'corrupt_event_rejected_with_valid_result=true' "$node_result"
-          grep -Fxq 'signal_impulse_applied=true' "$node_result"
+          grep -Fxq 'lifecycle_impulse_committed=true' "$node_result"
 
           patch_result=${patchMicrotests}/result
           grep -Fxq PASS "$patch_result"

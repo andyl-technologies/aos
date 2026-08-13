@@ -57,9 +57,9 @@ fn run() -> Result<(), String> {
         }
         diagnostic
     })?;
-    if !report.signal_impulse_applied {
+    if !report.lifecycle_impulse_committed {
         return Err(String::from(
-            "the signal runtime did not emit exactly one lifecycle impulse",
+            "the signal runtime did not commit exactly one lifecycle impulse",
         ));
     }
 
@@ -72,7 +72,10 @@ fn run() -> Result<(), String> {
     println!("action={}", report.action.to_hex());
     println!("evidence={}", report.evidence.to_hex());
     println!("exit_code={}", report.exit_code);
-    println!("signal_impulse_applied={}", report.signal_impulse_applied);
+    println!(
+        "lifecycle_impulse_committed={}",
+        report.lifecycle_impulse_committed
+    );
     println!(
         "exact_manifest_replay_admitted={}",
         report.exact_manifest_replay_admitted
@@ -90,8 +93,8 @@ fn run() -> Result<(), String> {
         report.corrupt_event_rejected_with_valid_result
     );
     println!(
-        "cross_domain_actions_applied={}",
-        report.cross_domain_actions_applied
+        "cross_adapter_actions_committed={}",
+        report.cross_adapter_actions_committed
     );
     Ok(())
 }

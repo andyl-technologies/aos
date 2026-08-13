@@ -98,7 +98,7 @@ in
           grep -Fxq 'changed_state_precondition_rejected=true' "$report"
           grep -Fxq 'corrupt_result_rejected_with_valid_event=true' "$report"
           grep -Fxq 'corrupt_event_rejected_with_valid_result=true' "$report"
-          grep -Fxq 'cross_domain_actions_applied=true' "$report"
+          grep -Fxq 'cross_adapter_actions_committed=true' "$report"
           grep -Fxq 'backend=production-qemu-signal-runtime' "$report"
           grep -Fxq 'effect=node.lifecycle' "$report"
           grep -Fxq 'transition=crash' "$report"
@@ -106,7 +106,7 @@ in
           grep -Eq '^action=[0-9a-f]{64}$' "$report"
           grep -Eq '^evidence=[0-9a-f]{64}$' "$report"
           grep -Fxq 'exit_code=70' "$report"
-          grep -Fxq 'signal_impulse_applied=true' "$report"
+          grep -Fxq 'lifecycle_impulse_committed=true' "$report"
 
           prefix_modifications=${qemuWithoutTypedResult}/share/licenses/qemu-crucible-without-typed-node-result/AOS-MODIFICATIONS
           grep -Fxq 'Distribution status: non-distributable compatibility-test material' \
