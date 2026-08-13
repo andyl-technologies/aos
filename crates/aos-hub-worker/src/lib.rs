@@ -777,9 +777,13 @@ mod entry {
         // `SqlDoBackend`. Pinned to WNAM (the hub's home) via a location hint so a
         // fresh instance lands near the readership; the package data plane
         // (NAR/narinfo on R2/CDN) is globally replicated independently.
+        let database_instance = env
+            .var("HUB_DATABASE_INSTANCE")
+            .map(|value| value.to_string())
+            .unwrap_or_else(|_| "hub".to_string());
         let stub = env
             .durable_object(crate::handlers::bindings::HUB_DB)?
-            .id_from_name("hub")
+            .id_from_name(&database_instance)
             .and_then(|id| id.get_stub_with_location_hint("wnam"))?;
         let resp = stub.fetch_with_request(req).await?;
 
@@ -861,9 +865,13 @@ mod entry {
     /// DO cannot be reached, or it responds non-200.
     async fn forward_internal(env: &Env, path: &str, body: Option<String>) -> Result<()> {
         let seal = env.secret(HUB_SEAL_KEY)?.to_string();
+        let database_instance = env
+            .var("HUB_DATABASE_INSTANCE")
+            .map(|value| value.to_string())
+            .unwrap_or_else(|_| "hub".to_string());
         let stub = env
             .durable_object(crate::handlers::bindings::HUB_DB)?
-            .id_from_name("hub")
+            .id_from_name(&database_instance)
             .and_then(|id| id.get_stub_with_location_hint("wnam"))?;
         let headers = worker::Headers::new();
         headers.set("x-hub-seal", &seal)?;

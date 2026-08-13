@@ -120,6 +120,12 @@ value at `/.well-known/aos-deployment` with `Cache-Control: no-store`; a
 controller should reject redirects and compare the response exactly before
 declaring the deployment healthy.
 
+The colocated database uses the stable Durable Object name `hub` by default.
+Routine updates must keep that name. `--database-instance <name>` explicitly
+selects a different, initially empty database for a restore or cutover; after a
+cutover, pass the same name on every subsequent deployment. Switching the name
+does not migrate accounts, tokens, topology, or publication state.
+
 Worker state is administered through the web console and API. Local
 `aos-hub --root ...` commands do not open the Durable Object database.
 

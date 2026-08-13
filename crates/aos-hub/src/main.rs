@@ -247,6 +247,12 @@ struct WorkerArgs {
     /// Immutable source/build identity exposed for deployment verification.
     #[arg(long, env = "HUB_DEPLOYMENT_ID")]
     deployment_id: Option<String>,
+    /// Stable name of the colocated SQLite Durable Object instance.
+    ///
+    /// Changing this selects a fresh database and is intended for explicit
+    /// restore or cutover operations, not routine deployments.
+    #[arg(long, default_value = "hub")]
+    database_instance: String,
     /// Bind the Worker to a custom domain (e.g. `aos.example.com`): `wrangler
     /// deploy` provisions its DNS record + edge cert, and its zone must be on the
     /// same Cloudflare account. Repeatable — pass `--domain` once per hostname to
@@ -1115,6 +1121,7 @@ async fn provision_worker(
         args.egress_gateway_url.as_deref(),
         &external_url,
         args.deployment_id.as_deref(),
+        &args.database_instance,
         args.email_relay_url.as_deref(),
         &args.domains,
         aos_hub::cloudflare::RateLimitNamespaces::from_base(args.rate_limit_namespace_base)?,
