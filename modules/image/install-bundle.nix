@@ -62,7 +62,7 @@ in {
       version = config.aos.system.version;
       src = null;
       buildDeps =
-        [pkgs.coreutils pkgs.findutils]
+        [pkgs.coreutils pkgs.findutils config.system.build.checks.image-budget]
         ++ lib.optionals config.aos.boot.secureBoot.enable [pkgs.perl pkgs.sbsigntools];
       phases = [{
         name = "install";
@@ -115,8 +115,9 @@ in {
             --replace-fail '@pinned_pcrs@' '${config.aos.boot.secureBoot.measuredBoot.pinnedPcrs}' \
             --replace-fail '@esp_devices@' '${lib.concatStringsSep " " cfg.espDevices}' \
             --replace-fail '@esp_count@' '${toString (builtins.length cfg.espDevices)}' \
-            --replace-fail '@root_slot_size@' '${toString cfg.zfs.rootSlotSizeGiB}' \
-            --replace-fail '@verity_slot_size@' '${toString cfg.zfs.veritySlotSizeMiB}'
+            --replace-fail '@root_slot_size@' '${toString cfg.zfs.rootSlotSizeMiB}' \
+            --replace-fail '@verity_slot_size@' '${toString cfg.zfs.veritySlotSizeMiB}' \
+            --replace-fail '@esp_size@' '${toString config.aos.image.budgets.maxEspMiB}'
           ${pkgs.bash}/bin/bash -n "$out/bin/aos-install-zfs"
           chmod 0755 "$out/bin/aos-install-zfs"
         '';

@@ -18,6 +18,7 @@ in
     buildDeps = [qemu];
     runtimeDeps = [glib zlib];
     propagatedDeps = [];
+    disallowedReferences = [qemu];
 
     phases = [
       {
