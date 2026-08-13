@@ -262,11 +262,11 @@ in
           cp ${cliSearchFuzz}/result "$out/evidence/cli-search-fuzz.result"
 
           cat > "$out/result" <<RESULT
-          PASS
+          CHECKPOINT
           check=${attrPath}
           gate=gate:signal-fault-system
           tasks=${taskList}
-          status=complete
+          status=implementation-in-progress
           effect_registry=closed-and-exhaustive
           executable_effect_count=71
           production_adapters=network,storage,node
@@ -274,6 +274,7 @@ in
           retired_execution_paths=absent
           unfinished_production_paths=absent
           per_kind_metadata=admission,capability,replay-evidence,user-reference
+          missing_acceptance=per-kind-production-execution-matrix,cross-domain-shared-cause-scenario
           system_evidence=adapter-dispatch,event-log,checkpoint,recomputed-replay,locked-replay,search,negative-tests
           live_boundary_evidence=network,block,9p,node-lifecycle,qemu-fault-patches
           production_checkpoint=authenticated-round-trip
