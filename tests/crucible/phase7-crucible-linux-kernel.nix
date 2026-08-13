@@ -333,7 +333,7 @@
       }
       {
         label = "phase7 e2e determinism consumes linux-crucible package proof";
-        needle = "dependencies = [perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
+        needle = "dependencies = [phase1.gates.licenseBoundary.rawGate perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
       }
     ];
 in

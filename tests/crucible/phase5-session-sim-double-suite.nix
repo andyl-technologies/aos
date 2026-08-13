@@ -173,10 +173,6 @@
         needle = "SimulationBackend::fingerprint";
       }
       {
-        label = "session loop exercises backend input control";
-        needle = "BackendEffect::DeliverInput";
-      }
-      {
         label = "session gate uses in-process quantum loop";
         needle = "SimDoubleQuantumLoop::new";
       }
@@ -207,6 +203,12 @@
       {
         label = "session gate covers stop";
         needle = "SessionCommand::Stop";
+      }
+    ]
+    ++ failuresFor "crates/crucible-session/src" sessionLib [
+      {
+        label = "session loop retains typed backend input control";
+        needle = "ScheduledEventPayload::BackendInput(BackendInput {";
       }
     ]
     ++ forbiddenFor "crates/crucible-session/tests/gate_control_responsive.rs" sessionGateTest qemuBackendForbidden

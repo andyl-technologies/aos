@@ -123,7 +123,7 @@ fn canonical_gate_statuses_are_current() {
     ));
     assert!(matches!(
         find_gate("gate:signal-fault-system").map(|spec| spec.status),
-        Some(GateStatus::CatalogOnly)
+        Some(GateStatus::Implemented)
     ));
 
     let expected_phases = BTreeMap::from([

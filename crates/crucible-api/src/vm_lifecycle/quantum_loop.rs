@@ -170,6 +170,16 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             merge_event_log_append(&mut outcome, append);
         }
         drop(queued);
+        let pending_search_choices = self
+            .fault_runtime
+            .lock()
+            .map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("production fault runtime lock is poisoned"),
+            })?
+            .drain_search_choices();
+        self.inner
+            .loop_impl_mut()
+            .record_pending_signal_fault_search_frontiers(pending_search_choices)?;
         if !pre_quantum_decisions.is_empty() {
             let mut decisions = pre_quantum_decisions;
             decisions.extend(std::mem::take(&mut outcome.decisions));
@@ -523,6 +533,22 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         } else {
             None
         };
+        let search_override_error = if self.fault_search_overrides_installed {
+            let runtime =
+                self.fault_runtime
+                    .lock()
+                    .map_err(|_| SchedulerError::BoundaryViolation {
+                        message: String::from("production fault runtime lock is poisoned"),
+                    })?;
+            runtime
+                .verify_search_overrides_consumed()
+                .err()
+                .map(|error| SchedulerError::BoundaryViolation {
+                    message: format!("production fault search override was not consumed: {error}"),
+                })
+        } else {
+            None
+        };
         let gateway_shutdown = self.debug_gateway.take().map(|gateway| {
             gateway
                 .shutdown()
@@ -536,14 +562,17 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             gateway_shutdown?;
         }
         let events = shutdown?;
-        self.run_manifest.clean_shutdown = true;
-        self.persist_run_manifest()?;
         if let Some(error) = pending_error {
             return Err(error);
         }
         if let Some(error) = replay_error {
             return Err(error);
         }
+        if let Some(error) = search_override_error {
+            return Err(error);
+        }
+        self.run_manifest.clean_shutdown = true;
+        self.persist_run_manifest()?;
         Ok(events)
     }
 }

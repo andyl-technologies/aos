@@ -25,10 +25,7 @@
   catalogGates =
     builtins.sort builtins.lessThan
     (lib.unique (lib.concatMap gateNameFromCatalogLine catalogGateLines));
-  # Catalog-only gates define a terminal contract but intentionally have no CI
-  # target until their complete production proof exists.
-  catalogOnlyGates = ["gate:signal-fault-system"];
-  wiredCatalogGates = builtins.filter (gate: !(builtins.elem gate catalogOnlyGates)) catalogGates;
+  wiredCatalogGates = catalogGates;
 
   phaseGateTargets = [
     {
@@ -162,6 +159,11 @@
       phase = "phase7";
       attr = "campaignContinuity";
       gate = "gate:campaign-continuity";
+    }
+    {
+      phase = "phase7";
+      attr = "signalFaultSystem";
+      gate = "gate:signal-fault-system";
     }
   ];
 

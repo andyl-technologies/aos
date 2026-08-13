@@ -173,7 +173,7 @@
       }
       {
         label = "resume local-QEMU thin-replay proof";
-        needle = "resume-thin-replay";
+        needle = "resume-exact-checkpoint";
       }
       {
         label = "resume terminal configuration report";
@@ -386,8 +386,8 @@
         needle = "SimBackend::from_restorable_checkpoints";
       }
       {
-        label = "resume API-owned QEMU replay oracle status";
-        needle = "QemuReplayOracleValidation::NotRun";
+        label = "resume API-owned exact snapshot policy";
+        needle = "QemuExactSnapshotPolicy,";
       }
       {
         label = "resume API-owned QEMU model executor marker";
@@ -409,7 +409,7 @@
       }
       {
         label = "resume QEMU exact snapshot policy";
-        needle = "QemuExactSnapshotPolicy::default";
+        needle = "QemuExactSnapshotPolicy,";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/realization/backend_executor.rs" qemuBackendExecutor [

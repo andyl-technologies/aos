@@ -361,6 +361,7 @@
     };
     "0072-crucible-typed-node-result-schema.patch" = {
       kind = "recorded";
+      symbols = [];
     };
   };
 

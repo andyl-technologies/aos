@@ -10,6 +10,7 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   backendLib = builtins.readFile ../../crates/crucible/src/backend.rs;
+  backendTests = builtins.readFile ../../crates/crucible/src/backend/tests.rs;
   crucibleShmemLib =
     import ./_crucible-shmem-source.nix {inherit lib;}
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs
@@ -17,7 +18,10 @@
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs;
   crucibleLib = builtins.readFile ../../crates/crucible/src/lib.rs;
   simBackendLib = import ./_crucible-local-and-test-backends-source.nix;
-  qemuNodeLib = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
+  qemuNodeLib = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-qemu/src/node.rs)
+    (builtins.readFile ../../crates/crucible-qemu/src/node_tests.rs)
+  ];
   sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -105,6 +109,8 @@
         label = "mock simulation backend implementation";
         needle = "impl SimulationBackend for MockSimulationBackend";
       }
+    ]
+    ++ failuresFor "crates/crucible/src/backend/tests.rs" backendTests [
       {
         label = "object-safe mock dispatch test";
         needle = "simulation_backend_trait_is_object_safe_and_scheduler_timed";
@@ -214,12 +220,12 @@
         needle = "last_observed_time: VirtualTime";
       }
       {
-        label = "QEMU snapshot stamps virtual time mirror";
-        needle = "checkpoint.virtual_time = self.last_observed_time";
+        label = "QEMU snapshot retains virtual time mirror";
+        needle = "last_observed_time: self.last_observed_time";
       }
       {
         label = "QEMU restore resets virtual time mirror";
-        needle = "self.last_observed_time = checkpoint.virtual_time";
+        needle = "self.last_observed_time = checkpoint.last_observed_time";
       }
       {
         label = "QEMU scheduler-time effect guard";

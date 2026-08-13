@@ -255,7 +255,7 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         name: "gate:signal-fault-system",
         phase: GatePhase::Phase7,
         owner: "crucible-harness",
-        status: GateStatus::CatalogOnly,
+        status: GateStatus::Implemented,
     },
 ];
 

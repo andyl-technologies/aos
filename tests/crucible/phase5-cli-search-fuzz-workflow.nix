@@ -482,7 +482,7 @@
       }
       {
         label = "scenario family schema";
-        needle = "crucible.scenario-family.v1";
+        needle = "crucible.scenario-family.v2";
       }
       {
         label = "local-double fuzz runner";

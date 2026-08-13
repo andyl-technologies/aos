@@ -873,8 +873,8 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
 ```
 
 - **[HARN-30]** A phase's gate(s) MUST be green before the next phase's tasks are
-  worked, and `gate:e2e-determinism` MUST remain in the terminal Phase 7 gate
-  set. The in-process double (§3) is what makes the Phase 1 foundation and
+  worked, and `gate:signal-fault-system` MUST remain the terminal Phase 7 gate,
+  after `gate:e2e-determinism` and the other production acceptance gates. The in-process double (§3) is what makes the Phase 1 foundation and
   Phase 4 mock end-to-end checks fast enough to iterate on, and must therefore
   be built in Phase 1 before the layers that depend on it.
 
@@ -1135,7 +1135,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   identity drift. This closes the shared mock artifact machine-profile route;
   physical AOS VM/fleet reproduction remains with the packaging and fleet gates.
 - [x] **T-HARN-26** Wire the full gate ordering into the phase plan and enforce
-  green-before-advance, with `gate:e2e-determinism` terminal and the `SimDouble`
+  green-before-advance, with `gate:signal-fault-system` terminal and the `SimDouble`
   available from Phase 1. — satisfies [HARN-3], [HARN-30]; spec §13.
   Completed by `checks.crucible.phase1.phaseGateOrdering`:
   `crucible_harness::phase_plan` now records every ordered phase-gate
@@ -1145,8 +1145,8 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   Nix attr path, validates the canonical plan against unknown catalog gates,
   duplicate attr paths, out-of-order phases, missing phase exits, bad terminal
   markers, and SimDouble-before-Phase-1 dependencies, and marks the Phase 7
-  `gate:e2e-determinism` occurrence as the terminal final-acceptance
-  determinism gate. `tests/crucible/default.nix` now wraps gate attrs with
+  `gate:signal-fault-system` occurrence as the terminal final-acceptance gate.
+  `tests/crucible/default.nix` now wraps gate attrs with
   green-before-advance derivations so later gate occurrences build only after
   prior gate occurrences and the required Phase 1 `SimDouble` check are green.
   The `phase_plan` integration test cross-checks the Rust ordering against this

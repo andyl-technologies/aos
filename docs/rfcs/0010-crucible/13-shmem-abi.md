@@ -450,7 +450,8 @@ const _: () = assert!(core::mem::align_of::<NodeSlot>() == 128);
   raw time ahead of logical time, timeout, or any post-load restore failure MUST
   terminate and reap the new QEMU process; a partially restored node MUST never
   be exposed. *Gate:* `gate:abi-conformance`,
-  `gate:qemu-exact-snapshot-restore`, `gate:qemu-node-factory`. *Spec:*
+  `checks.crucible.phase2.qemuExactSnapshotRestore`,
+  `checks.crucible.phase2.qemuNodeFactory`. *Spec:*
   §13.3.2, [`10-qemu-integration.md`](10-qemu-integration.md),
   [`36-time-travel-debugging.md`](36-time-travel-debugging.md).
 

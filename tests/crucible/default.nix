@@ -2775,6 +2775,44 @@ in rec {
         };
         dependencies = [fleetEquivalence phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignStorageBounding phase7.crucibleCampaignProvenance];
       };
+      signalFaultSystem = greenBeforeAdvance {
+        attrPath = "checks.crucible.phase7.gates.signalFaultSystem";
+        # lint needle: signalFaultSystem = import ./phase7-signal-fault-system.nix
+        gate = import ./phase7-signal-fault-system.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase7.gates.signalFaultSystem";
+          liveNetwork = phase2.qemuLiveNetworkIo;
+          liveBlock = phase2.qemuLiveBlockIo;
+          liveNineP = phase2.qemuLive9pIo;
+          liveNodeLifecycle = phase2.qemuLiveNodeLifecycleFault;
+          patchMicrotests = phase2.gates.patchMicrotests.rawGate;
+          checkpointMaterialization = phase6.checkpointMaterialization.rawGate;
+          replayOracle = phase6.gates.replayOracle.rawGate;
+          stateSpaceSearch = phase6.stateSpaceSearch.rawGate;
+          cliSearchFuzz = phase5.cliSearchFuzzWorkflow;
+          e2eDeterminism = e2eDeterminism.rawGate;
+          campaignContinuity = campaignContinuity.rawGate;
+          dependencies = [
+            phase1.gates.licenseBoundary.rawGate
+            phase2.gates.abiConformance.rawGate
+          ];
+        };
+        dependencies = [
+          phase1.gates.licenseBoundary
+          phase2.gates.abiConformance
+          phase2.qemuLiveNetworkIo
+          phase2.qemuLiveBlockIo
+          phase2.qemuLive9pIo
+          phase2.qemuLiveNodeLifecycleFault
+          phase2.gates.patchMicrotests
+          phase6.checkpointMaterialization
+          phase6.gates.replayOracle
+          phase6.stateSpaceSearch
+          phase5.cliSearchFuzzWorkflow
+          e2eDeterminism
+          campaignContinuity
+        ];
+      };
     };
   };
 }

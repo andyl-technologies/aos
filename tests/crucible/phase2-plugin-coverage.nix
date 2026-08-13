@@ -35,7 +35,9 @@
   shmemSpscTest = builtins.readFile ../../crates/crucible-shmem/tests/gate_layer1_injection.rs;
   mappedSetupRegion = builtins.readFile ../../crates/crucible-shmem/src/mapped_setup_region.rs;
   qemuMappedQuantum = builtins.readFile ../../crates/crucible-qemu/src/mapped_quantum.rs;
-  qemuNode = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
+  qemuNode =
+    builtins.readFile ../../crates/crucible-qemu/src/node.rs
+    + builtins.readFile ../../crates/crucible-qemu/src/node_tests.rs;
   mappedQuantumTest = builtins.readFile ../../crates/crucible-qemu/tests/mapped_quantum.rs;
   backendBoundary = builtins.readFile ../../crates/crucible/src/backend.rs;
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
@@ -207,7 +209,7 @@
     ++ failuresFor "crates/crucible-shmem split modules" shmemLib [
       {
         label = "coverage transport ABI version";
-        needle = "pub const ABI_VERSION: u32 = 10;";
+        needle = "pub const ABI_VERSION: u32 = 13;";
       }
       {
         label = "coverage queue bounded by map cardinality";

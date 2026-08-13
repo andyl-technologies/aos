@@ -13,7 +13,9 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
-  liveReplayContract = builtins.readFile ../../crates/crucible-cli/src/cli/artifact/live_qemu.rs;
+  liveReplayContract =
+    builtins.readFile ../../crates/crucible-cli/src/cli/artifact/live_qemu.rs
+    + builtins.readFile ../../crates/crucible-cli/src/cli/artifact/live_qemu/tests.rs;
   artifactCapture = builtins.readFile ../../crates/crucible-cli/src/cli/artifact_capture.rs;
   cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   cliE2e = builtins.readFile ../../crates/crucible-cli/tests/gate_e2e_determinism.rs;

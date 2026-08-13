@@ -122,6 +122,15 @@ pub(crate) fn run_local_qemu_search_workflow(
         .as_ref()
         .map(|frontier| vec![frontier.configuration.clone()])
         .unwrap_or_default();
+    let mut live_frontiers = root
+        .as_ref()
+        .map(|frontier| {
+            BTreeMap::from([(
+                frontier.configuration.id(),
+                (frontier.configuration.clone(), frontier.at),
+            )])
+        })
+        .unwrap_or_default();
     let mut scheduled = pending
         .iter()
         // crucible-lint: allow host-nondeterminism-state -- content-addressed canonical configurations define deterministic worklist identity.
@@ -142,6 +151,7 @@ pub(crate) fn run_local_qemu_search_workflow(
             break;
         };
         let frontier = pending.remove(index);
+        let branch_frontier = live_frontiers.get(&frontier.id()).cloned();
         let materialization_budget = match usize::try_from(plan.budget.max_expansions) {
             Ok(max_expansions) => max_expansions,
             Err(_) => usize::MAX,
@@ -159,6 +169,9 @@ pub(crate) fn run_local_qemu_search_workflow(
                 &config,
                 plan.scenario.scenario_form(),
                 &child.configuration,
+                branch_frontier
+                    .as_ref()
+                    .map(|(configuration, at)| (configuration, *at)),
             ))?;
             replay_oracle_validations = replay_oracle_validations.saturating_add(1);
             if let Some(finding) = failure
@@ -177,6 +190,10 @@ pub(crate) fn run_local_qemu_search_workflow(
                 live_realizations = live_realizations.saturating_add(1);
                 explored.insert(realized.configuration.id());
                 qemu_search_cache_frontier(&mut graph, &realized)?;
+                live_frontiers.insert(
+                    realized.configuration.id(),
+                    (realized.configuration.clone(), realized.at),
+                );
                 if scheduled.insert(realized.configuration.id()) {
                     pending.push(realized.configuration);
                 }
@@ -353,7 +370,7 @@ async fn qemu_search_root(
 > {
     // crucible-lint: allow host-nondeterminism-state -- genesis is a pure function of canonical scenario material.
     let root = crucible::Configuration::genesis(scenario.scenario_def());
-    let (frontier, failure) = qemu_search_realize(config, scenario, &root).await?;
+    let (frontier, failure) = qemu_search_realize(config, scenario, &root, None).await?;
     let Some(frontier) = frontier else {
         return Ok((
             save_validation_graph(&scenario.scenario_def())?,
@@ -391,9 +408,33 @@ async fn qemu_search_realize(
     scenario: &crucible::ScenarioDefForm,
     // crucible-lint: allow host-nondeterminism-state -- requested search state is canonical input checked against every live replay prefix.
     requested: &crucible::Configuration,
+    branch: Option<(&crucible::Configuration, crucible::VirtualTime)>,
 ) -> Result<(Option<QemuSearchFrontier>, Option<QemuSearchFinding>), CliError> {
     let network_choices = branch_network_choice_decisions(&requested.schedule);
-    let branch_config = config.clone().with_branch_network_choices(network_choices);
+    let mut branch_config = config.clone().with_branch_network_choices(network_choices);
+    if let Some((base, at)) = branch {
+        let signal_fault_decisions = requested
+            .schedule
+            .decisions()
+            .iter()
+            .skip(base.schedule.len())
+            .filter(|decision| {
+                matches!(
+                    decision,
+                    crucible::Decision::Override(override_decision)
+                        if override_decision.point.key.starts_with("signal-fault/")
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !signal_fault_decisions.is_empty() {
+            branch_config = branch_config.with_branch_prefix_overrides(
+                base.clone(),
+                at,
+                signal_fault_decisions,
+            );
+        }
+    }
     let control_plane = production_qemu_control_plane(branch_config, scenario);
     let client = InProcessLifecycleClient::new(control_plane);
     let seed = scenario.scenario_def().seed();
@@ -513,7 +554,7 @@ async fn qemu_search_realize(
         })
         .transpose()?
         .flatten();
-    let _ = qemu_search_stop(&control, &mut command_id).await;
+    qemu_search_stop(&control, &mut command_id).await?;
     Ok((
         captured.map(|frontier| QemuSearchFrontier {
             // crucible-lint: allow host-nondeterminism-state -- the queried configuration passed the exact requested-prefix check above.

@@ -78,7 +78,7 @@ a `Properties` bundle (a correctness suite) can be checked against many
 `(World, Plan)` pairs.
 
 ```rust,illustrative
-/// The immutable definition of a run: topology, fault plan, properties, seed.
+/// The immutable definition of a run: topology, Plan, properties, and seed.
 /// "Configuration #0" — the genesis configuration of the execution model (05)
 /// is exactly `(this, [])`. Content-addressed; equal content ⇒ equal `id`.
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -456,24 +456,19 @@ The `World` is defined above; the other three components of the tuple are define
 in detail by their own files, and referenced here so the `ScenarioDef`'s shape is
 complete and its layering is explicit.
 
-### 5.1 `Plan` — the declarative fault/event schedule
+### 5.1 `Plan` — event choreography and fault signals
 
-The `Plan` is the declarative schedule of injected faults and events over
-**virtual time** (not wall-clock, not host time). It is the scenario's *what is
-done to the world and when* layer. Its full taxonomy — fault kinds (partition,
-crash, loss, latency, corruption, reorder, duplicate, clock-skew, block-device,
-9p) and tags for healing is defined in
-[`17-fault-injection.md`](17-fault-injection.md); the trigger/condition vocabulary
+The `Plan` carries declarative event choreography and the signal-driven fault
+program. It is the scenario's *what changes modeled behavior and when* layer.
+The executable fault taxonomy and binding semantics are defined by
+[`RFC-0013`](../0013-signal-driven-fault-model/README.md); the trigger/condition vocabulary
 (timer-fired, event-fired, assertion-satisfied/violated, compound all-of/any-of)
 and the event-graph model the `Plan` is an instance of are defined in
 [`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md) — the real home
-of the trigger taxonomy this section forward-references. The `Plan` is, in full
-generality, a **set of events** (a `(trigger, action)` graph,
-[`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md) §17a.1); its
-declarative time-scheduled entries (`At` / `PermanentAt` / `Heal`, §5.1 below and
-17 §17.6.1) are the **degenerate case** whose every trigger is a pure `At`
-condition (17a §17a.7), and a richer scenario adds events with observation-anchored
-triggers without changing that model. What matters here is its place
+of the trigger taxonomy this section forward-references. The event graph emits
+referenced occurrences that event-domain signal sources may consume. Known-time
+fault behavior uses time-domain signal nodes directly; fault effects are not
+event actions. What matters here is the Plan's place
 in the tuple: the `Plan` is a content-addressed component, orthogonal to the
 `World` and reusable across worlds, and it is part of the `ScenarioDef`'s identity
 (a different fault campaign is a different scenario).
@@ -484,28 +479,25 @@ in the tuple: the `Plan` is a content-addressed component, orthogonal to the
 /// Full taxonomy in file 17; referenced here as a `ScenarioDef` component.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Plan {
-    /// Scheduled faults/events, canonically ordered (§8). Each references the
-    /// `World`'s nodes/links by `NodeId`; references are validated at build
-    /// time (§9). Each entry is an event whose trigger is a pure `At` condition
-    /// (17a §17a.7); fault kinds in 17, the event/trigger model in 17a.
-    pub schedule: Vec<PlanEntry>,
+    /// Canonical event choreography.
+    pub events: EventGraph,
+    /// Canonical signal programs, typed bindings, and resource limits.
+    pub fault_signals: FaultSignalPlan,
 }
 ```
 
-- **[SPAT-19]** The `Plan` MUST be a set of `(trigger, action)` events — the event
-  graph defined in [`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md)
-  (§17a.1), with fault kinds/tags defined in
-  [`17-fault-injection.md`](17-fault-injection.md) — of which the declarative
-  time-scheduled entries (`At` / `PermanentAt` / `Heal`) are the degenerate
-  pure-`At`-trigger case (17a §17a.7). It MUST be carried as an independently
+- **[SPAT-19]** The `Plan` MUST carry the event graph defined in
+  [`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md) and the sole
+  `FaultSignalPlan` defined by RFC-0013. It MUST be carried as an independently
   content-addressed component of the `ScenarioDef` (§2), MUST be orthogonal to the
   `World` (faults are not topology) and reusable across worlds, and all node/link
   references in it MUST be validated against the `World` at build time (§9).
   *Gate:* `gate:content-address`. *Spec:* §5.1; forward-ref 17, 17a.
 
-- **[SPAT-20]** The `Plan` MUST schedule its entries against virtual time (09),
-  never host wall-clock. A `Plan` entry's firing MUST be a function of virtual
-  time and the seeded decision RNG only ([INV-1]). *Gate:* `gate:e2e-determinism`.
+- **[SPAT-20]** The `Plan` MUST evaluate events and signals against canonical
+  domains such as virtual time and stable opportunities, never host wall-clock.
+  Evaluation MUST be a function of authenticated scenario and continuation state
+  only ([INV-1]). *Gate:* `gate:e2e-determinism`.
   *Spec:* §5.1; cross-ref 09, 04, 17.
 
 ### 5.2 `Properties` — the assertions

@@ -1,6 +1,7 @@
 //! Explorer-selected scheduler branch admission and replay choices.
 
 use super::*;
+use crate::model::{BindingSearchChoice, FaultCoordinate};
 
 impl SingleScheduler {
     /// Returns the seed that owns every future authoritative decision stream.
@@ -98,6 +99,72 @@ impl SingleScheduler {
     #[must_use]
     pub fn search_frontiers(&self) -> &[SearchRuntimeFrontier] {
         &self.search_frontiers
+    }
+
+    /// Records finite signal-fault choices at their pre-evaluation boundary.
+    ///
+    /// Each binding choice remains a separate frontier because its candidate
+    /// digest and one-shot identity have independent locked-replay semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when a choice has no
+    /// candidates or the supplied configuration is not the current parent.
+    pub fn record_signal_fault_search_frontiers(
+        &mut self,
+        parent: &Configuration,
+        at: VirtualTime,
+        choices: &[BindingSearchChoice],
+    ) -> Result<(), SchedulerError> {
+        if parent != &self.configuration {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "signal-fault search frontier does not match the scheduler parent",
+                ),
+            });
+        }
+        for choice in choices.iter().filter(|choice| !choice.overridden) {
+            let decisions = choice
+                .override_decisions(parent.id())
+                .into_iter()
+                .map(Decision::Override)
+                .collect::<Vec<_>>();
+            if decisions.is_empty() {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: String::from("signal-fault search choice has no finite candidates"),
+                });
+            }
+            self.search_frontiers.push(SearchRuntimeFrontier {
+                configuration: parent.clone(),
+                at,
+                choices: SearchFrontierChoices::from_decisions(decisions),
+            });
+        }
+        Ok(())
+    }
+
+    /// Records signal-fault choices whose owning device committed after the
+    /// boundary evaluator ran.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] under the same conditions
+    /// as [`Self::record_signal_fault_search_frontiers`].
+    pub fn record_pending_signal_fault_search_frontiers(
+        &mut self,
+        choices: Vec<(FaultCoordinate, Vec<BindingSearchChoice>)>,
+    ) -> Result<(), SchedulerError> {
+        let parent = self.configuration.clone();
+        for (coordinate, choices) in choices {
+            self.record_signal_fault_search_frontiers(
+                &parent,
+                VirtualTime {
+                    ticks: coordinate.virtual_nanos,
+                },
+                &choices,
+            )?;
+        }
+        Ok(())
     }
 
     /// Appends explorer-selected override decisions at the current boundary.

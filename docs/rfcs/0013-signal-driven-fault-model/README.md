@@ -187,31 +187,32 @@ The system has four separate concepts:
 
 ## Existing implementation seam
 
-The proposal builds on, rather than bypasses, the current deterministic spine:
+The implementation uses one deterministic spine:
 
-- [`Fault`](../../../crates/crucible/src/model/topology_faults.rs) and its
-  network/node/block/9p variants already provide typed, content-addressed effect
-  specifications.
-- [`CombinedFaults`](../../../crates/crucible/src/model/topology_faults.rs)
-  already reduces overlapping active effects into target-local tables by stable
-  rules.
-- The former `FaultPlanEntry` authoring and runtime path is removed completely;
+- [`FaultSignalPlan`](../../../crates/crucible/src/model/fault_signal/plan.rs)
+  is the sole admitted fault-program representation. It owns validated signal
+  programs, bindings, resource limits, and their canonical identity.
+- [`TransactionalFaultAdapters`](../../../crates/crucible/src/model/fault_signal/adapter_runtime.rs)
+  owns deterministic composition and transactional commit for the network,
+  storage, and node domains.
+- [`ResolvedBindingAction`](../../../crates/crucible/src/model/fault_signal/binding_runtime.rs)
+  is the typed application contract between evaluated bindings and those
+  adapters.
+- The former fault-plan authoring and runtime hierarchy is removed completely;
   it creates no compatibility obligation for the replacement schema.
 - [`LinkFaults`](../../../crates/crucible-device/src/netlink/fault.rs) and
   [`NetLink`](../../../crates/crucible-device/src/netlink/link.rs) already apply
   deterministic per-frame timing, capacity, loss, duplication, reordering, and
   corruption transforms.
-- [`SchedulerState`](../../../crates/crucible/src/model/materialized.rs) already
-  captures active fault tags, deterministic device cursors, pending work, and
-  search choices in checkpoint state.
-- The unified event log and schedule already record raw decisions and resolved
-  fault outcomes.
+- [`SchedulerState`](../../../crates/crucible/src/model/materialized.rs) captures
+  deterministic device cursors, pending work, and finite search frontiers in
+  checkpoint state; fault-runtime state is authenticated alongside it.
+- The unified event log and schedule record raw decisions and resolved fault
+  outcomes.
 
-The new work replaces fault-plan scheduling with signal-program state and a
-binding evaluator before the domain-specific combination/application seam.
-Existing effect-combination and device-application code may be refactored into
-the new adapters where its semantics are sufficient, but no legacy schema,
-lowering layer, parallel active-fault table, or alternate execution path remains.
+Signal-program state and the binding evaluator feed the domain-specific
+combination/application seam directly. No legacy schema, lowering layer,
+parallel active-fault table, or alternate execution path remains.
 
 ## Conventions and requirement IDs
 

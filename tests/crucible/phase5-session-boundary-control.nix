@@ -53,7 +53,7 @@
       }
       {
         label = "immediate scheduler control application";
-        needle = "fn apply_control_operation_at_boundary";
+        needle = "fn apply_control_operations_at_boundary";
       }
       {
         label = "deterministic frontier field";

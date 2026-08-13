@@ -78,7 +78,8 @@ implemented and an adversarial review confirms the gate exercises that behavior.
   Phase 5  Control plane    session actor, API, CLI, daemon          gate:control-responsive
   Phase 6  Exploration      fork, save/resume, search, fuzz, coverage gate:replay-oracle (under search)
   Phase 7  Package+perf+e2e AOS packaging, performance, acceptance   gate:perf-bench, gate:e2e-determinism (acceptance),
-                                                                            gate:fleet-equivalence, gate:campaign-continuity
+                                                                            gate:fleet-equivalence, gate:campaign-continuity,
+                                                                            gate:signal-fault-system
 ```
 
 Cross-cutting throughout: `T-STD-*` (engineering standards / harness-lint) apply
@@ -654,7 +655,7 @@ long-held locks.
   provider wiring through configuration-bound `SearchRetainedLogAssertionEvidence`,
   and retained evidence source digest/payload provenance in `search-run` output
   and reproduction artifacts;
-  file-backed `crucible.scenario-family.v1` fuzz family loading,
+  file-backed `crucible.scenario-family.v2` fuzz family loading,
   local-double `ScenarioFamily::fuzz_coverage_guided` and
   `ScenarioFamily::fuzz_coverage_guided_corpus` execution, durable
   `LocalDagStore` corpus persistence, stored family-hash loading as strict
@@ -877,7 +878,10 @@ fault-injected scenario runs bit-identically across adversarial host conditions
 and reproduces from its self-contained artifact), `gate:fleet-equivalence` (a
 distributed campaign across workers reproduces a finding bit-identically off any
 worker), `gate:campaign-continuity` (a continuous campaign resumes from its
-persisted frontier without losing or re-deriving coverage). When this is green and the
+persisted frontier without losing or re-deriving coverage), and
+`gate:signal-fault-system` (the closed production network, storage/9p, and node
+fault system passes its per-kind, live-boundary, checkpoint, replay, search,
+documentation, and retired-path proofs). When this is green and the
 coverage check below is empty, Crucible is at the target state of this RFC
 ([`01-goals-nongoals-invariants.md`](01-goals-nongoals-invariants.md) §Acceptance).
 
@@ -939,4 +943,5 @@ maintained two ways:
   wrappers in `tests/crucible/default.nix`: the checks derive the canonical gate
   inventory from §24, require every phase exit target to exist in the Nix check
   tree and master plan, enforce lower-layer/earlier-phase dependencies, and keep
-  the terminal phase-7 e2e occurrence in the acceptance set.
+  the terminal phase-7 signal-fault-system occurrence in the acceptance set,
+  after every other production acceptance dependency.

@@ -1,6 +1,7 @@
 //! Scheduler unit tests separated from the production quantum-loop implementation.
 
 use super::*;
+use crate::model::{BindingSearchChoice, SearchChoiceId, SearchOverride};
 use crate::{
     BackendEffect, BackendNetworkFaultContinuation, MockSimulationBackend, RngDecision, ScenarioDef,
 };
@@ -1305,6 +1306,58 @@ fn test_scheduler(
         pending_events,
     ))
     .unwrap_or_else(|error| panic!("test scheduler should build: {error}"))
+}
+
+#[test]
+fn signal_fault_frontier_preserves_parent_time_and_typed_candidates() {
+    let mut scheduler = test_scheduler(Vec::new(), Vec::new());
+    let parent = scheduler.configuration().clone();
+    let choice = BindingSearchChoice {
+        id: SearchChoiceId::from_content_hash(ContentHash::from_bytes(b"binding-choice")),
+        candidates_digest: ContentHash::from_bytes(b"binding-candidates"),
+        candidate_count: 2,
+        selected_index: None,
+        overridden: false,
+    };
+
+    scheduler
+        .record_signal_fault_search_frontiers(
+            &parent,
+            VirtualTime { ticks: 37 },
+            std::slice::from_ref(&choice),
+        )
+        .unwrap_or_else(|error| panic!("typed fault frontier should record: {error}"));
+    let frontier = scheduler
+        .search_frontiers()
+        .last()
+        .unwrap_or_else(|| panic!("typed fault frontier should exist"));
+    assert_eq!(frontier.configuration, parent);
+    assert_eq!(frontier.at, VirtualTime { ticks: 37 });
+    assert_eq!(frontier.choices.decisions().len(), 2);
+    for (index, decision) in frontier.choices.decisions().iter().enumerate() {
+        let Decision::Override(decision) = decision else {
+            panic!("fault search candidate must remain an override decision");
+        };
+        let (id, search_override) = SearchOverride::from_override_decision(decision)
+            .unwrap_or_else(|| panic!("fault search candidate should decode"));
+        assert_eq!(id, choice.id);
+        assert_eq!(search_override.candidate_index, index as u32);
+        assert_eq!(search_override.parent_branch, Some(parent.id()));
+    }
+
+    let wrong_parent = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.signal-search-test.v1",
+        "wrong-parent",
+    ));
+    assert!(
+        scheduler
+            .record_signal_fault_search_frontiers(
+                &wrong_parent,
+                VirtualTime { ticks: 37 },
+                &[choice],
+            )
+            .is_err()
+    );
 }
 
 #[test]

@@ -448,6 +448,8 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
             if next_wakeup_nanos.is_some() {
                 staged_scheduler.set_signal_fault_wakeup(next_wakeup_nanos)?;
             }
+            staged_scheduler
+                .record_pending_signal_fault_search_frontiers(runtime.drain_search_choices())?;
             let mut journal =
                 self.observations
                     .lock()
