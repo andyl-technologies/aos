@@ -7,6 +7,8 @@
 #[cfg(target_os = "linux")]
 use std::env;
 #[cfg(target_os = "linux")]
+use std::error::Error as _;
+#[cfg(target_os = "linux")]
 use std::process::ExitCode;
 
 #[cfg(target_os = "linux")]
@@ -45,8 +47,16 @@ fn run() -> Result<(), String> {
     if let Some(initrd) = initrd {
         config = config.with_initrd(initrd);
     }
-    let report =
-        run_qemu_live_node_lifecycle_fault_gate(&config).map_err(|error| error.to_string())?;
+    let report = run_qemu_live_node_lifecycle_fault_gate(&config).map_err(|error| {
+        let mut diagnostic = error.to_string();
+        let mut source = error.source();
+        while let Some(cause) = source {
+            diagnostic.push_str(": ");
+            diagnostic.push_str(&cause.to_string());
+            source = cause.source();
+        }
+        diagnostic
+    })?;
     if !report.signal_impulse_applied {
         return Err(String::from(
             "the signal runtime did not emit exactly one lifecycle impulse",
@@ -63,6 +73,22 @@ fn run() -> Result<(), String> {
     println!("evidence={}", report.evidence.to_hex());
     println!("exit_code={}", report.exit_code);
     println!("signal_impulse_applied={}", report.signal_impulse_applied);
+    println!(
+        "exact_manifest_replay_admitted={}",
+        report.exact_manifest_replay_admitted
+    );
+    println!(
+        "changed_state_precondition_rejected={}",
+        report.changed_state_precondition_rejected
+    );
+    println!(
+        "corrupt_result_rejected_with_valid_event={}",
+        report.corrupt_result_rejected_with_valid_event
+    );
+    println!(
+        "corrupt_event_rejected_with_valid_result={}",
+        report.corrupt_event_rejected_with_valid_result
+    );
     Ok(())
 }
 

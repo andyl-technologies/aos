@@ -32,7 +32,7 @@ use thiserror::Error;
 
 use crate::{
     QemuFaultCapabilityRequirement, QemuNodeChannelError, QemuPluginIpcControlChannel,
-    QemuSpawnSetupResources,
+    QemuSpawnSetupResources, fault_capability::QemuExactFaultManifests,
 };
 
 /// Completed host-side setup state for one QEMU plugin node.
@@ -133,6 +133,22 @@ impl QemuHostPluginSetup {
     #[must_use]
     pub const fn system_manifest(&self) -> &FaultSystemCapabilityManifestV1 {
         &self.system_manifest
+    }
+
+    /// Clones the complete public target manifests admitted during setup.
+    ///
+    /// Discovery gates use this snapshot to demand exact admission from a
+    /// separately launched process. A missing mandatory manifest is treated as
+    /// an incomplete setup rather than silently weakening the comparison.
+    pub(crate) fn exact_fault_manifests(&self) -> Option<QemuExactFaultManifests> {
+        Some(QemuExactFaultManifests {
+            system: self.system_manifest,
+            register: self.register_manifest.clone()?,
+            interrupt: self.interrupt_manifest.clone()?,
+            hardware_error: self.hardware_error_manifest.clone()?,
+            clock: self.clock_manifest.clone()?,
+            accelerator: self.accelerator_manifest.clone(),
+        })
     }
 
     /// Returns the launch-bound guest markers eligible to complete ready policies.
@@ -419,6 +435,12 @@ pub fn complete_qemu_host_plugin_setup(
         .map(|required| accept_hardware_error_manifest(&mut admission_region, slot_index, required))
         .transpose()?;
     let system_manifest = accept_system_manifest(&mut admission_region, slot_index)?;
+    if required_capabilities
+        .exact_system_manifest()
+        .is_some_and(|required| required != &system_manifest)
+    {
+        return Err(QemuHostPluginSetupError::AdmissionSystemManifestMismatch);
+    }
     let accelerator_manifest = required_capabilities
         .target_manifest()
         .and_then(crate::QemuTargetManifestRequirement::exact_accelerator_manifest)
@@ -1164,6 +1186,9 @@ pub enum QemuHostPluginSetupError {
         /// QEMU row at the first mismatch, or `None` when QEMU omitted a row.
         observed_row: Option<FaultCapabilityRowV1>,
     },
+    /// QEMU's immutable build, patch, ABI, or VMState identity changed across replay.
+    #[error("fault system manifest differs from the launch-bound exact identity")]
+    AdmissionSystemManifestMismatch,
     /// QEMU's target manifest described a different launch identity.
     #[error(
         "fault target manifest mismatch: required architecture={required_architecture:?} cpu_model={required_cpu_model}; observed architecture={observed_architecture:?} cpu_model={observed_cpu_model}"

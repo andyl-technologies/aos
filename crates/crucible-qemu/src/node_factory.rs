@@ -288,6 +288,7 @@ struct PreparedQemuNodeSetup {
     next_fault_command_sequence: u64,
     fault_capabilities: Vec<crucible_shmem::FaultCapabilityRowV1>,
     ready_markers: std::collections::BTreeSet<crucible::model::FaultObjectId>,
+    exact_fault_manifests: Option<crate::fault_capability::QemuExactFaultManifests>,
 }
 
 /// Runtime inputs shared by cold and warm QEMU node factory paths.
@@ -914,6 +915,7 @@ where
 
     let fault_capabilities = setup.fault_capabilities().to_vec();
     let ready_markers = setup.ready_markers().clone();
+    let exact_fault_manifests = setup.exact_fault_manifests();
     let next_fault_command_sequence = setup.next_fault_command_sequence();
 
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
@@ -927,6 +929,7 @@ where
         next_fault_command_sequence,
         fault_capabilities,
         ready_markers,
+        exact_fault_manifests,
     })
 }
 
@@ -961,6 +964,7 @@ where
     )
     .with_fault_capabilities(prepared_setup.fault_capabilities)
     .with_ready_markers(prepared_setup.ready_markers)
+    .with_exact_fault_manifests(prepared_setup.exact_fault_manifests)
 }
 
 fn validate_setup_slot_matches_config(

@@ -110,6 +110,18 @@ fail-closed permanent failure and never resumes the partially reset machine.
 
 `CRUCLIF1` version 4 is 304 bytes. Its first 192 bytes carry the lifecycle,
 state-policy, timing, affected-byte-count, and before/after fingerprint fields.
+The preserved-domain mask at offset 20 describes state QEMU actually captured
+for an in-process boot, reset, or power-cycle continuation; it is zero for
+terminal crash, power-off, and permanent-failure exits even when the requested
+policy is `preserve`, because terminal reconstruction is owned by the host's
+authenticated checkpoint and process-generation path. Affected RAM and device
+byte counts measure a fixed realized-machine topology. RAM coverage is nonzero
+for every supported machine; device coverage may be zero when no eligible
+device region exists. Whenever a final measurement is valid, its RAM and device
+counts exactly equal the corresponding pre-transition counts: a lifecycle
+policy changes contents, not the realized regions covered by the snapshot. The
+only final zero counts meaning "not measured" occur on the explicitly flagged
+fail-closed path whose pre-exit measurement is unavailable.
 The extension is exhaustive:
 
 | Offset | Width | Field |

@@ -50,10 +50,26 @@ committing its binding state.
   the tracked corresponding-source bundle.
 - A live production node impulse proves the host independently validates the
   fixed command result and command-specific occurrence event.
-- Corrupting either channel fails closed even if the other channel remains
-  valid.
-- Reverting only this patch makes the live typed-impulse gate fail at command
-  result decoding before it can classify the occurrence as committed.
+- A separate real-QEMU transaction retains the authentic result and occurrence
+  records. The gate corrupts only a host-side copy of each record in turn and
+  requires the production result or event decoder to reject that copy while
+  the untouched other channel still validates. No fake QEMU, synthesized
+  success record, or alternate decoder participates in this proof.
+- The result half invokes the same production validator used by transaction
+  commit. It authenticates the evidence bytes and status, decodes the original
+  request, and requires exact command kind, operation, target kind, model phase,
+  generation, action hash, target hash, schema hash, request SHA-256, and
+  before/after hash agreement. The gate has no reduced result validator.
+- The same derivation builds the tracked QEMU patch prefix ending at `0071`,
+  builds the Rust plugin against that exact prefix identity, and runs the live
+  transaction. It must fail while decoding the command result and must never
+  print `PASS`; this proves that removing only `0072` is detected before an
+  occurrence can be classified as committed.
+  This prefix build is compatibility-test-only and explicitly non-distributable;
+  it carries no false full-series corresponding-source claim. Its machine-readable
+  release policy marks it as an internal component, disables standalone release,
+  gives it no release route, and declares it non-publishable. Because no matching
+  prefix corresponding-source artifact exists, closure publication fails closed.
 
 The patch changes only QEMU/GPL-side code and uses the existing versioned
 shared-memory result and event protocols. It adds no pointer, callback, native

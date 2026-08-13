@@ -61,7 +61,14 @@ use crucible::{
 };
 use crucible_device::block::{BaseImage, BlockDurabilityConfig, BlockLatency};
 use crucible_device::{FsTree, NinepLatency};
-use crucible_shmem::{RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region};
+use crucible_shmem::{
+    DequeuedFaultResult, FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR, FAULT_COMMAND_FLAG_NONE,
+    FAULT_COMMAND_FLAG_PREPARE_ONLY, FAULT_COMMAND_SEMANTIC_VERSION, FaultBoundaryPhase,
+    FaultCommandHeaderV1, FaultCommandKind, FaultResultStatus, NODE_FAULT_POLICY_JSON_MAGIC_V1,
+    NodeFaultEvidenceV1, NodeFaultFieldV1, NodeFaultOperationV1, NodeFaultPayloadV1,
+    NodeFaultTargetKindV1, RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region,
+    node_fault_field,
+};
 
 use crate::console_observation::{QemuConsoleObservationReader, QemuConsoleObservationSpool};
 use crate::supervision::{
@@ -221,6 +228,7 @@ pub struct QemuLiveNodeStepGateConfig {
     second_run_host_load: bool,
     console_capture: bool,
     fault_capabilities: Option<crucible::model::WorldNodeFaultCapabilities>,
+    exact_gate_fault_manifests: Option<crate::fault_capability::QemuExactFaultManifests>,
 }
 
 #[derive(Clone, Debug)]
@@ -295,6 +303,7 @@ impl QemuLiveNodeStepGateConfig {
             second_run_host_load: true,
             console_capture: false,
             fault_capabilities: None,
+            exact_gate_fault_manifests: None,
         }
     }
 
@@ -344,6 +353,7 @@ impl QemuLiveNodeStepGateConfig {
             second_run_host_load: true,
             console_capture: false,
             fault_capabilities: None,
+            exact_gate_fault_manifests: None,
         }
     }
 
@@ -672,6 +682,18 @@ pub struct QemuLiveNodeLifecycleFaultReport {
     pub exit_code: i32,
     /// The signal runtime emitted exactly one lifecycle impulse.
     pub signal_impulse_applied: bool,
+    /// A separately launched QEMU process reproduced every discovered target
+    /// manifest and derived capability row exactly before the fault ran.
+    pub exact_manifest_replay_admitted: bool,
+    /// A real guest-state change between PREPARE and APPLY produced the typed
+    /// precondition-mismatch status while the QEMU process remained live.
+    pub changed_state_precondition_rejected: bool,
+    /// Corrupting the authentic command result was rejected while the authentic
+    /// occurrence event remained independently valid.
+    pub corrupt_result_rejected_with_valid_event: bool,
+    /// Corrupting the authentic occurrence event was rejected while the
+    /// authentic command result remained independently valid.
+    pub corrupt_event_rejected_with_valid_result: bool,
 }
 
 /// Drives the first live [`QemuNode`] through a bounded busy-window step schedule.
@@ -736,7 +758,10 @@ pub fn run_qemu_live_node_step_gate(
 pub fn run_qemu_live_node_lifecycle_fault_gate(
     config: &QemuLiveNodeStepGateConfig,
 ) -> Result<QemuLiveNodeLifecycleFaultReport, QemuLiveNodeStepGateError> {
-    let run_directory = config.run_directory.join("signal-node-lifecycle");
+    let discovery_directory = config
+        .run_directory
+        .join("signal-node-lifecycle-manifest-discovery");
+    let run_directory = config.run_directory.join("signal-node-lifecycle-exact");
     fs::create_dir_all(&run_directory).map_err(|source| {
         QemuLiveNodeStepGateError::PrepareRunDirectory {
             path: run_directory.clone(),
@@ -744,9 +769,63 @@ pub fn run_qemu_live_node_lifecycle_fault_gate(
         }
     })?;
 
+    let mut discovery_config = config.clone();
+    discovery_config.fault_capabilities = None;
+    discovery_config.exact_gate_fault_manifests = None;
+    let mut discovery_node = build_live_node(
+        &discovery_config,
+        &discovery_directory,
+        LiveNodeIdentity {
+            node: GATE_NODE,
+            router: GATE_ROUTER,
+            crash_detector: "signal-node-lifecycle-manifest-discovery",
+        },
+        None,
+        true,
+    )?;
+    let manifests = discovery_node
+        .exact_fault_manifests()
+        .cloned()
+        .ok_or_else(|| fault_gate_invariant("live manifest discovery was incomplete"))?;
+    let shutdown = discovery_node
+        .shutdown_child()
+        .map_err(|source| QemuLiveNodeStepGateError::Shutdown { source })?;
+    if !shutdown.reaped || shutdown.leaked {
+        return Err(fault_gate_invariant(
+            "manifest-discovery process did not shut down cleanly",
+        ));
+    }
+    let mut exact_config = config.clone();
+    exact_config.fault_capabilities = None;
+    exact_config.exact_gate_fault_manifests = Some(manifests);
+
+    let channel_proof_directory = config
+        .run_directory
+        .join("signal-node-lifecycle-channel-corruption");
+    let mut channel_proof_node = build_live_node(
+        &exact_config,
+        &channel_proof_directory,
+        LiveNodeIdentity {
+            node: GATE_NODE,
+            router: GATE_ROUTER,
+            crash_detector: "signal-node-lifecycle-channel-corruption",
+        },
+        None,
+        true,
+    )?;
+    prove_lifecycle_channel_corruption_rejection(&mut channel_proof_node)?;
+    let channel_proof_shutdown = channel_proof_node
+        .shutdown_child()
+        .map_err(|source| QemuLiveNodeStepGateError::Shutdown { source })?;
+    if !channel_proof_shutdown.reaped || channel_proof_shutdown.leaked {
+        return Err(fault_gate_invariant(
+            "channel-corruption proof process did not shut down cleanly",
+        ));
+    }
+
     let identity = node_id(GATE_NODE);
     let mut node = build_live_node(
-        config,
+        &exact_config,
         &run_directory,
         LiveNodeIdentity {
             node: GATE_NODE,
@@ -756,6 +835,7 @@ pub fn run_qemu_live_node_lifecycle_fault_gate(
         None,
         true,
     )?;
+    prove_lifecycle_precondition_rejection(&mut node)?;
     let observed_icount = node
         .current_icount()
         .map_err(|source| QemuLiveNodeStepGateError::node_op("read lifecycle boundary", source))?
@@ -826,7 +906,313 @@ pub fn run_qemu_live_node_lifecycle_fault_gate(
         evidence,
         exit_code,
         signal_impulse_applied: evaluation.actions.len() == 1,
+        exact_manifest_replay_admitted: true,
+        changed_state_precondition_rejected: true,
+        corrupt_result_rejected_with_valid_event: true,
+        corrupt_event_rejected_with_valid_result: true,
     })
+}
+
+fn prove_lifecycle_channel_corruption_rejection(
+    node: &mut QemuNode,
+) -> Result<(), QemuLiveNodeStepGateError> {
+    let payload = lifecycle_gate_payload(node)?;
+    let coordinate = node
+        .current_icount()
+        .map_err(|source| {
+            QemuLiveNodeStepGateError::node_op("read channel-proof boundary", source)
+        })?
+        .retired;
+    let prepare_sequence = node.reserve_fault_command_sequence().map_err(|source| {
+        QemuLiveNodeStepGateError::node_op("reserve channel-proof PREPARE sequence", source)
+    })?;
+    let prepare = lifecycle_gate_command(
+        coordinate,
+        prepare_sequence,
+        FAULT_COMMAND_FLAG_PREPARE_ONLY,
+        [0; 32],
+        &payload,
+    );
+    let DequeuedFaultResult::Valid {
+        header: prepare_header,
+        payload: prepare_payload,
+    } = node
+        .apply_fault_command_at_current_boundary(prepare, &payload)
+        .map_err(|source| {
+            QemuLiveNodeStepGateError::node_op("prepare channel-proof lifecycle", source)
+        })?
+    else {
+        return Err(fault_gate_invariant(
+            "channel-proof PREPARE returned an invalid result",
+        ));
+    };
+    if prepare_header.status != FaultResultStatus::Prepared {
+        return Err(fault_gate_invariant(format!(
+            "channel-proof PREPARE returned {:?}",
+            prepare_header.status
+        )));
+    }
+    let preparation = validate_live_node_result(
+        &payload,
+        prepare_header.clone(),
+        prepare_payload,
+        FaultResultStatus::Prepared,
+    )?;
+
+    let apply_sequence = node.reserve_fault_command_sequence().map_err(|source| {
+        QemuLiveNodeStepGateError::node_op("reserve channel-proof APPLY sequence", source)
+    })?;
+    let apply = lifecycle_gate_command(
+        coordinate,
+        apply_sequence,
+        FAULT_COMMAND_FLAG_NONE,
+        preparation.before_sha256,
+        &payload,
+    );
+    let DequeuedFaultResult::Valid {
+        header: apply_header,
+        payload: apply_payload,
+    } = node
+        .apply_fault_command_at_current_boundary(apply, &payload)
+        .map_err(|source| {
+            QemuLiveNodeStepGateError::node_op("apply channel-proof lifecycle", source)
+        })?
+    else {
+        return Err(fault_gate_invariant(
+            "channel-proof APPLY returned an invalid result",
+        ));
+    };
+    if apply_header.status != FaultResultStatus::Applied {
+        return Err(fault_gate_invariant(format!(
+            "channel-proof APPLY returned {:?}",
+            apply_header.status
+        )));
+    }
+    let result = validate_live_node_result(
+        &payload,
+        apply_header.clone(),
+        apply_payload.clone(),
+        FaultResultStatus::Applied,
+    )?;
+
+    let mut events = Vec::new();
+    node.drain_fault_events(&mut events).map_err(|source| {
+        QemuLiveNodeStepGateError::node_op("drain channel-proof occurrence", source)
+    })?;
+    let [event] = events.as_slice() else {
+        return Err(fault_gate_invariant(format!(
+            "channel-proof APPLY emitted {} occurrence events",
+            events.len()
+        )));
+    };
+    let sequence_matches = event.header.rule_command_sequence == apply_sequence;
+    let kind_matches = event.header.command_kind == FaultCommandKind::NodeLifecycle;
+    let before_matches = event.header.before_hash == result.before_sha256;
+    let after_matches = event.header.after_hash == result.after_sha256;
+    let evidence_valid = crate::production_fault_runtime::validate_live_gate_lifecycle_event(event);
+    if !(sequence_matches && kind_matches && before_matches && after_matches && evidence_valid) {
+        let evidence_diagnostic =
+            crate::production_fault_runtime::live_gate_lifecycle_event_diagnostic(event);
+        return Err(fault_gate_invariant(format!(
+            "authentic channel-proof join failed: sequence={sequence_matches} kind={kind_matches} before={before_matches} after={after_matches} evidence={evidence_valid}; {evidence_diagnostic}"
+        )));
+    }
+
+    let mut corrupt_result = apply_payload.clone();
+    corrupt_result[0] ^= 1;
+    if validate_live_node_result(
+        &payload,
+        apply_header.clone(),
+        corrupt_result,
+        FaultResultStatus::Applied,
+    )
+    .is_ok()
+        || !crate::production_fault_runtime::validate_live_gate_lifecycle_event(event)
+    {
+        return Err(fault_gate_invariant(
+            "corrupt result was accepted or invalidated the authentic occurrence",
+        ));
+    }
+    let mut corrupt_event = event.clone();
+    corrupt_event.payload[10..12].fill(0);
+    if validate_live_node_result(
+        &payload,
+        apply_header,
+        apply_payload,
+        FaultResultStatus::Applied,
+    )
+    .is_err()
+        || crate::production_fault_runtime::validate_live_gate_lifecycle_event(&corrupt_event)
+    {
+        return Err(fault_gate_invariant(
+            "corrupt occurrence was accepted or invalidated the authentic result",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_live_node_result(
+    request_payload: &[u8],
+    header: crucible_shmem::FaultResultHeaderV1,
+    payload: Vec<u8>,
+    expected_status: FaultResultStatus,
+) -> Result<NodeFaultEvidenceV1, QemuLiveNodeStepGateError> {
+    crate::fault_action_sink::validate_typed_node_result(
+        request_payload,
+        DequeuedFaultResult::Valid { header, payload },
+        expected_status,
+    )
+    .map_err(|error| fault_gate_invariant(format!("production typed result rejection: {error}")))
+}
+
+fn prove_lifecycle_precondition_rejection(
+    node: &mut QemuNode,
+) -> Result<(), QemuLiveNodeStepGateError> {
+    let payload = lifecycle_gate_payload(node)?;
+    let before_coordinate = node
+        .current_icount()
+        .map_err(|source| QemuLiveNodeStepGateError::node_op("read PREPARE boundary", source))?
+        .retired;
+    let prepare_sequence = node
+        .reserve_fault_command_sequence()
+        .map_err(|source| QemuLiveNodeStepGateError::node_op("reserve PREPARE sequence", source))?;
+    let prepare = lifecycle_gate_command(
+        before_coordinate,
+        prepare_sequence,
+        FAULT_COMMAND_FLAG_PREPARE_ONLY,
+        [0; 32],
+        &payload,
+    );
+    let DequeuedFaultResult::Valid {
+        header: prepare_header,
+        payload: prepare_payload,
+    } = node
+        .apply_fault_command_at_current_boundary(prepare, &payload)
+        .map_err(|source| {
+            QemuLiveNodeStepGateError::node_op("prepare lifecycle negative", source)
+        })?
+    else {
+        return Err(fault_gate_invariant(
+            "lifecycle PREPARE returned an invalid result",
+        ));
+    };
+    if prepare_header.status != FaultResultStatus::Prepared {
+        return Err(fault_gate_invariant(format!(
+            "lifecycle PREPARE returned {:?}",
+            prepare_header.status
+        )));
+    }
+    let preparation = validate_live_node_result(
+        &payload,
+        prepare_header,
+        prepare_payload,
+        FaultResultStatus::Prepared,
+    )?;
+    if preparation.before_sha256 != preparation.after_sha256 {
+        return Err(fault_gate_invariant("lifecycle PREPARE changed state"));
+    }
+
+    node.advance_to_ceiling(Icount {
+        retired: before_coordinate
+            .checked_add(1)
+            .ok_or_else(|| fault_gate_invariant("lifecycle negative icount overflow"))?,
+    })
+    .map_err(|source| {
+        QemuLiveNodeStepGateError::node_op("change live state after PREPARE", source)
+    })?;
+    let apply_coordinate = node
+        .current_icount()
+        .map_err(|source| QemuLiveNodeStepGateError::node_op("read APPLY boundary", source))?
+        .retired;
+    if apply_coordinate == before_coordinate {
+        return Err(fault_gate_invariant(
+            "guest state did not advance between lifecycle PREPARE and APPLY",
+        ));
+    }
+    let apply_sequence = node
+        .reserve_fault_command_sequence()
+        .map_err(|source| QemuLiveNodeStepGateError::node_op("reserve APPLY sequence", source))?;
+    let apply = lifecycle_gate_command(
+        apply_coordinate,
+        apply_sequence,
+        FAULT_COMMAND_FLAG_NONE,
+        preparation.before_sha256,
+        &payload,
+    );
+    let DequeuedFaultResult::Valid { header, .. } = node
+        .apply_fault_command_at_current_boundary(apply, &payload)
+        .map_err(|source| QemuLiveNodeStepGateError::node_op("apply lifecycle negative", source))?
+    else {
+        return Err(fault_gate_invariant(
+            "lifecycle mismatch APPLY returned an invalid result",
+        ));
+    };
+    if header.status != FaultResultStatus::PreconditionMismatch {
+        return Err(fault_gate_invariant(format!(
+            "changed lifecycle state returned {:?} instead of precondition mismatch",
+            header.status
+        )));
+    }
+    node.current_icount().map_err(|source| {
+        QemuLiveNodeStepGateError::node_op("prove QEMU survived rejection", source)
+    })?;
+    Ok(())
+}
+
+fn lifecycle_gate_payload(node: &QemuNode) -> Result<Vec<u8>, QemuLiveNodeStepGateError> {
+    let capability = node
+        .fault_capabilities()
+        .iter()
+        .find(|row| row.command_kind == FaultCommandKind::NodeLifecycle)
+        .ok_or_else(|| fault_gate_invariant("live node omitted lifecycle capability"))?;
+    let mut boot_policy = NODE_FAULT_POLICY_JSON_MAGIC_V1.to_vec();
+    boot_policy.extend_from_slice(br#"{"kind":"immediate"}"#);
+    NodeFaultPayloadV1 {
+        command_kind: FaultCommandKind::NodeLifecycle,
+        operation: NodeFaultOperationV1::Apply,
+        target_kind: NodeFaultTargetKindV1::Node,
+        model_phase: 9,
+        generation: 1,
+        action_hash: ContentHash::from_bytes(b"live-lifecycle-precondition-action").bytes,
+        target_hash: ContentHash::from_bytes(b"live-lifecycle-precondition-target").bytes,
+        schema_hash: capability.capability_hash,
+        fields: vec![
+            NodeFaultFieldV1::u32(node_fault_field::P1, 2),
+            NodeFaultFieldV1::u64(node_fault_field::P2, 1),
+            NodeFaultFieldV1::bytes(node_fault_field::P3, boot_policy),
+            NodeFaultFieldV1::u32(node_fault_field::P4, 1),
+            NodeFaultFieldV1::u32(node_fault_field::P5, 2),
+        ],
+    }
+    .encode()
+    .map_err(|error| fault_gate_invariant(format!("encode lifecycle negative: {error}")))
+}
+
+fn lifecycle_gate_command(
+    coordinate: u64,
+    sequence: u64,
+    flags: u16,
+    expected_precondition_hash: [u8; 32],
+    payload: &[u8],
+) -> FaultCommandHeaderV1 {
+    FaultCommandHeaderV1 {
+        abi_major: FAULT_COMMAND_ABI_MAJOR,
+        abi_minor: FAULT_COMMAND_ABI_MINOR,
+        command_kind: FaultCommandKind::NodeLifecycle,
+        command_flags: flags,
+        phase: FaultBoundaryPhase::NodeBoundary,
+        semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+        command_sequence: sequence,
+        target_node_hash: crate::qemu_fault_target_hash(GATE_NODE),
+        target_icount: coordinate,
+        authorization_ceiling_icount: coordinate,
+        binding_hash: ContentHash::from_bytes(b"live-lifecycle-precondition-binding").bytes,
+        opportunity_hash: [0; 32],
+        expected_precondition_hash,
+        payload_hash: *blake3::hash(payload).as_bytes(),
+        payload_offset: 0,
+        payload_length: u32::try_from(payload.len()).unwrap_or(u32::MAX),
+    }
 }
 
 fn lifecycle_crash_plan(
@@ -1472,8 +1858,11 @@ pub(super) fn build_live_node(
         .map_err(|source| QemuLiveNodeStepGateError::QmpChannelConfig { source })?;
     let vm = vm_launch_config(config, identity.node);
     let plugin = live_node_plugin_config(config, &profile, &vm, run_directory, identity.node)?;
-    let mut command = match &config.fault_capabilities {
-        Some(capabilities) => {
+    let mut command = match (
+        &config.fault_capabilities,
+        &config.exact_gate_fault_manifests,
+    ) {
+        (Some(capabilities), None) => {
             let requirement = crate::QemuFaultCapabilityRequirement::current_v1_for_node(
                 capabilities,
             )
@@ -1488,13 +1877,37 @@ pub(super) fn build_live_node(
                 requirement,
             )
         }
-        None => QemuLaunchCommandBuilder::new_for_live_gate(
+        (None, Some(manifests)) => {
+            let requirement = crate::QemuFaultCapabilityRequirement::exact_live_gate_v1(
+                config.architecture,
+                profile.cpu_model().to_owned(),
+                identity.node,
+                manifests,
+            )
+            .map_err(|_source| QemuLiveNodeStepGateError::LaunchCommand {
+                source: QemuLaunchCommandError::InvalidFaultCapabilityRequirement,
+            })?;
+            QemuLaunchCommandBuilder::new_for_exact_live_gate(
+                profile,
+                vm,
+                path_text(&config.qemu_executable),
+                plugin,
+                requirement,
+            )
+            .map_err(|source| QemuLiveNodeStepGateError::LaunchCommand { source })?
+        }
+        (None, None) => QemuLaunchCommandBuilder::new_for_live_gate(
             profile,
             vm,
             path_text(&config.qemu_executable),
             plugin,
             config.architecture,
         ),
+        (Some(_), Some(_)) => {
+            return Err(fault_gate_invariant(
+                "World and gate-replay capability manifests were both configured",
+            ));
+        }
     }
     .with_qmp(qmp_config.clone());
     if config.whitebox == QemuLaunchPluginSwitch::On {
