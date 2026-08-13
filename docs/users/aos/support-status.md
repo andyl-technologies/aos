@@ -22,7 +22,7 @@ promise.
 | APM machine-wide packages | Add/remove reconciliation implemented; upgrade and rollback incomplete | Use `apm install --system --from`; do not confuse sysroot upgrade/rollback with runtime-package operations |
 | Stock unprivileged user package profile | Not provisioned | Do not assume user-scope package mutation is available on a stock host |
 | Configuration generation rollback | Implemented | Same-ABI rollback is direct; cross-ABI rollback re-evaluates retained inputs |
-| Durable image, kernel, and UKI upgrade | Early-preview A/B path implemented with boot counting | Qualify inactive-slot staging, reboot, and image/config generation binding on the target firmware |
+| Durable image, kernel, and UKI upgrade | Early-preview A/B path implemented with boot counting and redundant ESP synchronization | Qualify inactive-slot staging, reboot, replica failover, and image/config generation binding on the target firmware |
 | Image rollback | Early-preview path implemented | Select the image axis explicitly and qualify configuration rebind after boot |
 | Opaque runtime credential references | Implemented for system credentials, desired credentials, and TPM2 credstore | Keep bytes outside Nix; external Vault/cloud-secret backends are separate |
 | System-package/configuration generation pruning | Implemented | `apm clean --system --generations --keep N`, then `apm gc` |
@@ -30,7 +30,9 @@ promise.
 | Secure Boot, lockdown, measured boot, dm-verity | Fleet-test fixtures implemented | Checked-in variants use public test keys; no complete production key-custody workflow is shipped |
 | SELinux module | Present, not enabled by presets | No production policy package is wired into `standard` or `hardened` |
 | Audit, firewall, kernel hardening | Implemented in server baseline | Verify active rules and service state on the deployed host |
-| ZFS in the server path | Disabled for this iteration | Use the supported `/var` layout unless separately qualifying ZFS |
+| Encrypted ZFS bare-metal storage | Early-preview installer and boot path implemented | Supply deployment trust keys; qualify TPM unlock, recovery, pool import, zvol slots, disk failure, and replacement on target hardware |
+| NVIDIA GPU support | Open kernel modules and matching GSP firmware implemented | Proprietary compute and graphics userspace is outside the source-only image; qualify module binding and supply version-matched userspace separately |
+| In-band IPMI | Kernel interfaces and `ipmitool` module implemented | Enable the server-management profile and qualify the BMC interface, watchdog policy, and credentials on target hardware |
 | Hardware watchdog and SMART monitoring | Opt-in | Qualify devices and alert delivery on real hardware |
 | Remote log shipping | No complete module | Journald can forward to syslog, but the receiver must be separately provided |
 

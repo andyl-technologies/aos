@@ -40,6 +40,8 @@
   pkgs,
   lib,
   kernel,
+  kernelModulePackages ? [],
+  firmwarePackages ? [],
   loadModules,
   initrdUnits,
   initrdExtraPackages ? [],
@@ -447,10 +449,41 @@ in
           # ── 4. Kernel modules ──────────────────────────────────────────
           if [ -d ${kernel}/lib/modules ]; then
             cp -a ${kernel}/lib/modules/. root/lib/modules/
+            chmod -R u+w root/lib/modules
           else
             echo "initrd-builder: ${kernel}/lib/modules not found" >&2
             exit 1
           fi
+          ${lib.concatMapStringsSep "\n" (package: ''
+              if [ ! -d ${package}/lib/modules ]; then
+                echo "initrd-builder: external module package ${package} has no module tree" >&2
+                exit 1
+              fi
+              chmod -R u+w root/lib/modules
+              cp -a ${package}/lib/modules/. root/lib/modules/
+            '')
+            kernelModulePackages}
+          for module_dir in root/lib/modules/*; do
+            # External module packages may restore the copied release
+            # directory's read-only store mode after the kernel tree was
+            # made writable. Only the parent directory needs write access
+            # to unlink the build/source symlinks; recursively chmodding does
+            # not follow those symlinks and therefore cannot repair it.
+            chmod u+w root/lib/modules "$module_dir"
+            rm -f "$module_dir/build" "$module_dir/source"
+            ${kmod}/sbin/depmod -b root "$(basename "$module_dir")"
+          done
+
+          # Firmware selected specifically for early storage, network, and TPM drivers.
+          mkdir -p root/lib/firmware
+          ${lib.concatMapStringsSep "\n" (package: ''
+              if [ ! -d ${package}/lib/firmware ]; then
+                echo "initrd-builder: firmware package ${package} has no firmware tree" >&2
+                exit 1
+              fi
+              cp -a ${package}/lib/firmware/. root/lib/firmware/
+            '')
+            firmwarePackages}
 
           # ── 5. /etc skeleton ───────────────────────────────────────────
           cat > root/etc/modules-load.d/initrd.conf <<MODULES
@@ -719,6 +752,7 @@ in
                  root/nix/store/*-coreutils-8.32 \
                  root/nix/store/*-bash-4.2 \
                  root/nix/store/*-linux-headers-2.6.* \
+                 root/nix/store/*-linux-*-dev \
                  root/nix/store/*-source
 
           # util-linux: man pages, zsh completion, etc.

@@ -18,6 +18,15 @@
   aos.filesystems.rootFsType = lib.mkDefault "erofs";
   aos.filesystems.rootReadOnly = lib.mkDefault true;
   aos.security.verity.enable = lib.mkDefault true;
+  aos.image.budgets = {
+    maxRootMiB = 512;
+    maxVerityMiB = 16;
+    maxInitrdMiB = 128;
+    maxUkiMiB = 160;
+    maxEspMiB = 384;
+    maxRuntimeClosureMiB = 768;
+    maxDownloadMiB = 640;
+  };
 
   # The service modules predate host-time evaluation and default to enabled.
   # Give this policy-neutral image a lower-priority disabled baseline. A normal

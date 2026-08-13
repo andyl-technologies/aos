@@ -50,13 +50,13 @@
 
   mkImage = {
     format,
-    sizeKiB ? 64,
+    sizeKiB ? 1024,
   }:
     pkgs.mkDerivation {
       pname = "apm-vm-image-${format}";
       version = "2026.03";
       src = null;
-      buildDeps = [pkgs.coreutils pkgs.jq];
+      buildDeps = [pkgs.coreutils pkgs.jq pkgs.zstd];
       UKI_STORE_PATH = "${pkgs.systemd}/lib/systemd/boot/efi";
       UKI_FILENAME = "systemd-bootx64.efi";
       phases = [
@@ -67,19 +67,23 @@
             ${
               if format == "raw"
               then ''
-                filename=aos-test.img
-                printf 'AOSRAW\n' > "$out/$filename"
-                dd if=/dev/zero bs=1024 count=${builtins.toString sizeKiB} >> "$out/$filename" 2>/dev/null
+                filename=aos-test.img.zst
+                printf 'AOSRAW\n' > image.raw
+                truncate -s ${builtins.toString sizeKiB}KiB image.raw
+                logical_disk_sha256=$(sha256sum image.raw | cut -d ' ' -f1)
+                zstd -19 -T1 --no-progress image.raw -o "$out/$filename"
               ''
               else if format == "qcow2"
               then ''
                 filename=aos-test.qcow2
                 printf 'QFI\373' > "$out/$filename"
-                dd if=/dev/zero bs=1024 count=${builtins.toString sizeKiB} >> "$out/$filename" 2>/dev/null
+                truncate -s ${builtins.toString sizeKiB}KiB "$out/$filename"
+                logical_disk_sha256=$(sha256sum "$out/$filename" | cut -d ' ' -f1)
               ''
               else ''
                 filename="aos-test.${format}"
                 printf 'AOS image ${format}\n' > "$out/$filename"
+                logical_disk_sha256=$(sha256sum "$out/$filename" | cut -d ' ' -f1)
               ''
             }
             image_sha256=$(sha256sum "$out/$filename" | cut -d ' ' -f1)
@@ -91,12 +95,12 @@
               --arg format '${format}' \
               --arg filename "$filename" \
               --arg sha256 "$image_sha256" \
-              --arg logicalDiskSha256 "$image_sha256" \
-              --arg rootfsSha256 "$image_sha256" \
+              --arg logicalDiskSha256 "$logical_disk_sha256" \
+              --arg rootfsSha256 "$logical_disk_sha256" \
               --arg objectKey "images/sha256/$image_sha256/$filename" \
               --arg mediaType '${
               if format == "raw"
-              then "application/vnd.aos.disk-image.raw"
+              then "application/vnd.aos.disk-image.raw+zstd"
               else "application/vnd.aos.disk-image.qcow2"
             }' \
               --arg ukiFilename "$UKI_FILENAME" \
@@ -112,12 +116,13 @@
               '{schemaVersion: 1, name: "server", version: "2026.03",
                 architecture: "x86_64", platform: "x86_64-linux",
                 format: $format, filename: $filename, objectKey: $objectKey,
-                mediaType: $mediaType, compression: "none", byteSize: $byteSize,
-                virtualSizeBytes: $byteSize,
+                mediaType: $mediaType, compression: "${if format == "raw" then "zstd" else "none"}", byteSize: $byteSize,
+                virtualSizeBytes: ${builtins.toString sizeKiB} * 1024,
                 sha256: $sha256, logicalDiskSha256: $logicalDiskSha256,
                 rootfsSha256: $rootfsSha256, compatibleTargets: $targets,
+                artifactBudgetsMiB: {root: 1, verity: 1, initrd: 1, uki: 1, esp: 34, runtimeClosure: 1, download: 2},
                 partitionTable: "gpt", kernelParams: "",
-                partitions: [{number: 1, label: "root-a", type: "root", filesystem: "fake", sizeMiB: 0, offsetBytes: 0, sizeBytes: $byteSize}],
+                partitions: [{number: 1, label: "root-a", type: "root", filesystem: "fake", sizeMiB: 1, offsetBytes: 0, sizeBytes: 1048576}],
                 esp: {uki: $ukiEspPath, sdBoot: "EFI/systemd/systemd-bootx64.efi"},
                 uki: {filename: $ukiFilename, espPath: $ukiEspPath,
                   byteSize: $ukiSize, sha256: $ukiSha256, signed: false, measured: false}}' \
@@ -171,7 +176,7 @@
     RAW_HASH=$(basename "$IMAGE_RAW_STORE" | cut -d- -f1)
     QCOW2_HASH=$(basename "$IMAGE_QCOW2_STORE" | cut -d- -f1)
     SERVER_HASH=$(basename "$SERVER_STORE" | cut -d- -f1)
-    RAW_FILE="$IMAGE_RAW_STORE/aos-test.img"
+    RAW_FILE="$IMAGE_RAW_STORE/aos-test.img.zst"
     QCOW2_FILE="$IMAGE_QCOW2_STORE/aos-test.qcow2"
     RAW_EXPECTED=$(sha256sum "$RAW_FILE" | cut -d' ' -f1)
     QCOW2_EXPECTED=$(sha256sum "$QCOW2_FILE" | cut -d' ' -f1)
@@ -254,7 +259,7 @@
     assert_file_contains "$REG_DIR/packages/s/server.toml" \
       "schema_version = 1" "published image catalog requires direct-delivery schema"
     assert_file_contains "$REG_DIR/packages/s/server.toml" \
-      "images/sha256/$RAW_EXPECTED/aos-test.img" \
+      "images/sha256/$RAW_EXPECTED/aos-test.img.zst" \
       "signed raw catalog points at immutable disk bytes"
     assert_file_contains "$REG_DIR/packages/s/server.toml" \
       "images/sha256/$QCOW2_EXPECTED/aos-test.qcow2" \
@@ -266,7 +271,7 @@
       "compatible_targets = \[\"qemu-kvm\", \"openstack\"\]" \
       "signed QCOW2 catalog carries end-user target mapping"
     assert_file_exists \
-      "$REG_DIR/.git/aos-image-staging/images/sha256/$RAW_EXPECTED/aos-test.img" \
+      "$REG_DIR/.git/aos-image-staging/images/sha256/$RAW_EXPECTED/aos-test.img.zst" \
       "raw direct-delivery bytes are staged outside Git objects"
     assert_file_exists \
       "$REG_DIR/.git/aos-image-staging/images/sha256/$QCOW2_EXPECTED/aos-test.qcow2" \

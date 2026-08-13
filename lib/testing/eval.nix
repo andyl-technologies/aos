@@ -861,6 +861,31 @@
     else if schedulingSystemOnly.success
     then throw "meta.execute must not be checked against the Nix scheduling system"
     else "ok";
+
+  bareMetalStorageSystem = mkSystem [
+    ../../systems/server-verity.nix
+    {
+      aos.profiles.bareMetalZfs = {
+        enable = true;
+        espDevices = [
+          "/dev/disk/by-partlabel/aos-esp-1"
+          "/dev/disk/by-partlabel/aos-esp-2"
+        ];
+      };
+    }
+  ];
+  bareMetalStorageProfile =
+    if bareMetalStorageSystem.config.aos.boot.storage.backend != "zfs-zvol"
+    then throw "bare-metal storage profile must select ZFS zvol image slots"
+    else if builtins.length bareMetalStorageSystem.config.aos.boot.initrd.modulePackages != 1
+    then throw "ZFS must be the only external early-boot module package"
+    else if builtins.length bareMetalStorageSystem.config.aos.kernel.modulePackages != 1
+    then throw "ZFS must be available in the runtime module tree"
+    else if !(builtins.elem "aos-mount-esp.service" bareMetalStorageSystem.config.systemd.services.aos-image-boot-commit.requires)
+    then throw "image blessing must require authoritative booted-ESP discovery"
+    else if bareMetalStorageSystem.config.system.build.installBundle == null
+    then throw "ZFS-backed bare-metal systems must expose an installer bundle"
+    else "ok";
 in
   # Use a raw derivation with AOS bash so we don't pull in host tools. The
   # builtins.toJSON calls still force the system config at instantiation time;
@@ -1003,6 +1028,7 @@ in
         echo "systemd gate:   $security_units workload services under threshold $security_threshold; $security_skipped allowlisted unconfined package(s) skipped: ''${security_skipped_names:-none}"
         echo "package policy: baked profile (${packagePolicyModule}), preset requires bundle (${packagePolicyRejectsPresetWithoutBundle}), target mismatch (${packagePolicyRejectsWrongTarget})"
         echo "derivations:    meta.execute uses build execution identity (${executionCompatibilityUsesBuildExecutionSystem})"
+        echo "bare metal:    encrypted ZFS zvol slots and authoritative ESPs (${bareMetalStorageProfile})"
 
         # Force the build attributes to ensure they evaluate
         echo "toplevel:       ${system.config.system.build.toplevel.name}"

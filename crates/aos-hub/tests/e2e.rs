@@ -434,7 +434,7 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     assert_eq!(body, public_fixture.raw);
     assert_eq!(
         headers[header::CONTENT_DISPOSITION],
-        "attachment; filename=\"aos-1.0.0-x86_64.img\""
+        "attachment; filename=\"aos-1.0.0-x86_64.img.zst\""
     );
     assert_eq!(headers["x-aos-sha256"].to_str().unwrap(), raw_sha256);
     assert!(headers[header::CACHE_CONTROL]

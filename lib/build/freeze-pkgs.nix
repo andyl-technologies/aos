@@ -5,13 +5,15 @@
 ##! (`restrict-eval`, no IFD) forcing any from-source derivation pulls in the
 ##! bootstrap chain's eval-time fetches, which the sandbox forbids. Store paths
 ##! selected by host configuration are therefore computed at image-build time
-##! and retained in the image closure through ordinary Nix references.
+##! without retaining packages that the evaluated image does not select.
 ##!
 ##! `freezePkgs` turns a live `pkgs` set into a *frozen* one: every derivation is
-##! replaced by a plain attrset whose `outPath` (and per-output paths) are the
-##! already-computed store-path STRINGS, with `__toString` so `${pkgs.foo}` and
+##! replaced by a plain attrset whose `outPath` (and per-output paths) are
+##! reversibly encoded store-path strings, with `__toString` so `${pkgs.foo}` and
 ##! `${pkgs.foo.lib}` interpolate the path exactly as before — but with no
-##! derivation behind them, so the eval never touches the build graph.
+##! derivation behind them, so the eval never touches the build graph. Literal
+##! store paths cannot appear in the serialized form because Nix scans output
+##! bytes for them and would retain every package in the image closure.
 ##!
 ##! Two halves:
 ##!   - `freezeToJSON pkgs` — run at stage-1 (base-lib build): forces the
@@ -31,6 +33,23 @@
   # Discard string context so the path is a plain string with no derivation
   # dependency riding along into the frozen value.
   pathString = p: builtins.unsafeDiscardStringContext (toString p);
+  reverse = value: let
+    length = builtins.stringLength value;
+  in
+    lib.concatStrings (builtins.genList (
+        index: builtins.substring (length - index - 1) 1 value
+      )
+      length);
+  encodePath = p: let
+    value = pathString p;
+  in
+    if lib.hasPrefix "/nix/store/" value
+    then "@nix-store@/${reverse (lib.removePrefix "/nix/store/" value)}"
+    else throw "freeze-pkgs: package output is not a Nix store path: ${value}";
+  decodePath = value:
+    if lib.hasPrefix "@nix-store@/" value
+    then "/nix/store/${reverse (lib.removePrefix "@nix-store@/" value)}"
+    else throw "freeze-pkgs: invalid encoded store path";
 
   # Freeze a single derivation to a JSON-safe record. NOTE: the key must NOT be
   # `outPath` — `builtins.toJSON` coerces any attrset carrying an `outPath` field
@@ -40,11 +59,11 @@
     outputs = drv.outputs or ["out"];
     outPaths = builtins.listToAttrs (builtins.map (o: {
         name = o;
-        value = pathString (lib.getOutput o drv).outPath;
+        value = encodePath (lib.getOutput o drv).outPath;
       })
       outputs);
   in {
-    path = pathString drv.outPath;
+    path = encodePath drv.outPath;
     outputs = outputs;
     outPaths = outPaths;
     # Package-provided systemd units must remain enumerable during on-host
@@ -89,18 +108,20 @@ in {
     };
     mkFrozen = name: e: let
       outputs = e.outputs or ["out"];
+    in let
+      path = decodePath e.path;
     in
       {
         type = "derivation";
         name = e.name or name;
-        outPath = e.path;
+        outPath = path;
         outputName = builtins.head outputs;
         systemdUnitInventory = e.systemdUnitInventory or {};
-        __toString = _: e.path;
+        __toString = _: path;
       }
       // builtins.listToAttrs (builtins.map (o: {
           name = o;
-          value = mkOutput "${name}-${o}" ((e.outPaths or {}).${o} or e.path);
+          value = mkOutput "${name}-${o}" (decodePath ((e.outPaths or {}).${o} or e.path));
         })
         outputs);
   in

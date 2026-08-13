@@ -88,14 +88,14 @@ pub fn cache_control(path: &str) -> &'static str {
 pub fn content_type(path: &str) -> &'static str {
     if path.ends_with(".narinfo") {
         "text/x-nix-narinfo"
+    } else if path.starts_with("images/") && path.ends_with(".img.zst") {
+        "application/vnd.aos.disk-image.raw+zstd"
     } else if path.ends_with(".nar.zst") || path.ends_with(".zst") {
         "application/zstd"
     } else if path.ends_with(".nar.xz") || path.ends_with(".xz") {
         "application/x-xz"
     } else if path.starts_with("images/") && path.ends_with("image-info.json") {
         "application/vnd.aos.image-info+json"
-    } else if path.starts_with("images/") && path.ends_with(".img") {
-        "application/vnd.aos.disk-image.raw"
     } else if path.starts_with("images/") && path.ends_with(".qcow2") {
         "application/vnd.aos.disk-image.qcow2"
     } else if path.starts_with("images/") && path.ends_with(".vmdk") {
@@ -245,7 +245,7 @@ mod tests {
             "web/index.json",
             "browse/curl.html",
             "publication-receipts/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
-            "images/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aos.img",
+            "images/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aos.img.zst",
         ] {
             assert!(is_machine_path(path), "{path}");
         }
@@ -275,6 +275,17 @@ mod tests {
             "publication-receipts/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json";
         assert_eq!(cache_control(path), IMMUTABLE_CACHE_CONTROL);
         assert_eq!(content_type(path), "application/json");
+    }
+
+    #[test]
+    fn compressed_raw_images_keep_their_specific_media_type() {
+        assert_eq!(
+            content_type(
+                "images/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aos.img.zst"
+            ),
+            "application/vnd.aos.disk-image.raw+zstd"
+        );
+        assert_eq!(content_type("nar/a.nar.zst"), "application/zstd");
     }
 
     #[test]

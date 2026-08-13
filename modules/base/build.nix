@@ -524,6 +524,11 @@ in {
                 printf '%s' "sha256:${builtins.hashString "sha256" (toString config.aos.config.evalAtBoot.baseLib)}" > $out/meta/baselib-digest
                 printf '%s' "EFI/Linux/aos-generation-0000000001${lib.optionalString (config.aos.boot.bootCountingTries != null) "+${toString config.aos.boot.bootCountingTries}"}.efi" > $out/meta/uki-path
                 printf '%s' ${lib.escapeShellArg config.aos.filesystems.espDevice} > $out/meta/esp-device
+                printf '%s\n' ${lib.escapeShellArg (builtins.toJSON {
+                  backend = config.aos.boot.storage.backend;
+                  espDevices = config.aos.boot.storage.espDevices;
+                  devices = config.aos.boot.storage.resolvedDevices;
+                })} > $out/meta/boot-storage.json
 
                 # Closure tracking: list every systemPackage as a
                 # /nix/store path so Nix's reference scanner pulls

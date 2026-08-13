@@ -14,22 +14,24 @@ checksum or signature. Record the release, image checksum, and
 `image-info.json`; do not identify an image only by a mutable object-storage
 name.
 
-The public golden image is not yet distributed during the current early
-preview. AOS Hub is the planned image catalog and download path. Release
-integrators producing the image today should use the
-[maintainer guide](../../maintainers/) and hand the resulting immutable
-artifact to this deployment workflow.
+Discover and download the immutable release through AOS Hub as described in
+the [installation guide](installation.md). Bare-metal raw images arrive as
+zstd-compressed disk streams; the signed catalog binds the transferred bytes,
+and `image-info.json` binds the exact reconstructed GPT disk.
 
 ## Size the target before first boot
 
-The target needs trailing unallocated space for swap, `/var`, the provisioning
-marker, and partition alignment. The stock policy needs more than 6 GiB beyond
-the built image; fleet tests use a 16 GiB disk.
+The integrity-bound `image-info.json` records the image's declared artifact
+budgets and exact GPT layout. Use that layout as the immutable-storage contract
+rather than deriving slot sizes from the current compressed payload. The target
+also needs trailing unallocated space for swap, `/var`, the provisioning marker,
+and partition alignment. The stock policy needs more than 6 GiB beyond the built
+image; fleet tests use a 16 GiB disk.
 
 When enlarging a raw image, relocate its backup GPT header before first boot:
 
 ```sh
-cp /path/to/downloaded-aos.img acme-server.img
+zstd -d /path/to/downloaded-aos.img.zst -o acme-server.img
 chmod u+w acme-server.img
 truncate -s 16G acme-server.img
 

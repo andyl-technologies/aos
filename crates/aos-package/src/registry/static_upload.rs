@@ -749,6 +749,8 @@ fn content_type(relative_path: &str) -> &'static str {
         "application/x-git-packed-objects"
     } else if relative_path.ends_with(".idx") {
         "application/x-git-packed-objects-toc"
+    } else if relative_path.starts_with("images/") && relative_path.ends_with(".img.zst") {
+        "application/vnd.aos.disk-image.raw+zstd"
     } else if relative_path.ends_with(".zst") {
         "application/zstd"
     } else if relative_path.ends_with(".wasm") {
@@ -761,8 +763,6 @@ fn content_type(relative_path: &str) -> &'static str {
         "text/css"
     } else if relative_path.starts_with("images/") && relative_path.ends_with("image-info.json") {
         "application/vnd.aos.image-info+json"
-    } else if relative_path.starts_with("images/") && relative_path.ends_with(".img") {
-        "application/vnd.aos.disk-image.raw"
     } else if relative_path.starts_with("images/") && relative_path.ends_with(".qcow2") {
         "application/vnd.aos.disk-image.qcow2"
     } else if relative_path.starts_with("images/") && relative_path.ends_with(".vmdk") {
@@ -838,19 +838,19 @@ mod tests {
     #[test]
     fn image_upload_snapshot_rejects_same_size_corruption_and_pins_verified_bytes() {
         let tmp = tempfile::tempdir().unwrap();
-        let source = tmp.path().join("aos-test.img");
+        let source = tmp.path().join("aos-test.img.zst");
         let good = b"signed-image";
         let corrupt = b"evil--image-";
         assert_eq!(good.len(), corrupt.len());
         std::fs::write(&source, good).unwrap();
         let expected_sha256 = hex::encode(Sha256::digest(good));
         let file = StaticOriginFile {
-            relative_path: format!("images/sha256/{expected_sha256}/aos-test.img"),
+            relative_path: format!("images/sha256/{expected_sha256}/aos-test.img.zst"),
             source: source.clone(),
             class: StaticOriginClass::ImageDisk,
-            content_type: "application/vnd.aos.disk-image.raw",
+            content_type: "application/vnd.aos.disk-image.raw+zstd",
             cache_control: IMMUTABLE_CACHE_CONTROL,
-            content_disposition: Some("attachment; filename=\"aos-test.img\"".into()),
+            content_disposition: Some("attachment; filename=\"aos-test.img.zst\"".into()),
             sha256: Some(expected_sha256.clone()),
             byte_size: Some(good.len() as u64),
         };
@@ -1315,6 +1315,12 @@ mod tests {
         assert_eq!(content_type("ui/app.js"), "text/javascript");
         assert_eq!(content_type("ui/style.css"), "text/css");
         assert_eq!(content_type("ui/manifest.json"), "application/json");
+        assert_eq!(
+            content_type(
+                "images/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aos.img.zst"
+            ),
+            "application/vnd.aos.disk-image.raw+zstd"
+        );
     }
 
     /// Shared upload event log: `(destination name, relative path)` in

@@ -23,6 +23,18 @@ Files under `systems/` are discovered automatically. A file named
   aos.roles.server.enable = true;
   aos.networking.hostName = "web-01";
 
+  # These maxima are both release gates and on-disk compatibility contracts.
+  # Root, verity, and ESP values size the A/B partitions or zvols.
+  aos.image.budgets = {
+    maxRootMiB = 512;
+    maxVerityMiB = 16;
+    maxInitrdMiB = 128;
+    maxUkiMiB = 160;
+    maxEspMiB = 384;
+    maxRuntimeClosureMiB = 768;
+    maxDownloadMiB = 640;
+  };
+
   aos.networking.interfaces.eth0 = {
     address = "10.0.0.20/24";
     gateway = "10.0.0.1";
@@ -118,11 +130,38 @@ package set explicitly:
 nix build .#packages.x86_64-linux.acme-server-image-qcow2
 ```
 
-The raw output contains `aos-<system>.img` and `image-info.json`. Converted
-outputs contain the corresponding disk file. Preserve the raw image metadata
-with every distributed format until the converter emits a per-format manifest.
+The raw output contains `aos-<system>.img.zst` and `image-info.json`. The outer
+zstd stream keeps fixed partition headroom and the empty inactive slot out of
+the transfer while the metadata separately binds both the compressed object
+and reconstructed GPT disk. Converted outputs contain the corresponding disk
+file. Preserve the image metadata with every distributed format.
 
 ## Validate the release artifact
+
+Build the variant's image contract check before publishing it:
+
+```sh
+nix-build -A systems.acme-server.checks.image-budget
+cat result/report.json
+```
+
+Every discovered system exposes this check. It builds the root, initrd, UKI,
+runtime closure, and compressed raw image; fails if any declared maximum is
+exceeded; and writes the observed and maximum values to `report.json`.
+Building each publication artifact independently enforces the complete
+contract, records it in the integrity-bound `image-info.json`, and uses the
+declared storage maxima for partition geometry. The resulting logical GPT disk
+must also remain within the 8 GiB publication safety limit, which bounds image
+materialization before any compressed bytes are expanded. Increase a budget
+only as an intentional storage-format compatibility change; do not raise one
+merely to absorb an unexplained size regression. Migrate existing storage
+before deploying a payload that depends on larger root, verity, or ESP maxima.
+Use `aos profile closure systems.acme-server.build.toplevel` to attribute
+closure growth first.
+
+The server and edge golden images cap each directly downloadable encoding at
+640 MiB with `maxDownloadMiB`. Treat a transfer-budget failure as a release-size
+regression: profile the closure and artifacts before changing that ceiling.
 
 Inspect the evaluated option before building:
 

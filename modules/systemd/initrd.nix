@@ -231,6 +231,8 @@ in {
     system.build.initrd = import ../base/_initrd-builder.nix {
       inherit pkgs lib;
       kernel = config.system.build.kernel;
+      kernelModulePackages = config.aos.boot.initrd.modulePackages;
+      firmwarePackages = config.aos.boot.initrd.firmwarePackages;
       loadModules = config.aos.boot.initrd.loadModules;
       initrdUnits = config.system.build.systemdInitrdUnits;
       initrdExtraPackages = config.aos.boot.initrd.extraPackages;

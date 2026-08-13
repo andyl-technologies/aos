@@ -42,6 +42,7 @@ in
           cp -a mellanox $out/lib/firmware/ 2>/dev/null || true
           cp -a bnx2 $out/lib/firmware/ 2>/dev/null || true
           cp -a bnx2x $out/lib/firmware/ 2>/dev/null || true
+          cp -a bnxt $out/lib/firmware/ 2>/dev/null || true
 
           # Storage controllers
           cp -a qed $out/lib/firmware/ 2>/dev/null || true
