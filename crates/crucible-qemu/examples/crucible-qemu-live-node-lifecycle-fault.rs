@@ -89,6 +89,10 @@ fn run() -> Result<(), String> {
         "corrupt_event_rejected_with_valid_result={}",
         report.corrupt_event_rejected_with_valid_result
     );
+    println!(
+        "cross_domain_actions_applied={}",
+        report.cross_domain_actions_applied
+    );
     Ok(())
 }
 
