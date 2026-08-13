@@ -21833,6 +21833,23 @@ impl RpcService {
             ));
         }
         let record = self.registry_or_not_found(&input.request.slug).await?;
+        let trust_keys_updated = input
+            .request
+            .update_mask
+            .iter()
+            .any(|field| field == "trust_keys");
+        if trust_keys_updated {
+            if let Err(error) = self.reindexer.reindex(&record).await {
+                // The configuration mutation is already durable. Indexing records
+                // its own failed status, and the periodic reconciler can safely
+                // retry without making this applied control plan look replayable.
+                tracing::warn!(
+                    registry = %record.slug,
+                    error = %format!("{error:#}"),
+                    "registry trust update could not refresh the signed index"
+                );
+            }
+        }
         let status = self
             .db
             .index_status(record.id)
@@ -34666,11 +34683,16 @@ mod cache_upload_tests {
         }
     }
 
-    struct InjectedReindexer;
+    struct InjectedReindexer {
+        calls: Option<Arc<AtomicUsize>>,
+    }
 
     #[async_trait::async_trait]
     impl Reindexer for InjectedReindexer {
         async fn reindex(&self, _registry: &RegistryRecord) -> Result<Option<String>> {
+            if let Some(calls) = &self.calls {
+                calls.fetch_add(1, Ordering::SeqCst);
+            }
             Ok(None)
         }
     }
@@ -34728,6 +34750,27 @@ mod cache_upload_tests {
         write_behaviors: Vec<WriteBehavior>,
         sealer_behaviors: Vec<SealerBehavior>,
     ) -> (RpcService, Arc<Database>, Arc<InMemoryLease>, String) {
+        injected_service_with_dependencies(
+            fetch_behaviors,
+            write_behaviors,
+            sealer_behaviors,
+            Arc::new(InjectedReindexer { calls: None }),
+        )
+        .await
+    }
+
+    async fn injected_service_with_reindexer(
+        reindexer: Arc<dyn Reindexer>,
+    ) -> (RpcService, Arc<Database>, Arc<InMemoryLease>, String) {
+        injected_service_with_dependencies(vec![], vec![], vec![], reindexer).await
+    }
+
+    async fn injected_service_with_dependencies(
+        fetch_behaviors: Vec<FetchBehavior>,
+        write_behaviors: Vec<WriteBehavior>,
+        sealer_behaviors: Vec<SealerBehavior>,
+        reindexer: Arc<dyn Reindexer>,
+    ) -> (RpcService, Arc<Database>, Arc<InMemoryLease>, String) {
         let db = Arc::new(Database::open_in_memory().await.unwrap());
         db.install_write_failure_test_tickets().await.unwrap();
         let user_id = db.create_user("writer@example.test", None).await.unwrap();
@@ -34771,7 +34814,7 @@ mod cache_upload_tests {
                 behaviors: Mutex::new(write_behaviors.into()),
             }),
             lease.clone(),
-            Arc::new(InjectedReindexer),
+            reindexer,
             Arc::new(DatabaseTopologyProbeScheduler::new(Arc::clone(&db))),
             Some(Arc::new(InjectedSealer {
                 behaviors: Mutex::new(sealer_behaviors.into()),
@@ -34875,6 +34918,62 @@ mod cache_upload_tests {
 
         assert_eq!(by_slug.stable_id, stored.stable_id);
         assert_eq!(by_stable_id.stable_id, stored.stable_id);
+    }
+
+    #[tokio::test]
+    async fn registry_trust_update_refreshes_the_signed_index() {
+        let reindex_calls = Arc::new(AtomicUsize::new(0));
+        let (service, db, _lease, auth) = injected_service_with_reindexer(Arc::new(
+            InjectedReindexer {
+                calls: Some(Arc::clone(&reindex_calls)),
+            },
+        ))
+        .await;
+        let org_id = db.create_org("trust-refresh", "Trust refresh").await.unwrap();
+        db.create_managed_registry(org_id, "", "packages", "public", &[], true)
+            .await
+            .unwrap();
+        let registry = db
+            .registry_by_slug("trust-refresh/packages")
+            .await
+            .unwrap()
+            .unwrap();
+        let trust_key =
+            "test:Ed25519:AAAAC3NzaC1lZDI1NTE5AAAAIEtMspYqYtUjGxOcRGRwn4WVoEYXgbIV+4crzbmtYAXy";
+
+        let planned = service
+            .plan_update_registry(
+                Some(&auth),
+                pb::PlanUpdateRegistryRequest {
+                    slug: registry.slug,
+                    trust_keys: vec![trust_key.into()],
+                    update_mask: vec!["trust_keys".into()],
+                    expected_resource_version: registry.resource_version.to_string(),
+                    idempotency_key: "plan-trust-refresh".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let response = service
+            .apply_update_registry(
+                Some(&auth),
+                pb::ApplyRegistryMutationRequest {
+                    plan_id: planned.plan_id,
+                    idempotency_key: "apply-trust-refresh".into(),
+                    confirmation_hash: planned.confirmation_hash,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(reindex_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            response.registry.unwrap().trust_keys,
+            vec![trust_key.to_string()]
+        );
     }
 
     #[test]
@@ -35837,7 +35936,7 @@ mod cache_upload_tests {
                 behaviors: Mutex::new(VecDeque::new()),
             }),
             Arc::new(InMemoryLease::new()),
-            Arc::new(InjectedReindexer),
+            Arc::new(InjectedReindexer { calls: None }),
             Arc::new(DatabaseTopologyProbeScheduler::new(db)),
             None,
         );
