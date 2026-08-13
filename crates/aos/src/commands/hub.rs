@@ -17,7 +17,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{
-    HubAccessPolicyArgs, HubAccessTokenCmd, HubAccessTokenIssueCmd, HubAccessTokenRetireCmd,
+    HubAccessArgs, HubAccessPolicyArgs, HubAccessTokenCmd, HubAccessTokenIssueCmd,
+    HubAccessTokenRetireCmd,
     HubAuditCmd, HubCacheCmd, HubCacheCoverageCmd, HubCacheGcCmd, HubCacheGcFirstSweepCmd,
     HubCacheGcJobsCmd, HubCacheGcPlanCmd, HubCacheGcPolicyCmd, HubCacheGcRunsCmd,
     HubCacheIntegrationCmd, HubCacheLeaseCmd, HubCachePopulationCmd, HubCacheRetentionCmd,
@@ -8304,7 +8305,7 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
                 }
                 None => publication_from_root(root, registry)?,
             };
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = publication_client(access).await?;
             bind_publication_parent(&client, &mut pinned.request).await?;
             let publication: hub_types::RegistryPublication = client
                 .call_topology(HubTopologyMethod::BeginRegistryPublication, &pinned.request)
@@ -8337,13 +8338,14 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
                     }
                     let file = snapshot_publication_object(&pinned.root, declared)?;
                     if object.upload_url.is_empty() {
-                        upload_publication_multipart(&client, &publication_id, object, file)
+                        upload_publication_multipart(access, &publication_id, object, file)
                             .await
                             .with_context(|| {
                                 format!("uploading publication path {}", object.path)
                             })?;
                     } else {
-                        client
+                        publication_client(access)
+                            .await?
                             .upload_publication_object(&object.upload_url, file, &object.path)
                             .await
                             .with_context(|| {
@@ -8351,7 +8353,8 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
                             })?;
                     }
                 }
-                client
+                publication_client(access)
+                    .await?
                     .call_topology(
                         HubTopologyMethod::CommitRegistryPublication,
                         &hub_types::CommitRegistryPublicationRequest {
@@ -8432,6 +8435,13 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
     }
 }
 
+async fn publication_client(access: &HubAccessArgs) -> Result<HubClient> {
+    if access.token.is_none() {
+        crate::commands::hub_auth::prepare_active_profile().await?;
+    }
+    hub_client(&access.hub, access.token.as_deref())
+}
+
 fn publication_objects_in_upload_order(
     publication: &hub_types::RegistryPublication,
 ) -> Vec<&hub_types::RegistryPublicationObject> {
@@ -8441,7 +8451,7 @@ fn publication_objects_in_upload_order(
 }
 
 async fn upload_publication_multipart(
-    client: &HubClient,
+    access: &HubAccessArgs,
     publication_id: &str,
     object: &hub_types::RegistryPublicationObject,
     mut file: std::fs::File,
@@ -8451,15 +8461,17 @@ async fn upload_publication_multipart(
     const MAX_CLIENT_PART_BYTES: u64 = 20 * 1024 * 1024;
     const MAX_CLIENT_PARTS: u64 = 10_000;
 
-    let admission: hub_types::BeginRegistryPublicationMultipartUploadResponse = client
-        .call_topology(
-            HubTopologyMethod::BeginRegistryPublicationMultipartUpload,
-            &hub_types::BeginRegistryPublicationMultipartUploadRequest {
-                publication_id: publication_id.into(),
-                object_id: object.object_id,
-            },
-        )
-        .await?;
+    let admission: hub_types::BeginRegistryPublicationMultipartUploadResponse =
+        publication_client(access)
+            .await?
+            .call_topology(
+                HubTopologyMethod::BeginRegistryPublicationMultipartUpload,
+                &hub_types::BeginRegistryPublicationMultipartUploadRequest {
+                    publication_id: publication_id.into(),
+                    object_id: object.object_id,
+                },
+            )
+            .await?;
     anyhow::ensure!(
         admission.part_size > 0 && admission.part_size <= MAX_CLIENT_PART_BYTES,
         "Hub returned an invalid publication multipart part size"
@@ -8477,15 +8489,17 @@ async fn upload_publication_multipart(
     );
 
     if admission.state == "completing" {
-        let _: hub_types::RegistryPublicationMultipartUploadResponse = client
-            .complete_registry_publication_multipart_upload(
-                &hub_types::CompleteRegistryPublicationMultipartUploadRequest {
-                    upload_id: admission.upload_id,
-                    parts: Vec::new(),
-                },
-            )
-            .await
-            .context("resuming publication multipart completion")?;
+        let _: hub_types::RegistryPublicationMultipartUploadResponse =
+            publication_client(access)
+                .await?
+                .complete_registry_publication_multipart_upload(
+                    &hub_types::CompleteRegistryPublicationMultipartUploadRequest {
+                        upload_id: admission.upload_id,
+                        parts: Vec::new(),
+                    },
+                )
+                .await
+                .context("resuming publication multipart completion")?;
         return Ok(());
     }
     anyhow::ensure!(
@@ -8513,7 +8527,8 @@ async fn upload_publication_multipart(
                     object.path
                 )
             })?;
-            let part = client
+            let part = publication_client(access)
+                .await?
                 .upload_publication_part(
                     &admission.part_upload_url,
                     &admission.upload_id,
@@ -8532,7 +8547,8 @@ async fn upload_publication_multipart(
     }
     .await;
     result.context("multipart progress remains resumable")?;
-    client
+    publication_client(access)
+        .await?
         .complete_registry_publication_multipart_upload(
             &hub_types::CompleteRegistryPublicationMultipartUploadRequest {
                 upload_id: admission.upload_id.clone(),
