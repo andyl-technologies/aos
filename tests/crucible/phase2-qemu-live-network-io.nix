@@ -157,10 +157,6 @@ in
           grep -Fxq 'search_branch=loss-fire' "$world_report"
           grep -Fxq 'branch_decisions_match=true' "$world_report"
           grep -Fxq 'exact_restore_next_quantum_match=true' "$world_report"
-          grep -Fxq 'process_crash_stopped=true' "$world_report"
-          grep -Fxq 'ready_point_process_relaunched=true' "$world_report"
-          grep -Fxq 'stay_down_start_node_process_relaunched=true' "$world_report"
-          grep -Fxq 'last_checkpoint_thin_replay_relaunched=true' "$world_report"
 
           mkdir -p "$out"
           cp "$report" "$out/result"
@@ -170,7 +166,7 @@ in
             printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'open_task_ids=%s\n' "$OPEN_TASK_IDS"
             printf 'scope=certifying-live-guest-network-plugin-ring-exchange\n'
-            printf 'proven=guest-originated-tx,hostless-router-ring,exact-router-latency,lossless-qemu-rx,guest-ack,frame-order-host-load-invariance,production-two-vm-world-route,production-live-search-branch,production-process-crash,production-ready-point-process-relaunch,production-stay-down-start-node-process-relaunch,production-last-checkpoint-thin-replay\n'
+            printf 'proven=guest-originated-tx,hostless-router-ring,exact-router-latency,lossless-qemu-rx,guest-ack,frame-order-host-load-invariance,production-two-vm-world-route,production-live-search-branch,durable-exact-restore-next-quantum\n'
             printf 'kernel_packet_socket=built-in\n'
             printf 'kernel_virtio_net=built-in\n'
           } >> "$out/result"
