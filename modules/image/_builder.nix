@@ -532,7 +532,8 @@
             # inactive slots and fixed partition headroom cost almost nothing
             # on the wire. The logical disk digest below still authenticates
             # the exact bytes reconstructed before writing physical media.
-            zstd -19 -T1 --no-progress image.raw -o "$out/$IMAGE_FILENAME"
+            zstd --ultra -22 --long=27 -T1 --no-progress \
+              image.raw -o "$out/$IMAGE_FILENAME"
             disk_size_bytes=$(stat -c %s "$out/$IMAGE_FILENAME")
             if [ "$disk_size_bytes" -gt $(( MAX_DOWNLOAD_MIB * 1048576 )) ]; then
               echo "compressed raw image exceeds its $MAX_DOWNLOAD_MIB MiB download contract" >&2
