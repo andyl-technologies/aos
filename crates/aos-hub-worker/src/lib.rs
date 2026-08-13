@@ -1355,6 +1355,10 @@ mod entry {
         }
 
         async fn fetch(&self, mut req: Request) -> Result<Response> {
+            // Durable Objects execute in an isolate distinct from the outer
+            // Worker, so they must install their own tracing subscriber.
+            crate::tracinglog::init();
+
             let backend = crate::sqldobackend::SqlDoBackend::new(self.state.storage());
             if let Err(err) = crate::sqldobackend::ensure_migrated(&backend).await {
                 return Response::error(format!("hubdb migrate: {err:#}"), 500);
