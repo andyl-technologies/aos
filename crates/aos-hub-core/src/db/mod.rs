@@ -377,6 +377,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("identity_control.sql"),
     include_str!("identity_incarnation.sql"),
     include_str!("operation_scope_inventory.sql"),
+    include_str!("publication_multipart.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -24093,6 +24094,36 @@ source_nar_hash = ""
             )
             .unwrap();
         assert_eq!(public_boundary, (1, "active".to_string()));
+    }
+
+    #[test]
+    fn publication_multipart_migration_upgrades_an_existing_database() {
+        let (migration, earlier) = MIGRATIONS.split_last().unwrap();
+        let connection = Connection::open_in_memory().unwrap();
+        for script in earlier {
+            connection.execute_batch(script).unwrap();
+        }
+        connection
+            .execute_batch(
+                "DROP TABLE registry_publication_multipart_parts;
+                 DROP TABLE registry_publication_multipart_backends;
+                 DROP TABLE registry_publication_multipart_uploads;",
+            )
+            .unwrap();
+
+        connection.execute_batch(migration).unwrap();
+        let tables: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name IN (
+                   'registry_publication_multipart_uploads',
+                   'registry_publication_multipart_parts',
+                   'registry_publication_multipart_backends')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 3);
     }
 
     #[test]
