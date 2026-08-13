@@ -29,12 +29,12 @@
 //! inventory and authorized placement lifecycle calls.
 
 use anyhow::{Context, Result};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::fmt;
 use std::str::FromStr;
 
-use aos_proto_types::{SurfaceRef, CONNECT_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION_HEADER};
+use aos_proto_types::{CONNECT_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION_HEADER, SurfaceRef};
 
 use crate::client::validate_base_url;
 
@@ -592,8 +592,6 @@ enum HubTopologyMethod {
     BeginRegistryPublication,
     /// Selects multipart admission for one large registry publication object.
     BeginRegistryPublicationMultipartUpload,
-    /// Selects multipart completion for one registry publication object.
-    CompleteRegistryPublicationMultipartUpload,
     /// Selects multipart abort for one registry publication object.
     AbortRegistryPublicationMultipartUpload,
     /// Selects paginated registry publication history.
@@ -1120,9 +1118,6 @@ impl HubTopologyMethod {
             BeginRegistryPublicationMultipartUpload => {
                 "aos.hub.v1.PublishService/BeginRegistryPublicationMultipartUpload"
             }
-            CompleteRegistryPublicationMultipartUpload => {
-                "aos.hub.v1.PublishService/CompleteRegistryPublicationMultipartUpload"
-            }
             AbortRegistryPublicationMultipartUpload => {
                 "aos.hub.v1.PublishService/AbortRegistryPublicationMultipartUpload"
             }
@@ -1505,7 +1500,6 @@ pub mod hub_rpc {
         ResolveImage: ResolveImageRequest => GetImageResponse;
         BeginRegistryPublication: BeginRegistryPublicationRequest => RegistryPublication;
         BeginRegistryPublicationMultipartUpload: BeginRegistryPublicationMultipartUploadRequest => BeginRegistryPublicationMultipartUploadResponse;
-        CompleteRegistryPublicationMultipartUpload: CompleteRegistryPublicationMultipartUploadRequest => RegistryPublicationMultipartUploadResponse;
         AbortRegistryPublicationMultipartUpload: AbortRegistryPublicationMultipartUploadRequest => RegistryPublicationMultipartUploadResponse;
         ListRegistryPublications: ListRegistryPublicationsRequest => ListRegistryPublicationsResponse;
         GetRegistryPublication: GetRegistryPublicationRequest => RegistryPublication;
@@ -1661,6 +1655,50 @@ impl HubClient {
         M: HubRpc,
     {
         self.call(M::method(), request).await
+    }
+
+    /// Completes one publication multipart upload without a unary RPC deadline.
+    ///
+    /// Completion performs exact streaming read-after-write verification of the
+    /// assembled object. Large release artifacts can legitimately take longer
+    /// than the ordinary control-plane deadline, so this operation uses the
+    /// same connect-only timeout as streaming uploads.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Hub is unreachable, rejects completion, or
+    /// returns a response that cannot be decoded.
+    pub async fn complete_registry_publication_multipart_upload(
+        &self,
+        request: &aos_proto_types::CompleteRegistryPublicationMultipartUploadRequest,
+    ) -> Result<aos_proto_types::RegistryPublicationMultipartUploadResponse> {
+        let method = "aos.hub.v1.PublishService/CompleteRegistryPublicationMultipartUpload";
+        let url = format!("{}{method}", self.base);
+        let mut request_builder = self
+            .upload_http
+            .post(&url)
+            .header(CONNECT_PROTOCOL_VERSION_HEADER, CONNECT_PROTOCOL_VERSION)
+            .json(request);
+        if let Some(token) = &self.token {
+            request_builder = request_builder.bearer_auth(token);
+        }
+        let response = request_builder
+            .send()
+            .await
+            .with_context(|| format!("contacting the hub at {url}"))?;
+        let status = response.status();
+        let body = response
+            .bytes()
+            .await
+            .with_context(|| format!("reading the hub response from {url}"))?;
+        if !status.is_success() {
+            if let Ok(envelope) = serde_json::from_slice::<ConnectError>(&body) {
+                anyhow::bail!("hub error [{}]: {}", envelope.code, envelope.message);
+            }
+            anyhow::bail!("hub request to {url} failed ({status})");
+        }
+        serde_json::from_slice(&body)
+            .with_context(|| format!("decoding the hub response from {url}"))
     }
 
     /// Streams one declared publication object to its exact Hub upload URL.
@@ -1941,7 +1979,7 @@ mod tests {
     use super::{HubClient, HubSurfaceRef, HubTopologyMethod};
     use aos_proto_types::surface_ref::Target;
     use aos_proto_types::{
-        PlanCreatePlacementRequest, PlanUpdatePlacementRequest, CONNECT_PROTOCOL_VERSION_HEADER,
+        CONNECT_PROTOCOL_VERSION_HEADER, PlanCreatePlacementRequest, PlanUpdatePlacementRequest,
     };
     use std::str::FromStr as _;
 

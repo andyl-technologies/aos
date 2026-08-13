@@ -8298,6 +8298,9 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
                         "Hub publication response changed the identity of {}",
                         object.path
                     );
+                    if object.verified {
+                        continue;
+                    }
                     let file = snapshot_publication_object(&pinned.root, declared)?;
                     if object.upload_url.is_empty() {
                         upload_publication_multipart(&client, &publication_id, object, file)
@@ -8324,23 +8327,13 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
                     .await
             }
             .await;
-            match result {
-                Ok(committed) => print_topology_message(printer, &committed),
-                Err(error) => {
-                    let abort = client
-                        .call_topology(
-                            HubTopologyMethod::AbortRegistryPublication,
-                            &hub_types::AbortRegistryPublicationRequest { publication_id },
-                        )
-                        .await;
-                    match abort {
-                        Ok(_) => Err(error.context("the incomplete publication was aborted")),
-                        Err(abort_error) => Err(error.context(format!(
-                            "aborting the incomplete publication also failed: {abort_error:#}"
-                        ))),
-                    }
-                }
-            }
+            result
+                .with_context(|| {
+                    format!(
+                        "publication {publication_id} remains resumable; rerun this exact upload or abort it explicitly"
+                    )
+                })
+                .and_then(|committed| print_topology_message(printer, &committed))
         }
         HubPublishCmd::Begin {
             access,
@@ -8443,8 +8436,7 @@ async fn upload_publication_multipart(
 
     if admission.state == "completing" {
         let _: hub_types::RegistryPublicationMultipartUploadResponse = client
-            .call_topology(
-                HubTopologyMethod::CompleteRegistryPublicationMultipartUpload,
+            .complete_registry_publication_multipart_upload(
                 &hub_types::CompleteRegistryPublicationMultipartUploadRequest {
                     upload_id: admission.upload_id,
                     parts: Vec::new(),
@@ -8508,8 +8500,7 @@ async fn upload_publication_multipart(
         }
     };
     client
-        .call_topology(
-            HubTopologyMethod::CompleteRegistryPublicationMultipartUpload,
+        .complete_registry_publication_multipart_upload(
             &hub_types::CompleteRegistryPublicationMultipartUploadRequest {
                 upload_id: admission.upload_id.clone(),
                 parts,

@@ -24953,6 +24953,7 @@ impl RpcService {
                         )
                     })
                     .unwrap_or_default(),
+                verified: object.verified,
             })
             .collect();
         let mut placements = Vec::new();
