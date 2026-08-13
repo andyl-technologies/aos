@@ -15706,41 +15706,207 @@ impl Database {
         local_root_path: Option<&str>,
         object_bucket: Option<&str>,
     ) -> Result<StorageBindingRecord> {
-        if let Some(binding) = self.instance_default_binding().await? {
+        let binding = if let Some(binding) = self.instance_default_binding().await? {
             if binding.kind != kind
                 || binding.local_root_path.as_deref() != local_root_path
                 || binding.object_bucket.as_deref() != object_bucket
             {
                 bail!("instance-default storage binding disagrees with deployment storage");
             }
-            return Ok(binding);
-        }
-        let created = self
-            .create_topology_storage_binding(
-                None,
-                "instance-default",
-                "instance",
-                "default",
-                kind,
-                local_root_path,
-                object_bucket,
-                (kind == "deployment_r2").then_some(""),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
-            .await;
-        match created {
-            Ok(_) => {}
-            Err(_error) if self.instance_default_binding().await?.is_some() => {}
-            Err(error) => return Err(error),
-        }
-        self.instance_default_binding()
+            binding
+        } else {
+            let created = self
+                .create_topology_storage_binding(
+                    None,
+                    "instance-default",
+                    "instance",
+                    "default",
+                    kind,
+                    local_root_path,
+                    object_bucket,
+                    (kind == "deployment_r2").then_some(""),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await;
+            match created {
+                Ok(_) => {}
+                Err(_error) if self.instance_default_binding().await?.is_some() => {}
+                Err(error) => return Err(error),
+            }
+            self.instance_default_binding()
+                .await?
+                .context("instance-default binding disappeared after provisioning")?
+        };
+        self.ensure_deployment_owned_write_revision(&binding)
+            .await?;
+        Ok(binding)
+    }
+
+    /// Records the write capability supplied by the deployment itself.
+    ///
+    /// Local filesystem and Worker R2 bindings do not use operator-managed
+    /// object-store credentials. Their deployment attachment is nevertheless
+    /// an immutable authorization input, so it receives the same validated
+    /// credential and write-revision history used by external providers.
+    async fn ensure_deployment_owned_write_revision(
+        &self,
+        binding: &StorageBindingRecord,
+    ) -> Result<()> {
+        let version_ref = match binding.kind.as_str() {
+            "local_fs" => "native://aos-hub/default-storage/v1",
+            "deployment_r2" => "worker://aos-hub/default-storage/v1",
+            kind => bail!("instance-default binding cannot use provider kind '{kind}'"),
+        };
+        let provider_identity = serde_json::to_vec(&(
+            binding.kind.as_str(),
+            binding.local_root_path.as_deref(),
+            binding.object_bucket.as_deref(),
+            version_ref,
+        ))?;
+        let credential_fingerprint = hex::encode(sha2::Sha256::digest(&provider_identity));
+
+        let credential = match self
+            .current_storage_binding_credential(binding.id, "write")
             .await?
-            .context("instance-default binding disappeared after provisioning")
+        {
+            Some(credential) => credential,
+            None => match self
+                .set_storage_binding_credential_revision(
+                    binding.id,
+                    "write",
+                    version_ref,
+                    0,
+                    &credential_fingerprint,
+                    "deployment-runtime",
+                )
+                .await
+            {
+                Ok(credential) => credential,
+                Err(error) => self
+                    .current_storage_binding_credential(binding.id, "write")
+                    .await?
+                    .ok_or(error)?,
+            },
+        };
+        anyhow::ensure!(
+            credential.secret_version_ref == version_ref
+                && credential.credential_fingerprint == credential_fingerprint,
+            "instance-default write credential disagrees with deployment storage"
+        );
+        let credential = match credential.validation_state.as_str() {
+            "valid" => credential,
+            "unknown" => match self
+                .validate_storage_binding_credential_revision(
+                    binding.id,
+                    "write",
+                    credential.generation,
+                    "valid",
+                    None,
+                    credential.head_resource_version,
+                )
+                .await
+            {
+                Ok(credential) => credential,
+                Err(error) => {
+                    let Some(current) = self
+                        .current_storage_binding_credential(binding.id, "write")
+                        .await?
+                    else {
+                        return Err(error);
+                    };
+                    if current.validation_state != "valid" {
+                        return Err(error);
+                    }
+                    current
+                }
+            },
+            state => bail!("instance-default write credential is {state}"),
+        };
+
+        let capability_fingerprint = hex::encode(sha2::Sha256::digest(serde_json::to_vec(&(
+            binding.kind.as_str(),
+            true,
+            false,
+        ))?));
+        let revision_fingerprint = hex::encode(sha2::Sha256::digest(serde_json::to_vec(&(
+            credential.secret_version_ref.as_str(),
+            credential.generation,
+            capability_fingerprint.as_str(),
+        ))?));
+        let revision = self
+            .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
+                storage_binding_id: binding.id,
+                write_credential_generation: credential.generation,
+                writes_supported: true,
+                conditional_writes_supported: false,
+                revision_fingerprint,
+                capability_fingerprint,
+            })
+            .await?;
+        let observation = self
+            .storage_binding_write_observation(binding.id, revision.revision)
+            .await?;
+        match observation {
+            None => {
+                if let Err(error) = self
+                    .observe_storage_binding_write_revision(
+                        binding.id,
+                        revision.revision,
+                        "valid",
+                        None,
+                        None,
+                    )
+                    .await
+                {
+                    let current = self
+                        .storage_binding_write_observation(binding.id, revision.revision)
+                        .await?;
+                    if !current
+                        .as_ref()
+                        .is_some_and(|current| current.state == "valid")
+                    {
+                        return Err(error);
+                    }
+                }
+            }
+            Some(observation) if observation.state == "valid" => {}
+            Some(observation) => bail!(
+                "instance-default write revision has unexpected state '{}'",
+                observation.state
+            ),
+        }
+        let state = self
+            .storage_binding_write_state(binding.id)
+            .await?
+            .context("instance-default write state is missing")?;
+        match state.current_write_revision {
+            Some(current) if current == revision.revision => {}
+            None => {
+                if let Err(error) = self
+                    .set_current_storage_binding_write_revision(
+                        binding.id,
+                        revision.revision,
+                        state.resource_version,
+                    )
+                    .await
+                {
+                    let current = self
+                        .storage_binding_write_state(binding.id)
+                        .await?
+                        .context("instance-default write state disappeared")?;
+                    if current.current_write_revision != Some(revision.revision) {
+                        return Err(error);
+                    }
+                }
+            }
+            Some(_) => bail!("instance-default binding selected an unexpected write revision"),
+        }
+        Ok(())
     }
 
     /// Look up a storage binding by `(org_id, name)`.
@@ -23037,6 +23203,62 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn deployment_default_records_one_valid_write_revision() {
+        let db = Database::open_in_memory().await.unwrap();
+        let first = db
+            .ensure_instance_default_binding("deployment_r2", None, Some("R2"))
+            .await
+            .unwrap();
+        let second = db
+            .ensure_instance_default_binding("deployment_r2", None, Some("R2"))
+            .await
+            .unwrap();
+        assert_eq!(first.id, second.id);
+
+        let credential = db
+            .current_storage_binding_credential(first.id, "write")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(credential.validation_state, "valid");
+        assert_eq!(
+            credential.secret_version_ref,
+            "worker://aos-hub/default-storage/v1"
+        );
+        let state = db
+            .storage_binding_write_state(first.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let revision = db
+            .storage_binding_write_revision(first.id, state.current_write_revision.unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(revision.writes_supported);
+        assert!(!revision.conditional_writes_supported);
+        assert_eq!(revision.write_credential_generation, credential.generation);
+
+        let count: i64 = db
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM storage_binding_write_revisions
+                 WHERE storage_binding_id = ?1",
+                &vals![first.id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(count, 1);
+        assert!(db
+            .ensure_instance_default_binding("deployment_r2", None, Some("different"))
+            .await
+            .is_err());
     }
 
     async fn create_test_binding(db: &Database, org_id: i64, name: &str, path: &str) -> i64 {
