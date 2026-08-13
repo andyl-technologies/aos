@@ -1090,6 +1090,13 @@ pub trait TopologyProbeScheduler: BackendBounds {
         operation_id: &str,
         probe: TopologyProbe,
     ) -> Result<TopologyOperationRecord>;
+
+    /// Wakes the controller for durable operations created outside this scheduler.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the runtime queue cannot accept the wakeup.
+    async fn wake_controller(&self) -> Result<()>;
 }
 
 /// Database-backed durable probe queue used by both Hub runtimes.
@@ -1280,6 +1287,13 @@ impl TopologyProbeScheduler for DatabaseTopologyProbeScheduler {
             }
         }
         Ok(operation)
+    }
+
+    async fn wake_controller(&self) -> Result<()> {
+        if let Some(wakeup) = &self.wakeup {
+            wakeup.enqueue(&Job::RunTopologyProbes).await?;
+        }
+        Ok(())
     }
 }
 
@@ -2663,6 +2677,17 @@ fn dns_target_eq(observed: &str, desired: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn explicit_controller_wakeup_enqueues_topology_pass() {
+        let database = Arc::new(Database::open_in_memory().await.unwrap());
+        let queue = Arc::new(crate::jobs::InMemoryQueue::new());
+        let scheduler = DatabaseTopologyProbeScheduler::new(database).with_wakeup(queue.clone());
+
+        scheduler.wake_controller().await.unwrap();
+
+        assert_eq!(queue.drain(), vec![Job::RunTopologyProbes]);
+    }
 
     #[test]
     fn grant_revocation_detail_accepts_generated_target_field_names() {

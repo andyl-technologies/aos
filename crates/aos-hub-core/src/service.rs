@@ -17812,6 +17812,12 @@ impl RpcService {
                 .await
                 .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?,
         };
+        if matches!(operation.state.as_str(), "pending" | "running") {
+            self.topology_probes
+                .wake_controller()
+                .await
+                .map_err(RpcError::internal)?;
+        }
         Ok(pb::OperationResponse {
             operation: Some(pb::OperationRef {
                 operation_id: operation.operation_id,

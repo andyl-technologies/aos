@@ -1375,6 +1375,9 @@ pub enum RegistryCommand {
         /// Package name override when --store-path is used
         #[arg(long)]
         name: Option<String>,
+        /// Package version override when --store-path is used
+        #[arg(long)]
+        version: Option<String>,
         /// Platform override when --store-path is used
         #[arg(long)]
         platform: Option<String>,
@@ -4311,6 +4314,7 @@ async fn run_registry(
             semver,
             store_path,
             name,
+            version,
             platform,
             description,
             homepage,
@@ -4347,6 +4351,7 @@ async fn run_registry(
                 semver,
                 store_path.as_deref(),
                 name.as_deref(),
+                version.as_deref(),
                 platform.as_deref(),
                 description.as_deref(),
                 homepage.as_deref(),

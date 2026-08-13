@@ -157,6 +157,11 @@ apr release 2026.8.1 \
   --upload-url s3://acme-packages/registry
 ```
 
+The package version still defaults to the version parsed from the store-path
+basename. Use `--version` when the output name does not carry its package
+version, or when the package version intentionally differs from the registry
+snapshot version. Attached image metadata must name that exact package version.
+
 `--cache-key` is optional. When present, it is a Nix narinfo signing key in
 `name:base64-secret` form. It is not the OpenSSH maintainer key used by
 `--key-id`.
