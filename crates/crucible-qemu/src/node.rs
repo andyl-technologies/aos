@@ -791,6 +791,7 @@ pub struct QemuNode {
     console_observation: Option<QemuConsoleObservation>,
     fault_capabilities: Vec<FaultCapabilityRowV1>,
     ready_markers: std::collections::BTreeSet<crucible::model::FaultObjectId>,
+    exact_fault_manifests: Option<crate::fault_capability::QemuExactFaultManifests>,
     next_fault_command_sequence: u64,
     setup_fault_command_sequence_floor: u64,
     next_fault_event_sequence: u64,
@@ -967,6 +968,7 @@ impl QemuNode {
             console_observation: None,
             fault_capabilities: Vec::new(),
             ready_markers: std::collections::BTreeSet::new(),
+            exact_fault_manifests: None,
             next_fault_command_sequence: initial_fault_command_sequence,
             setup_fault_command_sequence_floor: initial_fault_command_sequence,
             next_fault_event_sequence: 1,
@@ -1006,6 +1008,24 @@ impl QemuNode {
         &self,
     ) -> &std::collections::BTreeSet<crucible::model::FaultObjectId> {
         &self.ready_markers
+    }
+
+    /// Installs the exact public target manifests accepted during setup.
+    #[must_use]
+    pub(crate) fn with_exact_fault_manifests(
+        mut self,
+        manifests: Option<crate::fault_capability::QemuExactFaultManifests>,
+    ) -> Self {
+        self.exact_fault_manifests = manifests;
+        self
+    }
+
+    /// Returns the exact public target manifests accepted during setup.
+    #[must_use]
+    pub(crate) const fn exact_fault_manifests(
+        &self,
+    ) -> Option<&crate::fault_capability::QemuExactFaultManifests> {
+        self.exact_fault_manifests.as_ref()
     }
 
     /// Reserves the next strictly increasing host command sequence.

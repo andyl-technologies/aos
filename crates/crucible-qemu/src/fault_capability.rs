@@ -32,7 +32,8 @@ use crucible_shmem::{
     FaultInterruptCapabilityManifestV1, FaultInterruptCapabilityRowV1,
     FaultInterruptDeliveryDropV1, FaultInterruptFamilyV1, FaultInterruptPolarityV1,
     FaultInterruptTriggerV1, FaultRegisterCapabilityManifestV1, FaultRegisterCapabilityRowV1,
-    FaultRegisterGroupV1, HARD_FAULT_PAYLOAD_BYTES, fault_capability_manifest_digest,
+    FaultRegisterGroupV1, FaultSystemCapabilityManifestV1, HARD_FAULT_PAYLOAD_BYTES,
+    fault_capability_manifest_digest,
 };
 
 use crate::LivePluginGuestArchitecture;
@@ -52,6 +53,23 @@ pub struct QemuFaultCapabilityRequirement {
     target_manifest: Option<QemuTargetManifestRequirement>,
     ready_markers: std::collections::BTreeSet<FaultObjectId>,
     world_bound: bool,
+    exact_system_manifest: Option<FaultSystemCapabilityManifestV1>,
+}
+
+/// Exact public target manifests retained from one admitted QEMU process.
+///
+/// The live conformance gates use this value to require a second process to
+/// reproduce the first process's complete public fault surface byte for byte.
+/// Production launches continue to derive requirements exclusively from an
+/// admitted [`WorldNodeFaultCapabilities`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct QemuExactFaultManifests {
+    pub(crate) system: FaultSystemCapabilityManifestV1,
+    pub(crate) register: FaultRegisterCapabilityManifestV1,
+    pub(crate) interrupt: FaultInterruptCapabilityManifestV1,
+    pub(crate) hardware_error: FaultHardwareErrorCapabilityManifestV1,
+    pub(crate) clock: FaultClockCapabilityManifestV1,
+    pub(crate) accelerator: Option<FaultAcceleratorCapabilityManifestV1>,
 }
 
 /// Launch identity that an immutable QEMU target manifest must describe.
@@ -361,6 +379,7 @@ impl QemuFaultCapabilityRequirement {
             }),
             ready_markers: std::collections::BTreeSet::new(),
             world_bound: false,
+            exact_system_manifest: None,
         }
     }
 
@@ -379,6 +398,62 @@ impl QemuFaultCapabilityRequirement {
             cpu_model,
             crate::qemu_fault_target_hash(node_name),
         )
+    }
+
+    /// Builds an exact replay requirement for a loaded-QEMU conformance gate.
+    ///
+    /// Unlike manifest discovery, this requirement admits a process only when
+    /// every public target row and derived capability row matches the supplied
+    /// manifests exactly. It remains gate-only: production launch construction
+    /// requires [`Self::current_v1_for_node`].
+    pub(crate) fn exact_live_gate_v1(
+        architecture: LivePluginGuestArchitecture,
+        cpu_model: impl Into<String>,
+        node_name: &str,
+        manifests: &QemuExactFaultManifests,
+    ) -> Result<Self, FaultAbiError> {
+        let mut requirement = Self::current_v1(
+            architecture,
+            cpu_model,
+            crate::qemu_fault_target_hash(node_name),
+        );
+        let target = requirement
+            .target_manifest
+            .as_mut()
+            .ok_or(FaultAbiError::CapabilityInvariant)?;
+        target.exact_register_manifest = Some(manifests.register.clone());
+        target.exact_interrupt_manifest = Some(manifests.interrupt.clone());
+        target.exact_hardware_error_manifest = Some(manifests.hardware_error.clone());
+        target.exact_clock_manifest = Some(manifests.clock.clone());
+        target.exact_accelerator_manifest = manifests.accelerator.clone();
+        requirement.exact_system_manifest = Some(manifests.system);
+        requirement.rows = requirement.rows_for_manifests(
+            Some(&manifests.register),
+            Some(&manifests.interrupt),
+            Some(&manifests.hardware_error),
+            Some(&manifests.clock),
+            manifests.accelerator.as_ref(),
+        )?;
+        requirement.digest = fault_capability_manifest_digest(&requirement.rows)?;
+        Ok(requirement)
+    }
+
+    /// Returns whether this gate requirement binds all mandatory live manifests.
+    pub(crate) fn is_exact_live_gate_bound(&self) -> bool {
+        let Some(target) = self.target_manifest.as_ref() else {
+            return false;
+        };
+        !self.world_bound
+            && self.exact_system_manifest.is_some()
+            && target.exact_register_manifest.is_some()
+            && target.exact_interrupt_manifest.is_some()
+            && target.exact_hardware_error_manifest.is_some()
+            && target.exact_clock_manifest.is_some()
+    }
+
+    /// Returns the exact immutable system identity required during gate replay.
+    pub(crate) const fn exact_system_manifest(&self) -> Option<&FaultSystemCapabilityManifestV1> {
+        self.exact_system_manifest.as_ref()
     }
 
     /// Builds the production requirement from one admitted world-node manifest.
@@ -912,6 +987,7 @@ impl QemuFaultCapabilityRequirement {
             target_manifest: None,
             ready_markers: std::collections::BTreeSet::new(),
             world_bound: false,
+            exact_system_manifest: None,
         }
     }
 
@@ -982,11 +1058,20 @@ impl QemuFaultCapabilityRequirement {
                 .exact_register_manifest
                 .as_ref()
                 .is_some_and(|required| required != manifest)
+            || required_target
+                .exact_interrupt_manifest
+                .as_ref()
+                .is_some_and(|required| Some(required) != interrupt_manifest)
             || (self.world_bound
-                && required_target.exact_interrupt_manifest.as_ref() != interrupt_manifest)
+                && required_target.exact_interrupt_manifest.is_none()
+                && interrupt_manifest.is_some())
+            || required_target
+                .exact_hardware_error_manifest
+                .as_ref()
+                .is_some_and(|required| Some(required) != hardware_error_manifest)
             || (self.world_bound
-                && required_target.exact_hardware_error_manifest.as_ref()
-                    != hardware_error_manifest)
+                && required_target.exact_hardware_error_manifest.is_none()
+                && hardware_error_manifest.is_some())
             || hardware_error_manifest
                 .is_some_and(|manifest| manifest.architecture != required_target.architecture)
             || required_target
@@ -1005,7 +1090,10 @@ impl QemuFaultCapabilityRequirement {
                 .rows
                 .iter()
                 .any(|row| row.record_kind == FaultHardwareErrorRecordKindV1::MemoryEcc)
-        }) {
+        }) && !rows
+            .iter()
+            .any(|row| row.command_kind == FaultCommandKind::MemoryEccEvent)
+        {
             let mut row = capability_row(
                 FaultCommandKind::MemoryEccEvent,
                 manifest.architecture,
@@ -1398,6 +1486,91 @@ mod tests {
                 .find(|row| row.command_kind == FaultCommandKind::CpuRegisterTransform)
         );
         assert_ne!(x86.digest(), arm.digest());
+    }
+
+    #[test]
+    fn exact_gate_manifest_resolution_is_idempotent_and_checks_every_manifest() {
+        let register = FaultRegisterCapabilityManifestV1 {
+            architecture: FaultCapabilityScope::X86_64,
+            cpu_model: "crucible-x86-64-v1-x86_64-cpu".to_owned(),
+            rows: vec![FaultRegisterCapabilityRowV1 {
+                numeric_id: 1,
+                name: "rax".to_owned(),
+                width_bits: 8,
+                group: FaultRegisterGroupV1::GeneralPurpose,
+                model_phase_mask: 1 << (11 - 1),
+                side_effects: 0,
+                capabilities: FAULT_REGISTER_CAPABILITY_IMPULSE | FAULT_REGISTER_CAPABILITY_VMSTATE,
+                writable_mask: vec![0x0f],
+                reserved_mask: vec![0x30],
+                ignored_mask: vec![0x40],
+                read_only_mask: vec![0x80],
+            }],
+        };
+        let world = world_node_for_manifest(&register);
+        let world_requirement = QemuFaultCapabilityRequirement::current_v1_for_node(&world)
+            .unwrap_or_else(|error| panic!("World manifest should bind: {error}"));
+        let clock = world_requirement
+            .target_manifest
+            .as_ref()
+            .and_then(|target| target.exact_clock_manifest.clone())
+            .unwrap_or_else(|| panic!("World requirement should contain its clock manifest"));
+        let manifests = QemuExactFaultManifests {
+            system: FaultSystemCapabilityManifestV1 {
+                semantic_version: 1,
+                vmstate_format_version: 1,
+                vmstate_section_count: 9,
+                vmstate_sections_sha256: [1; 32],
+                qemu_build_id: [2; 32],
+                qemu_patch_series_hash: [3; 32],
+                shmem_header_hash: [4; 32],
+            },
+            register,
+            interrupt: FaultInterruptCapabilityManifestV1 {
+                architecture: FaultCapabilityScope::X86_64,
+                rows: Vec::new(),
+            },
+            hardware_error: FaultHardwareErrorCapabilityManifestV1 {
+                architecture: FaultCapabilityScope::X86_64,
+                rows: Vec::new(),
+            },
+            clock,
+            accelerator: None,
+        };
+        let requirement = QemuFaultCapabilityRequirement::exact_live_gate_v1(
+            LivePluginGuestArchitecture::X86_64,
+            "crucible-x86-64-v1",
+            "vm-a",
+            &manifests,
+        )
+        .unwrap_or_else(|error| panic!("exact gate manifest should bind: {error}"));
+
+        let resolved = requirement
+            .rows_for_manifests(
+                Some(&manifests.register),
+                Some(&manifests.interrupt),
+                Some(&manifests.hardware_error),
+                Some(&manifests.clock),
+                None,
+            )
+            .unwrap_or_else(|error| panic!("repeated exact resolution should succeed: {error}"));
+        assert_eq!(resolved, requirement.rows());
+
+        let wrong_interrupt = FaultInterruptCapabilityManifestV1 {
+            architecture: FaultCapabilityScope::Aarch64,
+            rows: Vec::new(),
+        };
+        assert!(
+            requirement
+                .rows_for_manifests(
+                    Some(&manifests.register),
+                    Some(&wrong_interrupt),
+                    Some(&manifests.hardware_error),
+                    Some(&manifests.clock),
+                    None,
+                )
+                .is_err()
+        );
     }
 
     #[test]

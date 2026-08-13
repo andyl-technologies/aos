@@ -567,7 +567,8 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                 .map_err(|_source| {
                     FaultActionCommitError::Fatal(FaultRuntimeError::AdapterTransactionRollback)
                 })?;
-            let evidence = validate_typed_result(&prepared, result, FaultResultStatus::Prepared)?;
+            let evidence =
+                validate_typed_node_result(&prepared.payload, result, FaultResultStatus::Prepared)?;
             if evidence.before_sha256 != evidence.after_sha256 {
                 return Err(FaultActionCommitError::Fatal(
                     FaultRuntimeError::IncompleteAdapterState,
@@ -732,7 +733,8 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                 .map_err(|_source| {
                     FaultActionCommitError::Fatal(FaultRuntimeError::AdapterTransactionRollback)
                 })?;
-            let evidence = validate_typed_result(&prepared, result, FaultResultStatus::Applied)?;
+            let evidence =
+                validate_typed_node_result(&prepared.payload, result, FaultResultStatus::Applied)?;
             if evidence.before_sha256 != preparation.before_sha256 {
                 return Err(FaultActionCommitError::Fatal(
                     FaultRuntimeError::IncompleteAdapterState,
@@ -824,8 +826,8 @@ fn typed_command_header(
     })
 }
 
-fn validate_typed_result(
-    prepared: &PreparedTypedNodeAction,
+pub(crate) fn validate_typed_node_result(
+    request_payload: &[u8],
     result: DequeuedFaultResult,
     expected_status: FaultResultStatus,
 ) -> Result<NodeFaultEvidenceV1, FaultActionCommitError> {
@@ -844,13 +846,13 @@ fn validate_typed_result(
             FaultRuntimeError::AdapterActionMismatch,
         ));
     }
-    let request = NodeFaultPayloadV1::decode(&prepared.payload).map_err(|_source| {
+    let request = NodeFaultPayloadV1::decode(request_payload).map_err(|_source| {
         FaultActionCommitError::Fatal(FaultRuntimeError::IncompleteAdapterState)
     })?;
     let evidence = NodeFaultEvidenceV1::decode(&evidence_bytes).map_err(|_source| {
         FaultActionCommitError::Fatal(FaultRuntimeError::IncompleteAdapterState)
     })?;
-    let request_sha256: [u8; 32] = Sha256::digest(&prepared.payload).into();
+    let request_sha256: [u8; 32] = Sha256::digest(request_payload).into();
     if evidence.command_kind != request.command_kind
         || evidence.operation != request.operation
         || evidence.target_kind != request.target_kind

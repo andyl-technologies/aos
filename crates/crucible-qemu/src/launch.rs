@@ -625,6 +625,22 @@ impl QemuLaunchCommandBuilder {
         builder
     }
 
+    /// Builds an internal gate command bound to previously observed exact manifests.
+    pub(crate) fn new_for_exact_live_gate(
+        profile: DeterministicLaunchProfile,
+        vm: QemuVmLaunchConfig,
+        executable: impl Into<String>,
+        plugin: QemuLaunchPluginConfig,
+        requirement: crate::QemuFaultCapabilityRequirement,
+    ) -> Result<Self, QemuLaunchCommandError> {
+        if !requirement.is_exact_live_gate_bound() {
+            return Err(QemuLaunchCommandError::InvalidFaultCapabilityRequirement);
+        }
+        let mut builder = Self::new(profile, vm, executable, plugin, requirement);
+        builder.allow_live_gate_manifest_discovery = true;
+        Ok(builder)
+    }
+
     /// Returns a builder that enables the debug-session gdbstub channel.
     #[must_use]
     pub fn with_gdbstub(mut self, gdbstub: QemuGdbstubChannelConfig) -> Self {
@@ -1297,6 +1313,12 @@ impl DeterministicLaunchProfile {
     /// away from the deterministic Contract-A requirements.
     pub fn conservative_default() -> Result<Self, LaunchProfileError> {
         LaunchProfileCandidate::default().try_into_deterministic()
+    }
+
+    /// Returns the canonical CPU-model identity pinned by this profile.
+    #[must_use]
+    pub(crate) fn cpu_model(&self) -> &str {
+        &self.cpu_model
     }
 
     /// Returns the QEMU arguments that pin the deterministic launch surface.

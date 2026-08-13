@@ -57,8 +57,18 @@ evidence cannot drift into separate digest algorithms.
 - The live signal-driven lifecycle gate issues prepare and apply through the
   production host runtime, authenticates QEMU's occurrence event, authorizes
   the exact child generation, and observes exit status `70`.
-- A changed guest or device snapshot between prepare and apply yields
-  `PRECONDITION_MISMATCH` and does not request a process exit.
+- The same gate performs a separate real-QEMU transaction, advances the guest
+  after `PREPARE`, submits `APPLY` at the new boundary with the old VM-state
+  digest, requires `PRECONDITION_MISMATCH`, proves the process remains live,
+  and only then runs the canonical signal-driven crash transaction.
+- Before either proof, a discovery process is shut down and a separately
+  launched process must reproduce its register, interrupt, hardware-error,
+  clock, accelerator, and derived capability manifests exactly. It must also
+  reproduce the complete system manifest: QEMU build ID, ordered patch-series
+  hash, generated shared-memory-header hash, VMState format version, section
+  count, and section-name/version digest. The exact-replay constructor rejects
+  a requirement missing any mandatory binding, so a caller cannot enable
+  discovery bypass with a discovery-only requirement.
 
 The patch modifies only QEMU/GPL-side files and crosses the Apache host boundary
 through the existing versioned shared-memory command, result, and event

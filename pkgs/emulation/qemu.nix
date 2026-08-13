@@ -18,8 +18,13 @@
   pname ? "qemu",
   enablePlugins ? false,
   applyCruciblePatches ? false,
+  testOnlyNonDistributable ? false,
   series ? import ./qemu-patches/_series.nix,
 }: let
+  _testArtifactPolicy =
+    if testOnlyNonDistributable && !applyCruciblePatches
+    then throw "test-only QEMU artifacts require a tracked Crucible patch series"
+    else null;
   version = series.qemuVersion;
   patchDir = ./qemu-patches;
   patchPath = file: patchDir + "/${file}";
@@ -227,6 +232,7 @@
   # patch -p1 < ${./qemu-patches/0069-crucible-accelerator-fault-device.patch}
   # patch -p1 < ${./qemu-patches/0070-crucible-fault-vmstate.patch}
 in
+  assert _testArtifactPolicy == null;
   mkDerivation {
     inherit pname;
     inherit version;
@@ -398,7 +404,11 @@ in
           }
           Ordered patch count: ${toString patchCount}
           Patch series identity: ${patchSeriesHash}
-          Corresponding source package: qemu-crucible-source
+          ${
+            if testOnlyNonDistributable
+            then "Distribution status: non-distributable compatibility-test material"
+            else "Corresponding source package: qemu-crucible-source"
+          }
           QEMU combined work: GPL-2.0-only
           Unmarked QEMU source default: GPL-2.0-or-later
           Installed qemu-plugin.h: GPL-2.0-or-later
@@ -410,9 +420,18 @@ in
             policy_version=1
             artifact_role=internal-component
             standalone_release=false
-            release_via=crucible
+            release_via=${
+              if testOnlyNonDistributable
+              then "none-test-only"
+              else "crucible"
+            }
             corresponding_source_required=true
             corresponding_source_identity=${qemuBuildIdentity}
+            publishable=${
+              if testOnlyNonDistributable
+              then "false"
+              else "via-aggregate-only"
+            }
             RELEASE_POLICY
           ''}
         '';
@@ -420,9 +439,10 @@ in
     ];
 
     passthru = {
-      standaloneRelease = !applyCruciblePatches;
+      standaloneRelease = !applyCruciblePatches && !testOnlyNonDistributable;
+      inherit testOnlyNonDistributable;
       releaseVia =
-        if applyCruciblePatches
+        if applyCruciblePatches && !testOnlyNonDistributable
         then "crucible"
         else null;
       inherit

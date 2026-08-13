@@ -1473,14 +1473,18 @@ fn validate_lifecycle_evidence(
     let Some(virtual_after) = read_u64(bytes, 96) else {
         return false;
     };
+    let expected_preserved_domains = if matches!(transition, 1 | 3 | 5) {
+        u32::from(volatile_policy == 1) | (u32::from(device_policy == 1) << 1)
+    } else {
+        0
+    };
     if !(1..=6).contains(&transition)
         || !(1..=2).contains(&volatile_policy)
         || !(1..=3).contains(&device_policy)
-        || preserved_domains
-            != u32::from(volatile_policy == 1) | (u32::from(device_policy == 1) << 1)
+        || preserved_domains != expected_preserved_domains
         || virtual_before.checked_add(downtime) != Some(virtual_after)
-        || read_u64(bytes, 48).is_none_or(|value| value == 0)
-        || read_u64(bytes, 56).is_none_or(|value| value == 0)
+        || !read_u64(bytes, 48).is_some_and(|ram_bytes| ram_bytes > 0)
+        || read_u64(bytes, 56).is_none()
     {
         return false;
     }
@@ -1542,6 +1546,68 @@ fn validate_lifecycle_evidence(
     }
 }
 
+/// Validates the lifecycle evidence emitted by the real-QEMU negative gate.
+///
+/// This is the same production decoder used during normal event admission; the
+/// gate wrapper fixes only the authored effect whose real output it requested.
+pub(crate) fn validate_live_gate_lifecycle_event(event: &DequeuedFaultEvent) -> bool {
+    validate_lifecycle_evidence(
+        event,
+        &NodeEffectSpecification::Lifecycle {
+            transition: NodeLifecycleTransition::Crash,
+            downtime_nanos: 1,
+            boot_policy: NodeBootPolicy::Immediate,
+            volatile_state_policy: NodeStatePolicy::Preserve,
+            device_state_policy: NodeStatePolicy::Clear,
+        },
+    )
+}
+
+/// Summarizes the independent lifecycle-evidence predicates used by the live gate.
+pub(crate) fn live_gate_lifecycle_event_diagnostic(event: &DequeuedFaultEvent) -> String {
+    let bytes = event.payload.as_slice();
+    let transition = read_u16(bytes, 10);
+    let volatile_policy = read_u32(bytes, 12);
+    let device_policy = read_u32(bytes, 16);
+    let effective_transition = read_u32(bytes, 288);
+    let terminal_cause = read_u32(bytes, 292);
+    let terminal_flags = read_u32(bytes, 296);
+    let terminal_shape = transition
+        .zip(effective_transition)
+        .zip(terminal_cause)
+        .zip(terminal_flags)
+        .is_some_and(|(((requested, effective), cause), flags)| {
+            validate_lifecycle_terminal_shape(event, bytes, requested, effective, cause, flags)
+        });
+    let boot_valid = validate_boot_evidence(bytes, &NodeBootPolicy::Immediate);
+    let terminal_policy =
+        effective_transition
+            .zip(terminal_cause)
+            .is_some_and(|(effective, cause)| {
+                validate_lifecycle_terminal_policy(&NodeBootPolicy::Immediate, effective, cause)
+            });
+
+    format!(
+        "len={} magic={} version={:?} outcome={:?} observed={} binding={} payload_before={} payload_after={} transition={transition:?} volatile={volatile_policy:?} device={device_policy:?} preserved={:?} virtual_before={:?} downtime={:?} virtual_after={:?} ram_before={:?} device_before={:?} ram_after={:?} device_after={:?} effective={effective_transition:?} cause={terminal_cause:?} flags={terminal_flags:?} terminal_shape={terminal_shape} boot={boot_valid} terminal_policy={terminal_policy}",
+        bytes.len(),
+        bytes.get(0..8) == Some(b"CRUCLIF1"),
+        read_u16(bytes, 8),
+        event.header.outcome,
+        read_u64(bytes, 24) == Some(event.header.observed_icount),
+        bytes.get(64..96) == Some(event.header.binding_hash.as_slice()),
+        bytes.get(128..160) == Some(event.header.before_hash.as_slice()),
+        bytes.get(160..192) == Some(event.header.after_hash.as_slice()),
+        read_u32(bytes, 20),
+        read_u64(bytes, 32),
+        read_u64(bytes, 40),
+        read_u64(bytes, 96),
+        read_u64(bytes, 48),
+        read_u64(bytes, 56),
+        read_u64(bytes, 112),
+        read_u64(bytes, 120),
+    )
+}
+
 fn validate_lifecycle_terminal_shape(
     event: &DequeuedFaultEvent,
     bytes: &[u8],
@@ -1570,7 +1636,7 @@ fn validate_lifecycle_terminal_shape(
                 && effective_transition == u32::from(requested_transition)
                 && flags == 0
                 && pre_exit == Some([0_u8; 32].as_slice())
-                && lifecycle_after_counts_are_nonzero(bytes)
+                && lifecycle_after_counts_match_before(bytes)
         }
         LIFECYCLE_TERMINAL_CAUSE_DIRECT => {
             event.header.outcome == FaultEventOutcomeV1::Applied
@@ -1578,14 +1644,14 @@ fn validate_lifecycle_terminal_shape(
                 && effective_transition == u32::from(requested_transition)
                 && flags == LIFECYCLE_TERMINAL_PRE_EXIT_VALID | LIFECYCLE_TERMINAL_EXIT_REQUIRED
                 && digest_is_valid
-                && lifecycle_after_counts_are_nonzero(bytes)
+                && lifecycle_after_counts_match_before(bytes)
         }
         LIFECYCLE_TERMINAL_CAUSE_READY_EXHAUSTED => {
             event.header.outcome == FaultEventOutcomeV1::Applied
                 && effective_is_terminal
                 && flags == LIFECYCLE_TERMINAL_PRE_EXIT_VALID | LIFECYCLE_TERMINAL_EXIT_REQUIRED
                 && digest_is_valid
-                && lifecycle_after_counts_are_nonzero(bytes)
+                && lifecycle_after_counts_match_before(bytes)
         }
         LIFECYCLE_TERMINAL_CAUSE_FAIL_CLOSED => {
             event.header.outcome == FaultEventOutcomeV1::Error
@@ -1593,7 +1659,7 @@ fn validate_lifecycle_terminal_shape(
                     == u32::from(lifecycle_tag(NodeLifecycleTransition::PermanentFailure))
                 && exit_required
                 && if pre_exit_valid {
-                    digest_is_valid && lifecycle_after_counts_are_nonzero(bytes)
+                    digest_is_valid && lifecycle_after_counts_match_before(bytes)
                 } else {
                     pre_exit == Some([0_u8; 32].as_slice())
                         && event.header.after_hash == event.header.before_hash
@@ -1605,9 +1671,8 @@ fn validate_lifecycle_terminal_shape(
     }
 }
 
-fn lifecycle_after_counts_are_nonzero(bytes: &[u8]) -> bool {
-    read_u64(bytes, 112).is_some_and(|value| value > 0)
-        && read_u64(bytes, 120).is_some_and(|value| value > 0)
+fn lifecycle_after_counts_match_before(bytes: &[u8]) -> bool {
+    read_u64(bytes, 112) == read_u64(bytes, 48) && read_u64(bytes, 120) == read_u64(bytes, 56)
 }
 
 fn validate_lifecycle_terminal_policy(
@@ -2420,7 +2485,8 @@ mod tests {
         payload[10..12].copy_from_slice(&transition.to_le_bytes());
         payload[12..16].copy_from_slice(&1_u32.to_le_bytes());
         payload[16..20].copy_from_slice(&2_u32.to_le_bytes());
-        payload[20..24].copy_from_slice(&1_u32.to_le_bytes());
+        let preserved_domains = u32::from(matches!(transition, 1 | 3 | 5));
+        payload[20..24].copy_from_slice(&preserved_domains.to_le_bytes());
         payload[24..32].copy_from_slice(&44_u64.to_le_bytes());
         payload[32..40].copy_from_slice(&100_u64.to_le_bytes());
         payload[40..48].copy_from_slice(&32_u64.to_le_bytes());
