@@ -12,7 +12,7 @@ use anyhow::{Context as _, Result};
 
 use aos_core::output::{OutputMode, Printer};
 use aos_remote::hub_rpc as HubTopologyMethod;
-use aos_remote::{HubClient, HubRpc, HubSurfaceRef, Placement, hub_types};
+use aos_remote::{hub_types, HubClient, HubRpc, HubSurfaceRef, Placement};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -213,47 +213,39 @@ mod tests {
           }]
         }"#;
         assert_eq!(parse_pin_resolution_document(valid).unwrap().len(), 1);
-        assert!(
-            parse_pin_resolution_document(
-                br#"{"schemaVersion":"aos.hub.pin-resolutions.v2","resolutions":[]}"#
-            )
-            .is_err()
-        );
-        assert!(
-            parse_pin_resolution_document(
-                br#"{"schemaVersion":"aos.hub.pin-resolutions.v1","resolutions":[],"extra":true}"#
-            )
-            .is_err()
-        );
+        assert!(parse_pin_resolution_document(
+            br#"{"schemaVersion":"aos.hub.pin-resolutions.v2","resolutions":[]}"#
+        )
+        .is_err());
+        assert!(parse_pin_resolution_document(
+            br#"{"schemaVersion":"aos.hub.pin-resolutions.v1","resolutions":[],"extra":true}"#
+        )
+        .is_err());
     }
 
     #[test]
     fn pin_resolution_document_rejects_malformed_duplicate_and_unsealed_actions() {
         assert!(parse_pin_resolution_document(b"not-json").is_err());
-        assert!(
-            parse_pin_resolution_document(
-                br#"{
+        assert!(parse_pin_resolution_document(
+            br#"{
               "schemaVersion":"aos.hub.pin-resolutions.v1",
               "resolutions":[
                 {"pinId":"pin:one","release":{"expectedSourceResourceVersion":"7"}},
                 {"pinId":"pin:one","release":{"expectedSourceResourceVersion":"8"}}
               ]
             }"#
-            )
-            .is_err()
-        );
-        assert!(
-            parse_pin_resolution_document(
-                br#"{
+        )
+        .is_err());
+        assert!(parse_pin_resolution_document(
+            br#"{
               "schemaVersion":"aos.hub.pin-resolutions.v1",
               "resolutions":[{
                 "pinId":"pin:one",
                 "release":{"expectedSourceResourceVersion":"0"}
               }]
             }"#
-            )
-            .is_err()
-        );
+        )
+        .is_err());
     }
 
     #[test]
@@ -473,6 +465,56 @@ mod tests {
         let replacement = publication_from_root(root, "andyl/main").unwrap();
         assert_eq!(replacement.request.refs_digest, first_refs_digest);
         assert_ne!(replacement.request.generation, first_generation);
+    }
+
+    #[test]
+    fn publication_upload_snapshot_rejects_post_inventory_changes() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        std::fs::create_dir_all(root.join("info")).unwrap();
+        let commit = "c".repeat(64);
+        std::fs::write(root.join("HEAD"), format!("{commit}\n")).unwrap();
+        std::fs::write(root.join("info/refs"), b"").unwrap();
+        std::fs::write(root.join("index.html"), b"reviewed").unwrap();
+        let pinned = publication_from_root(root, "andyl/main").unwrap();
+        let expected = pinned
+            .request
+            .objects
+            .iter()
+            .find(|object| object.path == "index.html")
+            .unwrap();
+
+        std::fs::write(root.join("index.html"), b"changed").unwrap();
+
+        assert!(snapshot_publication_object(&pinned.root, expected).is_err());
+    }
+
+    #[test]
+    fn publication_copy_is_bounded_by_the_declared_size() {
+        let mut excess = std::io::Cursor::new(b"reviewed-extra");
+        assert!(copy_and_hash_exact(&mut excess, &mut std::io::sink(), 8, "excess").is_err());
+
+        let mut short = std::io::Cursor::new(b"short");
+        assert!(copy_and_hash_exact(&mut short, &mut std::io::sink(), 8, "short").is_err());
+    }
+
+    #[test]
+    fn publication_surface_rejects_excessive_directory_depth() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        std::fs::create_dir_all(root.join("info")).unwrap();
+        let commit = "d".repeat(64);
+        std::fs::write(root.join("HEAD"), format!("{commit}\n")).unwrap();
+        std::fs::write(root.join("info/refs"), b"").unwrap();
+
+        let mut directory = root.join("web");
+        for _ in 0..=MAX_PUBLICATION_DIRECTORY_DEPTH {
+            directory.push("nested");
+        }
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("index.html"), b"too deep").unwrap();
+
+        assert!(publication_from_root(root, "andyl/main").is_err());
     }
 
     #[cfg(unix)]
@@ -2370,9 +2412,9 @@ async fn run_coverage_operation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyTopologyPlanRequest,
-        Response = hub_types::OperationResponse,
-    > + Copy,
+            Request = hub_types::ApplyTopologyPlanRequest,
+            Response = hub_types::OperationResponse,
+        > + Copy,
     mutation: &HubMutationArgs,
     operation: &HubOperationArgs,
 ) -> Result<()> {
@@ -3922,9 +3964,9 @@ async fn topology_operation_mutation<PlanReq>(
     client: &HubClient,
     plan_method: impl HubRpc<Request = PlanReq, Response = hub_types::TopologyPlanResponse>,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyTopologyPlanRequest,
-        Response = hub_types::OperationResponse,
-    > + Copy,
+            Request = hub_types::ApplyTopologyPlanRequest,
+            Response = hub_types::OperationResponse,
+        > + Copy,
     plan_request: &PlanReq,
     mutation: &HubMutationArgs,
     operation: &HubOperationArgs,
@@ -4170,9 +4212,9 @@ async fn consumer_scope_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyConsumerScopeGrantRequest,
-        Response = hub_types::ConsumerScopeGrantResponse,
-    > + Copy,
+            Request = hub_types::ApplyConsumerScopeGrantRequest,
+            Response = hub_types::ConsumerScopeGrantResponse,
+        > + Copy,
 ) -> Result<()> {
     let client = hub_client(&access.hub, access.token.as_deref())?;
     topology_mutation::<
@@ -4214,9 +4256,9 @@ async fn delete_topology_resource(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyDeleteTopologyResourceRequest,
-        Response = hub_types::DeleteTopologyResourceResponse,
-    > + Copy,
+            Request = hub_types::ApplyDeleteTopologyResourceRequest,
+            Response = hub_types::DeleteTopologyResourceResponse,
+        > + Copy,
 ) -> Result<()> {
     let client = hub_client(&access.hub, access.token.as_deref())?;
     topology_mutation::<
@@ -5605,9 +5647,9 @@ async fn boundary_lifecycle_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyNetworkBoundaryLifecycleRequest,
-        Response = hub_types::NetworkBoundaryRevisionResponse,
-    > + Copy,
+            Request = hub_types::ApplyNetworkBoundaryLifecycleRequest,
+            Response = hub_types::NetworkBoundaryRevisionResponse,
+        > + Copy,
 ) -> Result<()> {
     let (boundary_id, revision) =
         parse_generation_ref(boundary_revision, "network boundary revision")?;
@@ -6186,7 +6228,7 @@ async fn topology_state_mutation<Resp>(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<Request = hub_types::ApplyDeleteTopologyResourceRequest, Response = Resp>
-    + Copy,
+        + Copy,
 ) -> Result<()>
 where
     Resp: DeserializeOwned + Serialize,
@@ -6467,9 +6509,9 @@ async fn storage_gateway_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyStorageGatewayMutationRequest,
-        Response = hub_types::StorageGatewayResponse,
-    > + Copy,
+            Request = hub_types::ApplyStorageGatewayMutationRequest,
+            Response = hub_types::StorageGatewayResponse,
+        > + Copy,
     request: hub_types::PlanStorageGatewayMutationRequest,
     mutation: &HubMutationArgs,
 ) -> Result<()> {
@@ -7108,9 +7150,9 @@ async fn route_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyRouteMutationRequest,
-        Response = hub_types::DeliveryRouteResponse,
-    > + Copy,
+            Request = hub_types::ApplyRouteMutationRequest,
+            Response = hub_types::DeliveryRouteResponse,
+        > + Copy,
     request: hub_types::PlanRouteMutationRequest,
     mutation: &HubMutationArgs,
 ) -> Result<()> {
@@ -7288,9 +7330,9 @@ async fn apply_topology_defaults(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplySetTopologyDefaultsRequest,
-        Response = hub_types::TopologyDefaultsResponse,
-    > + Copy,
+            Request = hub_types::ApplySetTopologyDefaultsRequest,
+            Response = hub_types::TopologyDefaultsResponse,
+        > + Copy,
 ) -> Result<()> {
     if let Some(value) = storage_binding {
         defaults.storage_binding_id = value.clone();
@@ -8256,20 +8298,21 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
                         "Hub publication response changed the identity of {}",
                         object.path
                     );
-                    let file = pinned
-                        .files
-                        .get(&object.path)
-                        .with_context(|| {
-                            format!("pinned publication lost declared path {}", object.path)
-                        })?
-                        .try_clone()
-                        .with_context(|| {
-                            format!("duplicating pinned publication path {}", object.path)
-                        })?;
-                    client
-                        .upload_publication_object(&object.upload_url, file, &object.path)
-                        .await
-                        .with_context(|| format!("uploading publication path {}", object.path))?;
+                    let file = snapshot_publication_object(&pinned.root, declared)?;
+                    if object.upload_url.is_empty() {
+                        upload_publication_multipart(&client, &publication_id, object, file)
+                            .await
+                            .with_context(|| {
+                                format!("uploading publication path {}", object.path)
+                            })?;
+                    } else {
+                        client
+                            .upload_publication_object(&object.upload_url, file, &object.path)
+                            .await
+                            .with_context(|| {
+                                format!("uploading publication path {}", object.path)
+                            })?;
+                    }
                 }
                 client
                     .call_topology(
@@ -8362,6 +8405,121 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
     }
 }
 
+async fn upload_publication_multipart(
+    client: &HubClient,
+    publication_id: &str,
+    object: &hub_types::RegistryPublicationObject,
+    mut file: std::fs::File,
+) -> Result<()> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    const MAX_CLIENT_PART_BYTES: u64 = 20 * 1024 * 1024;
+    const MAX_CLIENT_PARTS: u64 = 10_000;
+
+    let admission: hub_types::BeginRegistryPublicationMultipartUploadResponse = client
+        .call_topology(
+            HubTopologyMethod::BeginRegistryPublicationMultipartUpload,
+            &hub_types::BeginRegistryPublicationMultipartUploadRequest {
+                publication_id: publication_id.into(),
+                object_id: object.object_id,
+            },
+        )
+        .await?;
+    anyhow::ensure!(
+        admission.part_size > 0 && admission.part_size <= MAX_CLIENT_PART_BYTES,
+        "Hub returned an invalid publication multipart part size"
+    );
+    let expected_size = u64::try_from(object.byte_size)
+        .context("publication object has a negative declared size")?;
+    let part_count = expected_size.div_ceil(admission.part_size);
+    anyhow::ensure!(
+        part_count > 0 && part_count <= MAX_CLIENT_PARTS,
+        "publication object exceeds the client multipart part-count limit"
+    );
+    anyhow::ensure!(
+        matches!(admission.state.as_str(), "active" | "completing"),
+        "Hub returned an invalid publication multipart state"
+    );
+
+    if admission.state == "completing" {
+        let _: hub_types::RegistryPublicationMultipartUploadResponse = client
+            .call_topology(
+                HubTopologyMethod::CompleteRegistryPublicationMultipartUpload,
+                &hub_types::CompleteRegistryPublicationMultipartUploadRequest {
+                    upload_id: admission.upload_id,
+                    parts: Vec::new(),
+                },
+            )
+            .await
+            .context("resuming publication multipart completion")?;
+        return Ok(());
+    }
+    file.seek(SeekFrom::Start(0))?;
+
+    let result: Result<Vec<hub_types::RegistryPublicationMultipartPart>> = async {
+        let mut remaining = expected_size;
+        let mut parts = Vec::with_capacity(usize::try_from(part_count)?);
+        for part_number in 1..=u32::try_from(part_count)? {
+            let size = remaining.min(admission.part_size);
+            let mut bytes = vec![0_u8; usize::try_from(size)?];
+            file.read_exact(&mut bytes).with_context(|| {
+                format!(
+                    "reading publication multipart part {part_number} for {}",
+                    object.path
+                )
+            })?;
+            let part = client
+                .upload_publication_part(
+                    &admission.part_upload_url,
+                    &admission.upload_id,
+                    part_number,
+                    bytes,
+                )
+                .await?;
+            anyhow::ensure!(
+                part.part_number == part_number,
+                "Hub returned a mismatched publication multipart part number"
+            );
+            parts.push(part);
+            remaining -= size;
+        }
+        anyhow::ensure!(remaining == 0, "publication multipart upload is incomplete");
+        Ok(parts)
+    }
+    .await;
+
+    let parts = match result {
+        Ok(parts) => parts,
+        Err(error) => {
+            let abort = client
+                .call_topology(
+                    HubTopologyMethod::AbortRegistryPublicationMultipartUpload,
+                    &hub_types::AbortRegistryPublicationMultipartUploadRequest {
+                        upload_id: admission.upload_id,
+                    },
+                )
+                .await;
+            return match abort {
+                Ok(_) => Err(error.context("the publication multipart upload was aborted")),
+                Err(abort_error) => Err(error.context(format!(
+                    "aborting the publication multipart upload also failed: {abort_error:#}"
+                ))),
+            };
+        }
+    };
+    client
+        .call_topology(
+            HubTopologyMethod::CompleteRegistryPublicationMultipartUpload,
+            &hub_types::CompleteRegistryPublicationMultipartUploadRequest {
+                upload_id: admission.upload_id.clone(),
+                parts,
+            },
+        )
+        .await
+        .context("completing publication multipart upload")?;
+    Ok(())
+}
+
 async fn bind_publication_parent(
     client: &HubClient,
     request: &mut hub_types::BeginRegistryPublicationRequest,
@@ -8394,26 +8552,34 @@ async fn bind_publication_parent(
 
 struct PinnedPublication {
     request: hub_types::BeginRegistryPublicationRequest,
-    files: std::collections::BTreeMap<String, std::fs::File>,
+    root: std::os::fd::OwnedFd,
 }
+
+const MAX_PUBLICATION_OBJECTS: usize = 10_000;
+const MAX_PUBLICATION_ENTRIES: usize = 20_000;
+const MAX_PUBLICATION_PATH_BYTES: usize = 512;
+const MAX_PUBLICATION_DIRECTORY_DEPTH: usize = 32;
 
 fn publication_from_root(root: &std::path::Path, registry: &str) -> Result<PinnedPublication> {
     use sha2::{Digest as _, Sha256};
 
-    let mut files = std::collections::BTreeMap::new();
+    let mut objects = std::collections::BTreeMap::new();
+    let mut entries = 0;
     let root = open_publication_root(root)?;
-    collect_publication_objects(&root, "", &mut files)?;
-    let refs_file = files
-        .get_mut("info/refs")
+    collect_publication_objects(&root, "", 0, &mut entries, &mut objects)?;
+    let refs_object = objects
+        .get("info/refs")
         .context("publication surface has no info/refs")?;
-    let refs = read_pinned_publication_file(refs_file, "info/refs")?;
+    let refs_file = snapshot_publication_object(&root, refs_object)?;
+    let refs = read_pinned_publication_file(refs_file, "info/refs", 4 * 1024 * 1024)?;
     let refs_digest = format!("{:x}", Sha256::digest(&refs));
-    let head_file = files
-        .get_mut("HEAD")
+    let head_object = objects
+        .get("HEAD")
         .context("publication surface has no HEAD")?;
-    let head = read_pinned_publication_file(head_file, "HEAD")?;
+    let head_file = snapshot_publication_object(&root, head_object)?;
+    let head = read_pinned_publication_file(head_file, "HEAD", 4096)?;
     let default_commit = publication_default_commit(&head, &refs)?;
-    let objects = publication_inputs(&files)?;
+    let objects = publication_inputs(&objects)?;
     let generation = publication_generation(&objects)?;
 
     Ok(PinnedPublication {
@@ -8425,14 +8591,16 @@ fn publication_from_root(root: &std::path::Path, registry: &str) -> Result<Pinne
             parent_publication_id: String::new(),
             objects,
         },
-        files,
+        root,
     })
 }
 
 fn collect_publication_objects(
     directory: &std::os::fd::OwnedFd,
     relative_directory: &str,
-    files: &mut std::collections::BTreeMap<String, std::fs::File>,
+    depth: usize,
+    entries: &mut usize,
+    objects: &mut std::collections::BTreeMap<String, hub_types::RegistryPublicationObjectInput>,
 ) -> Result<()> {
     let mut names = Vec::new();
     for entry in rustix::fs::Dir::read_from(directory)? {
@@ -8443,6 +8611,13 @@ fn collect_publication_objects(
             .context("publication path is not valid UTF-8")?
             .to_string();
         if name != "." && name != ".." {
+            *entries = entries
+                .checked_add(1)
+                .context("publication entry count overflowed")?;
+            anyhow::ensure!(
+                *entries <= MAX_PUBLICATION_ENTRIES,
+                "publication surface exceeds the {MAX_PUBLICATION_ENTRIES} entry limit"
+            );
             names.push(name);
         }
     }
@@ -8464,9 +8639,17 @@ fn collect_publication_objects(
         } else {
             format!("{relative_directory}/{name}")
         };
+        anyhow::ensure!(
+            relative.len() <= MAX_PUBLICATION_PATH_BYTES,
+            "publication path exceeds the {MAX_PUBLICATION_PATH_BYTES} byte limit: {relative}"
+        );
         if metadata.is_dir() {
+            anyhow::ensure!(
+                depth < MAX_PUBLICATION_DIRECTORY_DEPTH,
+                "publication surface exceeds the {MAX_PUBLICATION_DIRECTORY_DEPTH} directory depth limit"
+            );
             let descriptor = file.into();
-            collect_publication_objects(&descriptor, &relative, files)?;
+            collect_publication_objects(&descriptor, &relative, depth + 1, entries, objects)?;
             continue;
         }
         anyhow::ensure!(
@@ -8478,7 +8661,13 @@ fn collect_publication_objects(
             "publication surface contains unsupported path {relative}"
         );
         anyhow::ensure!(
-            files.insert(relative.clone(), file).is_none(),
+            objects.len() < MAX_PUBLICATION_OBJECTS,
+            "publication surface exceeds the {MAX_PUBLICATION_OBJECTS} object limit"
+        );
+        anyhow::ensure!(
+            objects
+                .insert(relative.clone(), publication_input(&relative, file)?)
+                .is_none(),
             "publication surface contains duplicate path {relative}"
         );
     }
@@ -8506,54 +8695,42 @@ fn open_publication_root(path: &std::path::Path) -> Result<std::os::fd::OwnedFd>
 }
 
 fn publication_inputs(
-    files: &std::collections::BTreeMap<String, std::fs::File>,
+    objects: &std::collections::BTreeMap<String, hub_types::RegistryPublicationObjectInput>,
 ) -> Result<Vec<hub_types::RegistryPublicationObjectInput>> {
-    use sha2::{Digest as _, Sha256};
-    use std::io::{Read as _, Seek as _, SeekFrom};
+    anyhow::ensure!(!objects.is_empty(), "publication surface is empty");
+    Ok(objects.values().cloned().collect())
+}
 
-    anyhow::ensure!(!files.is_empty(), "publication surface is empty");
-    let mut objects = Vec::with_capacity(files.len());
-    for (relative, source) in files {
-        let metadata = source
-            .metadata()
-            .with_context(|| format!("reading pinned publication object {relative}"))?;
-        let mut file = source
-            .try_clone()
-            .with_context(|| format!("duplicating pinned publication object {relative}"))?;
-        file.seek(SeekFrom::Start(0))?;
-        let mut digest = Sha256::new();
-        let mut buffer = vec![0_u8; 64 * 1024];
-        loop {
-            let count = file
-                .read(&mut buffer)
-                .with_context(|| format!("hashing publication object {relative}"))?;
-            if count == 0 {
-                break;
-            }
-            digest.update(&buffer[..count]);
+fn publication_input(
+    relative: &str,
+    mut file: std::fs::File,
+) -> Result<hub_types::RegistryPublicationObjectInput> {
+    use std::io::{Seek as _, SeekFrom};
+
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("reading pinned publication object {relative}"))?;
+    file.seek(SeekFrom::Start(0))?;
+    let digest = copy_and_hash_exact(&mut file, &mut std::io::sink(), metadata.len(), relative)?;
+    let after = file
+        .metadata()
+        .with_context(|| format!("rechecking pinned publication object {relative}"))?;
+    anyhow::ensure!(
+        metadata.len() == after.len() && metadata.modified().ok() == after.modified().ok(),
+        "publication object changed while it was hashed: {relative}"
+    );
+    Ok(hub_types::RegistryPublicationObjectInput {
+        path: relative.to_string(),
+        sha256: digest,
+        byte_size: i64::try_from(metadata.len()).context("publication object is too large")?,
+        kind: if publication_mutable_pointer(relative) {
+            "mutable_pointer"
+        } else {
+            "immutable"
         }
-        let after = file
-            .metadata()
-            .with_context(|| format!("rechecking pinned publication object {relative}"))?;
-        anyhow::ensure!(
-            metadata.len() == after.len() && metadata.modified().ok() == after.modified().ok(),
-            "publication object changed while it was hashed: {relative}"
-        );
-        file.seek(SeekFrom::Start(0))?;
-        objects.push(hub_types::RegistryPublicationObjectInput {
-            path: relative.clone(),
-            sha256: format!("{:x}", digest.finalize()),
-            byte_size: i64::try_from(metadata.len()).context("publication object is too large")?,
-            kind: if publication_mutable_pointer(&relative) {
-                "mutable_pointer"
-            } else {
-                "immutable"
-            }
-            .into(),
-            media_type: publication_object_media_type(&relative).into(),
-        });
-    }
-    Ok(objects)
+        .into(),
+        media_type: publication_object_media_type(relative).into(),
+    })
 }
 
 fn publication_generation(objects: &[hub_types::RegistryPublicationObjectInput]) -> Result<String> {
@@ -8581,10 +8758,11 @@ fn pinned_publication_from_root(
     root: &std::path::Path,
     mut request: hub_types::BeginRegistryPublicationRequest,
 ) -> Result<PinnedPublication> {
-    let mut files = std::collections::BTreeMap::new();
+    let mut objects = std::collections::BTreeMap::new();
+    let mut entries = 0;
     let root = open_publication_root(root)?;
-    collect_publication_objects(&root, "", &mut files)?;
-    let actual = publication_inputs(&files)?;
+    collect_publication_objects(&root, "", 0, &mut entries, &mut objects)?;
+    let actual = publication_inputs(&objects)?;
     request
         .objects
         .sort_by(|left, right| left.path.cmp(&right.path));
@@ -8601,17 +8779,119 @@ fn pinned_publication_from_root(
         declared == actual,
         "publication manifest does not exactly match the pinned surface"
     );
-    Ok(PinnedPublication { request, files })
+    Ok(PinnedPublication { request, root })
 }
 
-fn read_pinned_publication_file(file: &mut std::fs::File, label: &str) -> Result<Vec<u8>> {
+fn read_pinned_publication_file(
+    mut file: std::fs::File,
+    label: &str,
+    maximum_size: u64,
+) -> Result<Vec<u8>> {
     use std::io::{Read as _, Seek as _, SeekFrom};
 
+    let size = file.metadata()?.len();
+    anyhow::ensure!(
+        size <= maximum_size,
+        "publication control object exceeds its {maximum_size} byte limit: {label}"
+    );
     file.seek(SeekFrom::Start(0))?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
+    let mut bytes = vec![0_u8; usize::try_from(size)?];
+    file.read_exact(&mut bytes)
         .with_context(|| format!("reading pinned publication object {label}"))?;
+    let mut excess = [0_u8; 1];
+    anyhow::ensure!(
+        file.read(&mut excess)? == 0,
+        "publication control object grew while it was read: {label}"
+    );
     Ok(bytes)
+}
+
+fn open_publication_object(root: &std::os::fd::OwnedFd, relative: &str) -> Result<std::fs::File> {
+    let mut directory = root.try_clone()?;
+    let mut components = relative.split('/').peekable();
+    while let Some(component) = components.next() {
+        anyhow::ensure!(
+            !component.is_empty() && component != "." && component != "..",
+            "publication path is not a portable relative path: {relative}"
+        );
+        let mut flags =
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC | rustix::fs::OFlags::NOFOLLOW;
+        if components.peek().is_some() {
+            flags |= rustix::fs::OFlags::DIRECTORY;
+        }
+        let descriptor =
+            rustix::fs::openat(&directory, component, flags, rustix::fs::Mode::empty())
+                .with_context(|| {
+                    format!("opening publication path {relative} without following links")
+                })?;
+        if components.peek().is_some() {
+            directory = descriptor;
+        } else {
+            let file = std::fs::File::from(descriptor);
+            anyhow::ensure!(
+                file.metadata()?.is_file(),
+                "publication object is not a file"
+            );
+            return Ok(file);
+        }
+    }
+    anyhow::bail!("publication object path is empty")
+}
+
+fn snapshot_publication_object(
+    root: &std::os::fd::OwnedFd,
+    expected: &hub_types::RegistryPublicationObjectInput,
+) -> Result<std::fs::File> {
+    use std::io::{Seek as _, SeekFrom};
+
+    let mut source = open_publication_object(root, &expected.path)?;
+    let mut snapshot = tempfile::tempfile().context("creating publication object snapshot")?;
+    let expected_size = u64::try_from(expected.byte_size)
+        .context("publication object has a negative declared size")?;
+    let digest = copy_and_hash_exact(&mut source, &mut snapshot, expected_size, &expected.path)?;
+    anyhow::ensure!(
+        digest == expected.sha256,
+        "publication object changed after inventory: {}",
+        expected.path
+    );
+    snapshot.seek(SeekFrom::Start(0))?;
+    Ok(snapshot)
+}
+
+fn copy_and_hash_exact(
+    source: &mut impl std::io::Read,
+    destination: &mut impl std::io::Write,
+    expected_size: u64,
+    label: &str,
+) -> Result<String> {
+    use sha2::{Digest as _, Sha256};
+
+    let mut digest = Sha256::new();
+    let mut remaining = expected_size;
+    let mut buffer = [0_u8; 64 * 1024];
+    while remaining > 0 {
+        let limit = usize::try_from(remaining.min(buffer.len() as u64))?;
+        let count = source
+            .read(&mut buffer[..limit])
+            .with_context(|| format!("reading publication object {label}"))?;
+        anyhow::ensure!(
+            count != 0,
+            "publication object is shorter than its declared size: {label}"
+        );
+        destination
+            .write_all(&buffer[..count])
+            .with_context(|| format!("copying publication object {label}"))?;
+        digest.update(&buffer[..count]);
+        remaining -= u64::try_from(count)?;
+    }
+    anyhow::ensure!(
+        source
+            .read(&mut buffer[..1])
+            .with_context(|| format!("checking publication object size {label}"))?
+            == 0,
+        "publication object is longer than its declared size: {label}"
+    );
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 fn publication_machine_path(path: &str) -> bool {
@@ -9618,9 +9898,9 @@ async fn apply_signing_key_mutation(
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyTopologyPlanRequest,
-        Response = hub_types::SigningKeyResponse,
-    > + Copy,
+            Request = hub_types::ApplyTopologyPlanRequest,
+            Response = hub_types::SigningKeyResponse,
+        > + Copy,
 ) -> Result<()> {
     let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
     let mutation = retained_apply_mutation(apply);

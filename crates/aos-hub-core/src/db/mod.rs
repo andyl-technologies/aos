@@ -1709,6 +1709,36 @@ pub struct RegistryPublicationUploadObjectRecord {
     pub expected_size: i64,
 }
 
+/// One durable multipart transaction for a declared publication object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryPublicationMultipartUploadRecord {
+    /// Opaque upload identity carried by multipart requests.
+    pub upload_id: String,
+    /// Publication owning the object.
+    pub publication_id: String,
+    /// Registry owning the publication.
+    pub registry_id: i64,
+    /// Stable logical object id.
+    pub surface_object_id: i64,
+    /// `active`, `completing`, `completed`, `aborted`, or `failed`.
+    pub state: String,
+    /// Expiry time in Unix seconds.
+    pub expires_at: i64,
+}
+
+/// One backend-confirmed part identity retained for crash-safe completion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryPublicationMultipartPartRecord {
+    /// Opaque upload identity owning the part.
+    pub upload_id: String,
+    /// 1-based contiguous part number.
+    pub part_number: u32,
+    /// Frozen physical placement that accepted the part.
+    pub placement_id: i64,
+    /// Opaque backend entity tag required at completion.
+    pub etag: String,
+}
+
 /// One physical placement of a registry or binary-cache surface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SurfacePlacementRecord {
@@ -6077,6 +6107,323 @@ impl Database {
             .find(|object| object.surface_object_id == surface_object_id))
     }
 
+    /// Returns one durable registry-publication multipart upload.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed upload id or database failure.
+    pub async fn registry_publication_multipart_upload(
+        &self,
+        upload_id: &str,
+    ) -> Result<Option<RegistryPublicationMultipartUploadRecord>> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        self.backend
+            .query_opt(
+                "SELECT upload_id, publication_id, registry_id, surface_object_id,
+                        state, expires_at
+                 FROM registry_publication_multipart_uploads WHERE upload_id = ?1",
+                &vals![upload_id],
+            )
+            .await?
+            .map(|row| {
+                Ok(RegistryPublicationMultipartUploadRecord {
+                    upload_id: row.get(0)?,
+                    publication_id: row.get(1)?,
+                    registry_id: row.get(2)?,
+                    surface_object_id: row.get(3)?,
+                    state: row.get(4)?,
+                    expires_at: row.get(5)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Returns the active multipart upload for one publication object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed identities or database failure.
+    pub async fn active_registry_publication_multipart_upload(
+        &self,
+        publication_id: &str,
+        surface_object_id: i64,
+    ) -> Result<Option<RegistryPublicationMultipartUploadRecord>> {
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT upload_id FROM registry_publication_multipart_uploads
+                 WHERE publication_id = ?1 AND surface_object_id = ?2
+                   AND active_object_slot = 1",
+                &vals![publication_id, surface_object_id],
+            )
+            .await?;
+        match row {
+            Some(row) => {
+                self.registry_publication_multipart_upload(&row.get::<String>(0)?)
+                    .await
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Lists every active multipart upload owned by one publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed publication id or database failure.
+    pub async fn active_registry_publication_multipart_uploads(
+        &self,
+        publication_id: &str,
+    ) -> Result<Vec<RegistryPublicationMultipartUploadRecord>> {
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        let rows = self
+            .backend
+            .query(
+                "SELECT upload_id FROM registry_publication_multipart_uploads
+                 WHERE publication_id = ?1 AND active_object_slot = 1
+                 ORDER BY upload_id",
+                &vals![publication_id],
+            )
+            .await?;
+        let mut uploads = Vec::with_capacity(rows.len());
+        for row in rows {
+            uploads.push(
+                self.registry_publication_multipart_upload(&row.get::<String>(0)?)
+                    .await?
+                    .context("active publication multipart upload disappeared")?,
+            );
+        }
+        Ok(uploads)
+    }
+
+    /// Creates one durable multipart upload after every backend has admitted it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed identities, invalid backend JSON, an
+    /// existing active upload for the object, or database failure.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_registry_publication_multipart_upload(
+        &self,
+        upload_id: &str,
+        publication_id: &str,
+        registry_id: i64,
+        surface_object_id: i64,
+        expires_at: i64,
+        now: i64,
+        placements: &[(i64, i64)],
+    ) -> Result<RegistryPublicationMultipartUploadRecord> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        if expires_at <= now {
+            bail!("publication multipart expiry must be in the future");
+        }
+        let mut statements = vec![Statement::new(
+            "INSERT INTO registry_publication_multipart_uploads
+                 (upload_id, publication_id, registry_id, surface_object_id,
+                  state, active_object_slot, expires_at,
+                  created_at, finished_at)
+                 VALUES (?1, ?2, ?3, ?4, 'active', 1, ?5, ?6, NULL)",
+            vals![
+                upload_id,
+                publication_id,
+                registry_id,
+                surface_object_id,
+                expires_at,
+                now
+            ],
+        )
+        .expecting(1)];
+        for (placement_id, placement_resource_version) in placements {
+            statements.push(
+                Statement::new(
+                    "INSERT INTO registry_publication_multipart_backends
+                 (upload_id, placement_id, placement_resource_version,
+                  backend_upload_id, state)
+                 VALUES (?1, ?2, ?3, NULL, 'creating')",
+                    vals![upload_id, placement_id, placement_resource_version],
+                )
+                .expecting(1),
+            );
+        }
+        self.backend.checked_batch(&statements).await?;
+        self.registry_publication_multipart_upload(upload_id)
+            .await?
+            .context("created publication multipart upload disappeared")
+    }
+
+    /// Attaches a provider upload identity to its durable creating record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed identities, a lifecycle conflict, or
+    /// database failure.
+    pub async fn attach_registry_publication_multipart_backend(
+        &self,
+        upload_id: &str,
+        placement_id: i64,
+        backend_upload_id: &str,
+    ) -> Result<()> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        validate_key_bytes(backend_upload_id, "backend multipart upload id", 1024)?;
+        self.backend
+            .checked_batch(&[Statement::new(
+                "UPDATE registry_publication_multipart_backends
+             SET backend_upload_id = ?3, state = 'ready'
+             WHERE upload_id = ?1 AND placement_id = ?2 AND state = 'creating'
+               AND EXISTS (SELECT 1 FROM registry_publication_multipart_uploads
+                 WHERE upload_id = ?1 AND state = 'active')",
+                vals![upload_id, placement_id, backend_upload_id],
+            )
+            .expecting(1)])
+            .await
+    }
+
+    /// Lists every ready provider upload identity for one durable transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed upload id or database failure.
+    pub async fn registry_publication_multipart_backends(
+        &self,
+        upload_id: &str,
+    ) -> Result<Vec<(i64, i64, String)>> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        self.backend
+            .query(
+                "SELECT placement_id, placement_resource_version, backend_upload_id
+                 FROM registry_publication_multipart_backends
+                 WHERE upload_id = ?1 AND state = 'ready'
+                 ORDER BY placement_id",
+                &vals![upload_id],
+            )
+            .await?
+            .iter()
+            .map(|row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .collect()
+    }
+
+    /// Advances an active multipart upload into its idempotent completion phase.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the upload is not active/completing or persistence fails.
+    pub async fn begin_registry_publication_multipart_completion(
+        &self,
+        upload_id: &str,
+    ) -> Result<RegistryPublicationMultipartUploadRecord> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        self.backend
+            .execute(
+                "UPDATE registry_publication_multipart_uploads SET state = 'completing'
+                 WHERE upload_id = ?1 AND state = 'active'",
+                &vals![upload_id],
+            )
+            .await?;
+        self.registry_publication_multipart_upload(upload_id)
+            .await?
+            .filter(|upload| upload.state == "completing")
+            .context("publication multipart upload is not completable")
+    }
+
+    /// Atomically records every placement identity for one uploaded part.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed identities, an invalid part number or
+    /// entity tag, an inactive upload, or database failure.
+    pub async fn record_registry_publication_multipart_part(
+        &self,
+        upload_id: &str,
+        part_number: u32,
+        placements: &[(i64, String)],
+    ) -> Result<()> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        if part_number == 0 || placements.is_empty() {
+            bail!("publication multipart part identity is incomplete");
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        let mut statements = Vec::with_capacity(placements.len());
+        for (placement_id, etag) in placements {
+            if !seen.insert(*placement_id) || etag.is_empty() || etag.len() > 1024 {
+                bail!("publication multipart placement identity is invalid");
+            }
+            statements.push(
+                Statement::new(
+                    "INSERT INTO registry_publication_multipart_parts
+                 (upload_id, part_number, placement_id, etag)
+                 SELECT ?1, ?2, ?3, ?4
+                 WHERE EXISTS (SELECT 1 FROM registry_publication_multipart_uploads
+                   WHERE upload_id = ?1 AND state = 'active')
+                 ON CONFLICT(upload_id, part_number, placement_id)
+                 DO UPDATE SET etag = excluded.etag",
+                    vals![upload_id, i64::from(part_number), placement_id, etag],
+                )
+                .expecting(1),
+            );
+        }
+        self.backend.checked_batch(&statements).await
+    }
+
+    /// Lists durable backend identities for every confirmed upload part.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed upload id, invalid persisted part
+    /// numbers, or database failure.
+    pub async fn registry_publication_multipart_parts(
+        &self,
+        upload_id: &str,
+    ) -> Result<Vec<RegistryPublicationMultipartPartRecord>> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        self.backend
+            .query(
+                "SELECT upload_id, part_number, placement_id, etag
+                 FROM registry_publication_multipart_parts
+                 WHERE upload_id = ?1 ORDER BY part_number, placement_id",
+                &vals![upload_id],
+            )
+            .await?
+            .iter()
+            .map(|row| {
+                Ok(RegistryPublicationMultipartPartRecord {
+                    upload_id: row.get(0)?,
+                    part_number: u32::try_from(row.get::<i64>(1)?)?,
+                    placement_id: row.get(2)?,
+                    etag: row.get(3)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Finishes one active multipart upload with a terminal state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid terminal state, lifecycle conflict, or
+    /// database failure.
+    pub async fn finish_registry_publication_multipart_upload(
+        &self,
+        upload_id: &str,
+        state: &str,
+        now: i64,
+    ) -> Result<()> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        if !matches!(state, "completed" | "aborted" | "failed") {
+            bail!("invalid publication multipart terminal state");
+        }
+        self.backend
+            .checked_batch(&[Statement::new(
+                "UPDATE registry_publication_multipart_uploads
+                     SET state = ?2, active_object_slot = NULL, finished_at = ?3
+                     WHERE upload_id = ?1 AND state IN('active', 'completing')",
+                vals![upload_id, state, now],
+            )
+            .expecting(1)])
+            .await
+    }
+
     /// Lists the physical placements frozen into a publication manifest.
     ///
     /// # Errors
@@ -8662,6 +9009,11 @@ impl Database {
                  WHERE job.placement_id = ?1 AND job.active_slot = 1)
                AND NOT EXISTS (SELECT 1 FROM cache_inventory_placement_scans scan
                  WHERE scan.placement_id = ?1 AND scan.completed_at IS NULL)
+               AND NOT EXISTS (SELECT 1
+                 FROM registry_publication_multipart_uploads upload
+                 JOIN registry_publication_multipart_backends backend
+                   ON backend.upload_id = upload.upload_id
+                 WHERE backend.placement_id = ?1 AND upload.active_object_slot = 1)
                AND NOT EXISTS (
                  SELECT 1 FROM delivery_routes r
                  WHERE r.placement_id = ?1 OR r.placement_policy_revision_id IN (
@@ -8737,6 +9089,11 @@ impl Database {
                      WHERE job.placement_id = ?1 AND job.active_slot = 1)
                    AND NOT EXISTS (SELECT 1 FROM cache_inventory_placement_scans scan
                      WHERE scan.placement_id = ?1 AND scan.completed_at IS NULL)
+                   AND NOT EXISTS (SELECT 1
+                     FROM registry_publication_multipart_uploads upload
+                     JOIN registry_publication_multipart_backends backend
+                       ON backend.upload_id = upload.upload_id
+                     WHERE backend.placement_id = ?1 AND upload.active_object_slot = 1)
                    AND NOT EXISTS (SELECT 1 FROM topology_operations o
                      WHERE o.state IN ('pending', 'running') AND (
                        (o.primary_target_kind = 'placement'
@@ -10341,12 +10698,12 @@ impl Database {
             "retention_subscription" => {
                 return self
                     .numeric_operation_target_scope("cache_retention_subscriptions", stable_id)
-                    .await
+                    .await;
             }
             "population_target" => {
                 return self
                     .numeric_operation_target_scope("cache_population_targets", stable_id)
-                    .await
+                    .await;
             }
             "cache_gc_generation" => {
                 "SELECT cache.scope_key
@@ -14483,7 +14840,9 @@ impl Database {
         }
         // Resource locators are unique across registries and caches.
         if self.binary_cache_by_slug(&slug).await?.is_some() {
-            bail!("a cache already exists at '{slug}' (slugs are unique across registries and caches)");
+            bail!(
+                "a cache already exists at '{slug}' (slugs are unique across registries and caches)"
+            );
         }
         // Per-org registry-count quota (NULL/unset = unlimited).
         if let Some(max_registries) = self.org_quota(org_id).await?.max_registries {
@@ -14662,7 +15021,9 @@ impl Database {
         // Resource locators are unique across registries and caches so browse
         // links and control-plane lookup cannot become ambiguous.
         if self.registry_by_slug(slug).await?.is_some() {
-            bail!("a registry already exists at '{slug}' (slugs are unique across registries and caches)");
+            bail!(
+                "a registry already exists at '{slug}' (slugs are unique across registries and caches)"
+            );
         }
         let created_at = unix_now();
         let owner_scope_key = match org_id {
@@ -15248,7 +15609,9 @@ impl Database {
                 .await?
         };
         if affected != 1 {
-            bail!("topology defaults are missing, stale, duplicated, or reference inaccessible resources");
+            bail!(
+                "topology defaults are missing, stale, duplicated, or reference inaccessible resources"
+            );
         }
         self.stable_topology_defaults(scope_key)
             .await?
@@ -16006,10 +16369,22 @@ impl Database {
     /// Returns an error on database failure.
     pub async fn storage_binding_delete_blockers(&self, id: i64) -> Result<Vec<String>> {
         let checks = [
-            ("placements", "SELECT COUNT(*) FROM surface_placements WHERE storage_binding_id = ?1"),
-            ("storage gateways", "SELECT COUNT(*) FROM storage_gateways WHERE storage_binding_id = ?1"),
-            ("topology defaults", "SELECT COUNT(*) FROM topology_defaults WHERE storage_binding_id = ?1"),
-            ("active consumer grants", "SELECT COUNT(*) FROM storage_binding_consumer_scopes WHERE storage_binding_id = ?1 AND state = 'active' AND grant_kind <> 'owner'"),
+            (
+                "placements",
+                "SELECT COUNT(*) FROM surface_placements WHERE storage_binding_id = ?1",
+            ),
+            (
+                "storage gateways",
+                "SELECT COUNT(*) FROM storage_gateways WHERE storage_binding_id = ?1",
+            ),
+            (
+                "topology defaults",
+                "SELECT COUNT(*) FROM topology_defaults WHERE storage_binding_id = ?1",
+            ),
+            (
+                "active consumer grants",
+                "SELECT COUNT(*) FROM storage_binding_consumer_scopes WHERE storage_binding_id = ?1 AND state = 'active' AND grant_kind <> 'owner'",
+            ),
         ];
         let mut blockers = Vec::new();
         for (label, sql) in checks {
@@ -22497,7 +22872,9 @@ fn normalize_topology_hostname(hostname: &str) -> Result<String> {
         || hostname.contains(char::is_whitespace)
         || hostname.contains(['/', ':', '?', '#'])
     {
-        bail!("domain hostname must contain only a host, without scheme, port, path, query, or fragment");
+        bail!(
+            "domain hostname must contain only a host, without scheme, port, path, query, or fragment"
+        );
     }
     for label in hostname.split('.') {
         if label.is_empty()
@@ -22536,7 +22913,9 @@ fn validate_key_bytes(value: &str, label: &str, capacity: usize) -> Result<()> {
         || value.len() > capacity
         || value.chars().any(char::is_control)
     {
-        bail!("{label} must be non-empty, have no surrounding whitespace or control characters, and fit in {capacity} UTF-8 bytes");
+        bail!(
+            "{label} must be non-empty, have no surrounding whitespace or control characters, and fit in {capacity} UTF-8 bytes"
+        );
     }
     Ok(())
 }
@@ -27997,6 +28376,84 @@ source_nar_hash = ""
             .registry_publication_class_is_complete(publication_id, "immutable")
             .await
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn registry_publication_multipart_state_retains_expired_backend_identity() {
+        let db = Database::open_in_memory().await.unwrap();
+        let registry_id = db
+            .register_registry("multipart-state", &[], false)
+            .await
+            .unwrap();
+        let publication_id = "multipartpublication0000000000000001";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: publication_id.into(),
+            registry_id,
+            generation: "generation-1".into(),
+            manifest_digest: "a".repeat(64),
+            refs_digest: "b".repeat(64),
+            default_commit: Some("c".repeat(40)),
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        let object = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry_id),
+                object_key: "images/system.raw.zst".into(),
+                content_hash: Some("d".repeat(64)),
+                size: Some(128),
+                object_kind: "immutable".into(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        db.set_registry_publication_object(&SetRegistryPublicationObject {
+            publication_id: publication_id.into(),
+            surface_object_id: object.id,
+            object_kind: "immutable".into(),
+            expected_hash: "d".repeat(64),
+            expected_size: 128,
+        })
+        .await
+        .unwrap();
+
+        let created = db
+            .create_registry_publication_multipart_upload(
+                "multipart-upload-1",
+                publication_id,
+                registry_id,
+                object.id,
+                2,
+                1,
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.expires_at, 2);
+
+        let active = db
+            .active_registry_publication_multipart_upload(publication_id, object.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(active.upload_id, "multipart-upload-1");
+        assert_eq!(
+            db.active_registry_publication_multipart_uploads(publication_id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        db.finish_registry_publication_multipart_upload("multipart-upload-1", "aborted", 3)
+            .await
+            .unwrap();
+        assert!(db
+            .active_registry_publication_multipart_upload(publication_id, object.id)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     /// Test helper: register a managed registry owned by `org` at `slug` with a

@@ -29,12 +29,12 @@
 //! inventory and authorized placement lifecycle calls.
 
 use anyhow::{Context, Result};
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::fmt;
 use std::str::FromStr;
 
-use aos_proto_types::{CONNECT_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION_HEADER, SurfaceRef};
+use aos_proto_types::{SurfaceRef, CONNECT_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION_HEADER};
 
 use crate::client::validate_base_url;
 
@@ -590,6 +590,12 @@ enum HubTopologyMethod {
     ResolveImage,
     /// Selects placement-aware publication admission.
     BeginRegistryPublication,
+    /// Selects multipart admission for one large registry publication object.
+    BeginRegistryPublicationMultipartUpload,
+    /// Selects multipart completion for one registry publication object.
+    CompleteRegistryPublicationMultipartUpload,
+    /// Selects multipart abort for one registry publication object.
+    AbortRegistryPublicationMultipartUpload,
     /// Selects paginated registry publication history.
     ListRegistryPublications,
     /// Selects publication status inspection.
@@ -1111,6 +1117,15 @@ impl HubTopologyMethod {
             GetImage => "aos.hub.v1.ImageService/GetImage",
             ResolveImage => "aos.hub.v1.ImageService/ResolveImage",
             BeginRegistryPublication => "aos.hub.v1.PublishService/BeginRegistryPublication",
+            BeginRegistryPublicationMultipartUpload => {
+                "aos.hub.v1.PublishService/BeginRegistryPublicationMultipartUpload"
+            }
+            CompleteRegistryPublicationMultipartUpload => {
+                "aos.hub.v1.PublishService/CompleteRegistryPublicationMultipartUpload"
+            }
+            AbortRegistryPublicationMultipartUpload => {
+                "aos.hub.v1.PublishService/AbortRegistryPublicationMultipartUpload"
+            }
             ListRegistryPublications => "aos.hub.v1.PublishService/ListRegistryPublications",
             GetRegistryPublication => "aos.hub.v1.PublishService/GetRegistryPublication",
             CommitRegistryPublication => "aos.hub.v1.PublishService/CommitRegistryPublication",
@@ -1489,6 +1504,9 @@ pub mod hub_rpc {
         GetImage: GetImageRequest => GetImageResponse;
         ResolveImage: ResolveImageRequest => GetImageResponse;
         BeginRegistryPublication: BeginRegistryPublicationRequest => RegistryPublication;
+        BeginRegistryPublicationMultipartUpload: BeginRegistryPublicationMultipartUploadRequest => BeginRegistryPublicationMultipartUploadResponse;
+        CompleteRegistryPublicationMultipartUpload: CompleteRegistryPublicationMultipartUploadRequest => RegistryPublicationMultipartUploadResponse;
+        AbortRegistryPublicationMultipartUpload: AbortRegistryPublicationMultipartUploadRequest => RegistryPublicationMultipartUploadResponse;
         ListRegistryPublications: ListRegistryPublicationsRequest => ListRegistryPublicationsResponse;
         GetRegistryPublication: GetRegistryPublicationRequest => RegistryPublication;
         CommitRegistryPublication: CommitRegistryPublicationRequest => RegistryPublication;
@@ -1712,6 +1730,70 @@ impl HubClient {
         Ok(())
     }
 
+    /// Uploads one bounded part to an admitted publication multipart URL.
+    ///
+    /// The URL is constrained to this client's Hub origin and exact typed
+    /// publication-part namespace before the bearer credential is attached.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid URL, transport failure, Hub rejection,
+    /// or malformed part response.
+    pub async fn upload_publication_part(
+        &self,
+        part_upload_url: &str,
+        upload_id: &str,
+        part_number: u32,
+        bytes: Vec<u8>,
+    ) -> Result<aos_proto_types::RegistryPublicationMultipartPart> {
+        anyhow::ensure!(part_number > 0, "multipart part numbers are 1-based");
+        let base = url::Url::parse(&self.base).context("parsing configured Hub URL")?;
+        let mut target =
+            url::Url::parse(part_upload_url).context("parsing publication part upload URL")?;
+        anyhow::ensure!(
+            target.scheme() == base.scheme()
+                && target.host_str() == base.host_str()
+                && target.port_or_known_default() == base.port_or_known_default()
+                && target.query().is_none()
+                && target.fragment().is_none()
+                && target.path() == format!("/aos.hub.v1.PublishService/UploadPart/{upload_id}"),
+            "publication part upload URL is outside the configured Hub origin"
+        );
+        target
+            .path_segments_mut()
+            .map_err(|_| anyhow::anyhow!("publication part upload URL cannot accept a part"))?
+            .push(&part_number.to_string());
+        let size = bytes.len();
+        let mut request = self
+            .upload_http
+            .put(target.clone())
+            .header(reqwest::header::CONTENT_LENGTH, size)
+            .body(bytes);
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        let response = request
+            .send()
+            .await
+            .with_context(|| format!("uploading publication part to {target}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            let detail = response.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "publication part upload to {target} failed ({status}){}",
+                if detail.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", detail.trim())
+                }
+            );
+        }
+        response
+            .json()
+            .await
+            .context("decoding publication multipart part response")
+    }
+
     /// Connects to a hub for **unauthenticated** public reads.
     ///
     /// No credential is attached, so calls see only public registries and
@@ -1859,7 +1941,7 @@ mod tests {
     use super::{HubClient, HubSurfaceRef, HubTopologyMethod};
     use aos_proto_types::surface_ref::Target;
     use aos_proto_types::{
-        CONNECT_PROTOCOL_VERSION_HEADER, PlanCreatePlacementRequest, PlanUpdatePlacementRequest,
+        PlanCreatePlacementRequest, PlanUpdatePlacementRequest, CONNECT_PROTOCOL_VERSION_HEADER,
     };
     use std::str::FromStr as _;
 
