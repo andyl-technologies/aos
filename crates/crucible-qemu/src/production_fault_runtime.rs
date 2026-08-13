@@ -19,9 +19,14 @@ use crucible::model::{
     ResolvedEffectTrace, SignalArtifactProvider, SignalBoundarySnapshot,
 };
 use crucible::{BackendError, BackendNetworkOutput, NodeId, SchedulerNetworkCheckpoint};
-use crucible_shmem::{DequeuedFaultEvent, FaultEventOutcomeV1};
+use crucible_shmem::{
+    DequeuedFaultEvent, FaultClockEvidenceV1, FaultEventOutcomeV1, FaultExceptionEvidenceV1,
+    FaultInstructionEvidenceV1, FaultRegisterMutationEvidenceV1, FaultTerminalEvidenceV1,
+    MemoryMutationEvidenceV1,
+};
 use sha2::{Digest as _, Sha256};
 
+use crate::fault_action_sink::CommittedQemuActionEvidence;
 use crate::{ProductionFaultActionSink, QemuNodeSet};
 
 mod checkpoint_codec;
@@ -42,6 +47,8 @@ pub struct ProductionFaultRuntimeCheckpoint {
     qemu_fault_event_sequences: BTreeMap<NodeId, u64>,
     /// Issued QEMU actions needed to authenticate asynchronous occurrence events.
     qemu_issued_actions: BTreeMap<ContentHash, ResolvedBindingAction>,
+    /// Authenticated APPLY results that bind occurrences to exact commands.
+    qemu_action_commits: BTreeMap<ContentHash, CommittedQemuActionEvidence>,
     /// Issued persistent rules that remain installed in QEMU.
     qemu_active_rule_ids: BTreeSet<ContentHash>,
     /// Scheduler-owned network queues, pending outputs, and transition ledger.
@@ -201,6 +208,7 @@ pub struct ProductionFaultRuntime {
     restored_network_state: Option<ProductionNetworkStateCheckpoint>,
     emitted_events: Vec<ReferencedSignalEvent>,
     qemu_issued_actions: BTreeMap<ContentHash, ResolvedBindingAction>,
+    qemu_action_commits: BTreeMap<ContentHash, CommittedQemuActionEvidence>,
     qemu_active_rule_ids: BTreeSet<ContentHash>,
     pending_qemu_observations: Vec<FaultObservation>,
     pending_qemu_events: BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
@@ -247,6 +255,7 @@ impl ProductionFaultRuntime {
             restored_network_state: None,
             emitted_events: Vec::new(),
             qemu_issued_actions: BTreeMap::new(),
+            qemu_action_commits: BTreeMap::new(),
             qemu_active_rule_ids: BTreeSet::new(),
             pending_qemu_observations: Vec::new(),
             pending_qemu_events: BTreeMap::new(),
@@ -286,6 +295,7 @@ impl ProductionFaultRuntime {
         )?;
         validate_qemu_action_ledger(
             &checkpoint.qemu_issued_actions,
+            &checkpoint.qemu_action_commits,
             &checkpoint.qemu_active_rule_ids,
         )?;
         if checkpoint.identity
@@ -297,6 +307,7 @@ impl ProductionFaultRuntime {
                 &checkpoint.qemu_fault_sequences,
                 &checkpoint.qemu_fault_event_sequences,
                 &checkpoint.qemu_issued_actions,
+                &checkpoint.qemu_action_commits,
                 &checkpoint.qemu_active_rule_ids,
                 checkpoint.network_state.as_ref(),
                 &checkpoint.emitted_events,
@@ -326,6 +337,7 @@ impl ProductionFaultRuntime {
         let qemu_fault_sequences = checkpoint.qemu_fault_sequences;
         let qemu_fault_event_sequences = checkpoint.qemu_fault_event_sequences;
         let qemu_issued_actions = checkpoint.qemu_issued_actions;
+        let qemu_action_commits = checkpoint.qemu_action_commits;
         let qemu_active_rule_ids = checkpoint.qemu_active_rule_ids;
         let host = checkpoint.host;
         let restored_network_state = checkpoint.network_state;
@@ -357,6 +369,7 @@ impl ProductionFaultRuntime {
             restored_network_state,
             emitted_events,
             qemu_issued_actions,
+            qemu_action_commits,
             qemu_active_rule_ids,
             pending_qemu_observations,
             pending_qemu_events,
@@ -461,13 +474,14 @@ impl ProductionFaultRuntime {
             same_coordinate_sequence,
             &mut sink,
         )?;
+        let qemu_commits = sink.take_qemu_commit_evidence();
         if evaluation.emitted_events != preview.emitted_events
             || evaluation.state_machine_events != preview.state_machine_events
         {
             runtime.poison();
             return Err(FaultExecutionError::CheckpointPresence.into());
         }
-        if let Err(error) = self.update_qemu_action_ledger(&evaluation.actions) {
+        if let Err(error) = self.update_qemu_action_ledger(&evaluation.actions, qemu_commits) {
             if let Some(runtime) = &mut self.runtime {
                 runtime.poison();
             }
@@ -540,6 +554,15 @@ impl ProductionFaultRuntime {
                             action_identity.to_hex()
                         ),
                     })?;
+                let commit = self
+                    .qemu_action_commits
+                    .get(&action_identity)
+                    .ok_or_else(|| BackendError::Rejected {
+                        message: format!(
+                            "QEMU fault event {} names an action without an authenticated APPLY result",
+                            event.header.event_sequence
+                        ),
+                    })?;
                 let binding_hash = ContentHash::from_canonical_material(
                     "crucible.fault-binding.v1",
                     action.binding.as_str(),
@@ -551,6 +574,7 @@ impl ProductionFaultRuntime {
                 if event.header.binding_hash != binding_hash.bytes
                     || event.header.target_hash != target_hash.bytes
                     || event.header.generation != action.transition_sequence
+                    || !qemu_event_matches_commit(event, action, commit)
                     || boundary
                         .retired_instructions
                         .is_none_or(|retired| event.header.observed_icount > retired)
@@ -626,6 +650,7 @@ impl ProductionFaultRuntime {
     fn update_qemu_action_ledger(
         &mut self,
         actions: &[ResolvedBindingAction],
+        mut commits: BTreeMap<ContentHash, CommittedQemuActionEvidence>,
     ) -> Result<(), ProductionFaultRuntimeError> {
         for action in actions
             .iter()
@@ -634,6 +659,15 @@ impl ProductionFaultRuntime {
             match action.kind {
                 BindingActionKind::UpsertPersistent | BindingActionKind::Apply => {
                     let identity = action.id();
+                    let commit =
+                        commits
+                            .remove(&identity)
+                            .ok_or_else(|| BackendError::Rejected {
+                                message: format!(
+                                    "QEMU action identity {} has no authenticated APPLY result",
+                                    identity.to_hex()
+                                ),
+                            })?;
                     let retained = u64::try_from(self.qemu_issued_actions.len()).map_err(|_| {
                         FaultResourceLimitError::Representation {
                             field: "event_records",
@@ -654,6 +688,15 @@ impl ProductionFaultRuntime {
                         }
                         .into());
                     }
+                    if self.qemu_action_commits.insert(identity, commit).is_some() {
+                        return Err(BackendError::Rejected {
+                            message: format!(
+                                "QEMU action identity {} has more than one APPLY result",
+                                identity.to_hex()
+                            ),
+                        }
+                        .into());
+                    }
                     if action.kind == BindingActionKind::UpsertPersistent {
                         self.qemu_active_rule_ids.retain(|active_id| {
                             self.qemu_issued_actions
@@ -668,6 +711,15 @@ impl ProductionFaultRuntime {
                     }
                 }
                 BindingActionKind::RemovePersistent => {
+                    if commits.remove(&action.id()).is_none() {
+                        return Err(BackendError::Rejected {
+                            message: format!(
+                                "QEMU removal identity {} has no authenticated APPLY result",
+                                action.id().to_hex()
+                            ),
+                        }
+                        .into());
+                    }
                     let prior_len = self.qemu_active_rule_ids.len();
                     self.qemu_active_rule_ids.retain(|active_id| {
                         self.qemu_issued_actions
@@ -689,6 +741,12 @@ impl ProductionFaultRuntime {
                     }
                 }
             }
+        }
+        if !commits.is_empty() {
+            return Err(BackendError::Rejected {
+                message: String::from("QEMU returned APPLY evidence for an uncommitted action"),
+            }
+            .into());
         }
         Ok(())
     }
@@ -727,11 +785,18 @@ impl ProductionFaultRuntime {
             same_coordinate_sequence,
             &mut sink,
         )?;
+        let qemu_commits = sink.take_qemu_commit_evidence();
         if evaluation.emitted_events != preview.emitted_events
             || evaluation.state_machine_events != preview.state_machine_events
         {
             runtime.poison();
             return Err(FaultExecutionError::CheckpointPresence.into());
+        }
+        if let Err(error) = self.update_qemu_action_ledger(&evaluation.actions, qemu_commits) {
+            if let Some(runtime) = &mut self.runtime {
+                runtime.poison();
+            }
+            return Err(error);
         }
         self.emitted_events
             .extend(evaluation.emitted_events.iter().cloned());
@@ -847,6 +912,7 @@ impl ProductionFaultRuntime {
             &qemu_fault_sequences,
             &qemu_fault_event_sequences,
             &self.qemu_issued_actions,
+            &self.qemu_action_commits,
             &self.qemu_active_rule_ids,
             self.restored_network_state.as_ref(),
             &self.emitted_events,
@@ -860,6 +926,7 @@ impl ProductionFaultRuntime {
             qemu_fault_sequences,
             qemu_fault_event_sequences,
             qemu_issued_actions: self.qemu_issued_actions.clone(),
+            qemu_action_commits: self.qemu_action_commits.clone(),
             qemu_active_rule_ids: self.qemu_active_rule_ids.clone(),
             network_state: self.restored_network_state.clone(),
             emitted_events: self.emitted_events.clone(),
@@ -890,6 +957,7 @@ impl ProductionFaultRuntime {
             &checkpoint.qemu_fault_sequences,
             &checkpoint.qemu_fault_event_sequences,
             &checkpoint.qemu_issued_actions,
+            &checkpoint.qemu_action_commits,
             &checkpoint.qemu_active_rule_ids,
             checkpoint.network_state.as_ref(),
             &checkpoint.emitted_events,
@@ -984,6 +1052,18 @@ const LIFECYCLE_TERMINAL_EXIT_REQUIRED: u32 = 1 << 1;
 const LIFECYCLE_TERMINAL_KNOWN_FLAGS: u32 =
     LIFECYCLE_TERMINAL_PRE_EXIT_VALID | LIFECYCLE_TERMINAL_EXIT_REQUIRED;
 
+fn qemu_event_matches_commit(
+    event: &DequeuedFaultEvent,
+    action: &ResolvedBindingAction,
+    commit: &CommittedQemuActionEvidence,
+) -> bool {
+    event.header.rule_command_sequence == commit.command_sequence
+        && event.header.command_kind as u16 == commit.command_kind
+        && (action.kind != BindingActionKind::Apply
+            || (event.header.before_hash == commit.before_hash
+                && event.header.after_hash == commit.after_hash))
+}
+
 fn validate_node_event_evidence(
     event: &DequeuedFaultEvent,
     action: &ResolvedBindingAction,
@@ -991,17 +1071,93 @@ fn validate_node_event_evidence(
     let EffectSpecification::Node(effect) = action.effect.specification() else {
         return Ok(());
     };
-    let valid = match event.header.command_kind {
-        crucible_shmem::FaultCommandKind::NodeLifecycle => {
-            validate_lifecycle_evidence(event, effect)
+    let expected_kind = node_effect_command_kind(effect);
+    if event.header.command_kind != expected_kind {
+        return Err(BackendError::Rejected {
+            message: format!(
+                "QEMU fault event {} command kind does not match its issued effect",
+                event.header.event_sequence
+            ),
         }
-        crucible_shmem::FaultCommandKind::NodeHang
-            if event.payload.get(0..8) == Some(b"CRUCLIF1") =>
-        {
-            validate_lifecycle_evidence(event, effect)
+        .into());
+    }
+    let valid = if event.header.outcome == FaultEventOutcomeV1::Error
+        && FaultTerminalEvidenceV1::has_magic(&event.payload)
+    {
+        FaultTerminalEvidenceV1::decode(&event.payload).is_ok()
+    } else {
+        match event.header.command_kind {
+            crucible_shmem::FaultCommandKind::NodeLifecycle => {
+                validate_lifecycle_evidence(event, effect)
+            }
+            crucible_shmem::FaultCommandKind::NodeHang
+                if event.payload.get(0..8) == Some(b"CRUCLIF1") =>
+            {
+                validate_lifecycle_evidence(event, effect)
+            }
+            crucible_shmem::FaultCommandKind::NodeHang => validate_hang_evidence(event, effect),
+            crucible_shmem::FaultCommandKind::CpuService => validate_cpu_service_evidence(event),
+            crucible_shmem::FaultCommandKind::CpuVcpuState => validate_vcpu_state_evidence(event),
+            crucible_shmem::FaultCommandKind::CpuRegisterTransform => {
+                FaultRegisterMutationEvidenceV1::decode(&event.payload).is_ok_and(|evidence| {
+                    evidence.model_phase == event.header.model_phase
+                        && evidence.observed_icount == event.header.observed_icount
+                        && evidence.before_sha256 == event.header.before_hash
+                        && evidence.after_sha256 == event.header.after_hash
+                })
+            }
+            crucible_shmem::FaultCommandKind::CpuInstructionTransform => {
+                FaultInstructionEvidenceV1::decode(&event.payload).is_ok_and(|evidence| {
+                    evidence.observed_icount == event.header.observed_icount
+                        && evidence.before_state_sha256 == event.header.before_hash
+                        && evidence.after_state_sha256 == event.header.after_hash
+                })
+            }
+            crucible_shmem::FaultCommandKind::CpuException => {
+                FaultExceptionEvidenceV1::decode(&event.payload).is_ok_and(|evidence| {
+                    evidence.model_phase == event.header.model_phase
+                        && evidence.delivered_icount == event.header.observed_icount
+                        && evidence.before_sha256 == event.header.before_hash
+                        && evidence.after_sha256 == event.header.after_hash
+                })
+            }
+            crucible_shmem::FaultCommandKind::InterruptDisposition
+            | crucible_shmem::FaultCommandKind::InterruptStorm => {
+                validate_interrupt_evidence(event)
+            }
+            crucible_shmem::FaultCommandKind::MemoryMutation => {
+                MemoryMutationEvidenceV1::decode(&event.payload).is_ok_and(|evidence| {
+                    evidence.observed_icount == event.header.observed_icount
+                        && evidence.before_sha256 == event.header.before_hash
+                        && evidence.after_sha256 == event.header.after_hash
+                })
+            }
+            crucible_shmem::FaultCommandKind::MemoryAccessTransform
+            | crucible_shmem::FaultCommandKind::MemoryRegionState => {
+                validate_memory_access_evidence(event)
+            }
+            crucible_shmem::FaultCommandKind::MemoryEccEvent => validate_memory_ecc_evidence(event),
+            crucible_shmem::FaultCommandKind::MemoryService => {
+                validate_memory_service_evidence(event)
+            }
+            crucible_shmem::FaultCommandKind::ClockTransform
+            | crucible_shmem::FaultCommandKind::ClockSourceState => {
+                FaultClockEvidenceV1::decode(&event.payload).is_ok_and(|evidence| {
+                    evidence.model_phase == event.header.model_phase
+                        && evidence.observed_icount == event.header.observed_icount
+                        && evidence.binding_hash == event.header.binding_hash
+                        && evidence.before_hash == event.header.before_hash
+                        && evidence.after_hash == event.header.after_hash
+                })
+            }
+            crucible_shmem::FaultCommandKind::AcceleratorLifecycle
+            | crucible_shmem::FaultCommandKind::AcceleratorResultTransform
+            | crucible_shmem::FaultCommandKind::AcceleratorMemoryEvent
+            | crucible_shmem::FaultCommandKind::AcceleratorService => {
+                validate_accelerator_evidence(event)
+            }
+            _ => false,
         }
-        crucible_shmem::FaultCommandKind::NodeHang => validate_hang_evidence(event, effect),
-        _ => true,
     };
     if valid {
         Ok(())
@@ -1013,6 +1169,183 @@ fn validate_node_event_evidence(
             ),
         }
         .into())
+    }
+}
+
+fn node_effect_command_kind(effect: &NodeEffectSpecification) -> crucible_shmem::FaultCommandKind {
+    use crucible_shmem::FaultCommandKind;
+    match effect {
+        NodeEffectSpecification::Lifecycle { .. } => FaultCommandKind::NodeLifecycle,
+        NodeEffectSpecification::Hang { .. } => FaultCommandKind::NodeHang,
+        NodeEffectSpecification::CpuService { .. } => FaultCommandKind::CpuService,
+        NodeEffectSpecification::VcpuState { .. } => FaultCommandKind::CpuVcpuState,
+        NodeEffectSpecification::RegisterTransform { .. } => FaultCommandKind::CpuRegisterTransform,
+        NodeEffectSpecification::InstructionTransform { .. } => {
+            FaultCommandKind::CpuInstructionTransform
+        }
+        NodeEffectSpecification::CpuException { .. } => FaultCommandKind::CpuException,
+        NodeEffectSpecification::InterruptDisposition { .. } => {
+            FaultCommandKind::InterruptDisposition
+        }
+        NodeEffectSpecification::InterruptStorm { .. } => FaultCommandKind::InterruptStorm,
+        NodeEffectSpecification::MemoryMutation { .. } => FaultCommandKind::MemoryMutation,
+        NodeEffectSpecification::MemoryAccessTransform { .. } => {
+            FaultCommandKind::MemoryAccessTransform
+        }
+        NodeEffectSpecification::MemoryEccEvent { .. } => FaultCommandKind::MemoryEccEvent,
+        NodeEffectSpecification::MemoryRegionState { .. } => FaultCommandKind::MemoryRegionState,
+        NodeEffectSpecification::MemoryService { .. } => FaultCommandKind::MemoryService,
+        NodeEffectSpecification::ClockTransform { .. } => FaultCommandKind::ClockTransform,
+        NodeEffectSpecification::ClockSourceState { .. } => FaultCommandKind::ClockSourceState,
+        NodeEffectSpecification::AcceleratorLifecycle { .. } => {
+            FaultCommandKind::AcceleratorLifecycle
+        }
+        NodeEffectSpecification::AcceleratorResultTransform { .. } => {
+            FaultCommandKind::AcceleratorResultTransform
+        }
+        NodeEffectSpecification::AcceleratorMemoryEvent { .. } => {
+            FaultCommandKind::AcceleratorMemoryEvent
+        }
+        NodeEffectSpecification::AcceleratorService { .. } => FaultCommandKind::AcceleratorService,
+    }
+}
+
+fn validate_cpu_service_evidence(event: &DequeuedFaultEvent) -> bool {
+    let bytes = event.payload.as_slice();
+    if bytes.len() != 192 || bytes.get(..8) != Some(b"CRUCVCS1") {
+        return false;
+    }
+    let before: [u8; 32] = Sha256::digest(&bytes[..64]).into();
+    let after: [u8; 32] = Sha256::digest(&bytes[..160]).into();
+    read_u64(bytes, 112) == Some(event.header.observed_icount)
+        && before == event.header.before_hash
+        && after == event.header.after_hash
+}
+
+fn validate_vcpu_state_evidence(event: &DequeuedFaultEvent) -> bool {
+    let bytes = event.payload.as_slice();
+    if bytes.len() != 192
+        || bytes.get(..8) != Some(b"CRUCVST1")
+        || read_u16(bytes, 8) != Some(1)
+        || read_u64(bytes, 24) != Some(event.header.observed_icount)
+        || bytes.get(160..192) != Some(event.header.binding_hash.as_slice())
+    {
+        return false;
+    }
+    let mut before = bytes.to_vec();
+    before[..8].copy_from_slice(b"CRUCVSB1");
+    before[20..24].copy_from_slice(&bytes[16..20]);
+    let mut after = bytes.to_vec();
+    after[..8].copy_from_slice(b"CRUCVSA1");
+    after[16..20].copy_from_slice(&bytes[20..24]);
+    <[u8; 32]>::from(Sha256::digest(before)) == event.header.before_hash
+        && <[u8; 32]>::from(Sha256::digest(after)) == event.header.after_hash
+}
+
+fn validate_interrupt_evidence(event: &DequeuedFaultEvent) -> bool {
+    let bytes = event.payload.as_slice();
+    match bytes.get(..8) {
+        Some(b"CRUCIRQ1") => {
+            bytes.len() == 160
+                && read_u16(bytes, 8) == Some(1)
+                && read_u16(bytes, 18) == Some(event.header.model_phase)
+                && read_u64(bytes, 80) == Some(event.header.observed_icount)
+                && bytes.get(96..128) == Some(event.header.before_hash.as_slice())
+                && bytes.get(128..160) == Some(event.header.after_hash.as_slice())
+        }
+        Some(b"CRUCIER1") => {
+            bytes.len() == 64
+                && event.header.outcome == FaultEventOutcomeV1::Error
+                && read_u64(bytes, 16) == Some(event.header.observed_icount)
+        }
+        _ => false,
+    }
+}
+
+fn validate_memory_access_evidence(event: &DequeuedFaultEvent) -> bool {
+    let bytes = event.payload.as_slice();
+    if bytes.len() < 480
+        || bytes.get(..8) != Some(b"CRUCMEM1")
+        || read_u64(bytes, 64) != Some(event.header.observed_icount)
+        || read_u64(bytes, 72) != Some(event.header.generation)
+        || read_u16(bytes, 304) != Some(event.header.command_kind as u16)
+        || read_u16(bytes, 306) != Some(event.header.outcome as u16)
+        || bytes.get(368..400) != Some(event.header.before_hash.as_slice())
+        || bytes.get(400..432) != Some(event.header.after_hash.as_slice())
+        || read_u32(bytes, 432) != Some(1)
+    {
+        return false;
+    }
+    let Some(inline) = read_u32(bytes, 436).map(u64::from) else {
+        return false;
+    };
+    let Some(mutations) = read_u32(bytes, 440).map(u64::from) else {
+        return false;
+    };
+    let Some(counters) = read_u32(bytes, 448).map(u64::from) else {
+        return false;
+    };
+    if read_u32(bytes, 452) != Some(96) || read_u32(bytes, 456) != Some(64) {
+        return false;
+    }
+    let expected = 480_u64
+        .checked_add(inline.checked_mul(3).unwrap_or(u64::MAX))
+        .and_then(|length| length.checked_add(mutations.checked_mul(96)?))
+        .and_then(|length| length.checked_add(counters.checked_mul(64)?));
+    expected.and_then(|length| usize::try_from(length).ok()) == Some(bytes.len())
+}
+
+fn validate_memory_service_evidence(event: &DequeuedFaultEvent) -> bool {
+    let bytes = event.payload.as_slice();
+    bytes.len() == 576
+        && bytes.get(..8) == Some(b"CRUCMEM1")
+        && bytes.get(368..376) == Some(b"CRUCSVC1")
+        && read_u32(bytes, 376) == Some(1)
+        && read_u64(bytes, 64) == Some(event.header.observed_icount)
+        && bytes.get(304..336) == Some(event.header.before_hash.as_slice())
+        && bytes.get(336..368) == Some(event.header.after_hash.as_slice())
+        && read_u32(bytes, 468) == Some(event.header.outcome as u32)
+}
+
+fn validate_memory_ecc_evidence(event: &DequeuedFaultEvent) -> bool {
+    let bytes = event.payload.as_slice();
+    bytes.len() == 1376
+        && bytes.get(..8) == Some(b"CRUCHWE1")
+        && read_u16(bytes, 8) == Some(1)
+        && read_u64(bytes, 16) == Some(event.header.observed_icount)
+        && read_u64(bytes, 40) == Some(event.header.rule_command_sequence)
+        && bytes[49..52].iter().all(|byte| *byte == 0)
+        && bytes[56..64].iter().all(|byte| *byte == 0)
+        && bytes[288..320].iter().all(|byte| *byte == 0)
+}
+
+fn validate_accelerator_evidence(event: &DequeuedFaultEvent) -> bool {
+    let bytes = event.payload.as_slice();
+    if bytes.len() != 256 || event.header.outcome != FaultEventOutcomeV1::Applied {
+        return false;
+    }
+    match (event.header.command_kind, bytes.get(..8)) {
+        (crucible_shmem::FaultCommandKind::AcceleratorLifecycle, Some(b"CRUCALE1")) => {
+            bytes.get(96..128) == Some(event.header.before_hash.as_slice())
+                && bytes.get(128..160) == Some(event.header.after_hash.as_slice())
+        }
+        (crucible_shmem::FaultCommandKind::AcceleratorMemoryEvent, Some(b"CRUCAMI1")) => {
+            bytes.get(72..104) == Some(event.header.before_hash.as_slice())
+                && bytes.get(104..136) == Some(event.header.after_hash.as_slice())
+        }
+        (crucible_shmem::FaultCommandKind::AcceleratorMemoryEvent, Some(b"CRUCAME1")) => {
+            bytes.get(104..136) == Some(event.header.before_hash.as_slice())
+                && bytes.get(136..168) == Some(event.header.after_hash.as_slice())
+        }
+        (crucible_shmem::FaultCommandKind::AcceleratorResultTransform, Some(b"CRUCARE1")) => {
+            bytes.get(48..80) == Some(event.header.before_hash.as_slice())
+                && bytes.get(80..112) == Some(event.header.after_hash.as_slice())
+        }
+        (crucible_shmem::FaultCommandKind::AcceleratorService, Some(b"CRUCASE1")) => {
+            <[u8; 32]>::from(Sha256::digest(&bytes[..88])) == event.header.before_hash
+                && <[u8; 32]>::from(Sha256::digest(&bytes[..168])) == event.header.after_hash
+        }
+        _ => false,
     }
 }
 
@@ -1734,6 +2067,7 @@ fn production_checkpoint_identity(
     qemu_fault_sequences: &BTreeMap<NodeId, u64>,
     qemu_fault_event_sequences: &BTreeMap<NodeId, u64>,
     qemu_issued_actions: &BTreeMap<ContentHash, ResolvedBindingAction>,
+    qemu_action_commits: &BTreeMap<ContentHash, CommittedQemuActionEvidence>,
     qemu_active_rule_ids: &BTreeSet<ContentHash>,
     network_state: Option<&ProductionNetworkStateCheckpoint>,
     emitted_events: &[ReferencedSignalEvent],
@@ -1832,20 +2166,38 @@ fn production_checkpoint_identity(
     for (identity, action) in qemu_issued_actions {
         material.extend_from_slice(&identity.bytes);
         material.extend_from_slice(&action.id().bytes);
+        let commit = qemu_action_commits
+            .get(identity)
+            .ok_or(FaultExecutionError::CheckpointPresence)?;
+        material.extend_from_slice(&commit.command_sequence.to_be_bytes());
+        material.extend_from_slice(&commit.command_kind.to_be_bytes());
+        material.extend_from_slice(&commit.before_hash);
+        material.extend_from_slice(&commit.after_hash);
+    }
+    if qemu_action_commits.keys().ne(qemu_issued_actions.keys()) {
+        return Err(FaultExecutionError::CheckpointPresence.into());
     }
     for identity in qemu_active_rule_ids {
         material.extend_from_slice(&identity.bytes);
     }
     Ok(ContentHash::from_canonical_material(
-        "crucible.production-fault-runtime-checkpoint.v7",
+        "crucible.production-fault-runtime-checkpoint.v8",
         &hex_bytes(&material),
     ))
 }
 
 fn validate_qemu_action_ledger(
     actions: &BTreeMap<ContentHash, ResolvedBindingAction>,
+    commits: &BTreeMap<ContentHash, CommittedQemuActionEvidence>,
     active_rule_ids: &BTreeSet<ContentHash>,
 ) -> Result<(), ProductionFaultRuntimeError> {
+    if commits.keys().ne(actions.keys())
+        || commits
+            .values()
+            .any(|commit| commit.command_sequence == 0 || commit.command_kind == 0)
+    {
+        return Err(FaultExecutionError::CheckpointPresence.into());
+    }
     if actions.iter().any(|(identity, action)| {
         *identity != action.id()
             || !matches!(
@@ -2169,6 +2521,10 @@ mod tests {
         corrupt.payload[12..16].copy_from_slice(&2_u32.to_le_bytes());
         assert!(validate_node_event_evidence(&corrupt, &immediate).is_err());
 
+        let mut wrong_kind = event.clone();
+        wrong_kind.header.command_kind = crucible_shmem::FaultCommandKind::CpuService;
+        assert!(validate_node_event_evidence(&wrong_kind, &immediate).is_err());
+
         let ready = lifecycle_action(
             NodeLifecycleTransition::Reset,
             NodeBootPolicy::RequireReady {
@@ -2293,6 +2649,17 @@ mod tests {
 
     #[test]
     fn qemu_action_ledger_retains_impulses_and_removed_rules_for_events() {
+        let committed = |action: &ResolvedBindingAction, command_sequence: u64| {
+            BTreeMap::from([(
+                action.id(),
+                CommittedQemuActionEvidence {
+                    command_sequence,
+                    command_kind: crucible_shmem::FaultCommandKind::NodeLifecycle as u16,
+                    before_hash: [command_sequence as u8; 32],
+                    after_hash: [command_sequence as u8 + 1; 32],
+                },
+            )])
+        };
         let plan = FaultSignalPlan::new(Vec::new(), Vec::new(), FaultResourceLimits::default())
             .unwrap_or_else(|error| panic!("empty test plan should be valid: {error}"));
         let nodes = QemuNodeSet::new();
@@ -2307,7 +2674,7 @@ mod tests {
 
         let impulse = lifecycle_action(NodeLifecycleTransition::Reset, NodeBootPolicy::Immediate);
         runtime
-            .update_qemu_action_ledger(std::slice::from_ref(&impulse))
+            .update_qemu_action_ledger(std::slice::from_ref(&impulse), committed(&impulse, 1))
             .unwrap_or_else(|error| panic!("impulse should enter issued ledger: {error}"));
         assert_eq!(
             runtime.qemu_issued_actions.get(&impulse.id()),
@@ -2319,14 +2686,14 @@ mod tests {
         persistent.binding = object_id("node-hang");
         persistent.transition_sequence = 2;
         runtime
-            .update_qemu_action_ledger(std::slice::from_ref(&persistent))
+            .update_qemu_action_ledger(std::slice::from_ref(&persistent), committed(&persistent, 2))
             .unwrap_or_else(|error| panic!("persistent rule should enter issued ledger: {error}"));
 
         let mut remove = persistent.clone();
         remove.kind = BindingActionKind::RemovePersistent;
         remove.transition_sequence = 3;
         runtime
-            .update_qemu_action_ledger(std::slice::from_ref(&remove))
+            .update_qemu_action_ledger(std::slice::from_ref(&remove), committed(&remove, 3))
             .unwrap_or_else(|error| panic!("known rule should be removable: {error}"));
         assert_eq!(
             runtime.qemu_issued_actions.get(&persistent.id()),
@@ -2336,9 +2703,38 @@ mod tests {
         assert!(runtime.qemu_active_rule_ids.is_empty());
         assert!(
             runtime
-                .update_qemu_action_ledger(std::slice::from_ref(&remove))
+                .update_qemu_action_ledger(std::slice::from_ref(&remove), committed(&remove, 4))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn immediate_qemu_event_must_match_the_exact_apply_result() {
+        let action = lifecycle_action(NodeLifecycleTransition::Reset, NodeBootPolicy::Immediate);
+        let event = lifecycle_event(&action);
+        let commit = CommittedQemuActionEvidence {
+            command_sequence: event.header.rule_command_sequence,
+            command_kind: event.header.command_kind as u16,
+            before_hash: event.header.before_hash,
+            after_hash: event.header.after_hash,
+        };
+        assert!(qemu_event_matches_commit(&event, &action, &commit));
+
+        let mut wrong_sequence = event.clone();
+        wrong_sequence.header.rule_command_sequence += 1;
+        assert!(!qemu_event_matches_commit(
+            &wrong_sequence,
+            &action,
+            &commit
+        ));
+
+        let mut wrong_before = event.clone();
+        wrong_before.header.before_hash[0] ^= 1;
+        assert!(!qemu_event_matches_commit(&wrong_before, &action, &commit));
+
+        let mut wrong_after = event;
+        wrong_after.header.after_hash[0] ^= 1;
+        assert!(!qemu_event_matches_commit(&wrong_after, &action, &commit));
     }
 
     #[test]

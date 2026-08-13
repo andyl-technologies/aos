@@ -9,6 +9,7 @@ use super::{
     production_checkpoint_identity, validate_pending_qemu_event_sequences,
     validate_production_event_state, validate_qemu_action_ledger,
 };
+use crate::fault_action_sink::CommittedQemuActionEvidence;
 use crucible::model::{
     ContentHash, FaultObservation, FaultRuntimeCheckpoint, FaultSignalPlan, HostFaultActionState,
     ReferencedSignalEvent, ResolvedBindingAction,
@@ -16,7 +17,7 @@ use crucible::model::{
 use crucible::{BackendNetworkOutput, NodeId, SchedulerNetworkCheckpoint};
 use crucible_shmem::DequeuedFaultEvent;
 
-const MAGIC: &[u8] = b"crucible.production-fault-runtime.v1\0";
+const MAGIC: &[u8] = b"crucible.production-fault-runtime.v2\0";
 const MAX_BYTES: usize = 1_610_612_736;
 
 #[derive(Serialize, Deserialize)]
@@ -28,12 +29,44 @@ struct CheckpointWire {
     qemu_fault_sequences: BTreeMap<NodeId, u64>,
     qemu_fault_event_sequences: BTreeMap<NodeId, u64>,
     qemu_issued_actions: BTreeMap<ContentHash, ResolvedBindingAction>,
+    qemu_action_commits: BTreeMap<ContentHash, QemuActionCommitWire>,
     qemu_active_rule_ids: BTreeSet<ContentHash>,
     network_state: Option<NetworkWire>,
     emitted_events: Vec<ReferencedSignalEvent>,
     pending_qemu_observations: Vec<FaultObservation>,
     pending_qemu_events: BTreeMap<NodeId, Vec<Vec<u8>>>,
     identity: ContentHash,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QemuActionCommitWire {
+    command_sequence: u64,
+    command_kind: u16,
+    before_hash: [u8; 32],
+    after_hash: [u8; 32],
+}
+
+impl From<CommittedQemuActionEvidence> for QemuActionCommitWire {
+    fn from(value: CommittedQemuActionEvidence) -> Self {
+        Self {
+            command_sequence: value.command_sequence,
+            command_kind: value.command_kind,
+            before_hash: value.before_hash,
+            after_hash: value.after_hash,
+        }
+    }
+}
+
+impl From<QemuActionCommitWire> for CommittedQemuActionEvidence {
+    fn from(value: QemuActionCommitWire) -> Self {
+        Self {
+            command_sequence: value.command_sequence,
+            command_kind: value.command_kind,
+            before_hash: value.before_hash,
+            after_hash: value.after_hash,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -70,6 +103,11 @@ impl ProductionFaultRuntimeCheckpoint {
             qemu_fault_sequences: self.qemu_fault_sequences.clone(),
             qemu_fault_event_sequences: self.qemu_fault_event_sequences.clone(),
             qemu_issued_actions: self.qemu_issued_actions.clone(),
+            qemu_action_commits: self
+                .qemu_action_commits
+                .iter()
+                .map(|(identity, commit)| (*identity, (*commit).into()))
+                .collect(),
             qemu_active_rule_ids: self.qemu_active_rule_ids.clone(),
             network_state: self
                 .network_state
@@ -164,6 +202,11 @@ impl ProductionFaultRuntimeCheckpoint {
             qemu_fault_sequences: wire.qemu_fault_sequences,
             qemu_fault_event_sequences: wire.qemu_fault_event_sequences,
             qemu_issued_actions: wire.qemu_issued_actions,
+            qemu_action_commits: wire
+                .qemu_action_commits
+                .into_iter()
+                .map(|(identity, commit)| (identity, commit.into()))
+                .collect(),
             qemu_active_rule_ids: wire.qemu_active_rule_ids,
             network_state,
             emitted_events: wire.emitted_events,
@@ -264,6 +307,7 @@ fn validate_checkpoint(
     }
     validate_qemu_action_ledger(
         &checkpoint.qemu_issued_actions,
+        &checkpoint.qemu_action_commits,
         &checkpoint.qemu_active_rule_ids,
     )
     .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Invalid)?;
@@ -289,6 +333,7 @@ fn validate_checkpoint(
         &checkpoint.qemu_fault_sequences,
         &checkpoint.qemu_fault_event_sequences,
         &checkpoint.qemu_issued_actions,
+        &checkpoint.qemu_action_commits,
         &checkpoint.qemu_active_rule_ids,
         checkpoint.network_state.as_ref(),
         &checkpoint.emitted_events,
@@ -317,6 +362,7 @@ mod tests {
             qemu_fault_sequences: BTreeMap::new(),
             qemu_fault_event_sequences: BTreeMap::new(),
             qemu_issued_actions: BTreeMap::new(),
+            qemu_action_commits: BTreeMap::new(),
             qemu_active_rule_ids: BTreeSet::new(),
             network_state,
             emitted_events: Vec::new(),
@@ -332,6 +378,7 @@ mod tests {
             &checkpoint.qemu_fault_sequences,
             &checkpoint.qemu_fault_event_sequences,
             &checkpoint.qemu_issued_actions,
+            &checkpoint.qemu_action_commits,
             &checkpoint.qemu_active_rule_ids,
             checkpoint.network_state.as_ref(),
             &checkpoint.emitted_events,

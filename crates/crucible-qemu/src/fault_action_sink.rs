@@ -64,10 +64,24 @@ struct AuthorizedQemuNodeBatch {
     mutation_payload: Vec<u8>,
 }
 
+/// Authenticated APPLY-result identity retained for occurrence correlation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CommittedQemuActionEvidence {
+    /// Exact QEMU command sequence that installed or applied the action.
+    pub(crate) command_sequence: u64,
+    /// Numeric [`FaultCommandKind`] carried by the result header.
+    pub(crate) command_kind: u16,
+    /// QEMU-authenticated state digest before the APPLY mutation.
+    pub(crate) before_hash: [u8; 32],
+    /// QEMU-authenticated state digest after the APPLY mutation.
+    pub(crate) after_hash: [u8; 32],
+}
+
 /// A production node-adapter sink that mutates live patched-QEMU backends.
 pub struct QemuFaultActionSink<'a> {
     nodes: &'a mut QemuNodeSet,
     prepared: Option<PreparedQemuBatch>,
+    committed: BTreeMap<ContentHash, CommittedQemuActionEvidence>,
 }
 
 impl<'a> QemuFaultActionSink<'a> {
@@ -77,7 +91,15 @@ impl<'a> QemuFaultActionSink<'a> {
         Self {
             nodes,
             prepared: None,
+            committed: BTreeMap::new(),
         }
+    }
+
+    /// Removes APPLY-result identities committed through this transaction sink.
+    pub(crate) fn take_committed_evidence(
+        &mut self,
+    ) -> BTreeMap<ContentHash, CommittedQemuActionEvidence> {
+        std::mem::take(&mut self.committed)
     }
 
     fn reject(
@@ -656,6 +678,23 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                 ));
             }
             let precondition = ContentHash::from_bytes(&result_header.before_hash);
+            let committed_evidence = CommittedQemuActionEvidence {
+                command_sequence: mutation_sequence,
+                command_kind: FaultCommandKind::MemoryMutation as u16,
+                before_hash: result_header.before_hash,
+                after_hash: result_header.after_hash,
+            };
+            for action in &prepared.actions {
+                if self
+                    .committed
+                    .insert(action.action.id(), committed_evidence)
+                    .is_some()
+                {
+                    return Err(FaultActionCommitError::Fatal(
+                        FaultRuntimeError::IncompleteAdapterState,
+                    ));
+                }
+            }
             applied = true;
             results.extend(
                 prepared
@@ -702,6 +741,23 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
             let evidence_hash = ContentHash::from_bytes(&evidence.encode().map_err(|_source| {
                 FaultActionCommitError::Fatal(FaultRuntimeError::IncompleteAdapterState)
             })?);
+            if self
+                .committed
+                .insert(
+                    prepared.action.id(),
+                    CommittedQemuActionEvidence {
+                        command_sequence: sequence,
+                        command_kind: prepared.command_kind as u16,
+                        before_hash: evidence.before_sha256,
+                        after_hash: evidence.after_sha256,
+                    },
+                )
+                .is_some()
+            {
+                return Err(FaultActionCommitError::Fatal(
+                    FaultRuntimeError::IncompleteAdapterState,
+                ));
+            }
             results.push(PreparedActionResult {
                 action: prepared.action.id(),
                 precondition: Some(ContentHash::from_bytes(&preparation.before_sha256)),
