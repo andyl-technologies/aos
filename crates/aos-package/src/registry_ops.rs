@@ -13110,6 +13110,7 @@ pub struct ReleaseStorePublish {
     pub config: ApmConfig,
     pub store_path: String,
     pub name: Option<String>,
+    pub version: Option<String>,
     pub platform: Option<String>,
     pub description: Option<String>,
     pub homepage: Option<String>,
@@ -13212,6 +13213,7 @@ pub async fn release(
     semver: &str,
     store_path: Option<&str>,
     name: Option<&str>,
+    version_override: Option<&str>,
     platform: Option<&str>,
     description: Option<&str>,
     homepage: Option<&str>,
@@ -13270,6 +13272,7 @@ pub async fn release(
         config: config.clone(),
         store_path: store_path.to_string(),
         name: name.map(ToString::to_string),
+        version: version_override.map(ToString::to_string),
         platform: platform.map(ToString::to_string),
         description: description.map(ToString::to_string),
         homepage: homepage.map(ToString::to_string),
@@ -13317,11 +13320,9 @@ pub async fn release(
 /// Publish a release's `--store-path` into the registry tree.
 ///
 /// The published package version is **not** the release tag. Like a plain
-/// `apr publish`, the version is taken from the store-path basename (the
-/// package derivation's `version`), so a registry release tag and the package
-/// versions it snapshots are independent. The `version_override` argument to
-/// [`publish`] is therefore left `None`; `--store-path` carries the version
-/// already.
+/// `apr publish`, it defaults to the store-path basename and can be overridden
+/// explicitly, so a registry release tag and the package versions it snapshots
+/// remain independent.
 async fn publish_release_store_path(
     publish_opts: &ReleaseStorePublish,
     signing_key: &str,
@@ -13331,7 +13332,7 @@ async fn publish_release_store_path(
         &publish_opts.config,
         &publish_opts.store_path,
         publish_opts.name.as_deref(),
-        None,
+        publish_opts.version.as_deref(),
         publish_opts.platform.as_deref(),
         publish_opts.description.as_deref(),
         publish_opts.homepage.as_deref(),
