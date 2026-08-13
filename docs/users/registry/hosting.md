@@ -152,31 +152,47 @@ or publish a complete static HTTPS origin for production consumers.
 
 ## AOS Hub
 
-Create or select a registry in the Hub, then mint a short-lived,
-registry-scoped upload credential:
+Create or select a registry in the Hub, attach a complete storage placement,
+scan it, and promote it to write authority. Obtain a short-lived token with
+`publish` access to the registry. The Hub accepts one complete APR surface as
+an atomic publication: content-addressed payloads are written before mutable
+refs, and refs become visible only after every required placement verifies the
+declared bytes.
+
+Stage the release locally first. A filesystem destination contains the Git
+origin, image objects, and binary-cache objects in the exact paths consumers
+will request:
 
 ```sh
-aos hub mint-upload \
-  --hub https://hub.example.com \
-  --token '<access-token>' \
-  --slug acme/cdn
-```
+publication_root="$(mktemp -d)"
 
-The command prints a one-time provisioning token and the canonical upload URL.
-Pass those values to the release command:
-
-```sh
-export AOS_TOKEN='<one-time provisioning token>'
 apr release 2026.8.0 \
   --registry acme \
   --key-id initial \
   --cache-url https://hub.example.com/acme/cdn/ \
-  --upload-url '<Hub-provided upload URL>'
+  --upload-url "file://${publication_root}"
 ```
 
-With `AOS_TOKEN` set, the HTTP backend exchanges the provisioning secret for a
-short-lived access token and uses the Hub upload API. Use the exact public and
-upload URLs reported by your Hub; deployment prefixes can differ.
+Then upload that surface through the Hub's placement-aware transaction:
+
+```sh
+export AOS_HUB=https://hub.example.com
+export AOS_TOKEN='<short-lived access token>'
+
+aos hub registry publish upload acme/cdn \
+  --root "${publication_root}"
+```
+
+The CLI inventories regular files beneath the root, rejects symlinks and
+non-machine paths, hashes every object, derives the immutable generation from
+`info/refs`, and binds the transaction to the current ready publication. For a
+separately reviewed or externally generated inventory, pass
+`--manifest publication.json`; every declared size and digest is still checked
+against the local file before upload.
+
+Use the exact public URL reported by your Hub; deployment prefixes can differ.
+The local staging directory may be removed after the publication reports
+`ready`.
 
 Continue with [Operate AOS Hub](../aos-hub/) for native and Worker deployment,
 storage bindings, IAM, backup, and monitoring.

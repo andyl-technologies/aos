@@ -2036,6 +2036,21 @@ pub struct ObjectPresenceRecord {
     pub observed_at: i64,
 }
 
+/// Byte evidence produced by one complete physical-placement scan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlacementScanPresence {
+    /// Logical surface object receiving the observation.
+    pub surface_object_id: i64,
+    /// `present`, `missing`, or `corrupt`.
+    pub state: String,
+    /// SHA-256 digest derived from the physical bytes, when present.
+    pub observed_hash: Option<String>,
+    /// Size derived from the physical bytes, when present.
+    pub observed_size: Option<i64>,
+    /// Backend-issued strong entity tag, when available.
+    pub etag: Option<String>,
+}
+
 /// Operator-confirmed equivalence between two exact surface placements.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlacementEquivalenceRecord {
@@ -7369,6 +7384,184 @@ impl Database {
             .context("observed placement disappeared")
     }
 
+    /// Starts a physical inventory scan and clears the placement's prior evidence.
+    ///
+    /// The observation changes to syncing/unknown in the same transaction that
+    /// removes old presence rows. Readers therefore cannot select evidence from
+    /// two different scans while the new inventory is being assembled.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the placement topology or observation version is
+    /// stale, or when persistence fails.
+    pub async fn begin_surface_placement_scan(
+        &self,
+        placement_id: i64,
+        expected_resource_version: i64,
+        expected_observation_version: i64,
+    ) -> Result<SurfacePlacementRecord> {
+        let now = unix_now();
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE surface_placement_observations
+                     SET state = 'syncing', completeness = 'unknown', observed_at = ?4,
+                         observation_version = observation_version + 1
+                     WHERE placement_id = ?1 AND observation_version = ?3
+                       AND EXISTS (SELECT 1 FROM surface_placements placement
+                         WHERE placement.id = ?1 AND placement.resource_version = ?2)",
+                    vals![
+                        placement_id,
+                        expected_resource_version,
+                        expected_observation_version,
+                        now
+                    ],
+                )
+                .expecting(1),
+                Statement::new(
+                    "DELETE FROM object_placements
+                     WHERE placement_id = ?1
+                       AND EXISTS (SELECT 1 FROM surface_placement_observations observation
+                         WHERE observation.placement_id = ?1
+                           AND observation.observation_version = ?2)",
+                    vals![placement_id, expected_observation_version + 1],
+                )
+                .unchecked(),
+            ])
+            .await?;
+        self.surface_placement(placement_id)
+            .await?
+            .context("placement disappeared after its scan began")
+    }
+
+    /// Records one logical object's evidence during a physical placement scan.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed evidence, stale placement topology, an
+    /// object on another surface, a placement no longer being scanned, or a
+    /// database failure.
+    pub async fn record_surface_placement_scan_presence(
+        &self,
+        placement_id: i64,
+        expected_resource_version: i64,
+        expected_observation_version: i64,
+        presence: &PlacementScanPresence,
+        observed_at: i64,
+    ) -> Result<()> {
+        if !matches!(presence.state.as_str(), "present" | "missing" | "corrupt") {
+            bail!("invalid placement scan presence state '{}'", presence.state);
+        }
+        if observed_at < 0 || presence.observed_size.is_some_and(|size| size < 0) {
+            bail!("placement scan evidence has an invalid time or size");
+        }
+        if presence.state == "missing"
+            && (presence.observed_hash.is_some()
+                || presence.observed_size.is_some()
+                || presence.etag.is_some())
+        {
+            bail!("missing placement scan evidence cannot describe physical bytes");
+        }
+        if presence.state != "missing"
+            && (presence.observed_hash.is_none() || presence.observed_size.is_none())
+        {
+            bail!("present placement scan evidence requires a digest and size");
+        }
+        if let Some(hash) = presence.observed_hash.as_deref() {
+            validate_key_bytes(hash, "placement scan observed hash", 128)?;
+        }
+
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "DELETE FROM object_placements
+                     WHERE surface_object_id = ?2 AND placement_id = ?1",
+                    vals![placement_id, presence.surface_object_id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "INSERT INTO object_placements
+                       (surface_object_id, cache_id, registry_id, placement_id,
+                        state, observed_hash, observed_size, etag,
+                        observed_inventory_generation, observed_at)
+                     SELECT object.id, object.cache_id, object.registry_id, placement.id,
+                            ?5, ?6, ?7, ?8, ?3, ?9
+                     FROM surface_objects object
+                     JOIN surface_placements placement
+                       ON object.registry_id = placement.registry_id
+                       OR object.cache_id = placement.cache_id
+                     JOIN surface_placement_observations observation
+                       ON observation.placement_id = placement.id
+                     WHERE placement.id = ?1 AND object.id = ?2
+                       AND placement.resource_version = ?3
+                       AND observation.observation_version = ?4
+                       AND observation.state = 'syncing'
+                       AND observation.completeness = 'unknown'",
+                    vals![
+                        placement_id,
+                        presence.surface_object_id,
+                        expected_resource_version,
+                        expected_observation_version,
+                        presence.state,
+                        presence.observed_hash,
+                        presence.observed_size,
+                        presence.etag,
+                        observed_at
+                    ],
+                )
+                .expecting(1),
+            ])
+            .await
+    }
+
+    /// Publishes the terminal state of a complete physical inventory pass.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid state, stale topology or observation
+    /// versions, or persistence failure.
+    pub async fn finish_surface_placement_scan(
+        &self,
+        placement_id: i64,
+        expected_resource_version: i64,
+        expected_observation_version: i64,
+        state: &str,
+        completeness: &str,
+    ) -> Result<SurfacePlacementRecord> {
+        if !matches!(state, "ready" | "degraded") {
+            bail!("invalid completed placement scan state '{state}'");
+        }
+        if !matches!(completeness, "complete" | "partial") {
+            bail!("invalid completed placement scan completeness '{completeness}'");
+        }
+        let affected = self
+            .backend
+            .execute(
+                "UPDATE surface_placement_observations
+                 SET state = ?4, completeness = ?5, observed_at = ?6,
+                     observation_version = observation_version + 1
+                 WHERE placement_id = ?1 AND observation_version = ?3
+                   AND state = 'syncing' AND completeness = 'unknown'
+                   AND EXISTS (SELECT 1 FROM surface_placements placement
+                     WHERE placement.id = ?1 AND placement.resource_version = ?2)",
+                &vals![
+                    placement_id,
+                    expected_resource_version,
+                    expected_observation_version,
+                    state,
+                    completeness,
+                    unix_now()
+                ],
+            )
+            .await?;
+        if affected != 1 {
+            bail!("placement scan topology or observation version is stale");
+        }
+        self.surface_placement(placement_id)
+            .await?
+            .context("placement disappeared after its scan completed")
+    }
+
     /// Creates initial single-writer authority from a validated complete placement.
     ///
     /// # Errors
@@ -8561,7 +8754,7 @@ impl Database {
         let row = self
             .backend
             .query_opt(
-                "SELECT p.name, r.slug, c.slug FROM surface_placements p
+                "SELECT p.name, r.stable_id, c.stable_id FROM surface_placements p
                  LEFT JOIN registries r ON r.id = p.registry_id
                  LEFT JOIN binary_caches c ON c.id = p.cache_id WHERE p.id = ?1",
                 &vals![id],
@@ -8679,6 +8872,63 @@ impl Database {
             )
             .await?;
         rows.first().map(row_to_surface_object).transpose()
+    }
+
+    /// Lists every active logical object on one registry or binary-cache surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed persisted data.
+    pub async fn list_active_surface_objects(
+        &self,
+        surface: SurfaceTarget,
+    ) -> Result<Vec<SurfaceObjectRecord>> {
+        let (registry_id, cache_id) = surface.ids();
+        self.backend
+            .query(
+                &format!(
+                    "SELECT {SURFACE_OBJECT_COLUMNS} FROM surface_objects
+                     WHERE (registry_id = ?1 OR cache_id = ?2)
+                       AND lifecycle_state = 'active'
+                     ORDER BY object_key, id"
+                ),
+                &vals![registry_id, cache_id],
+            )
+            .await?
+            .iter()
+            .map(row_to_surface_object)
+            .collect()
+    }
+
+    /// Resolves the stable placement identity captured by a topology operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed persisted data.
+    pub async fn surface_placement_by_operation_target(
+        &self,
+        stable_id: &str,
+    ) -> Result<Option<SurfacePlacementRecord>> {
+        validate_key_bytes(stable_id, "placement operation target", 255)?;
+        let rows = self
+            .backend
+            .query(
+                &format!(
+                    "SELECT {PLACEMENT_COLUMNS} FROM surface_placement_effective
+                     WHERE id IN (
+                       SELECT placement.id FROM surface_placements placement
+                       LEFT JOIN registries registry ON registry.id = placement.registry_id
+                       LEFT JOIN binary_caches cache ON cache.id = placement.cache_id
+                       WHERE (registry.stable_id || '/placement:' || placement.name) = ?1
+                          OR (cache.stable_id || '/placement:' || placement.name) = ?1)"
+                ),
+                &vals![stable_id],
+            )
+            .await?;
+        if rows.len() > 1 {
+            bail!("placement operation target is ambiguous");
+        }
+        rows.first().map(row_to_surface_placement).transpose()
     }
 
     /// Lists placement-presence observations for one logical surface object.
@@ -9868,6 +10118,36 @@ impl Database {
             .collect()
     }
 
+    /// Lists placement scans eligible for a controller claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn due_surface_placement_scan_operations(
+        &self,
+        stale_before: i64,
+        limit: usize,
+    ) -> Result<Vec<TopologyOperationRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        self.backend
+            .query(
+                &format!(
+                    "SELECT {OPERATION_COLUMNS} FROM topology_operations operation
+                     WHERE operation.operation_kind = 'scan_placement'
+                       AND (operation.state = 'pending'
+                         OR (operation.state = 'running' AND operation.started_at <= ?1))
+                     ORDER BY operation.created_at, operation.operation_id LIMIT ?2"
+                ),
+                &vals![stale_before, i64::try_from(limit)?],
+            )
+            .await?
+            .iter()
+            .map(row_to_topology_operation)
+            .collect()
+    }
+
     /// Lists route-probe operations eligible for a controller claim.
     ///
     /// # Errors
@@ -10458,6 +10738,38 @@ impl Database {
              WHERE operation_id = ?1 AND operation_kind = 'domain_probe'
                AND resource_version = ?2
                AND (state = 'pending' OR (state = 'running' AND started_at <= ?4))",
+                &vals![operation_id, expected_version, now, now - lease_seconds],
+            )
+            .await?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        self.topology_operation(operation_id).await
+    }
+
+    /// Claims one pending or stale-running physical placement scan under CAS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid lease or database failure.
+    pub async fn claim_surface_placement_scan_operation(
+        &self,
+        operation_id: &str,
+        expected_version: i64,
+        lease_seconds: i64,
+    ) -> Result<Option<TopologyOperationRecord>> {
+        if lease_seconds <= 0 {
+            bail!("placement scan claim lease must be positive");
+        }
+        let now = unix_now();
+        let changed = self
+            .backend
+            .execute(
+                "UPDATE topology_operations SET state = 'running', started_at = ?3,
+                   finished_at = NULL, error = NULL, resource_version = resource_version + 1
+                 WHERE operation_id = ?1 AND operation_kind = 'scan_placement'
+                   AND resource_version = ?2
+                   AND (state = 'pending' OR (state = 'running' AND started_at <= ?4))",
                 &vals![operation_id, expected_version, now, now - lease_seconds],
             )
             .await?;

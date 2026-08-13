@@ -3853,7 +3853,7 @@ fn extract_sb_signer_cert_sha256(uki: &Path) -> Result<Option<String>> {
     let bytes = fs::read(uki).with_context(|| format!("reading {}", uki.display()))?;
     let leaf = leaf_cert_from_pe(&bytes)
         .with_context(|| format!("extracting signer cert from {}", uki.display()))?;
-    Ok(Some(sha256_hex(leaf)))
+    Ok(leaf.map(sha256_hex))
 }
 
 /// Return the first (leaf) X.509 certificate DER bytes from a signed PE's
@@ -3868,8 +3868,10 @@ fn extract_sb_signer_cert_sha256(uki: &Path) -> Result<Option<String>> {
 ///
 /// Returns an error when the PE headers, the security directory, or the
 /// PKCS#7 certificate set cannot be parsed.
-fn leaf_cert_from_pe(pe: &[u8]) -> Result<&[u8]> {
-    let (cert_off, cert_len) = pe_security_dir(pe)?;
+fn leaf_cert_from_pe(pe: &[u8]) -> Result<Option<&[u8]>> {
+    let Some((cert_off, cert_len)) = pe_security_dir(pe)? else {
+        return Ok(None);
+    };
     let cert_table = pe
         .get(cert_off..cert_off + cert_len)
         .ok_or_else(|| anyhow::anyhow!("security directory extends past end of file"))?;
@@ -3877,7 +3879,7 @@ fn leaf_cert_from_pe(pe: &[u8]) -> Result<&[u8]> {
     let pkcs7 = cert_table
         .get(8..)
         .ok_or_else(|| anyhow::anyhow!("WIN_CERTIFICATE blob too short"))?;
-    first_certificate_der(pkcs7)
+    first_certificate_der(pkcs7).map(Some)
 }
 
 /// Parse the PE optional-header data directory entry for the
@@ -3887,9 +3889,8 @@ fn leaf_cert_from_pe(pe: &[u8]) -> Result<&[u8]> {
 /// # Errors
 ///
 /// Returns an error when the DOS/PE signatures, the optional-header magic,
-/// or the data directory cannot be read, or when no security directory is
-/// present.
-fn pe_security_dir(pe: &[u8]) -> Result<(usize, usize)> {
+/// or the data directory cannot be read. An unsigned PE returns `None`.
+fn pe_security_dir(pe: &[u8]) -> Result<Option<(usize, usize)>> {
     let read_u16 = |off: usize| -> Option<u16> {
         pe.get(off..off + 2)
             .map(|b| u16::from_le_bytes([b[0], b[1]]))
@@ -3906,24 +3907,50 @@ fn pe_security_dir(pe: &[u8]) -> Result<(usize, usize)> {
     if read_u32(pe_off) != Some(0x0000_4550) {
         bail!("missing PE signature");
     }
-    // COFF header is 20 bytes; the optional header magic follows.
-    let opt_off = pe_off + 24;
+    let coff_off = pe_off
+        .checked_add(4)
+        .context("PE header offset overflowed")?;
+    let optional_size = read_u16(coff_off + 16).context("reading optional-header size")? as usize;
+    // COFF header is 20 bytes; the optional header follows.
+    let opt_off = coff_off
+        .checked_add(20)
+        .context("optional-header offset overflowed")?;
+    let opt_end = opt_off
+        .checked_add(optional_size)
+        .context("optional-header size overflowed")?;
+    if opt_end > pe.len() {
+        bail!("optional header extends past end of PE image");
+    }
     let magic = read_u16(opt_off).context("reading optional-header magic")?;
     // The data directory array starts after the windows-specific fields:
     // 96 bytes for PE32 (0x10b), 112 bytes for PE32+ (0x20b).
-    let dir_off = match magic {
-        0x10b => opt_off + 96,
-        0x20b => opt_off + 112,
+    let (dir_off, count_off) = match magic {
+        0x10b => (opt_off + 96, opt_off + 92),
+        0x20b => (opt_off + 112, opt_off + 108),
         other => bail!("unexpected optional-header magic {other:#x}"),
     };
+    if count_off.checked_add(4).is_none_or(|end| end > opt_end) {
+        bail!("data-directory count is outside the declared optional header");
+    }
+    let directory_count =
+        read_u32(count_off).context("reading optional-header data-directory count")?;
+    if directory_count <= 4 {
+        return Ok(None);
+    }
     // Security directory is entry index 4 (8 bytes each: RVA/offset + size).
     let entry = dir_off + 4 * 8;
+    if entry.checked_add(8).is_none_or(|end| end > opt_end) {
+        bail!("security directory is outside the declared optional header");
+    }
     let offset = read_u32(entry).context("reading security dir offset")? as usize;
     let size = read_u32(entry + 4).context("reading security dir size")? as usize;
-    if offset == 0 || size == 0 {
-        bail!("PE has no Authenticode certificate table");
+    if offset == 0 && size == 0 {
+        return Ok(None);
     }
-    Ok((offset, size))
+    if offset == 0 || size == 0 {
+        bail!("PE security directory has an incomplete certificate table");
+    }
+    Ok(Some((offset, size)))
 }
 
 /// Walk a PKCS#7 `SignedData` DER blob and return the *signer* certificate's
@@ -14333,10 +14360,13 @@ mod tests {
         let mut tail = Vec::new();
         tail.extend_from_slice(&0x0000_4550u32.to_le_bytes()); // "PE\0\0"
         tail.extend_from_slice(&[0u8; 20]); // COFF header
+        tail[20..22].copy_from_slice(&(112_u16 + 16 * 8).to_le_bytes());
         let opt_start = pe.len() + tail.len();
         tail.extend_from_slice(&0x020bu16.to_le_bytes()); // PE32+ magic
         // Pad optional header up to the data directory (112 bytes from magic).
         tail.resize(tail.len() + (112 - 2), 0);
+        let count_in_tail = (opt_start - pe.len()) + 108;
+        tail[count_in_tail..count_in_tail + 4].copy_from_slice(&16_u32.to_le_bytes());
         let dir_start = opt_start + 112;
         // Security dir is entry index 4 (each entry 8 bytes).
         let cert_off = dir_start + 16 * 8; // place blob after all 16 entries
@@ -14350,8 +14380,23 @@ mod tests {
         assert_eq!(pe.len(), cert_off);
         pe.extend_from_slice(&win_cert);
 
-        let from_pe = leaf_cert_from_pe(&pe).unwrap();
+        let from_pe = leaf_cert_from_pe(&pe).unwrap().unwrap();
         assert_eq!(from_pe, leaf);
+
+        let mut unsigned = pe;
+        let entry_in_pe = 0x40 + entry_in_tail;
+        unsigned[entry_in_pe..entry_in_pe + 8].fill(0);
+        assert!(leaf_cert_from_pe(&unsigned).unwrap().is_none());
+
+        let mut malformed = unsigned;
+        malformed[entry_in_pe..entry_in_pe + 4].copy_from_slice(&(cert_off as u32).to_le_bytes());
+        assert!(leaf_cert_from_pe(&malformed).is_err());
+
+        let mut truncated_optional_header = malformed;
+        let coff_optional_size = 0x40 + 4 + 16;
+        truncated_optional_header[coff_optional_size..coff_optional_size + 2]
+            .copy_from_slice(&64_u16.to_le_bytes());
+        assert!(leaf_cert_from_pe(&truncated_optional_header).is_err());
     }
 
     /// Wrap a DER value in a SEQUENCE/SET/context tag with a short length.

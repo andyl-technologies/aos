@@ -435,6 +435,64 @@ mod tests {
         assert!(canonical_cidr("2001:db8::1/32").is_err());
         assert_eq!(canonical_cidr("2001:db8::/32").unwrap(), "2001:db8::/32");
     }
+
+    #[test]
+    fn publication_surface_derives_a_complete_stable_request() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        std::fs::create_dir_all(root.join("info")).unwrap();
+        std::fs::create_dir_all(root.join("objects/aa")).unwrap();
+        std::fs::create_dir_all(root.join("channels/stable")).unwrap();
+        let commit = "a".repeat(64);
+        std::fs::write(root.join("HEAD"), "ref: refs/heads/stable\n").unwrap();
+        std::fs::write(
+            root.join("info/refs"),
+            format!("{commit}\trefs/heads/stable\n"),
+        )
+        .unwrap();
+        std::fs::write(root.join("objects/aa/object"), b"object").unwrap();
+        std::fs::write(root.join("channels/stable/00"), b"pointer").unwrap();
+
+        let pinned = publication_from_root(root, "andyl/main").unwrap();
+        let first_generation = pinned.request.generation.clone();
+        let first_refs_digest = pinned.request.refs_digest.clone();
+        let request = pinned.request;
+        assert_eq!(request.registry, "andyl/main");
+        assert_eq!(request.default_commit, commit);
+        assert_ne!(request.generation, request.refs_digest);
+        assert_eq!(request.generation.len(), 64);
+        assert_eq!(request.objects.len(), 4);
+        assert_eq!(request.objects[0].path, "HEAD");
+        assert_eq!(request.objects[0].kind, "mutable_pointer");
+        assert_eq!(request.objects[2].path, "info/refs");
+        assert_eq!(request.objects[2].kind, "mutable_pointer");
+        assert_eq!(request.objects[3].path, "objects/aa/object");
+        assert_eq!(request.objects[3].kind, "immutable");
+
+        std::fs::write(root.join("objects/aa/object"), b"replacement object").unwrap();
+        let replacement = publication_from_root(root, "andyl/main").unwrap();
+        assert_eq!(replacement.request.refs_digest, first_refs_digest);
+        assert_ne!(replacement.request.generation, first_generation);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publication_surface_rejects_symlinks_and_unknown_paths() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        std::fs::create_dir_all(root.join("info")).unwrap();
+        let commit = "b".repeat(64);
+        std::fs::write(root.join("HEAD"), format!("{commit}\n")).unwrap();
+        std::fs::write(root.join("info/refs"), b"").unwrap();
+        std::fs::write(root.join("operator-notes"), b"private").unwrap();
+        assert!(publication_from_root(root, "andyl/main").is_err());
+
+        std::fs::remove_file(root.join("operator-notes")).unwrap();
+        symlink(root.join("HEAD"), root.join("index.html")).unwrap();
+        assert!(publication_from_root(root, "andyl/main").is_err());
+    }
 }
 
 /// Dispatches one `aos hub` subcommand.
@@ -8165,19 +8223,27 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
             manifest,
             root,
         } => {
-            let request = publication_manifest_request(manifest, registry)?;
+            let mut pinned = match manifest {
+                Some(manifest) => {
+                    let request = publication_manifest_request(manifest, registry)?;
+                    pinned_publication_from_root(root, request)?
+                }
+                None => publication_from_root(root, registry)?,
+            };
             let client = hub_client(&access.hub, access.token.as_deref())?;
+            bind_publication_parent(&client, &mut pinned.request).await?;
             let publication: hub_types::RegistryPublication = client
-                .call_topology(HubTopologyMethod::BeginRegistryPublication, &request)
+                .call_topology(HubTopologyMethod::BeginRegistryPublication, &pinned.request)
                 .await?;
             let publication_id = publication.publication_id.clone();
             let result: Result<hub_types::RegistryPublication> = async {
                 anyhow::ensure!(
-                    publication.objects.len() == request.objects.len(),
+                    publication.objects.len() == pinned.request.objects.len(),
                     "Hub publication response changed the declared object count"
                 );
                 for object in &publication.objects {
-                    let declared = request
+                    let declared = pinned
+                        .request
                         .objects
                         .iter()
                         .find(|declared| declared.path == object.path)
@@ -8190,10 +8256,18 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
                         "Hub publication response changed the identity of {}",
                         object.path
                     );
-                    let path = root.join(&object.path);
-                    verify_publication_file(&path, object)?;
+                    let file = pinned
+                        .files
+                        .get(&object.path)
+                        .with_context(|| {
+                            format!("pinned publication lost declared path {}", object.path)
+                        })?
+                        .try_clone()
+                        .with_context(|| {
+                            format!("duplicating pinned publication path {}", object.path)
+                        })?;
                     client
-                        .upload_publication_object(&object.upload_url, &path)
+                        .upload_publication_object(&object.upload_url, file, &object.path)
                         .await
                         .with_context(|| format!("uploading publication path {}", object.path))?;
                 }
@@ -8288,6 +8362,320 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
     }
 }
 
+async fn bind_publication_parent(
+    client: &HubClient,
+    request: &mut hub_types::BeginRegistryPublicationRequest,
+) -> Result<()> {
+    if !request.parent_publication_id.is_empty() {
+        return Ok(());
+    }
+    let publications: hub_types::ListRegistryPublicationsResponse = client
+        .call_topology(
+            HubTopologyMethod::ListRegistryPublications,
+            &hub_types::ListRegistryPublicationsRequest {
+                registry: request.registry.clone(),
+                state: "ready".into(),
+                page_size: 100,
+                page_token: String::new(),
+            },
+        )
+        .await?;
+    if let Some(existing) = publications
+        .publications
+        .iter()
+        .find(|publication| publication.generation == request.generation)
+    {
+        request.parent_publication_id = existing.parent_publication_id.clone();
+    } else if let Some(current) = publications.publications.first() {
+        request.parent_publication_id = current.publication_id.clone();
+    }
+    Ok(())
+}
+
+struct PinnedPublication {
+    request: hub_types::BeginRegistryPublicationRequest,
+    files: std::collections::BTreeMap<String, std::fs::File>,
+}
+
+fn publication_from_root(root: &std::path::Path, registry: &str) -> Result<PinnedPublication> {
+    use sha2::{Digest as _, Sha256};
+
+    let mut files = std::collections::BTreeMap::new();
+    let root = open_publication_root(root)?;
+    collect_publication_objects(&root, "", &mut files)?;
+    let refs_file = files
+        .get_mut("info/refs")
+        .context("publication surface has no info/refs")?;
+    let refs = read_pinned_publication_file(refs_file, "info/refs")?;
+    let refs_digest = format!("{:x}", Sha256::digest(&refs));
+    let head_file = files
+        .get_mut("HEAD")
+        .context("publication surface has no HEAD")?;
+    let head = read_pinned_publication_file(head_file, "HEAD")?;
+    let default_commit = publication_default_commit(&head, &refs)?;
+    let objects = publication_inputs(&files)?;
+    let generation = publication_generation(&objects)?;
+
+    Ok(PinnedPublication {
+        request: hub_types::BeginRegistryPublicationRequest {
+            registry: registry.into(),
+            generation,
+            refs_digest,
+            default_commit,
+            parent_publication_id: String::new(),
+            objects,
+        },
+        files,
+    })
+}
+
+fn collect_publication_objects(
+    directory: &std::os::fd::OwnedFd,
+    relative_directory: &str,
+    files: &mut std::collections::BTreeMap<String, std::fs::File>,
+) -> Result<()> {
+    let mut names = Vec::new();
+    for entry in rustix::fs::Dir::read_from(directory)? {
+        let entry = entry?;
+        let name = entry
+            .file_name()
+            .to_str()
+            .context("publication path is not valid UTF-8")?
+            .to_string();
+        if name != "." && name != ".." {
+            names.push(name);
+        }
+    }
+    names.sort();
+    for name in names {
+        let descriptor = rustix::fs::openat(
+            directory,
+            name.as_str(),
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC | rustix::fs::OFlags::NOFOLLOW,
+            rustix::fs::Mode::empty(),
+        )
+        .with_context(|| format!("opening publication path {name} without following links"))?;
+        let file = std::fs::File::from(descriptor);
+        let metadata = file
+            .metadata()
+            .with_context(|| format!("reading publication metadata {name}"))?;
+        let relative = if relative_directory.is_empty() {
+            name.clone()
+        } else {
+            format!("{relative_directory}/{name}")
+        };
+        if metadata.is_dir() {
+            let descriptor = file.into();
+            collect_publication_objects(&descriptor, &relative, files)?;
+            continue;
+        }
+        anyhow::ensure!(
+            metadata.is_file(),
+            "publication surface contains non-file {relative}"
+        );
+        anyhow::ensure!(
+            publication_machine_path(&relative),
+            "publication surface contains unsupported path {relative}"
+        );
+        anyhow::ensure!(
+            files.insert(relative.clone(), file).is_none(),
+            "publication surface contains duplicate path {relative}"
+        );
+    }
+    Ok(())
+}
+
+fn open_publication_root(path: &std::path::Path) -> Result<std::os::fd::OwnedFd> {
+    let descriptor = rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::DIRECTORY,
+        rustix::fs::Mode::empty(),
+    )
+    .with_context(|| {
+        format!(
+            "opening publication root {} without following links",
+            path.display()
+        )
+    })?;
+    let metadata = std::fs::File::from(descriptor.try_clone()?).metadata()?;
+    anyhow::ensure!(metadata.is_dir(), "publication root is not a directory");
+    Ok(descriptor)
+}
+
+fn publication_inputs(
+    files: &std::collections::BTreeMap<String, std::fs::File>,
+) -> Result<Vec<hub_types::RegistryPublicationObjectInput>> {
+    use sha2::{Digest as _, Sha256};
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    anyhow::ensure!(!files.is_empty(), "publication surface is empty");
+    let mut objects = Vec::with_capacity(files.len());
+    for (relative, source) in files {
+        let metadata = source
+            .metadata()
+            .with_context(|| format!("reading pinned publication object {relative}"))?;
+        let mut file = source
+            .try_clone()
+            .with_context(|| format!("duplicating pinned publication object {relative}"))?;
+        file.seek(SeekFrom::Start(0))?;
+        let mut digest = Sha256::new();
+        let mut buffer = vec![0_u8; 64 * 1024];
+        loop {
+            let count = file
+                .read(&mut buffer)
+                .with_context(|| format!("hashing publication object {relative}"))?;
+            if count == 0 {
+                break;
+            }
+            digest.update(&buffer[..count]);
+        }
+        let after = file
+            .metadata()
+            .with_context(|| format!("rechecking pinned publication object {relative}"))?;
+        anyhow::ensure!(
+            metadata.len() == after.len() && metadata.modified().ok() == after.modified().ok(),
+            "publication object changed while it was hashed: {relative}"
+        );
+        file.seek(SeekFrom::Start(0))?;
+        objects.push(hub_types::RegistryPublicationObjectInput {
+            path: relative.clone(),
+            sha256: format!("{:x}", digest.finalize()),
+            byte_size: i64::try_from(metadata.len()).context("publication object is too large")?,
+            kind: if publication_mutable_pointer(&relative) {
+                "mutable_pointer"
+            } else {
+                "immutable"
+            }
+            .into(),
+            media_type: publication_object_media_type(&relative).into(),
+        });
+    }
+    Ok(objects)
+}
+
+fn publication_generation(objects: &[hub_types::RegistryPublicationObjectInput]) -> Result<String> {
+    use sha2::{Digest as _, Sha256};
+
+    let canonical = objects
+        .iter()
+        .map(|object| {
+            (
+                &object.path,
+                &object.sha256,
+                object.byte_size,
+                &object.kind,
+                &object.media_type,
+            )
+        })
+        .collect::<Vec<_>>();
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&canonical)?)
+    ))
+}
+
+fn pinned_publication_from_root(
+    root: &std::path::Path,
+    mut request: hub_types::BeginRegistryPublicationRequest,
+) -> Result<PinnedPublication> {
+    let mut files = std::collections::BTreeMap::new();
+    let root = open_publication_root(root)?;
+    collect_publication_objects(&root, "", &mut files)?;
+    let actual = publication_inputs(&files)?;
+    request
+        .objects
+        .sort_by(|left, right| left.path.cmp(&right.path));
+    anyhow::ensure!(
+        request
+            .objects
+            .windows(2)
+            .all(|objects| objects[0].path != objects[1].path),
+        "publication manifest contains duplicate paths"
+    );
+    let declared = serde_json::to_vec(&request.objects)?;
+    let actual = serde_json::to_vec(&actual)?;
+    anyhow::ensure!(
+        declared == actual,
+        "publication manifest does not exactly match the pinned surface"
+    );
+    Ok(PinnedPublication { request, files })
+}
+
+fn read_pinned_publication_file(file: &mut std::fs::File, label: &str) -> Result<Vec<u8>> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    file.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .with_context(|| format!("reading pinned publication object {label}"))?;
+    Ok(bytes)
+}
+
+fn publication_machine_path(path: &str) -> bool {
+    path == "HEAD"
+        || path == "nix-cache-info"
+        || path == "index.html"
+        || path.ends_with(".narinfo")
+        || [
+            "info/",
+            "objects/",
+            "channels/",
+            "releases/",
+            "publication-receipts/",
+            "nar/",
+            "images/",
+            "web/",
+            "browse/",
+        ]
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+}
+
+fn publication_mutable_pointer(path: &str) -> bool {
+    path == "HEAD"
+        || path == "info/refs"
+        || path == "nix-cache-info"
+        || path.starts_with("objects/info/")
+        || path.starts_with("channels/")
+}
+
+fn publication_object_media_type(path: &str) -> &'static str {
+    match path.rsplit_once('.').map(|(_, extension)| extension) {
+        Some("json") => "application/json",
+        Some("toml") => "application/toml",
+        Some("qcow2") => "application/x-qemu-disk",
+        Some("vmdk") => "application/x-vmdk",
+        Some("vhd") | Some("vhdx") => "application/x-vhd",
+        _ => "application/octet-stream",
+    }
+}
+
+fn publication_default_commit(head: &[u8], refs: &[u8]) -> Result<String> {
+    let head = std::str::from_utf8(head)
+        .context("HEAD is not UTF-8")?
+        .trim();
+    let commit = if let Some(reference) = head.strip_prefix("ref: ") {
+        let refs = std::str::from_utf8(refs).context("info/refs is not UTF-8")?;
+        refs.lines()
+            .filter_map(|line| line.split_once('\t'))
+            .find_map(|(oid, name)| (name == reference).then_some(oid))
+            .with_context(|| format!("HEAD reference {reference} is absent from info/refs"))?
+    } else {
+        head
+    };
+    anyhow::ensure!(
+        commit.len() == 64
+            && commit
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "publication HEAD does not resolve to a lowercase SHA-256 commit"
+    );
+    Ok(commit.into())
+}
+
 fn publication_manifest_request(
     manifest: &std::path::Path,
     registry: &str,
@@ -8301,48 +8689,6 @@ fn publication_manifest_request(
     }
     request.registry = registry.to_string();
     Ok(request)
-}
-
-fn verify_publication_file(
-    path: &std::path::Path,
-    object: &hub_types::RegistryPublicationObject,
-) -> Result<()> {
-    use sha2::{Digest as _, Sha256};
-    use std::io::Read as _;
-
-    let mut file = std::fs::File::open(path)
-        .with_context(|| format!("opening publication object {}", path.display()))?;
-    let size = file
-        .metadata()
-        .with_context(|| format!("reading publication object metadata {}", path.display()))?
-        .len();
-    anyhow::ensure!(
-        i64::try_from(size).ok() == Some(object.byte_size),
-        "publication object {} has size {}, expected {}",
-        object.path,
-        size,
-        object.byte_size
-    );
-    let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 1024 * 1024];
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .with_context(|| format!("hashing publication object {}", path.display()))?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
-    }
-    let actual = format!("{:x}", digest.finalize());
-    anyhow::ensure!(
-        actual == object.sha256,
-        "publication object {} has SHA-256 {}, expected {}",
-        object.path,
-        actual,
-        object.sha256
-    );
-    Ok(())
 }
 
 async fn config(printer: &Printer, command: &HubConfigCmd) -> Result<()> {

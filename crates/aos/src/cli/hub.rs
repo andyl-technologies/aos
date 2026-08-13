@@ -460,13 +460,14 @@ pub enum HubPublishCmd {
         #[command(flatten)]
         pagination: HubPaginationArgs,
     },
+    /// Atomically publish a complete APR surface to every required placement
     Upload {
         #[command(flatten)]
         access: HubAccessArgs,
         registry: String,
-        /// Read the exact publication manifest from this JSON file.
+        /// Read a reviewed publication manifest instead of deriving one from --root.
         #[arg(long)]
-        manifest: PathBuf,
+        manifest: Option<PathBuf>,
         /// Read every declared object below this surface root.
         #[arg(long)]
         root: PathBuf,
