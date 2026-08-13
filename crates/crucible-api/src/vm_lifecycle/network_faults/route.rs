@@ -1047,7 +1047,26 @@ fn apply_network_frame_actions(
                     effects.mark_drop();
                 }
             }
-            _ => apply_network_frame_action(
+            NetworkEffectSpecification::Availability { .. }
+            | NetworkEffectSpecification::Flap { .. }
+            | NetworkEffectSpecification::NegotiatedMode { .. }
+            | NetworkEffectSpecification::ProfileDelta { .. }
+            | NetworkEffectSpecification::PropagationDelay { .. }
+            | NetworkEffectSpecification::AccessDelay { .. }
+            | NetworkEffectSpecification::Jitter { .. }
+            | NetworkEffectSpecification::FrameLoss { .. }
+            | NetworkEffectSpecification::Duplicate { .. }
+            | NetworkEffectSpecification::Reorder { .. }
+            | NetworkEffectSpecification::PayloadTransform { .. }
+            | NetworkEffectSpecification::DetectedFrameError { .. }
+            | NetworkEffectSpecification::RecipientSubset { .. }
+            | NetworkEffectSpecification::ForwarderLifecycle { .. }
+            | NetworkEffectSpecification::RouteTransition { .. }
+            | NetworkEffectSpecification::ControlPlaneService { .. }
+            | NetworkEffectSpecification::Association { .. }
+            | NetworkEffectSpecification::ControlResultTransform { .. }
+            | NetworkEffectSpecification::Contact { .. }
+            | NetworkEffectSpecification::RfChannel { .. } => apply_network_frame_action(
                 payload,
                 effects,
                 action,
