@@ -326,6 +326,19 @@ pub struct ProductionNetworkOutageEvidence {
     pub unavailable_until_nanos: u64,
 }
 
+/// Read-only evidence for one live production network queue.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProductionNetworkQueueEvidence {
+    /// Concrete World queue target owning the reservations.
+    pub target: crucible::model::ResolvedFaultTarget,
+    /// Number of frames currently reserved in the queue.
+    pub reservations: usize,
+    /// Canonical digest of the complete queue continuation.
+    pub continuation_digest: ContentHash,
+    /// Latest scheduled completion among current reservations.
+    pub last_finish_nanos: Option<u64>,
+}
+
 /// Read-only evidence for one authoritative production block continuation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProductionBlockFaultEvidence {
@@ -357,10 +370,14 @@ pub struct ProductionFaultEvidenceSnapshot {
     pub frontier: VirtualTime,
     /// Committed replay trace, including pass work items.
     pub resolved_effect_trace: Option<ResolvedEffectTrace>,
+    /// Committed locked-effect replay trace, including pass work items.
+    pub locked_effect_trace: Option<ResolvedEffectTrace>,
     /// Signal events emitted in authoritative evaluation order.
     pub emitted_events: Vec<crucible::model::ReferencedSignalEvent>,
     /// Network outages active at `frontier`.
     pub network_outages: Vec<ProductionNetworkOutageEvidence>,
+    /// Live network queues with at least one reservation.
+    pub network_queues: Vec<ProductionNetworkQueueEvidence>,
     /// Authoritative live block continuations in device-identity order.
     pub block_devices: Vec<ProductionBlockFaultEvidence>,
     /// Live-QEMU service state in World node order.

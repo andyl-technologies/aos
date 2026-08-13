@@ -1419,6 +1419,33 @@ impl ProductionFaultNetworkInterceptor {
         self.effect_state.boundary.active_outages(now)
     }
 
+    pub(super) fn active_queue_evidence(
+        &self,
+    ) -> Result<Vec<super::ProductionNetworkQueueEvidence>, SchedulerError> {
+        self.effect_state
+            .queues
+            .iter()
+            .filter(|(_target, queue)| !queue.reservations.is_empty())
+            .map(|(target, queue)| {
+                let encoded = serde_json::to_vec(&(target, queue)).map_err(|error| {
+                    SchedulerError::BoundaryViolation {
+                        message: format!("encode production queue evidence: {error}"),
+                    }
+                })?;
+                Ok(super::ProductionNetworkQueueEvidence {
+                    target: target.clone(),
+                    reservations: queue.reservations.len(),
+                    continuation_digest: ContentHash::from_bytes(&encoded),
+                    last_finish_nanos: queue
+                        .reservations
+                        .iter()
+                        .map(|reservation| reservation.finish_nanos)
+                        .max(),
+                })
+            })
+            .collect()
+    }
+
     /// Returns the restored runtime shared by non-network fault coordinators.
     pub(super) fn shared_runtime(&self) -> Arc<Mutex<ProductionFaultRuntime>> {
         Arc::clone(&self.runtime)
