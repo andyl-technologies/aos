@@ -187,6 +187,19 @@ pub(super) struct BoundaryRouteApplication {
 }
 
 impl BoundaryNetworkState {
+    pub(super) fn active_outages(
+        &self,
+        now: u64,
+    ) -> Vec<(crucible::model::ResolvedFaultTarget, u64)> {
+        self.outages
+            .iter()
+            .filter_map(|(key, outage)| {
+                (now < outage.unavailable_until)
+                    .then_some((key.target.clone(), outage.unavailable_until))
+            })
+            .collect()
+    }
+
     pub(super) fn activate_timed_outage(
         &mut self,
         action: &ResolvedBindingAction,

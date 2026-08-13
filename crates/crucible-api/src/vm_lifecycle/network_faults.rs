@@ -1412,6 +1412,13 @@ pub(super) struct ProductionFaultNetworkInterceptor {
 }
 
 impl ProductionFaultNetworkInterceptor {
+    pub(super) fn active_outages(
+        &self,
+        now: u64,
+    ) -> Vec<(crucible::model::ResolvedFaultTarget, u64)> {
+        self.effect_state.boundary.active_outages(now)
+    }
+
     /// Returns the restored runtime shared by non-network fault coordinators.
     pub(super) fn shared_runtime(&self) -> Arc<Mutex<ProductionFaultRuntime>> {
         Arc::clone(&self.runtime)
