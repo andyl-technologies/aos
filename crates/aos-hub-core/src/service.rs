@@ -24184,6 +24184,17 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
         {
+            if self
+                .db
+                .registry_publication_multipart_has_creating_backend(&existing.upload_id)
+                .await
+                .map_err(RpcError::internal)?
+            {
+                return Err(RpcError::Unavailable(
+                    "publication multipart backend creation is unresolved; retry after provider cleanup"
+                        .into(),
+                ));
+            }
             if existing.state == "active" && existing.expires_at <= now {
                 self.abort_registry_publication_multipart_record(auth, existing)
                     .await?;
@@ -24276,6 +24287,14 @@ impl RpcService {
                             .abort_multipart(&object.object_key, &backend.backend_upload_id)
                             .await;
                     }
+                    let _ = self
+                        .db
+                        .finish_registry_publication_multipart_upload(
+                            &upload_id,
+                            "failed",
+                            clock::now_unix_secs(),
+                        )
+                        .await;
                     return Err(RpcError::Unavailable(format!("{error:#}")));
                 }
             };
@@ -24296,6 +24315,14 @@ impl RpcService {
                         .abort_multipart(&object.object_key, &backend.backend_upload_id)
                         .await;
                 }
+                let _ = self
+                    .db
+                    .finish_registry_publication_multipart_upload(
+                        &upload_id,
+                        "failed",
+                        clock::now_unix_secs(),
+                    )
+                    .await;
                 return Err(RpcError::internal(error));
             }
             started.push((
