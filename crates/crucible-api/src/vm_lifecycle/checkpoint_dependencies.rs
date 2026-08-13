@@ -10,7 +10,13 @@ use crucible::model::{
     SignalNodeKind, SignalSourceSpecification, SignalTraceManifest, SpatialArtifactKind,
 };
 
-pub(super) fn collect_signal_artifact_objects(
+/// Resolves and authenticates the transitive object closure of a signal plan.
+///
+/// # Errors
+///
+/// Returns [`LifecycleApiError`] when an object is absent, corrupt, exceeds the
+/// plan's resource limits, or contains an unauthenticated transitive reference.
+pub fn collect_signal_artifact_objects(
     plan: &FaultSignalPlan,
     store: &dyn DagStore,
 ) -> Result<BTreeMap<ContentHash, Vec<u8>>, LifecycleApiError> {

@@ -207,6 +207,152 @@ pub(crate) fn live_qemu_artifact_payloads(
     payloads
 }
 
+#[derive(serde::Serialize)]
+struct SignalMutationProvenance<'a> {
+    schema: &'static str,
+    plan: String,
+    cases: Vec<SignalMutationCaseProvenance<'a>>,
+}
+
+#[derive(serde::Serialize)]
+struct SignalMutationCaseProvenance<'a> {
+    original_program: String,
+    binding: &'a str,
+    provenance: String,
+    mutation: &'a crucible::MaterializedSearchMutation,
+    artifacts: Vec<String>,
+}
+
+/// Captures every reachable signal object and optional mutation recipe.
+pub(crate) fn signal_artifact_payloads(
+    plan: &crucible::FaultSignalPlan,
+    store: &dyn crucible::DagStore,
+    mutation: Option<&crucible::MaterializedSearchPlan>,
+) -> Result<Vec<ReproductionArtifactComponentPayload>, CliError> {
+    let objects = crucible_api::collect_signal_artifact_objects(plan, store)
+        .map_err(|error| artifact_error(format!("collect signal artifact closure: {error}")))?;
+    let mut payloads = Vec::new();
+    if !objects.is_empty() || !plan.programs().is_empty() {
+        payloads.push(ReproductionArtifactComponentPayload {
+            kind: String::from("signal_artifact_bundle"),
+            name: String::from("signal-artifacts.bundle"),
+            media_type: String::from(SIGNAL_ARTIFACT_BUNDLE_MEDIA_TYPE),
+            bytes: encode_signal_artifact_bundle(&objects)?,
+        });
+    }
+    if let Some(mutation) = mutation {
+        let provenance = SignalMutationProvenance {
+            schema: "crucible.signal-mutation-provenance.v1",
+            plan: format_content_hash_ref(mutation.provenance),
+            cases: mutation
+                .cases
+                .iter()
+                .map(|case| SignalMutationCaseProvenance {
+                    original_program: format_content_hash_ref(case.original_program),
+                    binding: case.binding_id.as_str(),
+                    provenance: format_content_hash_ref(case.provenance),
+                    mutation: &case.mutation,
+                    artifacts: case
+                        .artifacts
+                        .iter()
+                        .map(|artifact| format_content_hash_ref(*artifact))
+                        .collect(),
+                })
+                .collect(),
+        };
+        payloads.push(ReproductionArtifactComponentPayload {
+            kind: String::from("signal_mutation_provenance"),
+            name: String::from("signal-mutation-provenance.json"),
+            media_type: String::from(SIGNAL_MUTATION_PROVENANCE_MEDIA_TYPE),
+            bytes: serde_json::to_vec_pretty(&provenance).map_err(|error| {
+                artifact_error(format!("encode signal mutation provenance: {error}"))
+            })?,
+        });
+    }
+    Ok(payloads)
+}
+
+fn encode_signal_artifact_bundle(
+    objects: &BTreeMap<crucible::ContentHash, Vec<u8>>,
+) -> Result<Vec<u8>, CliError> {
+    let count = u64::try_from(objects.len())
+        .map_err(|_| artifact_error("signal artifact object count cannot be represented"))?;
+    let mut bytes = Vec::from(&b"CSAB\0\0\0\x01"[..]);
+    bytes.extend_from_slice(&count.to_le_bytes());
+    for (identity, object) in objects {
+        let length = u64::try_from(object.len())
+            .map_err(|_| artifact_error("signal artifact object size cannot be represented"))?;
+        bytes.extend_from_slice(&identity.bytes);
+        bytes.extend_from_slice(&length.to_le_bytes());
+        bytes.extend_from_slice(object);
+    }
+    Ok(bytes)
+}
+
+/// Restores and authenticates an embedded signal-object closure.
+pub(crate) fn decode_signal_artifact_bundle(
+    bytes: &[u8],
+) -> Result<std::sync::Arc<crucible::MemoryDagStore>, CliError> {
+    const HEADER_BYTES: usize = 16;
+    if bytes.len() < HEADER_BYTES || bytes.get(..8) != Some(&b"CSAB\0\0\0\x01"[..]) {
+        return Err(artifact_error(
+            "signal artifact bundle has an invalid header",
+        ));
+    }
+    let count = u64::from_le_bytes(
+        bytes[8..16]
+            .try_into()
+            .map_err(|_| artifact_error("signal artifact bundle count is truncated"))?,
+    );
+    let count = usize::try_from(count)
+        .map_err(|_| artifact_error("signal artifact bundle count cannot be represented"))?;
+    let store = std::sync::Arc::new(crucible::MemoryDagStore::new());
+    let mut cursor = HEADER_BYTES;
+    for _ in 0..count {
+        let identity_end = cursor
+            .checked_add(32)
+            .ok_or_else(|| artifact_error("signal artifact bundle offset overflow"))?;
+        let length_end = identity_end
+            .checked_add(8)
+            .ok_or_else(|| artifact_error("signal artifact bundle offset overflow"))?;
+        if length_end > bytes.len() {
+            return Err(artifact_error("signal artifact bundle record is truncated"));
+        }
+        let identity = crucible::ContentHash {
+            bytes: bytes[cursor..identity_end]
+                .try_into()
+                .map_err(|_| artifact_error("signal artifact identity is truncated"))?,
+        };
+        let length = u64::from_le_bytes(
+            bytes[identity_end..length_end]
+                .try_into()
+                .map_err(|_| artifact_error("signal artifact length is truncated"))?,
+        );
+        let length = usize::try_from(length)
+            .map_err(|_| artifact_error("signal artifact length cannot be represented"))?;
+        let object_end = length_end
+            .checked_add(length)
+            .ok_or_else(|| artifact_error("signal artifact bundle offset overflow"))?;
+        let object = bytes
+            .get(length_end..object_end)
+            .ok_or_else(|| artifact_error("signal artifact object is truncated"))?;
+        if crucible::ContentHash::from_bytes(object) != identity {
+            return Err(artifact_error(
+                "signal artifact object failed authentication",
+            ));
+        }
+        let stored = store.put(object).map_err(CliError::Store)?;
+        if stored != identity {
+            return Err(artifact_error("restored signal artifact identity changed"));
+        }
+        cursor = object_end;
+    }
+    if cursor != bytes.len() {
+        return Err(artifact_error("signal artifact bundle has trailing bytes"));
+    }
+    Ok(store)
+}
+
 /// Returns the typed schedule indices that must be forced during live replay.
 pub(crate) fn replay_choice_indices(schedule: &crucible::Schedule) -> Vec<u64> {
     let decisions = schedule.decisions();
@@ -463,6 +609,35 @@ mod tests {
             Ok(_) => panic!("duplicate terminal node samples must fail closed"),
         };
         assert!(error.to_string().contains("scenario VM nodes"));
+        Ok(())
+    }
+
+    #[test]
+    fn signal_artifact_bundle_restores_without_source_store()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let object = b"normalized signal object".to_vec();
+        let identity = crucible::ContentHash::from_bytes(&object);
+        let bundle = encode_signal_artifact_bundle(&BTreeMap::from([(identity, object.clone())]))?;
+
+        let restored = decode_signal_artifact_bundle(&bundle)?;
+        assert_eq!(restored.get(&identity)?, object);
+        Ok(())
+    }
+
+    #[test]
+    fn signal_artifact_bundle_rejects_tampered_objects() -> Result<(), Box<dyn std::error::Error>> {
+        let object = b"normalized signal object".to_vec();
+        let identity = crucible::ContentHash::from_bytes(&object);
+        let mut bundle = encode_signal_artifact_bundle(&BTreeMap::from([(identity, object)]))?;
+        let last = bundle
+            .last_mut()
+            .ok_or_else(|| std::io::Error::other("bundle fixture is empty"))?;
+        *last ^= 1;
+
+        let error = decode_signal_artifact_bundle(&bundle)
+            .err()
+            .ok_or_else(|| std::io::Error::other("tampered bundle must fail"))?;
+        assert!(error.to_string().contains("failed authentication"));
         Ok(())
     }
 }

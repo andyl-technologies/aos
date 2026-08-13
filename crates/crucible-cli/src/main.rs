@@ -76,6 +76,10 @@ const LIVE_QEMU_FINGERPRINT_STREAM_MEDIA_TYPE: &str =
     "application/vnd.crucible.live-qemu-fingerprint-stream.v1+bytes";
 const LIVE_QEMU_RESOLVED_EFFECT_TRACE_MEDIA_TYPE: &str =
     "application/vnd.crucible.resolved-effect-trace.v1+cbor";
+const SIGNAL_ARTIFACT_BUNDLE_MEDIA_TYPE: &str =
+    "application/vnd.crucible.signal-artifact-bundle.v1+binary";
+const SIGNAL_MUTATION_PROVENANCE_MEDIA_TYPE: &str =
+    "application/vnd.crucible.signal-mutation-provenance.v1+json";
 const REPLAY_SCHEDULE_PREFIX_PROOF_SCHEMA: &str = "crucible.replay.schedule-prefix-proof.v1";
 const SEARCH_SCHEDULE_NAMED_TRUTHS_SCHEMA: &str = "crucible.search-schedule-named-truths.v1";
 const SEARCH_SCHEDULE_NAMED_TRUTHS_MEDIA_TYPE: &str =

@@ -20,6 +20,7 @@ fn search_finding_reproduction_artifact_bytes(
     backend_plan: &BackendSelectionPlan,
     plan: &SearchDriverPlan,
     finding: &QemuSearchFinding,
+    mutation: Option<&crucible::MaterializedSearchPlan>,
 ) -> Result<Vec<u8>, CliError> {
     let model = &finding.evidence.finding;
     let scenario = model.artifact.scenario_form();
@@ -79,6 +80,12 @@ fn search_finding_reproduction_artifact_bytes(
     };
     let mut payloads = model_reproduction_artifact_payloads(&model.artifact, model.replay.state);
     payloads.extend(live_qemu_artifact_payloads(&live));
+    let store = crucible::LocalDagStore::new(plan.store_root.clone());
+    payloads.extend(signal_artifact_payloads(
+        scenario.plan().fault_signals(),
+        &store,
+        mutation,
+    )?);
     let scenario_bytes = scenario.to_compact_binary();
     reproduction_artifact_bytes_with_scenario_payload(
         seed_to_u64(model.artifact.seed()),
@@ -121,7 +128,37 @@ pub(crate) fn run_local_qemu_search_workflow(
         ergonomics_plan,
         plan,
         plan.scenario.scenario_form(),
+        plan.budget.max_expansions,
+        None,
     )
+    .map(|execution| execution.outcome)
+}
+
+struct QemuSearchExecution {
+    outcome: BackendCommandOutcome,
+    expansions: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MutationSearchBudget {
+    remaining_states: u64,
+}
+
+impl MutationSearchBudget {
+    const fn new(max_states: u64) -> Self {
+        Self {
+            remaining_states: max_states,
+        }
+    }
+
+    fn begin_case(&mut self) -> Option<u64> {
+        self.remaining_states = self.remaining_states.checked_sub(1)?;
+        Some(self.remaining_states)
+    }
+
+    fn charge_expansions(&mut self, expansions: u64) {
+        self.remaining_states = self.remaining_states.saturating_sub(expansions);
+    }
 }
 
 fn run_local_qemu_search_scenario(
@@ -130,7 +167,9 @@ fn run_local_qemu_search_scenario(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     plan: &SearchDriverPlan,
     scenario: &crucible::ScenarioDefForm,
-) -> Result<BackendCommandOutcome, CliError> {
+    expansion_budget: u64,
+    mutation: Option<&crucible::MaterializedSearchPlan>,
+) -> Result<QemuSearchExecution, CliError> {
     let backend = backend_plan
         .resolved_backend
         .as_ref()
@@ -143,7 +182,10 @@ fn run_local_qemu_search_scenario(
     let config = production_qemu_lifecycle_config(backend)?
         .with_run_ceiling_icount(LIVE_EXPLORATION_RUN_CEILING_ICOUNT)
         .with_quantum_budget(LIVE_EXPLORATION_QUANTUM_LIMIT)
-        .with_coverage(coverage);
+        .with_coverage(coverage)
+        .with_signal_artifacts(std::sync::Arc::new(crucible::LocalDagStore::new(
+            plan.store_root.clone(),
+        )));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -172,7 +214,7 @@ fn run_local_qemu_search_scenario(
     let mut expansions = Vec::new();
     let mut live_realizations = usize::from(root.is_some());
     let mut replay_oracle_validations = 0_usize;
-    'search: while (expansions.len() as u64) < plan.budget.max_expansions {
+    'search: while (expansions.len() as u64) < expansion_budget {
         if plan.on_violation == SearchOnViolationArg::Stop && !discovered_findings.is_empty() {
             break;
         }
@@ -183,7 +225,7 @@ fn run_local_qemu_search_scenario(
         };
         let frontier = pending.remove(index);
         let branch_frontier = live_frontiers.get(&frontier.id()).cloned();
-        let materialization_budget = match usize::try_from(plan.budget.max_expansions) {
+        let materialization_budget = match usize::try_from(expansion_budget) {
             Ok(max_expansions) => max_expansions,
             Err(_) => usize::MAX,
         };
@@ -241,7 +283,7 @@ fn run_local_qemu_search_scenario(
     let run = crucible::TemporalGraphSearchRun {
         root: root_configuration.id(),
         strategy: plan.engine_strategy,
-        budget: plan.budget,
+        budget: crucible::SearchBudget::new(expansion_budget),
         explored_graph: explored,
         expansions,
         discovered_failures: discovered_findings
@@ -252,7 +294,9 @@ fn run_local_qemu_search_scenario(
     };
     let counterexample_artifact = discovered_findings
         .first()
-        .map(|finding| search_finding_reproduction_artifact_bytes(backend_plan, plan, finding))
+        .map(|finding| {
+            search_finding_reproduction_artifact_bytes(backend_plan, plan, finding, mutation)
+        })
         .transpose()?;
     let counterexample = run
         .discovered_failures
@@ -337,6 +381,7 @@ fn run_local_qemu_search_scenario(
             backend_plan,
             plan,
             &finding,
+            mutation,
         )?);
         evidence.push(finding.evidence);
     }
@@ -374,7 +419,10 @@ fn run_local_qemu_search_scenario(
     }
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
     append_qemu_control_plane_execution_proof(&mut outcome, backend, "search-live-branches");
-    Ok(outcome)
+    Ok(QemuSearchExecution {
+        outcome,
+        expansions: run.expansions.len() as u64,
+    })
 }
 
 fn run_local_qemu_mutation_search_workflow(
@@ -387,11 +435,15 @@ fn run_local_qemu_mutation_search_workflow(
     let original = plan.scenario.scenario_form();
     let total = mutation_plans.len();
     let mut selected_outcome = None;
+    let mut budget = MutationSearchBudget::new(plan.max_states);
     for (index, materialized) in mutation_plans.into_iter().enumerate() {
+        let Some(expansion_budget) = budget.begin_case() else {
+            break;
+        };
         let materialized_plan = original
             .plan()
             .clone()
-            .with_fault_signals_for_world(original.world(), materialized.plan)
+            .with_fault_signals_for_world(original.world(), materialized.plan.clone())
             .map_err(|error| {
                 backend_error(format!("validate fault search candidate {index}: {error}"))
             })?;
@@ -400,13 +452,17 @@ fn run_local_qemu_mutation_search_workflow(
         })?;
         let mut materialized_driver = plan.clone();
         materialized_driver.scenario = plan.scenario.with_form(form.clone());
-        let mut outcome = run_local_qemu_search_scenario(
+        let execution = run_local_qemu_search_scenario(
             thin_plan,
             backend_plan,
             ergonomics_plan,
             &materialized_driver,
             &form,
+            expansion_budget,
+            Some(&materialized),
         )?;
+        budget.charge_expansions(execution.expansions);
+        let mut outcome = execution.outcome;
         outcome.canonical_log.push(CanonicalLogEntry {
             sequence: outcome.canonical_log.len() as u64,
             virtual_time_ticks: outcome.canonical_log.len() as u64,
@@ -418,6 +474,18 @@ fn run_local_qemu_mutation_search_workflow(
                 total,
                 format_content_hash_ref(materialized.provenance),
                 format_content_hash_ref(form.id())
+            ),
+        });
+        outcome.canonical_log.push(CanonicalLogEntry {
+            sequence: outcome.canonical_log.len() as u64,
+            virtual_time_ticks: outcome.canonical_log.len() as u64,
+            node: String::from("search"),
+            kind: String::from("signal_fault_mutation_budget"),
+            summary: format!(
+                "global_max_states={} root_and_expansions_consumed={} remaining={}",
+                plan.max_states,
+                execution.expansions.saturating_add(1),
+                budget.remaining_states
             ),
         });
         outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
@@ -439,6 +507,23 @@ fn merge_mutation_search_outcome(
     candidate: usize,
     mut outcome: BackendCommandOutcome,
 ) {
+    if let Some(artifact) = outcome.reproduction_artifact.take() {
+        outcome
+            .side_reproduction_artifacts
+            .push((format!("mutation-{candidate}-finding"), artifact));
+    }
+    outcome.side_reproduction_artifacts = outcome
+        .side_reproduction_artifacts
+        .into_iter()
+        .map(|(label, artifact)| {
+            let label = if label.starts_with(&format!("mutation-{candidate}-")) {
+                label
+            } else {
+                format!("mutation-{candidate}-{label}")
+            };
+            (label, artifact)
+        })
+        .collect();
     let Some(current) = aggregate.as_mut() else {
         *aggregate = Some(outcome);
         return;
@@ -449,17 +534,9 @@ fn merge_mutation_search_outcome(
         entry.sequence = current.canonical_log.len() as u64;
         current.canonical_log.push(entry);
     }
-    if let Some(artifact) = outcome.reproduction_artifact {
-        current
-            .side_reproduction_artifacts
-            .push((format!("mutation-{candidate}-finding"), artifact));
-    }
-    current.side_reproduction_artifacts.extend(
-        outcome
-            .side_reproduction_artifacts
-            .into_iter()
-            .map(|(label, artifact)| (format!("mutation-{candidate}-{label}"), artifact)),
-    );
+    current
+        .side_reproduction_artifacts
+        .append(&mut outcome.side_reproduction_artifacts);
     if mutation_outcome_rank(outcome.status) > mutation_outcome_rank(current.status) {
         current.status = outcome.status;
         current.exit_code = outcome.exit_code;
@@ -997,4 +1074,68 @@ fn qemu_search_cache_frontier(
     graph
         .cache_snapshot(&frontier.configuration, checkpoint)
         .map_err(|error| backend_error(format!("cache live QEMU search frontier: {error}")))
+}
+
+#[cfg(test)]
+mod mutation_search_tests {
+    use super::*;
+
+    fn outcome(status: BackendCommandStatus, artifact: &[u8]) -> BackendCommandOutcome {
+        BackendCommandOutcome {
+            subcommand: CliSubcommand::Search,
+            status,
+            exit_code: status.exit_code(),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            canonical_log: Vec::new(),
+            canonical_log_digest: content_address_bytes(b"log"),
+            artifact_digest: content_address_bytes(artifact),
+            terminal_savepoint: None,
+            savepoint_oracle: None,
+            save_boundary_evidence: None,
+            reproduction_artifact: Some(artifact.to_vec()),
+            side_reproduction_artifacts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn mutation_search_budget_is_shared_across_roots_and_expansions() {
+        let mut budget = MutationSearchBudget::new(5);
+        assert_eq!(budget.begin_case(), Some(4));
+        budget.charge_expansions(2);
+        assert_eq!(budget.begin_case(), Some(1));
+        budget.charge_expansions(1);
+        assert_eq!(budget.begin_case(), None);
+    }
+
+    #[test]
+    fn mutation_aggregation_retains_every_primary_artifact() {
+        let mut aggregate = None;
+        merge_mutation_search_outcome(
+            &mut aggregate,
+            0,
+            outcome(BackendCommandStatus::Timeout, b"candidate-zero"),
+        );
+        merge_mutation_search_outcome(
+            &mut aggregate,
+            1,
+            outcome(BackendCommandStatus::Crashed, b"candidate-one"),
+        );
+        let aggregate = aggregate.unwrap_or_else(|| panic!("aggregation must produce an outcome"));
+        assert_eq!(aggregate.status, BackendCommandStatus::Crashed);
+        assert!(aggregate.reproduction_artifact.is_none());
+        assert_eq!(
+            aggregate.side_reproduction_artifacts,
+            vec![
+                (
+                    String::from("mutation-0-finding"),
+                    b"candidate-zero".to_vec()
+                ),
+                (
+                    String::from("mutation-1-finding"),
+                    b"candidate-one".to_vec()
+                ),
+            ]
+        );
+    }
 }

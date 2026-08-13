@@ -62,7 +62,8 @@ pub struct MappingMaterialization {
 }
 
 /// Canonical description of the mutation applied to an executable case.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MaterializedSearchMutation {
     /// A normalized trace interval was replaced.
     TraceWindow(TraceWindowMaterialization),
@@ -137,11 +138,11 @@ pub fn materialize_search_plans(
                     | BindingSearchPolicy::MutateMapping { .. }
             )
         }) else {
+            let mut seen_artifacts = BTreeSet::new();
             let artifacts = applied
                 .iter()
                 .flat_map(|case| case.artifacts.iter().copied())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
+                .filter(|artifact| seen_artifacts.insert(*artifact))
                 .collect::<Vec<_>>();
             let material = applied
                 .iter()
