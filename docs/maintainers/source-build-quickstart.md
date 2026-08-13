@@ -38,9 +38,10 @@ nix-build -A pkgs.qemu -o result-aos-qemu
 nix-build -A pkgs.edk2 -o result-aos-edk2
 nix-build -A pkgs.gptfdisk -o result-aos-gptfdisk
 nix-build -A pkgs.libisoburn -o result-aos-libisoburn
+nix-build -A pkgs.zstd -o result-aos-zstd
 ```
 
-The image is `result-aos-image/aos-aos.img`. It contains a UEFI system
+The image is `result-aos-image/aos-aos.img.zst`. It contains a zstd-compressed UEFI system
 partition and the immutable `root-a` filesystem. Swap and `/var` are created in
 free space on first boot.
 
@@ -86,7 +87,7 @@ Copy the immutable build result, grow the copy to 16 GiB, and move the backup
 GPT header to the new end of the disk:
 
 ```sh
-cp result-aos-image/aos-aos.img aos-demo.img
+./result-aos-zstd/bin/zstd -d result-aos-image/aos-aos.img.zst -o aos-demo.img
 chmod u+w aos-demo.img
 truncate -s 16G aos-demo.img
 ./result-aos-gptfdisk/sbin/sgdisk -e aos-demo.img

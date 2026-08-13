@@ -661,8 +661,8 @@ nar_size = 10
         let info_sha256 = "b".repeat(64);
         let (extension, media_type, targets) = match format {
             "raw" => (
-                "img",
-                "application/vnd.aos.disk-image.raw",
+                "img.zst",
+                "application/vnd.aos.disk-image.raw+zstd",
                 "\"bare-metal\"",
             ),
             "qcow2" => (
@@ -677,6 +677,7 @@ nar_size = 10
         let filename = format!("aos-server.{extension}");
         let object_key = immutable_image_object_key(&image_sha256, &filename);
         let info_key = immutable_image_info_object_key(&image_sha256, &info_sha256);
+        let compression = if format == "raw" { "zstd" } else { "none" };
         format!(
             r#"
 [package]
@@ -712,7 +713,7 @@ rootfs_sha256 = "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 filename = "{filename}"
 object_key = "{object_key}"
 media_type = "{media_type}"
-compression = "none"
+compression = "{compression}"
 byte_size = 10
 sha256 = "{image_sha256}"
 compatible_targets = [{targets}]

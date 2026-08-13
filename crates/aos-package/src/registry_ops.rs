@@ -3348,6 +3348,8 @@ struct PublishedImage {
     esp_offset_bytes: u64,
     /// Byte interval of the canonical root filesystem payload.
     root_range: (u64, u64),
+    /// Exact byte length of the reconstructed canonical raw disk.
+    virtual_size_bytes: u64,
 }
 
 struct ValidatedImageDirectory {
@@ -3439,6 +3441,7 @@ struct ProducerArtifactBudgets {
     uki: u64,
     esp: u64,
     runtime_closure: u64,
+    download: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -3464,6 +3467,7 @@ struct ProducerEspInfo {
 /// Verifies that declared budgets agree with observable image metadata.
 fn validate_image_artifact_budgets(
     budgets: &ProducerArtifactBudgets,
+    download_size: u64,
     uki_size: u64,
     partitions: &[ProducerPartitionInfo],
 ) -> Result<()> {
@@ -3474,10 +3478,12 @@ fn validate_image_artifact_budgets(
         budgets.uki,
         budgets.esp,
         budgets.runtime_closure,
+        budgets.download,
     ]
     .into_iter()
     .all(|value| value > 0);
     let uki_fits = uki_size <= budgets.uki.saturating_mul(1024 * 1024);
+    let download_fits = download_size <= budgets.download.saturating_mul(1024 * 1024);
     let esp_holds_two_ukis = budgets.esp >= budgets.uki.saturating_mul(2).saturating_add(32);
     let partition_contracts_match = partitions.iter().all(|partition| {
         let expected = match partition.kind.as_str() {
@@ -3490,13 +3496,37 @@ fn validate_image_artifact_budgets(
             size == partition.size_mi_b && partition.size_bytes == size.saturating_mul(1024 * 1024)
         })
     });
-    if !nonzero || !uki_fits || !esp_holds_two_ukis || !partition_contracts_match {
+    if !nonzero || !uki_fits || !download_fits || !esp_holds_two_ukis || !partition_contracts_match
+    {
         bail!("image-info artifact budgets disagree with the image payload or partition layout");
     }
     Ok(())
 }
 
 const MAX_IMAGE_INFO_BYTES: u64 = 1024 * 1024;
+const MAX_LOGICAL_DISK_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const CANONICAL_GPT_TAIL_BYTES: u64 = 1024 * 1024;
+
+/// Rejects decompression sizes that are unbounded or disagree with GPT geometry.
+fn validate_logical_disk_geometry(
+    virtual_size_bytes: u64,
+    partition_ranges: &[(u64, u64)],
+) -> Result<()> {
+    let partition_end = partition_ranges
+        .last()
+        .map(|range| range.1)
+        .context("image-info must declare at least one partition")?;
+    let expected_virtual_size = partition_end
+        .checked_add(CANONICAL_GPT_TAIL_BYTES)
+        .context("image-info partition geometry overflows")?;
+    if virtual_size_bytes != expected_virtual_size || virtual_size_bytes > MAX_LOGICAL_DISK_BYTES {
+        bail!(
+            "image-info virtualSizeBytes must equal the canonical GPT extent and may not exceed {} bytes",
+            MAX_LOGICAL_DISK_BYTES
+        );
+    }
+    Ok(())
+}
 
 /// Validates one image store output and constructs its signed delivery entry.
 ///
@@ -3666,6 +3696,7 @@ where
     {
         bail!("image-info partition layout overlaps");
     }
+    validate_logical_disk_geometry(producer.virtual_size_bytes, &partition_ranges)?;
     if producer
         .esp
         .as_ref()
@@ -3710,6 +3741,7 @@ where
     }
     validate_image_artifact_budgets(
         &producer.artifact_budgets_mi_b,
+        producer.byte_size,
         producer.uki.byte_size,
         &producer.partitions,
     )?;
@@ -3793,9 +3825,6 @@ where
     }
     if producer.sha256 != actual_sha256 {
         bail!("image-info sha256 does not match the disk file");
-    }
-    if format == "raw" && producer.logical_disk_sha256 != actual_sha256 {
-        bail!("raw image SHA-256 must equal its canonical logical disk SHA-256");
     }
     let expected_key = immutable_image_object_key(&actual_sha256, &producer.filename);
     if producer.object_key != expected_key {
@@ -3944,6 +3973,7 @@ where
         },
         esp_offset_bytes,
         root_range,
+        virtual_size_bytes: producer.virtual_size_bytes,
     })
 }
 
@@ -4279,11 +4309,37 @@ fn inheritable_procfd(file: &fs::File, fallback: &Path) -> Result<(fs::File, Pat
 /// Proves that the separately verified UKI is byte-identical to the UKI
 /// embedded in the disk image at the signed ESP path.
 #[cfg(target_os = "linux")]
+fn decompress_raw_disk(
+    source: impl std::io::Read,
+    destination: &mut impl std::io::Write,
+    expected_size: u64,
+) -> Result<()> {
+    let decoder =
+        zstd::stream::read::Decoder::new(source).context("opening compressed raw disk")?;
+    let copied = std::io::copy(
+        &mut decoder.take(expected_size.saturating_add(1)),
+        destination,
+    )
+    .context("decompressing canonical raw disk")?;
+    if copied != expected_size {
+        bail!("compressed raw image expands to {copied} bytes, expected {expected_size}");
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
 fn verify_embedded_uki(image: &PublishedImage) -> Result<()> {
     let mut raw = tempfile::tempfile().context("creating pinned raw-image verification file")?;
     let raw_input;
     let raw_path = if image.format == "raw" {
-        let (file, path) = inheritable_procfd(&image.disk.file, &image.disk.path)?;
+        let disk = image
+            .disk
+            .file
+            .try_clone()
+            .context("duplicating compressed raw disk")?;
+        decompress_raw_disk(disk, &mut raw, image.virtual_size_bytes)?;
+        raw.seek(SeekFrom::Start(0))?;
+        let (file, path) = inheritable_procfd(&raw, Path::new("<raw image>"))?;
         raw_input = Some(file);
         path
     } else {
@@ -4314,16 +4370,7 @@ fn verify_embedded_uki(image: &PublishedImage) -> Result<()> {
         path
     };
 
-    let mut logical_disk = if image.format == "raw" {
-        image
-            .disk
-            .file
-            .try_clone()
-            .context("duplicating canonical raw disk")?
-    } else {
-        raw.try_clone()
-            .context("duplicating converted canonical raw disk")?
-    };
+    let mut logical_disk = raw.try_clone().context("duplicating canonical raw disk")?;
     let logical_disk_sha256 = sha256_open_file(&mut logical_disk, Path::new("<logical disk>"))?;
     if logical_disk_sha256 != image.delivery.logical_disk_sha256 {
         bail!("image encoding does not materialize the signed canonical logical disk");
@@ -14651,13 +14698,54 @@ mod tests {
             uki: 160,
             esp: 384,
             runtime_closure: 768,
+            download: 640,
         };
 
-        assert!(validate_image_artifact_budgets(&budgets, 108 * 1024 * 1024, &partitions,).is_ok());
+        assert!(
+            validate_image_artifact_budgets(
+                &budgets,
+                590 * 1024 * 1024,
+                108 * 1024 * 1024,
+                &partitions,
+            )
+            .is_ok()
+        );
 
         budgets.root = 511;
         assert!(
-            validate_image_artifact_budgets(&budgets, 108 * 1024 * 1024, &partitions,).is_err()
+            validate_image_artifact_budgets(
+                &budgets,
+                590 * 1024 * 1024,
+                108 * 1024 * 1024,
+                &partitions,
+            )
+            .is_err()
+        );
+
+        budgets.root = 512;
+        budgets.download = 589;
+        assert!(
+            validate_image_artifact_budgets(
+                &budgets,
+                590 * 1024 * 1024,
+                108 * 1024 * 1024,
+                &partitions,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn logical_disk_geometry_bounds_decompression_before_materialization() {
+        let mib = 1024 * 1024;
+        assert!(validate_logical_disk_geometry(36 * mib, &[(mib, 35 * mib)]).is_ok());
+        assert!(validate_logical_disk_geometry(35 * mib, &[(mib, 35 * mib)]).is_err());
+        assert!(
+            validate_logical_disk_geometry(
+                MAX_LOGICAL_DISK_BYTES + mib,
+                &[(mib, MAX_LOGICAL_DISK_BYTES)]
+            )
+            .is_err()
         );
     }
 
@@ -14670,16 +14758,28 @@ mod tests {
         let uki_root = container.join("uki-output");
         fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&uki_root).unwrap();
-        let extension = if format == "raw" { "img" } else { format };
+        let extension = if format == "raw" { "img.zst" } else { format };
         let filename = format!("aos-test.{extension}");
         let image_path = root.join(&filename);
-        fs::write(&image_path, b"exact disk image bytes").unwrap();
+        let logical_path = container.join("logical.raw");
+        fs::write(&logical_path, b"exact disk image bytes").unwrap();
         OpenOptions::new()
             .write(true)
-            .open(&image_path)
+            .open(&logical_path)
             .unwrap()
-            .set_len(35 * 1024 * 1024)
+            .set_len(36 * 1024 * 1024)
             .unwrap();
+        let logical_size = fs::metadata(&logical_path).unwrap().len();
+        let (mut logical_file, logical_identity) = open_stable_regular_file(&logical_path).unwrap();
+        let logical_sha256 = sha256_open_file(&mut logical_file, &logical_path).unwrap();
+        verify_stable_regular_file(&logical_path, &logical_file, &logical_identity).unwrap();
+        if format == "raw" {
+            logical_file.seek(SeekFrom::Start(0)).unwrap();
+            let image_file = fs::File::create(&image_path).unwrap();
+            zstd::stream::copy_encode(logical_file, image_file, 1).unwrap();
+        } else {
+            fs::copy(&logical_path, &image_path).unwrap();
+        }
         let (mut image_file, image_identity) = open_stable_regular_file(&image_path).unwrap();
         let sha256 = sha256_open_file(&mut image_file, &image_path).unwrap();
         verify_stable_regular_file(&image_path, &image_file, &image_identity).unwrap();
@@ -14690,7 +14790,7 @@ mod tests {
         let uki_sha256 = sha256_open_file(&mut uki_file, &uki_path).unwrap();
         verify_stable_regular_file(&uki_path, &uki_file, &uki_identity).unwrap();
         let media_type = match format {
-            "raw" => "application/vnd.aos.disk-image.raw",
+            "raw" => "application/vnd.aos.disk-image.raw+zstd",
             "qcow2" => "application/vnd.aos.disk-image.qcow2",
             "vmdk" => "application/x-vmdk",
             "vhd" => "application/vnd.aos.disk-image.vhd",
@@ -14706,11 +14806,11 @@ mod tests {
             "filename": filename,
             "objectKey": immutable_image_object_key(&sha256, &filename),
             "mediaType": media_type,
-            "compression": "none",
+            "compression": if format == "raw" { "zstd" } else { "none" },
             "byteSize": fs::metadata(&image_path).unwrap().len(),
-            "virtualSizeBytes": fs::metadata(&image_path).unwrap().len(),
+            "virtualSizeBytes": logical_size,
             "sha256": &sha256,
-            "logicalDiskSha256": &sha256,
+            "logicalDiskSha256": &logical_sha256,
             "rootfsSha256": "2".repeat(64),
             "artifactBudgetsMiB": {
                 "root": 1,
@@ -14719,6 +14819,7 @@ mod tests {
                 "uki": 1,
                 "esp": 34,
                 "runtimeClosure": 1,
+                "download": 64,
             },
             "compatibleTargets": targets,
             "partitionTable": "gpt",
@@ -14805,7 +14906,7 @@ mod tests {
             serde_json::json!(["qemu-kvm", "openstack"]),
         );
         let image = inspect_test_image("qcow2", store, "2026.08", "x86_64-linux").unwrap();
-        assert_eq!(image.delivery.byte_size, 35 * 1024 * 1024);
+        assert_eq!(image.delivery.byte_size, 36 * 1024 * 1024);
         assert_eq!(image.delivery.filename, "aos-test.qcow2");
         assert_eq!(image.delivery.image_info.filename, "image-info.json");
         assert!(image.delivery.object_key.contains(&image.delivery.sha256));
@@ -14993,7 +15094,7 @@ mod tests {
         let store =
             write_direct_image_output(tamper.path(), "raw", serde_json::json!(["bare-metal"]));
         fs::write(
-            Path::new(&store.path).join("aos-test.img"),
+            Path::new(&store.path).join("aos-test.img.zst"),
             b"changed bytes",
         )
         .unwrap();
@@ -15050,7 +15151,7 @@ mod tests {
             write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
         let target = TempDir::new().unwrap();
         let external = target.path().join("real.img");
-        let image_path = Path::new(&store.path).join("aos-test.img");
+        let image_path = Path::new(&store.path).join("aos-test.img.zst");
         fs::rename(&image_path, &external).unwrap();
         symlink(&external, &image_path).unwrap();
         assert!(inspect_test_image("raw", store, "2026.08", "x86_64-linux").is_err());
@@ -15063,7 +15164,7 @@ mod tests {
         let store =
             write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
         fs::hard_link(
-            Path::new(&store.path).join("aos-test.img"),
+            Path::new(&store.path).join("aos-test.img.zst"),
             temp.path().join("disk-alias.img"),
         )
         .unwrap();
@@ -15087,7 +15188,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store =
             write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
-        let image_path = Path::new(&store.path).join("aos-test.img");
+        let image_path = Path::new(&store.path).join("aos-test.img.zst");
         let image = inspect_test_image("raw", store, "2026.08", "x86_64-linux").unwrap();
         fs::rename(&image_path, temp.path().join("original.img")).unwrap();
         fs::write(&image_path, b"replacement bytes").unwrap();
@@ -15095,37 +15196,41 @@ mod tests {
     }
 
     #[test]
-    fn image_publisher_hashes_sparse_files_as_logical_bytes() {
+    fn image_publisher_distinguishes_transfer_and_logical_disk_identity() {
         let temp = TempDir::new().unwrap();
         let store =
             write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
-        let image_path = Path::new(&store.path).join("aos-test.img");
-        let sparse_size = 36 * 1024 * 1024_u64;
-        OpenOptions::new()
-            .write(true)
-            .open(&image_path)
-            .unwrap()
-            .set_len(sparse_size)
-            .unwrap();
-        let (mut file, _) = open_stable_regular_file(&image_path).unwrap();
-        let sha256 = sha256_open_file(&mut file, &image_path).unwrap();
-        let info_path = Path::new(&store.path).join("image-info.json");
-        let mut info: serde_json::Value =
-            serde_json::from_slice(&fs::read(&info_path).unwrap()).unwrap();
-        info["byteSize"] = serde_json::json!(sparse_size);
-        info["virtualSizeBytes"] = serde_json::json!(sparse_size);
-        info["sha256"] = serde_json::json!(sha256);
-        info["logicalDiskSha256"] = info["sha256"].clone();
-        info["objectKey"] = serde_json::json!(immutable_image_object_key(
-            info["sha256"].as_str().unwrap(),
-            "aos-test.img"
-        ));
-        info["partitions"][1]["sizeMiB"] = serde_json::json!(2);
-        info["partitions"][1]["sizeBytes"] = serde_json::json!(2 * 1024 * 1024);
-        info["artifactBudgetsMiB"]["root"] = serde_json::json!(2);
-        fs::write(&info_path, serde_json::to_vec(&info).unwrap()).unwrap();
         let image = inspect_test_image("raw", store, "2026.08", "x86_64-linux").unwrap();
-        assert_eq!(image.delivery.byte_size, sparse_size);
+        assert!(image.delivery.byte_size < image.virtual_size_bytes);
+        assert_ne!(image.delivery.sha256, image.delivery.logical_disk_sha256);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn compressed_raw_materialization_enforces_exact_logical_size() {
+        let logical = b"canonical raw disk bytes";
+        let compressed = zstd::stream::encode_all(&logical[..], 1).unwrap();
+
+        let mut output = Vec::new();
+        decompress_raw_disk(&compressed[..], &mut output, logical.len() as u64).unwrap();
+        assert_eq!(output, logical);
+
+        assert!(
+            decompress_raw_disk(&compressed[..], &mut Vec::new(), logical.len() as u64 - 1)
+                .is_err()
+        );
+        assert!(
+            decompress_raw_disk(&compressed[..], &mut Vec::new(), logical.len() as u64 + 1)
+                .is_err()
+        );
+        assert!(
+            decompress_raw_disk(
+                &compressed[..compressed.len() - 1],
+                &mut Vec::new(),
+                logical.len() as u64,
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -29,6 +29,7 @@ in
       ROOT_SIZE_FILE = "${rootfs}/rootfs-size-bytes";
       INITRD = "${config.system.build.initrd}/initrd.img";
       UKI = uki;
+      IMAGE_INFO = "${image}/image-info.json";
       MAX_ROOT_BYTES = toString (budgets.maxRootMiB * mib);
       MAX_INITRD_BYTES = toString (budgets.maxInitrdMiB * mib);
       MAX_UKI_BYTES = toString (budgets.maxUkiMiB * mib);
@@ -45,6 +46,7 @@ in
             initrd_bytes=$(stat -c %s "$INITRD")
             uki_bytes=$(stat -c %s "$UKI")
             closure_bytes=$(jq '[.runtime[].narSize] | add // 0' "$NIX_ATTRS_JSON_FILE")
+            download_bytes=$(jq -er '.byteSize' "$IMAGE_INFO")
             ${lib.optionalString verityEnabled ''verity_bytes=$(stat -c %s ${rootfs}/root.verity)''}
             ${lib.optionalString (!verityEnabled) ''verity_bytes=0''}
 
@@ -71,12 +73,14 @@ in
               --argjson ukiBytes "$uki_bytes" \
               --argjson verityBytes "$verity_bytes" \
               --argjson runtimeClosureBytes "$closure_bytes" \
+              --argjson downloadBytes "$download_bytes" \
               --argjson maxRootMiB ${toString budgets.maxRootMiB} \
               --argjson maxInitrdMiB ${toString budgets.maxInitrdMiB} \
               --argjson maxUkiMiB ${toString budgets.maxUkiMiB} \
               --argjson maxVerityMiB ${toString budgets.maxVerityMiB} \
               --argjson maxEspMiB ${toString budgets.maxEspMiB} \
               --argjson maxRuntimeClosureMiB ${toString budgets.maxRuntimeClosureMiB} \
+              --argjson maxDownloadMiB ${toString budgets.maxDownloadMiB} \
               '{
                 schema: "aos.image-budget-report/v1",
                 name: $name,
@@ -85,7 +89,8 @@ in
                   initrdBytes: $initrdBytes,
                   ukiBytes: $ukiBytes,
                   verityBytes: $verityBytes,
-                  runtimeClosureBytes: $runtimeClosureBytes
+                  runtimeClosureBytes: $runtimeClosureBytes,
+                  downloadBytes: $downloadBytes
                 },
                 maximumMiB: {
                   root: $maxRootMiB,
@@ -93,7 +98,8 @@ in
                   uki: $maxUkiMiB,
                   verity: $maxVerityMiB,
                   esp: $maxEspMiB,
-                  runtimeClosure: $maxRuntimeClosureMiB
+                  runtimeClosure: $maxRuntimeClosureMiB,
+                  download: $maxDownloadMiB
                 }
               }' > "$out/report.json"
           '';

@@ -21092,8 +21092,8 @@ mod tests {
             let (sha256, extension, media_type, compatible_targets, info_sha256) = match format {
                 "raw" => (
                     "a".repeat(64),
-                    "img",
-                    "application/vnd.aos.disk-image.raw",
+                    "img.zst",
+                    "application/vnd.aos.disk-image.raw+zstd",
                     vec![ImageTarget::BareMetal],
                     "c".repeat(64),
                 ),
@@ -21118,7 +21118,11 @@ mod tests {
                 filename: filename.clone(),
                 object_key: immutable_image_object_key(&sha256, &filename),
                 media_type: media_type.into(),
-                compression: ImageCompression::None,
+                compression: if format == "raw" {
+                    ImageCompression::Zstd
+                } else {
+                    ImageCompression::None
+                },
                 byte_size: 4096,
                 sha256: sha256.clone(),
                 compatible_targets,
