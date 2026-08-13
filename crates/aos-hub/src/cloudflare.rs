@@ -200,6 +200,8 @@ pub struct DeployConfig {
     pub external_url: String,
     /// Immutable source/build identity exposed by the deployed Worker.
     pub deployment_id: Option<String>,
+    /// Stable named Durable Object instance containing the Hub database.
+    pub database_instance: String,
     /// The magic-link email relay endpoint (`HUB_EMAIL_API_URL` `[vars]`).
     pub email_relay_url: Option<String>,
     /// The verified sender address for Cloudflare Email Service. When `Some`, the
@@ -274,6 +276,10 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
             toml_string(deployment_id)
         ));
     }
+    vars.push_str(&format!(
+        "HUB_DATABASE_INSTANCE = {}\n",
+        toml_string(&cfg.database_instance)
+    ));
     // Surface the default R2 bucket name so the console's instance-settings page
     // can show where unbound registries/caches push (the R2 binding itself is
     // opaque to the Worker runtime).
@@ -888,6 +894,7 @@ pub async fn provision(
     egress_gateway_url: Option<&str>,
     external_url: &str,
     deployment_id: Option<&str>,
+    database_instance: &str,
     email_relay_url: Option<&str>,
     custom_domains: &[String],
     rate_limit_namespaces: RateLimitNamespaces,
@@ -924,6 +931,14 @@ pub async fn provision(
             "deployment ID must be 1-128 ASCII letters, digits, '.', '_', or '-'"
         );
     }
+    anyhow::ensure!(
+        !database_instance.is_empty()
+            && database_instance.len() <= 128
+            && database_instance
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')),
+        "database instance must be 1-128 ASCII letters, digits, '.', '_', or '-'"
+    );
     // The system of record is the `HubDb` Durable Object's colocated SQLite
     // (declared by the `wrangler.toml`
     // `new_sqlite_classes` migration, created on first deploy).
@@ -943,6 +958,7 @@ pub async fn provision(
         egress_gateway_url: egress_gateway_url.map(str::to_string),
         external_url: external_url.to_string(),
         deployment_id: deployment_id.map(str::to_string),
+        database_instance: database_instance.to_string(),
         email_relay_url: email_relay_url.map(str::to_string),
         // The `worker` CLI overrides this from its `--email-from` flag before
         // staging the config; Email Service is off until a sender is set.
@@ -1452,6 +1468,7 @@ mod tests {
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
             deployment_id: Some("0123456789abcdef".into()),
+            database_instance: "hub".into(),
             email_relay_url: None,
             email_from: None,
             custom_domains: vec!["aos.example.com".into()],
@@ -1545,6 +1562,7 @@ mod tests {
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
             deployment_id: None,
+            database_instance: "hub".into(),
             email_relay_url: None,
             email_from: None,
             custom_domains: vec![],
@@ -1570,6 +1588,7 @@ mod tests {
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
             deployment_id: None,
+            database_instance: "hub".into(),
             email_relay_url: None,
             email_from: None,
             custom_domains: vec![],
@@ -1596,6 +1615,7 @@ mod tests {
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
             deployment_id: None,
+            database_instance: "hub".into(),
             email_relay_url: None,
             email_from: Some("noreply@example.com".into()),
             custom_domains: vec![],
@@ -1640,6 +1660,7 @@ mod tests {
             egress_gateway_url: Some("https://egress.example.com/v1/fetch".into()),
             external_url: "https://aos.example.com".into(),
             deployment_id: None,
+            database_instance: "hub".into(),
             email_relay_url: None,
             email_from: None,
             custom_domains: vec![],
@@ -1742,6 +1763,7 @@ mod tests {
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
             deployment_id: None,
+            database_instance: "hub".into(),
             email_relay_url: None,
             email_from: None,
             custom_domains: vec![],
