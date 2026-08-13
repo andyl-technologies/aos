@@ -986,10 +986,6 @@ struct LocalFsWrite {
 
 #[async_trait]
 impl core_sw::SurfaceWrite for LocalFsWrite {
-    fn multipart_protocol_version(&self) -> Option<u32> {
-        Some(1)
-    }
-
     async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
         let target = crate::fetch::safe_join(&self.root, path)
             .with_context(|| format!("resolving surface path {path}"))?;
@@ -1072,9 +1068,18 @@ impl core_sw::SurfaceWrite for LocalFsWrite {
         path: &str,
         upload_id: &str,
         parts: &[core_sw::PartTag],
-    ) -> Result<()> {
+    ) -> Result<String> {
         let upload_id = validate_upload_id(upload_id)?;
         let dir = self.parts_dir(&upload_id);
+        if tokio::fs::try_exists(self.multipart_terminal_marker(&upload_id))
+            .await
+            .unwrap_or(false)
+        {
+            return self
+                .strong_version(path)
+                .await?
+                .context("completed filesystem object has no strong identity");
+        }
         let target = crate::fetch::safe_join(&self.root, path)
             .with_context(|| format!("resolving surface path {path}"))?;
         let contained = self.contained_target(&target).await?;
@@ -1133,7 +1138,9 @@ impl core_sw::SurfaceWrite for LocalFsWrite {
             .await
             .with_context(|| format!("removing completed upload staging dir {}", dir.display()))?;
         sync_parent_directory(&dir).await?;
-        Ok(())
+        self.strong_version(path)
+            .await?
+            .context("completed filesystem object has no strong identity")
     }
 
     async fn abort_multipart(
@@ -1176,6 +1183,15 @@ impl core_sw::SurfaceWrite for LocalFsWrite {
 }
 
 impl LocalFsWrite {
+    async fn strong_version(&self, path: &str) -> Result<Option<String>> {
+        if let Some(digest) = crate::fetch::LocalFsFetch::image_digest(path) {
+            return Ok(Some(format!("\"snapshot-sha256-{digest}\"")));
+        }
+        crate::fetch::LocalFsFetch::new(&self.root)
+            .strong_version(path)
+            .await
+    }
+
     fn new(root: PathBuf) -> Self {
         Self {
             root,
@@ -1961,10 +1977,6 @@ impl S3Write {
 
 #[async_trait]
 impl core_sw::SurfaceWrite for S3Write {
-    fn multipart_protocol_version(&self) -> Option<u32> {
-        Some(1)
-    }
-
     async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
         let url =
             self.surface
@@ -2118,7 +2130,7 @@ impl core_sw::SurfaceWrite for S3Write {
         path: &str,
         upload_id: &str,
         parts: &[core_sw::PartTag],
-    ) -> Result<()> {
+    ) -> Result<String> {
         let url = self.surface.multipart_url(
             "complete",
             path,
@@ -2145,8 +2157,7 @@ impl core_sw::SurfaceWrite for S3Write {
         let body =
             crate::fetch::read_text_capped(response, 1024 * 1024, "S3 complete multipart response")
                 .await?;
-        aos_hub_core::s3surface::validate_complete_multipart_response(&body)?;
-        Ok(())
+        aos_hub_core::s3surface::complete_multipart_etag(&body)
     }
 
     async fn abort_multipart(

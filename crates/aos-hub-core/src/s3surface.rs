@@ -707,6 +707,14 @@ pub fn validate_complete_multipart_response(xml: &str) -> Result<()> {
     Ok(())
 }
 
+/// Returns the strong ETag from a successful multipart-completion document.
+pub fn complete_multipart_etag(xml: &str) -> Result<String> {
+    validate_complete_multipart_response(xml)?;
+    let etag = extract_unique_tag(xml.trim(), "ETag")?
+        .context("S3 multipart completion response omitted ETag")?;
+    crate::surface_write::strong_if_match_etag(etag)
+}
+
 /// Returns the unique `<tag>…</tag>` body, if present.
 fn extract_unique_tag<'a>(xml: &'a str, tag: &str) -> Result<Option<&'a str>> {
     let open = format!("<{tag}>");

@@ -32,6 +32,7 @@
 //! where traversal is not expressible.
 
 use anyhow::Result;
+use md5::{Digest as _, Md5};
 
 use crate::backend::BackendBounds;
 use crate::db::SurfacePlacementRecord;
@@ -127,6 +128,47 @@ pub fn strong_if_match_etag(etag: &str) -> Result<String> {
     Ok(format!("\"{etag}\""))
 }
 
+/// Derives an MD5-style final multipart identity from provider part tags.
+///
+/// R2 and conventional S3 configurations use the MD5 of the ordered binary
+/// part MD5 values plus the part count. Tags that do not have that shape return
+/// `None`; callers must then rely on backend-specific durable completion
+/// evidence rather than guessing.
+///
+/// # Errors
+///
+/// Returns an error when the manifest is empty, duplicated, or non-contiguous.
+pub fn md5_multipart_etag(parts: &[PartTag]) -> Result<Option<String>> {
+    if parts.is_empty() {
+        anyhow::bail!("multipart completion manifest is empty");
+    }
+    let mut ordered = parts.to_vec();
+    ordered.sort_by_key(|part| part.part_number);
+    if ordered
+        .iter()
+        .enumerate()
+        .any(|(index, part)| part.part_number as usize != index + 1)
+    {
+        anyhow::bail!("multipart completion manifest is not contiguous");
+    }
+
+    let mut part_digests = Vec::with_capacity(ordered.len() * 16);
+    for part in &ordered {
+        let normalized = strong_if_match_etag(&part.etag)?;
+        let inner = &normalized[1..normalized.len() - 1];
+        if inner.len() != 32 || !inner.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Ok(None);
+        }
+        let digest = hex::decode(inner)?;
+        part_digests.extend_from_slice(&digest);
+    }
+    Ok(Some(format!(
+        "\"{}-{}\"",
+        hex::encode(Md5::digest(&part_digests)),
+        ordered.len()
+    )))
+}
+
 /// Write access to a registry surface by relative path (the "Blobs" write
 /// port).
 ///
@@ -143,6 +185,21 @@ pub trait SurfaceWrite: BackendBounds {
     /// create/part/complete/abort contract; the default is fail-closed.
     fn multipart_protocol_version(&self) -> Option<u32> {
         None
+    }
+
+    /// Predicts the provider's final strong multipart identity when its
+    /// contract defines that identity entirely from the accepted part tags.
+    ///
+    /// The default is deliberately unknown. In particular, generic S3 ETags
+    /// vary with encryption and checksum configuration and must not be inferred
+    /// merely because individual part tags resemble MD5 values.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a provider-specific part manifest is malformed.
+    fn expected_multipart_etag(&self, parts: &[PartTag]) -> Result<Option<String>> {
+        let _ = parts;
+        Ok(None)
     }
 
     /// Atomically write `bytes` to the surface at the logical `path`.
@@ -255,7 +312,7 @@ pub trait SurfaceWrite: BackendBounds {
         path: &str,
         upload_id: &str,
         parts: &[PartTag],
-    ) -> Result<()> {
+    ) -> Result<String> {
         let _ = (path, upload_id, parts);
         anyhow::bail!("multipart upload not supported by this backend")
     }
@@ -325,7 +382,7 @@ pub trait SurfaceWriteProvider: BackendBounds {
 
 #[cfg(test)]
 mod tests {
-    use super::strong_if_match_etag;
+    use super::{md5_multipart_etag, strong_if_match_etag, PartTag};
 
     #[test]
     fn exact_delete_etags_are_strong_and_canonical() {
@@ -336,5 +393,32 @@ mod tests {
         assert!(strong_if_match_etag("\"a\\b\"").is_err());
         assert!(strong_if_match_etag("\"a\"b\"").is_err());
         assert!(strong_if_match_etag("").is_err());
+    }
+
+    #[test]
+    fn conventional_part_tags_predict_the_completed_identity() {
+        let parts = [
+            PartTag {
+                part_number: 2,
+                etag: "\"7d793037a0760186574b0282f2f435e7\"".into(),
+            },
+            PartTag {
+                part_number: 1,
+                etag: "5d41402abc4b2a76b9719d911017c592".into(),
+            },
+        ];
+        assert_eq!(
+            md5_multipart_etag(&parts).unwrap().as_deref(),
+            Some("\"065947336a2f2a95ba8899f3675c3be6-2\"")
+        );
+    }
+
+    #[test]
+    fn opaque_part_tags_do_not_invent_a_completed_identity() {
+        let parts = [PartTag {
+            part_number: 1,
+            etag: "provider-opaque-tag".into(),
+        }];
+        assert_eq!(md5_multipart_etag(&parts).unwrap(), None);
     }
 }

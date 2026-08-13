@@ -1727,6 +1727,22 @@ pub struct RegistryPublicationMultipartUploadRecord {
     pub state: String,
     /// Expiry time in Unix seconds.
     pub expires_at: i64,
+    /// Number of contiguous object bytes incorporated into `sha256_state`.
+    pub hashed_size: i64,
+    /// Portable hexadecimal SHA-256 compression state.
+    pub sha256_state: String,
+    /// Part currently claimed for a provider write, when any.
+    pub pending_part: Option<i64>,
+    /// Exact body digest for the claimed part.
+    pub pending_hash: Option<String>,
+    /// Unique lease owner authorized to commit the claimed provider writes.
+    pub pending_token: Option<String>,
+    /// Claim acquisition time in Unix seconds.
+    pub pending_since: Option<i64>,
+    /// Unique request authorized to perform provider completion.
+    pub completion_token: Option<String>,
+    /// Completion ownership acquisition time in Unix seconds.
+    pub completion_since: Option<i64>,
 }
 
 /// One backend-confirmed part identity retained for crash-safe completion.
@@ -6184,7 +6200,9 @@ impl Database {
         self.backend
             .query_opt(
                 "SELECT upload_id, publication_id, registry_id, surface_object_id,
-                        state, expires_at
+                        state, expires_at, hashed_size, sha256_state,
+                        pending_part, pending_hash, pending_token, pending_since,
+                        completion_token, completion_since
                  FROM registry_publication_multipart_uploads WHERE upload_id = ?1",
                 &vals![upload_id],
             )
@@ -6197,6 +6215,14 @@ impl Database {
                     surface_object_id: row.get(3)?,
                     state: row.get(4)?,
                     expires_at: row.get(5)?,
+                    hashed_size: row.get(6)?,
+                    sha256_state: row.get(7)?,
+                    pending_part: row.get(8)?,
+                    pending_hash: row.get(9)?,
+                    pending_token: row.get(10)?,
+                    pending_since: row.get(11)?,
+                    completion_token: row.get(12)?,
+                    completion_since: row.get(13)?,
                 })
             })
             .transpose()
@@ -6352,11 +6378,12 @@ impl Database {
     pub async fn registry_publication_multipart_backends(
         &self,
         upload_id: &str,
-    ) -> Result<Vec<(i64, i64, String)>> {
+    ) -> Result<Vec<(i64, i64, String, Option<String>)>> {
         validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
         self.backend
             .query(
-                "SELECT placement_id, placement_resource_version, backend_upload_id
+                "SELECT placement_id, placement_resource_version, backend_upload_id,
+                        completion_etag
                  FROM registry_publication_multipart_backends
                  WHERE upload_id = ?1 AND state = 'ready'
                  ORDER BY placement_id",
@@ -6364,7 +6391,7 @@ impl Database {
             )
             .await?
             .iter()
-            .map(|row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .map(|row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
             .collect()
     }
 
@@ -6397,18 +6424,35 @@ impl Database {
     pub async fn begin_registry_publication_multipart_completion(
         &self,
         upload_id: &str,
+        completion_token: &str,
+        claimed_at: i64,
+        steal_before: i64,
     ) -> Result<RegistryPublicationMultipartUploadRecord> {
         validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
-        self.backend
+        validate_key_bytes(completion_token, "multipart completion token", 64)?;
+        anyhow::ensure!(
+            claimed_at > steal_before,
+            "multipart completion claim is invalid"
+        );
+        let updated = self
+            .backend
             .execute(
-                "UPDATE registry_publication_multipart_uploads SET state = 'completing'
-                 WHERE upload_id = ?1 AND state = 'active'",
-                &vals![upload_id],
+                "UPDATE registry_publication_multipart_uploads
+                 SET state = 'completing', completion_token = ?2, completion_since = ?3
+                 WHERE upload_id = ?1
+                   AND ((state = 'active' AND completion_token IS NULL
+                         AND completion_since IS NULL)
+                     OR (state = 'completing' AND completion_since <= ?4))",
+                &vals![upload_id, completion_token, claimed_at, steal_before],
             )
             .await?;
+        anyhow::ensure!(updated == 1, "multipart completion is already owned");
         self.registry_publication_multipart_upload(upload_id)
             .await?
-            .filter(|upload| upload.state == "completing")
+            .filter(|upload| {
+                upload.state == "completing"
+                    && upload.completion_token.as_deref() == Some(completion_token)
+            })
             .context("publication multipart upload is not completable")
     }
 
@@ -6423,13 +6467,45 @@ impl Database {
         upload_id: &str,
         part_number: u32,
         placements: &[(i64, String)],
+        prior_hashed_size: i64,
+        hashed_size: i64,
+        sha256_state: &str,
+        pending_hash: &str,
+        pending_token: &str,
     ) -> Result<()> {
         validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
-        if part_number == 0 || placements.is_empty() {
+        validate_key_bytes(pending_hash, "publication multipart part hash", 64)?;
+        validate_key_bytes(pending_token, "publication multipart claim token", 64)?;
+        if part_number == 0 || placements.is_empty() || hashed_size <= prior_hashed_size {
             bail!("publication multipart part identity is incomplete");
         }
+        validate_key_bytes(sha256_state, "publication SHA-256 state", 64)?;
+        if sha256_state.len() != 64 || !sha256_state.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            bail!("publication SHA-256 state is invalid");
+        }
         let mut seen = std::collections::BTreeSet::new();
-        let mut statements = Vec::with_capacity(placements.len());
+        let mut statements = Vec::with_capacity(placements.len() + 1);
+        statements.push(
+            Statement::new(
+                "UPDATE registry_publication_multipart_uploads
+                 SET hashed_size = ?3, sha256_state = ?4,
+                     pending_part = NULL, pending_hash = NULL,
+                     pending_token = NULL, pending_since = NULL
+                 WHERE upload_id = ?1 AND state = 'active' AND hashed_size = ?2
+                   AND pending_part = ?5 AND pending_hash = ?6
+                   AND pending_token = ?7",
+                vals![
+                    upload_id,
+                    prior_hashed_size,
+                    hashed_size,
+                    sha256_state,
+                    i64::from(part_number),
+                    pending_hash,
+                    pending_token
+                ],
+            )
+            .expecting(1),
+        );
         for (placement_id, etag) in placements {
             if !seen.insert(*placement_id) || etag.is_empty() || etag.len() > 1024 {
                 bail!("publication multipart placement identity is invalid");
@@ -6440,15 +6516,93 @@ impl Database {
                  (upload_id, part_number, placement_id, etag)
                  SELECT ?1, ?2, ?3, ?4
                  WHERE EXISTS (SELECT 1 FROM registry_publication_multipart_uploads
-                   WHERE upload_id = ?1 AND state = 'active')
-                 ON CONFLICT(upload_id, part_number, placement_id)
-                 DO UPDATE SET etag = excluded.etag",
-                    vals![upload_id, i64::from(part_number), placement_id, etag],
+                   WHERE upload_id = ?1 AND state = 'active' AND hashed_size = ?5)",
+                    vals![
+                        upload_id,
+                        i64::from(part_number),
+                        placement_id,
+                        etag,
+                        hashed_size
+                    ],
                 )
                 .expecting(1),
             );
         }
         self.backend.checked_batch(&statements).await
+    }
+
+    /// Claims the next contiguous part before any provider side effect.
+    ///
+    /// A claim serializes writes for a part until the complete provider
+    /// transaction is explicitly aborted. It is never stolen on the same
+    /// provider upload because a timed-out writer may still have an in-flight
+    /// side effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed claim data, an inactive upload, a
+    /// conflicting claim, stale hash progress, or database failure.
+    pub async fn claim_registry_publication_multipart_part(
+        &self,
+        upload_id: &str,
+        part_number: u32,
+        body_hash: &str,
+        hashed_size: i64,
+        claim_token: &str,
+        claimed_at: i64,
+    ) -> Result<()> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        validate_key_bytes(body_hash, "publication multipart part hash", 64)?;
+        validate_key_bytes(claim_token, "publication multipart claim token", 64)?;
+        if claimed_at < 0 {
+            bail!("publication multipart claim lease is invalid");
+        }
+        if body_hash.len() != 64
+            || !body_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            bail!("publication multipart part hash is invalid");
+        }
+        self.backend
+            .checked_batch(&[Statement::new(
+                "UPDATE registry_publication_multipart_uploads
+                 SET pending_part = ?2, pending_hash = ?3,
+                     pending_token = ?5, pending_since = ?6
+                 WHERE upload_id = ?1 AND state = 'active' AND hashed_size = ?4
+                   AND pending_part IS NULL AND pending_hash IS NULL
+                   AND pending_token IS NULL AND pending_since IS NULL",
+                vals![
+                    upload_id,
+                    i64::from(part_number),
+                    body_hash,
+                    hashed_size,
+                    claim_token,
+                    claimed_at
+                ],
+            )
+            .expecting(1)])
+            .await
+    }
+
+    /// Records the strong object identity returned by provider completion.
+    pub async fn record_registry_publication_multipart_completion_etag(
+        &self,
+        upload_id: &str,
+        placement_id: i64,
+        etag: &str,
+    ) -> Result<()> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        validate_key_bytes(etag, "multipart completion ETag", 1024)?;
+        self.backend
+            .checked_batch(&[Statement::new(
+                "UPDATE registry_publication_multipart_backends SET completion_etag = ?3
+             WHERE upload_id = ?1 AND placement_id = ?2 AND state = 'ready'
+               AND (completion_etag IS NULL OR completion_etag = ?3)",
+                vals![upload_id, placement_id, etag],
+            )
+            .expecting(1)])
+            .await
     }
 
     /// Lists durable backend identities for every confirmed upload part.
@@ -6504,6 +6658,33 @@ impl Database {
                      SET state = ?2, active_object_slot = NULL, finished_at = ?3
                      WHERE upload_id = ?1 AND state IN('active', 'completing')",
                 vals![upload_id, state, now],
+            )
+            .expecting(1)])
+            .await
+    }
+
+    /// Finishes a multipart completion only for its current durable owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed identities, lost completion ownership,
+    /// or database failure.
+    pub async fn finish_owned_registry_publication_multipart_completion(
+        &self,
+        upload_id: &str,
+        completion_token: &str,
+        finished_at: i64,
+    ) -> Result<()> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        validate_key_bytes(completion_token, "multipart completion token", 64)?;
+        self.backend
+            .checked_batch(&[Statement::new(
+                "UPDATE registry_publication_multipart_uploads
+                 SET state = 'completed', active_object_slot = NULL,
+                     finished_at = ?3
+                 WHERE upload_id = ?1 AND state = 'completing'
+                   AND completion_token = ?2",
+                vals![upload_id, completion_token, finished_at],
             )
             .expecting(1)])
             .await
@@ -24117,7 +24298,7 @@ source_nar_hash = ""
 
     #[test]
     fn publication_multipart_migration_upgrades_an_existing_database() {
-        let (migration, earlier) = MIGRATIONS.split_last().unwrap();
+        let (multipart_migration, earlier) = MIGRATIONS.split_last().unwrap();
         let connection = Connection::open_in_memory().unwrap();
         for script in earlier {
             connection.execute_batch(script).unwrap();
@@ -24130,7 +24311,7 @@ source_nar_hash = ""
             )
             .unwrap();
 
-        connection.execute_batch(migration).unwrap();
+        connection.execute_batch(multipart_migration).unwrap();
         let tables: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master
@@ -24143,6 +24324,15 @@ source_nar_hash = ""
             )
             .unwrap();
         assert_eq!(tables, 3);
+        let columns: Vec<String> = connection
+            .prepare("PRAGMA table_info(registry_publication_multipart_uploads)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(columns.iter().any(|column| column == "hashed_size"));
+        assert!(columns.iter().any(|column| column == "sha256_state"));
     }
 
     #[test]
@@ -28557,6 +28747,50 @@ source_nar_hash = ""
             .await
             .unwrap();
         assert_eq!(created.expires_at, 2);
+        assert_eq!(created.hashed_size, 0);
+
+        let part_hash = "e".repeat(64);
+        db.claim_registry_publication_multipart_part(
+            "multipart-upload-1",
+            1,
+            &part_hash,
+            0,
+            "claim-token-1",
+            100,
+        )
+        .await
+        .unwrap();
+        assert!(db
+            .claim_registry_publication_multipart_part(
+                "multipart-upload-1",
+                1,
+                &part_hash,
+                0,
+                "claim-token-2",
+                101,
+            )
+            .await
+            .is_err());
+        assert!(db
+            .claim_registry_publication_multipart_part(
+                "multipart-upload-1",
+                1,
+                &"f".repeat(64),
+                0,
+                "claim-token-3",
+                702,
+            )
+            .await
+            .is_err());
+        let claimed = db
+            .registry_publication_multipart_upload("multipart-upload-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed.pending_part, Some(1));
+        assert_eq!(claimed.pending_hash.as_deref(), Some(part_hash.as_str()));
+        assert_eq!(claimed.pending_token.as_deref(), Some("claim-token-1"));
+        assert_eq!(claimed.pending_since, Some(100));
 
         let active = db
             .active_registry_publication_multipart_upload(publication_id, object.id)

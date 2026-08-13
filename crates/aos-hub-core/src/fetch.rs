@@ -399,6 +399,19 @@ pub trait SurfaceFetch: BackendBounds {
         Ok(None)
     }
 
+    /// Returns the backend-observed object size without consuming its body.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for metadata transport failure or a size too large to
+    /// represent in the shared database contract.
+    async fn inventory_size(&self, path: &str) -> Result<Option<i64>> {
+        self.fetch_stream(path, None)
+            .await?
+            .map(|read| i64::try_from(read.total).context("surface object size exceeds i64"))
+            .transpose()
+    }
+
     /// Streams one object and derives placement-scoped inventory evidence.
     ///
     /// The default deliberately hashes the streamed bytes and separately asks

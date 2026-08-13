@@ -1575,6 +1575,8 @@ message BeginRegistryPublicationMultipartUploadResponse {
   uint64 part_size = 2;
   string part_upload_url = 3;
   string state = 4;
+  // First part not yet durably accepted, or zero while completing.
+  uint32 next_part_number = 5;
 }
 
 message RegistryPublicationPlacementPart {
