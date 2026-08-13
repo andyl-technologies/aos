@@ -150,7 +150,7 @@ const HARD_PENDING_NETWORK_FRAMES: usize = 65_536;
 const HARD_PENDING_NETWORK_BYTES: usize = 1_073_741_824;
 const HARD_CONTACT_SERVICE_RESERVATIONS: usize = 262_144;
 const HARD_CONTACT_SERVICE_STATES: usize = 262_144;
-const NETWORK_ADAPTER_CHECKPOINT_VERSION: u16 = 5;
+const NETWORK_ADAPTER_CHECKPOINT_VERSION: u16 = 6;
 
 fn stage_pending_network_output(
     pending: &mut Vec<crucible::BackendNetworkOutput>,
@@ -1780,6 +1780,9 @@ impl ProductionFaultNetworkInterceptor {
                     .clear_queued_targets
                     .append(&mut applied.clear_queued_targets);
                 boundary_application
+                    .clear_table_targets
+                    .append(&mut applied.clear_table_targets);
+                boundary_application
                     .address_discontinuities
                     .append(&mut applied.address_discontinuities);
                 boundary_application
@@ -1801,6 +1804,24 @@ impl ProductionFaultNetworkInterceptor {
                     evidence: control_plane_outcome_evidence(outcome)?,
                 });
             }
+            for (target, queue_targets, downtime_nanos) in
+                &boundary_application.drain_queued_targets
+            {
+                let unavailable_from = queue_targets
+                    .iter()
+                    .filter_map(|queue_target| staged_effect_state.queues.get(queue_target))
+                    .flat_map(|queue| queue.reservations.iter())
+                    .map(|reservation| reservation.finish_nanos)
+                    .max()
+                    .unwrap_or(coordinate.virtual_nanos)
+                    .max(coordinate.virtual_nanos);
+                staged_effect_state
+                    .boundary
+                    .defer_outage_until_queues_drain(target, unavailable_from, *downtime_nanos)?;
+            }
+            boundary_application.next_wakeup_nanos = staged_effect_state
+                .boundary
+                .next_wakeup_nanos(coordinate.virtual_nanos);
             for target in boundary_application.clear_queued_targets {
                 if let Some(queue) = staged_effect_state.queues.remove(&target) {
                     let removed = queue
@@ -1816,6 +1837,14 @@ impl ProductionFaultNetworkInterceptor {
                             .is_none_or(|opportunity| !removed.contains(&opportunity))
                     });
                 }
+            }
+            for target in boundary_application.clear_table_targets {
+                staged_effect_state
+                    .state_machines
+                    .retain(|key, _machine| key.target != target);
+                staged_effect_state
+                    .connection_tables
+                    .retain(|key, _table| key.target != target);
             }
             let mut removed_attachment_opportunities = BTreeSet::new();
             for target in &boundary_application.address_discontinuities {
