@@ -8,8 +8,8 @@
 
 pub use crucible_protocol::{
     GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS, GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS,
-    WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HLT_BYTES,
-    WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE, WHITEBOX_DOORBELL_ABIS,
+    WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HINT_BYTES,
+    WHITEBOX_DOORBELL_AARCH64_RESERVED_HINT, WHITEBOX_DOORBELL_ABIS,
     WHITEBOX_DOORBELL_FRAME_HEADER_LEN, WHITEBOX_DOORBELL_FRAME_MAGIC,
     WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE, WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION,
     WHITEBOX_DOORBELL_KIND_ASSERTION, WHITEBOX_DOORBELL_KIND_COVERAGE,
@@ -26,7 +26,7 @@ pub use crucible_protocol::{
     WhiteboxEventMarkerBody, WhiteboxLifecycleMarkerEvent, WhiteboxMarkerDetail,
     WhiteboxMarkerPayload, WhiteboxMarkerPayloadDecodeError, WhiteboxMarkerPayloadEncodeError,
     WhiteboxMarkerPayloadGoldenVector, WhiteboxRandomRequestBody, decode_whitebox_marker_payload,
-    encode_aarch64_hlt_instruction, encode_whitebox_doorbell_frame, encode_whitebox_marker_frame,
+    encode_aarch64_hint_instruction, encode_whitebox_doorbell_frame, encode_whitebox_marker_frame,
     encode_whitebox_marker_payload_body, encode_x86_64_out_imm8_al_instruction,
     whitebox_doorbell_abi_for_architecture,
 };
@@ -1155,7 +1155,7 @@ impl WhiteboxDoorbellCapabilities {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WhiteboxDoorbellSetupResources<'a> {
     x86_mapped_ports: &'a [u16],
-    aarch64_reserved_immediates_in_use: &'a [u16],
+    aarch64_reserved_immediates_in_use: &'a [u8],
 }
 
 impl<'a> WhiteboxDoorbellSetupResources<'a> {
@@ -1163,7 +1163,7 @@ impl<'a> WhiteboxDoorbellSetupResources<'a> {
     #[must_use]
     pub const fn from_observed_resources(
         x86_mapped_ports: &'a [u16],
-        aarch64_reserved_immediates_in_use: &'a [u16],
+        aarch64_reserved_immediates_in_use: &'a [u8],
     ) -> Self {
         Self {
             x86_mapped_ports,
@@ -1179,7 +1179,7 @@ impl<'a> WhiteboxDoorbellSetupResources<'a> {
 
     /// Returns observed aarch64 reserved immediates that are unavailable for Crucible.
     #[must_use]
-    pub const fn aarch64_reserved_immediates_in_use(self) -> &'a [u16] {
+    pub const fn aarch64_reserved_immediates_in_use(self) -> &'a [u8] {
         self.aarch64_reserved_immediates_in_use
     }
 }
@@ -1217,7 +1217,7 @@ impl WhiteboxDoorbellSetupValidation {
                     WhiteboxDoorbellSetupOutcome::CollisionFree
                 }
             }
-            WhiteboxDoorbellTrap::Aarch64Hlt { immediate } => {
+            WhiteboxDoorbellTrap::Aarch64Hint { immediate } => {
                 if resources
                     .aarch64_reserved_immediates_in_use()
                     .contains(&immediate)
@@ -1270,10 +1270,10 @@ pub enum WhiteboxDoorbellCollision {
         /// Colliding port number.
         port: u16,
     },
-    /// The aarch64 `hlt #imm16` immediate is used by guest code or platform ABI.
+    /// The aarch64 `hint #imm7` immediate is used by guest code or platform ABI.
     Aarch64ReservedImmediateInUse {
         /// Colliding immediate value.
-        immediate: u16,
+        immediate: u8,
     },
 }
 
@@ -1315,10 +1315,10 @@ pub enum WhiteboxDoorbellTrap {
         /// Reserved port number chosen by the scenario.
         port: u16,
     },
-    /// aarch64 reserved `hlt #imm16` trap instruction.
-    Aarch64Hlt {
-        /// Reserved immediate encoded in the trap instruction.
-        immediate: u16,
+    /// aarch64 reserved inert `hint #imm7` instruction.
+    Aarch64Hint {
+        /// Reserved immediate encoded in the inert instruction.
+        immediate: u8,
     },
 }
 
@@ -1328,7 +1328,7 @@ impl WhiteboxDoorbellTrap {
     pub const fn from_abi(trap: WhiteboxDoorbellTrapAbi) -> Self {
         match trap {
             WhiteboxDoorbellTrapAbi::X86PortIo { port } => Self::X86PortIo { port },
-            WhiteboxDoorbellTrapAbi::Aarch64Hlt { immediate } => Self::Aarch64Hlt { immediate },
+            WhiteboxDoorbellTrapAbi::Aarch64Hint { immediate } => Self::Aarch64Hint { immediate },
         }
     }
 }

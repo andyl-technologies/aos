@@ -11,7 +11,12 @@ pub(super) const REDUCTION_PATH_PACKAGES: &[&str] = &[
     "crucible-session",
 ];
 pub(super) const NONDETERMINISTIC_BOUNDARY_PACKAGES: &[&str] =
-    &["crucible-daemon", "crucible-cli", "crucible-qemu"];
+    &[
+        "crucible-daemon",
+        "crucible-cli",
+        "crucible-debug-gateway",
+        "crucible-qemu",
+    ];
 pub(super) const BINARY_BOUNDARY_PACKAGE: &str = "crucible-cli";
 pub(super) const BINARY_ENTRY_PACKAGES: &[&str] = &["crucible-debug-gateway", "crucible-guest"];
 pub(super) const CLIPPY_DISALLOWED_METHODS: &[&str] = &[

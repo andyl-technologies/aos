@@ -150,11 +150,13 @@ manifest contains **no secret values** — credentials appear only as handles
 
 ## The evaluator
 
-### P1 — stock C++ Nix (already in the image)
+### P1 — stock C++ Nix (historical parity baseline)
 
 Stock C++ Nix 2.24.12 is already built from source as an AOS package
 (`pkgs/tools/nix.nix`) with `nix-instantiate --eval` present and tested. P1
-uses it directly.
+used it directly during the first phase. The completed P2 system keeps this
+invocation only in hermetic differential checks; it is not shipped as a
+production fallback.
 Starting on stock Nix is not a compromise on the model: the module system is
 *our* Nix code (`lib/modules.nix`) and evaluates identically on either
 evaluator. The seam is exactly `eval entry.nix → JSON manifest`.

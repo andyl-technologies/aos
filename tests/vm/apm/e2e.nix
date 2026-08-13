@@ -43,8 +43,11 @@
     NIXCONF
     nix-store --init || true
     nix-store --load-db < /aos-registration
-    mkdir -p /nix/var/nix/gcroots
-    ln -sfn /var/lib/profiles /nix/var/nix/gcroots/aos-profiles
+    mkdir -p /var/lib/profiles /nix/var/nix/gcroots/aos-profiles
+    if ! ${pkgs.util-linux}/bin/mountpoint -q /nix/var/nix/gcroots/aos-profiles; then
+      ${pkgs.util-linux}/bin/mount --bind \
+        /var/lib/profiles /nix/var/nix/gcroots/aos-profiles
+    fi
   '';
 
   shellHelpers = ''

@@ -17,6 +17,7 @@
   taskList = builtins.concatStringsSep "," taskIds;
   fixturesProbe = import ../../pkgs/tools/crucible-fixtures.nix {
     inherit lib;
+    stdenv.hostPlatform.system = pkgs.stdenv.hostPlatform.system;
     mkDerivation = args: args // {type = "derivation-probe";};
     bash = "/stub/aos-bash";
     coreutils = "/stub/aos-coreutils";
@@ -24,6 +25,7 @@
     fakeroot = "/stub/aos-fakeroot";
     util-linux = "/stub/aos-util-linux";
     crucible-guest = "/stub/crucible-guest";
+    openssh = "/stub/aos-openssh";
   };
 
   fixtureNodes =
@@ -38,6 +40,16 @@
     if fixturesProbe ? passthru && fixturesProbe.passthru ? crucibleFixtureEntropySeedMechanism
     then fixturesProbe.passthru.crucibleFixtureEntropySeedMechanism
     else "";
+  fixtureConsole =
+    if fixturesProbe ? passthru && fixturesProbe.passthru ? crucibleFixtureConsole
+    then fixturesProbe.passthru.crucibleFixtureConsole
+    else "";
+  expectedFixtureConsole =
+    {
+      "x86_64-linux" = "ttyS0";
+      "aarch64-linux" = "ttyAMA0";
+    }.${pkgs.stdenv.hostPlatform.system}
+    or (throw "crucible phase7 fixture check does not support ${pkgs.stdenv.hostPlatform.system}");
   fixtureThirdPartyPath =
     if fixturesProbe ? passthru && fixturesProbe.passthru ? crucibleFixtureThirdPartyGuestPath
     then fixturesProbe.passthru.crucibleFixtureThirdPartyGuestPath
@@ -76,6 +88,9 @@
     ]
     ++ lib.optionals (fixtureEntropyMechanism != "scenario-seed-fw_cfg-plus-seeded-qemu-rng") [
       "pkgs.crucible-fixtures: entropy mechanism must name the deterministic fw_cfg/QEMU seed path"
+    ]
+    ++ lib.optionals (fixtureConsole != expectedFixtureConsole) [
+      "pkgs.crucible-fixtures: expected native console ${expectedFixtureConsole}, got ${fixtureConsole}"
     ]
     ++ lib.optionals (!(hasInfix "third-party-guests/generic-aos-linux-unmodified/manifest.toml" fixtureThirdPartyPath)) [
       "pkgs.crucible-fixtures: third-party guest path must point at the packaged generic unmodified guest manifest"
@@ -127,6 +142,10 @@
       {
         label = "AOS bash shell target";
         needle = "rootfs/bin/sh";
+      }
+      {
+        label = "debug agent direct-argv uname path";
+        needle = "ln -sfn " + "$" + "{coreutils}/bin/uname rootfs/bin/uname";
       }
       {
         label = "virtio-9p readonly store mount";

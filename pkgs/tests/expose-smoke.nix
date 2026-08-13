@@ -55,7 +55,6 @@ mkDerivation {
       syscalls = "restricted";
       security-label = "aos.expose-smoke";
     };
-    requires = [];
   };
 
   meta.description = "RFC-0001 package expose renderer smoke test payload";

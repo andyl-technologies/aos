@@ -1,7 +1,8 @@
 # RFC-0011: On-host, eval-only configuration — generations from downloaded Nix modules
 
-- **Status:** Accepted, revised after an adversarial review, and **made
-  goal-mode-executable**. The three forks (F1/F2/F3) and the generations open
+- **Status:** **Implemented.** Accepted, revised after adversarial review, and
+  completed against the executable acceptance gates. The three forks
+  (F1/F2/F3) and the generations open
   questions are now **resolved** with locked choices + decision-free mechanisms
   ([`decisions.md`](decisions.md)); field-level interface/schema contracts are in
   [`build-spec.md`](build-spec.md); and every implementation-plan item has a
@@ -9,17 +10,17 @@
   resolved as **dm-verity on the erofs root with the roothash baked into the
   measured UKI `.cmdline`** (so PCR-11 transitively covers the evaluator +
   base-lib), reusing the existing `package-root-image.nix` verity recipe.
-  Implementation is phased: **P1** runs the existing from-source stock C++ Nix
-  (`pkgs/tools/nix.nix`, 2.24.12) as the on-host evaluator; **P2** swaps in
-  `aos-nix` ([RFC-0007](../0007-nix-evaluator/)) behind the same
-  `eval → manifest` seam with no change to the registry format, the module
-  contract, or the generation machinery. The phased checklist lives in
+  The completed **P2** path runs `aos-nix`
+  ([RFC-0007](../0007-nix-evaluator/)) as the in-process on-host evaluator
+  behind the `eval → manifest` seam. The hermetic AOS-built C++ Nix evaluator
+  remains only as the P1 byte-parity oracle; production has no stock-Nix
+  fallback. The completed checklist lives in
   [`implementation-plan.md`](implementation-plan.md).
 - **Date:** 2026-06-25
 - **Audience:** anyone working on `lib/modules.nix`, `lib/types.nix`,
   `lib/modules/systemd/`, `modules/base/{build,apm,apm-registries,networking}.nix`,
-  `modules/base/activate.sh.in`, `modules/services/ignition.nix`,
-  `modules/security/secure-boot.nix`, `crates/aos-package/`, `pkgs/tools/nix.nix`,
+  `modules/base/activate.sh.in`, `modules/services/aos-metadata.nix`,
+  `modules/base/secure-boot.nix`, `crates/aos-package/`, `pkgs/tools/nix.nix`,
   `pkgs/build-support/_expose-renderer.nix`, or release/key operations.
 
 This is a directory RFC. The README carries the status header, the core model,
@@ -27,7 +28,8 @@ the invariants, and the resolved decisions; the topic files hold the detail:
 
 - [`architecture.md`](architecture.md) — the two-stage evaluation model, the
   render/assemble split that keeps "no build on host" honest, the `config`
-  output, the manifest data contract, the evaluator (stock Nix → aos-nix), and
+  output, the manifest data contract, the native evaluator and stock parity
+  oracle, and
   the boot / first-boot bootstrap ordering.
 - [`module-system.md`](module-system.md) — namespacing (per-package roots plus
   "system extension" packages that own shared roots, ownership adjudicated
@@ -56,10 +58,9 @@ the invariants, and the resolved decisions; the topic files hold the detail:
 - [`operability.md`](operability.md) — `apm switch --dry-run` + the off-host CI
   preflight, eval-failure observability, GC of config closures, the
   flat-merge ↔ module-eval parity gate, and the perf budget + test plan.
-- [`test-plan.md`](test-plan.md) — the **characterization-first TDD** strategy:
-  the preserve-vs-change split, the three golden/snapshot artifacts written and
-  green on master *before* implementation (the first code into the PR), the
-  barrier pattern, and the red-first new-subsystem test specs.
+- [`test-plan.md`](test-plan.md) — the structural-contract and behavioral test
+  strategy: focused pure-eval assertions, manifest/materializer parity, fleet
+  lifecycle coverage, and red-first subsystem test specs.
 - [`implementation-plan.md`](implementation-plan.md) — the phased checklist.
 - [`decisions.md`](decisions.md) — the **locked resolutions** of F1/F2/F3 + the
   generations open questions, each with a decision-free mechanism.
@@ -216,27 +217,25 @@ pkgs/*.nix (mkDerivation)                 base lib (in measured image) ─┐
 | D21 | Golden-image boundary | Consumers configure hosts through `host.nix`, not by rebuilding the release image. The image contains boot capabilities, evaluator/runtime mechanisms, bootstrap networking/storage, and initial trust roots. Roles, desired packages, identity, networking, users, services, runtime security and observability policy live in `host.nix`. Mixed profiles are split accordingly. |
 | D15 | Secrets | Referenced by **handle** via an opaque `secretRef` type + an activation-time resolution contract; backend/rotation/distribution **deferred** to the forthcoming secret-management system. |
 
-## Open questions
+## Resolved operational decisions
 
-These do not block the design; they are tuning decisions tracked in the topic
-files.
+The five former open questions are locked in
+[`decisions.md`](decisions.md) and implemented as follows:
 
-1. **Config-gen retention vs image-gen retention.** Config-gens are cheap
-   (`/var`, keep many); image-gens are expensive (ESP ×2 → 2 A/B slots).
-   Re-eval of a config-gen across an ABI boundary needs that image-gen's
-   base-lib retained. Decision: keep ≥1 prior base-lib on `/var` independent of
-   ESP slot count, or accept re-download. See [`generations.md`](generations.md).
-2. **Exact measured locus of `module_abi`.** Confirm the base-lib digest (hence
-   the ABI) is inside the PCR-11-measured UKI section, so "ABI integrity for
-   free" holds. See [`trust-and-secrets.md`](trust-and-secrets.md).
-3. **`stateVersion` vs `module_abi`.** Two adjacent version axes
-   (`aos.system.stateVersion` for state migration vs `module_abi` for option
-   schema). Decide whether they collapse or stay orthogonal.
-4. **Auto-reboot orchestration** for combined image+config upgrades — a
-   reboot-spanning two-phase transaction vs a first-boot re-eval service (the
-   latter is simpler and matches today's first-boot ignition rendering).
-5. **host.nix revision pinning per config-gen**, so re-eval after an image
-   rollback reproduces the config-gen's intended `host.nix`, not fork HEAD.
+1. **Config-gen retention vs image-gen retention.** A dedicated base-lib GC
+   root keeps at least one prior ABI closure on `/var`, independently of the two
+   ESP A/B slots. Cross-ABI re-evaluation never relies on re-downloading it.
+2. **Exact measured locus of `module_abi`.** `AOS_MODULE_ABI` and the base-lib
+   digest are in the PCR-11-measured UKI `.osrel`; the dm-verity root hash in
+   the measured `.cmdline` binds the actual erofs bytes.
+3. **`stateVersion` vs `module_abi`.** The state-migration and module-schema
+   axes remain orthogonal; neither implies a bump of the other.
+4. **Auto-reboot orchestration.** Image upgrade records pending intent and the
+   idempotent `aos-firstboot-reeval.service` performs post-reboot re-evaluation.
+   There is no reboot-spanning transaction object.
+5. **`host.nix` pinning per config-gen.** Each generation retains the exact
+   content-addressed `host_nix_ref` through its `cfgsrc` GC root, so rollback
+   re-evaluation cannot drift with a mutable source ref.
 
 ## Relationship to other RFCs
 

@@ -4,9 +4,10 @@ This guide is for AOS release maintainers and platform integrators. End users
 should download the published AOS image, customize the host with `host.nix`,
 and install packages with `apm`.
 
-The current runtime `host.nix` activation path is incomplete. Until it can
-activate networking, users, access, and services, the release image must carry
-the policy needed to boot and reach a host.
+Runtime `host.nix` activation evaluates and atomically applies networking,
+users, access, services, packages, and other general host policy. Keep only
+image capabilities, bootstrap reachability, and initial trust roots in the
+release image; put machine-specific policy in authenticated `host.nix`.
 
 ## Create a system variant
 

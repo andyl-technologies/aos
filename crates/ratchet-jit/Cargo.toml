@@ -1,0 +1,30 @@
+[package]
+name = "ratchet-jit"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[features]
+default = []
+# RFC-0007 Candidate-C value-ABI cutover variant (task #12): forwards the
+# one-word carrier to `ratchet-value` and the matching layout descriptor to
+# `ratchet-core`. Enabled together to keep the carrier and layout coherent. The
+# tier-1 JIT emits the two-word ABI + two-word stack maps, so under this variant
+# the JIT is unreachable by construction until S4b (see the cutover plan §6.1);
+# the feature only exists here so JIT-ABI tests can `cfg`-gate on it.
+candidate_c_value = [
+  "ratchet-value/candidate_c_value",
+  "ratchet-core/candidate_c_value",
+]
+
+[dependencies]
+bincode = { workspace = true }
+cranelift-codegen = { workspace = true }
+cranelift-jit = { workspace = true }
+cranelift-module = { workspace = true }
+cranelift-native = { workspace = true }
+ratchet-core = { workspace = true }
+ratchet-value = { workspace = true }
+serde = { workspace = true }
+target-lexicon = { workspace = true }
+thiserror = { workspace = true }

@@ -49,7 +49,6 @@ where
 
 pub(super) fn verify_compare_artifacts(
     verify_plan: &VerifyInvocationPlan,
-    backend: Option<&ResolvedLocalBackend>,
 ) -> Result<VerifyWorkflowReport, CliError> {
     let VerifyMode::CompareArtifacts { left, right } = &verify_plan.mode else {
         return Err(backend_error(
@@ -60,9 +59,7 @@ pub(super) fn verify_compare_artifacts(
     let right_bytes = fs::read(right)?;
     let left_artifact = decode_reproduction_artifact(&left_bytes)?;
     let right_artifact = decode_reproduction_artifact(&right_bytes)?;
-    let expected_identity = expected_replay_identity_for_backend(backend);
-    verify_replay_identity(&left_artifact.identity, &expected_identity)?;
-    verify_replay_identity(&right_artifact.identity, &expected_identity)?;
+    verify_replay_identity(&right_artifact.identity, &left_artifact.identity)?;
     verify_compare_artifact_inputs_match("verify --compare", &left_artifact, &right_artifact)?;
     let witnesses = vec![
         verify_witness_from_artifact(verify_plan.reductions[0].clone(), left_artifact, left_bytes)?,
@@ -112,6 +109,7 @@ pub(super) fn verify_run_invocation_plan(
 ) -> RunInvocationPlan {
     RunInvocationPlan {
         scenario,
+        save_store_root: None,
         request_seed: Some(request_seed),
         terminal_condition: RunTerminalCondition::Quiescence,
         max_virtual_time: None,
@@ -272,6 +270,7 @@ pub(super) fn canonical_run_log_entries(
         artifact_digest: content_address_bytes(b"empty"),
         terminal_savepoint: None,
         savepoint_oracle: None,
+        save_boundary_evidence: None,
         reproduction_artifact: None,
         side_reproduction_artifacts: Vec::new(),
     };
@@ -626,13 +625,10 @@ pub(super) fn localize_verify_divergence(
         mismatch,
         first_different_decision,
         first_different_fingerprint_sample: first_different_sample,
-        first_different_instruction: entry
-            .map(|entry| entry.virtual_time_ticks)
-            .or_else(|| sample.map(|sample| sample.instruction))
-            .unwrap_or(first_different_byte as u64),
-        node: entry
-            .map(|entry| entry.node.clone())
-            .or_else(|| sample.map(|sample| sample.node.clone())),
+        first_different_virtual_time: entry.map(|entry| entry.virtual_time_ticks),
+        first_different_virtual_time_node: entry.map(|entry| entry.node.clone()),
+        first_different_instruction: sample.map(|sample| sample.instruction),
+        first_different_instruction_node: sample.map(|sample| sample.node.clone()),
         first_different_byte,
         left_state_digest: verify_witness_state_digest(left),
         right_state_digest: verify_witness_state_digest(right),
@@ -916,7 +912,7 @@ pub(super) async fn run_local_double_workflow_stdin_async(
         |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
     );
     let client = InProcessLifecycleClient::new(control_plane);
-    run_control_client_workflow_stdin_async(&client, run_plan).await
+    run_control_client_workflow_stdin_async(&client, run_plan, false).await
 }
 
 pub(super) fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), CliError> {
@@ -926,7 +922,7 @@ pub(super) fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), Cl
         ));
     }
     validate_serve_invocation(args)?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|error| serve_error(format!("serve runtime error: {error}")))?;
@@ -979,8 +975,11 @@ where
     };
     if args.production_qemu {
         let backend = require_selftest_qemu_backend(cli)?;
-        let config =
-            production_qemu_lifecycle_config(&backend)?.with_debug_gdbstub(None, "127.0.0.1:0");
+        let mut config = production_qemu_lifecycle_config(&backend)?;
+        if let Some(interval) = args.qemu_rendezvous_icount {
+            config = config.with_rendezvous_interval_icount(interval);
+        }
+        let config = config.with_debug_gdbstubs_for_all_nodes("127.0.0.1:0");
         let mut control_plane = LifecycleControlPlane::new_with_fallible_source_factory(
             "crucible-cli-qemu-daemon",
             Vec::new(),
@@ -1116,6 +1115,16 @@ pub(super) fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError
     if args.max_sessions == Some(0) {
         return Err(usage_error("--max-sessions must be greater than zero"));
     }
+    if args.qemu_rendezvous_icount == Some(0) {
+        return Err(usage_error(
+            "--qemu-rendezvous-icount must be greater than zero",
+        ));
+    }
+    if args.qemu_rendezvous_icount.is_some() && !args.production_qemu {
+        return Err(usage_error(
+            "--qemu-rendezvous-icount requires --production-qemu",
+        ));
+    }
     let tls_file_count = [
         args.tls_cert.is_some(),
         args.tls_key.is_some(),
@@ -1197,6 +1206,8 @@ where
         client,
         run_plan,
         InteractiveCommandDriver::Preparsed(interactive_commands),
+        false,
+        false,
     )
     .await
 }
@@ -1223,74 +1234,55 @@ where
     let mut state_updates = Vec::new();
     let mut command_id = 1;
 
-    let boundary = match save_plan.at {
+    let (boundary, breakpoint_firing) = match save_plan.at {
         SaveAtArg::Quiescence => {
-            let before =
-                wait_for_save_workflow_state(client, created.session, LiveStateKind::Paused)
-                    .await?;
-            send_save_workflow_command(
+            let predicate = crucible::Predicate::quiescent();
+            let (boundary, breakpoint_id) = run_save_predicate_to_boundary(
+                client,
+                created.session,
+                BreakpointSpec::suspend_once(predicate.clone()),
+                &mut command_id,
+                &mut acknowledged_commands,
+                &mut state_updates,
+                "paused quiescence save boundary",
+                false,
+            )
+            .await?;
+            let firings = query_save_breakpoint_firings(
                 client,
                 created.session,
                 &mut command_id,
-                SessionCommand::step(StepMode::Quantum),
                 &mut acknowledged_commands,
                 &mut state_updates,
             )
             .await?;
-            wait_for_save_workflow_advanced_paused(
-                client,
-                created.session,
-                &before,
-                "paused quiescence save boundary",
-            )
-            .await?
+            let firing = validate_save_breakpoint_firing(
+                "quiescence",
+                &predicate,
+                breakpoint_id,
+                &boundary,
+                &firings,
+            )?;
+            (boundary, Some(firing))
         }
         SaveAtArg::VirtualTime => {
             let budget = run_plan.max_virtual_time_ticks.ok_or_else(|| {
                 usage_error("save --at virtual-time requires --max-virtual-time <dur>")
             })?;
-            let summary =
-                wait_for_save_workflow_state(client, created.session, LiveStateKind::Paused)
-                    .await?;
-            let boundary = if summary.frontier.ticks < budget {
-                send_save_workflow_command(
-                    client,
-                    created.session,
-                    &mut command_id,
-                    SessionCommand::step(StepMode::Duration(SimDuration {
-                        nanos: budget.saturating_sub(summary.frontier.ticks),
-                    })),
-                    &mut acknowledged_commands,
-                    &mut state_updates,
-                )
-                .await?;
-                let max_attempts = RUN_INTERACTIVE_ACK_QUANTA_BOUND
-                    .saturating_add(budget.saturating_sub(summary.frontier.ticks));
-                wait_for_save_workflow_summary(
-                    client,
-                    created.session,
-                    |candidate| {
-                        candidate.state == LiveStateKind::Paused
-                            && candidate.frontier.ticks >= budget
-                            && candidate.quanta_stepped > summary.quanta_stepped
-                    },
-                    "paused requested virtual-time save boundary",
-                    max_attempts,
-                )
-                .await?
-            } else {
-                summary
-            };
-            if boundary.frontier.ticks != budget {
-                return Err(CliError::Identity(format!(
-                    "save virtual-time boundary reached {}, expected {}",
-                    boundary.frontier.ticks, budget
-                )));
-            }
-            boundary
+            let boundary = drive_save_to_virtual_time_boundary(
+                client,
+                created.session,
+                budget,
+                &mut command_id,
+                &mut acknowledged_commands,
+                &mut state_updates,
+                "",
+            )
+            .await?;
+            (boundary, None)
         }
         SaveAtArg::Property | SaveAtArg::Marker => {
-            run_save_selector_to_boundary(
+            let (boundary, firing) = run_save_selector_to_boundary(
                 client,
                 created.session,
                 save_plan,
@@ -1298,7 +1290,8 @@ where
                 &mut acknowledged_commands,
                 &mut state_updates,
             )
-            .await?
+            .await?;
+            (boundary, Some(firing))
         }
     };
 
@@ -1424,5 +1417,12 @@ where
             watch_statuses: Vec::new(),
         },
         oracle,
+        boundary_evidence: SaveBoundaryEvidence {
+            at: save_plan.at,
+            selector: save_plan.selector.clone(),
+            frontier_ticks: boundary.frontier.ticks,
+            quanta: boundary.quanta_stepped,
+            breakpoint_firing,
+        },
     })
 }

@@ -802,6 +802,8 @@ impl TemporalGraph {
             causal_event_log_before,
             causal_event_log_after,
             event_log_with_fork_marker,
+            guest_introspection_features: None,
+            guest_introspection_activation_failure: None,
         })
     }
 
@@ -977,12 +979,15 @@ impl TemporalGraph {
             current_configuration: request.current.id(),
             target_coordinate: request.target.clone(),
             target_configuration: target.id(),
+            landed_virtual_time: configuration_virtual_time(&target),
+            landed_schedule_prefix_len: target.schedule.len(),
             restore_configuration: restore.id(),
             restore_checkpoint,
             replay_suffix_decisions: replay_suffix.len(),
             runtime,
             target_checkpoint: target_checkpoint.id,
             replay_oracle,
+            live_reposition: None,
         })
     }
 
@@ -1003,13 +1008,18 @@ impl TemporalGraph {
         request: &DebugReverseStepRequest,
     ) -> Result<DebugReverseStepReport, EngineError> {
         let target = debug_reverse_step_target(request)?;
-        let goto = self.debug_goto(
-            attach,
-            &DebugGotoRequest::at_configuration(
+        let goto_request = match target.event_sequence {
+            Some(sequence) => DebugGotoRequest::new(
+                request.current.clone(),
+                DebugCoordinate::EventSequence(sequence),
+            )
+            .with_event_coordinate(sequence, target.configuration.clone()),
+            None => DebugGotoRequest::at_configuration(
                 request.current.clone(),
                 target.configuration.clone(),
             ),
-        )?;
+        };
+        let goto = self.debug_goto(attach, &goto_request)?;
         Ok(DebugReverseStepReport {
             grain: request.grain,
             target_event_sequence: target.event_sequence,
@@ -1086,7 +1096,11 @@ impl TemporalGraph {
                     })?;
                 let goto = self.debug_goto(
                     attach,
-                    &DebugGotoRequest::at_configuration(request.current.clone(), target.clone()),
+                    &DebugGotoRequest::new(
+                        request.current.clone(),
+                        DebugCoordinate::EventSequence(entry.sequence()),
+                    )
+                    .with_event_coordinate(entry.sequence(), target.clone()),
                 )?;
                 return Ok(DebugReverseContinueReport {
                     condition: request.condition.clone(),

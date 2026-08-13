@@ -2,7 +2,8 @@
 
 AOS keeps the base system immutable and puts durable runtime state under
 `/var`. Routine operations therefore center on systemd, the journal, APM
-profiles, the active sysroot generation, and first-boot provisioning evidence.
+profiles, the active image and configuration generations, and first-boot
+provisioning evidence.
 
 ## Establish a baseline
 
@@ -19,6 +20,7 @@ findmnt /var
 lsblk -o NAME,SIZE,FSTYPE,PARTLABEL,MOUNTPOINTS
 networkctl list
 apm rollback --system --list
+apm rollback --system --image --list
 apm list --installed --system
 cat /var/lib/aos-provisioning/audit.json
 ```
@@ -98,12 +100,14 @@ du -x -h -d 2 /var | sort -h
 journalctl --disk-usage
 ```
 
-Do not delete APM profile directories or generation links by hand. User-profile
-cleanup is available through `apm clean --generations`; supported pruning for
-system-package and sysroot generations is not implemented. Reimage or follow a
-tested recovery procedure when those stores become the dominant consumer.
+Do not delete APM profile directories or generation links by hand. Use
+`apm clean --generations --keep N` for the invoking user's package generations,
+or add `--system` to prune both machine-wide package and configuration
+generations. The current generation is retained even when it falls outside the
+latest-`N` window. Follow with `apm gc` to reclaim released config output and
+input roots. A/B image-generation pruning is not implemented.
 
-## Operate packages and system generations
+## Operate packages, images, and configuration generations
 
 Preview package changes:
 
@@ -113,10 +117,10 @@ apm list --upgradable --system
 apm upgrade --system --dry-run
 ```
 
-The unqualified `apm upgrade --system` is production-safe only for a sysroot
-whose kernel and UKI are unchanged. Durable boot-artifact replacement is not
-complete. Use the [upgrade guide](upgrades.md) for activation status and
-rollback semantics.
+`apm upgrade --system` stages an authenticated image in the inactive A/B root
+slot and publishes its counted UKI as the next-boot default. It does not replace
+the running root. Use the [upgrade guide](upgrades.md) for boot assessment,
+image rollback, configuration rebind, and activation semantics.
 
 `apm upgrade --system` is specifically the OS-sysroot operation. It is not a
 machine-wide runtime-package upgrade. The current desired-package reconciler
@@ -158,7 +162,7 @@ The module does not currently install a working thermal-check timer.
 Before changing a host:
 
 1. verify console or out-of-band access;
-2. record image, sysroot, and package generations;
+2. record image, configuration, and package generations;
 3. record provisioning and registry state;
 4. confirm `/var` capacity and application backups;
 5. run dry-run package or system selection;

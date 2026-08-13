@@ -2,12 +2,31 @@
 
 use super::*;
 
+#[path = "engine/guest_introspection.rs"]
+mod guest_introspection;
 #[path = "engine/terminal.rs"]
 mod terminal;
 
 use terminal::*;
 
 const GUEST_RESPONSE_BROKER_CAPACITY: usize = 64;
+// A forked production guest may still be cold-booting when activation begins.
+// Keep negotiation bounded while allowing the portable TCG fixtures enough
+// scheduler turns to reach their blocking activation reader.
+const GUEST_ACTIVATION_QUANTUM_LIMIT: u64 = 1024;
+
+struct PendingGuestActivation {
+    node: NodeId,
+    started_quanta: u64,
+    report: DebugNonCanonicalBranchReport,
+    reply: CommandReply<DebugNonCanonicalBranchReport>,
+}
+
+impl PendingGuestActivation {
+    fn record_guest_activation_failure(&mut self, reason: String) {
+        self.report.guest_introspection_activation_failure = Some(reason);
+    }
+}
 
 /// Host-side engine state machine owned by the session actor.
 ///
@@ -37,8 +56,12 @@ pub struct Engine<L> {
     pub(super) debug_attach: Option<DebugAttachReport>,
     pub(super) debug_coordinator: DebugCoordinator,
     pub(super) debug_branch_required: bool,
+    pub(super) debug_event_cursor: Option<u64>,
     pub(super) guest_responses: BTreeMap<(NodeId, u64), VecDeque<GuestIntrospectionRecord>>,
     pub(super) guest_channels: BTreeSet<(NodeId, u64)>,
+    pub(super) guest_features: BTreeMap<NodeId, GuestIntrospectionFeatures>,
+    pending_guest_activation: Option<PendingGuestActivation>,
+    guest_channel_run_active: bool,
     pub(super) next_control_sequence: u64,
     pub(super) boundary_control_log: Vec<SessionControlLogEntry>,
     pub(super) next_boundary_control_sequence: u64,
@@ -72,8 +95,12 @@ impl<L> Engine<L> {
             debug_attach: None,
             debug_coordinator: DebugCoordinator::new(),
             debug_branch_required: false,
+            debug_event_cursor: None,
             guest_responses: BTreeMap::new(),
             guest_channels: BTreeSet::new(),
+            guest_features: BTreeMap::new(),
+            pending_guest_activation: None,
+            guest_channel_run_active: false,
             next_control_sequence: 0,
             boundary_control_log: Vec::new(),
             next_boundary_control_sequence: 0,
@@ -134,8 +161,12 @@ impl<L> Engine<L> {
             debug_attach: None,
             debug_coordinator: DebugCoordinator::new(),
             debug_branch_required: false,
+            debug_event_cursor: None,
             guest_responses: BTreeMap::new(),
             guest_channels: BTreeSet::new(),
+            guest_features: BTreeMap::new(),
+            pending_guest_activation: None,
+            guest_channel_run_active: false,
             next_control_sequence: 0,
             boundary_control_log: Vec::new(),
             next_boundary_control_sequence: 0,
@@ -231,6 +262,12 @@ impl<L> Engine<L> {
     #[must_use]
     pub const fn debug_branch_required(&self) -> bool {
         self.debug_branch_required
+    }
+
+    /// Returns the exact event-log cursor established by a debugger reposition.
+    #[must_use]
+    pub const fn debug_event_cursor(&self) -> Option<u64> {
+        self.debug_event_cursor
     }
 
     /// Returns the number of scheduler quanta driven by this engine.
@@ -495,88 +532,11 @@ impl<L> Engine<L> {
         Ok(())
     }
 
-    fn receive_guest_channel_response(
-        &mut self,
-        node: &NodeId,
-        channel_id: u64,
-    ) -> Result<Option<GuestIntrospectionRecord>, SessionError>
-    where
-        L: QuantumLoop,
-    {
-        let key = (node.clone(), channel_id);
-        if let Some(record) = self
-            .guest_responses
-            .get_mut(&key)
-            .and_then(VecDeque::pop_front)
-        {
-            return Ok(Some(record));
-        }
-        for _ in 0..GUEST_RESPONSE_BROKER_CAPACITY {
-            let Some(record) = self
-                .quantum_loop
-                .receive_guest_introspection(node.clone())?
-            else {
-                return Ok(None);
-            };
-            record.validate_guest_response().map_err(|error| {
-                SchedulerError::BoundaryViolation {
-                    message: format!("invalid guest-introspection response: {error}"),
-                }
-            })?;
-            let record_key = (node.clone(), record.channel_id());
-            let terminal = matches!(
-                record.message(),
-                GuestIntrospectionMessage::Exit { .. } | GuestIntrospectionMessage::Error { .. }
-            );
-            if terminal {
-                self.guest_channels.remove(&record_key);
-            }
-            if record_key == key {
-                return Ok(Some(record));
-            }
-            let buffered = self
-                .guest_responses
-                .values()
-                .map(VecDeque::len)
-                .sum::<usize>();
-            if buffered >= GUEST_RESPONSE_BROKER_CAPACITY {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: String::from("guest-introspection response broker is full"),
-                }
-                .into());
-            }
-            self.guest_responses
-                .entry(record_key)
-                .or_default()
-                .push_back(record);
-        }
-        Ok(None)
-    }
-
-    pub(super) fn close_guest_channels_for_reposition(&mut self) {
-        self.guest_responses.clear();
-        for (node, channel_id) in std::mem::take(&mut self.guest_channels) {
-            let record = GuestIntrospectionRecord::new(
-                channel_id,
-                GuestIntrospectionMessage::Error {
-                    code: GuestIntrospectionFailureCode::ClosedChannel,
-                    message: String::from("debug runtime reposition closed the guest channel"),
-                },
-            );
-            if let Ok(record) = record {
-                self.guest_responses
-                    .entry((node, channel_id))
-                    .or_default()
-                    .push_back(record);
-            }
-        }
-    }
-
     fn reposition_debug_runtime(
         &mut self,
         previous_attach: &DebugAttachReport,
         mut candidate_graph: TemporalGraph,
-        goto: &DebugGotoReport,
+        goto: &mut DebugGotoReport,
     ) -> Result<DebugAttachReport, SessionError>
     where
         L: QuantumLoop,
@@ -613,7 +573,16 @@ impl<L> Engine<L> {
         )?;
         reposition.target_runtime = self
             .quantum_loop
-            .resolve_debug_runtime_evidence(&reposition.target_runtime)?;
+            .resolve_debug_coordinate_runtime_evidence(
+                &goto.target_coordinate,
+                &reposition.target_runtime,
+            )?;
+        let landed_frontier = self.quantum_loop.resolve_debug_coordinate_frontier(
+            &goto.target_coordinate,
+            &reposition.target_runtime,
+            frontier,
+        )?;
+        goto.landed_virtual_time = landed_frontier;
         let attach_request = DebugAttachRequest {
             configuration: configuration.clone(),
             node: previous_attach.gdbstub.node.clone(),
@@ -622,6 +591,7 @@ impl<L> Engine<L> {
         };
         let mut refreshed = candidate_graph.debug_attach(&attach_request)?;
         let previous_coordinator_state = self.debug_coordinator.state().clone();
+        let guest_run_suspended = self.suspend_guest_channel_run_for_reposition()?;
         self.debug_coordinator
             .begin_reposition(reposition.target.id());
         let evidence = match self
@@ -632,6 +602,15 @@ impl<L> Engine<L> {
             Err(error) => {
                 self.debug_coordinator
                     .restore_state(previous_coordinator_state);
+                if let Err(resume_error) =
+                    self.resume_guest_channel_run_after_failed_reposition(guest_run_suspended)
+                {
+                    self.close_guest_channels_for_reposition()?;
+                    self.debug_coordinator.failed(format!(
+                        "runtime replacement failed: {error}; guest scheduler ownership restoration also failed: {resume_error}"
+                    ));
+                    return Err(resume_error);
+                }
                 return Err(error.into());
             }
         };
@@ -639,6 +618,12 @@ impl<L> Engine<L> {
             self.debug_coordinator.failed(String::from(
                 "runtime replacement returned mismatched committed-backend evidence",
             ));
+            if guest_run_suspended
+                || !self.guest_channels.is_empty()
+                || self.pending_guest_activation.is_some()
+            {
+                self.close_guest_channels_for_reposition()?;
+            }
             return Err(SessionError::DebugRuntimeRepositionMismatch(Box::new(
                 DebugRuntimeRepositionEvidenceMismatch {
                     expected_node: reposition.node,
@@ -656,13 +641,22 @@ impl<L> Engine<L> {
             )));
         }
 
-        refreshed.gdbstub.qemu_endpoint = evidence.qemu_gdbstub;
+        if let Err(error) = self.close_guest_channels_for_reposition() {
+            self.debug_coordinator.failed(format!(
+                "runtime replacement committed but guest-channel closure failed: {error}"
+            ));
+            return Err(error);
+        }
+
+        refreshed.gdbstub.qemu_endpoint = evidence.qemu_gdbstub.clone();
+        goto.runtime.runtime = reposition.target_runtime.clone();
+        goto.live_reposition = Some(evidence);
 
         self.graph = candidate_graph;
         self.configuration = configuration.clone();
         self.runtime = Some(reposition.target_runtime.clone());
         self.runtime_instantiated = true;
-        self.frontier = frontier;
+        self.frontier = landed_frontier;
         self.event_log_len = u64_to_usize(reposition.target_runtime.event_log.events);
         self.active_step = None;
         if matches!(self.state, EngineState::Running) {
@@ -671,7 +665,10 @@ impl<L> Engine<L> {
             };
         }
         self.debug_branch_required = true;
-        self.close_guest_channels_for_reposition();
+        self.debug_event_cursor = match &goto.target_coordinate {
+            DebugCoordinate::EventSequence(sequence) => Some(*sequence),
+            _ => None,
+        };
         self.debug_attach = Some(refreshed.clone());
         self.debug_coordinator
             .repositioned_canonical(configuration.id());
@@ -750,6 +747,7 @@ impl<L> Engine<L> {
     where
         L: QuantumLoop,
     {
+        self.resolve_guest_introspection_for_terminal();
         let entries = self.quantum_loop.shutdown()?;
         self.append_boundary_event_log_entries(entries)
     }
@@ -1657,9 +1655,9 @@ impl<L: QuantumLoop> Engine<L> {
                 EngineState::Running | EngineState::Paused { .. } => {
                     let attach = self.current_debug_attach("debug-goto")?;
                     let mut candidate_graph = self.graph.clone();
-                    let report = candidate_graph.debug_goto(&attach, request)?;
+                    let mut report = candidate_graph.debug_goto(&attach, request)?;
                     let _refreshed =
-                        self.reposition_debug_runtime(&attach, candidate_graph, &report)?;
+                        self.reposition_debug_runtime(&attach, candidate_graph, &mut report)?;
                     reply.complete(Ok(report));
                     Ok(self.snapshot())
                 }
@@ -1671,9 +1669,9 @@ impl<L: QuantumLoop> Engine<L> {
                 EngineState::Running | EngineState::Paused { .. } => {
                     let attach = self.current_debug_attach("debug-reverse-step")?;
                     let mut candidate_graph = self.graph.clone();
-                    let report = candidate_graph.debug_reverse_step(&attach, request)?;
+                    let mut report = candidate_graph.debug_reverse_step(&attach, request)?;
                     let _refreshed =
-                        self.reposition_debug_runtime(&attach, candidate_graph, &report.goto)?;
+                        self.reposition_debug_runtime(&attach, candidate_graph, &mut report.goto)?;
                     reply.complete(Ok(report));
                     Ok(self.snapshot())
                 }
@@ -1685,10 +1683,13 @@ impl<L: QuantumLoop> Engine<L> {
                 EngineState::Running | EngineState::Paused { .. } => {
                     let attach = self.current_debug_attach("debug-reverse-continue")?;
                     let mut candidate_graph = self.graph.clone();
-                    let report = candidate_graph.debug_reverse_continue(&attach, request)?;
-                    if let Some(matched) = report.matched.as_ref() {
-                        let _refreshed =
-                            self.reposition_debug_runtime(&attach, candidate_graph, &matched.goto)?;
+                    let mut report = candidate_graph.debug_reverse_continue(&attach, request)?;
+                    if let Some(matched) = report.matched.as_mut() {
+                        let _refreshed = self.reposition_debug_runtime(
+                            &attach,
+                            candidate_graph,
+                            &mut matched.goto,
+                        )?;
                     } else if matches!(self.state, EngineState::Running) {
                         self.graph = candidate_graph;
                         self.active_step = None;
@@ -1709,26 +1710,48 @@ impl<L: QuantumLoop> Engine<L> {
                 EngineState::Running | EngineState::Paused { .. } => {
                     self.validate_event_log_prefix(event_log)?;
                     let attach = self.current_debug_attach("debug-fork-non-canonical")?;
-                    let report = self
-                        .graph
-                        .debug_non_canonical_branch(&attach, request, event_log)?;
+                    let introspection_node =
+                        request.actions.first().and_then(|action| match action {
+                            DebugNonCanonicalBranchAction::GuestIntrospection { node } => {
+                                Some(node.clone())
+                            }
+                            _ => None,
+                        });
+                    if let Some(node) = introspection_node.as_ref()
+                        && self.white_box_policies.get(node) != Some(&WhiteBoxPolicy::Enabled)
+                    {
+                        return Err(SessionError::GuestIntrospectionNotAuthorized {
+                            node: node.name.clone(),
+                        });
+                    }
+                    let mut candidate_graph = self.graph.clone();
+                    let report =
+                        candidate_graph.debug_non_canonical_branch(&attach, request, event_log)?;
                     let entries = report
                         .event_log_with_fork_marker
                         .iter()
                         .skip(event_log.len())
                         .cloned()
                         .collect::<Vec<_>>();
+                    let entries = self
+                        .quantum_loop
+                        .append_noncanonical_debug_event_log_entries(entries)?;
                     self.append_boundary_event_log_entries(entries)?;
+                    self.graph = candidate_graph;
                     self.debug_branch_required = false;
                     self.debug_coordinator
                         .forked_non_canonical(self.configuration.id());
-                    if matches!(self.state, EngineState::Running) {
+                    if let Some(node) = introspection_node {
+                        self.begin_debug_guest_activation(node, report, reply.clone());
+                    } else if matches!(self.state, EngineState::Running) {
                         self.active_step = None;
                         self.state = EngineState::Paused {
                             reason: PauseReason::UserRequested,
                         };
+                        reply.complete(Ok(report));
+                    } else {
+                        reply.complete(Ok(report));
                     }
-                    reply.complete(Ok(report));
                     Ok(self.snapshot())
                 }
                 EngineState::Loaded | EngineState::Stopped { .. } => {
@@ -1742,69 +1765,11 @@ impl<L: QuantumLoop> Engine<L> {
                 reply,
             } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
-                    if !matches!(
-                        self.debug_coordinator.state(),
-                        DebugCoordinatorState::NonCanonical { .. }
-                    ) {
-                        if request.is_none()
-                            && let Some(record) = self
-                                .guest_responses
-                                .get_mut(&(node.clone(), *channel_id))
-                                .and_then(VecDeque::pop_front)
-                        {
-                            reply.complete(Ok(Some(record)));
-                            return Ok(self.snapshot());
-                        }
-                        return Err(SessionError::DebugNonCanonicalBranchRequired {
-                            operation: "guest-introspection",
-                        });
-                    }
-                    if self.white_box_policies.get(node) != Some(&WhiteBoxPolicy::Enabled) {
-                        return Err(SessionError::GuestIntrospectionNotAuthorized {
-                            node: node.name.clone(),
-                        });
-                    }
-                    let response = if let Some(record) = request {
-                        if record.channel_id() != *channel_id {
-                            return Err(SchedulerError::BoundaryViolation {
-                                message: String::from(
-                                    "guest-introspection request channel does not match envelope",
-                                ),
-                            }
-                            .into());
-                        }
-                        record.validate_host_request().map_err(|error| {
-                            SchedulerError::BoundaryViolation {
-                                message: format!("invalid guest-introspection request: {error}"),
-                            }
-                        })?;
-                        self.quantum_loop
-                            .send_guest_introspection(node.clone(), record.clone())?;
-                        match record.message() {
-                            GuestIntrospectionMessage::Exec { .. }
-                            | GuestIntrospectionMessage::Pty { .. }
-                            | GuestIntrospectionMessage::Ssh { .. } => {
-                                self.guest_channels.insert((node.clone(), *channel_id));
-                            }
-                            GuestIntrospectionMessage::Input(_)
-                            | GuestIntrospectionMessage::Resize { .. }
-                            | GuestIntrospectionMessage::Close => {}
-                            GuestIntrospectionMessage::Features(_)
-                            | GuestIntrospectionMessage::Output { .. }
-                            | GuestIntrospectionMessage::Exit { .. }
-                            | GuestIntrospectionMessage::Error { .. } => {
-                                return Err(SchedulerError::BoundaryViolation {
-                                    message: String::from(
-                                        "guest response message passed host-request validation",
-                                    ),
-                                }
-                                .into());
-                            }
-                        }
-                        None
-                    } else {
-                        self.receive_guest_channel_response(node, *channel_id)?
-                    };
+                    let response = self.handle_guest_introspection_command(
+                        node,
+                        *channel_id,
+                        request.as_ref(),
+                    )?;
                     reply.complete(Ok(response));
                     Ok(self.snapshot())
                 }
@@ -1868,18 +1833,26 @@ impl<L: QuantumLoop> Engine<L> {
         } else {
             None
         };
-        let runtime = self.graph.resume(&outcome.configuration)?.runtime;
-        let runtime = self
+        let mut attached_runtime = self.graph.resume(&outcome.configuration)?;
+        attached_runtime.runtime = self
             .quantum_loop
-            .bind_debug_runtime_evidence(&outcome.configuration, &runtime)?;
+            .bind_debug_runtime_evidence(&outcome.configuration, &attached_runtime.runtime)?;
+        let runtime = attached_runtime.runtime.clone();
 
         self.configuration = outcome.configuration.clone();
-        self.runtime = Some(runtime);
+        self.runtime = Some(runtime.clone());
         self.runtime_instantiated = true;
         self.frontier = outcome.frontier;
         self.event_log_len = u64_to_usize(outcome.event_log_offset.events);
         self.scheduler_quiescence = outcome.scheduler_quiescence.clone();
         self.quanta = self.quanta.saturating_add(1);
+        self.debug_event_cursor = None;
+        if let Some(attach) = self.debug_attach.as_mut() {
+            attach.configuration = self.configuration.id();
+            attach.checkpoint = attached_runtime.checkpoint;
+            attach.runtime = attached_runtime;
+            attach.reduced_state = runtime.id;
+        }
         self.pending_event_log_entries
             .extend(outcome.event_log_entries.iter().cloned());
         if let Some((mode, true)) = step_completion {

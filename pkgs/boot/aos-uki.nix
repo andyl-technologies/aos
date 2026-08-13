@@ -47,6 +47,8 @@
   mkDerivation,
   systemd,
   sbsigntools,
+  binutils,
+  openssl,
 }: {
   kernel,
   initrd,
@@ -89,6 +91,11 @@ in
     # sbsigntools (sbsign) is only needed when signing.
     buildDeps =
       [systemd.tools systemd]
+      ++ (
+        if measuring
+        then [binutils openssl]
+        else []
+      )
       ++ (
         if signing
         then [sbsigntools]
@@ -137,6 +144,7 @@ in
           # ${pcrArgs} is empty unless PCR-policy signing is configured, in
           # which case ukify measures the assembled sections and writes a
           # signed PCR policy (.pcrsig/.pcrpkey) for TPM-sealed unlock.
+          uki="$out/aos-${name}-${version}.efi"
           ${systemd.tools}/bin/ukify build \
             --stub=${effectiveStub} \
             --linux="$vmlinuz" \
@@ -145,7 +153,58 @@ in
             --os-release=@${osRelease} \
             ${signArgs} \
             ${pcrArgs} \
-            --output=$out/aos-${name}-${version}.efi
+            --output="$uki"
+
+          ${
+            if measuring
+            then ''
+              # Publish the stable ready-phase PCR-11 prediction beside the
+              # UKI, authenticated by the same key carried in its signed
+              # .pcrpkey section. The sidecar also binds the prediction to the
+              # exact UKI bytes, so it cannot be replayed across slots or
+              # image revisions. Runtime imports this build result; it never
+              # promotes a live TPM reading into catalog authority.
+              mkdir -p pcr11-sections
+              measure_args=""
+              for section in linux osrel cmdline initrd ucode splash dtb uname sbat pcrpkey; do
+                ${binutils}/bin/objcopy -O binary --only-section=.$section \
+                  "$uki" "pcr11-sections/$section" 2>/dev/null || true
+                if [ -s "pcr11-sections/$section" ]; then
+                  measure_args="$measure_args --$section=pcr11-sections/$section"
+                fi
+              done
+              ${systemd}/lib/systemd/systemd-measure calculate \
+                --bank=sha256 $measure_args > pcr11-calculated
+              expected_pcr11=""
+              while IFS= read -r line; do
+                case "$line" in
+                  11:sha256=*) expected_pcr11="''${line#*=}" ;;
+                esac
+              done < pcr11-calculated
+              case "$expected_pcr11" in
+                *[!0-9a-f]*|"")
+                  echo "aos-uki: malformed predicted PCR 11: $expected_pcr11" >&2
+                  exit 1
+                  ;;
+              esac
+              [ "''${#expected_pcr11}" -eq 64 ] || {
+                echo "aos-uki: predicted PCR 11 has the wrong length" >&2
+                exit 1
+              }
+              uki_sha256=$(${openssl}/bin/openssl dgst -sha256 -r "$uki")
+              uki_sha256=''${uki_sha256%% *}
+              measurement="$out/aos-${name}-${version}.efi.measurement"
+              signature="$measurement.sig"
+              printf '%s\n' \
+                'aos.uki-measurement/v1' \
+                "uki_sha256=$uki_sha256" \
+                "expected_pcr11=sha256:$expected_pcr11" \
+                > "$measurement"
+              ${openssl}/bin/openssl dgst -sha256 \
+                -sign ${pcrPrivateKey} -out "$signature" "$measurement"
+            ''
+            else ""
+          }
         '';
       }
     ];

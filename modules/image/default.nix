@@ -104,6 +104,17 @@ in {
         faster level without changing the filesystem or boot semantics.
       '';
     };
+
+    hostConfigClosures = lib.mkOption {
+      type = lib.types.listOf lib.types.package;
+      default = [];
+      internal = true;
+      description = ''
+        Package closures retained in the immutable image for authenticated
+        host configuration to select at runtime. These packages are not added
+        to the generation-zero manifest or the interactive command path.
+      '';
+    };
   };
 
   options.system.build.image = {

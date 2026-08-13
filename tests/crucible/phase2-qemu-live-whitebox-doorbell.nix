@@ -9,7 +9,7 @@
   cargoDeps = pkgs.fetchCargoDeps {
     src = crucibleSrc;
     sourceRoot = "source/crates";
-    hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
+    hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
   };
 
   guest = pkgs.mkDerivation {
@@ -159,14 +159,16 @@
 
           # QEMU's aarch64 virt direct-kernel loader enters a raw image at
           # 0x40080000. The image loads x0/x1 with the frame pointer/length,
-          # executes the frozen hlt #0x04c1 doorbell, then remains live in a
-          # deterministic arithmetic loop.
+          # executes the frozen inert hint #0x4c doorbell twice, proving the
+          # first observation does not prevent later guest execution, then
+          # remains live in a deterministic arithmetic loop.
           dd if=/dev/zero of="$out/whitebox-guest-aarch64.img" \
             bs=65536 count=1 status=none
           printf '%b' \
-            '\300\000\000\130\301\002\200\322\040\230\100\324' \
-            '\102\004\000\221\143\000\002\312\376\377\377\027' \
-            '\040\000\010\100\000\000\000\000' \
+            '\000\001\000\130\301\002\200\322\237\051\003\325' \
+            '\237\051\003\325\102\004\000\221\143\000\002\312' \
+            '\376\377\377\027\037\040\003\325' \
+            '\050\000\010\100\000\000\000\000' \
             '\103\122\102\114\002\000\004\000\012\000\000\000' \
             '\010\000hot-path' \
             | dd of="$out/whitebox-guest-aarch64.img" \
@@ -322,12 +324,82 @@ in
           fi
           grep -Fxq PASS "$aarch64_report"
           grep -Fxq 'whitebox=on' "$aarch64_report"
-          grep -Fxq 'whitebox_setup_region=aarch64-hlt-04c1' "$aarch64_report"
-          grep -Fxq 'whitebox_marker_count=1' "$aarch64_report"
+          grep -Fxq 'whitebox_setup_region=aarch64-hint-4c-inert' "$aarch64_report"
+          grep -Fxq 'whitebox_marker_count=2' "$aarch64_report"
           grep -Fxq 'whitebox_marker_point=hot-path' "$aarch64_report"
           grep -Fxq 'fingerprint=off' "$aarch64_report"
           grep -Fxq 'boot_barrier_ceiling_enforced=true' "$aarch64_report"
           grep -Fxq 'orderly_child_exit=true' "$aarch64_report"
+          aarch64_first_icount=$(sed -n \
+            's/^whitebox_marker_icount=\([0-9][0-9]*\)$/\1/p' "$aarch64_report")
+          aarch64_last_icount=$(sed -n \
+            's/^whitebox_last_marker_icount=\([0-9][0-9]*\)$/\1/p' "$aarch64_report")
+          test -n "$aarch64_first_icount"
+          test "$aarch64_last_icount" -eq "$((aarch64_first_icount + 1))"
+
+          aarch64_repeat_dir="$TMPDIR/live-whitebox-aarch64-repeat"
+          aarch64_repeat_report="$TMPDIR/live-whitebox-aarch64-repeat.result"
+          aarch64_repeat_log="$TMPDIR/live-whitebox-aarch64-repeat.qemu.log"
+          mkdir -p "$aarch64_repeat_dir"
+          cp ${rootImage}/overlay.qcow2 "$aarch64_repeat_dir/crucible-root-overlay.qcow2"
+          chmod u+w "$aarch64_repeat_dir/crucible-root-overlay.qcow2"
+          if ! CRUCIBLE_LIVE_PLUGIN_GUEST_ARCH=aarch64 \
+            CRUCIBLE_LIVE_PLUGIN_WHITEBOX=on \
+            CRUCIBLE_LIVE_PLUGIN_FINGERPRINT=off \
+            timeout -k 15 180 \
+            "$TMPDIR/live-whitebox-target/debug/examples/crucible-qemu-live-plugin-install" \
+            ${pkgs.qemu-crucible}/bin/qemu-system-aarch64 \
+            ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+            ${guest}/whitebox-guest-aarch64.img \
+            ${rootImage}/root.qcow2 \
+            "$aarch64_repeat_dir" \
+            > "$aarch64_repeat_report" 2> "$aarch64_repeat_log"; then
+            cat "$aarch64_repeat_report" >&2
+            cat "$aarch64_repeat_log" >&2
+            exit 1
+          fi
+          grep -Fxq PASS "$aarch64_repeat_report"
+          grep -Fxq 'whitebox_marker_count=2' "$aarch64_repeat_report"
+          repeat_first_icount=$(sed -n \
+            's/^whitebox_marker_icount=\([0-9][0-9]*\)$/\1/p' "$aarch64_repeat_report")
+          repeat_last_icount=$(sed -n \
+            's/^whitebox_last_marker_icount=\([0-9][0-9]*\)$/\1/p' "$aarch64_repeat_report")
+          test "$repeat_first_icount" = "$aarch64_first_icount"
+          test "$repeat_last_icount" = "$aarch64_last_icount"
+
+          aarch64_off_dir="$TMPDIR/live-whitebox-aarch64-off"
+          aarch64_off_report="$TMPDIR/live-whitebox-aarch64-off.result"
+          aarch64_off_log="$TMPDIR/live-whitebox-aarch64-off.qemu.log"
+          mkdir -p "$aarch64_off_dir"
+          cp ${rootImage}/overlay.qcow2 "$aarch64_off_dir/crucible-root-overlay.qcow2"
+          chmod u+w "$aarch64_off_dir/crucible-root-overlay.qcow2"
+          if ! CRUCIBLE_LIVE_PLUGIN_GUEST_ARCH=aarch64 \
+            CRUCIBLE_LIVE_PLUGIN_WHITEBOX=off \
+            CRUCIBLE_LIVE_PLUGIN_FINGERPRINT=off \
+            timeout -k 15 180 \
+            "$TMPDIR/live-whitebox-target/debug/examples/crucible-qemu-live-plugin-install" \
+            ${pkgs.qemu-crucible}/bin/qemu-system-aarch64 \
+            ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+            ${guest}/whitebox-guest-aarch64.img \
+            ${rootImage}/root.qcow2 \
+            "$aarch64_off_dir" \
+            > "$aarch64_off_report" 2> "$aarch64_off_log"; then
+            cat "$aarch64_off_report" >&2
+            cat "$aarch64_off_log" >&2
+            exit 1
+          fi
+          grep -Fxq PASS "$aarch64_off_report"
+          grep -Fxq 'whitebox=off' "$aarch64_off_report"
+          grep -Fxq 'whitebox_setup_region=not-required' "$aarch64_off_report"
+          grep -Fxq 'whitebox_marker_count=0' "$aarch64_off_report"
+          grep -Fxq 'whitebox_marker_icount=not-observed' "$aarch64_off_report"
+          grep -Fxq 'whitebox_last_marker_icount=not-observed' "$aarch64_off_report"
+          grep -Fxq 'boot_barrier_ceiling_enforced=true' "$aarch64_off_report"
+          grep -Fxq 'orderly_child_exit=true' "$aarch64_off_report"
+          if grep -q '^CRUCIBLE_WHITEBOX_' "$aarch64_off_log"; then
+            echo "FAIL: disabled AArch64 HINT triggered white-box callback I/O" >&2
+            exit 1
+          fi
 
           app_random_dir="$TMPDIR/live-whitebox-app-random"
           app_random_report="$TMPDIR/live-whitebox-app-random.result"
@@ -438,6 +510,8 @@ in
           cp "$TMPDIR/live-whitebox-on.qemu.log" "$out/qemu-on.log"
           cp "$aarch64_report" "$out/install-aarch64-result"
           cp "$aarch64_log" "$out/qemu-aarch64.log"
+          cp "$aarch64_repeat_report" "$out/install-aarch64-repeat-result"
+          cp "$aarch64_repeat_log" "$out/qemu-aarch64-repeat.log"
           cp "$app_random_report" "$out/app-random-result"
           cp "$app_random_log" "$out/qemu-app-random.log"
           cp "$app_random_branch_report" "$out/app-random-branch-result"
@@ -475,8 +549,12 @@ in
             printf 'on_fingerprint=%s\n' "$on_fingerprint"
             printf 'off_on_fingerprint_equal=true\n'
             printf 'production_whitebox_channel_implemented=x86_64,aarch64\n'
-            printf 'aarch64_setup_attestation=aarch64-hlt-04c1-unclaimed-v1\n'
-            printf 'aarch64_doorbell_instruction=hlt-0x04c1\n'
+            printf 'aarch64_setup_attestation=aarch64-hint-4c-inert-v1\n'
+            printf 'aarch64_doorbell_instruction=hint-0x4c\n'
+            printf 'aarch64_repeated_doorbells=2\n'
+            printf 'aarch64_adjacent_marker_icounts=true\n'
+            printf 'aarch64_marker_icounts_reproducible=true\n'
+            printf 'aarch64_whitebox_off_inert=true\n'
             printf 'aarch64_payload_registers=x0,x1\n'
             printf 'aarch64_live_marker_observed=true\n'
             printf 'aarch64_boot_barrier_ceiling_enforced=true\n'

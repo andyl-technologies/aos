@@ -1,0 +1,146 @@
+{
+  "schema": "aos.config-manifest/v1",
+  "etc": {
+    "example.conf": {
+      "kind": "text",
+      "text": "enabled=true\n",
+      "mode": "0644"
+    }
+  },
+  "units": {
+    "example.service": {
+      "action": "restart",
+      "credentials": ["join-token"],
+      "enable": true
+    }
+  },
+  "jobScripts": {
+    "example.service:ExecStart.0": {
+      "text": "#!/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-bash/bin/bash\nexec example\n",
+      "mode": "0755",
+      "name": "example-start"
+    }
+  },
+  "users": [
+    {
+      "name": "example",
+      "uid": 991,
+      "group": "example",
+      "gid": 991,
+      "home": "/var/lib/example",
+      "shell": "/sbin/nologin",
+      "system": true,
+      "description": "Example service",
+      "supplementaryGroups": []
+    }
+  ],
+  "presets": [
+    {
+      "unit": "example.service",
+      "policy": "enable",
+      "source": "example"
+    }
+  ],
+  "storePaths": [
+    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example",
+    "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-bash"
+  ],
+  "module_abi": 1,
+  "inputs": {
+    "base_lib": {
+      "store_path": "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-aos-base-lib",
+      "abi_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "module_abi": 1
+    },
+    "evaluator": {
+      "store_path": "/nix/store/cccccccccccccccccccccccccccccccc-aom-evaluator",
+      "store_hash": "sha256:2222222222222222222222222222222222222222"
+    },
+    "config_modules": {
+      "closure_hash": "sha256:8e49596363c8cbdce372824657aa402047793ff52ea76dd3eb3c7c7295cf2889",
+      "count": 1,
+      "store_paths": [
+        "/nix/store/dddddddddddddddddddddddddddddddd-example-config"
+      ],
+      "nar_hashes": [
+        "sha256:0000000000000000000000000000000000000000000000000000"
+      ],
+      "package_names": [
+        "example"
+      ],
+      "module_abi_compat": [
+        {
+          "min": 1,
+          "max": 1
+        }
+      ],
+      "authorizations": [
+        {
+          "owns": [],
+          "contributes": {}
+        }
+      ]
+    },
+    "host_nix": {
+      "content_hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "trust_mode": "platform",
+      "platform": "fixture",
+      "signer_key": null,
+      "store_path": "/nix/store/gggggggggggggggggggggggggggggggg-host.nix"
+    },
+    "instance_facts": {
+      "facts_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "platform": "fixture",
+      "store_path": "/nix/store/ffffffffffffffffffffffffffffffff-facts.json"
+    }
+  },
+  "packages": ["example"],
+  "packageOutputs": {
+    "example": {
+      "version": "1",
+      "platform": "fixture",
+      "registry": "fixture",
+      "store_path": "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example",
+      "closure": [
+        {
+          "store_path_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "store_path": "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example",
+          "realisations": [
+            {
+              "nar_hash": "sha256:fixture",
+              "nar_size": 1
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "graph": {
+    "edges": {
+      "example": []
+    }
+  },
+  "config": {},
+  "credentials": {},
+  "ownership": {
+    "etc": {
+      "example.conf": "example"
+    },
+    "units": {
+      "example.service": "example"
+    },
+    "jobScripts": {
+      "example.service:ExecStart.0": "example"
+    },
+    "users": {
+      "example": "example"
+    },
+    "presets": {
+      "example.service:example": "example"
+    },
+    "storePaths": {
+      "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example": "example",
+      "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-bash": "@base"
+    }
+  }
+}

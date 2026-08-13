@@ -201,8 +201,13 @@ pub struct MacIface {
 #[serde(default)]
 pub struct StaticNetwork {
     /// MAC address used in the networkd `[Match]` section. Empty ⇒ match the
-    /// first managed link.
+    /// explicitly named interface instead.
     pub mac: Option<String>,
+    /// Kernel interface name used when the platform does not report a MAC.
+    ///
+    /// A seed without either `mac` or `interface_name` is rejected rather than
+    /// producing an unqualified networkd match-all unit.
+    pub interface_name: Option<String>,
     /// `Address=` entries in CIDR form (`203.0.113.10/24`).
     pub addresses: Vec<String>,
     /// Default gateway, rendered as `Gateway=`.
@@ -212,9 +217,30 @@ pub struct StaticNetwork {
 }
 
 impl StaticNetwork {
-    /// Whether this config carries enough to seed a route (at least one
-    /// address).
+    /// Whether this config carries an address and a deterministic link match.
     pub fn is_seedable(&self) -> bool {
-        !self.addresses.is_empty()
+        let has_selector = self.mac.as_deref().is_some_and(is_canonical_mac)
+            || self
+                .interface_name
+                .as_deref()
+                .is_some_and(is_exact_interface_name);
+        !self.addresses.is_empty() && has_selector
     }
+}
+
+pub(super) fn is_canonical_mac(value: &str) -> bool {
+    let mut octets = value.split(':');
+    let valid = octets
+        .by_ref()
+        .take(6)
+        .all(|octet| octet.len() == 2 && octet.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    valid && octets.next().is_none() && value.matches(':').count() == 5
+}
+
+pub(super) fn is_exact_interface_name(value: &str) -> bool {
+    !value.is_empty()
+        && value == value.trim()
+        && !value
+            .chars()
+            .any(|character| character.is_control() || matches!(character, '*' | '?' | '[' | '\\'))
 }

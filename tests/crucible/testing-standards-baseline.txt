@@ -5,7 +5,6 @@
 # package<TAB>test target<TAB>pattern<TAB>count
 crucible-api	src/debug_gateway	std::thread::sleep	1
 crucible-api	src/debug_gateway	thread::sleep	1
-crucible-api	tests/gate_lifecycle_unary	retry	1
 crucible-cli	tests/serve_process	thread::sleep	1
 crucible-debug-gateway	tests/process_lifecycle	thread::sleep	1
 crucible-guest	src/guest_introspection_agent	retry	1

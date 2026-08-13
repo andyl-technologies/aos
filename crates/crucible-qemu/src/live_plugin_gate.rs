@@ -84,6 +84,7 @@ pub struct LivePluginInstallGateConfig {
     kernel_cmdline: Option<String>,
     root_image_format: crate::QemuRootImageFormat,
     architecture: crate::LivePluginGuestArchitecture,
+    doorbell_instruction_abi_version: u16,
     whitebox: crate::QemuLaunchPluginSwitch,
     app_random: Option<QemuLaunchAppRandomConfig>,
     fingerprint: crate::QemuLaunchPluginSwitch,
@@ -112,6 +113,8 @@ impl LivePluginInstallGateConfig {
             kernel_cmdline: None,
             root_image_format: crate::QemuRootImageFormat::Qcow2,
             architecture,
+            doorbell_instruction_abi_version:
+                crucible_protocol::WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION,
             whitebox: crate::QemuLaunchPluginSwitch::Off,
             app_random: None,
             fingerprint: crate::QemuLaunchPluginSwitch::Off,
@@ -149,6 +152,13 @@ impl LivePluginInstallGateConfig {
     #[must_use]
     pub const fn with_whitebox(mut self, whitebox: crate::QemuLaunchPluginSwitch) -> Self {
         self.whitebox = whitebox;
+        self
+    }
+
+    /// Returns this configuration with the retained guest's doorbell instruction ABI.
+    #[must_use]
+    pub const fn with_doorbell_instruction_abi_version(mut self, version: u16) -> Self {
+        self.doorbell_instruction_abi_version = version;
         self
     }
 
@@ -220,6 +230,8 @@ pub struct LivePluginInstallReport {
     pub whitebox_marker_count: usize,
     /// Exact icount of the first admitted guest coverage marker, when present.
     pub whitebox_marker_icount: Option<u64>,
+    /// Exact icount of the last admitted guest coverage marker, when present.
+    pub whitebox_last_marker_icount: Option<u64>,
     /// Semantic point of the first admitted guest coverage marker, when present.
     pub whitebox_marker_point: Option<String>,
     /// Number of live app-random decisions validated against the host recorder.
@@ -295,7 +307,9 @@ pub fn run_live_plugin_install_gate(
             crate::LivePluginGuestArchitecture::X86_64 => {
                 probe_x86_whitebox_setup(&probe_command, run_directory)
             }
-            crate::LivePluginGuestArchitecture::Aarch64 => validate_aarch64_whitebox_setup(&[]),
+            crate::LivePluginGuestArchitecture::Aarch64 => {
+                validate_aarch64_whitebox_setup(config.doorbell_instruction_abi_version)
+            }
         }
         .map_err(|source| LivePluginInstallGateError::WhiteboxSetup { source })?;
         let region = validation.observed_region().to_owned();
@@ -386,19 +400,17 @@ pub fn run_live_plugin_install_gate(
         .append_observable_events(observations)
         .map_err(|source| LivePluginInstallGateError::EventLog { source })?;
     let coverage_projection = event_log_coverage_projection(&append.entries);
-    let mut whitebox_markers =
-        coverage_projection
-            .entries()
-            .iter()
-            .filter_map(|entry| match &entry.observation {
-                EventLogCoverageObservation::Named { marker, .. } => {
-                    Some((entry.at.icount.retired, marker.name.clone()))
-                }
-                EventLogCoverageObservation::BasicBlock { .. } => None,
-            });
-    let first_whitebox_marker = whitebox_markers.next();
-    let whitebox_marker_count =
-        usize::from(first_whitebox_marker.is_some()) + whitebox_markers.count();
+    let mut whitebox_marker_count = 0;
+    let mut first_whitebox_marker = None;
+    let mut whitebox_last_marker_icount = None;
+    for entry in coverage_projection.entries() {
+        if let EventLogCoverageObservation::Named { marker, .. } = &entry.observation {
+            whitebox_marker_count += 1;
+            first_whitebox_marker
+                .get_or_insert_with(|| (entry.at.icount.retired, marker.name.clone()));
+            whitebox_last_marker_icount = Some(entry.at.icount.retired);
+        }
+    }
     let (whitebox_marker_icount, whitebox_marker_point) =
         first_whitebox_marker.map_or((None, None), |(icount, point)| (Some(icount), Some(point)));
 
@@ -435,6 +447,7 @@ pub fn run_live_plugin_install_gate(
         whitebox_setup_region,
         whitebox_marker_count,
         whitebox_marker_icount,
+        whitebox_last_marker_icount,
         whitebox_marker_point,
         app_random_decision_count: app_random_evidence.count,
         app_random_request_id: app_random_evidence.request_id,

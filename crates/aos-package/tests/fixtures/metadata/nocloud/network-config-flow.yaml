@@ -1,0 +1,10 @@
+network:
+  version: 2
+  ethernets:
+    zz-dhcp:
+      dhcp4: true
+    ens3:
+      addresses: ["192.0.2.22/24", "2001:db8::22/64"]
+      match: {macaddress: "52:54:00:12:34:56"}
+      nameservers: {addresses: ["1.1.1.1", "2606:4700:4700::1111"]}
+      routes: [{to: default, via: "192.0.2.1"}]

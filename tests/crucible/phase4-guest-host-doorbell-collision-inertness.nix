@@ -9,12 +9,13 @@
   cargoDeps = pkgs.fetchCargoDeps {
     src = crucibleSrc;
     sourceRoot = "source/crates";
-    hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
+    hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
   };
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginWhiteboxDoorbell = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
   pluginWhiteboxDoorbellTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
+  qemuWhiteboxSetup = builtins.readFile ../../crates/crucible-qemu/src/launch/whitebox_setup.rs;
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -136,7 +137,7 @@
       }
       {
         label = "observed aarch64 collision resource test vector";
-        needle = "WhiteboxDoorbellSetupResources::from_observed_resources(&[], &[0x4c1])";
+        needle = "WhiteboxDoorbellSetupResources::from_observed_resources(&[], &[0x4c])";
       }
       {
         label = "collision validation test";
@@ -149,6 +150,16 @@
       {
         label = "off mode bypasses validation test";
         needle = "whitebox_registration_off_mode_bypasses_whitebox_payload_validation";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/launch/whitebox_setup.rs" qemuWhiteboxSetup [
+      {
+        label = "aarch64 retained-guest ABI validation";
+        needle = "InstructionAbiMismatch";
+      }
+      {
+        label = "aarch64 mismatch negative test";
+        needle = "aarch64_setup_rejects_a_mismatched_guest_instruction_abi";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

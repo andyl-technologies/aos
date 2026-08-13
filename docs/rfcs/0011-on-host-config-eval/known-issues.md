@@ -1,40 +1,41 @@
-# Known issues, open decisions, and the review-revision log
+# Resolved review findings and the revision log
 
 An adversarial review (72 agents: per-dimension skeptical finders + a refute-each
 attempt) raised 65 findings; 48 survived refutation (2 critical, 13 major, 24
-minor; 17 refuted). This document records the **three open decisions** the review
-forced (they need a human call), and the **revision log** of fixes applied to the
-other docs. The findings themselves were the review's; the resolutions here are
-the RFC's response.
+minor; 17 refuted). This document preserves the **three formerly open forks**
+and the **revision log** of fixes applied to the other docs. All three forks are
+resolved and implemented; the findings themselves were the review's, and the
+resolutions here are the RFC's historical response.
 
-## Open decisions (forks)
+## Resolved decisions (historical forks)
 
 > **RESOLVED.** F1, F2, and F3 are now locked with decision-free mechanisms in
 > [`decisions.md`](decisions.md): **F1** → dm-verity on the erofs root, roothash
 > on the measured UKI `.cmdline` (PCR-11 covers the producer); **F2** → manifest
 > carries job-script text, materializer writes gen-local paths; **F3** →
 > capability-scoped contribution surface (owner declares contributable
-> sub-paths). The original framing is kept below for context.
+> sub-paths). The alternatives below are retained only as design history; their
+> descriptions do not describe current implementation gaps.
 
 ### F1 — How is the on-host evaluator + base lib anchored to measured boot? (from C1)
 
-The review correctly found that `trust-and-secrets.md` overclaimed: the evaluator
-and base lib are **not** in the measured UKI — they are consumed from the **erofs
-root**, which today has **no dm-verity/roothash** (`verity.nix` exists but no
-production system imports it), and the `/var` seal binds only PCR-11 (UKI) + PCR-7
-(SB state), neither covering the root partition. So an offline attacker can swap
-the evaluator/base-lib without moving any PCR and `/var` still unseals — defeating
-"measure the producer." The overclaiming text has been corrected (see log); the
-remedy is a decision:
+The review found that an earlier design put the evaluator and base lib on an
+unprotected erofs root, outside the measured UKI. In that design an offline
+attacker could replace the evaluator/base-lib without moving PCR-11 or PCR-7.
+The implemented resolution is F1-A: the `server-verity` production-integrity
+variant protects the erofs root with dm-verity and includes its root hash in the
+PCR-11-measured UKI command line.
 
-- **A (recommended): dm-verity on the erofs root, roothash on the measured
-  kernel cmdline.** Root tampering then changes PCR-11 and fails the seal.
-  Composes with existing measured boot; `verity.nix` already exists. Cost:
-  wire dm-verity into the production image + the roothash into the UKI cmdline.
-- **B: embed the evaluator + base-lib closure in the UKI initrd.** Directly
-  measured, but a large initrd and in tension with the documented
+- **A (selected and implemented): dm-verity on the erofs root, roothash on the
+  measured kernel cmdline.** Root tampering changes PCR-11 and fails the seal.
+  This composes with the measured-boot stack and is wired by
+  `systems/server-verity.nix`.
+- **B (rejected): embed the evaluator + base-lib closure in the UKI initrd.**
+  This would measure it directly, but produces a large initrd and conflicts
+  with the documented
   `initrd → toplevel → initrd` cycle avoidance.
-- **C: scope the claim down.** Accept the root is unmeasured; rely only on the
+- **C (rejected): scope the claim down.** This would accept an unmeasured root
+  and rely only on the
   `/var` seal + signed eval inputs. Weakest — an attacker with offline root write
   runs a tampered producer.
 
@@ -46,13 +47,13 @@ remedy is a decision:
 content is a function of the *evaluated* config, so it cannot be pre-built in
 stage 1; on an eval-only host it would have to be **built** — violating invariant 1.
 
-- **A (recommended): the manifest carries job-script *text*; the materializer
-  writes each to a generation-local path and rewrites `ExecStart=` to point at
-  it.** Keeps the full systemd module language. Cost: the rendered `ExecStart=`
+- **A (selected and implemented): the manifest carries job-script *text*; the
+  materializer writes each to a generation-local path and rewrites `ExecStart=`
+  to point at it.** Keeps the full systemd module language. Cost: the rendered `ExecStart=`
   bytes differ from the build-time form, so the P0 "byte-identical toplevel" gate
   must compare job scripts *semantically* (text equality), not by embedded path.
-- **B: forbid the shell-snippet options in stage-2 config modules**, enforced by
-  a publish-time lint. Simpler, but a genuine language restriction (many real
+- **B (rejected): forbid the shell-snippet options in stage-2 config modules**,
+  enforced by a publish-time lint. Simpler, but a genuine language restriction (many real
   units use `preStart`) and it falsifies "evaluates identically on either
   evaluator."
 
@@ -64,15 +65,16 @@ composition** — `nextcloud` writing `nginx.virtualHosts.*`,
 "registered contributor" escape is the same act an attacker would use, making the
 rule either too strict or vacuous.
 
-- **A: operator-grant.** `host.nix` explicitly grants package A write access to a
-  root/service. Safe and explicit; more operator wiring for ordinary apps.
-- **B (recommended): capability-scoped contribution surface.** The shared-root
-  *owner* declares which sub-paths are open to non-owner contributors (e.g.
+- **A (rejected): operator-grant.** `host.nix` would explicitly grant package A
+  write access to a root/service. Safe and explicit; more operator wiring for
+  ordinary apps.
+- **B (selected and implemented): capability-scoped contribution surface.** The
+  shared-root *owner* declares which sub-paths are open to non-owner contributors (e.g.
   `nginx` opens `virtualHosts.*` and `upstreams.*` but keeps `enable`/global
   owner-only). The owner curates the surface; composition (add a vhost/database)
   works without operator wiring; enabling/conscripting the service stays blocked.
   This makes "contributor" non-vacuous by scoping it per-root, per-sub-path.
-- **C: strict-forbid; the operator composes.** Apps declare requirements
+- **C (rejected): strict-forbid; the operator composes.** Apps would declare requirements
   (assertions); the operator wires `nginx ↔ nextcloud` in `host.nix`. Most
   restrictive; heaviest operator burden.
 
@@ -80,7 +82,7 @@ rule either too strict or vacuous.
 
 | # | Finding (sev) | Resolution | Doc(s) |
 |---|---|---|---|
-| C1 | Evaluator/base-lib not actually measured | Corrected the measured-vs-derived text to stop claiming UKI-measured; added the F1 requirement (dm-verity-root or embed). | trust-and-secrets.md |
+| C1 | Evaluator/base-lib was not actually measured | Anchored the erofs bytes through dm-verity and the PCR-11-measured UKI command line (F1-A). | trust-and-secrets.md |
 | C2 | Job scripts need a build | Render now emits job-script **text** into the manifest; materializer writes gen-local; P0 excludes job-script bytes. (F2-A.) | architecture.md, implementation-plan.md |
 | M-facts | Instance facts are an unrecorded host-varying input | Facts are a **first-class recorded input**: `facts_hash` (+ retained `facts.json`) in the manifest `inputs` and the `gen-attestation` record, distinct from the operator-authored provisioning input. | trust-and-secrets.md, README.md, module-system.md |
 | M-gen0key | Gen-0 SSH key seeded from unauthenticated IMDS before policy acceptance | **Removed** the carve-out. No `authorized_keys` is seeded from the facts channel before the selected provisioning trust policy accepts input; pre-eval reachability comes only from image-baked or accepted provisioning input. | provisioning.md |
@@ -99,12 +101,13 @@ rule either too strict or vacuous.
 
 - README/problem framing: "fed by / driven by Ignition" → cloud user-data
   (Ignition removed). Reworded.
-- Evaluator identity: gen-0 ships **stock C++ Nix** (`pkgs/tools/nix.nix`) for P1,
-  invoked by `aos`; "evaluator = pkgs.aos" clarified.
+- Evaluator identity: gen-0 ships **aos-nix** as the measured production
+  evaluator. The AOS-built C++ Nix remains only in differential parity checks;
+  it is never a runtime fallback.
 - Runtime re-eval: every boot reacquires/authorizes `host.nix` and performs
   full evaluation; only storage mutation is first-boot-only.
-- `activate.sh.in` is **not** "reused unchanged": its `prepare` stage hard-codes
-  the Ignition binary and must be retargeted to the `aos metadata` agent. Noted.
+- `activate.sh.in` now prepares through the native `aos metadata` agent; no
+  Ignition binary remains in the production activation path.
 - `-Dfirstboot=false` is build-**disabled** (not just stripped); prefer
   manifest-rendered hostname. Noted.
 - "materialization not building" sharpened: no compiler/configure/derivation

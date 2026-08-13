@@ -14,6 +14,7 @@
   defaultChecks = builtins.readFile ./default.nix;
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
+  doorbellAbi = builtins.readFile ../../crates/crucible-protocol/src/doorbell_abi.rs;
   apiRpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
 
@@ -38,6 +39,11 @@
     "guest-host protocol version"
     "pub const CONTROL_PROTOCOL_VERSION: u32 = "
     protocolLib;
+  doorbellInstructionAbiVersion =
+    sourceConst
+    "doorbell instruction ABI version"
+    "pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = "
+    doorbellAbi;
   rpcProtocolMajor = sourceConst "RPC ABI major version" "pub const RPC_PROTOCOL_MAJOR: u16 = " apiRpcAbi;
   rpcProtocolMinor = sourceConst "RPC ABI minor version" "pub const RPC_PROTOCOL_MINOR: u16 = " apiRpcAbi;
   rpcProtocolPatch = sourceConst "RPC ABI patch version" "pub const RPC_PROTOCOL_PATCH: u16 = " apiRpcAbi;
@@ -189,6 +195,14 @@
     ) [
       "release manifest GDB component is incomplete"
     ]
+    ++ lib.optionals (
+      manifest.components.ssh.package
+      != "openssh"
+      || manifest.components.ssh.license != "BSD-2-Clause"
+      || manifest.components.ssh.boundary != "operator-guest-bridge-client"
+    ) [
+      "release manifest SSH component is incomplete"
+    ]
     ++ lib.optionals (manifest.components.qemu.licenses != ["GPL-2.0-only" "GPL-2.0-or-later" "MIT"]) [
       "release manifest QEMU component license inventory is incomplete"
     ]
@@ -210,7 +224,7 @@
     ++ lib.optionals (manifest.components.correspondingSource.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later"]) [
       "release manifest corresponding-source license inventory is incomplete"
     ]
-    ++ lib.optionals (manifest.licensing.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later"]) [
+    ++ lib.optionals (manifest.licensing.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later" "BSD-2-Clause"]) [
       "release manifest aggregate project license inventory is incomplete"
     ]
     ++ lib.optionals (manifest.licensing.licenseSetScope != "primary-project-components") [
@@ -305,6 +319,10 @@
       {
         label = "manifest records guest-host ABI source";
         needle = "pub const CONTROL_PROTOCOL_VERSION: u32 = ";
+      }
+      {
+        label = "manifest records doorbell instruction ABI source";
+        needle = "pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = ";
       }
       {
         label = "manifest records RPC ABI source";
@@ -437,6 +455,10 @@
         needle = "guest_host_protocol_abi=${guestHostProtocolAbi}";
       }
       {
+        label = "doorbell instruction ABI";
+        needle = "doorbell_instruction_abi_version=${doorbellInstructionAbiVersion}";
+      }
+      {
         label = "RPC ABI";
         needle = "rpc_abi=${rpcAbi}";
       }
@@ -445,8 +467,8 @@
         needle = "reproducibility_timestamp_policy=no-wall-clock-timestamps";
       }
       {
-        label = "aggregate project licenses include MIT";
-        needle = "aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later";
+        label = "aggregate project licenses include packaged operator clients";
+        needle = "aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause";
       }
       {
         label = "debug gateway component";
@@ -493,6 +515,10 @@
       {
         label = "GDB component";
         needle = "\"gdb\":{";
+      }
+      {
+        label = "SSH component";
+        needle = "\"ssh\":{";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -546,6 +572,7 @@ in
           grep -q "^qemu_build_id=$QEMU_BUILD_ID$" "$manifest_env"
           grep -q "^shmem_abi=$SHMEM_ABI$" "$manifest_env"
           grep -q "^guest_host_protocol_abi=$GUEST_HOST_PROTOCOL_ABI$" "$manifest_env"
+          grep -q '^doorbell_instruction_abi_version=4$' "$manifest_env"
           grep -q "^rpc_abi=$RPC_ABI$" "$manifest_env"
           grep -q '^reproducibility_timestamp_policy=no-wall-clock-timestamps$' "$manifest_env"
           grep -q '^boundary_crates_license=MIT$' "$manifest_env"
@@ -558,7 +585,10 @@ in
           grep -q '^gdb_package=gdb$' "$manifest_env"
           grep -q '^gdb_license=GPL-3.0-or-later$' "$manifest_env"
           grep -q '^gdb_boundary=operator-debugger-client$' "$manifest_env"
-          grep -q '^aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later$' "$manifest_env"
+          grep -q '^ssh_package=openssh$' "$manifest_env"
+          grep -q '^ssh_license=BSD-2-Clause$' "$manifest_env"
+          grep -q '^ssh_boundary=operator-guest-bridge-client$' "$manifest_env"
+          grep -q '^aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause$' "$manifest_env"
           grep -q '^aggregate_license_scope=primary-project-components$' "$manifest_env"
           grep -q '^third_party_license_metadata=vendored-source-manifests$' "$manifest_env"
           grep -q '^publication_root_package=crucible$' "$manifest_env"

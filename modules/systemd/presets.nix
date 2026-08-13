@@ -39,6 +39,8 @@ in {
     systemd.services.aos-preset = {
       description = "Apply AOS package preset policy";
       wantedBy = ["multi-user.target"];
+      wants = ["aos-graph-compile.service"];
+      after = ["aos-graph-compile.service" "aos-activate.service"];
       before = ["multi-user.target"];
       serviceConfig = {
         Type = "oneshot";

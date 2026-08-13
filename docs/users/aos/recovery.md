@@ -1,8 +1,8 @@
 # Recover an AOS host
 
-Recovery starts by identifying which layer changed: firmware and boot image,
-first-boot storage, immutable userspace generation, APM package generation, or
-mutable application state under `/var`.
+Recovery starts by identifying which layer changed: firmware, A/B image
+generation, first-boot storage, configuration generation, APM package
+generation, or mutable application state under `/var`.
 
 Keep console access, the deployed image digest, the accepted `host.nix`,
 registry trust anchors, and application backups outside the host.
@@ -20,6 +20,9 @@ findmnt /
 findmnt /var
 lsblk -o NAME,SIZE,FSTYPE,PARTLABEL,PARTUUID,MOUNTPOINTS
 readlink /var/lib/profiles/system/current
+cat /var/lib/profiles/image/state.json
+cat /var/lib/profiles/system/state.json
+cat /run/aos/activation.json
 apm rollback --system --list
 cat /var/lib/aos-provisioning/audit.json
 ```
@@ -56,17 +59,21 @@ If the layout is wrong, preserve required data from `/var`, correct the image
 or metadata, and reprovision a replacement disk. Do not edit the recorded plan
 to make it agree with an unintended layout.
 
-## Recover a failed userspace activation
+## Recover a failed configuration activation
 
-An APM error can occur before activation, during `/etc` replacement, after the
-new generation is committed, or while handling boot artifacts. First determine
-the active pointer and reported activation phase:
+An error can occur during evaluation, package fetch/render, secret resolution,
+EROFS materialization, `/etc` replacement, or unit reconciliation. First
+determine the active pointer and transaction-bound activation result:
 
 ```sh
 readlink /var/lib/profiles/system/current
 cat /etc/os-release
 apm rollback --system --list
 systemctl --failed
+journalctl -b \
+  -u aos-eval.service \
+  -u aos-graph-compile.service \
+  -u aos-activate.service
 ```
 
 Preview rollback, then switch to the intended generation:
@@ -76,9 +83,22 @@ apm rollback --system --dry-run
 apm rollback --system
 ```
 
-Rollback across different kernels has the same incomplete boot-entry boundary
-as upgrade. If the kernel or UKI changed, recover by reimaging the known-good
-release rather than relying on the current boot-artifact handler.
+Configuration rollback under the same module ABI reactivates the retained
+generation directly. Across an ABI boundary, APM re-evaluates its retained
+inputs against the running image before committing a compatible generation.
+It does not switch the kernel or root slot.
+
+To select a known-good image for the next boot, use the image axis explicitly:
+
+```sh
+apm rollback --system --image --list
+apm rollback --system --image --generation N --dry-run
+apm rollback --system --image --generation N --reboot
+```
+
+The candidate is accepted only after its boot-time configuration transaction
+commits. If a pending image exhausts its sd-boot attempts, boot counting falls
+back to the other slot; inspect both state files after reaching the console.
 
 If activation status indicates an incomplete `/etc` swap, treat the system as
 indeterminate. Use console access, preserve `/var`, and restore a known-good
@@ -98,9 +118,10 @@ journalctl -u acme-agent.service -b
 ```
 
 The current CLI has no supported rollback command for the machine-wide runtime
-package profile: `apm rollback --system` rolls back the OS sysroot. Restore a
-known-good image or follow a release-specific recovery procedure that has been
-tested before the incident. Do not move a registry channel backward; registry
+package profile: `apm rollback --system` rolls back configuration, while
+`--system --image` selects an A/B image. Restore a known-good image or follow a
+release-specific recovery procedure that has been tested before the incident.
+Do not move a registry channel backward; registry
 consumers enforce a monotonic release floor. Stop the rollout and publish a
 higher corrected release.
 
@@ -122,9 +143,12 @@ journalctl --vacuum-size=250M
 ```
 
 Use application-specific cleanup for application state and AOS Hub storage.
-`apm clean --generations` only cleans the invoking user's package profile.
-There is no supported command to prune system-package or sysroot generations.
-Do not remove their directories or current links by hand.
+`apm clean --generations --keep N` cleans the invoking user's package profile;
+`apm clean --system --generations --keep N` safely prunes both machine-wide
+package and configuration generations while retaining each current generation.
+Run `apm gc` afterward to collect store paths released by pruned configuration
+roots. A/B image generations are not pruned by this command. Do not remove
+profile directories or current links by hand.
 
 When no supported cleanup can restore a safe margin, preserve application
 state and reimage onto a correctly sized disk.
@@ -156,7 +180,8 @@ Reimage when:
   damaged or does not match the intended release;
 - first-boot storage was committed incorrectly;
 - recovery would require manual edits to immutable system content;
-- system generations consume space that cannot be pruned safely;
+- A/B image generations consume space that cannot be pruned safely, or
+  supported package/configuration pruning cannot restore a safe margin;
 - host trust or identity can no longer be established.
 
 An immutable system makes replacement a normal recovery tool. The critical

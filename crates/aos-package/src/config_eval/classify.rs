@@ -112,6 +112,13 @@ pub struct ConflictDef {
 pub enum EvalClass {
     /// Eval succeeded; carries the JSON manifest text from stdout.
     Manifest(String),
+    /// Native eval succeeded with its canonical first-class option graph.
+    NativeManifest {
+        /// Strict JSON manifest.
+        manifest: String,
+        /// Canonical option accesses.
+        option_graph: aos_core::nix::native::OptionGraph,
+    },
     /// One or more missing options (Case A: n≥1 writes; Case B: a single read).
     Missing(Vec<MissingOption>),
     /// A *declared* option left undefined with no default (`lib/modules.nix:744`).
