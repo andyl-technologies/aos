@@ -761,19 +761,32 @@ sha256 = "{info_sha256}"
     #[test]
     fn signed_image_entry_rejects_tamper_and_path_traversal() {
         let base = direct_image_toml("raw");
-        for tampered in [
-            base.replace("release = \"2026.08\"", "release = \"2026.07\""),
-            base.replace("sha256 = \"aaaaaaaa", "sha256 = \"Aaaaaaaa"),
-            base.replace(
-                "filename = \"aos-server.img\"",
-                "filename = \"../server.img\"",
+        for (name, tampered) in [
+            (
+                "release mismatch",
+                base.replace("release = \"2026.08\"", "release = \"2026.07\""),
             ),
-            base.replace(
-                "compatible_targets = [\"bare-metal\"]",
-                "compatible_targets = [\"vmware\"]",
+            (
+                "invalid digest",
+                base.replace("sha256 = \"aaaaaaaa", "sha256 = \"Aaaaaaaa"),
+            ),
+            (
+                "path traversal",
+                base.replace(
+                    "filename = \"aos-server.img.zst\"",
+                    "filename = \"../server.img.zst\"",
+                ),
+            ),
+            (
+                "incompatible target",
+                base.replace(
+                    "compatible_targets = [\"bare-metal\"]",
+                    "compatible_targets = [\"vmware\"]",
+                ),
             ),
         ] {
-            assert!(parse_package_file(&tampered).is_err());
+            assert_ne!(tampered, base, "{name} fixture mutation must change input");
+            assert!(parse_package_file(&tampered).is_err(), "{name}");
         }
     }
 
