@@ -2865,8 +2865,8 @@ pub(crate) fn test_image_delivery(format: &str) -> ImageDelivery {
             vec![ImageTarget::HyperV],
         ),
         _ => (
-            "img",
-            "application/vnd.aos.disk-image.raw",
+            "img.zst",
+            "application/vnd.aos.disk-image.raw+zstd",
             vec![ImageTarget::BareMetal],
         ),
     };
@@ -2882,7 +2882,11 @@ pub(crate) fn test_image_delivery(format: &str) -> ImageDelivery {
         object_key: format!("images/sha256/{image_sha256}/{filename}"),
         filename,
         media_type: media_type.into(),
-        compression: ImageCompression::None,
+        compression: if format == "raw" {
+            ImageCompression::Zstd
+        } else {
+            ImageCompression::None
+        },
         byte_size: 1,
         sha256: image_sha256.clone(),
         compatible_targets,

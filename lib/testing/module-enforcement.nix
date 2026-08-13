@@ -63,6 +63,37 @@
   };
   healthyTryBuild = builtins.tryEval healthySystem.config.system.build.toplevel.name;
   healthyBuildSucceeds = healthyTryBuild.success;
+  imageBudgetCheckWired = healthySystem.config.system.build.checks ? image-budget;
+
+  # Image budgets are both release ceilings and storage geometry. Reject an
+  # ESP contract that cannot hold two maximum-sized UKIs before any image or
+  # installer derivation is realized.
+  undersizedEspSystem = aos.mkSystem {
+    modules = [
+      ../../systems/server.nix
+      {aos.image.budgets.maxEspMiB = lib.mkForce 351;}
+    ];
+  };
+  undersizedEspRejected = !(
+    builtins.tryEval undersizedEspSystem.config.system.build.toplevel.name
+  ).success;
+
+  # A ZFS installer must not allocate zvols smaller than payloads admitted by
+  # the image contract.
+  undersizedZfsSlotSystem = aos.mkSystem {
+    modules = [
+      ../../systems/server.nix
+      {
+        aos.boot.storage = {
+          backend = "zfs-zvol";
+          zfs.rootSlotSizeMiB = lib.mkForce 511;
+        };
+      }
+    ];
+  };
+  undersizedZfsSlotRejected = !(
+    builtins.tryEval undersizedZfsSlotSystem.config.system.build.toplevel.name
+  ).success;
 
   # --- mkEnableOption -------------------------------------------------
   enableExplicitlySet =
@@ -677,6 +708,9 @@
     {ok = brokenConfigStillReadable; message = "broken config should remain inspectable";}
     {ok = brokenBuildThrows; message = "broken build must throw";}
     {ok = healthyBuildSucceeds; message = "healthy build must succeed";}
+    {ok = imageBudgetCheckWired; message = "per-image budget check must be exposed";}
+    {ok = undersizedEspRejected; message = "undersized image ESP contract must throw";}
+    {ok = undersizedZfsSlotRejected; message = "undersized ZFS image slot must throw";}
     {ok = enableExplicitlySet; message = "mkEnableOption explicit value";}
     {ok = enableDefaultsFalse == false; message = "mkEnableOption default";}
     {ok = packageOptDefaultName == "coreutils"; message = "mkPackageOption default";}

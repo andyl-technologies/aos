@@ -82,6 +82,14 @@ verification of the generation quote against the live PCR 7/11 values and the
 published image PCR 11. A failed ready transition leaves evaluation and boot
 blessing inactive.
 
+On installations with redundant EFI System Partitions, the ESP selected by
+firmware is authoritative for boot assessment. AOS identifies it from the
+systemd-boot EFI variable, mounts it read-only, and refuses to bless a boot if
+that identity is unavailable or not configured. After a successful blessing,
+the stable bootloader, UKIs, loader configuration, and sealed credential are
+synchronized to every configured replica. This ordering prevents an
+undecremented copy of a failed counted entry from being promoted again.
+
 For the initially installed image, the expected ready-phase value comes from a
 build-produced measurement sidecar signed by the PCR-policy key and bound to
 the exact UKI hash. AOS verifies it before importing it into durable image

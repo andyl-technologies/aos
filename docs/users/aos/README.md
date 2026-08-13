@@ -6,11 +6,11 @@ their own machines.
 
 AOS is an early preview. The public golden image is not published yet.
 First-boot storage provisioning, runtime `host.nix` activation, package
-profiles, and durable A/B image and configuration generations are present in
-the tree. They remain early-preview interfaces that must be qualified on the
-exact image and platform. The checked-in verified-boot variants still use
-public test keys, and public image distribution and a production key-custody
-workflow remain separate work.
+profiles, durable A/B image and configuration generations, and a guarded
+encrypted-ZFS bare-metal installer are present in the tree. They remain
+early-preview interfaces that must be qualified on the exact image and
+platform. The checked-in verified-boot variants still use public test keys;
+production deployments must supply their own trust material.
 
 ## The operating model
 

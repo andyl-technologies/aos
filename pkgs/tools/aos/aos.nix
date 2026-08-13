@@ -25,7 +25,7 @@
   sbsigntools,
   systemd,
   mtools,
-  qemu,
+  qemu-img,
   tpm2-tools,
   util-linux,
   which,
@@ -59,7 +59,7 @@
   # scrubPhase keeps their store-path references in the wrappers and pulls them
   # into the runtime closure; without that, nuke-refs would rewrite these paths
   # to placeholders and the wrappers would point at nonexistent stores.
-  runtimeTools = [bash binutils nix sbsigntools systemd mtools qemu util-linux zstd which];
+  runtimeTools = [bash binutils nix sbsigntools systemd mtools qemu-img util-linux zstd which];
   runtimeBinPath = lib.concatStringsSep ":" [
     (lib.makeBinPath runtimeTools)
     "${systemd}/lib/systemd"
@@ -127,7 +127,7 @@ in
       export AOS_VERITY_ROOT_GUARD="${aos-verity-root-guard}/bin/aos-verity-root-guard"
       export AOS_SYSTEMD_PCREXTEND="${systemd}/lib/systemd/systemd-pcrextend"
       export AOS_MCOPY="${mtools}/bin/mcopy"
-      export AOS_QEMU_IMG="${qemu}/bin/qemu-img"
+      export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
       export AOS_TPM2_CREATEEK="${tpm2-tools}/bin/tpm2_createek"
       export AOS_TPM2_CREATEAK="${tpm2-tools}/bin/tpm2_createak"
       export AOS_TPM2_READPUBLIC="${tpm2-tools}/bin/tpm2_readpublic"
@@ -194,7 +194,7 @@ in
       export AOS_VERITY_ROOT_GUARD="${aos-verity-root-guard}/bin/aos-verity-root-guard"
       export AOS_SYSTEMD_PCREXTEND="${systemd}/lib/systemd/systemd-pcrextend"
       export AOS_MCOPY="${mtools}/bin/mcopy"
-      export AOS_QEMU_IMG="${qemu}/bin/qemu-img"
+      export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
       export AOS_TPM2_CREATEEK="${tpm2-tools}/bin/tpm2_createek"
       export AOS_TPM2_CREATEAK="${tpm2-tools}/bin/tpm2_createak"
       export AOS_TPM2_READPUBLIC="${tpm2-tools}/bin/tpm2_readpublic"

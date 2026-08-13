@@ -154,39 +154,55 @@
       "lib/systemd/system/multi-user.target.wants/demo.service"
     ];
   };
-  frozenInventoryPackage = (freezePkgs.frozenFromJSON (freezePkgs.freezeToJSON {
-    fixture = inventoryPackage // {
-      type = "derivation";
-      name = "inventory-fixture";
-      outputs = ["out"];
-    };
-  })).fixture;
+  frozenInventoryJson = freezePkgs.freezeToJSON {
+    fixture =
+      inventoryPackage
+      // {
+        type = "derivation";
+        name = "inventory-fixture";
+        outputs = ["out"];
+      };
+  };
+  frozenInventoryPackage = (freezePkgs.frozenFromJSON frozenInventoryJson).fixture;
   inventoryGenerated = systemdLib.generateUnits {
     type = "system";
     units."demo.service" = overlapUnit "demo.service";
     packages = [inventoryPackage];
   };
   inventoryEtc = systemdLib.unitsToEtc inventoryGenerated;
-  missingInventoryRejected = !(builtins.tryEval (builtins.toJSON (systemdLib.generateUnits {
-    type = "system";
-    units = {};
-    packages = [{outPath = "/missing-inventory"; __toString = self: self.outPath;}];
-  }))).success;
-  inventoryCollisionRejected = !(builtins.tryEval (builtins.toJSON (systemdLib.generateUnits {
-    type = "system";
-    units = {};
-    packages = [inventoryPackage inventoryPackage];
-    upstreamUnits = ["demo.service"];
-    package = inventoryPackage // {
-      systemdUnitInventory.system = ["example/systemd/system/demo.service"];
-    };
-  }))).success;
-  disallowedCollisionRejected = !(builtins.tryEval (builtins.toJSON (systemdLib.generateUnits {
-    allowCollisions = false;
-    type = "system";
-    units."demo.service" = overlapUnit "demo.service";
-    packages = [inventoryPackage];
-  }))).success;
+  missingInventoryRejected =
+    !(builtins.tryEval (builtins.toJSON (systemdLib.generateUnits {
+      type = "system";
+      units = {};
+      packages = [
+        {
+          outPath = "/missing-inventory";
+          __toString = self: self.outPath;
+        }
+      ];
+    })))
+    .success;
+  inventoryCollisionRejected =
+    !(builtins.tryEval (builtins.toJSON (systemdLib.generateUnits {
+      type = "system";
+      units = {};
+      packages = [inventoryPackage inventoryPackage];
+      upstreamUnits = ["demo.service"];
+      package =
+        inventoryPackage
+        // {
+          systemdUnitInventory.system = ["example/systemd/system/demo.service"];
+        };
+    })))
+    .success;
+  disallowedCollisionRejected =
+    !(builtins.tryEval (builtins.toJSON (systemdLib.generateUnits {
+      allowCollisions = false;
+      type = "system";
+      units."demo.service" = overlapUnit "demo.service";
+      packages = [inventoryPackage];
+    })))
+    .success;
   upstreamPackage = {
     outPath = "/nix/store/11111111111111111111111111111111-upstream-fixture";
     __toString = self: self.outPath;
@@ -205,19 +221,21 @@
     upstreamUnits = ["default.target"];
     upstreamWants = ["default.target.wants"];
   });
-  duplicateFinalEtcRejected = !(builtins.tryEval (builtins.toJSON (systemdLib.unitsToEtc {
-    "demo.service" = {
-      name = "demo.service";
-      text = "[Service]";
-      mode = "0644";
-      enable = true;
-      overrideStrategy = "asDropinIfExists";
-      aliases = ["demo.service"];
-      wantedBy = [];
-      requiredBy = [];
-      upheldBy = [];
-    };
-  }))).success;
+  duplicateFinalEtcRejected =
+    !(builtins.tryEval (builtins.toJSON (systemdLib.unitsToEtc {
+      "demo.service" = {
+        name = "demo.service";
+        text = "[Service]";
+        mode = "0644";
+        enable = true;
+        overrideStrategy = "asDropinIfExists";
+        aliases = ["demo.service"];
+        wantedBy = [];
+        requiredBy = [];
+        upheldBy = [];
+      };
+    })))
+    .success;
   overlapUnit = name: {
     inherit name;
     text = "[Service]";
@@ -229,11 +247,13 @@
     requiredBy = [];
     upheldBy = [];
   };
-  nonAdjacentAncestorEtcRejected = !(builtins.tryEval (builtins.toJSON (systemdLib.unitsToEtc {
-    "a" = overlapUnit "a";
-    "a-escape" = overlapUnit "a-escape";
-    "a/child" = overlapUnit "a/child";
-  }))).success;
+  nonAdjacentAncestorEtcRejected =
+    !(builtins.tryEval (builtins.toJSON (systemdLib.unitsToEtc {
+      "a" = overlapUnit "a";
+      "a-escape" = overlapUnit "a-escape";
+      "a/child" = overlapUnit "a/child";
+    })))
+    .success;
 
   # AOS lib doesn't currently expose `hasInfix`; a one-liner using
   # `builtins.match` is enough for these checks.
@@ -265,7 +285,8 @@
     }
     {
       cond =
-        inventoryEtc."systemd/system/demo.service" == {
+        inventoryEtc."systemd/system/demo.service"
+        == {
           kind = "symlink";
           target = "${inventoryPackage}/lib/systemd/system/demo.service";
         }
@@ -284,11 +305,22 @@
     }
     {
       cond =
-        upstreamEtc."systemd/system/default.target" == {
+        toString frozenInventoryPackage
+        == toString inventoryPackage
+        && !containsStr "/nix/store/" frozenInventoryJson
+        && !containsStr "00000000000000000000000000000000" frozenInventoryJson
+        && containsStr "@nix-store@/" frozenInventoryJson;
+      msg = "systemd-lib: frozen package paths must round-trip without serialized store references";
+    }
+    {
+      cond =
+        upstreamEtc."systemd/system/default.target"
+        == {
           kind = "symlink";
           target = "${upstreamPackage}/example/systemd/system/default.target";
         }
-        && upstreamEtc."systemd/system/default.target.wants/base.service" == {
+        && upstreamEtc."systemd/system/default.target.wants/base.service"
+        == {
           kind = "symlink";
           target = "../base.service";
         };

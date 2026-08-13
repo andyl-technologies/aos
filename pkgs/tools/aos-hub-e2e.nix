@@ -110,7 +110,7 @@ mkDerivation {
           -H 'connect-protocol-version: 1' \
           --data '{"slug":"demo/cdn","channel":"stable"}' \
           "$HUB/aos.hub.v1.ImageService/ListImages")"
-        if printf '%s' "$api_list" | grep -q 'aos-e2e.img' \
+        if printf '%s' "$api_list" | grep -q 'aos-e2e.img.zst' \
            && printf '%s' "$api_list" | grep -q 'aos-e2e.qcow2'; then
           pass "Image API lists the complete apr-produced integrity catalog"
         else die "Image API omitted producer output"; fi
@@ -181,7 +181,7 @@ mkDerivation {
           aos image download --hub "$HUB" --registry demo/cdn --channel stable \
             --format raw >/dev/null
         )
-        if cmp -s "$work/expected.raw" "$work/default-name/aos-e2e.img"; then
+        if cmp -s "$work/expected.raw" "$work/default-name/aos-e2e.img.zst"; then
           pass "aos image download uses the signed useful filename"
         else die "default image filename or bytes are incorrect"; fi
 
