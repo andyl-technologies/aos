@@ -468,6 +468,38 @@ mod tests {
     }
 
     #[test]
+    fn publication_uploads_immutable_objects_before_pointers() {
+        let object = |path: &str, kind: &str| hub_types::RegistryPublicationObject {
+            path: path.into(),
+            kind: kind.into(),
+            ..Default::default()
+        };
+        let publication = hub_types::RegistryPublication {
+            objects: vec![
+                object("HEAD", "mutable_pointer"),
+                object("objects/aa/object", "immutable"),
+                object("info/refs", "mutable_pointer"),
+                object("nar/package.nar.zst", "immutable"),
+            ],
+            ..Default::default()
+        };
+
+        let paths = publication_objects_in_upload_order(&publication)
+            .into_iter()
+            .map(|object| object.path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            [
+                "objects/aa/object",
+                "nar/package.nar.zst",
+                "HEAD",
+                "info/refs"
+            ]
+        );
+    }
+
+    #[test]
     fn publication_upload_snapshot_rejects_post_inventory_changes() {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path();
@@ -8283,7 +8315,9 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
                     publication.objects.len() == pinned.request.objects.len(),
                     "Hub publication response changed the declared object count"
                 );
-                for object in &publication.objects {
+                // The response is an inventory, not an execution order. Pointer
+                // writes open only after every immutable object verifies.
+                for object in publication_objects_in_upload_order(&publication) {
                     let declared = pinned
                         .request
                         .objects
@@ -8396,6 +8430,14 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
             .await
         }
     }
+}
+
+fn publication_objects_in_upload_order(
+    publication: &hub_types::RegistryPublication,
+) -> Vec<&hub_types::RegistryPublicationObject> {
+    let mut objects = publication.objects.iter().collect::<Vec<_>>();
+    objects.sort_by_key(|object| object.kind == "mutable_pointer");
+    objects
 }
 
 async fn upload_publication_multipart(
