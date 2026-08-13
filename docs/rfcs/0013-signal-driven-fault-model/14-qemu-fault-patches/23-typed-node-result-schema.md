@@ -20,6 +20,14 @@ spaces, evidence hashes, retention rules, and validation paths remain distinct.
 QEMU must not place a lifecycle, clock, interrupt, hardware-error, or other
 command-specific event payload in the result ring.
 
+The host retains the authenticated APPLY command sequence and result
+before/after hashes beside the issued action in its canonical continuation. An
+occurrence is admissible only when its `rule_command_sequence` names that exact
+APPLY result and its command kind matches the issued effect. Immediate impulses
+must additionally carry the same before/after hashes on both channels. The host
+then applies exhaustive command-specific decoding to the occurrence payload;
+there is no accepted unknown-kind or unvalidated typed-payload branch.
+
 ## QEMU change
 
 After an immediate impulse executes, `plugins/crucible-fault-node.c` first
@@ -30,7 +38,9 @@ produced by the mutation, not the prepare-only prediction.
 
 Deferred impulses retain their dedicated deferred status and completion path;
 this patch does not misreport a deferred transition as synchronously applied.
-The host must validate deferred completion before committing its binding state.
+The result bridge publishes the final typed result only after QEMU completes or
+fails the deferred mutation, and the host validates that terminal result before
+committing its binding state.
 
 ## Required proofs
 

@@ -14,6 +14,7 @@ use crucible::model::{
     ResolvedBindingAction,
 };
 
+use crate::fault_action_sink::CommittedQemuActionEvidence;
 use crate::{QemuFaultActionSink, QemuNodeSet};
 
 #[derive(Clone, Debug)]
@@ -40,6 +41,13 @@ impl<'a> ProductionFaultActionSink<'a> {
             qemu: QemuFaultActionSink::new(nodes),
             prepared: None,
         }
+    }
+
+    /// Removes authenticated QEMU APPLY-result identities committed by the sink.
+    pub(crate) fn take_qemu_commit_evidence(
+        &mut self,
+    ) -> BTreeMap<ContentHash, CommittedQemuActionEvidence> {
+        self.qemu.take_committed_evidence()
     }
 
     fn reject(error: FaultRuntimeError) -> Box<RejectedActionBatch> {
