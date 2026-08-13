@@ -100,9 +100,10 @@ pub use rpc_abi::{
 };
 pub use vm_lifecycle::{
     ProductionBlockFaultEvidence, ProductionFaultEvidenceSnapshot, ProductionNetworkOutageEvidence,
-    ProductionNodeFaultEvidence, ProductionVmLifecycleConfig, ProductionVmLifecycleLoop,
-    build_production_vm_lifecycle_loop, build_production_vm_lifecycle_loop_from_checkpoint,
-    collect_signal_artifact_objects, production_vm_search_frontier,
+    ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence, ProductionVmLifecycleConfig,
+    ProductionVmLifecycleLoop, build_production_vm_lifecycle_loop,
+    build_production_vm_lifecycle_loop_from_checkpoint, collect_signal_artifact_objects,
+    production_vm_search_frontier,
 };
 // Re-exported so control-plane clients (e.g. the CLI) record the *shared*
 // guest-host protocol version in a reproduction artifact's provenance triple

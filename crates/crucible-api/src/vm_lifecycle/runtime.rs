@@ -67,6 +67,18 @@ impl ProductionVmLifecycleLoop {
                     });
                 }
             };
+        let locked_effect_trace =
+            match runtime.recorded_trace(crucible::model::FaultReplayMode::LockedEffect) {
+                Ok(trace) => Some(trace),
+                Err(crucible_qemu::ProductionFaultRuntimeError::Execution(
+                    crucible::model::FaultExecutionError::CheckpointPresence,
+                )) => None,
+                Err(error) => {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!("capture production locked-effect trace: {error}"),
+                    });
+                }
+            };
         let emitted_events = runtime.emitted_events().to_vec();
         drop(runtime);
 
@@ -82,6 +94,10 @@ impl ProductionVmLifecycleLoop {
                 },
             )
             .collect();
+        let network_queues = self
+            .inner
+            .network_output_interceptor()
+            .active_queue_evidence()?;
         let devices = self
             .block_devices
             .lock()
@@ -147,8 +163,10 @@ impl ProductionVmLifecycleLoop {
         Ok(ProductionFaultEvidenceSnapshot {
             frontier,
             resolved_effect_trace,
+            locked_effect_trace,
             emitted_events,
             network_outages,
+            network_queues,
             block_devices,
             nodes,
         })
