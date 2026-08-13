@@ -59,6 +59,7 @@ use crucible::{
     ExecutionFingerprint, Icount, NodeId, SchedulerError, SchedulerNodeId,
     SchedulerSendAuthorization, SchedulerSendAuthorizer, VirtualTime,
 };
+use crucible::model::{FaultActionCommitError, FaultActionSink};
 use crucible_device::block::{BaseImage, BlockDurabilityConfig, BlockLatency};
 use crucible_device::{FsTree, NinepLatency};
 use crucible_shmem::{
@@ -78,8 +79,9 @@ use crate::supervision::{
 use crate::{
     CrucibleAcceleratorDevice, CrucibleShmem9pDevice, CrucibleShmemBlockDevice,
     CrucibleShmemNetworkDevice, IcountShiftSetting, LaunchProfileCandidate, LaunchProfileError,
-    LivePluginGuestArchitecture, ProductionFaultRuntime, QemuAsyncDriverPolicy, QemuCrashDetector,
-    QemuGdbstubChannelConfig, QemuHostPluginSetupError, QemuLaunchAppRandomConfig,
+    LivePluginGuestArchitecture, ProductionFaultActionSink, ProductionFaultRuntime,
+    QemuAsyncDriverPolicy, QemuCrashDetector, QemuGdbstubChannelConfig,
+    QemuHostPluginSetupError, QemuLaunchAppRandomConfig,
     QemuLaunchArtifact, QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchPluginConfig,
     QemuLaunchPluginSwitch, QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError,
     QemuNode, QemuNodeChannelError, QemuNodeError, QemuNodeFactoryError, QemuNodeFactoryRuntime,
@@ -701,6 +703,9 @@ pub struct QemuLiveNodeLifecycleFaultReport {
     /// storage impulses still require exact device opportunities before their
     /// mutations become externally visible.
     pub cross_adapter_actions_committed: bool,
+    /// A live QEMU precondition rejection left the prepared host adapter state
+    /// byte-identical and empty.
+    pub cross_adapter_rejection_rolled_back: bool,
 }
 
 /// Drives the first live [`QemuNode`] through a bounded busy-window step schedule.
@@ -912,6 +917,7 @@ pub fn run_qemu_live_node_lifecycle_fault_gate(
             "shared power event did not atomically commit network, storage, and node actions",
         ));
     }
+    prove_cross_adapter_rejection_rollback(&exact_config, &evaluation.actions)?;
     if decision.requested_transition != crucible::model::NodeLifecycleTransition::Crash
         || decision.effective_transition != crucible::model::NodeLifecycleTransition::Crash
         || decision.observed_icount != observed_icount
@@ -944,7 +950,101 @@ pub fn run_qemu_live_node_lifecycle_fault_gate(
         corrupt_result_rejected_with_valid_event: true,
         corrupt_event_rejected_with_valid_result: true,
         cross_adapter_actions_committed,
+        cross_adapter_rejection_rolled_back: true,
     })
+}
+
+fn prove_cross_adapter_rejection_rollback(
+    config: &QemuLiveNodeStepGateConfig,
+    committed_actions: &[crucible::model::ResolvedBindingAction],
+) -> Result<(), QemuLiveNodeStepGateError> {
+    let run_directory = config
+        .run_directory
+        .join("signal-rollback");
+    let mut node = build_live_node(
+        config,
+        &run_directory,
+        LiveNodeIdentity {
+            node: GATE_NODE,
+            router: GATE_ROUTER,
+            crash_detector: "signal-rollback",
+        },
+        None,
+        true,
+    )?;
+    let observed_icount = node
+        .current_icount()
+        .map_err(|source| {
+            QemuLiveNodeStepGateError::node_op("read rejection boundary", source)
+        })?
+        .retired;
+    let mut nodes = QemuNodeSet::new();
+    if nodes.insert(node_id(GATE_NODE), node).is_some() {
+        return Err(fault_gate_invariant(
+            "cross-adapter rejection node identity collided",
+        ));
+    }
+
+    let mut actions = committed_actions.to_vec();
+    let mut node_actions = 0_usize;
+    for action in &mut actions {
+        action.coordinate.retired_instructions = Some(observed_icount);
+        if action.effect.kind().descriptor().adapter == crucible::model::FaultAdapter::Node {
+            node_actions += 1;
+            action.expected_precondition = Some(ContentHash::from_bytes(
+                b"deliberately-wrong-live-node-precondition",
+            ));
+        }
+    }
+    if node_actions != 1 {
+        return Err(fault_gate_invariant(format!(
+            "cross-adapter rejection expected one node action, observed {node_actions}"
+        )));
+    }
+
+    let mut host = crucible::model::HostFaultActionSink::new(
+        crucible::model::FaultResourceLimits::default(),
+    );
+    let before = host
+        .state()
+        .canonical_bytes()
+        .map_err(|error| fault_gate_invariant(format!("encode host state before rejection: {error}")))?;
+    let before_digest = host.state().digest();
+    let mut sink = ProductionFaultActionSink::new(&mut host, &mut nodes);
+    let prepared = sink
+        .prepare_batch(&actions)
+        .map_err(|error| fault_gate_invariant(format!("prepare rejection transaction: {}", error.error)))?;
+    let rejected = matches!(
+        sink.commit_batch(prepared.transaction),
+        Err(FaultActionCommitError::Rejected(_))
+    );
+    drop(sink);
+    let after = host
+        .state()
+        .canonical_bytes()
+        .map_err(|error| fault_gate_invariant(format!("encode host state after rejection: {error}")))?;
+    if !rejected
+        || !host.state().is_empty()
+        || host.state().digest() != before_digest
+        || after != before
+    {
+        return Err(fault_gate_invariant(
+            "live QEMU rejection made prepared host adapter state visible",
+        ));
+    }
+
+    let mut node = nodes
+        .take(&node_id(GATE_NODE))
+        .ok_or_else(|| fault_gate_invariant("cross-adapter rejection node disappeared"))?;
+    let shutdown = node
+        .shutdown_child()
+        .map_err(|error| fault_gate_invariant(format!("shut down rejection node: {error}")))?;
+    if !shutdown.reaped || shutdown.leaked {
+        return Err(fault_gate_invariant(
+            "cross-adapter rejection process did not shut down cleanly",
+        ));
+    }
+    Ok(())
 }
 
 fn prove_lifecycle_channel_corruption_rejection(

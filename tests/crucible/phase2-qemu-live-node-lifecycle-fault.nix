@@ -99,6 +99,7 @@ in
           grep -Fxq 'corrupt_result_rejected_with_valid_event=true' "$report"
           grep -Fxq 'corrupt_event_rejected_with_valid_result=true' "$report"
           grep -Fxq 'cross_adapter_actions_committed=true' "$report"
+          grep -Fxq 'cross_adapter_rejection_rolled_back=true' "$report"
           grep -Fxq 'backend=production-qemu-signal-runtime' "$report"
           grep -Fxq 'effect=node.lifecycle' "$report"
           grep -Fxq 'transition=crash' "$report"

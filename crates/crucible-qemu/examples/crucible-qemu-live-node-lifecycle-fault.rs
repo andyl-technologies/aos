@@ -96,6 +96,10 @@ fn run() -> Result<(), String> {
         "cross_adapter_actions_committed={}",
         report.cross_adapter_actions_committed
     );
+    println!(
+        "cross_adapter_rejection_rolled_back={}",
+        report.cross_adapter_rejection_rolled_back
+    );
     Ok(())
 }
 
