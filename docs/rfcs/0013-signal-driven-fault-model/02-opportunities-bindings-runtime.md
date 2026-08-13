@@ -337,8 +337,20 @@ Not every signal sample is a useful branch. Bindings declare search policy:
 - `branch_outcome`: branch fired/not-fired at selected opportunities;
 - `branch_transition`: branch a state-machine transition;
 - `branch_parameter`: choose among a finite declared parameter set;
-- `mutate_trace_window`: fuzz a bounded normalized trace interval;
-- `mutate_mapping`: fuzz declared transfer-function points within bounds.
+- `mutate_trace_window`: choose from finite concrete trace-sample replacement
+  schedules inside one bounded normalized trace interval;
+- `mutate_mapping`: choose from finite concrete transfer-function point
+  replacement schedules within declared point and count bounds.
+
+Mutation policies never ask the runtime to invent replacement values. Each
+candidate names exact typed replacement values (and, for traces, exact sample
+coordinates and event sequences). Search deterministically materializes the
+bounded Cartesian product of mutation-enabled bindings into ordinary
+fixed-policy scenarios before guest start. The product is limited by
+`search_choices_per_state`; exceeding it is an admission error, not sampling.
+Changing a trace changes its program identity, so every binding on that graph is
+re-admitted against the new identity. Materialization provenance and created
+artifact hashes are retained with the child scenario.
 
 Search choice identity includes signal program, binding, opportunity, and
 candidate set. State-space reduction may treat independent opportunity choices
@@ -346,7 +358,8 @@ as commutative only when adapter dependency analysis proves disjoint targets and
 state.
 
 - **[BIND-22]** Search MUST NOT branch continuously over unbounded numeric signal
-  ranges. Candidate sets and mutation bounds MUST be finite and explicit.
+  ranges. Candidate sets, concrete mutation schedules, and mutation bounds MUST
+  be finite and explicit.
 - **[BIND-23]** A search result MUST export the concrete signal/binding choices
   needed for ordinary locked replay without rerunning the explorer.
 - **[BIND-24]** Minimization MAY remove signal nodes, trace intervals, bindings,

@@ -74,6 +74,15 @@ fn mapping_mutation_becomes_an_ordinary_fixed_binding() {
         None,
         BindingSearchPolicy::MutateMapping {
             point_indices: vec![1],
+            candidates: vec![MappingMaterialization {
+                points: vec![MappingPointMutation {
+                    index: 1,
+                    point: BindingMapPoint {
+                        input: SignalValue::U64(10),
+                        output: SignalValue::DurationNanos(50),
+                    },
+                }],
+            }],
             maximum_mutations: PositiveU64::new("maximum_mutations", 1)
                 .unwrap_or_else(|error| panic!("invalid mutation limit: {error}")),
         },
@@ -157,6 +166,214 @@ fn mapping_mutation_becomes_an_ordinary_fixed_binding() {
             },
         ),
         Err(SearchMaterializationError::ProgramIdentity)
+    ));
+}
+
+#[test]
+fn finite_mapping_candidates_materialize_complete_fixed_plans() {
+    let output = signal_id("output");
+    let program = SignalProgram::new(
+        vec![SignalNode {
+            id: output.clone(),
+            domain: SignalDomain::VirtualTime,
+            output: SignalShape::new(SignalValueType::U64, SignalUnit::VirtualNanoseconds, 0)
+                .unwrap_or_else(|error| panic!("invalid test shape: {error}")),
+            inputs: Vec::new(),
+            kind: SignalNodeKind::Constant {
+                value: SignalValue::U64(5),
+            },
+        }],
+        vec![output.clone()],
+        SignalResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("invalid test program: {error}"));
+    let target = TargetSelector::Exact(
+        ResolvedTargetSet::new(
+            vec![ResolvedFaultTarget::NetworkSegment {
+                segment: object_id("segment-a"),
+                direction: FaultDirection::AToB,
+            }],
+            false,
+        )
+        .unwrap_or_else(|error| panic!("invalid target: {error}")),
+    );
+    let effect = EffectRequest::new(
+        EFFECT_SEMANTIC_VERSION,
+        EffectLifetime::Persistent,
+        EffectSpecification::Network(NetworkEffectSpecification::PropagationDelay {
+            delay_nanos: Some(
+                PositiveU64::new("delay_nanos", 1)
+                    .unwrap_or_else(|error| panic!("invalid delay: {error}")),
+            ),
+            distance_velocity_lookup: None,
+        }),
+    )
+    .unwrap_or_else(|error| panic!("invalid effect: {error}"));
+    let points = vec![
+        BindingMapPoint {
+            input: SignalValue::U64(0),
+            output: SignalValue::DurationNanos(10),
+        },
+        BindingMapPoint {
+            input: SignalValue::U64(10),
+            output: SignalValue::DurationNanos(30),
+        },
+    ];
+    let candidates = [40_u64, 50]
+        .into_iter()
+        .map(|value| MappingMaterialization {
+            points: vec![MappingPointMutation {
+                index: 1,
+                point: BindingMapPoint {
+                    input: SignalValue::U64(10),
+                    output: SignalValue::DurationNanos(value),
+                },
+            }],
+        })
+        .collect();
+    let binding = FaultBinding::new(
+        object_id("binding-finite-mutation"),
+        vec![output],
+        BindingSampling::AtBoundary,
+        BindingMapping::PiecewiseParameter {
+            parameter: MappedEffectParameter::DurationNanos,
+            points,
+            rounding: SignalRounding::NearestTiesToEven,
+            overflow: SignalOverflow::Error,
+        },
+        target,
+        [FaultPhase::Resolve].into_iter().collect(),
+        effect,
+        None,
+        BindingSearchPolicy::MutateMapping {
+            point_indices: vec![1],
+            candidates,
+            maximum_mutations: PositiveU64::new("maximum_mutations", 1)
+                .unwrap_or_else(|error| panic!("invalid mutation limit: {error}")),
+        },
+        BindingObservabilityPolicy {
+            samples: SampleObservation::ChangesAndEffects,
+            record_inactive_opportunities: false,
+            retain_mapped_values: true,
+        },
+        &program,
+    )
+    .unwrap_or_else(|error| panic!("invalid mutation binding: {error}"));
+    let plan = FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
+        .unwrap_or_else(|error| panic!("invalid mutation plan: {error}"));
+
+    let cases = materialize_search_plans(&plan, &MemoryDagStore::new())
+        .unwrap_or_else(|error| panic!("mutation space should materialize: {error}"));
+    assert_eq!(cases.len(), 2);
+    assert!(cases.iter().all(|case| {
+        case.plan.bindings().iter().all(|binding| {
+            !matches!(
+                binding.search(),
+                BindingSearchPolicy::MutateTraceWindow { .. }
+                    | BindingSearchPolicy::MutateMapping { .. }
+            )
+        })
+    }));
+    assert_ne!(cases[0].provenance, cases[1].provenance);
+}
+
+#[test]
+fn candidate_product_respects_the_scenario_search_bound() {
+    let output = signal_id("bounded-output");
+    let program = SignalProgram::new(
+        vec![SignalNode {
+            id: output.clone(),
+            domain: SignalDomain::VirtualTime,
+            output: SignalShape::new(SignalValueType::U64, SignalUnit::VirtualNanoseconds, 0)
+                .unwrap_or_else(|error| panic!("invalid test shape: {error}")),
+            inputs: Vec::new(),
+            kind: SignalNodeKind::Constant {
+                value: SignalValue::U64(5),
+            },
+        }],
+        vec![output.clone()],
+        SignalResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("invalid test program: {error}"));
+    let effect = EffectRequest::new(
+        EFFECT_SEMANTIC_VERSION,
+        EffectLifetime::Persistent,
+        EffectSpecification::Network(NetworkEffectSpecification::PropagationDelay {
+            delay_nanos: Some(
+                PositiveU64::new("delay_nanos", 1)
+                    .unwrap_or_else(|error| panic!("invalid delay: {error}")),
+            ),
+            distance_velocity_lookup: None,
+        }),
+    )
+    .unwrap_or_else(|error| panic!("invalid effect: {error}"));
+    let target = TargetSelector::Exact(
+        ResolvedTargetSet::new(
+            vec![ResolvedFaultTarget::NetworkSegment {
+                segment: object_id("segment-a"),
+                direction: FaultDirection::AToB,
+            }],
+            false,
+        )
+        .unwrap_or_else(|error| panic!("invalid target: {error}")),
+    );
+    let candidates = [40_u64, 50]
+        .into_iter()
+        .map(|value| MappingMaterialization {
+            points: vec![MappingPointMutation {
+                index: 1,
+                point: BindingMapPoint {
+                    input: SignalValue::U64(10),
+                    output: SignalValue::DurationNanos(value),
+                },
+            }],
+        })
+        .collect();
+    let binding = FaultBinding::new(
+        object_id("binding-bounded-mutation"),
+        vec![output],
+        BindingSampling::AtBoundary,
+        BindingMapping::PiecewiseParameter {
+            parameter: MappedEffectParameter::DurationNanos,
+            points: vec![
+                BindingMapPoint {
+                    input: SignalValue::U64(0),
+                    output: SignalValue::DurationNanos(10),
+                },
+                BindingMapPoint {
+                    input: SignalValue::U64(10),
+                    output: SignalValue::DurationNanos(30),
+                },
+            ],
+            rounding: SignalRounding::NearestTiesToEven,
+            overflow: SignalOverflow::Error,
+        },
+        target,
+        [FaultPhase::Resolve].into_iter().collect(),
+        effect,
+        None,
+        BindingSearchPolicy::MutateMapping {
+            point_indices: vec![1],
+            candidates,
+            maximum_mutations: PositiveU64::new("maximum_mutations", 1)
+                .unwrap_or_else(|error| panic!("invalid mutation limit: {error}")),
+        },
+        BindingObservabilityPolicy {
+            samples: SampleObservation::ChangesAndEffects,
+            record_inactive_opportunities: false,
+            retain_mapped_values: true,
+        },
+        &program,
+    )
+    .unwrap_or_else(|error| panic!("invalid mutation binding: {error}"));
+    let mut limits = FaultResourceLimits::default();
+    limits.search_choices_per_state = 1;
+    let plan = FaultSignalPlan::new(vec![program], vec![binding], limits)
+        .unwrap_or_else(|error| panic!("bounded mutation plan should admit: {error}"));
+
+    assert!(matches!(
+        materialize_search_plans(&plan, &MemoryDagStore::new()),
+        Err(SearchMaterializationError::CandidateProductLimit)
     ));
 }
 
@@ -274,6 +491,14 @@ fn trace_mutation_rewrites_canonical_artifacts_and_program_identity() {
         BindingSearchPolicy::MutateTraceWindow {
             start_nanos: 101,
             end_nanos: 102,
+            candidates: vec![TraceWindowMaterialization {
+                trace_node: output.clone(),
+                samples: vec![TraceSampleMutation {
+                    coordinate: 101,
+                    event_sequence: None,
+                    value: SignalValue::U64(99),
+                }],
+            }],
             maximum_mutations: PositiveU64::new("maximum_mutations", 1)
                 .unwrap_or_else(|error| panic!("invalid mutation bound: {error}")),
         },

@@ -139,11 +139,11 @@ pub use model::{
     GuidanceSignalComposition, GuidanceSignalInput, GuidanceSignalKind, GuidanceSignalWeight,
     Icount, IoEventKind, IrqVector, LinkDef, LinkId, LinkLossProbability,
     LocalCheckpointClosureIndex, LocalDagStore, MAX_APP_RANDOM_SAMPLES_PER_DRAW, MIN_LINK_LATENCY,
-    MarkerId, MaterializationPolicy, MaterializationTrigger, MaterializedState, MemPlace,
-    MemoryCmp, MemoryDagStore, MemoryWidth, MinimizationAttempt, MinimizationConfig,
-    MinimizationRun, NetworkLinkPendingFrame, NetworkLinkRuntimeCursor, NodeBlobRef, NodeCounter,
-    NodeId, NodeLifecycle, NodeTemplate, NoveltyRarityGuidanceSignal, OverrideDecision,
-    PROPERTY_QUANTIFIER_COUNT, PROPERTY_SCHEMA_DOMAIN, PROPERTY_SCHEMA_VERSION,
+    MarkerId, MaterializationPolicy, MaterializationTrigger, MaterializedSearchPlan,
+    MaterializedState, MemPlace, MemoryCmp, MemoryDagStore, MemoryWidth, MinimizationAttempt,
+    MinimizationConfig, MinimizationRun, NetworkLinkPendingFrame, NetworkLinkRuntimeCursor,
+    NodeBlobRef, NodeCounter, NodeId, NodeLifecycle, NodeTemplate, NoveltyRarityGuidanceSignal,
+    OverrideDecision, PROPERTY_QUANTIFIER_COUNT, PROPERTY_SCHEMA_DOMAIN, PROPERTY_SCHEMA_VERSION,
     PartialOrderIndependenceProof, PartialOrderReductionKey, PartialOrderReductionPolicy,
     PendingFrame, PinnedConfiguration, PinnedScenario, Plan, Predicate, PreemptionBranchConfig,
     PreemptionBranchRun, PreemptionDecision, PreemptionKind, Properties, Property, PropertyKind,
@@ -177,8 +177,8 @@ pub use model::{
     WorldBlockLatency, WorldDeviceKind, WorldIoCoreConfig, WorldIoNode, WorldIoNodeKind,
     WorldLookaheadEdge, WorldNinePLatency, WorldNode, WorldNodeDef, WorldStaticTopology,
     WorldWorkloadConfigTree, app_random_branch_decisions, app_random_draw_sites_from_schedule,
-    bake, instantiate, lint_guidance_determinism_source, preemption_branch_decisions, reduce,
-    run_adaptive_strategy_selection, step, try_step,
+    bake, instantiate, lint_guidance_determinism_source, materialize_search_plans,
+    preemption_branch_decisions, reduce, run_adaptive_strategy_selection, step, try_step,
 };
 pub use node_time::{NodeTimeMapping, NodeTimeProjection};
 #[cfg(feature = "test-double")]

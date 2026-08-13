@@ -42,6 +42,22 @@ impl Plan {
         Self::from_canonical_parts(self.graph, fault_signals)
     }
 
+    /// Replaces the fault layer and validates the reconstructed plan for `world`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when the materialized fault targets or the
+    /// existing event graph are incompatible with `world`.
+    pub fn with_fault_signals_for_world(
+        self,
+        world: &World,
+        fault_signals: FaultSignalPlan,
+    ) -> Result<Self, EngineError> {
+        let plan = Self::from_canonical_parts(self.graph, fault_signals);
+        plan.validate_for_world(world)?;
+        Ok(plan)
+    }
+
     /// Builds a graph-native plan after validating it against `world`.
     ///
     /// # Errors

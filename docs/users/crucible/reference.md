@@ -824,8 +824,14 @@ Unknown variants or fields in any table are rejected.
 
 Search policy kinds are `fixed`, `branch_outcome { maximum_branches }`,
 `branch_transition { candidates }`, `branch_parameter { parameter, candidates }`,
-`mutate_trace_window { start_nanos, end_nanos, maximum_mutations }`, and
-`mutate_mapping { point_indices, maximum_mutations }`.
+`mutate_trace_window { start_nanos, end_nanos, candidates,
+maximum_mutations }`, and `mutate_mapping { point_indices, candidates,
+maximum_mutations }`. Mutation candidates are concrete, finite replacement
+schedules. A trace candidate names `trace_node` and exact existing sample
+coordinates with typed replacement values. A mapping candidate names exact
+point indices and complete typed replacement points. Crucible materializes the
+bounded Cartesian product into fixed-policy scenarios before starting QEMU; it
+never guesses mutation values.
 
 ### Target selector values
 

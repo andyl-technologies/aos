@@ -14,7 +14,10 @@ use super::*;
 use crate::{DagStore, DagStoreError};
 
 /// One exact replacement in a normalized trace channel.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
 pub struct TraceSampleMutation {
     /// Mapped virtual coordinate of the existing sample.
     pub coordinate: u64,
@@ -25,7 +28,10 @@ pub struct TraceSampleMutation {
 }
 
 /// Concrete trace-window mutation selected by an explorer.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
 pub struct TraceWindowMaterialization {
     /// Trace source node whose manifest is replaced.
     pub trace_node: SignalId,
@@ -34,7 +40,10 @@ pub struct TraceWindowMaterialization {
 }
 
 /// One exact replacement of an authored piecewise transfer-function point.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
 pub struct MappingPointMutation {
     /// Zero-based point index admitted by the binding search policy.
     pub index: u32,
@@ -43,7 +52,10 @@ pub struct MappingPointMutation {
 }
 
 /// Concrete transfer-function mutation selected by an explorer.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
 pub struct MappingMaterialization {
     /// Nonempty canonical set of point replacements.
     pub points: Vec<MappingPointMutation>,
@@ -77,6 +89,219 @@ pub struct MaterializedSearchCase {
     pub artifacts: Vec<ContentHash>,
 }
 
+/// One complete fixed-policy fault plan from the Cartesian mutation space.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MaterializedSearchPlan {
+    /// Concrete fault plan containing no mutation search policies.
+    pub plan: FaultSignalPlan,
+    /// Ordered concrete mutation choices applied to build the plan.
+    pub cases: Vec<MaterializedSearchCase>,
+    /// Content identity of the complete ordered materialization.
+    pub provenance: ContentHash,
+    /// Newly created content-addressed artifacts in dependency order.
+    pub artifacts: Vec<ContentHash>,
+}
+
+/// Enumerates the bounded Cartesian product of all mutation-enabled bindings.
+///
+/// Each returned plan contains only ordinary fixed-policy bindings at former
+/// mutation sites. Candidate order is canonical and the total number of plans
+/// may not exceed `search_choices_per_state` from the scenario resource
+/// contract.
+///
+/// # Errors
+///
+/// Returns [`SearchMaterializationError`] when any authored candidate cannot be
+/// materialized, a reconstructed plan fails admission, or the Cartesian product
+/// exceeds the configured bound.
+pub fn materialize_search_plans(
+    plan: &FaultSignalPlan,
+    store: &dyn DagStore,
+) -> Result<Vec<MaterializedSearchPlan>, SearchMaterializationError> {
+    if plan.bindings().iter().all(|binding| {
+        !matches!(
+            binding.search(),
+            BindingSearchPolicy::MutateTraceWindow { .. }
+                | BindingSearchPolicy::MutateMapping { .. }
+        )
+    }) {
+        return Ok(Vec::new());
+    }
+    let mut frontier = vec![(plan.clone(), Vec::<MaterializedSearchCase>::new())];
+    let mut complete = Vec::new();
+    while let Some((current, applied)) = frontier.pop() {
+        let Some(binding) = current.bindings().iter().find(|binding| {
+            matches!(
+                binding.search(),
+                BindingSearchPolicy::MutateTraceWindow { .. }
+                    | BindingSearchPolicy::MutateMapping { .. }
+            )
+        }) else {
+            let artifacts = applied
+                .iter()
+                .flat_map(|case| case.artifacts.iter().copied())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            let material = applied
+                .iter()
+                .map(|case| case.provenance.to_hex())
+                .collect::<Vec<_>>()
+                .join(";");
+            complete.push(MaterializedSearchPlan {
+                provenance: ContentHash::from_canonical_material(
+                    "crucible.materialized-fault-search-plan.v1",
+                    &format!("plan={};cases={material}", current.id().to_hex()),
+                ),
+                plan: current,
+                cases: applied,
+                artifacts,
+            });
+            continue;
+        };
+        let program = current
+            .programs()
+            .iter()
+            .find(|program| program.id() == binding.program())
+            .ok_or(SearchMaterializationError::ProgramIdentity)?;
+        let candidates = match binding.search() {
+            BindingSearchPolicy::MutateTraceWindow { candidates, .. } => candidates
+                .iter()
+                .cloned()
+                .map(MaterializedSearchMutation::TraceWindow)
+                .collect::<Vec<_>>(),
+            BindingSearchPolicy::MutateMapping { candidates, .. } => candidates
+                .iter()
+                .cloned()
+                .map(MaterializedSearchMutation::Mapping)
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        for candidate in candidates.into_iter().rev() {
+            let case = match candidate {
+                MaterializedSearchMutation::TraceWindow(candidate) => {
+                    materialize_trace_window(program, binding, store, candidate)?
+                }
+                MaterializedSearchMutation::Mapping(candidate) => {
+                    materialize_mapping(program, binding, candidate)?
+                }
+            };
+            let next = apply_materialized_search_case(&current, &case)?;
+            let mut next_applied = applied.clone();
+            next_applied.push(case);
+            frontier.push((next, next_applied));
+            if frontier.len().saturating_add(complete.len())
+                > usize::try_from(plan.resource_limits().search_choices_per_state)
+                    .unwrap_or(usize::MAX)
+            {
+                return Err(SearchMaterializationError::CandidateProductLimit);
+            }
+        }
+    }
+    complete.sort_by_key(|materialized| materialized.provenance);
+    Ok(complete)
+}
+
+/// Enumerates every authored finite mutation as an ordinary executable case.
+///
+/// Candidates are returned in canonical binding and candidate order. The
+/// materializer never synthesizes a value: every replacement and trace sample
+/// coordinate comes from the admitted scenario contract.
+///
+/// # Errors
+///
+/// Returns [`SearchMaterializationError`] when a candidate can no longer be
+/// materialized from its admitted program, binding, or artifact closure.
+pub fn materialize_search_candidates(
+    plan: &FaultSignalPlan,
+    store: &dyn DagStore,
+) -> Result<Vec<MaterializedSearchCase>, SearchMaterializationError> {
+    let programs = plan
+        .programs()
+        .iter()
+        .map(|program| (program.id(), program))
+        .collect::<BTreeMap<_, _>>();
+    let mut cases = Vec::new();
+    for binding in plan.bindings() {
+        let program = programs
+            .get(&binding.program())
+            .copied()
+            .ok_or(SearchMaterializationError::ProgramIdentity)?;
+        match binding.search() {
+            BindingSearchPolicy::MutateTraceWindow { candidates, .. } => {
+                for candidate in candidates {
+                    cases.push(materialize_trace_window(
+                        program,
+                        binding,
+                        store,
+                        candidate.clone(),
+                    )?);
+                }
+            }
+            BindingSearchPolicy::MutateMapping { candidates, .. } => {
+                for candidate in candidates {
+                    cases.push(materialize_mapping(program, binding, candidate.clone())?);
+                }
+            }
+            BindingSearchPolicy::Fixed
+            | BindingSearchPolicy::BranchOutcome { .. }
+            | BindingSearchPolicy::BranchTransition { .. }
+            | BindingSearchPolicy::BranchParameter { .. } => {}
+        }
+    }
+    Ok(cases)
+}
+
+/// Replaces one mutation binding and its program in the complete fault plan.
+///
+/// # Errors
+///
+/// Returns [`SearchMaterializationError`] if the original plan no longer
+/// contains the candidate's exact program and binding or if final admission
+/// rejects the reconstructed fixed-policy plan.
+pub fn apply_materialized_search_case(
+    plan: &FaultSignalPlan,
+    case: &MaterializedSearchCase,
+) -> Result<FaultSignalPlan, SearchMaterializationError> {
+    let mut replaced_program = false;
+    let programs = plan
+        .programs()
+        .iter()
+        .map(|program| {
+            if program.id() == case.original_program {
+                replaced_program = true;
+                case.program.clone()
+            } else {
+                program.clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut replaced_binding = false;
+    let bindings = plan
+        .bindings()
+        .iter()
+        .map(
+            |binding| -> Result<FaultBinding, SearchMaterializationError> {
+                if binding.id() == &case.binding_id && binding.program() == case.original_program {
+                    replaced_binding = true;
+                    Ok(case.binding.clone())
+                } else if binding.program() == case.original_program {
+                    binding
+                        .rebind_program(&case.program, binding.search().clone())
+                        .map_err(SearchMaterializationError::Binding)
+                } else {
+                    Ok(binding.clone())
+                }
+            },
+        )
+        .collect::<Result<Vec<_>, _>>()?;
+    if !replaced_program || !replaced_binding {
+        return Err(SearchMaterializationError::ProgramIdentity);
+    }
+    FaultSignalPlan::new(programs, bindings, plan.resource_limits())
+        .map_err(SearchMaterializationError::Plan)
+}
+
 /// Materializes a bounded normalized-trace mutation and stores its artifacts.
 ///
 /// Every requested coordinate must name one existing sample in the selected
@@ -101,6 +326,7 @@ pub fn materialize_trace_window(
     let BindingSearchPolicy::MutateTraceWindow {
         start_nanos,
         end_nanos,
+        candidates,
         maximum_mutations,
     } = binding.search()
     else {
@@ -113,7 +339,11 @@ pub fn materialize_trace_window(
             sample.event_sequence.is_some(),
         )
     });
-    if mutation.samples.is_empty()
+    if !binding.signals().contains(&mutation.trace_node) {
+        return Err(SearchMaterializationError::UnauthorizedTraceNode);
+    }
+    if candidates.binary_search(&mutation).is_err()
+        || mutation.samples.is_empty()
         || u64::try_from(mutation.samples.len())
             .map_or(true, |count| count > maximum_mutations.get())
         || mutation.samples.windows(2).any(|pair| {
@@ -128,9 +358,6 @@ pub fn materialize_trace_window(
         return Err(SearchMaterializationError::InvalidMutation);
     }
     let mut nodes = program.nodes().to_vec();
-    if !binding.signals().contains(&mutation.trace_node) {
-        return Err(SearchMaterializationError::UnauthorizedTraceNode);
-    }
     let node = nodes
         .iter_mut()
         .find(|node| node.id == mutation.trace_node)
@@ -302,13 +529,15 @@ pub fn materialize_mapping(
     }
     let BindingSearchPolicy::MutateMapping {
         point_indices,
+        candidates,
         maximum_mutations,
     } = binding.search()
     else {
         return Err(SearchMaterializationError::WrongPolicy);
     };
     mutation.points.sort_by_key(|point| point.index);
-    if mutation.points.is_empty()
+    if candidates.binary_search(&mutation).is_err()
+        || mutation.points.is_empty()
         || u64::try_from(mutation.points.len())
             .map_or(true, |count| count > maximum_mutations.get())
         || mutation
@@ -487,6 +716,8 @@ pub enum SearchMaterializationError {
     UnauthorizedTraceNode,
     /// Mutation count, identity, order, or authored window is invalid.
     InvalidMutation,
+    /// Cartesian candidate materialization exceeds the scenario search bound.
+    CandidateProductLimit,
     /// Named signal node is absent or is not a normalized trace source.
     UnknownTraceNode,
     /// Trace manifest omits the source node's selected channel.
@@ -507,6 +738,8 @@ pub enum SearchMaterializationError {
     Contract(FaultContractError),
     /// Concrete fixed binding failed admission.
     Binding(BindingError),
+    /// Reconstructed complete fault plan failed admission.
+    Plan(FaultSignalPlanError),
     /// Canonical binding-contract encoding failed.
     BindingCodec(serde_json::Error),
     /// Canonical trace codec validation failed.
@@ -530,6 +763,7 @@ impl Error for SearchMaterializationError {
             Self::Evaluation(error) => Some(error),
             Self::Contract(error) => Some(error),
             Self::Binding(error) => Some(error),
+            Self::Plan(error) => Some(error),
             Self::BindingCodec(error) => Some(error),
             Self::Trace(error) => Some(error),
             Self::TraceStore(error) => Some(error),

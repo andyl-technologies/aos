@@ -817,6 +817,8 @@ pub enum BindingSearchPolicy {
         start_nanos: u64,
         /// Exclusive end virtual nanosecond.
         end_nanos: u64,
+        /// Finite concrete mutation schedules considered by search.
+        candidates: Vec<TraceWindowMaterialization>,
         /// Maximum changed samples.
         maximum_mutations: PositiveU64,
     },
@@ -824,6 +826,8 @@ pub enum BindingSearchPolicy {
     MutateMapping {
         /// Canonical point indices.
         point_indices: Vec<u32>,
+        /// Finite concrete mutation schedules considered by search.
+        candidates: Vec<MappingMaterialization>,
         /// Maximum changed points.
         maximum_mutations: PositiveU64,
     },
@@ -836,8 +840,9 @@ impl BindingSearchPolicy {
         match self {
             Self::BranchTransition { candidates } => candidates.len(),
             Self::BranchParameter { candidates, .. } => candidates.len(),
-            Self::MutateMapping { point_indices, .. } => point_indices.len(),
-            Self::Fixed | Self::BranchOutcome { .. } | Self::MutateTraceWindow { .. } => 0,
+            Self::MutateTraceWindow { candidates, .. } => candidates.len(),
+            Self::MutateMapping { candidates, .. } => candidates.len(),
+            Self::Fixed | Self::BranchOutcome { .. } => 0,
         }
     }
 
@@ -906,20 +911,43 @@ impl BindingSearchPolicy {
             Self::MutateTraceWindow {
                 start_nanos,
                 end_nanos,
+                candidates,
                 maximum_mutations,
             } => {
-                let trace_input = signals.iter().any(|signal| {
-                    program.nodes().iter().any(|node| {
-                        &node.id == signal
-                            && matches!(
-                                node.kind,
-                                SignalNodeKind::Source(SignalSourceSpecification::Trace { .. })
-                            )
-                    })
-                });
+                candidates.sort();
                 if *start_nanos >= *end_nanos
                     || maximum_mutations.get() > HARD_SEARCH_CHOICES_PER_STATE
-                    || !trace_input
+                    || validate_candidates(candidates).is_err()
+                    || candidates.iter().any(|candidate| {
+                        let trace_shape = signals
+                            .contains(&candidate.trace_node)
+                            .then(|| {
+                                program.nodes().iter().find_map(|node| {
+                                    (&node.id == &candidate.trace_node
+                                        && matches!(
+                                            node.kind,
+                                            SignalNodeKind::Source(
+                                                SignalSourceSpecification::Trace { .. }
+                                            )
+                                        ))
+                                    .then_some(&node.output)
+                                })
+                            })
+                            .flatten();
+                        candidate.samples.is_empty()
+                            || u64::try_from(candidate.samples.len())
+                                .map_or(true, |count| count > maximum_mutations.get())
+                            || candidate.samples.windows(2).any(|pair| {
+                                (pair[0].coordinate, pair[0].event_sequence)
+                                    >= (pair[1].coordinate, pair[1].event_sequence)
+                            })
+                            || candidate.samples.iter().any(|sample| {
+                                sample.coordinate < *start_nanos
+                                    || sample.coordinate >= *end_nanos
+                                    || sample.value.value_type().as_ref()
+                                        != trace_shape.map(|shape| &shape.value_type)
+                            })
+                    })
                 {
                     Err(BindingError::InvalidSearchPolicy)
                 } else {
@@ -928,17 +956,35 @@ impl BindingSearchPolicy {
             }
             Self::MutateMapping {
                 point_indices,
+                candidates,
                 maximum_mutations,
             } => {
-                let point_count = match mapping {
-                    BindingMapping::PiecewiseParameter { points, .. } => points.len(),
+                let (parameter, point_count) = match mapping {
+                    BindingMapping::PiecewiseParameter {
+                        parameter, points, ..
+                    } => (parameter, points.len()),
                     _ => return Err(BindingError::InvalidSearchPolicy),
                 };
                 point_indices.sort_unstable();
                 validate_candidates(point_indices)?;
+                candidates.sort();
                 if point_indices
                     .iter()
                     .any(|index| usize::try_from(*index).map_or(true, |index| index >= point_count))
+                    || validate_candidates(candidates).is_err()
+                    || candidates.iter().any(|candidate| {
+                        candidate.points.is_empty()
+                            || u64::try_from(candidate.points.len())
+                                .map_or(true, |count| count > maximum_mutations.get())
+                            || candidate
+                                .points
+                                .windows(2)
+                                .any(|pair| pair[0].index >= pair[1].index)
+                            || candidate.points.iter().any(|point| {
+                                point_indices.binary_search(&point.index).is_err()
+                                    || !parameter.accepts_value(&point.point.output)
+                            })
+                    })
                     || usize::try_from(maximum_mutations.get())
                         .map_or(true, |maximum| maximum > point_indices.len())
                 {
@@ -1351,6 +1397,31 @@ impl FaultBinding {
             self.effect.clone(),
             self.opportunity_filter.clone(),
             BindingSearchPolicy::Fixed,
+            self.observability,
+            program,
+            &registry,
+        )
+    }
+
+    pub(crate) fn rebind_program(
+        &self,
+        program: &SignalProgram,
+        search: BindingSearchPolicy,
+    ) -> Result<Self, BindingError> {
+        let registry = BindingMappingRegistry::new(
+            self.transition_declaration.clone().into_iter().collect(),
+            self.service_declaration.clone().into_iter().collect(),
+        )?;
+        Self::new_with_registry(
+            self.id.clone(),
+            self.signals.clone(),
+            self.sampling.clone(),
+            self.mapping.clone(),
+            self.selector.clone(),
+            self.phases.clone(),
+            self.effect.clone(),
+            self.opportunity_filter.clone(),
+            search,
             self.observability,
             program,
             &registry,
