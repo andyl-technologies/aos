@@ -1,12 +1,11 @@
-# 17 — Fault injection: the deterministic fault model
+# 17 — Deterministic fault effects
 
 This file specifies Crucible's **fault model**: the complete taxonomy of
 perturbations a scenario may impose on the simulated world, the exact semantics
-of each, how every probabilistic fault decision is drawn deterministically from
-the seeded decision RNG, where each fault lives in the runtime, how faults are
-scheduled declaratively in the `Plan` and injected imperatively over the control
-plane, and how a weighted random generator produces reproducible fault campaigns
-for fuzzing. Faults are the **one** kind of thing that belongs in the `Plan`
+of each, how every probabilistic fault decision is derived deterministically,
+where each effect lives in the runtime, and how signal programs produce
+reproducible fault campaigns for search and fuzzing. Fault signals and bindings
+are the **one** fault representation that belongs in the `Plan`
 ([`06-spatial-graph.md`](06-spatial-graph.md) §5.1, [SPAT-2], [SPAT-33]):
 topology lives in the `World`, assertions in the `Properties`, and *only*
 faults/events are events.
@@ -23,9 +22,9 @@ exact virtual times ([`08-scheduling.md`](08-scheduling.md) §8.9.4, [SCHED-29])
 perturbs delivery on links and I/O sub-nodes
 ([`15-io-subnodes.md`](15-io-subnodes.md) §15.4, §15.6), is recorded as
 `Decision`s in the `Schedule` ([`05-execution-model.md`](05-execution-model.md)),
-is exercised by imperative control commands
+is never mutated by session control commands
 ([`20-session-control-plane.md`](20-session-control-plane.md)), and is generated
-for exploration by a `ScenarioFamily`
+for exploration by a scenario family
 ([`06-spatial-graph.md`](06-spatial-graph.md) §7,
 [`22-advanced-features.md`](22-advanced-features.md)).
 
@@ -545,81 +544,64 @@ unification explicit; it is the §15.6 table extended to node faults.
   locus MUST reuse this vocabulary rather than introduce a parallel one. *Gate:*
   `gate:layer1-injection`. *Spec:* §17.5; cross-ref 15 §15.6.
 
-## 17.6 Scheduling faults: the declarative `FaultPlan` and imperative injection
+## 17.6 Scheduling faults with signals and bindings
 
-A fault becomes active either **declaratively** — it is part of the `Plan`
-component of the `ScenarioDef`, scheduled at an exact virtual time — or
-**imperatively** — it is injected by a control command during a live session.
-Both routes converge on the same active-fault state the scheduler consults at
-RESOLVE. Both are, more generally, the firing of an `InjectFault`/`HealFault`
-**`Action`** in the 17a event graph (§17.6.5,
-[`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md) §17a.4); the
-declarative `FaultPlan` below is its degenerate pure-`At`-trigger case.
+A fault is authored only as a typed binding in `Plan::fault_signals`. The
+binding samples one or more immutable signal-program outputs at its declared
+boundary or opportunity, maps those values to a typed effect, and contributes
+that effect to the target adapter. A persistent contribution is removed when
+its activation mapping becomes false; there is no imperative fault mutation or
+separate heal operation.
 
-### 17.6.1 The declarative `FaultPlan` (part of the `Plan`)
+Known-time behavior uses `step`, `pulse`, or `periodic_pulse` sources. Behavior
+anchored to an observed event uses the event source and deterministic signal
+operators. Recorded physical behavior uses a normalized content-addressed trace.
+Synthetic sporadic behavior uses a stable-key stochastic source. All of these
+forms enter the same evaluator, binding, adapter, checkpoint, search, and replay
+path.
 
-The `Plan` ([`06-spatial-graph.md`](06-spatial-graph.md) §5.1) is a canonically
-ordered list of `PlanEntry`s. A fault entry schedules a fault to activate at an
-exact virtual time, either for a finite **duration** (`at`) or permanently from a
-start (`permanent_at`); a heal entry removes a tagged fault at an exact virtual
-time. Every entry is scheduled in **virtual time** ([SPAT-20]), never wall-clock,
-and the activation/heal is itself a cross-node event resolved in total order
-([SCHED-29]).
-
-```rust,illustrative
-/// One entry in the declarative `Plan` (06 §5.1). All times are virtual (09).
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub enum PlanEntry {
-    /// Activate `fault` at virtual time `at` for `duration`, then auto-heal.
-    /// Equivalent to an `Inject` at `at` plus a `Heal{tag}` at `at + duration`.
-    At { at: VirtualTime, duration: VirtualDuration, fault: Fault, tag: FaultTag },
-    /// Activate `fault` at virtual time `at`, permanently (no auto-heal).
-    PermanentAt { at: VirtualTime, fault: Fault, tag: FaultTag },
-    /// Remove the tagged fault at virtual time `at`. The tag MUST be injected
-    /// somewhere in the Plan ([SPAT-31]).
-    Heal { at: VirtualTime, tag: FaultTag },
-}
-
-/// A declarative fault campaign — the body of the `Plan` (06 §5.1).
-#[derive(Clone, PartialEq, Eq, Hash, Default)]
-pub struct FaultPlan { pub entries: Vec<PlanEntry> }
-
-impl FaultPlan {
-    /// Schedule a finite-duration fault. Auto-heals at `at + duration`.
-    pub fn at(self, at: VirtualTime, duration: VirtualDuration, fault: Fault) -> Self;
-    /// Schedule a permanent fault (active from `at` to end-of-run unless healed).
-    pub fn permanent_at(self, at: VirtualTime, fault: Fault) -> Self;
-    /// Explicitly heal a previously-injected tagged fault at `at`.
-    pub fn heal(self, at: VirtualTime, tag: impl Into<FaultTag>) -> Self;
-}
-```
+### 17.6.1 The declarative signal/binding plan
 
 ```toml
-# A FaultPlan as it appears in the canonical Plan serialization (06 §6.1).
-# Rates are integer basis points (§17.3.2); times are virtual (09).
-[[plan.entry]]
-at = "10s"
-duration = "30s"
-inject = { fault = "partition", a = "db-0", b = "db-1", direction = "bidirectional", tag = "split" }
+[plan]
+fault_model = "signal_bindings_v2"
+fault_signal_semantic_version = 2
 
-[[plan.entry]]
-at = "20s"
-inject = { fault = "message_loss", a = "db-1", b = "db-2", rate_bp = 2500, tag = "lossy" }
+[[plan.signal]]
+id = "split-window"
+semantic_version = 1
+domain = "virtual_time"
+value_type = "bool"
+unit = "dimensionless"
+scale_decimal_exponent = 0
+inputs = []
 
-[[plan.entry]]
-at = "40s"
-heal = { tag = "split" }            # explicit heal; "lossy" auto-heals never (permanent)
+[plan.signal.node]
+kind = "pulse"
+start = 10000000000
+duration = 30000000000
+inactive = false
+active = true
+
+[[plan.fault_binding]]
+id = "split-db-link"
+semantic_version = 1
+signals = ["split-window"]
+search_policy = { kind = "fixed" }
+
+[plan.fault_binding.sampling]
+kind = "at_boundary"
+
+[plan.fault_binding.mapping]
+kind = "active_when_true"
+invert = false
 ```
 
-- **[FAULT-24]** A `FaultPlan` MUST be the body of the `Plan` component of the
-  `ScenarioDef` ([SPAT-19]) and MUST support declarative scheduling: `at(start,
-  duration, fault)` (finite, auto-healing at `start + duration`), `permanent_at`
-  (active from `start` with no auto-heal), and explicit `heal(tag)` at a virtual
-  time. Every entry MUST be scheduled in virtual time ([SPAT-20]), MUST reference
-  declared nodes/links ([SPAT-19]), and every `heal` tag MUST reference a fault
-  injected somewhere in the `Plan` ([SPAT-31]). The `FaultPlan` MUST be
-  content-addressed as part of the `Plan` ([SPAT-3]) with rates in integer basis
-  points ([FAULT-13]). *Gate:* `gate:content-address`, `gate:e2e-determinism`.
+- **[FAULT-24]** `Plan::fault_signals` MUST be the sole fault representation in
+  the `ScenarioDef`, MUST use `fault_model = "signal_bindings_v2"`, and MUST be
+  content-addressed with the complete program, bindings, resource limits, and
+  referenced artifacts. Targets MUST resolve to declared World objects before
+  execution. *Gate:* `gate:content-address`, `gate:e2e-determinism`.
   *Spec:* §17.6.1; cross-ref 06 §5.1, §9.
 
 - **[FAULT-25]** A fault activation, heal, or auto-heal MUST be resolved by the
@@ -631,142 +613,83 @@ heal = { tag = "split" }            # explicit heal; "lossy" auto-heals never (p
   [SCHED-39]). *Gate:* `gate:layer1-injection`, `gate:scheduler-liveness`.
   *Spec:* §17.6.1; cross-ref 08 §8.5, §8.11.
 
-### 17.6.2 Imperative injection over the control plane
+### 17.6.2 Session control does not mutate faults
 
-During a live session, a control command MAY inject or heal a fault at the
-*current* virtual time, the same way the declarative plan does at scheduled
-times. Imperative injection is for interactive debugging and for
-property-conditional fault campaigns (inject a fault *because* an assertion just
-became satisfied). The command is applied at a quantum boundary ([SCHED-3], the
-[INV-8] yield point), so it lands at a well-defined virtual time and is recorded
-in the `Schedule` exactly like a declarative activation — a session that injected
-faults imperatively still reduces to a self-contained reproduction artifact
-([SPAT-28]).
+The session control plane may pause, resume, save, fork, and select an explorer
+candidate, but it cannot add, remove, or rewrite a fault. Interactive fault
+experiments create a new scenario or a child configuration with a typed search
+override. Both forms are content-addressed and replayable.
 
-- **[FAULT-26]** Crucible MUST support **imperative** fault injection and healing
-  via control commands ([`20-session-control-plane.md`](20-session-control-plane.md)):
-  an `inject(fault, tag)` and a `heal(tag)` applied at the current virtual time.
-  An imperative injection MUST be applied only at a quantum boundary ([SCHED-3],
-  [SCHED-33]) and MUST be recorded in the `Schedule` as a `Decision`
-  ([`05-execution-model.md`](05-execution-model.md)) at that exact virtual time,
-  so a session driven by imperative commands reduces to the same self-contained
-  reproduction artifact ([SPAT-28]) as an equivalent declarative `Plan`. *Gate:*
-  `gate:control-responsive`, `gate:replay-oracle`. *Spec:* §17.6.2; cross-ref 20,
-  05.
+- **[FAULT-26]** Session commands MUST NOT provide an out-of-band fault mutation
+  path. A changed signal program or binding creates a new scenario identity; an
+  explorer selection creates a child configuration whose canonical override is
+  bound to the exact parent, choice identity, candidate-set digest, and candidate
+  index. *Gate:* `gate:control-responsive`, `gate:state-space-search`,
+  `gate:replay-oracle`. *Spec:* §17.6.2; cross-ref 20, 22.
 
-### 17.6.3 Tag-based activation and heal
+### 17.6.3 Binding identity and persistent contribution state
 
-Every injected fault carries a **tag** ([`02-glossary.md`](02-glossary.md)): a
-stable handle used to heal it. A heal references a tag, not a fault value, so the
-exact fault being removed is unambiguous even when several faults of the same
-kind are active. Injecting a fault with a tag that is already active replaces the
-prior fault under that tag (deterministically). A heal of an unknown tag is a
-no-op at runtime but a *declarative* heal whose tag is never injected MUST be
-rejected at build time ([SPAT-31]) — the fail-early discipline of
-([`06-spatial-graph.md`](06-spatial-graph.md) §9).
+Every binding has a stable content-addressed identity. A mapping evaluation
+either contributes a typed effect or does not; a false transition removes that
+binding's prior persistent contribution. Multiple bindings can contribute the
+same effect kind without ambiguous handles because adapter state is keyed by
+binding and target identity.
 
-- **[FAULT-27]** Every injected fault MUST carry a stable **tag**; a heal MUST
-  reference a fault by its tag, not by value. Injecting a fault under a tag that
-  is already active MUST deterministically replace the prior fault for that tag.
-  A declarative `heal` whose tag is never injected in the `Plan` MUST be rejected
-  at build time ([SPAT-31]); an imperative heal of an unknown tag MUST be a
-  defined no-op at runtime, never a panic. The active-tag set MUST be part of the
-  scheduler state captured in `MaterializedState` so a resumed run heals the same
-  tags ([TEMP-7]). *Gate:* `gate:content-address`, `gate:replay-oracle`. *Spec:*
-  §17.6.3; cross-ref 06 §9, 07 §3.
+- **[FAULT-27]** Binding contribution and hysteresis state MUST be part of the
+  authenticated fault-runtime checkpoint. Restore MUST reproduce the same active
+  contributions without replaying a control mutation. *Gate:*
+  `gate:checkpoint-materialization`, `gate:replay-oracle`. *Spec:* §17.6.3.
 
-### 17.6.4 The active-fault table the scheduler consults
+### 17.6.4 Adapter state at deterministic opportunities
 
-At runtime, the union of declaratively-activated and imperatively-injected faults
-forms the **active-fault table** — the effective fault set the scheduler consults
-at RESOLVE to decide each frame's delivery and each I/O response's completion. The
-table is keyed for fast lookup by directed edge and by node, is combined per
-§17.3.3 when multiple faults overlap, and is recomputed (with a lookahead
-recompute) at the quantum boundary whenever an activation/heal changes it
-([SCHED-37]).
+At each admitted boundary or hardware opportunity, the evaluator samples the
+declared signals, resolves mappings in canonical binding order, and commits the
+combined typed effects atomically through the owning adapter. Network lookahead
+is recomputed at the exact boundary when a committed effect changes causal
+delivery bounds.
 
-- **[FAULT-28]** The scheduler MUST maintain a deterministic **active-fault
-  table** (the union of declaratively-activated and imperatively-injected faults),
-  keyed by directed edge and by node, combined per §17.3.3 when faults overlap,
-  and consulted at RESOLVE to decide frame delivery and I/O completion ([SCHED-29],
-  [IO-20], [IO-25]). The table MUST be recomputed — with the lookahead/horizon
-  recompute of [SCHED-37] — at the quantum boundary on any activation or heal, and
-  MUST be part of `MaterializedState` so a resumed/forked run sees the identical
-  active-fault set ([TEMP-7]). The table MUST NOT depend on any unordered-map
-  iteration order on the ordering-significant path ([INV-9], [SCHED-19]). *Gate:*
-  `gate:layer1-injection`, `gate:harness-lint`, `gate:replay-oracle`. *Spec:*
-  §17.6.4; cross-ref 08 §8.11, 07 §3.
+- **[FAULT-28]** The evaluator, binding ledger, adapter state, and same-boundary
+  sequence MUST use canonical ordered collections and MUST be checkpointed as one
+  authenticated continuation. No outcome may depend on hash-map iteration or
+  host arrival order. *Gate:* `gate:harness-lint`, `gate:replay-oracle`,
+  `gate:e2e-determinism`. *Spec:* §17.6.4; cross-ref 08 §8.11, 07 §3.
 
-### 17.6.5 Faults are `Action`s in the 17a event graph
+### 17.6.5 Event observations are signal inputs, not fault actions
 
-The scheduling story above is one model, not two. A fault is not a special-case
-scheduling primitive: it is an **`Action`** in the event graph of
-[`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md). `InjectFault`
-and `HealFault` are the canonical actions of that graph ([TRIG-22], 17a §17a.4);
-an *event* binds a trigger condition to one of them, and "inject the partition once
-the cluster is observed healthy, heal it thirty virtual seconds later" is two
-events whose triggers are observable conditions (17a §17a.2), not two `PlanEntry`s.
-The condition/trigger vocabulary — the timer-fired, event-fired,
-assertion-satisfied/violated, and compound all-of/any-of triggers that
-[`06-spatial-graph.md`](06-spatial-graph.md) §5.1 attributes to the `Plan` — is
-defined once in 17a; this file does **not** re-specify it and MUST be read as a
-consumer of it (a fault is a trigger *action*).
+The event graph and fault system remain separate, composable parts of the Plan.
+The event graph produces deterministic referenced occurrences. Event-domain
+signal sources consume those occurrences and bindings map their values to typed
+effects. The `Action` taxonomy therefore contains no fault action, and there is
+no lowering from an event action into a second fault representation.
 
-The declarative `FaultPlan` of §17.6.1 (`At` / `PermanentAt` / `Heal`) is the
-**degenerate case** of that event graph: the subset whose every trigger is a pure
-`At` condition and whose every action is `InjectFault`/`HealFault`. It lowers
-mechanically to 17a events — `PermanentAt { at, fault, tag }` ⇒ one event
-`(trigger: At{at}, action: InjectFault{tag, fault})`; a finite `At { at, duration,
-fault, tag }` ⇒ that inject event plus a heal event `(trigger: At{at+duration},
-action: HealFault{tag})`; `Heal { at, tag }` ⇒ `(trigger: At{at}, action:
-HealFault{tag})` (17a §17a.7). The `FaultPlan` and the event graph are therefore
-**one content-addressed model**: an author who needs only time-scheduled faults
-writes the `FaultPlan` and never touches a `ConsoleMatch`; an author who needs
-observation-anchored choreography writes richer events; both hash and reduce
-identically (17a [TRIG-28], [TRIG-29]). Imperative injection (§17.6.2) is the
-control-plane spelling of firing an `InjectFault`/`HealFault` action at the current
-virtual time, recorded as a `Decision` ([FAULT-26]) rather than computed from a
-trigger — the firing-vs-Decision boundary 17a §17a.3.3 draws.
+- **[FAULT-33]** Observation-anchored faults MUST use a referenced event signal
+  source and the same binding runtime as time-, trace-, spatial-, and
+  opportunity-driven faults. Event occurrences and signal cursors MUST cross the
+  checkpoint and replay boundary. *Gate:* `gate:content-address`,
+  `gate:e2e-determinism`. *Spec:* §17.6.5; cross-ref 17a §17a.4.
 
-- **[FAULT-33]** A fault MUST be expressed as an `InjectFault`/`HealFault`
-  **`Action`** in the event graph of
-  [`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md) ([TRIG-22],
-  17a §17a.4); there MUST be no parallel fault-scheduling mechanism outside that
-  action set. The trigger/condition vocabulary that decides *when* a fault fires
-  MUST be the single vocabulary of 17a §17a.2 (this file MUST NOT define a separate
-  one), and a declarative or imperative fault MUST apply at its firing virtual time
-  at a quantum boundary exactly as 17a [TRIG-23] requires. *Gate:*
-  `gate:layer1-injection`, `gate:e2e-determinism`. *Spec:* §17.6.5; cross-ref 17a
-  §17a.4, §17a.3.3.
-
-- **[FAULT-34]** The declarative `FaultPlan` (§17.6.1 — `At` / `PermanentAt` /
-  `Heal`) MUST be the **degenerate pure-`At` case** of the 17a event graph and MUST
-  lower to it mechanically: each `PlanEntry` lowers to one or more events whose
-  trigger is a pure `At` condition and whose action is `InjectFault`/`HealFault`
-  (a finite `At { duration }` lowering to an inject event plus an `At { at+duration
-  }` heal event, 17a §17a.7). The `FaultPlan` and the event graph MUST be one
-  content-addressed model sharing one canonicalization, one content hash, and one
-  build-time validator (17a [TRIG-28], [TRIG-29]); a pure-`At` `FaultPlan` MUST hash
-  and reduce identically whether expressed as a `FaultPlan` or as the equivalent
-  `At`-triggered event graph. *Gate:* `gate:content-address`, `gate:e2e-determinism`.
-  *Spec:* §17.6.5; cross-ref 17a §17a.7, 06 §5.1.
+- **[FAULT-34]** Known-time faults MUST use time-domain signal nodes such as
+  `step`, `pulse`, or `periodic_pulse`; they MUST NOT lower through a historical
+  activation-row representation. Equivalent authored programs MUST share the
+  signal program's canonical identity and evaluation path. *Gate:*
+  `gate:content-address`, `gate:e2e-determinism`. *Spec:* §17.6.5.
 
 ## 17.7 `RandomFaultConfig`: weighted probabilistic fault generation
 
 For fuzzing and state-space exploration ([G-6],
 [`22-advanced-features.md`](22-advanced-features.md)) an author needs not one
 hand-written campaign but a *generator* that produces a fresh, reproducible
-`FaultPlan` from a seed. `RandomFaultConfig` is that generator's configuration: a
+`signal/binding plan` from a seed. `RandomFaultConfig` is that generator's configuration: a
 set of nodes, a run duration, per-kind weights, severity bounds, and a seed.
 Generation is itself **fully deterministic from the seed** — the same config
-produces byte-identical `FaultPlan`s every time — so a discovered failure reduces
+produces byte-identical `signal/binding plan`s every time — so a discovered failure reduces
 to a concrete `ScenarioDef` (the generated `Plan` is pinned and content-addressed)
 with no reference back to the generator ([SPAT-27]).
 
 ```rust,illustrative
 /// Configuration for weighted, reproducible random fault-campaign generation
 /// (fuzzing/exploration, file 22). `generate(config)` is a pure function of
-/// `config` (including its seed): same config ⇒ byte-identical `FaultPlan`.
+/// `config` (including its seed): same config ⇒ byte-identical `signal/binding plan`.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct RandomFaultConfig {
     /// The nodes the generator may target (drawn from the `World`).
@@ -801,21 +724,21 @@ slot it picks a start time, a duration, a kind (a weighted categorical draw over
 `FaultWeights`), a target (node or link), and severity parameters within
 `SeverityBounds`. It then enforces `FaultCaps` by deterministically pruning excess
 faults (e.g. keep the first `max_partitions` partitions in generation order). The
-result is a `FaultPlan` whose rates are integer basis points ([FAULT-13]) and
+result is a `signal/binding plan` whose rates are integer basis points ([FAULT-13]) and
 whose entries are canonically ordered for hashing ([SPAT-30]).
 
 - **[FAULT-29]** Crucible MUST provide a `RandomFaultConfig` that generates a
-  `FaultPlan` by weighted probabilistic selection over the fault taxonomy, ranging
+  `signal/binding plan` by weighted probabilistic selection over the fault taxonomy, ranging
   over kind (via integer `FaultWeights`), target (node/link from the `World`),
   start time, duration, and severity (within `SeverityBounds`), subject to integer
   `FaultCaps` (max concurrent faults, max partitions, max crashes). Generation
   MUST be a **pure function of the config including its seed**: the same config
-  MUST produce a byte-identical `FaultPlan` on every host (the generator draws
+  MUST produce a byte-identical `signal/binding plan` on every host (the generator draws
   from one seeded RNG in a fixed order and prunes to caps deterministically).
   *Gate:* `gate:e2e-determinism`, `gate:content-address`. *Spec:* §17.7;
   forward-ref 22.
 
-- **[FAULT-30]** A `FaultPlan` produced by `RandomFaultConfig` MUST lower every
+- **[FAULT-30]** A `signal/binding plan` produced by `RandomFaultConfig` MUST lower every
   generated rate to integer basis points ([FAULT-13]) and canonically order its
   entries ([SPAT-30]) before it is hashed, so a generated campaign is
   content-addressed and reproducible like a hand-written one. A failure discovered
@@ -888,11 +811,10 @@ TAXONOMY by locus:
   9p (fs sub-node): latency, failure (FAULT-6)
   I/O faults are UNIFORM with network faults — perturb modeled response (FAULT-22,23)
 SCHEDULING:
-  declarative FaultPlan in the Plan: at(start,dur,fault) / permanent_at / heal,
-    in virtual time, content-addressed, exact-time activation (FAULT-24,25)
-  imperative inject/heal over the control plane at quantum boundaries,
-    recorded in the Schedule (FAULT-26)
-  tag-based: heal by tag, replace-on-retag, active set in MaterializedState (FAULT-27,28)
+  one declarative signal/binding plan: time, event, trace, spatial, stochastic,
+    and opportunity domains share one content-addressed evaluator (FAULT-24,25)
+  session control cannot mutate faults; search selects typed child overrides (FAULT-26)
+  binding contribution and adapter state are authenticated continuation state (FAULT-27,28)
 GENERATION: RandomFaultConfig — weighted, reproducible from seed, lowered to
   basis points + canonical order before hashing; failures pin a concrete def (FAULT-29,30)
 GATE: same seed + plan ⇒ identical activation icounts AND effects;
@@ -905,298 +827,10 @@ basis points, then a fault-injected run is a pure function of `(ScenarioDef,
 Seed, Schedule)` exactly like a fault-free run — which is what
 `gate:layer1-injection` and `gate:e2e-determinism` enforce.
 
-## Implementation checklist
+## Implementation status
 
-> The checklist task text below is authoritative for this topic; phase ordering lives in
-> [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
-> whose primary area is fault injection, tracked here by [PLAN-3]. They
-> populate Phase 1 (the determinism / harness / transport foundation), sequenced
-> after the L1 scheduler and I/O-sub-node primitives and before any L3+ feature
-> built on faults (assertions, search, fuzzing).
-
-- [x] **T-FAULT-1** Define the `Fault` taxonomy enum (network: partition[bi/A→B/
-  B→A], loss, reorder, duplicate, corruption[bit-flip/field-mutation/truncation],
-  bandwidth, latency bump; node: crash[restart policy], slow, clock-skew; block:
-  latency, failure, reorder; 9p: latency, failure) with integer basis-point rates
-  and integer time/bandwidth units. — satisfies [FAULT-3], [FAULT-4], [FAULT-5],
-  [FAULT-6], [FAULT-7], [FAULT-8], [FAULT-9], [FAULT-10]; spec §17.2.
-
-  Completed by `checks.crucible.phase4.faultTaxonomy`: the engine model now
-  exports the closed `Fault` taxonomy with network, node, block, and 9p variants,
-  including directed/bidirectional partitions, loss, reorder, duplicate,
-  bit-flip/field-mutation/truncation corruption, bandwidth, latency bump, crash
-  restart policies, slow, and clock-skew. `FaultRateBasisPoints`,
-  `FaultSlowdownFactorBasisPoints`, `FaultDuration`, and
-  `FaultBandwidthBitsPerSecond` keep all rates and units integer-only, reject
-  out-of-range basis points, below-identity slow factors, zero bandwidth caps,
-  and invalid 9p errno values, and feed stable length-delimited canonical
-  material plus content hashes. The focused taxonomy test covers every RFC kind,
-  directed partition and restart-policy variants, block jitter and failure
-  modes, 9p errno, integer-only material, and content-address drift when
-  parameters change.
-- [x] **T-FAULT-2** Enforce the one design rule: every fault perturbs modeled
-  behavior only (no host wall-clock/scheduling/FS/entropy) and never mutates the
-  static topology; add a harness-lint check on the fault apply path. — satisfies
-  [FAULT-1]; spec §17.1.
-
-  Completed by `checks.crucible.phase4.faultModelRule`: the trigger fault
-  application path is now covered by `gate:harness-lint` through a dedicated
-  `fault_apply_path_failures` scan that rejects host time, host filesystem,
-  host thread scheduling, host entropy/RNG, and topology-mutation tokens inside
-  the `InjectFault`/`HealFault` effect arms and requires those arms to be direct
-  modeled `active_faults` mutations with no helper calls or assignments. The
-  focused `fault_model_rule` engine test applies and heals a partition fault,
-  proving the path changes only modeled `active_faults`/causal trigger-action
-  log state while the schedule, scheduler static topology, and source `World`
-  topology remain unchanged.
-- [x] **T-FAULT-3** Route every probabilistic fault decision through the single
-  seeded decision RNG in the scheduler's total order, fork per-link/per-device
-  streams by name-hash, and record each decision as a `Decision`; prove
-  replay re-applies recorded decisions without re-rolling. — satisfies [FAULT-2],
-  [FAULT-11], [FAULT-12]; spec §17.3.1.
-
-  Completed by `checks.crucible.phase4.faultDecisionRng`: the scheduler RESOLVE
-  path consumes `ScheduledEventPayload::ProbabilisticFault` choices in canonical
-  event order, draws through `DecisionRecorder` seeded from the run
-  `Configuration`, appends the raw `RngDraw` and derived `FaultFires` decisions,
-  and advances per-stream cursors for those recorded draws. Link and device
-  fault streams use the name-hashed link/device RNG domains, including the
-  block/9p sub-node bridge tests that record device `RngDraw`/`FaultFires`
-  outcomes. The focused replay regressions prove recorded `FaultFires` outcomes
-  are replayed as schedule material, not by re-rolling or advancing the decision
-  RNG, and the check pins the reproduction-artifact replay test that carries
-  recorded `FaultFires`/`RngDraw` entries through offline artifact replay.
-- [x] **T-FAULT-4** Implement integer-basis-point rates and exact integer
-  Bernoulli decisions; ban floats on the determinism-relevant path and in the
-  canonical `Plan` serialization; compute all delays/jitter/bandwidth in integer
-  arithmetic. — satisfies [FAULT-13], [FAULT-14]; spec §17.3.2.
-
-  Completed by `checks.crucible.phase4.faultIntegerRates`: the shared
-  `FaultRateBasisPoints` type now exposes the canonical `10_000` denominator,
-  deterministic raw-draw-to-bucket reduction, and the exact
-  `bucket < basis_points` Bernoulli rule used by the scheduler's
-  `SchedulerResolveFaultChoice` payload and the recorder's
-  `decide_fault_basis_points` API, which records the raw `RngDraw` before the
-  derived `FaultFires` outcome. The focused regression covers zero, boundary,
-  wraparound, and always-on basis-point decisions; exercises the scheduler
-  RESOLVE boundary so `bucket == rate` does not fire and `bucket < rate` does;
-  verifies canonical fault material emits `rate_basis_points`,
-  `factor_basis_points`, `*_nanos`, and `bits_per_second` integer fields without
-  decimal rates; and pins scheduled plan TOML fault entries as float-free,
-  including rejection of decimal `rate = 1.5` fault parameters. The gate also
-  checks the block/9p/link shared device transforms for exact-fraction
-  probability, integer serialization delay, and integer jitter/reorder
-  arithmetic.
-- [x] **T-FAULT-5** Implement deterministic, injection-order-independent
-  combination of overlapping same-kind faults per the §17.3.3 table. — satisfies
-  [FAULT-15]; spec §17.3.3.
-
-  Completed by `checks.crucible.phase4.faultCombination`: the model layer now
-  exposes a pure `CombinedFaults::from_faults` reducer that groups active
-  taxonomy faults by target and computes combined effects from the set, not
-  declaration or injection order. The reducer implements the §17.3.3 table with
-  highest-first loss/block/9p failure rate lists for any-fires evaluation,
-  while preserving each 9p failure rate with its errno payload; saturating
-  integer sums for latency and clock skew; widest windows for reorder;
-  highest-rate duplicate/corruption/slow choices; any-covers partition coverage;
-  any-crash node state; and most-severe block failure mode. The focused
-  regression reverses the same active set to prove order independence, checks
-  network, node, block, and 9p rows explicitly, and includes independent second
-  targets to prove same-kind faults do not combine across targets.
-- [x] **T-FAULT-6** Apply network faults on the link sub-node at RESOLVE
-  (partition/loss drop; latency/jitter/reorder/bandwidth shift delivery_icount;
-  duplicate emits a second frame; corruption mutates payload), honor
-  conservative-latency-bound raising as-is, clamp bound-lowering to the floor,
-  and trigger the lookahead recompute on conservative latency-bound change. —
-  satisfies [FAULT-16], [FAULT-17]; spec §17.4.1; cross-ref 08 §8.11, 15 §15.4.
-
-  Completed by `checks.crucible.phase4.networkFaultApplication`: the engine
-  bridge lowers combined RFC network faults onto the concrete link sub-node
-  before RESOLVE, preserving highest-first any-fires loss rates, summed exact
-  bit-rate bandwidth delays, latency-bound raises, duplicate gaps, fixed-order
-  corruption strategies, directed partition drops, and directed partition edge
-  removals. The link table now carries overlapping loss rates, exact
-  bit-per-second caps, and corruption strategy lists while retaining the existing
-  floor clamp and lookahead recompute signal for conservative latency changes.
-  Partition drops are recorded separately from probabilistic loss decisions, and
-  the scheduler-facing application bridge queues the topology mutation with the
-  link fault table. The heal bridge re-applies the remaining fault table and
-  queues both remaining partition removals and restored directed edges that no
-  active partition still covers. The focused regression drives a combined fault
-  set through `NetLink::emit`, proves seeded payload mutation, duplicate
-  emission, any-fires loss drop, partition drop recording, and applies the
-  bridge-produced partition, partial-heal, and full-heal changes through
-  `SingleScheduler` so removed directed edges stop authorizing sends or
-  contributing lookahead until restored.
-- [x] **T-FAULT-7** Apply node faults on the VM: slow stretches the vt map
-  without altering the retired instruction stream; clock-skew offsets only the
-  perceived time-of-day source, never virtual time/icount. — satisfies
-  [FAULT-18], [FAULT-21]; spec §17.4.2, §17.4.4.
-
-  Completed by `checks.crucible.phase4.nodeFaultApplication`: VM timing faults
-  now lower combined node-fault effects into an anchored per-node timing
-  projection in `SingleScheduler`. Slowdown preserves the VM's current
-  faulted virtual time at activation, stretches future counter-to-virtual-time
-  mapping by the integer basis-point factor, and computes RUN ceilings by the
-  inverse slowed projection, so the VM retires the same counter stream while
-  advancing more slowly against peers. Clock skew is stored only in the
-  guest-visible projection; effective clocks, frontier computation, RUN
-  ceilings, completion event keys, preemption timestamps, and ordering keys
-  remain on the scheduler axis. The focused regression covers anchored slow
-  projection, slowed scheduler RUN ceilings, slowed preemption and I/O
-  completion timestamps, and guest-visible-only clock skew.
-- [x] **T-FAULT-8** Implement crash semantics (stop runtime, discard in-flight
-  I/O, break connections, deterministic recorded discard set) and restart
-  policies (FromReadyPoint / FromLastCheckpoint / StayDown), proving the crashed
-  node constrains no peer and replays identically. — satisfies [FAULT-19],
-  [FAULT-20]; spec §17.4.3.
-  Completed by `checks.crucible.phase4.nodeCrashApplication`: `SingleScheduler`
-  now records crash/restart applications, stops crashed VM nodes by removing
-  them from PICK/frontier pressure, discards incident scheduler events and
-  pending device completions with full delivery keys, suppresses incident
-  effective topology edges while retaining later edge updates for restart, and
-  applies FromReadyPoint, FromLastCheckpoint from a recorded scheduler
-  checkpoint anchor, and StayDown plus explicit restart. The focused regressions
-  cover deterministic run-twice replay evidence, unrelated-work survival,
-  peer progress, frozen all-crashed frontier behavior, and topology updates
-  while a node is down.
-- [x] **T-FAULT-9** Apply block/9p faults on their I/O sub-nodes at RESOLVE,
-  uniform with network faults (latency/jitter shift; failure error/drop; reorder;
-  duplicate; corruption), drawn from the per-device RNG, with active I/O faults in
-  `MaterializedState`. — satisfies [FAULT-22], [FAULT-23]; spec §17.4.5, §17.5;
-  cross-ref 15 §15.6.
-  Completed by `checks.crucible.phase4.ioFaultApplication`: combined block and
-  9p fault tables now lower to the concrete `IoFaults` applied on live
-  `DeviceSchedulingSubNode`s. Latency, jitter, reorder, duplicate, corruption,
-  and bit-rate bandwidth share the per-device RNG path; block failures re-encode
-  native block error payloads or record decision-only drop deliveries; 9p failures
-  re-encode `Rlerror` with the selected errno and original tag. Active bit-rate
-  bandwidth and overlapping failure rates are folded into scheduler active-fault
-  state so `MaterializedState` captures the live I/O fault set.
-- [x] **T-FAULT-10** Implement the declarative `FaultPlan` (at / permanent_at /
-  heal) as the body of the `Plan`, in virtual time, with build-time validation
-  (declared refs, heal-tag injected somewhere, in-range params) and integer-bp
-  content-addressing; activate/heal at exact virtual times in total order with the
-  topology swap + lookahead recompute. Express every fault as an
-  `InjectFault`/`HealFault` `Action` in the 17a event graph (no parallel fault
-  scheduler) and lower the declarative `FaultPlan` mechanically as the degenerate
-  pure-`At` case sharing one canonicalization and content hash. — satisfies
-  [FAULT-24], [FAULT-25], [FAULT-33], [FAULT-34]; spec §17.6.1; cross-ref 06 §9,
-  08 §8.11, 17a §17a.4, §17a.7.
-  Completed by `checks.crucible.phase4.faultPlan`: `Plan` now carries a
-  full-taxonomy `FaultPlan` body with canonical `at`, `permanent_at`, and `heal`
-  entries, world-time validation for node/link refs and heal tags, integer-param
-  TOML parsing, compact-binary round trips, and pure-`At` event-graph lowering
-  into `InjectFault`/`HealFault` actions in deterministic same-time order. The
-  lowered trigger path projects active taxonomy faults into `CombinedFaults`,
-  applies scheduler-owned node/topology/device effects, and exposes a live
-  `NetLink` bridge for trigger-owned network faults. The `FaultPlan` content hash
-  matches the mechanically equivalent pure-`At` event graph; block/9p device refs
-  fail closed until the implemented `World` grows first-class I/O participant
-  declarations.
-- [x] **T-FAULT-11** Implement imperative inject/heal over the control plane
-  applied at quantum boundaries and recorded in the `Schedule`, so an
-  imperatively-driven session reduces to the same self-contained repro artifact.
-  — satisfies [FAULT-26]; spec §17.6.2; cross-ref 20, 05.
-  Completed by `checks.crucible.phase4.imperativeFaultControl`: control
-  operations and session commands now carry typed full-taxonomy
-  `InjectFault`/`HealFault` actions, apply them only during scheduler boundary
-  drain, record each action as a `Decision::ControlFault` with exact virtual
-  time and control sequence, and feed the resulting active-fault table through
-  the same scheduler-owned node/topology/device application path used by
-  declarative trigger faults. Recorded schedule prefixes rehydrate active
-  imperative fault state without resubmitting controls, and compact-binary
-  schedule round trips include control-fault decisions. Unknown imperative heals
-  remain runtime no-ops while still being recorded in the schedule artifact.
-- [x] **T-FAULT-12** Implement tag-based activation/heal (heal by tag,
-  replace-on-retag, build-time rejection of declarative heal of an uninjected
-  tag, runtime no-op heal of an unknown tag) and carry the active-tag set in
-  `MaterializedState`. — satisfies [FAULT-27]; spec §17.6.3; cross-ref 06 §9, 07.
-  Completed by `checks.crucible.phase4.faultTagState`: trigger and imperative
-  control fault application now share tag-keyed activation semantics where
-  reinjecting an active tag replaces the prior binding and healing removes only
-  the named tag. Declarative `FaultPlan` heals whose tag is never injected remain
-  build-time errors, while imperative unknown heals are recorded runtime no-ops.
-  `SchedulerState` now materializes the active tag-to-fault binding, hashes it
-  into `MaterializedState`, and includes it in symmetry material.
-  `SingleScheduler::materialized_scheduler_state` captures declarative
-  trigger/fault-plan active tags, while fat checkpoint materialization derives
-  imperative tags from recorded `Decision::ControlFault` schedule prefixes so
-  resumed checkpoints carry the same healable tags.
-- [x] **T-FAULT-13** Implement the scheduler's deterministic active-fault table
-  (edge/node-keyed, combined per §17.3.3, recomputed with lookahead at the quantum
-  boundary on activation/heal, in `MaterializedState`, no unordered iteration). —
-  satisfies [FAULT-28]; spec §17.6.4; cross-ref 08 §8.11, 07 §3.
-  Completed by `checks.crucible.phase4.activeFaultTable`: `SchedulerState` now
-  carries a materialized `ActiveFaultTable` with directed network-edge keys plus
-  combined node, block, and 9p device maps. It is recomputed from active tag
-  bindings for recorded `Decision::ControlFault` schedule replay and captured
-  directly from `SingleScheduler`'s trigger-owned active projection for
-  declarative trigger/fault-plan activations, including legacy crash/partition
-  membership faults. The table is hashed into `MaterializedState` with explicit
-  `BTreeMap` iteration and field writers, so resumed/forked runs preserve the
-  same combined active network, node, block, and 9p lookup table.
-- [x] **T-FAULT-14** Implement `RandomFaultConfig` weighted reproducible
-  generation (kind via integer weights, target/start/duration/severity within
-  bounds, caps enforced by deterministic pruning), pure from the seed, lowering
-  rates to basis points and canonically ordering before hashing; a discovered
-  failure pins a concrete content-addressed def. — satisfies [FAULT-29],
-  [FAULT-30]; spec §17.7; forward-ref 22.
-  Completed by `checks.crucible.phase4.randomFaultConfig`: the model layer now
-  exposes `RandomFaultConfig`, `FaultWeights`, `SeverityBounds`, and `FaultCaps`
-  and generates a validated canonical `FaultPlan` from one seeded RNG fork. The
-  generator draws start time, duration, weighted kind, target, and integer
-  severity parameters, lowers rates through `FaultRateBasisPoints`, and prunes
-  max-concurrent, partition, and crash caps deterministically in generation
-  order. Generated plans validate through the existing `FaultPlan`/`Plan`
-  content-addressing path so a random failure can be pinned as a concrete
-  `ScenarioDef`. Heterogeneous Worlds now contribute content-derived block/9p
-  targets; mixed device weights have a pinned golden plan, target selection stays
-  within the selected device family, and the unbiased bounded sampler has a
-  forced-rejection regression proving it consumes the biased prefix before the
-  next logical field. The focused gate pins the generated failure as a concrete
-  content-addressed `ScenarioDef`, regenerates it byte-identically from the same
-  seed, and verifies different seeds change the generated plan.
-- [x] **T-FAULT-15** Wire the fault determinism gate: a Plan of every currently
-  plan-valid fault kind run twice yields identical activation icounts, identical
-  effects, and an identical decision-RNG draw sequence; a divergence localizes to
-  the first differing fault decision. — satisfies [FAULT-31]; spec §17.8;
-  cross-ref 24.
-  Completed by `checks.crucible.phase4.faultDeterminismGate`, which
-  lowers a deterministic `FaultPlan` containing every plan-valid network, node,
-  block, and 9p taxonomy kind, including each network corruption sub-kind. The
-  World declares content-addressed block/9p nodes; the gate resolves their real
-  immutable artifacts through the production World-backed scheduler constructor,
-  activates the Plan through the trigger scheduler, and drives the attached
-  concrete `DeviceSchedulingSubNode`s. Two runs compare activation times, active
-  tag/table effects, live link/device fault tables, full delivery records, exact
-  payload/timing effects, raw `RngDraw`s, and derived `FaultFires` decisions.
-  Dedicated link/device probes prevent partition/loss from masking duplicate,
-  corruption, and timing effects, while negative regressions localize mutated,
-  inserted, truncated, and raw-draw divergences. A separate L4 integration test
-  starts the World-backed session and proves a session fault command changes the
-  active table of the artifact-backed device owned by that same scheduler. The
-  Gate fingerprints now record the live counter of every scheduler node at each
-  fault activation in addition to the shift-zero activation icount. The crash
-  case starts with an artifact-backed block completion in flight and proves the
-  concrete crash application discards that exact completion. The run-twice
-  fingerprint includes these activation counters and crash-discard records
-  alongside the already concrete failure, timing, duplicate, and corruption
-  effects required by [FAULT-31].
-- [x] **T-FAULT-16** Exercise every fault kind against its production device core
-  (apply fault, drive request/frame sequence with a fixed seed, assert perturbed
-  deliveries/drops/recorded decisions) with a per-kind run-twice determinism +
-  divergence-localization test. — satisfies [FAULT-32]; spec §17.8; cross-ref 15
-  §15.7, 24.
-  Completed by `checks.crucible.phase4.faultProductionDeviceCoreGate`: the production device core
-  now drives every network-link, block, and 9p fault kind through a fixed
-  frame/request sequence, asserts the visible perturbation (drop, delay, duplicate
-  delivery, error reply/status, byte corruption, bandwidth serialization), checks
-  exact recorded `RngDraw` replay and `FaultFires` loss/duplicate/corrupt triples,
-  runs each case twice for byte-identical replay, and compares against a
-  fault-free run with pinned first-divergence fields. Network partition coverage
-  includes A-to-B drops, B-to-A unaffected direction, and bidirectional drops;
-  network corruption sub-kinds are split into bit-flip, field-mutation, and
-  truncation cases; reorder uses multi-frame/request batches so the observed
-  delivery order must change rather than merely delay; block failure covers both
-  error-status and drop modes.
+The former activation-row implementation checklist has been retired with its
+execution model. The authoritative signal-system implementation requirements,
+per-effect evidence, and terminal acceptance gate are in
+[`RFC-0013`](../0013-signal-driven-fault-model/README.md) and its
+[`implementation plan`](../0013-signal-driven-fault-model/07-implementation-plan.md).

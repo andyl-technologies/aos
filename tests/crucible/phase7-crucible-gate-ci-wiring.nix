@@ -119,12 +119,12 @@
     {
       label = "phase7 e2e waits for perf and package inputs";
       edge = "gate:perf-bench+package-inputs+release-manifest+reproduction-provenance->gate:e2e-determinism";
-      needle = "dependencies = [perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
+      needle = "dependencies = [phase1.gates.licenseBoundary.rawGate perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
     }
     {
       label = "phase7 e2e wrapper waits for package inputs";
       edge = "gate:perf-bench-wrapper+package-inputs+release-manifest+reproduction-provenance->gate:e2e-determinism-wrapper";
-      needle = "dependencies = [perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
+      needle = "dependencies = [phase1.gates.licenseBoundary perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
     }
     {
       label = "fleet equivalence waits for real-QEMU slice, e2e, fleet store, shared DagStore, frontier leases, four-layer dedup, determinism guardrail, and seam proof";
@@ -416,7 +416,7 @@
       }
       {
         label = "fleet checks exposed with Crucible e2e surface";
-        needle = "fleet = discoverFleetTests // crucibleFleetChecks;";
+        needle = "base = discoverFleetTests // crucibleFleetChecks;";
       }
       {
         label = "distributed continuous exploration fleet wrapper defined";

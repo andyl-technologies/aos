@@ -231,6 +231,8 @@
   # patch -p1 < ${./qemu-patches/0068-crucible-guest-clock-faults.patch}
   # patch -p1 < ${./qemu-patches/0069-crucible-accelerator-fault-device.patch}
   # patch -p1 < ${./qemu-patches/0070-crucible-fault-vmstate.patch}
+  # patch -p1 < ${./qemu-patches/0071-crucible-lifecycle-precondition.patch}
+  # patch -p1 < ${./qemu-patches/0072-crucible-typed-node-result-schema.patch}
 in
   assert _testArtifactPolicy == null;
   mkDerivation {

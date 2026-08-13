@@ -586,12 +586,10 @@ engine behavior in the event log (an `event_activated` / `fault_activated` /
 
 The consequence is exactly what makes the model compose cleanly with exploration:
 
-- **Only probabilistic outcomes are Decisions.** A trigger whose action is
-  `InjectFault` with a *probabilistic* fault still produces Decisions — but the
-  Decisions are the *fault's* per-frame probabilistic draws ([FAULT-2],
-  [FAULT-12]), resolved when the fault is active, **not** the trigger firing that
-  activated it. The *firing* is deterministic; the *fault's randomness* is the
-  Decision. This keeps the boundary crisp.
+- **Only resolved choices are Decisions.** A signal binding with a stochastic
+  source or finite search policy produces Decisions at its declared opportunity,
+  but the referenced event firing remains deterministic causal input. This keeps
+  the boundary crisp.
 - **Search enumerates Decisions, not triggers.** Because triggers are not
   Decisions, state-space search (22) does not "branch on whether a trigger fired"
   — a trigger fires or not as a function of the schedule it is exploring. Search
@@ -651,17 +649,11 @@ pub enum FirePolicy {
     Repeatable,
 }
 
-/// What an event does when it fires. Faults are the canonical action (17), but
-/// the action set also covers timers, baked-node scheduling, savepoints, forks,
+/// What an event does when it fires. Fault behavior belongs to signal bindings;
+/// the action set covers timers, baked-node scheduling, savepoints, forks,
 /// pass/fail, logging, and grouping.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Action {
-    // ── faults (17) — the canonical action ───────────────────────────────
-    /// Activate `fault` under `tag` at the firing virtual time (17 §17.6.2).
-    InjectFault { tag: FaultTag, fault: Fault },
-    /// Heal the fault under `tag` at the firing virtual time (17 §17.6.3).
-    HealFault { tag: FaultTag },
-
     // ── timers (the relative-delay primitive, §17a.5) ────────────────────
     /// Arm a named timer to fire `after` virtual time from now; its firing is
     /// observed by a `Timer { name }` condition (§17a.2.1).
@@ -696,10 +688,10 @@ pub enum Action {
 }
 ```
 
-The action set is small and complete. `InjectFault` / `HealFault` are the
-canonical actions and the reason this file and 17 are *one model* (§17a.7):
-17's declarative fault Plan is a set of `At`-triggered `InjectFault`/`HealFault`
-events. `ArmTimer` / `CancelTimer` are the relative-delay primitive (§17a.5).
+The action set is small and complete. Fault effects are not actions: signal
+bindings sample event-domain inputs and add or remove typed persistent
+contributions at the same deterministic boundaries. `ArmTimer` / `CancelTimer`
+are the relative-delay primitive (§17a.5).
 `StartNode` / `StopNode` schedule a *baked* declared node (§17a.4.1).
 `CreateSavepoint` / `Fork` drive the temporal graph (07, 22). `Pass` / `Fail` are
 the run verdict (§17a.8). `Log` is observational. `Group` fires several actions
@@ -715,18 +707,17 @@ a savepoint *and* log" is one event.
   (§17a.2.1) and for cycle/reachability analysis (§17a.6). *Gate:*
   `gate:e2e-determinism`. *Spec:* §17a.4, §17a.6.
 
-- **[TRIG-22]** The `Action` set MUST include exactly: `InjectFault`/`HealFault`
-  (17); `ArmTimer`/`CancelTimer` (§17a.5); `StartNode`/`StopNode` (baked-node
+- **[TRIG-22]** The `Action` set MUST include exactly:
+  `ArmTimer`/`CancelTimer` (§17a.5); `StartNode`/`StopNode` (baked-node
   scheduling, §17a.4.1); `CreateSavepoint`/`Fork` (07, 22); `Pass`/`Fail`
   (§17a.8); `Log` (observational); and `Group` (several actions fired atomically
-  in declared order at one firing point). A fault MUST be expressed as an
-  `InjectFault`/`HealFault` action ([FAULT-26]); there MUST be no parallel fault
-  mechanism outside the action set. *Gate:* `gate:layer1-injection`,
+  in declared order at one firing point). Fault behavior MUST be expressed only
+  by the signal/binding model in 17. *Gate:* `gate:layer1-injection`,
   `gate:e2e-determinism`. *Spec:* §17a.4; cross-ref 17 §17.6.2.
 
 - **[TRIG-23]** Every action MUST be applied **deterministically at the firing
   virtual time**, at a quantum boundary ([SCHED-3], [SCHED-33], the [INV-8] yield
-  point), exactly as imperative fault injection is ([FAULT-26]). An action's effect
+  point). An action's effect
   MUST be a function of `(ScenarioDef, Seed, Schedule)` and the firing point only.
   A `Group`'s constituent actions MUST be applied in declared order at the single
   firing point, atomically with respect to the run (no other quantum intervenes
@@ -768,25 +759,24 @@ set, the lookahead graph, or the bake set ([SPAT-18]).
 
 ## 17a.5 Relative timers and phases (what pure-VT scheduling cannot do)
 
-The capability the event graph adds over a flat time-stamped Plan is **relative
-timing anchored to observations.** Pure virtual-time scheduling can say "heal at
-40s"; it *cannot* say "heal 30s *after the partition was observed to take effect*,"
-because the virtual time at which the partition's effect was *observed* depends on
-the run. The event graph expresses this directly with the relative timer:
+The event graph provides **relative timing anchored to observations.** A
+time-domain signal can start at 40s, but observation-relative behavior instead
+uses a referenced event occurrence as signal input:
 
 ```text
-Inject when (cluster ready AND recovery path observed) → arm a relative heal timer
-on that same observed firing, → heal when the timer fires.
+Observe (cluster ready AND recovery path observed), then emit one occurrence.
 
-  event "inject":
+  event "ready":
     trigger = AllOf([ ConsoleMatch{node=db-0, regex="ready to accept"},
                       ConsoleMatch{node=db-1, regex="ready to accept"} ])
-    action  = Group([ InjectFault{tag="split", Partition(db-0,db-1)},
-                      ArmTimer{name="heal-after", after="30s"} ])
+    action  = Log{level="info", message="cluster ready"}
 
-  event "heal":
-    trigger = Timer{name="heal-after"}     # fires 30s of VIRTUAL time AFTER
-    action  = HealFault{tag="split"}       # the "inject" event actually fired
+  signal "split-window":
+    source = EventPulse{event="ready", duration=30s}
+
+  binding "split":
+    mapping = ActiveWhenTrue
+    effect = NetworkAvailability{state=Unavailable}
 ```
 
 Equivalently, the `After { duration, of }` leaf folds the arm-and-wait into one
@@ -833,17 +823,14 @@ trigger = { all_of = [
   { console_match = { node = "db-1", regex = "ready to accept connections" } },
   { once = { coverage_point = { node = "db-0", symbol = "cluster_join_complete" } } },
 ] }
-# inject a bidirectional partition AND arm a relative heal timer, atomically.
+# Arm the relative timer used by the `split` signal binding's pulse interval.
 action = { group = [
-  { inject_fault = { tag = "split", fault = "partition", a = "db-0", b = "db-1",
-                     direction = "bidirectional" } },
   { arm_timer = { name = "heal-after", after = "30s" } },
 ] }
 
-[[event]]
-id = "heal"
-trigger = { timer = { name = "heal-after" } }   # 30 virtual-s after "wait-ready" fired
-action  = { heal_fault = { tag = "split" } }
+# `split` is a persistent network.availability binding driven by a Boolean
+# pulse anchored to wait-ready. Signal deactivation removes the contribution;
+# there is no imperative heal action.
 
 [[event]]
 id = "pass-when-converged"
@@ -881,8 +868,8 @@ scheduler is already known well-formed. The validator runs four checks:
    references a declared node/link ([SPAT-6], [SPAT-10]); `After { of }` and a
    cycle edge reference a declared event; `Timer { name }` references a timer some
    `ArmTimer` action can arm; `AssertionState { name }` references a declared
-   assertion (18); a `HealFault { tag }` references a `tag` some `InjectFault`
-   injects ([SPAT-31]); `GuestMarker` is used only on a white-box-opted-in node
+   assertion (18); event-domain signals reference a declared event;
+   `GuestMarker` is used only on a white-box-opted-in node
    ([SPAT-9]).
 2. **Empty-compound** — no `AllOf`/`AnyOf` is empty (an empty `AllOf` is a
    fire-immediately footgun; an empty `AnyOf` is dead, §17a.2.11).
@@ -920,7 +907,7 @@ pub enum TriggerGraphError {
   ill-formed graph rejected with a precise, localized error *before* it is
   content-addressed or run, with no well-formedness check deferred to runtime (the
   [SPAT-32] discipline). The validator MUST check: (a) **dangling references** —
-  every `node`/`link`/`of`/`Timer name`/`AssertionState name`/`HealFault tag`
+  every `node`/`link`/`of`/`Timer name`/`AssertionState name`
   reference resolves to a declared entity ([SPAT-6], [SPAT-10], [SPAT-31]) and
   `GuestMarker` is used only on a white-box-opted-in node ([SPAT-9]); (b)
   **empty-compound** — no `AllOf`/`AnyOf` is empty; (c) **cycles** — the dependency
@@ -938,61 +925,30 @@ pub enum TriggerGraphError {
   deterministic across hosts ([INV-9], [SPAT-30]). *Gate:* `gate:harness-lint`.
   *Spec:* §17a.6.
 
-## 17a.7 Relationship to the Plan: the time-scheduled Plan is the degenerate event graph
+## 17a.7 Relationship to signal-driven faults
 
-[`06-spatial-graph.md`](06-spatial-graph.md) §5.1 and
-[`17-fault-injection.md`](17-fault-injection.md) §17.6.1 define the declarative
-**`Plan`**: authored fault rows (`At`, `PermanentAt`, and `Heal`) scheduled over
-virtual time. The implemented canonical `Plan` representation normalizes those
-rows into `PlanEntry::Activate` and `PlanEntry::Heal`: finite `At` authoring is
-an activation plus a heal, and `PermanentAt` authoring is an activation with no
-paired heal. This file unifies that canonical Plan with the event graph: **the
-Plan is a set of events whose triggers are pure `At` conditions.** The
-declarative time-scheduled Plan is the **degenerate case** of the event graph,
-not a separate model.
+The Plan carries both an event graph and a `FaultSignalPlan`. They are distinct
+typed submodels with one-way data flow: an event firing emits a referenced
+occurrence, an event-domain signal source consumes that occurrence, and a fault
+binding maps the signal value to an adapter effect. Event actions never add or
+remove faults.
 
-The lowering is mechanical:
+Known-time fault behavior does not need an event. It uses a time-domain signal
+node directly. Observation-anchored behavior names the referenced event source,
+including its occurrence policy, and checkpoints the event cursor alongside the
+signal runtime. This preserves one fault representation and one event-action
+taxonomy while still supporting relative, observable choreography.
 
-```text
-  canonical PlanEntry                    event graph
-  ───────────────────────────────────   ─────────────────────────────────────────
-  Activate { at, fault, tag }        ⇒   Event{ trigger: At{at},
-                                                action:  InjectFault{tag, fault} }
-  Heal { at, tag }                   ⇒   Event{ trigger: At{at},
-                                                action:  HealFault{tag} }
-```
+- **[TRIG-28]** Event-domain signal sources MUST reference declared event IDs,
+  define exact occurrence and repeat semantics, and reject dangling references
+  at admission. Their consumed occurrence cursors MUST be checkpointed and
+  authenticated. *Gate:* `gate:content-address`, `gate:e2e-determinism`.
+  *Spec:* §17a.7; cross-ref 17 §17.6.5.
 
-So 17's `FaultPlan` and this file's event graph are **one model**: a fault Plan is
-exactly the subset of the event graph whose every trigger is `At` and whose every
-action is `InjectFault`/`HealFault`. An author who only needs time-scheduled faults
-writes the Plan and never touches a `ConsoleMatch`; an author who needs
-observation-anchored choreography writes events with richer triggers. The Plan
-lowering preserves the source Plan's canonical bytes and content hash in the
-lowered graph wrapper and reduces identically through the scheduler. Native
-event-graph canonical serialization and graph-owned content hashing are supplied
-by the code-first/serializable event-graph form in §17a.10. The Plan's
-content-addressing ([SPAT-3], [SPAT-19]) and build-time validation ([SPAT-31])
-remain the stricter `At`-restricted special case; the general event-graph
-validator (§17a.6) validates references and graph shape for both time and
-observation-triggered graphs.
-
-- **[TRIG-28]** The canonical declarative time-scheduled `Plan` ([SPAT-19],
-  [`17-fault-injection.md`](17-fault-injection.md) §17.6.1, normalized from
-  authored `At` / `PermanentAt` / `Heal` rows into `Activate` / `Heal` entries)
-  MUST be the **degenerate case** of the event graph: every canonical `PlanEntry`
-  MUST lower to an `Event` whose trigger is a pure `At` condition and whose action
-  is `InjectFault` or `HealFault`. The fault `Plan` and the lowered event graph
-  MUST preserve one content-addressed identity for the Plan ([SPAT-3]) and must
-  run through the same trigger action application path; graph-owned
-  canonicalization and serialization are completed by §17a.10. *Gate:*
-  `gate:content-address`, `gate:e2e-determinism`. *Spec:* §17a.7; cross-ref
-  06 §5.1, 17 §17.6.1.
-
-- **[TRIG-29]** A scenario that needs only time-scheduled faults MUST be authorable
-  as a pure-`At` Plan with no richer conditions, and the lowering of [TRIG-28] MUST
-  preserve the Plan's canonical bytes/content hash while reducing identically as
-  trigger actions. Conversely, adding an observation-anchored event MUST NOT change
-  the meaning, lowered prefix, or identity of the pre-existing `At`-triggered Plan
+- **[TRIG-29]** A scenario that needs only time-scheduled faults MUST express
+  them as time-domain signal nodes without adding event-graph actions. Adding an
+  observation-anchored event MUST NOT change the meaning or identity of an
+  existing independent time-domain signal program
   entries ([SPAT-5], meaning-not-spelling). *Gate:* `gate:content-address`. *Spec:*
   §17a.7; cross-ref 06 §2, §8.
 
@@ -1044,8 +1000,8 @@ posture 16 takes at the transport layer ([GHC-1], [GHC-28]) lifted into the
 control-flow layer.
 
 - **[TRIG-31]** A complete, expressive scenario — readiness detection (e.g.
-  `ConsoleMatch`/`NetworkMatch`/`CoveragePoint`), fault injection
-  (`InjectFault`/`HealFault`), property checking (shared `Condition` assertions,
+  `ConsoleMatch`/`NetworkMatch`/`CoveragePoint`), signal-driven faults,
+  property checking (shared `Condition` assertions,
   18), and pass/fail (`Pass`/`Fail`) — MUST be authorable with **zero guest-side
   components**, using only observable conditions. Removing every `GuestMarker`
   condition from any scenario MUST leave a functional, deterministic event graph;
@@ -1075,14 +1031,9 @@ let plan = EventGraph::builder()
             Condition::console_match("db-1", r"ready to accept connections"),
             Condition::coverage_point("db-0", sym("cluster_join_complete")).once(),
         ]))
-        .action(Action::group([
-            Action::inject_fault("split", Fault::partition("db-0", "db-1")),
-            Action::arm_timer("heal-after", secs(30)),   // relative timer (§17a.5)
-        ]))
-    // heal: relative-timer firing, 30 virtual-s after wait-ready fired
-    .event("heal")
-        .when(Condition::timer("heal-after"))
-        .action(Action::heal_fault("split"))
+        .action(Action::arm_timer("heal-after", secs(30)))
+    // The separate `split` fault binding consumes a Boolean pulse anchored to
+    // wait-ready; its false transition removes network.availability after 30s.
     // pass: observable convergence + quiescence
     .event("pass-when-converged")
         .when(Condition::all_of([
@@ -1141,7 +1092,7 @@ DETERMINISM (critical):
   a trigger FIRING is deterministic ENGINE BEHAVIOR, NOT a Decision (05 §3);
     only probabilistic fault OUTCOMES are Decisions ⇒ composes with fork/search/fuzz (TRIG-19,20)
 
-ACTIONS (TRIG-22): InjectFault/HealFault (17) · ArmTimer/CancelTimer · StartNode/
+ACTIONS (TRIG-22): ArmTimer/CancelTimer · StartNode/
   StopNode (a BAKED node, NOT topology mutation, TRIG-24) · CreateSavepoint/Fork ·
   Pass/Fail · Log · Group(atomic). Applied at the firing VT, quantum boundary (TRIG-23)
 
@@ -1151,9 +1102,8 @@ RELATIVE TIMERS (TRIG-25): "heal 30s AFTER the partition was OBSERVED" — the t
 VALIDATOR build-time (TRIG-26,27): dangling-ref · empty-compound · CYCLE (DFS) ·
   reachability — fail early, not at runtime (06 §9 discipline)
 
-PLAN = degenerate event graph (TRIG-28,29): canonical Activate/Heal Plan entries
-  lower to At-triggered Inject/Heal events; the lowered wrapper preserves Plan
-  hash and reduction
+FAULT INPUT (TRIG-28,29): referenced event occurrences feed event-domain signals;
+  known-time faults use time-domain signal nodes directly
 
 VERDICT (TRIG-30): Pass/Fail compose with the assertion verdict — a violated Always
   fails regardless. AUTHORING (TRIG-32): code-first builder + serializable form,
@@ -1170,347 +1120,33 @@ a run is as pure a function of `(ScenarioDef, Seed, Schedule)` as the run it ste
 — which is what unifies it with 17's fault Plan, lets it share 18's predicate
 vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
 
-## Implementation checklist
+## Implementation status
 
-> The checklist task text below is authoritative for this topic; phase ordering lives in
-> [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
-> whose primary area is conditions & triggers, tracked by [PLAN-3]. They
-> populate Phase 1 (the determinism / harness / transport foundation), sequenced
-> after the L1 scheduler, event log, and fault primitives and shared with the
-> assertion layer (18), before any L3+ feature built on triggers (search/fuzz, 22).
+The former fault-action lowering checklist has been retired with that execution
+model. Event actions retain the closed taxonomy in §17a.4; signal-driven fault
+bindings consume referenced event occurrences as specified by
+[`RFC-0013`](../0013-signal-driven-fault-model/README.md).
 
-- [x] **T-TRIG-1** Define the event graph as the single control-flow mechanism:
-  `Event = (id, trigger: Option<Condition>, action, policy)`, with the engine
-  firing an event's action when its trigger becomes true at a deterministic
-  evaluation point; forbid any parallel ad-hoc poke mechanism. — satisfies
-  [TRIG-1], [TRIG-21]; spec §17a.1, §17a.4.
+Historical gate aliases retained for the executable event-graph checks:
 
-  Completed by `checks.crucible.phase4.eventGraphControlFlow`: `crucible::trigger`
-  exposes the event-graph spine (`EventId`, `Event`, `Condition` handles,
-  `Action`, `LogLevel`, `FirePolicy`, `EventGraph`, `EventGraphState`) and the
-  pass-driven local producer of opaque action firings,
-  `ConditionEvaluationPass::evaluate_event_graph`. The gate covers entrypoints,
-  named trigger handles, once/repeatable policy, deterministic declared-order
-  firings, duplicate-id and repeatable-entrypoint rejection, and a focused
-  static guardrail against current direct scenario poke/inject/heal APIs in the
-  engine-facing control surfaces.
-- [x] **T-TRIG-2** Define the shared `Condition` vocabulary as one predicate type
-  with two consumers (assertion 18 + trigger), evaluated identically over the same
-  log at the same points; prove a predicate usable as an assertion is usable as a
-  trigger. — satisfies [TRIG-4]; spec §17a.2.
-
-  Completed by `checks.crucible.phase4.sharedConditionVocabulary`: trigger
-  `Condition` is a public alias of the assertion/property `Predicate` type, so
-  `Property` declarations and event triggers consume the same value through the
-  shared sealed evaluator pass (`ConditionEvaluationPass` over the crate-local
-  recursive evaluator). The gate covers assertion-to-trigger assignment,
-  identical predicate evaluation over a shared condition value and evaluation
-  point, `Eventually` trigger/property reuse, compound predicate reuse in
-  `Properties` and `EventGraph`, and rejects a separate trigger-only `Condition`
-  enum.
-- [x] **T-TRIG-3** Implement the time leaves `At`, `After { duration, of }`
-  (relative timer), and `Timer { name }`, all functions of virtual time and the
-  graph's firing history, with build-time reference validation. — satisfies
-  [TRIG-5], [TRIG-25]; spec §17a.2.1, §17a.5.
-
-  Completed by `checks.crucible.phase4.timeConditionLeaves`: shared `Predicate`
-  includes `At`, `After { duration, of }`, and `Timer { name }` leaves, and the
-  shared evaluator resolves them from the deterministic evaluation virtual time,
-  event-graph firing history, and evaluator-supplied timer fire times. The event
-  graph records last firing times, supplies them to `After` conditions during
-  evaluation, and rejects `After` references to undeclared events plus `Timer`
-  references without an armable `Action::ArmTimer` declaration. Assertion
-  properties accept `At` as pure virtual-time vocabulary while rejecting
-  edge-shaped `After` and `Timer` leaves as trigger-only.
-- [x] **T-TRIG-4** Implement the black-box observable leaves `NetworkMatch`,
-  `ConsoleMatch`, `IoPattern`, and `NodeState` over the event log (delivery /
-  console / I/O completion / lifecycle entries), each with its deterministic
-  evaluation point and zero guest cooperation. — satisfies [TRIG-6], [TRIG-7],
-  [TRIG-10], [TRIG-11]; spec §17a.2.2, §17a.2.3, §17a.2.6, §17a.2.7.
-
-  Completed by `checks.crucible.phase4.observableConditionLeaves`: shared
-  `Predicate` includes the black-box observable leaves, with typed `LinkId`,
-  `FramePredicate`, `RegexProgram`, `IoEventKind`, and `NodeLifecycle` support.
-  The shared evaluator consumes a deterministic typed observable-log prefix and
-  resolves `NetworkMatch` from delivered frame bytes, `ConsoleMatch` from the
-  node's host-captured console stream prefix at the current evaluation point,
-  `IoPattern` from deterministic I/O completions, and `NodeState` from lifecycle
-  entries without using named predicates or guest-marker cooperation. Console
-  regexes are validated during graph/property construction. Full RFC 19 event-log
-  catalog integration remains T-OBS-*.
-- [x] **T-TRIG-5** Implement `CoveragePoint` from the TCG-exec hook (zero
-  instrumentation, host-side symbol resolution), sampled by the block-execution
-  event itself. — satisfies [TRIG-8], [TRIG-18]; spec §17a.2.4, §17a.3.2;
-  cross-ref 12, 22.
-
-  Completed by `checks.crucible.phase4.coverageConditionLeaf`: shared
-  `Predicate` includes `CoveragePoint { node, point }` with typed `CodePoint`
-  support for guest addresses and host-resolved symbols. The shared evaluator
-  consumes deterministic TCG-exec basic-block observable events that carry the
-  exact execution icount, resolves symbols through host-supplied code metadata,
-  and samples coverage only at the matching block-execution event's evaluation
-  point. Prior executions of the same resolved code point in the observable-log
-  prefix suppress later matches, and the path requires no named predicates or
-  guest-marker cooperation. Full RFC 19 coverage-entry catalog integration,
-  production symbol-table loading, and coverage-guided search consumption remain
-  T-OBS-9 and T-ADV-10.
-- [x] **T-TRIG-6** Implement `MemoryPredicate` over the QMP/plugin guest-memory
-  read at a deterministic sample icount with a deterministic cadence; gate it on
-  spike S5 and default to the conservative form until S5 resolves. — satisfies
-  [TRIG-9], [TRIG-18]; spec §17a.2.5, §17a.3.2; forward-ref 30, cross-ref [GHC-33].
-
-  Completed by `checks.crucible.phase4.memoryConditionLeaf`: shared `Predicate`
-  includes `MemoryPredicate { node, place, cmp, value }` with typed `MemPlace`,
-  `MemoryWidth`, and unsigned `MemoryCmp` support. The shared evaluator consumes
-  deterministic memory/register sample events that carry both the sample icount
-  and deterministic evaluation time, then compares sampled values at the current
-  evaluation point. Physical-address and register places resolve directly as the
-  conservative default; virtual-address and symbol places require host-supplied
-  resolution metadata. The path requires no named predicates or guest-marker
-  cooperation. Production QMP/plugin sample scheduling, author-declared stride
-  cadence, and RFC 19 memory-sample catalog integration remain T-OBS-*;
-
-- [x] **T-TRIG-7** Implement `AssertionState` (Satisfied/Violated, closing the
-  grading↔steering loop) and `Quiescent`, sourced from the causal
-  `assertion_state_changed` entry and scheduler quiescence respectively. —
-  satisfies [TRIG-12], [TRIG-13]; spec §17a.2.8, §17a.2.9.
-
-  Completed by `checks.crucible.phase4.assertionQuiescenceLeaves`: shared
-  `Predicate` includes `AssertionState { name, state }` with typed
-  `AssertionPhase::{Satisfied, Violated}` and `Quiescent`. The shared evaluator
-  consumes causal `assertion_state_changed` observable entries at the current
-  deterministic evaluation point and resolves `Quiescent` only from
-  scheduler-owned `SchedulerQuiescence` evidence. Property validation rejects
-  `AssertionState` references to undeclared assertions while accepting forward
-  references within the same properties bundle, and event-graph construction
-  validates assertion-state triggers through the declared assertion namespace.
-  Both leaves require no named predicate, host timeout, or guest-marker
-  cooperation. Production RFC 19 catalog integration remains T-OBS-*;
-
-- [x] **T-TRIG-8** Implement the optional white-box `GuestMarker` leaf (doorbell
-  marker, opt-in, additive, fingerprint-neutral) and prove the engine functions
-  with zero `GuestMarker` conditions. — satisfies [TRIG-3], [TRIG-14]; spec
-  §17a.2.10; cross-ref 16 §16.5.
-
-  Completed by `checks.crucible.phase4.guestMarkerLeaf`: shared `Predicate`
-  keeps `GuestMarker { marker }` as the only guest-participating leaf, and the
-  shared evaluator now resolves it from typed white-box doorbell observable events
-  instead of the generic leaf oracle. `ObservableEvent::guest_marker` stamps the
-  event at the doorbell-retirement icount and carries only the emitting node plus
-  marker identity; authoritative white-box opt-in comes from the evaluator's
-  world-derived node policy, so self-attested event payloads cannot enable the
-  leaf. Focused tests prove wrong marker names, disabled emitting nodes, and
-  wrong evaluation times do not match; marker names are global while the emitting
-  node must be opted in; event-graph and property validation reject guest-marker
-  conditions when no world node enables white-box; event-graph firing does not
-  require named-predicate fallback; zero-`GuestMarker` graphs run without any
-  guest-marker support; and unrelated guest-marker events are additive to
-  non-marker conditions. Production RFC 19 catalog integration remains T-OBS-*;
-
-- [x] **T-TRIG-9** Implement the compound combinators `AllOf`, `AnyOf`,
-  `Once` (latch), `Not`, nesting arbitrarily, with empty `AllOf`/`AnyOf` rejected
-  at build time. — satisfies [TRIG-15]; spec §17a.2.11.
-
-  Completed by `checks.crucible.phase4.compoundConditionCombinators`: shared
-  `Predicate` already carries `AllOf`, `AnyOf`, `Once`, and `Not`, and the shared
-  evaluator now gives `Once` persistent latch state through the evaluator/event
-  graph state instead of treating it as a point-local alias for the inner
-  predicate. `AllOf` and `AnyOf` intentionally evaluate every child before
-  returning their boolean result so nested `Once` predicates observe their inner
-  condition even when another branch decides the current truth value. Event-graph
-  construction rejects empty `AllOf` and `AnyOf` at any nesting depth with a
-  deterministic `EmptyCompound` error; property validation already rejects the
-  same empty compounds.
-- [x] **T-TRIG-10** Enforce that conditions are evaluated only over the event log
-  at deterministic evaluation points (event + quantum/rendezvous boundaries keyed
-  on icount), in the same deterministic pass as assertion evaluation, never
-  host-clock polled. — satisfies [TRIG-16], [TRIG-17]; spec §17a.3.1; cross-ref
-  08, 18 §18.7.
-
-  Completed by `checks.crucible.phase4.deterministicConditionEvaluation`:
-  `EventEvaluationPoint` now distinguishes event-log entry, quantum, and
-  rendezvous boundaries derived from scheduler event-log entries, and scheduler
-  EMIT appends a quantum evaluation-boundary entry to each driven quantum.
-  `SingleScheduler` owns the checked `ConditionEventLogPrefix`, with the raw
-  scheduler-entry constructor kept crate-local and guarded against public API
-  exposure. The prefix validates dense scheduler log entries with matching
-  content hashes before deriving observable events and the evaluation point, so
-  leaves consume a prefix `[start, t]` rather than an arbitrary host-polled event
-  vector. `ConditionEvaluationPass` evaluates assertion predicates and trigger
-  graphs over the same checked prefix and point, and the phase guard forbids the
-  old raw observable-event injection path, public raw point constructors, public
-  raw prefix construction, public graph-evaluation bypasses, direct
-  assertion-evaluation bypasses, and host wall-clock APIs in the trigger
-  evaluation surface.
-- [x] **T-TRIG-11** Enforce that a trigger firing is deterministic engine behavior
-  recorded as a causal log entry, NOT a `Decision`; only probabilistic fault
-  outcomes are Decisions; prove triggers re-derive identically on a forked schedule
-  prefix. — satisfies [TRIG-19], [TRIG-20]; spec §17a.3.3; cross-ref 05 §3, 22.
-
-  Completed by `checks.crucible.phase4.triggerFiringCausalLog`: event-graph
-  evaluation now returns an opaque ordered `EventFirings` batch tied to the
-  deterministic evaluation point and event-log offset that produced it, and
-  `SingleScheduler` appends that batch through `append_trigger_firings` as causal
-  `SchedulerEventLogPayload::TriggerFired` entries. The append path rejects
-  stale batches whose evaluation point or event-log offset no longer matches the
-  scheduler-owned condition prefix, keeps the `Schedule` unchanged, and
-  content-addresses the
-  trigger-firing segment through the same event-log append path as scheduler
-  EMIT. Focused tests prove a firing is not recorded as a `Decision`, same-prefix
-  forked schedulers rederive byte-identical trigger-firing entries, and a trigger
-  whose action activates a fault still keeps the deterministic firing separate
-  from later probabilistic fault outcome `Decision`s.
-- [x] **T-TRIG-12** Implement the `Action` set (InjectFault/HealFault,
-  ArmTimer/CancelTimer, StartNode/StopNode, CreateSavepoint/Fork, Pass/Fail, Log,
-  Group), each applied deterministically at the firing virtual time at a quantum
-  boundary, `Group` atomic in declared order. — satisfies [TRIG-22], [TRIG-23];
-  spec §17a.4; cross-ref 17 §17.6.2.
-
-  Completed by `checks.crucible.phase4.triggerActionApplication`: the scheduler
-  now exposes `apply_trigger_firings`, which validates the firing batch against
-  the scheduler-owned condition prefix, appends the causal `TriggerFired` records,
-  and applies each non-group action at the firing virtual time into
-  `TriggerActionState`. The action state tracks active fault tags, armed timers,
-  start/stop lifecycle scheduling, savepoint and fork requests, pass/fail verdict
-  requests, diagnostics, and the ordered `TriggerActionApplication` evidence.
-  `Group` is flattened recursively in declared order against a cloned state and
-  commits only after the event-log append succeeds, so a failed nested action
-  cannot partially mutate scheduler state. Focused tests exercise every action
-  variant through a nested group, prove log actions are observational rather than
-  causal, prove trigger actions do not append `Decision`s, and prove same-prefix
-  forked schedulers rederive identical action state and event-log bytes.
-
-- [x] **T-TRIG-13** Implement `StartNode`/`StopNode` as scheduling of a declared,
-  baked node (not topology mutation): verify the participant set, RNG-stream set,
-  lookahead graph, and bake set stay functions of the `World` alone. — satisfies
-  [TRIG-24]; spec §17a.4.1; cross-ref 06 §4, 05 §6.
-
-  Completed by `checks.crucible.phase4.triggerNodeScheduling`: the scheduler
-  now carries the world-derived `WorldStaticTopology` used for trigger action
-  validation, and `SchedulerLivenessScenario::with_trigger_world` folds that
-  static topology into scenario identity before execution. `StartNode` and
-  `StopNode` validate their target against the participant and bake-node sets
-  before mutating only `TriggerActionState::node_states`; the stored participant
-  set, per-entity RNG streams, lookahead graph, and bake set remain equal to
-  `World::static_topology()` before and after action application. The world-aware
-  `EventGraph::new_for_world` path also rejects undeclared Start/Stop targets at
-  graph construction, and world-agnostic graph constructors reject Start/Stop
-  actions because there is no `World` to validate against. The scheduler boundary
-  check still rejects stale or topology-mismatched firings atomically with no
-  trigger state or event-log mutation.
-- [x] **T-TRIG-14** Implement the relative-timer phase model (ArmTimer+Timer
-  general form, `After { of }` sugar) anchoring a heal/action a fixed virtual-time
-  offset after an observed firing; the worked partition-recovery scenario runs
-  bit-identically with zero guest-side components. — satisfies [TRIG-25],
-  [TRIG-31]; spec §17a.5, §17a.5.1, §17a.9.
-
-  Completed by `checks.crucible.phase4.triggerRelativeTimers`: the scheduler now
-  appends black-box observable condition facts and deterministic evaluation
-  boundaries through the same content-addressed event-log path used by trigger
-  firings, and `SingleScheduler::evaluate_event_graph` evaluates the graph over
-  the scheduler-owned checked prefix while feeding `TriggerActionState`'s armed
-  timer fire points into `Timer` leaves. Focused tests drive a zero-guest-marker
-  partition-recovery graph from console-output and coverage observations through
-  an atomic `InjectFault` + `ArmTimer` group, prove the heal fires exactly at the
-  observation-anchored virtual offset and replays byte-identically, prove
-  `After { of }` fires at the same relative time without an explicit timer name,
-  prove `CancelTimer` prevents the former deadline from firing, and prove the
-  scheduler rejects trigger-firing batches evaluated without its armed timer
-  state.
-- [x] **T-TRIG-15** Implement the build-time trigger-graph validator
-  (dangling-ref, empty-compound, DFS cycle detection over non-repeatable events,
-  reachability from entrypoints) with precise localized deterministic errors;
-  reject before hashing/running. — satisfies [TRIG-26], [TRIG-27]; spec §17a.6;
-  cross-ref 06 §9.
-
-  Completed by `checks.crucible.phase4.triggerGraphValidator`: event-graph
-  construction now validates topology-bearing condition leaves and membership
-  fault actions against the world when a world is required, rejects missing
-  fault-tag heals, preserves local empty-compound errors, detects hard cycles
-  over non-repeatable event dependencies, and rejects events unreachable from
-  entrypoint, named, or armable-timer roots before hashing/running. Focused
-  tests cover world-required and unknown node/link errors, missing fault tags,
-  injected faults with dangling topology, empty compounds, non-repeatable
-  cycles, unreachable events, and reachable repeatable feedback.
-- [x] **T-TRIG-16** Unify the time-scheduled `Plan` with the event graph: lower
-  canonical `PlanEntry::Activate`/`PlanEntry::Heal` rows to `At`-triggered
-  Inject/Heal events; prove the lowered wrapper preserves the Plan hash, reduces
-  identically, and that adding an observation-anchored event does not perturb
-  pre-existing `At` entries. — satisfies [TRIG-28], [TRIG-29]; spec §17a.7;
-  cross-ref 06 §5.1, 17 §17.6.1.
-
-  Completed by `checks.crucible.phase4.triggerPlanLowering`:
-  `Plan::lower_to_event_graph_for_world` lowers the current canonical
-  `PlanEntry::Activate`/`PlanEntry::Heal` model into once-only pure-`At`
-  `Action::InjectFault`/`Action::HealFault` events validated against the source
-  `World`. The lowering preserves the source plan's canonical bytes and content
-  hash through `LoweredPlanEventGraph`, exposes the exact virtual-time evaluation
-  schedule, and reduces through `SingleScheduler` to the same active-fault state
-  and same-time action order as replaying the plan entries directly. Focused
-  tests also compose an observation-anchored event onto the lowered graph and
-  prove the existing `At` event prefix and plan identity are unchanged.
-- [x] **T-TRIG-17** Implement `Pass`/`Fail` verdict actions composing with the
-  assertion verdict (a violated `Always` fails regardless), as a deterministic
-  function of the log identical online and offline. — satisfies [TRIG-30]; spec
-  §17a.8; cross-ref 18 §18.8.
-
-  Completed by `checks.crucible.phase4.triggerVerdictComposition`:
-  `TriggerActionState::compose_run_verdict` now combines explicit trigger
-  `Pass`/`Fail` requests with the final assertion-layer verdict, and
-  `TriggerActionState::compose_run_verdict_from_event_log` replays the same
-  verdict from validated `TriggerActionApplied` event-log entries for offline
-  callers. Trigger `Fail` actions are sticky over later `Pass` actions, `Pass` and
-  `Fail` record deterministic termination requests, assertion failures are
-  normalized as deterministic composed failure causes and override explicit
-  trigger passes, and the same trigger/action log composes byte-identically
-  online and offline. Focused tests cover trigger-only failure, pass updates
-  before failure, assertion failure overriding pass, mixed trigger/assertion
-  failure ordering from the event log, and the passing case.
-- [x] **T-TRIG-18** Implement the code-first event-graph builder and the
-  serializable content-addressed form (canonical TOML + compact binary, same
-  canonical bytes, round-trip), carried as the `Plan` component of the
-  `ScenarioDef`, orthogonal to World/Properties/Seed. — satisfies [TRIG-32]; spec
-  §17a.10; cross-ref 06 §6, §10.
-
-  Completed by `checks.crucible.phase4.eventGraphSerialization`:
-  `EventGraph::builder` provides code-first graph authoring with pre-hash world
-  and assertion-namespace validation, graph-native `Plan` values carry
-  event-graph content as the `ScenarioDef` Plan component, and canonical TOML plus
-  compact binary round-trip to the same canonical bytes and content hash.
-  Focused tests cover builder validation, graph-plan TOML and binary
-  serialization, scenario component orthogonality across World/Properties/Seed,
-  and rejection of assertion-state triggers whose assertion namespace is absent
-  from the composed `Properties`.
-- [x] **T-TRIG-19** Wire the black-box-first guarantee gate: a complete scenario
-  (readiness + faults + properties + pass/fail) authored with zero guest-side
-  components runs deterministically; removing all `GuestMarker` conditions leaves a
-  functional graph. — satisfies [TRIG-2], [TRIG-31]; spec §17a.9; cross-ref
-  `gate:any-guest`.
-
-  Completed by `checks.crucible.phase4.blackBoxFirstGuarantee`:
-  a complete graph-native scenario with fixed readiness observations,
-  membership-fault injection, relative-timer healing, black-box property state,
-  network convergence, and terminal `Pass`/`Fail` actions runs byte-identically
-  without any `GuestMarker`, named-predicate, or white-box world dependency. It
-  separately drives the assertion-violation branch and proves trigger `Fail`
-  verdict replay from the causal log. The focused gate also builds an enriched
-  graph with an optional `GuestMarker` readiness branch and proves the graph with
-  that branch removed still validates and reaches the same trigger action state
-  and composed verdict from black-box observations alone.
-- [x] **T-TRIG-20** Wire `gate:e2e-determinism` and `gate:replay-oracle` for the
-  event graph: identical trigger firings and actions across runs of a fixed
-  `(ScenarioDef, Seed, Schedule)`, identical online vs offline, and divergence
-  localized to the first differing firing. — satisfies [TRIG-16], [TRIG-19],
-  [TRIG-30]; spec §17a.3, §17a.8; cross-ref 24.
-
-  Completed by `checks.crucible.phase4.gates.replayOracle`: the event-graph
-  replay test captures a self-contained `(ScenarioDef, Seed, Schedule)`
-  reproduction artifact whose recorded Schedule carries the deterministic
-  condition-script hash, replays the Plan-carried graph from that
-  schedule-anchored script, and asserts byte-identical trigger firings, trigger
-  action applications, online action state, offline replayed applications,
-  composed verdicts, and event-log segment bytes. The same gate checks the real
-  scheduler-backed `gate:e2e-determinism` target, rejects condition-script drift
-  against the recorded Schedule, corrupts the recorded terminal firing for the
-  fixed artifact, and reports the first differing trigger firing while proving
-  the prefix before that firing remains identical.
+- Completed by `checks.crucible.phase4.assertionQuiescenceLeaves`
+- Completed by `checks.crucible.phase4.blackBoxFirstGuarantee`
+- Completed by `checks.crucible.phase4.compoundConditionCombinators`
+- Completed by `checks.crucible.phase4.coverageConditionLeaf`
+- Completed by `checks.crucible.phase4.deterministicConditionEvaluation`
+- Completed by `checks.crucible.phase4.eventGraphControlFlow`
+- Completed by `checks.crucible.phase4.eventGraphSerialization`
+- Completed by `checks.crucible.phase4.gates.e2eDeterminism` and its replay gate
+- Completed by `checks.crucible.phase4.gates.replayOracle`
+- Completed by `checks.crucible.phase4.guestMarkerLeaf`
+- Completed by `checks.crucible.phase4.memoryConditionLeaf`
+- Completed by `checks.crucible.phase4.observableConditionLeaves`
+- Completed by `checks.crucible.phase4.sharedConditionVocabulary`
+- Completed by `checks.crucible.phase4.timeConditionLeaves`
+- Completed by `checks.crucible.phase4.triggerActionApplication`
+- Completed by `checks.crucible.phase4.triggerFiringCausalLog`
+- Completed by `checks.crucible.phase4.triggerGraphValidator`
+- Completed by `checks.crucible.phase4.triggerNodeScheduling`
+- Completed by `checks.crucible.phase4.triggerPlanLowering`
+- Completed by `checks.crucible.phase4.triggerRelativeTimers`
+- Completed by `checks.crucible.phase4.triggerVerdictComposition`

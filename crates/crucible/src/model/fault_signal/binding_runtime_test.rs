@@ -569,6 +569,144 @@ fn initially_inactive_binding_does_not_emit_removal_actions() {
 }
 
 #[test]
+fn finite_binding_search_choices_replay_once_and_reject_unused_overrides() {
+    let program = constant_program(
+        SignalValue::U64(5),
+        SignalShape::new(SignalValueType::U64, SignalUnit::VirtualNanoseconds, 0)
+            .unwrap_or_else(|error| panic!("invalid test shape: {error}")),
+    );
+    let effect = EffectRequest::new(
+        EFFECT_SEMANTIC_VERSION,
+        EffectLifetime::Persistent,
+        EffectSpecification::Network(NetworkEffectSpecification::PropagationDelay {
+            delay_nanos: Some(
+                PositiveU64::new("delay_nanos", 1)
+                    .unwrap_or_else(|error| panic!("invalid delay: {error}")),
+            ),
+            distance_velocity_lookup: None,
+        }),
+    )
+    .unwrap_or_else(|error| panic!("invalid test effect: {error}"));
+    let binding = FaultBinding::new(
+        object_id("binding-search-outcome"),
+        vec![signal_id("output")],
+        BindingSampling::AtBoundary,
+        BindingMapping::PiecewiseParameter {
+            parameter: MappedEffectParameter::DurationNanos,
+            points: vec![
+                BindingMapPoint {
+                    input: SignalValue::U64(0),
+                    output: SignalValue::DurationNanos(10),
+                },
+                BindingMapPoint {
+                    input: SignalValue::U64(10),
+                    output: SignalValue::DurationNanos(30),
+                },
+            ],
+            rounding: SignalRounding::NearestTiesToEven,
+            overflow: SignalOverflow::Error,
+        },
+        TargetSelector::Exact(target_set()),
+        [FaultPhase::Resolve].into_iter().collect(),
+        effect,
+        None,
+        BindingSearchPolicy::BranchParameter {
+            parameter: MappedEffectParameter::DurationNanos,
+            candidates: vec![
+                SignalValue::DurationNanos(10),
+                SignalValue::DurationNanos(20),
+            ],
+        },
+        observability(),
+        &program,
+    )
+    .unwrap_or_else(|error| panic!("invalid search binding: {error}"));
+    let seed = ContentHash::from_bytes(b"finite-binding-search");
+    let mut discovery = FaultBindingRuntime::new(
+        &program,
+        vec![binding.clone()],
+        &NoArtifacts,
+        SignalBoundarySnapshot::default(),
+        seed,
+        FaultResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("invalid discovery runtime: {error}"));
+    let discovered = discovery
+        .evaluate_boundary(coordinate(0), 0, &mut AcceptActions::default())
+        .unwrap_or_else(|error| panic!("search discovery failed: {error}"));
+    let choice = discovered
+        .search_choices
+        .first()
+        .unwrap_or_else(|| panic!("branching binding must expose a finite choice"));
+    assert_eq!(choice.candidate_count, 2);
+    assert_eq!(choice.selected_index, Some(1));
+    assert!(!choice.overridden);
+
+    let overrides: BTreeMap<SearchChoiceId, SearchOverride> = [(
+        choice.id,
+        SearchOverride {
+            candidate_index: 0,
+            candidates_digest: choice.candidates_digest,
+            parent_branch: Some(ContentHash::from_bytes(b"search-parent")),
+        },
+    )]
+    .into_iter()
+    .collect();
+    let mut replay = FaultBindingRuntime::new_with_search_overrides(
+        &program,
+        vec![binding.clone()],
+        &NoArtifacts,
+        SignalBoundarySnapshot::default(),
+        seed,
+        FaultResourceLimits::default(),
+        overrides.clone(),
+    )
+    .unwrap_or_else(|error| panic!("invalid replay runtime: {error}"));
+    let replayed = replay
+        .evaluate_boundary(coordinate(0), 0, &mut AcceptActions::default())
+        .unwrap_or_else(|error| panic!("search replay failed: {error}"));
+    assert_eq!(replayed.actions.len(), 1);
+    assert_eq!(
+        replayed.actions[0].mapping_output.as_ref(),
+        &ResolvedMappingOutput::Parameter {
+            parameter: MappedEffectParameter::DurationNanos,
+            value: SignalValue::DurationNanos(10),
+        }
+    );
+    assert_eq!(replayed.search_choices[0].selected_index, Some(0));
+    assert!(replayed.search_choices[0].overridden);
+    assert!(replay.verify_search_overrides_consumed().is_ok());
+    let consumed_checkpoint = replay
+        .checkpoint()
+        .unwrap_or_else(|error| panic!("consumed search state should checkpoint: {error}"));
+    let restored = FaultBindingRuntime::restore(
+        &program,
+        vec![binding],
+        &NoArtifacts,
+        seed,
+        FaultResourceLimits::default(),
+        &consumed_checkpoint,
+    )
+    .unwrap_or_else(|error| panic!("consumed search state should restore: {error}"));
+    assert!(restored.verify_search_overrides_consumed().is_ok());
+
+    let unused = FaultBindingRuntime::new_with_search_overrides(
+        &program,
+        Vec::new(),
+        &NoArtifacts,
+        SignalBoundarySnapshot::default(),
+        seed,
+        FaultResourceLimits::default(),
+        overrides,
+    )
+    .unwrap_or_else(|error| panic!("invalid unused-override runtime: {error}"));
+    assert!(matches!(
+        unused.verify_search_overrides_consumed(),
+        Err(BindingRuntimeError::UnusedSearchOverride)
+    ));
+}
+
+#[test]
 fn dynamic_membership_reconciles_active_adapter_contributions() {
     let program = constant_program(
         SignalValue::Bool(true),

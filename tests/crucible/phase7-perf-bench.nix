@@ -57,6 +57,7 @@
     (builtins.readFile ../../crates/crucible-harness/src/perf/corpus.rs)
   ];
   perfGate = builtins.readFile ../../crates/crucible-harness/tests/gate_perf_bench.rs;
+  perfHotPathIo = builtins.readFile ../../crates/crucible-harness/tests/gate_perf_bench/hot_path_io.rs;
   gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
   gateCatalog = builtins.readFile ../../crates/crucible-harness/tests/gate_catalog.rs;
   libRs = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
@@ -288,10 +289,6 @@
         needle = "gate_perf_bench_coverage_ratchet_rejects_decrease";
       }
       {
-        label = "no per-quantum IPC";
-        needle = "gate_perf_bench_advance_path_has_no_per_quantum_ipc";
-      }
-      {
         label = "snapshot latency tracks changed state";
         needle = "gate_perf_bench_snapshot_latency_tracks_changed_state";
       }
@@ -310,6 +307,16 @@
       {
         label = "unknown proving gate rejection";
         needle = "gate_perf_bench_rejects_unknown_proving_gate";
+      }
+    ]
+    ++ failuresFor "crates/crucible-harness/tests/gate_perf_bench/hot_path_io.rs" perfHotPathIo [
+      {
+        label = "no advance/delivery socket or control IPC";
+        needle = "advance_and_delivery_owners_have_no_socket_or_control_io";
+      }
+      {
+        label = "hot-path IPC negative control";
+        needle = "hot_path_io_scanner_rejects_socket_qmp_and_plugin_control_fixture";
       }
     ]
     ++ forbiddenFor "crates/crucible-harness/tests/gate_perf_bench.rs" perfGate [
@@ -357,7 +364,7 @@
       }
       {
         label = "phase7 e2e determinism depends on perf-bench";
-        needle = "dependencies = [perfBench.rawGate";
+        needle = "dependencies = [phase1.gates.licenseBoundary.rawGate perfBench.rawGate";
       }
     ]
     ++ failuresFor "default.nix" rootChecks [

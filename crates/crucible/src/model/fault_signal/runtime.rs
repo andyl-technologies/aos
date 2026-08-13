@@ -10,6 +10,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use super::*;
+use crate::{ChoiceTag, OverrideDecision, SchedulingPoint};
 
 /// Semantic version of runtime/checkpoint state.
 pub const FAULT_RUNTIME_STATE_VERSION: u16 = 2;
@@ -166,6 +167,28 @@ pub struct BindingSearchChoice {
     pub selected_index: Option<u32>,
     /// Whether a replay/explorer override selected the result.
     pub overridden: bool,
+}
+
+impl BindingSearchChoice {
+    /// Materializes every finite candidate as a canonical explorer decision.
+    #[must_use]
+    pub fn override_decisions(&self, parent_branch: ContentHash) -> Vec<OverrideDecision> {
+        (0..self.candidate_count)
+            .map(|candidate_index| OverrideDecision {
+                point: SchedulingPoint {
+                    key: format!(
+                        "signal-fault/{}/{}/{}",
+                        parent_branch.to_hex(),
+                        self.id.content_hash().to_hex(),
+                        self.candidates_digest.to_hex()
+                    ),
+                },
+                choice: ChoiceTag {
+                    name: format!("candidate/{candidate_index}"),
+                },
+            })
+            .collect()
+    }
 }
 
 impl BindingRuntimeState {
@@ -445,6 +468,12 @@ impl SearchChoiceId {
     pub const fn content_hash(self) -> ContentHash {
         self.0
     }
+
+    /// Restores an identity from its authenticated content hash.
+    #[must_use]
+    pub const fn from_content_hash(hash: ContentHash) -> Self {
+        Self(hash)
+    }
 }
 
 /// Concrete explorer result retained for ordinary locked replay.
@@ -457,6 +486,49 @@ pub struct SearchOverride {
     pub candidates_digest: ContentHash,
     /// Parent branch, if this choice forked an earlier search branch.
     pub parent_branch: Option<ContentHash>,
+}
+
+impl SearchOverride {
+    /// Decodes one canonical signal-fault explorer decision.
+    #[must_use]
+    pub fn from_override_decision(decision: &OverrideDecision) -> Option<(SearchChoiceId, Self)> {
+        let encoded = decision.point.key.strip_prefix("signal-fault/")?;
+        let (encoded_parent, encoded) = encoded.split_once('/')?;
+        let (choice_id, candidates_digest) = encoded.split_once('/')?;
+        if candidates_digest.contains('/') {
+            return None;
+        }
+        let parent_branch = parse_search_content_hash(encoded_parent)?;
+        let candidate_index = decision
+            .choice
+            .name
+            .strip_prefix("candidate/")?
+            .parse()
+            .ok()?;
+        Some((
+            SearchChoiceId::from_content_hash(parse_search_content_hash(choice_id)?),
+            Self {
+                candidate_index,
+                candidates_digest: parse_search_content_hash(candidates_digest)?,
+                parent_branch: Some(parent_branch),
+            },
+        ))
+    }
+}
+
+fn parse_search_content_hash(encoded: &str) -> Option<ContentHash> {
+    if encoded.len() != 64
+        || !encoded
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return None;
+    }
+    let mut bytes = [0_u8; 32];
+    for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
+        bytes[index] = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(ContentHash { bytes })
 }
 
 /// Authoritative replay behavior.

@@ -66,7 +66,7 @@
       }
       {
         label = "actor-owned snapshot publisher";
-        needle = "fn publish(&self, snapshot: &EngineSnapshot";
+        needle = "pub(super) fn publish(\n        &self,\n        snapshot: &EngineSnapshot,";
       }
       {
         label = "direct actor live status read";

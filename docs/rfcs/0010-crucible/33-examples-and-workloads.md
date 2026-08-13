@@ -274,12 +274,9 @@ The full trigger graph:
      ConsoleMatch(db-1, "ready to accept"),                     │ both replicas up
      ConsoleMatch(db-2, "ready to accept"),                     │  AND
      Once(CoveragePoint(db-0, "cluster_join_complete")) ]  ─────┘ join path ran
-        action = Group[ InjectFault("split", Partition(db-0 | db-1,db-2)),
-                        ArmTimer("heal-after", 10s) ]   ── relative timer armed
+        action = Log("partition signal anchor reached")
      │
-     ▼  (10 virtual-s AFTER "wait-ready" actually fired — run-dependent anchor)
-  event "heal"        trigger = Timer("heal-after")
-        action = HealFault("split")
+     ▼  event-domain pulse drives network.availability for 10 virtual-s
      │
      ▼
   event "pass"        trigger = AllOf[
@@ -329,15 +326,12 @@ trigger = { all_of = [
   { once = { coverage_point = { node = "db-0", symbol = "cluster_join_complete" } } },
 ] }
 action = { group = [
-  { inject_fault = { tag = "split", fault = "partition",
-                     a = "db-0", b = "db-1", direction = "bidirectional" } },
   { arm_timer = { name = "heal-after", after = "10s" } },
 ] }
 
-[[event]]
-id = "heal"
-trigger = { timer = { name = "heal-after" } }    # 10 virtual-s AFTER wait-ready fired
-action  = { heal_fault = { tag = "split" } }
+# The network-availability binding named `split` samples a Boolean pulse signal
+# anchored to the wait-ready event. Its true interval is the 10 virtual seconds
+# before `heal-after`; the false transition removes the persistent contribution.
 
 [[event]]
 id = "pass-on-converge"
@@ -386,16 +380,13 @@ Implementation note (T-EX-2): `crucible::example_corpus` ships the
 `partition-recovery.scn` corpus fixture as a three-node, three-link
 content-addressed `ScenarioDefForm` with unmodified kernels and store images;
 the user-controlled store test application emits structured guest assertions.
-Its `wait-ready` event uses observable console and
-basic-block coverage leaves, then applies a grouped `InjectFault("split",
-Isolate(db-0))` plus `ArmTimer("heal-after", 10s)` action through the
-`SingleScheduler` trigger-action path, which models the `db-0 | db-1,db-2`
-split under one stable heal tag. The runner appends the host-visible
-`split-active` assertion-state transition only after the assertion evaluator
-reports the injected split active, advances to the timer boundary for
-`HealFault("split")`, and passes only after the split-active state, healed fault
-state, the satisfied `replicas-reconciled` guest assertion, and quiescence all
-hold. `no-split-brain` is a structured `guest_unreachable` safety assertion,
+Its `wait-ready` event uses observable console and basic-block coverage leaves.
+The `split` event-pulse signal anchors to that occurrence for 10 virtual seconds;
+its network-availability binding models the `db-0 | db-1,db-2` split through the
+production signal runtime. The runner appends `split-active` only after the
+assertion evaluator observes the adapter state and passes only after the signal
+contribution has ended, `replicas-reconciled` is satisfied, and the system is
+quiescent. `no-split-brain` is a structured `guest_unreachable` safety assertion,
 while `converges-after-heal` is triggered by the host-owned `split-active`
 assertion state and satisfied by the guest-reported reconciliation assertion; the captured
 reproduction schedule replays to byte-identical canonical event-log bytes and
@@ -432,15 +423,15 @@ trigger = { all_of = [
   { node_state = { node = "db-1", state = "started" } },
   { once = { io_pattern = { node = "db-1", kind = { block_write = { region = "wal" } } } } },
 ] }
-action  = { inject_fault = { tag = "kill", fault = "crash",
-                             node = "db-1", restart = "from_ready_point" } }
+# A node-lifecycle binding samples a pulse anchored to this event and maps its
+# true transition to `node.crash` for db-1.
+action = { log = { level = "info", message = "crash signal anchor reached" } }
 
 [[event]]
 id = "restart"
 # restart 5 virtual-s after the crash was injected (relative timer)
 trigger = { after = { duration = "5s", of = "crash-after-commit" } }
 action  = { group = [
-  { heal_fault = { tag = "kill" } },          # clears the crash fault
   { start_node = { node = "db-1" } },          # re-activate the baked node (17a §17a.4.1)
 ] }
 
@@ -480,8 +471,8 @@ its baked genesis snapshot (05 §6), so a restart is a deterministic re-`bake`
 resume, not a fresh boot with new entropy. Alternatives the policy offers are
 `Manual` (stay down until a `StartNode` fires, as used above for explicit
 choreography) and `None` (a terminal crash). The example uses an explicit
-`HealFault` + `StartNode` group to make the restart point a first-class event the
-event graph can also gate further work on.
+`StartNode` action to make the restart point a first-class event the event graph
+can also gate further work on; the crash binding pulse ends at that boundary.
 
 **Expected outcome.** `PASSED`: `data-not-lost` holds across the crash and
 `reconverges` is satisfied within 40 virtual seconds of the crash. **Reproduce:**
@@ -492,11 +483,11 @@ Implementation note (T-EX-3): `crucible::example_corpus` ships the
 `crash-restart.scn` corpus fixture as a three-node, three-link
 content-addressed `ScenarioDefForm` with unmodified kernels and store images;
 the user-controlled store test application emits structured guest assertions.
-Its `crash-after-commit` event uses only host-visible
-host-visible lifecycle and deterministic block-write observations to prove
-`db-1` was a committing replica before injecting `InjectFault("kill",
-Crash(db-1, FromReadyPoint))`; the replay fixture records the WAL region in the
-I/O payload. The runner builds idle VM scheduler nodes and bidirectional
+Its `crash-after-commit` event uses host-visible lifecycle and deterministic
+block-write observations to prove `db-1` was a committing replica before the
+event-pulse signal drives the typed `node.crash` binding; the replay fixture
+records the WAL region in the I/O payload. The runner builds idle VM scheduler
+nodes and bidirectional
 lookahead edges from the declared world so the crash action exercises the normal
 node-crash scheduler path, removes the four directed edges incident to `db-1`,
 and restores them on heal. After trigger actions enqueue crash/heal topology
@@ -508,7 +499,7 @@ the scheduler crash/restart/topology applications produced by
 trigger actions rather than scripting crash/restart outcomes in the replay
 schedule.
 The `restart` event uses the `After(5s, "crash-after-commit")` trigger and a
-`HealFault("kill")` + `StartNode(db-1)` action group; the resulting restart
+`StartNode(db-1)` action; the resulting restart
 lifecycle fact is likewise derived from the applied `StartNode` while the
 scheduler restart application proves the crash fault healed with
 `FromReadyPoint`. `data-not-lost` is a structured `guest_unreachable` safety
@@ -873,7 +864,7 @@ steady, spike-via-virtual-time-rate, spike-via-`StartNode`, cardinality-growth,
 and correlated-failure examples. The spike burst fixture is an `EventGraph`
 plan that holds the burst node with `NotYetJoined`, then heals that hold and
 fires `StartNode` at virtual time; the correlated-failure fixture is a
-`FaultPlan` campaign. No application-load-generation subsystem is introduced.
+`signal/binding plan` campaign. No application-load-generation subsystem is introduced.
 
 Implementation note (T-WL-5): `GuestWorkloadTimeSource` encodes
 `load_time_source=virtual_time` for time-varying load shapes. World validation
@@ -1030,8 +1021,7 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   not redefine them.
 - Every condition used in the examples (`ConsoleMatch`, `NetworkMatch`,
   `CoveragePoint`, `NodeState`, `IoPattern`, `Quiescent`, `At`/`After`/`Timer`,
-  `AssertionState`, `AllOf`/`Once`) and the `Action` set (`InjectFault`/`HealFault`,
-  `ArmTimer`, `StartNode`/`StopNode`, `Pass`, `Group`) is
+  `AssertionState`, `AllOf`/`Once`) and the closed non-fault `Action` set is
   [`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md).
 - The faults (`Partition`, `Crash` with its `RestartPolicy`, `MessageLoss`,
   `LatencyBump`) are [`17-fault-injection.md`](17-fault-injection.md); the
@@ -1093,7 +1083,7 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   validated `load_pattern=...` and `spike_mode=...` guest cmdline scenario
   parameters, fixture constructors for every classic pattern, a virtual-time
   rate spike fixture, a `StartNode` burst fixture, and a correlated-failure
-  `FaultPlan` campaign without adding a host load-generation subsystem.
+  `signal/binding plan` campaign without adding a host load-generation subsystem.
 - [x] **T-WL-5** Enforce that all time-varying load shapes derive from virtual time
   (guest VT clock or VT-scheduled events), never host wall-clock; assert spike and
   cardinality-growth fixtures reproduce bit-identically. — satisfies [WL-8]; spec
@@ -1146,8 +1136,8 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   Completed by `checks.crucible.phase7.crashRestartExample`: the built-in
   `crash-restart.scn` fixture is exported from `crucible::example_corpus`, uses
   the observable WAL-write crash trigger, `Fault::Crash` with
-  `RestartPolicy::FromReadyPoint`, an `After`-anchored `HealFault` +
-  `StartNode` restart event, derived crash/restart lifecycle facts, and
+  `RestartPolicy::FromReadyPoint`, an `After`-anchored `StartNode` restart event,
+  derived crash/restart lifecycle facts, and
   scheduler crash/restart/topology application evidence for the declared
   triangle; it checks `data-not-lost` as structured guest safety and uses guest
   durability/reconciliation verdicts for crash-triggered bounded liveness, is exercised by

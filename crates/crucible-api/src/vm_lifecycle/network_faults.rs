@@ -1646,6 +1646,8 @@ impl ProductionFaultNetworkInterceptor {
             };
         let staged = (|| {
             let impulses = runtime.drain_host_impulses();
+            staged_scheduler
+                .record_pending_signal_fault_search_frontiers(runtime.drain_search_choices())?;
             if impulses
                 .iter()
                 .any(|action| action.phase != FaultPhase::Boundary)

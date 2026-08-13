@@ -5,7 +5,7 @@
 //! adapter families. It owns one atomic checkpoint surface so callers never
 //! persist evaluator state without the corresponding adapter state.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
@@ -42,17 +42,42 @@ impl<'a> FaultExecutionRuntime<'a> {
         scenario_seed: ContentHash,
         manifests: FaultAdapterManifests,
     ) -> Result<Self, FaultExecutionError> {
+        Self::new_with_search_overrides(
+            plan,
+            artifacts,
+            boundary,
+            scenario_seed,
+            manifests,
+            BTreeMap::new(),
+        )
+    }
+
+    /// Admits live capabilities with concrete finite explorer overrides.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultExecutionError`] under the same conditions as
+    /// [`Self::new`], or when the override set exceeds admitted bounds.
+    pub fn new_with_search_overrides(
+        plan: &'a FaultSignalPlan,
+        artifacts: &'a dyn SignalArtifactProvider,
+        boundary: SignalBoundarySnapshot,
+        scenario_seed: ContentHash,
+        manifests: FaultAdapterManifests,
+        search_overrides: BTreeMap<SearchChoiceId, SearchOverride>,
+    ) -> Result<Self, FaultExecutionError> {
         let program = sole_program(plan)?;
         let resource_limits = plan.resource_limits();
         admit_manifests(plan.bindings(), &manifests)?;
         let bindings = plan.bindings().to_vec();
-        let binding_runtime = FaultBindingRuntime::new(
+        let binding_runtime = FaultBindingRuntime::new_with_search_overrides(
             program,
             bindings.clone(),
             artifacts,
             boundary,
             scenario_seed,
             resource_limits,
+            search_overrides,
         )?;
         let adapters = TransactionalFaultAdapters::new(manifests, resource_limits)?;
         Ok(Self {
@@ -365,6 +390,17 @@ impl<'a> FaultExecutionRuntime<'a> {
     pub fn bindings(&self) -> &[FaultBinding] {
         &self.bindings
     }
+
+    /// Requires every installed finite search override to be consumed once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultExecutionError`] when any configured override was not
+    /// reached by execution.
+    pub fn verify_search_overrides_consumed(&self) -> Result<(), FaultExecutionError> {
+        self.binding_runtime.verify_search_overrides_consumed()?;
+        Ok(())
+    }
 }
 
 /// An owned, cloneable fault continuation suitable for scheduler state.
@@ -396,12 +432,37 @@ impl OwnedFaultExecutionRuntime {
         scenario_seed: ContentHash,
         manifests: FaultAdapterManifests,
     ) -> Result<Self, FaultExecutionError> {
-        let runtime = FaultExecutionRuntime::new(
+        Self::new_with_search_overrides(
+            plan,
+            artifacts,
+            boundary,
+            scenario_seed,
+            manifests,
+            BTreeMap::new(),
+        )
+    }
+
+    /// Creates an owned continuation with concrete finite explorer overrides.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultExecutionError`] under the same conditions as
+    /// [`Self::new`], or when the override set exceeds admitted bounds.
+    pub fn new_with_search_overrides(
+        plan: FaultSignalPlan,
+        artifacts: Arc<dyn SignalArtifactProvider>,
+        boundary: SignalBoundarySnapshot,
+        scenario_seed: ContentHash,
+        manifests: FaultAdapterManifests,
+        search_overrides: BTreeMap<SearchChoiceId, SearchOverride>,
+    ) -> Result<Self, FaultExecutionError> {
+        let runtime = FaultExecutionRuntime::new_with_search_overrides(
             &plan,
             artifacts.as_ref(),
             boundary,
             scenario_seed,
             manifests.clone(),
+            search_overrides,
         )?;
         let checkpoint = runtime.checkpoint()?;
         drop(runtime);
@@ -712,6 +773,29 @@ impl OwnedFaultExecutionRuntime {
             .ok_or(FaultRuntimeError::InvalidReplayTrace)?
             .require_exhausted()
             .map_err(FaultExecutionError::from)
+    }
+
+    /// Requires every installed finite search override to be consumed once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultExecutionError`] when continuation restore fails or any
+    /// configured override was not reached by execution.
+    pub fn verify_search_overrides_consumed(&self) -> Result<(), FaultExecutionError> {
+        let runtime = FaultExecutionRuntime::restore(
+            &self.plan,
+            self.artifacts.as_ref(),
+            self.scenario_seed,
+            self.manifests.clone(),
+            &self.checkpoint,
+        )?;
+        runtime.verify_search_overrides_consumed()
+    }
+
+    /// Reports whether this continuation carries finite explorer overrides.
+    #[must_use]
+    pub fn has_search_overrides(&self) -> bool {
+        !self.checkpoint.binding_runtime.search_overrides.is_empty()
     }
 
     /// Returns all committed effects as an unconsumed replay trace.

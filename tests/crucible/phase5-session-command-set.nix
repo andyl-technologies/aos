@@ -15,7 +15,7 @@
 
   taskList = builtins.concatStringsSep "," taskIds;
 
-  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
+  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionDoc [
@@ -38,10 +38,6 @@
       {
         label = "oneshot reply result";
         needle = "oneshot::Sender<Result<T, SessionError>>";
-      }
-      {
-        label = "fault command payload";
-        needle = "pub struct FaultSpec";
       }
       {
         label = "breakpoint command payload";
@@ -146,6 +142,24 @@
       {
         label = "running local acknowledgement test";
         needle = "rfc_command_running_actor_acknowledges_local_boundary_replies_immediately";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible-session/src/lib.rs" sessionLib [
+      {
+        label = "retired imperative fault injection command";
+        needle = "InjectFault";
+      }
+      {
+        label = "retired imperative fault healing command";
+        needle = "HealFault";
+      }
+      {
+        label = "retired session fault payload";
+        needle = "FaultSpec";
+      }
+      {
+        label = "retired session fault tag";
+        needle = "FaultTag";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

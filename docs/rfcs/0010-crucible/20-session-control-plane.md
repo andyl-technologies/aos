@@ -342,11 +342,6 @@ pub enum Command {
     Step { mode: StepMode },
     /// End the run. Any non-terminal state → Stopped(Stopped).
     Stop,
-    /// Inject a fault into the scheduler's active-fault set (17), applied at a
-    /// quantum boundary. Returns a `FaultTag` for later healing.
-    InjectFault { spec: FaultSpec, reply: Reply<FaultTag> },
-    /// Heal a previously injected fault by tag (17), applied at a boundary.
-    HealFault { tag: FaultTag },
     /// Add a predicate-based breakpoint (§6). Returns its id.
     SetBreakpoint { spec: BreakpointSpec, reply: Reply<BreakpointId> },
     /// Remove a breakpoint by id (§6).
@@ -368,6 +363,12 @@ pub enum Command {
 /// still a fire-and-await message — the caller never touches session state.
 pub type Reply<T> = tokio::sync::oneshot::Sender<Result<T, SessionError>>;
 ```
+
+Faults are not imperative session commands. The admitted signal-driven fault
+plan is part of scenario identity, and its typed bindings apply and remove
+effects at deterministic adapter opportunities. Changing that plan creates a
+new scenario or fork; there is no `InjectFault`, `HealFault`, `FaultSpec`, or
+`FaultTag` compatibility path in the session command set.
 
 ### 4.1 Command → model/graph/scheduler mapping
 

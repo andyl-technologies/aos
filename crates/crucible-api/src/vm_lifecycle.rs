@@ -141,6 +141,40 @@ struct ProductionVmBranchConfig {
     seed: Option<Seed>,
 }
 
+fn production_fault_search_overrides(
+    branch: Option<&ProductionVmBranchConfig>,
+) -> Result<
+    BTreeMap<crucible::model::SearchChoiceId, crucible::model::SearchOverride>,
+    LifecycleApiError,
+> {
+    let mut overrides = BTreeMap::new();
+    let Some(branch) = branch else {
+        return Ok(overrides);
+    };
+    for decision in &branch.decisions {
+        let Decision::Override(decision) = decision else {
+            continue;
+        };
+        if !decision.point.key.starts_with("signal-fault/") {
+            continue;
+        }
+        let (id, search_override) =
+            crucible::model::SearchOverride::from_override_decision(decision)
+                .ok_or_else(|| loop_factory_error("malformed signal-fault branch override"))?;
+        if search_override.parent_branch != Some(branch.base.id()) {
+            return Err(loop_factory_error(
+                "signal-fault branch override names a different parent configuration",
+            ));
+        }
+        if overrides.insert(id, search_override).is_some() {
+            return Err(loop_factory_error(
+                "signal-fault branch repeats one search-choice identity",
+            ));
+        }
+    }
+    Ok(overrides)
+}
+
 /// Original live-execution evidence sampled at one scheduler boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ProductionVmDebugRuntimeEvidence {
@@ -395,6 +429,7 @@ pub struct ProductionVmLifecycleLoop {
     storage_fault_observations: storage_faults::ProductionStorageObservations,
     fault_runtime: Arc<std::sync::Mutex<ProductionFaultRuntime>>,
     fault_replay_installed: bool,
+    fault_search_overrides_installed: bool,
     fault_evaluation_cursor: network_faults::SharedProductionFaultEvaluationCursor,
     icount_shift: u8,
     node_indexes: BTreeMap<NodeId, usize>,
@@ -1136,6 +1171,7 @@ pub fn build_production_vm_lifecycle_loop(
         .map_err(|error| loop_factory_error(format!("lower scenario trigger plan: {error}")))?
         .into_event_graph();
     let signal_plan = source.plan().fault_signals().clone();
+    let fault_search_overrides = production_fault_search_overrides(config.branch.as_ref())?;
     let signal_artifact_objects = if signal_plan.programs().is_empty() {
         BTreeMap::new()
     } else if let Some(checkpoint) = &restore_checkpoint {
@@ -1216,12 +1252,13 @@ pub fn build_production_vm_lifecycle_loop(
                 pending_outputs,
             )
         } else {
-            let mut runtime = ProductionFaultRuntime::new(
+            let mut runtime = ProductionFaultRuntime::new_with_search_overrides(
                 signal_plan,
                 signal_artifacts,
                 SignalBoundarySnapshot::default(),
                 scenario.id(),
                 &backends,
+                fault_search_overrides.clone(),
             )
             .map_err(|error| loop_factory_error(format!("admit signal fault runtime: {error}")))?;
             if let Some(trace) = config.fault_replay.clone() {
@@ -1243,6 +1280,10 @@ pub fn build_production_vm_lifecycle_loop(
             (runtime, cursor, interceptor, Vec::new())
         };
     let fault_replay_installed = config.fault_replay.is_some();
+    let fault_search_overrides_installed = fault_runtime
+        .lock()
+        .map_err(|_| loop_factory_error("production fault runtime lock is poisoned"))?
+        .has_search_overrides();
     let mut block_device_map = BTreeMap::new();
     for (node, block) in &block_bindings {
         let handle = backends.shared_block_device(node).map_err(|error| {
@@ -1357,6 +1398,7 @@ pub fn build_production_vm_lifecycle_loop(
         storage_fault_observations,
         fault_runtime,
         fault_replay_installed,
+        fault_search_overrides_installed,
         fault_evaluation_cursor,
         icount_shift: first.icount_shift,
         node_indexes,

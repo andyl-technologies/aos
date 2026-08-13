@@ -658,7 +658,7 @@ gate, including checkpoint/restore with pending work.
   the identical semantics across the production shared-memory and QEMU path;
   no test double result can satisfy that gate. *Gate:*
   `gate:layer0-determinism`, `gate:layer1-injection`,
-  `gate:qemu-exact-snapshot-restore`. *Spec:* §15.7; cross-ref 24.
+  `checks.crucible.phase2.qemuExactSnapshotRestore`. *Spec:* §15.7; cross-ref 24.
 
 - **[IO-28]** Each sub-node MUST satisfy a **run-twice determinism test** using
   two independent constructions of the production device core driven through the same

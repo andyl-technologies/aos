@@ -69,7 +69,7 @@
       }
       {
         label = "phase5 CLI remote selector proof progress";
-        needle = "routes remote selector proof\n  queries over RPC breakpoint-firing payloads";
+        needle = "routes remote\n  selector proof queries over RPC breakpoint-firing payloads";
       }
       {
         label = "phase5 CLI process qemu save progress";

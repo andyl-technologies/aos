@@ -9,14 +9,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crucible::model::{
-    BindingActionKind, BindingEvaluation, ContentHash, EffectKind, EffectSpecification,
-    FaultAdapterManifests, FaultCapabilityId, FaultCapabilityManifest, FaultCoordinate,
-    FaultExecutionError, FaultObjectId, FaultObservation, FaultObservationKind, FaultOpportunity,
-    FaultReplayMode, FaultResourceLimitError, FaultResourceLimits, FaultRuntimeCheckpoint,
-    FaultSignalPlan, HostFaultActionSink, HostFaultActionState, NodeBootPolicy,
-    NodeEffectSpecification, NodeHangScope, NodeLifecycleTransition, NodeStatePolicy,
-    NodeWatchdogPolicy, OwnedFaultExecutionRuntime, ReferencedSignalEvent, ResolvedBindingAction,
-    ResolvedEffectTrace, SignalArtifactProvider, SignalBoundarySnapshot,
+    BindingActionKind, BindingEvaluation, BindingSearchChoice, ContentHash, EffectKind,
+    EffectSpecification, FaultAdapterManifests, FaultCapabilityId, FaultCapabilityManifest,
+    FaultCoordinate, FaultExecutionError, FaultObjectId, FaultObservation, FaultObservationKind,
+    FaultOpportunity, FaultReplayMode, FaultResourceLimitError, FaultResourceLimits,
+    FaultRuntimeCheckpoint, FaultSignalPlan, HostFaultActionSink, HostFaultActionState,
+    NodeBootPolicy, NodeEffectSpecification, NodeHangScope, NodeLifecycleTransition,
+    NodeStatePolicy, NodeWatchdogPolicy, OwnedFaultExecutionRuntime, ReferencedSignalEvent,
+    ResolvedBindingAction, ResolvedEffectTrace, SearchChoiceId, SearchOverride,
+    SignalArtifactProvider, SignalBoundarySnapshot,
 };
 use crucible::{BackendError, BackendNetworkOutput, NodeId, SchedulerNetworkCheckpoint};
 use crucible_shmem::{
@@ -164,6 +165,9 @@ pub enum ProductionFaultRuntimeError {
     /// A QEMU occurrence event has not yet entered the authoritative log.
     #[error("cannot checkpoint while QEMU fault events await boundary admission")]
     PendingQemuFaultEvents,
+    /// Explorer choices have not yet crossed into the scheduler frontier log.
+    #[error("cannot checkpoint while signal-fault search choices await scheduler admission")]
+    PendingSearchChoices,
     /// A scenario-owned production resource reservation failed.
     #[error(transparent)]
     ResourceLimit(#[from] FaultResourceLimitError),
@@ -214,6 +218,7 @@ pub struct ProductionFaultRuntime {
     pending_qemu_events: BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
     pending_node_lifecycle: Vec<QemuNodeLifecycleDecision>,
     pending_node_boot: BTreeSet<NodeId>,
+    pending_search_choices: Vec<(FaultCoordinate, Vec<BindingSearchChoice>)>,
 }
 
 impl ProductionFaultRuntime {
@@ -230,6 +235,30 @@ impl ProductionFaultRuntime {
         scenario_seed: ContentHash,
         nodes: &QemuNodeSet,
     ) -> Result<Self, ProductionFaultRuntimeError> {
+        Self::new_with_search_overrides(
+            plan,
+            artifacts,
+            boundary,
+            scenario_seed,
+            nodes,
+            BTreeMap::new(),
+        )
+    }
+
+    /// Admits a complete plan with concrete finite explorer overrides.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionFaultRuntimeError`] under the same conditions as
+    /// [`Self::new`], or when the override set exceeds admitted bounds.
+    pub fn new_with_search_overrides(
+        plan: FaultSignalPlan,
+        artifacts: Option<Arc<dyn SignalArtifactProvider>>,
+        boundary: SignalBoundarySnapshot,
+        scenario_seed: ContentHash,
+        nodes: &QemuNodeSet,
+        search_overrides: BTreeMap<SearchChoiceId, SearchOverride>,
+    ) -> Result<Self, ProductionFaultRuntimeError> {
         validate_ready_marker_admission(&plan, nodes)?;
         let manifests = production_manifests(nodes)?;
         let plan_id = plan.id();
@@ -239,12 +268,13 @@ impl ProductionFaultRuntime {
         } else {
             let artifacts =
                 artifacts.ok_or(ProductionFaultRuntimeError::MissingArtifactProvider)?;
-            Some(OwnedFaultExecutionRuntime::new(
+            Some(OwnedFaultExecutionRuntime::new_with_search_overrides(
                 plan,
                 artifacts,
                 boundary,
                 scenario_seed,
                 manifests,
+                search_overrides,
             )?)
         };
         Ok(Self {
@@ -261,6 +291,7 @@ impl ProductionFaultRuntime {
             pending_qemu_events: BTreeMap::new(),
             pending_node_lifecycle: Vec::new(),
             pending_node_boot: BTreeSet::new(),
+            pending_search_choices: Vec::new(),
         })
     }
 
@@ -375,6 +406,7 @@ impl ProductionFaultRuntime {
             pending_qemu_events,
             pending_node_lifecycle: Vec::new(),
             pending_node_boot: BTreeSet::new(),
+            pending_search_choices: Vec::new(),
         })
     }
 
@@ -412,6 +444,20 @@ impl ProductionFaultRuntime {
             .as_ref()
             .ok_or(FaultExecutionError::CheckpointPresence)?
             .verify_replay_exhausted()?;
+        Ok(())
+    }
+
+    /// Requires every installed finite search override to be consumed once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionFaultRuntimeError`] when the plan is inert or an
+    /// installed override was never reached.
+    pub fn verify_search_overrides_consumed(&self) -> Result<(), ProductionFaultRuntimeError> {
+        self.runtime
+            .as_ref()
+            .ok_or(FaultExecutionError::CheckpointPresence)?
+            .verify_search_overrides_consumed()?;
         Ok(())
     }
 
@@ -506,6 +552,7 @@ impl ProductionFaultRuntime {
             .extend(evaluation.emitted_events.iter().cloned());
         self.pending_node_boot
             .extend(node_boot_requests(&evaluation.actions)?);
+        self.retain_search_choices(coordinate, &evaluation.search_choices);
         Ok(evaluation)
     }
 
@@ -800,6 +847,7 @@ impl ProductionFaultRuntime {
         }
         self.emitted_events
             .extend(evaluation.emitted_events.iter().cloned());
+        self.retain_search_choices(opportunity.coordinate(), &evaluation.search_choices);
         Ok(evaluation)
     }
 
@@ -849,6 +897,7 @@ impl ProductionFaultRuntime {
         }
         self.emitted_events
             .extend(evaluation.emitted_events.iter().cloned());
+        self.retain_search_choices(opportunity.coordinate(), &evaluation.search_choices);
         Ok(evaluation)
     }
 
@@ -883,6 +932,9 @@ impl ProductionFaultRuntime {
             || !self.pending_node_boot.is_empty()
         {
             return Err(ProductionFaultRuntimeError::PendingQemuFaultEvents);
+        }
+        if !self.pending_search_choices.is_empty() {
+            return Err(ProductionFaultRuntimeError::PendingSearchChoices);
         }
         validate_production_event_state(
             &self.emitted_events,
@@ -934,6 +986,14 @@ impl ProductionFaultRuntime {
             pending_qemu_events: self.pending_qemu_events.clone(),
             identity,
         })
+    }
+
+    /// Reports whether the live or restored continuation carries explorer overrides.
+    #[must_use]
+    pub fn has_search_overrides(&self) -> bool {
+        self.runtime
+            .as_ref()
+            .is_some_and(OwnedFaultExecutionRuntime::has_search_overrides)
     }
 
     /// Captures the complete continuation with scheduler-owned network state.
@@ -1014,6 +1074,23 @@ impl ProductionFaultRuntime {
     /// Acknowledges boot requests after every requested node is activated.
     pub fn acknowledge_node_boot_requests(&mut self) {
         self.pending_node_boot.clear();
+    }
+
+    /// Removes finite explorer choices after the scheduler has recorded them.
+    #[must_use]
+    pub fn drain_search_choices(&mut self) -> Vec<(FaultCoordinate, Vec<BindingSearchChoice>)> {
+        std::mem::take(&mut self.pending_search_choices)
+    }
+
+    fn retain_search_choices(
+        &mut self,
+        coordinate: FaultCoordinate,
+        choices: &[BindingSearchChoice],
+    ) {
+        if !choices.is_empty() {
+            self.pending_search_choices
+                .push((coordinate, choices.to_vec()));
+        }
     }
 
     /// Removes committed host impulses for exact device-opportunity execution.
@@ -2902,6 +2979,120 @@ mod tests {
         .unwrap_or_else(|error| panic!("test binding should be valid: {error}"));
         FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
             .unwrap_or_else(|error| panic!("test plan should be valid: {error}"))
+    }
+
+    fn finite_search_plan(target: &ResolvedFaultTarget) -> FaultSignalPlan {
+        let output = signal_id("network-delay");
+        let program = crucible::model::SignalProgram::new(
+            vec![SignalNode {
+                id: output.clone(),
+                domain: SignalDomain::VirtualTime,
+                output: SignalShape::new(SignalValueType::U64, SignalUnit::VirtualNanoseconds, 0)
+                    .unwrap_or_else(|error| panic!("test signal shape should be valid: {error}")),
+                inputs: Vec::new(),
+                kind: SignalNodeKind::Constant {
+                    value: SignalValue::U64(5),
+                },
+            }],
+            vec![output],
+            SignalResourceLimits::default(),
+        )
+        .unwrap_or_else(|error| panic!("test signal program should be valid: {error}"));
+        let targets = ResolvedTargetSet::new(vec![target.clone()], false)
+            .unwrap_or_else(|error| panic!("test target set should be valid: {error}"));
+        let effect = EffectRequest::new(
+            EFFECT_SEMANTIC_VERSION,
+            EffectLifetime::Persistent,
+            EffectSpecification::Network(NetworkEffectSpecification::PropagationDelay {
+                delay_nanos: Some(
+                    PositiveU64::new("delay_nanos", 1)
+                        .unwrap_or_else(|error| panic!("test delay should be valid: {error}")),
+                ),
+                distance_velocity_lookup: None,
+            }),
+        )
+        .unwrap_or_else(|error| panic!("test effect should be valid: {error}"));
+        let binding = FaultBinding::new(
+            object_id("network-delay-binding"),
+            program.exported_outputs().to_vec(),
+            BindingSampling::AtBoundary,
+            BindingMapping::PiecewiseParameter {
+                parameter: crucible::model::MappedEffectParameter::DurationNanos,
+                points: vec![
+                    crucible::model::BindingMapPoint {
+                        input: SignalValue::U64(0),
+                        output: SignalValue::DurationNanos(10),
+                    },
+                    crucible::model::BindingMapPoint {
+                        input: SignalValue::U64(10),
+                        output: SignalValue::DurationNanos(30),
+                    },
+                ],
+                rounding: crucible::model::SignalRounding::NearestTiesToEven,
+                overflow: crucible::model::SignalOverflow::Error,
+            },
+            TargetSelector::Exact(targets),
+            [FaultPhase::Resolve].into_iter().collect(),
+            effect,
+            None,
+            BindingSearchPolicy::BranchParameter {
+                parameter: crucible::model::MappedEffectParameter::DurationNanos,
+                candidates: vec![
+                    SignalValue::DurationNanos(10),
+                    SignalValue::DurationNanos(20),
+                ],
+            },
+            BindingObservabilityPolicy {
+                samples: SampleObservation::ChangesAndEffects,
+                record_inactive_opportunities: false,
+                retain_mapped_values: true,
+            },
+            &program,
+        )
+        .unwrap_or_else(|error| panic!("test binding should be valid: {error}"));
+        FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
+            .unwrap_or_else(|error| panic!("test plan should be valid: {error}"))
+    }
+
+    #[test]
+    fn production_search_choices_must_cross_scheduler_boundary_before_checkpoint() {
+        let target = ResolvedFaultTarget::NetworkSegment {
+            segment: object_id("segment-a"),
+            direction: FaultDirection::AToB,
+        };
+        let plan = finite_search_plan(&target);
+        let mut nodes = QemuNodeSet::new();
+        let mut runtime = ProductionFaultRuntime::new(
+            plan,
+            Some(Arc::new(NoArtifacts)),
+            SignalBoundarySnapshot::default(),
+            ContentHash::from_bytes(b"production-search-choice"),
+            &nodes,
+        )
+        .unwrap_or_else(|error| panic!("search runtime should initialize: {error}"));
+
+        let evaluation = runtime
+            .evaluate_boundary(
+                FaultCoordinate {
+                    virtual_nanos: 0,
+                    retired_instructions: None,
+                },
+                0,
+                &mut nodes,
+            )
+            .unwrap_or_else(|error| panic!("search boundary should evaluate: {error}"));
+        assert_eq!(evaluation.search_choices.len(), 1);
+        assert!(matches!(
+            runtime.checkpoint(&mut nodes),
+            Err(ProductionFaultRuntimeError::PendingSearchChoices)
+        ));
+
+        let pending = runtime.drain_search_choices();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].1, evaluation.search_choices);
+        runtime
+            .checkpoint(&mut nodes)
+            .unwrap_or_else(|error| panic!("drained search choice should checkpoint: {error}"));
     }
 
     #[test]

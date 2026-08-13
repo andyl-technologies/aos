@@ -74,10 +74,13 @@
     inherit lib;
     entry = ../../crates/crucible-qemu/src/mapped_quantum.rs;
   };
-  qemuNode = import ./_rust-module-source.nix {
-    inherit lib;
-    entry = ../../crates/crucible-qemu/src/node.rs;
-  };
+  qemuNode = builtins.concatStringsSep "\n" [
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu/src/node.rs;
+    })
+    (builtins.readFile ../../crates/crucible-qemu/src/node_tests.rs)
+  ];
   qemuAsyncDriver = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible-qemu/src/async_driver.rs;
