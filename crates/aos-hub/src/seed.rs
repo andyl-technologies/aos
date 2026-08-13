@@ -56,7 +56,7 @@ use crate::db::{
 };
 use crate::domain::{Permission, Principal, Role, Scope};
 use crate::fetch::LocalFsFetch;
-use crate::surface::object::{encode_loose, encode_tree, hash_object, ObjectKind, Oid, TreeEntry};
+use crate::surface::object::{ObjectKind, Oid, TreeEntry, encode_loose, encode_tree, hash_object};
 use crate::surface::sshsig;
 use aos_hub_core::service::RouteReservationKey;
 
@@ -945,17 +945,18 @@ fn write_signed_surface(root: &Path, key: &SigningKey, trust_key: &str) -> Resul
 
 fn seed_system_images() -> Result<Vec<aos_registry_surface::manifest::ImageEntry>> {
     use aos_registry_surface::manifest::{
-        immutable_image_info_object_key, immutable_image_object_key, ImageCompression,
-        ImageDelivery, ImageEntry, ImageInfoReference, ImageTarget, ImageUkiIdentity,
-        ImageVerificationState,
+        ImageCompression, ImageDelivery, ImageEntry, ImageInfoReference, ImageTarget,
+        ImageUkiIdentity, ImageVerificationState, immutable_image_info_object_key,
+        immutable_image_object_key,
     };
     use sha2::{Digest as _, Sha256};
 
-    let raw = b"AOS demo raw disk image bytes\n";
+    let logical_raw = b"AOS demo raw disk image bytes\n";
+    let raw = zstd::stream::encode_all(&logical_raw[..], 1)?;
     let qcow2 = b"QFI\xfbAOS demo qcow2 disk image bytes\n";
     let raw_info = br#"{"schemaVersion":1,"format":"raw","target":"bare-metal"}"#;
     let qcow2_info = br#"{"schemaVersion":1,"format":"qcow2","targets":["qemu-kvm","openstack"]}"#;
-    let raw_sha = hex::encode(Sha256::digest(raw));
+    let raw_sha = hex::encode(Sha256::digest(logical_raw));
     let uki = ImageUkiIdentity {
         filename: "aos.efi".to_string(),
         esp_path: "EFI/Linux/aos.efi".to_string(),
@@ -991,7 +992,11 @@ fn seed_system_images() -> Result<Vec<aos_registry_surface::manifest::ImageEntry
                 filename: filename.to_string(),
                 object_key: immutable_image_object_key(&sha256, filename),
                 media_type: media_type.to_string(),
-                compression: ImageCompression::None,
+                compression: if format == "raw" {
+                    ImageCompression::Zstd
+                } else {
+                    ImageCompression::None
+                },
                 byte_size: bytes.len() as u64,
                 sha256: sha256.clone(),
                 compatible_targets,
@@ -1017,10 +1022,10 @@ fn seed_system_images() -> Result<Vec<aos_registry_surface::manifest::ImageEntry
     let images = vec![
         make(
             "raw",
-            "aos-demo-1.0.0-x86_64.img",
-            raw,
+            "aos-demo-1.0.0-x86_64.img.zst",
+            &raw,
             raw_info,
-            "application/vnd.aos.disk-image.raw",
+            "application/vnd.aos.disk-image.raw+zstd",
             vec![ImageTarget::BareMetal],
         ),
         make(

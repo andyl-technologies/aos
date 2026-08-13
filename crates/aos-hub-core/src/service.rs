@@ -1064,6 +1064,7 @@ fn image_verification_name(state: ImageVerificationState) -> &'static str {
 fn image_compression_name(compression: ImageCompression) -> &'static str {
     match compression {
         ImageCompression::None => "none",
+        ImageCompression::Zstd => "zstd",
     }
 }
 
@@ -31060,7 +31061,7 @@ mod cache_upload_tests {
 
         let image_sha256 = "a".repeat(64);
         let info_sha256 = "b".repeat(64);
-        let filename = "aos-system.img";
+        let filename = "aos-system.img.zst";
         let image = ImageEntry {
             format: "raw".into(),
             store_path: "/aos/store/aos-system-raw".into(),
@@ -31076,8 +31077,8 @@ mod cache_upload_tests {
                 rootfs_sha256: "d".repeat(64),
                 filename: filename.into(),
                 object_key: immutable_image_object_key(&image_sha256, filename),
-                media_type: "application/vnd.aos.disk-image.raw".into(),
-                compression: ImageCompression::None,
+                media_type: "application/vnd.aos.disk-image.raw+zstd".into(),
+                compression: ImageCompression::Zstd,
                 byte_size: 16,
                 sha256: image_sha256.clone(),
                 compatible_targets: vec![ImageTarget::BareMetal],

@@ -21,6 +21,16 @@
       type = lib.types.addCheck lib.types.int (value: value > 0);
       inherit default description;
     };
+  maxLogicalDiskMiB = 8192;
+  verityStorageMiB =
+    if config.aos.security.verity.enable
+    then 2 * cfg.budgets.maxVerityMiB
+    else 0;
+  logicalDiskContractMiB =
+    2
+    + cfg.budgets.maxEspMiB
+    + 2 * cfg.budgets.maxRootMiB
+    + verityStorageMiB;
   buildImage = import ./_builder.nix;
 
   rawImage = buildImage {
@@ -48,7 +58,7 @@
     pkgs.mkDerivation {
       name = "aos-image-${config.aos.system.name}-${format}";
       src = null;
-      buildDeps = [pkgs.qemu pkgs.coreutils pkgs.jq];
+      buildDeps = [pkgs.qemu pkgs.coreutils pkgs.jq pkgs.zstd];
       IMAGE_FORMAT = format;
       IMAGE_FILENAME = "aos-${config.aos.system.name}.${format}";
       IMAGE_MEDIA_TYPE = mediaType;
@@ -58,12 +68,20 @@
           name = "convert";
           script = ''
             mkdir -p $out
+            zstd -d --no-progress \
+              ${rawImage}/aos-${config.aos.system.name}.img.zst \
+              -o image.raw
             qemu-img convert -f raw -O ${formatFlag} \
-              ${rawImage}/aos-${config.aos.system.name}.img \
+              image.raw \
               $out/aos-${config.aos.system.name}.${format}
 
             filename="$IMAGE_FILENAME"
             byte_size=$(stat -c %s "$out/$filename")
+            max_download_mib=$(${pkgs.jq}/bin/jq -er '.artifactBudgetsMiB.download' ${rawImage}/image-info.json)
+            if [ "$byte_size" -gt $(( max_download_mib * 1048576 )) ]; then
+              echo "$IMAGE_FORMAT image exceeds its $max_download_mib MiB download contract" >&2
+              exit 1
+            fi
             sha256=$(sha256sum "$out/$filename" | cut -d ' ' -f1)
             virtual_size=$(${pkgs.qemu}/bin/qemu-img info --output=json "$out/$filename" \
               | ${pkgs.jq}/bin/jq -er '.["virtual-size"]')
@@ -135,13 +153,14 @@ in {
       maxUkiMiB = positiveMiB 160 "Maximum signed Unified Kernel Image size.";
       maxEspMiB = positiveMiB 384 "EFI System Partition capacity, including two UKIs and update headroom.";
       maxRuntimeClosureMiB = positiveMiB 768 "Maximum NAR size of the system toplevel runtime closure.";
+      maxDownloadMiB = positiveMiB 640 "Maximum directly downloadable disk-image object size.";
     };
   };
 
   options.system.build.image = {
     raw = lib.mkOption {
       type = lib.types.package;
-      description = "Raw GPT disk image (bootable via dd).";
+      description = "Zstandard-compressed raw GPT disk image (bootable after decompression).";
     };
     qcow2 = lib.mkOption {
       type = lib.types.package;
@@ -172,6 +191,10 @@ in {
       {
         assertion = cfg.budgets.maxEspMiB >= 2 * cfg.budgets.maxUkiMiB + 32;
         message = "aos.image.budgets.maxEspMiB must hold two maximum-sized UKIs plus 32 MiB of bootloader and FAT headroom";
+      }
+      {
+        assertion = logicalDiskContractMiB <= maxLogicalDiskMiB;
+        message = "aos.image storage budgets produce a logical disk larger than the 8192 MiB publication safety limit";
       }
     ];
     system.build.image = {

@@ -400,7 +400,7 @@ pub(crate) fn decode_producer_surface_fixture(bytes: &[u8]) -> Result<WorkerImag
     }
     let raw_key = objects
         .keys()
-        .find(|path| path.starts_with("images/sha256/") && path.ends_with("/aos-e2e.img"))
+        .find(|path| path.starts_with("images/sha256/") && path.ends_with("/aos-e2e.img.zst"))
         .context("apr producer surface has no raw image object")?
         .clone();
     let qcow2_key = objects

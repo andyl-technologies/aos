@@ -30,7 +30,7 @@
     pname = "apm-registry-publish-sysroot-image";
     version = "1.0.0";
     src = null;
-    buildDeps = [pkgs.coreutils pkgs.jq];
+    buildDeps = [pkgs.coreutils pkgs.jq pkgs.zstd];
     UKI_STORE_PATH = "${pkgs.systemd}/lib/systemd/boot/efi";
     UKI_FILENAME = "systemd-bootx64.efi";
     phases = [
@@ -38,9 +38,11 @@
         name = "build";
         script = ''
           mkdir -p "$out"
-          filename=aos-server.img
-          printf 'AOS registry publish image fixture\n' > "$out/$filename"
-          truncate -s 1MiB "$out/$filename"
+          filename=aos-server.img.zst
+          printf 'AOS registry publish image fixture\n' > image.raw
+          truncate -s 1MiB image.raw
+          logical_disk_sha256=$(sha256sum image.raw | cut -d ' ' -f1)
+          zstd -19 -T1 --no-progress image.raw -o "$out/$filename"
           image_sha256=$(sha256sum "$out/$filename" | cut -d ' ' -f1)
           image_size=$(stat -c %s "$out/$filename")
           uki_sha256=$(sha256sum "$UKI_STORE_PATH/$UKI_FILENAME" | cut -d ' ' -f1)
@@ -48,8 +50,8 @@
           ${pkgs.jq}/bin/jq -S -n \
             --arg filename "$filename" \
             --arg sha256 "$image_sha256" \
-            --arg logicalDiskSha256 "$image_sha256" \
-            --arg rootfsSha256 "$image_sha256" \
+            --arg logicalDiskSha256 "$logical_disk_sha256" \
+            --arg rootfsSha256 "$logical_disk_sha256" \
             --arg objectKey "images/sha256/$image_sha256/$filename" \
             --arg ukiFilename "$UKI_FILENAME" \
             --arg ukiSha256 "$uki_sha256" \
@@ -58,13 +60,13 @@
             '{schemaVersion: 1, name: "server", version: "1.0.0",
               architecture: "x86_64", platform: "x86_64-linux", format: "raw",
               filename: $filename, objectKey: $objectKey,
-              mediaType: "application/vnd.aos.disk-image.raw", compression: "none",
-              byteSize: $byteSize, virtualSizeBytes: $byteSize, sha256: $sha256,
+              mediaType: "application/vnd.aos.disk-image.raw+zstd", compression: "zstd",
+              byteSize: $byteSize, virtualSizeBytes: 1048576, sha256: $sha256,
               logicalDiskSha256: $logicalDiskSha256, rootfsSha256: $rootfsSha256,
               compatibleTargets: ["bare-metal"],
-              artifactBudgetsMiB: {root: 1, verity: 1, initrd: 1, uki: 1, esp: 34, runtimeClosure: 1},
+              artifactBudgetsMiB: {root: 1, verity: 1, initrd: 1, uki: 1, esp: 34, runtimeClosure: 1, download: 2},
               partitionTable: "gpt", kernelParams: "",
-              partitions: [{number: 1, label: "root-a", type: "root", filesystem: "fake", sizeMiB: 1, offsetBytes: 0, sizeBytes: $byteSize}],
+              partitions: [{number: 1, label: "root-a", type: "root", filesystem: "fake", sizeMiB: 1, offsetBytes: 0, sizeBytes: 1048576}],
               esp: {uki: "EFI/Linux/aos-server.efi", sdBoot: "EFI/systemd/systemd-bootx64.efi"},
               uki: {filename: $ukiFilename, espPath: "EFI/Linux/aos-server.efi",
                 byteSize: $ukiSize, sha256: $ukiSha256, signed: false, measured: false}}' \

@@ -232,7 +232,7 @@
     if (rawDownload.status !== 200
         || downloaded.length !== rawBytes.length
         || !downloaded.every((byte, index) => byte === rawBytes[index])
-        || !rawDownload.headers.get("content-disposition")?.includes("aos-e2e.img")
+        || !rawDownload.headers.get("content-disposition")?.includes("aos-e2e.img.zst")
         || !rawDownload.headers.get("cache-control")?.includes("immutable")
         || rawDownload.headers.get("x-aos-sha256") !== rawSha256
         || !rawDownload.headers.get("repr-digest")?.startsWith("sha-256=:")) {
@@ -581,7 +581,7 @@ in
             --hub http://127.0.0.1:8799 \
             --registry failure/images-public --channel stable \
             > "\$work/cli-images.json"
-          ${grep}/bin/grep -q 'aos-e2e.img' "\$work/cli-images.json"
+          ${grep}/bin/grep -q 'aos-e2e.img.zst' "\$work/cli-images.json"
           ${aos}/bin/aos image download \
             --hub http://127.0.0.1:8799 \
             --registry failure/images-public --channel stable --format raw \

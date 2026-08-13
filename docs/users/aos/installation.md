@@ -52,23 +52,28 @@ The same golden system may be published in several disk encodings:
 
 | Format | Typical target |
 | --- | --- | --- |
-| Raw GPT disk | Bare metal, custom image pipelines, QEMU |
+| Zstd-compressed raw GPT disk | Bare metal, custom image pipelines, QEMU |
 | QCOW2 | QEMU/KVM, OpenStack, Proxmox |
 | VMDK | VMware and vSphere |
 | Dynamic VHD | Hyper-V and VHD-based conversion pipelines |
 
-Use the format published for the target. The CLI verifies the file checksum by
-default; retain its `image-info.json` with the deployment record. UEFI firmware
-is required; do not pass a separate kernel or initrd.
+Use the format published for the target. Raw images are delivered as
+`aos-<system>.img.zst`; fixed partition headroom and the empty inactive slot
+therefore add almost no transfer cost. The CLI verifies the compressed object's
+signed size and SHA-256. Publication also verifies that decompression produces
+the exact `virtualSizeBytes` and `logicalDiskSha256` recorded in
+`image-info.json`. Retain that metadata with the deployment record. UEFI
+firmware is required; do not pass a separate kernel or initrd.
 
 ## Size the target
 
 Each golden image declares maximum sizes for its root, verity tree, initrd,
-UKI, ESP, and runtime closure through `aos.image.budgets`. The root, verity,
-and ESP maxima are storage-format contracts: they determine the capacities of
-the A/B GPT partitions and encrypted ZFS zvols rather than following the size
-of one particular build. The per-image `image-budget` Nix check fails when an
-artifact or runtime closure crosses its declared maximum.
+UKI, ESP, runtime closure, and direct download through `aos.image.budgets`.
+The root, verity, and ESP maxima are storage-format contracts: they determine
+the capacities of the A/B GPT partitions and encrypted ZFS zvols rather than
+following the size of one particular build. The per-image `image-budget` Nix
+check fails when an artifact, transfer, or runtime closure crosses its declared
+maximum.
 
 The target must also provide trailing unallocated space for first-boot state:
 
@@ -90,7 +95,7 @@ If a raw file is enlarged before boot, relocate its backup GPT header after
 resizing:
 
 ```sh
-cp /path/to/downloaded-aos.img aos-server.img
+zstd -d /path/to/downloaded-aos.img.zst -o aos-server.img
 chmod u+w aos-server.img
 truncate -s 16G aos-server.img
 
@@ -114,11 +119,14 @@ ls -l /dev/disk/by-id
 lsblk -o NAME,SIZE,MODEL,SERIAL,MOUNTPOINTS
 ```
 
-After the operator has confirmed the target, a typical imaging tool can copy
-the downloaded raw image to that device and flush it. Relocate the GPT backup header
-on the target before first boot:
+After the operator has confirmed the target, decompress directly into the
+imaging tool so the uncompressed disk need not occupy staging storage. Then
+relocate the GPT backup header on the target before first boot:
 
 ```sh
+zstd -dc aos-server.img.zst | \
+  sudo dd of=/dev/disk/by-id/REPLACE_WITH_TARGET bs=16M oflag=direct status=progress
+sudo sync
 sudo sgdisk -e /dev/disk/by-id/REPLACE_WITH_TARGET
 ```
 

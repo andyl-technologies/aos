@@ -25,6 +25,7 @@
     maxUkiMiB = 160;
     maxEspMiB = 384;
     maxRuntimeClosureMiB = 768;
+    maxDownloadMiB = 640;
   };
 
   # The service modules predate host-time evaluation and default to enabled.

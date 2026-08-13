@@ -26,7 +26,7 @@
 ##!   system — evaluated system configuration (from evalModules)
 ##!   name   — image name slug
 ##!
-##! Output: disk bytes + portable public image-info.json
+##! Output: zstd-compressed disk bytes + portable public image-info.json
 {
   pkgs,
   lib,
@@ -249,6 +249,7 @@
           pkgs.mtools # mcopy
           pkgs.coreutils
           pkgs.jq
+          pkgs.zstd
         ]
         ++ lib.optional sb.enable pkgs.sbsigntools; # sbsign for sd-boot
 
@@ -261,7 +262,7 @@
       UKI_MEASUREMENT_SIG_PATH = "${ukiA}/${ukiAStoreFilename}.measurement.sig";
       SDBOOT_DIR = "${pkgs.systemd}/lib/systemd/boot/efi";
       IMAGE_NAME = name;
-      IMAGE_FILENAME = "aos-${name}.img";
+      IMAGE_FILENAME = "aos-${name}.img.zst";
       IMAGE_VERSION = version;
       IMAGE_ARCHITECTURE = lib.platform.constraints.cpu;
       IMAGE_PLATFORM = lib.system;
@@ -273,6 +274,7 @@
       MAX_UKI_MIB = toString budgets.maxUkiMiB;
       MAX_ESP_MIB = toString budgets.maxEspMiB;
       MAX_RUNTIME_CLOSURE_MIB = toString budgets.maxRuntimeClosureMiB;
+      MAX_DOWNLOAD_MIB = toString budgets.maxDownloadMiB;
       IMAGE_UKI_PATH = "EFI/Linux/${espUkiFilename}";
       IMAGE_UKI_FILENAME = espUkiFilename;
       IMAGE_SDBOOT_PATH = "EFI/systemd/${efiName.systemd}";
@@ -485,7 +487,6 @@
           name = "install";
           script = ''
             mkdir -p $out
-            mv image.raw $out/aos-${name}.img
             # OTA payloads: the imported raw-image store path is also the
             # authenticated source for inactive-slot staging. These files are
             # copied to block devices/ESP without parsing the enclosing GPT.
@@ -503,9 +504,9 @@
             # can validate both before committing the catalog entry.
             root_size_bytes=$(cat root-size-bytes)
             root_size_mib=$(( root_size_bytes / 1048576 ))
-            disk_size_bytes=$(stat -c %s "$out/aos-${name}.img")
-            disk_size_mib=$(( disk_size_bytes / 1048576 ))
-            disk_sha256=$(sha256sum "$out/aos-${name}.img" | cut -d ' ' -f1)
+            virtual_size_bytes=$(stat -c %s image.raw)
+            disk_size_mib=$(( virtual_size_bytes / 1048576 ))
+            logical_disk_sha256=$(sha256sum image.raw | cut -d ' ' -f1)
             uki_size_bytes=$(stat -c %s "$UKI_PATH")
             uki_sha256=$(sha256sum "$UKI_PATH" | cut -d ' ' -f1)
             if [ -n "$SB_ENABLE" ]; then uki_signed=true; else uki_signed=false; fi
@@ -515,7 +516,7 @@
             esp_partition_size_bytes=$(cat esp-partition-size-bytes)
             root_offset_bytes=$(cat root-offset-bytes)
             root_partition_size_bytes=$(cat root-partition-size-bytes)
-            rootfs_sha256=$(dd if="$out/aos-${name}.img" \
+            rootfs_sha256=$(dd if=image.raw \
               iflag=skip_bytes,count_bytes \
               skip="$root_offset_bytes" count="$root_partition_size_bytes" \
               status=none | sha256sum | cut -d ' ' -f1)
@@ -526,15 +527,27 @@
             ${lib.optionalString verityEnabled ''hash_partition_size_bytes=$(cat hash-partition-size-bytes)''}
             ${lib.optionalString verityEnabled ''hash_b_offset_bytes=$(cat hash-b-offset-bytes)''}
             ${lib.optionalString verityEnabled ''hash_b_partition_size_bytes=$(cat hash-b-partition-size-bytes)''}
+
+            # The direct-delivery object is compressed as a whole so empty
+            # inactive slots and fixed partition headroom cost almost nothing
+            # on the wire. The logical disk digest below still authenticates
+            # the exact bytes reconstructed before writing physical media.
+            zstd -19 -T1 --no-progress image.raw -o "$out/$IMAGE_FILENAME"
+            disk_size_bytes=$(stat -c %s "$out/$IMAGE_FILENAME")
+            if [ "$disk_size_bytes" -gt $(( MAX_DOWNLOAD_MIB * 1048576 )) ]; then
+              echo "compressed raw image exceeds its $MAX_DOWNLOAD_MIB MiB download contract" >&2
+              exit 1
+            fi
+            disk_sha256=$(sha256sum "$out/$IMAGE_FILENAME" | cut -d ' ' -f1)
             ${pkgs.jq}/bin/jq -S -n \
               --arg name "$IMAGE_NAME" \
               --arg version "$IMAGE_VERSION" \
               --arg architecture "$IMAGE_ARCHITECTURE" \
               --arg platform "$IMAGE_PLATFORM" \
               --arg filename "$IMAGE_FILENAME" \
-              --arg mediaType 'application/vnd.aos.disk-image.raw' \
+              --arg mediaType 'application/vnd.aos.disk-image.raw+zstd' \
               --arg sha256 "$disk_sha256" \
-              --arg logicalDiskSha256 "$disk_sha256" \
+              --arg logicalDiskSha256 "$logical_disk_sha256" \
               --arg rootfsSha256 "$rootfs_sha256" \
               --arg objectKey "images/sha256/$disk_sha256/$IMAGE_FILENAME" \
               --arg ukiFilename "$IMAGE_UKI_FILENAME" \
@@ -545,7 +558,8 @@
               --arg uki "$IMAGE_UKI_PATH" \
               --arg sdBoot "$IMAGE_SDBOOT_PATH" \
               --argjson diskSizeMiB "$disk_size_mib" \
-              --argjson diskSizeBytes "$disk_size_bytes" \
+              --argjson diskSizeBytes "$virtual_size_bytes" \
+              --argjson byteSize "$disk_size_bytes" \
               --argjson espSizeMiB "$esp_size_mib" \
               --argjson rootSizeMiB "$root_size_mib" \
               --argjson rootPartitionSizeMiB "$MAX_ROOT_MIB" \
@@ -564,6 +578,7 @@
               --argjson maxUkiMiB "$MAX_UKI_MIB" \
               --argjson maxEspMiB "$MAX_ESP_MIB" \
               --argjson maxRuntimeClosureMiB "$MAX_RUNTIME_CLOSURE_MIB" \
+              --argjson maxDownloadMiB "$MAX_DOWNLOAD_MIB" \
               ${lib.optionalString verityEnabled ''              --argjson hashSizeMiB "$hash_size_mib" \
                             --argjson hashOffsetBytes "$hash_offset_bytes" \
                             --argjson hashPartitionSizeBytes "$hash_partition_size_bytes" \
@@ -579,8 +594,8 @@
                 filename: $filename,
                 objectKey: $objectKey,
                 mediaType: $mediaType,
-                compression: "none",
-                byteSize: $diskSizeBytes,
+                compression: "zstd",
+                byteSize: $byteSize,
                 virtualSizeBytes: $diskSizeBytes,
                 sha256: $sha256,
                 logicalDiskSha256: $logicalDiskSha256,
@@ -591,7 +606,8 @@
                   initrd: $maxInitrdMiB,
                   uki: $maxUkiMiB,
                   esp: $maxEspMiB,
-                  runtimeClosure: $maxRuntimeClosureMiB
+                  runtimeClosure: $maxRuntimeClosureMiB,
+                  download: $maxDownloadMiB
                 },
                 compatibleTargets: ["bare-metal"],
                 uki: {
