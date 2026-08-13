@@ -4323,16 +4323,27 @@ fn decompress_raw_disk(
 }
 
 #[cfg(target_os = "linux")]
+fn decompress_pinned_raw_disk(
+    source: &fs::File,
+    destination: &mut impl std::io::Write,
+    expected_size: u64,
+) -> Result<()> {
+    let mut disk = source
+        .try_clone()
+        .context("duplicating compressed raw disk")?;
+    // File::try_clone shares the open-file-description offset on Unix. Image
+    // hashing intentionally leaves that offset at EOF, so every independent
+    // consumer must establish its own starting position before reading.
+    disk.seek(SeekFrom::Start(0))?;
+    decompress_raw_disk(disk, destination, expected_size)
+}
+
+#[cfg(target_os = "linux")]
 fn verify_embedded_uki(image: &PublishedImage) -> Result<()> {
     let mut raw = tempfile::tempfile().context("creating pinned raw-image verification file")?;
     let raw_input;
     let raw_path = if image.format == "raw" {
-        let disk = image
-            .disk
-            .file
-            .try_clone()
-            .context("duplicating compressed raw disk")?;
-        decompress_raw_disk(disk, &mut raw, image.virtual_size_bytes)?;
+        decompress_pinned_raw_disk(&image.disk.file, &mut raw, image.virtual_size_bytes)?;
         raw.seek(SeekFrom::Start(0))?;
         let (file, path) = inheritable_procfd(&raw, Path::new("<raw image>"))?;
         raw_input = Some(file);
@@ -15254,6 +15265,22 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pinned_raw_materialization_rewinds_after_hashing() {
+        let logical = b"canonical raw disk bytes";
+        let compressed = zstd::stream::encode_all(&logical[..], 1).unwrap();
+        let mut pinned = tempfile::tempfile().unwrap();
+        pinned.write_all(&compressed).unwrap();
+        pinned.seek(SeekFrom::Start(0)).unwrap();
+        sha256_open_file(&mut pinned, Path::new("<compressed test image>")).unwrap();
+
+        let mut output = Vec::new();
+        decompress_pinned_raw_disk(&pinned, &mut output, logical.len() as u64).unwrap();
+
+        assert_eq!(output, logical);
     }
 
     #[test]
