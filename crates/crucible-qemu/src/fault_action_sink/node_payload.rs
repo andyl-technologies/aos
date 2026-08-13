@@ -1025,6 +1025,7 @@ mod tests {
             json!({"kind":"cpu_exception","parameters":{"exception":{"architecture":"x86_64","vector":18,"syndrome":0,"fault_address":null,"before_instruction":true,"maskable":false,"record":{"kind":"architecture_default"}}}}),
             json!({"kind":"interrupt_disposition","parameters":{"mutation":{"kind":"delay","parameters":{"delay_nanos":10}}}}),
             json!({"kind":"interrupt_storm","parameters":{"source":"timer","vector":32,"period_nanos":100,"burst":2,"count":4,"routing":{"target_vcpus":[0],"priority":0,"retain_pending":true}}}),
+            json!({"kind":"memory_mutation","parameters":{"address_space":"guest_physical","range":{"start":4096,"length":8},"mutation":{"kind":"bit_flip","parameters":{"mask":"01"}},"atomicity":"all_or_nothing"}}),
             json!({"kind":"memory_access_transform","parameters":{"range":{"start":4096,"length":64},"accesses":{"fetch":false,"cpu_load":false,"cpu_store":true,"dma_read":false,"dma_write":false,"page_table_walk":false},"violate_atomicity":true,"mutation":{"kind":"torn_write","parameters":{"selector":"0f"}},"occurrence":{"kind":"every"}}}),
             json!({"kind":"memory_ecc_event","parameters":{"target_vcpu":0,"kind":"corrected","address":4096,"syndrome":1,"bank":"bank-0","channel":"channel-0","rank":"rank-0","guest_visibility":{"kind":"telemetry_only"}}}),
             json!({"kind":"memory_region_state","parameters":{"range":{"start":4096,"length":64},"kind":"retention","process":{"kind":"retention","parameters":{"interval_nanos":100,"decay_mask":"01"}}}}),
@@ -1036,7 +1037,7 @@ mod tests {
             json!({"kind":"accelerator_memory_event","parameters":{"range":{"start":0,"length":1},"ecc":null,"syndrome":null,"transform":"01"}}),
             json!({"kind":"accelerator_service","parameters":{"capacity":{"numerator":1,"denominator":2},"memory_bytes_per_second":null,"jobs_per_second":null,"thermal_power":{"temperature_millikelvin":300000,"power_milliwatts":1000}}}),
         ];
-        assert_eq!(effects.len(), 19);
+        assert_eq!(effects.len(), 20);
         for encoded_effect in effects {
             let effect: NodeEffectSpecification = serde_json::from_value(encoded_effect)
                 .unwrap_or_else(|error| panic!("closed node effect JSON must decode: {error}"));
@@ -1071,6 +1072,21 @@ mod tests {
                 cause: BindingActionCause::Signal,
                 expected_precondition: None,
             };
+            if kind == crucible::model::EffectKind::MemoryMutation {
+                let prepared = super::super::prepare_memory_action_payload(&action)
+                    .unwrap_or_else(|error| panic!("{kind:?} must prepare atomically: {error}"));
+                let bytes = prepared
+                    .payload
+                    .encode_preparation()
+                    .unwrap_or_else(|error| {
+                        panic!("{kind:?} preparation schema must encode: {error}")
+                    });
+                assert_eq!(
+                    crucible_shmem::MemoryMutationPayloadV1::decode_preparation(&bytes),
+                    Ok(prepared.payload),
+                );
+                continue;
+            }
             let encoded = encode_node_action(&action, [3; 32])
                 .unwrap_or_else(|error| panic!("{kind:?} must translate: {error}"));
             if kind == crucible::model::EffectKind::CpuInstructionTransform {
@@ -1114,6 +1130,13 @@ mod tests {
                     vector: 32,
                 }
             }
+            EffectKind::MemoryMutation => ResolvedFaultTarget::MemoryRange {
+                node: node(),
+                address_space: object_id("gpa"),
+                guest_address: 4096,
+                vcpu: None,
+                length_bytes: 8,
+            },
             EffectKind::MemoryAccessTransform
             | EffectKind::MemoryEccEvent
             | EffectKind::MemoryRegionState

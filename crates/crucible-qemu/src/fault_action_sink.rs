@@ -129,83 +129,14 @@ impl<'a> QemuFaultActionSink<'a> {
         &self,
         action: &ResolvedBindingAction,
     ) -> Result<PreparedMemoryAction, FaultRuntimeError> {
-        if action.kind != BindingActionKind::Apply || action.phase != FaultPhase::Boundary {
-            return Err(FaultRuntimeError::AdapterActionMismatch);
-        }
-        let ResolvedFaultTarget::MemoryRange {
-            node,
-            address_space,
-            guest_address,
-            vcpu,
-            length_bytes,
-        } = &action.target
-        else {
-            return Err(FaultRuntimeError::AdapterActionMismatch);
-        };
-        let EffectSpecification::Node(NodeEffectSpecification::MemoryMutation {
-            address_space: requested_address_space,
-            range,
-            mutation,
-            atomicity,
-        }) = action.effect.specification()
-        else {
-            return Err(FaultRuntimeError::AdapterActionMismatch);
-        };
-        let target_address_space = match (address_space.as_str(), vcpu) {
-            ("gpa", None) => MemoryAddressSpace::GuestPhysical,
-            ("gva", Some(_)) => MemoryAddressSpace::GuestVirtual,
-            _ => return Err(FaultRuntimeError::AdapterActionMismatch),
-        };
-        if target_address_space != *requested_address_space
-            || *atomicity != ModelMemoryMutationAtomicity::AllOrNothing
-            || range.start() != *guest_address
-            || range.length() != *length_bytes
-        {
-            return Err(FaultRuntimeError::AdapterActionMismatch);
-        }
-        let length = usize::try_from(*length_bytes)
-            .map_err(|_source| FaultRuntimeError::AdapterActionMismatch)?;
-        let (transform, mask, values) = match mutation {
-            MemoryMutationKind::BitFlip { mask } => {
-                let pattern = mask.decode();
-                let mask = pattern.iter().copied().cycle().take(length).collect();
-                (MemoryMutationTransformKind::BitFlip, mask, Vec::new())
-            }
-            MemoryMutationKind::Replace { bytes } => (
-                MemoryMutationTransformKind::Replace,
-                vec![0xff; length],
-                bytes.decode(),
-            ),
-        };
-        let (address_space, vcpu_index) = match target_address_space {
-            MemoryAddressSpace::GuestPhysical => (
-                MemoryMutationAddressSpace::GuestPhysical,
-                MEMORY_MUTATION_NO_VCPU,
-            ),
-            MemoryAddressSpace::GuestVirtual => (
-                MemoryMutationAddressSpace::GuestVirtual,
-                (*vcpu).ok_or(FaultRuntimeError::AdapterActionMismatch)?,
-            ),
-        };
-        let payload = MemoryMutationPayloadV1 {
-            address_space,
-            transform,
-            atomicity: MemoryMutationAtomicity::AllOrNothing,
-            vcpu_index,
-            address: *guest_address,
-            mask,
-            values,
-            expected_translation_sha256: [0; 32],
-        };
-        let encoded = payload
+        let prepared = prepare_memory_action_payload(action)?;
+        let encoded = prepared
+            .payload
             .encode_preparation()
             .map_err(|_source| FaultRuntimeError::AdapterActionMismatch)?;
-        let node = NodeId {
-            name: node.as_str().to_owned(),
-        };
         let admitted = self
             .nodes
-            .fault_capabilities(&node)
+            .fault_capabilities(&prepared.node)
             .map_err(|_source| FaultRuntimeError::AdapterActionMismatch)?
             .iter()
             .any(|row| {
@@ -218,11 +149,7 @@ impl<'a> QemuFaultActionSink<'a> {
         if !admitted {
             return Err(FaultRuntimeError::AdapterActionMismatch);
         }
-        Ok(PreparedMemoryAction {
-            action: action.clone(),
-            node,
-            payload,
-        })
+        Ok(prepared)
     }
 
     fn prepare_typed_action(
@@ -263,6 +190,87 @@ impl<'a> QemuFaultActionSink<'a> {
             payload,
         })
     }
+}
+
+fn prepare_memory_action_payload(
+    action: &ResolvedBindingAction,
+) -> Result<PreparedMemoryAction, FaultRuntimeError> {
+    if action.kind != BindingActionKind::Apply || action.phase != FaultPhase::Boundary {
+        return Err(FaultRuntimeError::AdapterActionMismatch);
+    }
+    let ResolvedFaultTarget::MemoryRange {
+        node,
+        address_space,
+        guest_address,
+        vcpu,
+        length_bytes,
+    } = &action.target
+    else {
+        return Err(FaultRuntimeError::AdapterActionMismatch);
+    };
+    let EffectSpecification::Node(NodeEffectSpecification::MemoryMutation {
+        address_space: requested_address_space,
+        range,
+        mutation,
+        atomicity,
+    }) = action.effect.specification()
+    else {
+        return Err(FaultRuntimeError::AdapterActionMismatch);
+    };
+    let target_address_space = match (address_space.as_str(), vcpu) {
+        ("gpa", None) => MemoryAddressSpace::GuestPhysical,
+        ("gva", Some(_)) => MemoryAddressSpace::GuestVirtual,
+        _ => return Err(FaultRuntimeError::AdapterActionMismatch),
+    };
+    if target_address_space != *requested_address_space
+        || *atomicity != ModelMemoryMutationAtomicity::AllOrNothing
+        || range.start() != *guest_address
+        || range.length() != *length_bytes
+    {
+        return Err(FaultRuntimeError::AdapterActionMismatch);
+    }
+    let length = usize::try_from(*length_bytes)
+        .map_err(|_source| FaultRuntimeError::AdapterActionMismatch)?;
+    let (transform, mask, values) = match mutation {
+        MemoryMutationKind::BitFlip { mask } => {
+            let pattern = mask.decode();
+            let mask = pattern.iter().copied().cycle().take(length).collect();
+            (MemoryMutationTransformKind::BitFlip, mask, Vec::new())
+        }
+        MemoryMutationKind::Replace { bytes } => (
+            MemoryMutationTransformKind::Replace,
+            vec![0xff; length],
+            bytes.decode(),
+        ),
+    };
+    let (address_space, vcpu_index) = match target_address_space {
+        MemoryAddressSpace::GuestPhysical => (
+            MemoryMutationAddressSpace::GuestPhysical,
+            MEMORY_MUTATION_NO_VCPU,
+        ),
+        MemoryAddressSpace::GuestVirtual => (
+            MemoryMutationAddressSpace::GuestVirtual,
+            (*vcpu).ok_or(FaultRuntimeError::AdapterActionMismatch)?,
+        ),
+    };
+    let payload = MemoryMutationPayloadV1 {
+        address_space,
+        transform,
+        atomicity: MemoryMutationAtomicity::AllOrNothing,
+        vcpu_index,
+        address: *guest_address,
+        mask,
+        values,
+        expected_translation_sha256: [0; 32],
+    };
+    let node = NodeId {
+        name: node.as_str().to_owned(),
+    };
+    Ok(PreparedMemoryAction {
+        action: action.clone(),
+        node,
+        payload,
+    })
 }
 
 impl FaultActionSink for QemuFaultActionSink<'_> {
