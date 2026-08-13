@@ -8446,12 +8446,23 @@ async fn upload_publication_multipart(
             .context("resuming publication multipart completion")?;
         return Ok(());
     }
-    file.seek(SeekFrom::Start(0))?;
+    anyhow::ensure!(
+        admission.next_part_number > 0 && u64::from(admission.next_part_number) <= part_count + 1,
+        "Hub returned invalid multipart progress"
+    );
+    let first_part = admission.next_part_number;
+    let offset = if u64::from(first_part) == part_count + 1 {
+        expected_size
+    } else {
+        u64::from(first_part - 1)
+            .checked_mul(admission.part_size)
+            .context("publication multipart resume offset overflowed")?
+    };
+    file.seek(SeekFrom::Start(offset))?;
 
-    let result: Result<Vec<hub_types::RegistryPublicationMultipartPart>> = async {
-        let mut remaining = expected_size;
-        let mut parts = Vec::with_capacity(usize::try_from(part_count)?);
-        for part_number in 1..=u32::try_from(part_count)? {
+    let result: Result<()> = async {
+        let mut remaining = expected_size - offset;
+        for part_number in first_part..=u32::try_from(part_count)? {
             let size = remaining.min(admission.part_size);
             let mut bytes = vec![0_u8; usize::try_from(size)?];
             file.read_exact(&mut bytes).with_context(|| {
@@ -8472,38 +8483,18 @@ async fn upload_publication_multipart(
                 part.part_number == part_number,
                 "Hub returned a mismatched publication multipart part number"
             );
-            parts.push(part);
             remaining -= size;
         }
         anyhow::ensure!(remaining == 0, "publication multipart upload is incomplete");
-        Ok(parts)
+        Ok(())
     }
     .await;
-
-    let parts = match result {
-        Ok(parts) => parts,
-        Err(error) => {
-            let abort = client
-                .call_topology(
-                    HubTopologyMethod::AbortRegistryPublicationMultipartUpload,
-                    &hub_types::AbortRegistryPublicationMultipartUploadRequest {
-                        upload_id: admission.upload_id,
-                    },
-                )
-                .await;
-            return match abort {
-                Ok(_) => Err(error.context("the publication multipart upload was aborted")),
-                Err(abort_error) => Err(error.context(format!(
-                    "aborting the publication multipart upload also failed: {abort_error:#}"
-                ))),
-            };
-        }
-    };
+    result.context("multipart progress remains resumable")?;
     client
         .complete_registry_publication_multipart_upload(
             &hub_types::CompleteRegistryPublicationMultipartUploadRequest {
                 upload_id: admission.upload_id.clone(),
-                parts,
+                parts: Vec::new(),
             },
         )
         .await

@@ -575,10 +575,6 @@ impl SurfaceFetch for DoE2eSurface {
 
 #[async_trait(?Send)]
 impl SurfaceWrite for DoE2eSurface {
-    fn multipart_protocol_version(&self) -> Option<u32> {
-        Some(1)
-    }
-
     async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
         let content_hash = hex::encode(Sha256::digest(bytes));
         let object_key = self.object_key(path);
@@ -744,7 +740,7 @@ impl SurfaceWrite for DoE2eSurface {
         path: &str,
         upload_id: &str,
         parts: &[PartTag],
-    ) -> Result<()> {
+    ) -> Result<String> {
         let mut body = Vec::new();
         let cursor = self.sql.exec(
             "SELECT part_number, body, etag FROM aos_e2e_surface_parts
@@ -752,6 +748,12 @@ impl SurfaceWrite for DoE2eSurface {
             Some(vec![SqlStorageValue::String(upload_id.to_string())]),
         )?;
         let rows = cursor.raw().collect::<worker::Result<Vec<_>>>()?;
+        if rows.is_empty() {
+            let (_, version, _) = self
+                .load_object(path)?
+                .context("completed test multipart object disappeared")?;
+            return Ok(format!("do-{version}"));
+        }
         anyhow::ensure!(rows.len() == parts.len(), "multipart part count changed");
         for (row, expected) in rows.into_iter().zip(parts) {
             let [SqlStorageValue::Integer(part_number), body_value, SqlStorageValue::String(etag)] =
@@ -767,7 +769,10 @@ impl SurfaceWrite for DoE2eSurface {
         }
         self.write(path, &body).await?;
         self.abort_multipart(path, upload_id).await?;
-        Ok(())
+        let (_, version, _) = self
+            .load_object(path)?
+            .context("completed test multipart object disappeared")?;
+        Ok(format!("do-{version}"))
     }
 
     async fn abort_multipart(&self, _path: &str, upload_id: &str) -> Result<MultipartAbortOutcome> {

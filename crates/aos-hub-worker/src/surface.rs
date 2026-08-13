@@ -251,7 +251,7 @@ impl R2BucketAdapter for WorkerR2BucketAdapter {
         key: &str,
         upload_id: &str,
         parts: &[PartTag],
-    ) -> Result<()> {
+    ) -> Result<String> {
         use wasm_bindgen::JsValue;
         use wasm_bindgen_futures::JsFuture;
         let upload = resume_r2_multipart(&self.bucket, key, upload_id)?;
@@ -277,10 +277,13 @@ impl R2BucketAdapter for WorkerR2BucketAdapter {
             key,
             "complete",
         )?;
-        JsFuture::from(promise)
+        let object = JsFuture::from(promise)
             .await
             .map_err(|e| anyhow::anyhow!("R2 complete {key}: {e:?}"))?;
-        Ok(())
+        js_sys::Reflect::get(&object, &JsValue::from_str("etag"))
+            .ok()
+            .and_then(|value| value.as_string())
+            .context("R2 multipart completion returned no ETag")
     }
 
     async fn abort_multipart(&self, key: &str, upload_id: &str) -> Result<()> {
@@ -646,6 +649,15 @@ impl SurfaceFetch for R2SurfaceFetch {
             .and_then(|value| value.as_string())
             .map(|value| value.trim().to_string());
         Ok(etag.filter(|value| aos_hub_core::surface_write::strong_if_match_etag(value).is_ok()))
+    }
+
+    async fn inventory_size(&self, path: &str) -> Result<Option<i64>> {
+        let key = keymap::r2_key(&self.prefix, path);
+        self.contract
+            .head(&key)
+            .await?
+            .map(|size| i64::try_from(size).context("R2 object size exceeds i64"))
+            .transpose()
     }
 
     async fn fetch_stream(
@@ -1271,6 +1283,10 @@ impl SurfaceWrite for R2Write {
         Some(1)
     }
 
+    fn expected_multipart_etag(&self, parts: &[PartTag]) -> Result<Option<String>> {
+        aos_hub_core::surface_write::md5_multipart_etag(parts)
+    }
+
     async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
         let key = keymap::r2_key(&self.prefix, path);
         self.contract.put(&key, bytes).await
@@ -1304,7 +1320,7 @@ impl SurfaceWrite for R2Write {
         path: &str,
         upload_id: &str,
         parts: &[PartTag],
-    ) -> Result<()> {
+    ) -> Result<String> {
         let key = keymap::r2_key(&self.prefix, path);
         self.contract
             .complete_multipart(&key, upload_id, parts)
@@ -1639,10 +1655,6 @@ struct S3Write {
 
 #[async_trait(?Send)]
 impl SurfaceWrite for S3Write {
-    fn multipart_protocol_version(&self) -> Option<u32> {
-        Some(1)
-    }
-
     async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
         let now = aos_hub_core::clock::now_unix_secs();
         let url = self.surface.object_url(S3Method::Put, path, now)?;
@@ -1776,7 +1788,7 @@ impl SurfaceWrite for S3Write {
         path: &str,
         upload_id: &str,
         parts: &[aos_hub_core::surface_write::PartTag],
-    ) -> Result<()> {
+    ) -> Result<String> {
         let url = self.surface.multipart_url(
             "complete",
             path,
@@ -1811,8 +1823,7 @@ impl SurfaceWrite for S3Write {
         .await?;
         let body =
             String::from_utf8(body).context("S3 complete multipart response is not UTF-8")?;
-        aos_hub_core::s3surface::validate_complete_multipart_response(&body)?;
-        Ok(())
+        aos_hub_core::s3surface::complete_multipart_etag(&body)
     }
 
     async fn abort_multipart(

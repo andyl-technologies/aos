@@ -2107,12 +2107,134 @@ struct RegistryPublicationUploadPlacement {
 
 const REGISTRY_PUBLICATION_UPLOAD_TTL_SECS: i64 = 86_400;
 const MAX_REGISTRY_PUBLICATION_MULTIPART_PARTS: u64 = 10_000;
+const REGISTRY_PUBLICATION_PART_CLAIM_SECS: i64 = 300;
+
+fn multipart_next_part(
+    upload: &crate::db::RegistryPublicationMultipartUploadRecord,
+    expected_size: u64,
+) -> Result<u32, RpcError> {
+    if upload.state == "completing" {
+        return Ok(0);
+    }
+    let hashed_size = u64::try_from(upload.hashed_size)
+        .map_err(|_| RpcError::internal(anyhow::anyhow!("multipart hash progress is negative")))?;
+    if hashed_size > expected_size
+        || (hashed_size < expected_size
+            && hashed_size % REGISTRY_PUBLICATION_PART_BYTES as u64 != 0)
+    {
+        return Err(RpcError::internal(anyhow::anyhow!(
+            "multipart hash progress is invalid"
+        )));
+    }
+    let next = if hashed_size == expected_size {
+        expected_size.div_ceil(REGISTRY_PUBLICATION_PART_BYTES as u64) + 1
+    } else {
+        hashed_size / REGISTRY_PUBLICATION_PART_BYTES as u64 + 1
+    };
+    u32::try_from(next).map_err(RpcError::internal)
+}
+
+fn advance_multipart_sha256(
+    encoded_state: &str,
+    body: &[u8],
+    total_size: u64,
+    final_part: bool,
+) -> anyhow::Result<String> {
+    let state_bytes = hex::decode(encoded_state).context("decoding multipart SHA-256 state")?;
+    anyhow::ensure!(
+        state_bytes.len() == 32,
+        "multipart SHA-256 state is invalid"
+    );
+    let mut state = [0_u32; 8];
+    for (word, bytes) in state.iter_mut().zip(state_bytes.chunks_exact(4)) {
+        *word = u32::from_be_bytes(bytes.try_into()?);
+    }
+
+    let complete = body.len() / 64 * 64;
+    for chunk in body[..complete].chunks_exact(64) {
+        let block = sha2::digest::generic_array::GenericArray::clone_from_slice(chunk);
+        sha2::compress256(&mut state, std::slice::from_ref(&block));
+    }
+    if final_part {
+        let mut tail = body[complete..].to_vec();
+        tail.push(0x80);
+        while tail.len() % 64 != 56 {
+            tail.push(0);
+        }
+        tail.extend_from_slice(
+            &total_size
+                .checked_mul(8)
+                .context("multipart SHA-256 bit length overflowed")?
+                .to_be_bytes(),
+        );
+        for chunk in tail.chunks_exact(64) {
+            let block = sha2::digest::generic_array::GenericArray::clone_from_slice(chunk);
+            sha2::compress256(&mut state, std::slice::from_ref(&block));
+        }
+    } else {
+        anyhow::ensure!(
+            complete == body.len(),
+            "non-final multipart part is not block aligned"
+        );
+    }
+    Ok(state.iter().map(|word| format!("{word:08x}")).collect())
+}
+
+#[cfg(test)]
+mod multipart_digest_tests {
+    use super::{advance_multipart_sha256, multipart_next_part, REGISTRY_PUBLICATION_PART_BYTES};
+    use crate::db::RegistryPublicationMultipartUploadRecord;
+    use sha2::{Digest as _, Sha256};
+
+    const INITIAL_STATE: &str = "6a09e667bb67ae853c6ef372a54ff53a510e527f9b05688c1f83d9ab5be0cd19";
+
+    #[test]
+    fn portable_sha256_state_matches_whole_object_digest() {
+        let first = vec![b'a'; 64];
+        let state = advance_multipart_sha256(INITIAL_STATE, &first, 64, false).unwrap();
+        let digest = advance_multipart_sha256(&state, b"bc", 66, true).unwrap();
+
+        let mut whole = first;
+        whole.extend_from_slice(b"bc");
+        assert_eq!(digest, hex::encode(Sha256::digest(whole)));
+    }
+
+    #[test]
+    fn portable_sha256_state_matches_short_final_object() {
+        let digest = advance_multipart_sha256(INITIAL_STATE, b"abc", 3, true).unwrap();
+        assert_eq!(digest, hex::encode(Sha256::digest(b"abc")));
+    }
+
+    #[test]
+    fn fully_uploaded_non_aligned_object_resumes_at_completion() {
+        let expected_size = REGISTRY_PUBLICATION_PART_BYTES as u64 + 7;
+        let upload = RegistryPublicationMultipartUploadRecord {
+            upload_id: "upload".into(),
+            publication_id: "publication".into(),
+            registry_id: 1,
+            surface_object_id: 2,
+            state: "active".into(),
+            expires_at: i64::MAX,
+            hashed_size: expected_size as i64,
+            sha256_state: "0".repeat(64),
+            pending_part: None,
+            pending_hash: None,
+            pending_token: None,
+            pending_since: None,
+            completion_token: None,
+            completion_since: None,
+        };
+
+        assert_eq!(multipart_next_part(&upload, expected_size).unwrap(), 3);
+    }
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct RegistryPublicationMultipartBackend {
     placement_id: i64,
     placement_resource_version: i64,
     backend_upload_id: String,
+    completion_etag: Option<String>,
 }
 
 async fn collect_exact_publication_body(
@@ -24027,11 +24149,12 @@ impl RpcService {
             .map_err(RpcError::internal)?
             .into_iter()
             .map(
-                |(placement_id, placement_resource_version, backend_upload_id)| {
+                |(placement_id, placement_resource_version, backend_upload_id, completion_etag)| {
                     RegistryPublicationMultipartBackend {
                         placement_id,
                         placement_resource_version,
                         backend_upload_id,
+                        completion_etag,
                     }
                 },
             )
@@ -24091,11 +24214,12 @@ impl RpcService {
             .map_err(RpcError::internal)?
             .into_iter()
             .map(
-                |(placement_id, placement_resource_version, backend_upload_id)| {
+                |(placement_id, placement_resource_version, backend_upload_id, completion_etag)| {
                     RegistryPublicationMultipartBackend {
                         placement_id,
                         placement_resource_version,
                         backend_upload_id,
+                        completion_etag,
                     }
                 },
             )
@@ -24204,11 +24328,23 @@ impl RpcService {
                         .into(),
                 ));
             }
-            if existing.state == "active" && existing.expires_at <= now {
+            let claim_expired = match (&existing.pending_token, existing.pending_since) {
+                (Some(_), Some(since)) => {
+                    since <= now.saturating_sub(REGISTRY_PUBLICATION_PART_CLAIM_SECS)
+                }
+                (None, None) => false,
+                _ => {
+                    return Err(RpcError::internal(anyhow::anyhow!(
+                        "multipart claim state is incomplete"
+                    )));
+                }
+            };
+            if existing.state == "active" && (existing.expires_at <= now || claim_expired) {
                 self.abort_registry_publication_multipart_record(auth, existing)
                     .await?;
             } else {
                 let state = existing.state.clone();
+                let next_part_number = multipart_next_part(&existing, expected_size)?;
                 return Ok(pb::BeginRegistryPublicationMultipartUploadResponse {
                     part_upload_url: format!(
                         "{}/aos.hub.v1.PublishService/UploadPart/{}",
@@ -24218,6 +24354,7 @@ impl RpcService {
                     upload_id: existing.upload_id,
                     part_size: REGISTRY_PUBLICATION_PART_BYTES as u64,
                     state,
+                    next_part_number,
                 });
             }
         }
@@ -24267,6 +24404,7 @@ impl RpcService {
                 .map_err(RpcError::internal)?
                 .filter(|existing| existing.expires_at > now && existing.state == "active")
             {
+                let next_part_number = multipart_next_part(&existing, expected_size)?;
                 return Ok(pb::BeginRegistryPublicationMultipartUploadResponse {
                     part_upload_url: format!(
                         "{}/aos.hub.v1.PublishService/UploadPart/{}",
@@ -24276,6 +24414,7 @@ impl RpcService {
                     upload_id: existing.upload_id,
                     part_size: REGISTRY_PUBLICATION_PART_BYTES as u64,
                     state: "active".into(),
+                    next_part_number,
                 });
             }
             return Err(RpcError::internal(error));
@@ -24339,6 +24478,7 @@ impl RpcService {
                     placement_id: placement.id,
                     placement_resource_version: placement.resource_version,
                     backend_upload_id,
+                    completion_etag: None,
                 },
                 writer,
             ));
@@ -24351,6 +24491,7 @@ impl RpcService {
             upload_id,
             part_size: REGISTRY_PUBLICATION_PART_BYTES as u64,
             state: "active".into(),
+            next_part_number: 1,
         })
     }
 
@@ -24394,6 +24535,43 @@ impl RpcService {
                 "multipart part does not have its exact expected size",
             ));
         }
+        let prior_hashed_size = u64::try_from(upload.hashed_size).map_err(|_| {
+            RpcError::internal(anyhow::anyhow!("multipart hash progress is negative"))
+        })?;
+        if offset != prior_hashed_size {
+            return Err(RpcError::FailedPrecondition(
+                "multipart parts must be uploaded contiguously".into(),
+            ));
+        }
+        let body_hash = hex::encode(Sha256::digest(body));
+        let claim_token = uuid::Uuid::new_v4().simple().to_string();
+        let claimed_at = clock::now_unix_secs();
+        self.db
+            .claim_registry_publication_multipart_part(
+                &upload.upload_id,
+                part_number,
+                &body_hash,
+                upload.hashed_size,
+                &claim_token,
+                claimed_at,
+            )
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+        let hashed_size = prior_hashed_size
+            .checked_add(body.len() as u64)
+            .ok_or_else(|| RpcError::invalid("multipart hash progress overflowed"))?;
+        let sha256_state = advance_multipart_sha256(
+            &upload.sha256_state,
+            body,
+            hashed_size,
+            hashed_size == expected_size,
+        )
+        .map_err(RpcError::internal)?;
+        if hashed_size == expected_size && sha256_state != object.expected_hash {
+            return Err(RpcError::invalid(
+                "multipart bytes do not match the declared SHA-256",
+            ));
+        }
 
         let mut placements = Vec::with_capacity(backends.len());
         for backend in backends {
@@ -24435,6 +24613,11 @@ impl RpcService {
                     .iter()
                     .map(|placement| (placement.placement_id, placement.etag.clone()))
                     .collect::<Vec<_>>(),
+                i64::try_from(prior_hashed_size).map_err(RpcError::internal)?,
+                i64::try_from(hashed_size).map_err(RpcError::internal)?,
+                &sha256_state,
+                &body_hash,
+                &claim_token,
             )
             .await
             .map_err(RpcError::internal)?;
@@ -24466,6 +24649,13 @@ impl RpcService {
         let expected_size = u64::try_from(object.expected_size)
             .map_err(|_| RpcError::invalid("publication object size is out of range"))?;
         let part_count = expected_size.div_ceil(REGISTRY_PUBLICATION_PART_BYTES as u64);
+        if u64::try_from(upload.hashed_size).ok() != Some(expected_size)
+            || upload.sha256_state != object.expected_hash
+        {
+            return Err(RpcError::invalid(
+                "multipart upload has not verified the complete declared object",
+            ));
+        }
         let durable_parts = self
             .db
             .registry_publication_multipart_parts(&req.upload_id)
@@ -24536,8 +24726,15 @@ impl RpcService {
                 ));
             }
         }
+        let completion_token = uuid::Uuid::new_v4().simple().to_string();
+        let completion_claimed_at = clock::now_unix_secs();
         self.db
-            .begin_registry_publication_multipart_completion(&req.upload_id)
+            .begin_registry_publication_multipart_completion(
+                &req.upload_id,
+                &completion_token,
+                completion_claimed_at,
+                completion_claimed_at.saturating_sub(REGISTRY_PUBLICATION_PART_CLAIM_SECS),
+            )
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
 
@@ -24558,35 +24755,102 @@ impl RpcService {
                 .placement_fetcher(&placement)
                 .await
                 .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
-            let already_complete = fetch
-                .inventory_evidence(&object.object_key)
+            let placement_parts = per_placement
+                .get(&backend.placement_id)
+                .ok_or(RpcError::Internal)?;
+            let mut completion_etag = backend.completion_etag.clone();
+            if completion_etag.is_none() {
+                completion_etag = writer
+                    .expected_multipart_etag(placement_parts)
+                    .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+                if let Some(etag) = &completion_etag {
+                    self.db
+                        .record_registry_publication_multipart_completion_etag(
+                            &upload.upload_id,
+                            backend.placement_id,
+                            etag,
+                        )
+                        .await
+                        .map_err(RpcError::internal)?;
+                }
+            }
+            if completion_etag.is_none() {
+                return Err(RpcError::FailedPrecondition(
+                    "multipart backend does not provide a predictable completion identity".into(),
+                ));
+            }
+
+            let observed_before_size = fetch
+                .inventory_size(&object.object_key)
+                .await
+                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+            let observed_before_etag = fetch
+                .inventory_strong_etag(&object.object_key)
                 .await
                 .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?
-                .is_some_and(|evidence| {
-                    evidence.size == object.expected_size
-                        && hex::encode(evidence.sha256) == object.expected_hash
-                });
-            if !already_complete {
-                writer
+                .map(|etag| crate::surface_write::strong_if_match_etag(&etag))
+                .transpose()
+                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+            let already_landed = completion_etag.as_ref().is_some_and(|etag| {
+                observed_before_size == Some(object.expected_size)
+                    && observed_before_etag.as_ref() == Some(etag)
+            });
+            if !already_landed {
+                let returned_etag = match writer
                     .complete_multipart(
                         &object.object_key,
                         &backend.backend_upload_id,
-                        per_placement
-                            .get(&backend.placement_id)
-                            .ok_or(RpcError::Internal)?,
+                        placement_parts,
                     )
                     .await
-                    .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+                {
+                    Ok(etag) => crate::surface_write::strong_if_match_etag(&etag)
+                        .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?,
+                    Err(error) => return Err(RpcError::Unavailable(format!("{error:#}"))),
+                };
+                if completion_etag
+                    .as_ref()
+                    .is_some_and(|etag| etag != &returned_etag)
+                {
+                    return Err(RpcError::Unavailable(
+                        "provider returned an unexpected multipart object identity".into(),
+                    ));
+                }
+                if completion_etag.is_none() {
+                    self.db
+                        .record_registry_publication_multipart_completion_etag(
+                            &upload.upload_id,
+                            backend.placement_id,
+                            &returned_etag,
+                        )
+                        .await
+                        .map_err(RpcError::internal)?;
+                    completion_etag = Some(returned_etag);
+                }
             }
-            let evidence = fetch
-                .inventory_evidence(&object.object_key)
+            let completion_etag = completion_etag.ok_or_else(|| {
+                RpcError::Unavailable("provider returned no durable completion identity".into())
+            })?;
+            let observed_size = fetch
+                .inventory_size(&object.object_key)
                 .await
                 .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?
                 .ok_or_else(|| RpcError::Unavailable("completed object is absent".into()))?;
-            let observed_hash = hex::encode(evidence.sha256);
-            if evidence.size != object.expected_size || observed_hash != object.expected_hash {
+            if observed_size != object.expected_size {
                 return Err(RpcError::Unavailable(
                     "completed object failed exact read-after-write verification".into(),
+                ));
+            }
+            let observed_etag = fetch
+                .inventory_strong_etag(&object.object_key)
+                .await
+                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?
+                .map(|etag| crate::surface_write::strong_if_match_etag(&etag))
+                .transpose()
+                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+            if observed_etag.as_deref() != Some(completion_etag.as_str()) {
+                return Err(RpcError::Unavailable(
+                    "completed object identity changed before verification".into(),
                 ));
             }
             self.db
@@ -24594,9 +24858,9 @@ impl RpcService {
                     &upload.publication_id,
                     object.surface_object_id,
                     placement.id,
-                    &observed_hash,
-                    evidence.size,
-                    evidence.strong_etag.as_deref(),
+                    &object.expected_hash,
+                    observed_size,
+                    observed_etag.as_deref(),
                     clock::now_unix_secs(),
                 )
                 .await
@@ -24607,9 +24871,9 @@ impl RpcService {
                 .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
         }
         self.db
-            .finish_registry_publication_multipart_upload(
+            .finish_owned_registry_publication_multipart_completion(
                 &req.upload_id,
-                "completed",
+                &completion_token,
                 clock::now_unix_secs(),
             )
             .await

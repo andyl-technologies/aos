@@ -367,6 +367,7 @@ dependencies = [
  "hmac 0.12.1",
  "js-sys",
  "jwt-rustcrypto",
+ "md-5 0.11.0",
  "p256",
  "password-hash",
  "rand 0.9.4",
