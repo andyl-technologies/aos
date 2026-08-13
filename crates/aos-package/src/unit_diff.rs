@@ -328,8 +328,8 @@ pub struct UnitDiff {
 enum UnitType {
     /// Full restart/reload/stop/start lifecycle.
     Active,
-    /// `.target` — never restarted directly; stopped only as a barrier when
-    /// `X-StopOnReconfiguration=true`.
+    /// `.target` — never restarted directly; stopped for an explicit
+    /// reconfiguration barrier or when its final install edge is removed.
     Target,
     /// `.slice` / `.path` — config picked up by daemon-reload; not restarted.
     ReloadOnly,
@@ -532,7 +532,7 @@ fn install_dir_kind(name: &str) -> Option<(String, InstallKind)> {
 }
 
 // ---------------------------------------------------------------------------
-// Fingerprinting (file + reload-trigger folding)
+// Fingerprinting (unit files + referenced runtime content)
 // ---------------------------------------------------------------------------
 
 /// The unit's structural fingerprint over its own files only: the primary
@@ -569,14 +569,48 @@ fn trigger_fp(u: &LogicalUnit, etc_root: &Path) -> Option<u64> {
     Some(acc)
 }
 
-/// Effective fingerprint = file fingerprint, with reload-trigger content folded
-/// in when present.
-fn effective_fp(u: &LogicalUnit, etc_root: &Path) -> u64 {
-    let base = file_fp(u);
-    match trigger_fp(u, etc_root) {
-        Some(t) => base.rotate_left(7) ^ t,
-        None => base,
+/// Folds generation-local job scripts owned by this unit into a content hash.
+///
+/// Runtime-evaluated units refer to stable `/etc/aos-job-scripts/<key>` paths,
+/// so their unit-file text does not change when a script body changes. Keys are
+/// namespaced as `<unit>:<slot>`, which lets reconciliation bind the referenced
+/// script bytes to their owning unit without consulting an untrusted manifest.
+fn job_scripts_fp(u: &LogicalUnit, etc_root: &Path) -> Option<u64> {
+    let scripts_dir = etc_root.join("aos-job-scripts");
+    let prefix = format!("{}:", u.name);
+    let mut scripts: Vec<_> = std::fs::read_dir(scripts_dir)
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+        .collect();
+    scripts.sort_by_key(|entry| entry.file_name());
+    if scripts.is_empty() {
+        return None;
     }
+
+    let mut acc = 5381u64;
+    for script in scripts {
+        let name = script.file_name();
+        acc = acc
+            .wrapping_mul(31)
+            .wrapping_add(djb2_hash(name.to_string_lossy().as_bytes()))
+            .rotate_left(5)
+            ^ content_hash(&script.path());
+    }
+    Some(acc)
+}
+
+/// Effective fingerprint = file fingerprint, with reload-trigger and
+/// generation-local job-script content folded in when present.
+fn effective_fp(u: &LogicalUnit, etc_root: &Path) -> u64 {
+    let mut fingerprint = file_fp(u);
+    if let Some(triggers) = trigger_fp(u, etc_root) {
+        fingerprint = fingerprint.rotate_left(7) ^ triggers;
+    }
+    if let Some(job_scripts) = job_scripts_fp(u, etc_root) {
+        fingerprint = fingerprint.rotate_left(11) ^ job_scripts;
+    }
+    fingerprint
 }
 
 /// Resolve an absolute trigger path (canonically under `/etc`) onto a side's
@@ -679,7 +713,15 @@ fn classify_removed(name: &str, live: &LogicalUnit, diff: &mut UnitDiff) {
     if live.primary.is_none() {
         return;
     }
-    if unit_type(name) != UnitType::Active || is_denylisted_mount(name) {
+    match unit_type(name) {
+        UnitType::Target if install_link_count(live) > 0 => {
+            diff.to_stop.push(name.to_string());
+            return;
+        }
+        UnitType::Active => {}
+        _ => return,
+    }
+    if is_denylisted_mount(name) {
         return;
     }
     let knobs = Knobs::from_merged(&live.merged());
@@ -696,8 +738,14 @@ fn classify_added(name: &str, candidate: &LogicalUnit, diff: &mut UnitDiff) {
     if candidate.primary.is_none() {
         return;
     }
+    if unit_type(name) == UnitType::Target {
+        if install_link_count(candidate) > 0 {
+            diff.install_only.push(name.to_string());
+        }
+        return;
+    }
     if unit_type(name) != UnitType::Active {
-        return; // targets activate via deps; slices/paths via daemon-reload.
+        return; // uninstalled targets and slices/paths need only daemon-reload.
     }
     let knobs = Knobs::from_merged(&candidate.merged());
     if knobs.only_manual_start {
@@ -723,10 +771,12 @@ fn classify_both(
     let c_file = file_fp(candidate);
     let l_eff = effective_fp(live, live_root);
     let c_eff = effective_fp(candidate, candidate_root);
+    let install_changed = install_changed(live, candidate);
 
     if l_eff != c_eff {
         // Changed. Route via per-type policy on the candidate's knobs.
-        let trigger_driven = l_file == c_file;
+        let trigger_driven = l_file == c_file
+            && trigger_fp(live, live_root) != trigger_fp(candidate, candidate_root);
         match changed_action(name, candidate, diff) {
             Action::Restart => {
                 diff.to_restart.push(name.to_string());
@@ -744,14 +794,30 @@ fn classify_both(
             Action::None => {}
         }
     } else {
-        // Unchanged unit file + triggers: pick up new install wiring.
-        if unit_type(name) == UnitType::Active
-            && install_changed(live, candidate)
+        // Unchanged active unit: pick up new install wiring.
+        if install_changed
+            && unit_type(name) == UnitType::Active
             && !Knobs::from_merged(&candidate.merged()).only_manual_start
         {
             diff.install_only.push(name.to_string());
         }
     }
+
+    // Target enablement is policy, independent of whether the target body also
+    // changed (for example when deselection restores an image-bundled unit).
+    if install_changed && unit_type(name) == UnitType::Target {
+        if install_link_count(candidate) > 0 {
+            if !diff.install_only.iter().any(|unit| unit == name) {
+                diff.install_only.push(name.to_string());
+            }
+        } else if install_link_count(live) > 0 && !diff.to_stop.iter().any(|unit| unit == name) {
+            diff.to_stop.push(name.to_string());
+        }
+    }
+}
+
+fn install_link_count(unit: &LogicalUnit) -> usize {
+    unit.install_wants.len() + unit.install_requires.len() + unit.install_upholds.len()
 }
 
 /// The classification of a *changed* (present-on-both) unit. Additions and
@@ -937,6 +1003,29 @@ mod tests {
     }
 
     #[test]
+    fn added_enabled_target_is_started() {
+        let live = TempDir::new().unwrap();
+        let cand = TempDir::new().unwrap();
+        units_dir(live.path());
+        let cu = units_dir(cand.path());
+        write(
+            &cu,
+            "aos-pkg-web.target",
+            "[Unit]\nDescription=Package target\n",
+        );
+        std::fs::create_dir_all(cu.join("multi-user.target.wants")).unwrap();
+        std::os::unix::fs::symlink(
+            "../aos-pkg-web.target",
+            cu.join("multi-user.target.wants/aos-pkg-web.target"),
+        )
+        .unwrap();
+
+        let diff = compute_diff(live.path(), cand.path());
+        assert_eq!(diff.install_only, vec!["aos-pkg-web.target"]);
+        assert!(diff.to_stop.is_empty() && diff.to_restart.is_empty());
+    }
+
+    #[test]
     fn removed_service_is_stopped_unless_opt_out() {
         let live = TempDir::new().unwrap();
         let cand = TempDir::new().unwrap();
@@ -970,6 +1059,55 @@ mod tests {
         let diff = compute_diff(live.path(), cand.path());
         assert_eq!(diff.to_restart, vec!["svc.service"]);
         assert!(diff.to_reload.is_empty());
+    }
+
+    #[test]
+    fn changed_generation_local_job_script_restarts_its_unit() {
+        let live = TempDir::new().unwrap();
+        let cand = TempDir::new().unwrap();
+        let lu = units_dir(live.path());
+        let cu = units_dir(cand.path());
+        let unit = "[Service]\nExecStart=/etc/aos-job-scripts/svc.service:ExecStart.0\n";
+        write(&lu, "svc.service", unit);
+        write(&cu, "svc.service", unit);
+        write(
+            live.path(),
+            "aos-job-scripts/svc.service:ExecStart.0",
+            "printf old\n",
+        );
+        write(
+            cand.path(),
+            "aos-job-scripts/svc.service:ExecStart.0",
+            "printf new\n",
+        );
+
+        let diff = compute_diff(live.path(), cand.path());
+        assert_eq!(diff.to_restart, vec!["svc.service"]);
+        assert!(diff.blanket_targets.is_empty());
+    }
+
+    #[test]
+    fn another_units_job_script_does_not_restart_an_unchanged_unit() {
+        let live = TempDir::new().unwrap();
+        let cand = TempDir::new().unwrap();
+        let lu = units_dir(live.path());
+        let cu = units_dir(cand.path());
+        let unit = "[Service]\nExecStart=/bin/true\n";
+        write(&lu, "svc.service", unit);
+        write(&cu, "svc.service", unit);
+        write(
+            live.path(),
+            "aos-job-scripts/other.service:ExecStart.0",
+            "printf old\n",
+        );
+        write(
+            cand.path(),
+            "aos-job-scripts/other.service:ExecStart.0",
+            "printf new\n",
+        );
+
+        let diff = compute_diff(live.path(), cand.path());
+        assert!(diff.to_restart.is_empty());
     }
 
     #[test]
@@ -1211,6 +1349,45 @@ mod tests {
         let diff = compute_diff(live.path(), cand.path());
         assert_eq!(diff.install_only, vec!["svc.service"]);
         assert!(diff.to_restart.is_empty());
+    }
+
+    #[test]
+    fn target_enablement_is_started_and_last_disablement_is_stopped() {
+        let disabled = TempDir::new().unwrap();
+        let enabled = TempDir::new().unwrap();
+        let disabled_units = units_dir(disabled.path());
+        let enabled_units = units_dir(enabled.path());
+        let body = "[Unit]\nDescription=Package target\n";
+        write(&disabled_units, "aos-pkg-web.target", body);
+        write(&enabled_units, "aos-pkg-web.target", body);
+        std::fs::create_dir_all(enabled_units.join("multi-user.target.wants")).unwrap();
+        symlink(
+            "../aos-pkg-web.target",
+            enabled_units.join("multi-user.target.wants/aos-pkg-web.target"),
+        )
+        .unwrap();
+
+        let enable = compute_diff(disabled.path(), enabled.path());
+        assert_eq!(enable.install_only, vec!["aos-pkg-web.target"]);
+        assert!(enable.to_stop.is_empty());
+
+        let disable = compute_diff(enabled.path(), disabled.path());
+        assert_eq!(disable.to_stop, vec!["aos-pkg-web.target"]);
+        assert!(disable.install_only.is_empty());
+
+        write(
+            &disabled_units,
+            "aos-pkg-web.target",
+            "[Unit]\nDescription=Image package target\n",
+        );
+        let restore_image_unit = compute_diff(enabled.path(), disabled.path());
+        assert_eq!(restore_image_unit.to_stop, vec!["aos-pkg-web.target"]);
+        assert!(restore_image_unit.install_only.is_empty());
+
+        let removed = TempDir::new().unwrap();
+        std::fs::create_dir_all(units_dir(removed.path())).unwrap();
+        let remove = compute_diff(enabled.path(), removed.path());
+        assert_eq!(remove.to_stop, vec!["aos-pkg-web.target"]);
     }
 
     // --- masking --------------------------------------------------------

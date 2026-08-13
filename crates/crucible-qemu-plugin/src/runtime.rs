@@ -329,7 +329,6 @@ impl OwnedCallbackRuntimeState {
         args: &crate::PluginArgs,
         target_architecture: crate::abi::QemuPluginTargetArchitecture,
         vcpu_count: u32,
-        icount_raw: crate::QemuIcountRawFn,
         request_shutdown: QemuRequestShutdownFn,
     ) -> Result<&mut live_whitebox::LiveWhiteboxState, live_whitebox::LiveWhiteboxError> {
         // SAFETY: assigning an independently heap-owned callback runtime does
@@ -367,7 +366,6 @@ impl OwnedCallbackRuntimeState {
             apis,
             live_whitebox::LiveWhiteboxTarget::new(target_architecture, args.whitebox_setup()),
             vcpu_count,
-            icount_raw,
             request_shutdown,
             live_whitebox::LiveWhiteboxShmem::new(marker_output, guest_introspection_rings),
             args.app_random(),

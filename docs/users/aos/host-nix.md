@@ -7,10 +7,10 @@ from the system variant used to build the image:
 - `host.nix` carries deployment-time intent for one machine;
 - instance facts describe what the platform reports about that machine.
 
-Today, AOS applies the `aos.provisioning.storage` part of `host.nix` during
-first boot. It also evaluates the full module during stage 2, but does not yet
-activate the resulting runtime manifest. This page documents both paths so an
-operator can tell what changes the host and what is only diagnostic output.
+AOS applies the `aos.provisioning.storage` projection during first boot, then
+evaluates and activates the complete module during stage 2. Storage intent is
+committed once; the stage-2 result is a replaceable, numbered configuration
+generation.
 
 ## Start with the supported form
 
@@ -42,22 +42,33 @@ metadata transport
   -> restricted initrd evaluation of aos.provisioning
   -> validate and commit the first-boot storage plan
   -> switch_root
-  -> full stage-2 evaluation
-  -> /run/aos/manifest.json
+  -> pure stage-2 evaluation and provider fixpoint
+  -> authenticated package closure fetch and config render
+  -> resolve opaque secretRef handles
+  -> build a durable EROFS /etc lower
+  -> atomically activate the configuration generation
 ```
 
 The initrd evaluation can see only the closed provisioning schema shipped in
 the image. It cannot fetch registry modules or select arbitrary build packages.
 This is the path that runs before disk mutation.
 
-The stage-2 evaluator uses the image's ABI-pinned module library, the selected
-package configuration modules, and `host.nix` to produce a converged manifest.
-An evaluation failure does not replace the active system. A successful result
-is cached with the accepted input under `/var/lib/aos-provisioning`.
+The stage-2 evaluator is a pure function of the image's ABI-pinned module
+library, authenticated package `config` outputs, the exact accepted `host.nix`,
+and normalized instance facts. It runs with a cleared environment, restricted
+filesystem access, no import-from-derivation, and bounded systemd resources.
+The resolver fetches only signed providers compatible with the running module
+ABI. It records its provider trace and emits `/run/aos/manifest.json` only after
+the fixpoint converges.
 
-The final materialization and activation step for the general manifest is not
-wired into the current boot graph. `/run/aos/manifest.json` is therefore an
-evaluation result, not proof of a live configuration change.
+The systemd graph then fetches pinned package closures, validates and stages
+each package's signed configuration projection, and drops a failed soft package
+from the projected manifest. Activation resolves credential handles before
+consumers restart, materializes `gen-N/config-lower/etc.erofs`, atomically
+switches the configuration pointer and `/etc`, and publishes an activation
+record. A failed evaluation or pre-swap activation retains the previous live
+generation; a post-swap service failure is recorded as degraded and remains
+retriable.
 
 ## Choose a delivery channel
 
@@ -72,8 +83,10 @@ Offline media is checked before DMI-based cloud detection.
 | AWS | Native user-data as literal Nix or a pointer document | Pointer `sig_url` only |
 | GCP, Azure, DigitalOcean, OpenStack | Native user-data as literal Nix | Not available through native metadata |
 
-Native metadata fetchers for Hetzner, Vultr, Scaleway, and Oracle Cloud are not
-implemented. On those platforms, use an offline metadata or config drive.
+The native network metadata agents support AWS IMDSv2, GCP, Azure,
+DigitalOcean, and OpenStack. Other providers are treated as bare metal unless
+an offline metadata or config drive is attached; AOS does not guess at an
+unrecorded provider API.
 
 Create an AOS metadata ISO with `xorriso` on the deployment workstation:
 
@@ -216,8 +229,9 @@ is allowed per device.
 }
 ```
 
-The partition is created and formatted. Declaring it does not create a mount
-unit; mount policy still belongs in the build-time system configuration today.
+The partition is created and formatted. Declaring it does not itself create a
+mount unit; describe mount policy separately in the general host configuration
+or the release image.
 
 ### Consume remaining space with a data partition
 
@@ -334,16 +348,23 @@ cmp \
   /run/aos-metadata/host.nix
 ```
 
-The stage-2 evaluation result is:
+The stage-2 source result and activation evidence are:
 
 ```sh
 test -s /run/aos/manifest.json
+cat /run/aos/activation.json
+readlink /var/lib/profiles/system/current
+cat /var/lib/profiles/system/state.json
 systemctl status aos-eval.service
-journalctl -b -u aos-eval.service
+journalctl -b \
+  -u aos-eval.service \
+  -u aos-graph-compile.service \
+  -u aos-activate.service
 ```
 
-Treat the files in `/run` as diagnostics for the current boot. The durable
-audit and cached input under `/var/lib/aos-provisioning` survive reboot.
+Treat the files in `/run` as diagnostics for the current transaction. The
+accepted input under `/var/lib/aos-provisioning` and each numbered generation's
+manifest, EROFS lower, input GC roots, and activation record survive reboot.
 
 ## Diagnose the boot stages
 
@@ -365,7 +386,12 @@ Stage 2 then runs:
 aos-provisioning-persist
 aos-host-config-restore
 aos-eval
-aos-host-config-cache
+  -> aos-host-config-cache
+  -> aos-graph-compile
+     -> aos-fetch.target
+     -> aos-config-render.target
+     -> aos-activate
+     -> aos-config.target
 ```
 
 Inspect the current boot with:
@@ -377,7 +403,9 @@ journalctl -b \
   -u aos-metadata-authorize.service \
   -u aos-provisioning-eval.service \
   -u aos-repart.service \
-  -u aos-eval.service
+  -u aos-eval.service \
+  -u aos-graph-compile.service \
+  -u aos-activate.service
 ```
 
 First-boot authorization, evaluation, or storage validation failures stop disk
@@ -385,10 +413,9 @@ mutation. Once provisioning has committed, metadata acquisition failures are
 handled as recovery conditions: AOS keeps the active system and can restore the
 last fully evaluated host input.
 
-## Understand the current runtime boundary
+## Understand the runtime boundary
 
-The full module evaluator already understands more than storage. A file such
-as this can evaluate successfully:
+The full module evaluator and activation pipeline can apply a file such as:
 
 ```nix
 {
@@ -398,19 +425,40 @@ as this can evaluate successfully:
 }
 ```
 
-It does not currently make those settings live. Specifically:
+The change becomes live only after `aos-config.target` completes. The evaluator
+manifest alone is intermediate evidence; confirm the active generation and
+activation record as shown above.
 
-- `/etc/hostname` is not switched to `web-01`;
-- the running SSH service is not moved to port 2222;
-- package selection is not a complete install-and-activate operation;
-- SSH keys found in cloud facts are recorded but not installed as authorized
-  keys.
+Desired packages are part of that same transaction. AOS pins each selected
+payload and rendered unit artifact to authenticated registry NAR identities,
+places the unit links and package-target preset in the candidate `/etc`, and
+enables the package target only after the atomic swap. Removing a package from
+`aos.apm.desiredPackages` removes that enablement edge and stops its target;
+image-bundled package units remain present but inert when they are not selected.
 
-Use a [`systems/*.nix` variant](configuration.md#create-a-system-variant) for
-hostname, network, users, SSH, services, firewall, and image contents. Use the
-implemented [machine-wide package reconciliation](packages.md#manage-machine-wide-packages)
-for runtime packages.
+For an interactive change, preview and apply the same file with:
 
-This distinction is also useful in incident response: a valid manifest with an
-unchanged live host is expected with the current implementation, not evidence
-that systemd ignored an activated generation.
+```sh
+apm switch --from ./host.nix --dry-run
+apm switch --from ./host.nix
+```
+
+That selects a transaction input; it does not rewrite the metadata source or
+the durable last-known-good metadata cache. Update the authoritative delivery
+channel before reboot. On an image using signed trust, a standalone file also
+needs its sibling `.sig`, `--require-signed-host-nix`, and the applicable
+`--trusted-config-keys-dir`.
+
+Cloud-supplied public SSH keys are normalized into the typed
+`host.facts.ssh_authorized_keys` input. They are data, not implicit
+authorization: a trusted `host.nix` or image module must deliberately project
+those facts into an account's `environment.etc."ssh/authorized_keys/USER"`
+entry. A key merely present in provider metadata is not automatically granted
+access.
+
+Secrets are also deliberately outside the value graph. `host.nix` may contain
+only opaque `secretRef` handles. Activation can resolve the implemented
+system-credential, desired-TOML, and TPM2 credstore forms, place their material
+with mode `0600` when materialization is required, and deduplicate the
+credential-triggered restart set. A general Vault or cloud secret-manager
+delivery backend is not included; see [Manage secrets on AOS](secrets.md).

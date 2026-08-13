@@ -153,5 +153,12 @@ failures include:
 - malformed content-addressed artifact references; and
 - mismatched derived IDs in canonical TOML.
 
+Malformed derived-ID diagnostics name the offending field, such as `world.id`.
+When a derived ID is well formed but stale, the diagnostic prints both the
+serialized value and the recomputed content hash so an authoring tool can
+identify exactly which generated section changed. Do not copy the recomputed
+hash into a hand-authored sketch: regenerate the complete canonical document
+from `ScenarioDefForm` so all dependent identities remain consistent.
+
 An invalid scenario exits with status `5`. Fix the definition; do not treat the
 error as a backend failure.

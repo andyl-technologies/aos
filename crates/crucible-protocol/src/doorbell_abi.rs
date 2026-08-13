@@ -5,17 +5,17 @@
 //! by the guest-host channel spec and decoded by the plugin.
 
 /// Version of the architecture-specific doorbell instruction ABI.
-pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = 3;
+pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = 4;
 /// Reserved x86_64 port used by the canonical white-box doorbell ABI.
 pub const WHITEBOX_DOORBELL_X86_64_RESERVED_PORT: u16 = 0x00e7;
-/// Reserved aarch64 immediate used by the canonical white-box doorbell ABI.
-pub const WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE: u16 = 0x04c1;
+/// Reserved aarch64 HINT immediate used by the canonical white-box doorbell ABI.
+pub const WHITEBOX_DOORBELL_AARCH64_RESERVED_HINT: u8 = 0x4c;
 /// Frozen x86_64 trap instruction bytes for `out 0xe7, al`.
 pub const WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES: [u8; 2] =
     encode_x86_64_out_imm8_al_instruction(WHITEBOX_DOORBELL_X86_64_RESERVED_PORT as u8);
-/// Frozen aarch64 trap instruction bytes for `hlt #0x04c1`.
-pub const WHITEBOX_DOORBELL_AARCH64_HLT_BYTES: [u8; 4] =
-    encode_aarch64_hlt_instruction(WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE);
+/// Frozen aarch64 inert instruction bytes for `hint #0x4c`.
+pub const WHITEBOX_DOORBELL_AARCH64_HINT_BYTES: [u8; 4] =
+    encode_valid_aarch64_hint_instruction(WHITEBOX_DOORBELL_AARCH64_RESERVED_HINT);
 /// Canonical x86_64 doorbell ABI entry used by plugin and guest code.
 pub const WHITEBOX_DOORBELL_X86_64_ABI: WhiteboxDoorbellAbi = WhiteboxDoorbellAbi {
     version: WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION,
@@ -34,15 +34,15 @@ pub const WHITEBOX_DOORBELL_X86_64_ABI: WhiteboxDoorbellAbi = WhiteboxDoorbellAb
 pub const WHITEBOX_DOORBELL_AARCH64_ABI: WhiteboxDoorbellAbi = WhiteboxDoorbellAbi {
     version: WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION,
     architecture: WhiteboxDoorbellArchitecture::Aarch64,
-    instruction: WhiteboxDoorbellInstruction::Aarch64Hlt,
-    trap: WhiteboxDoorbellTrapAbi::Aarch64Hlt {
-        immediate: WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE,
+    instruction: WhiteboxDoorbellInstruction::Aarch64Hint,
+    trap: WhiteboxDoorbellTrapAbi::Aarch64Hint {
+        immediate: WHITEBOX_DOORBELL_AARCH64_RESERVED_HINT,
     },
     payload_pointer_register: "x0",
     payload_length_register: "x1",
-    assembly: "hlt #0x04c1",
-    instruction_bytes: &WHITEBOX_DOORBELL_AARCH64_HLT_BYTES,
-    vector_name: "aarch64-hlt-imm-04c1",
+    assembly: "hint #0x4c",
+    instruction_bytes: &WHITEBOX_DOORBELL_AARCH64_HINT_BYTES,
+    vector_name: "aarch64-hint-imm-4c",
 };
 /// All canonical doorbell ABI entries in stable golden-vector order.
 pub const WHITEBOX_DOORBELL_ABIS: &[WhiteboxDoorbellAbi] =
@@ -73,8 +73,8 @@ impl WhiteboxDoorbellArchitecture {
 pub enum WhiteboxDoorbellInstruction {
     /// x86-64 `out imm8, al` with the reserved port encoded in the instruction.
     X86OutImm8Al,
-    /// AArch64 `hlt #imm16`.
-    Aarch64Hlt,
+    /// AArch64 `hint #imm7` that remains inert after plugin observation.
+    Aarch64Hint,
 }
 
 impl WhiteboxDoorbellInstruction {
@@ -83,7 +83,7 @@ impl WhiteboxDoorbellInstruction {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::X86OutImm8Al => "out-imm8-al",
-            Self::Aarch64Hlt => "hlt-imm16",
+            Self::Aarch64Hint => "hint-imm7",
         }
     }
 }
@@ -96,10 +96,10 @@ pub enum WhiteboxDoorbellTrapAbi {
         /// Reserved port number chosen by the ABI.
         port: u16,
     },
-    /// AArch64 reserved `hlt #imm16` instruction.
-    Aarch64Hlt {
-        /// Reserved immediate encoded in the trap instruction.
-        immediate: u16,
+    /// AArch64 reserved `hint #imm7` instruction.
+    Aarch64Hint {
+        /// Reserved immediate encoded in the inert instruction.
+        immediate: u8,
     },
 }
 
@@ -190,10 +190,20 @@ pub const fn encode_x86_64_out_imm8_al_instruction(port: u8) -> [u8; 2] {
     [0xe6, port]
 }
 
-/// Encodes the aarch64 `hlt #imm16` trap instruction as little-endian bytes.
+/// Encodes an aarch64 `hint #imm7` instruction as little-endian bytes.
+///
+/// Returns `None` when `immediate` does not fit the instruction's seven-bit
+/// field.
 #[must_use]
-pub const fn encode_aarch64_hlt_instruction(immediate: u16) -> [u8; 4] {
-    let word = 0xd440_0000_u32 | ((immediate as u32) << 5);
+pub const fn encode_aarch64_hint_instruction(immediate: u8) -> Option<[u8; 4]> {
+    if immediate > 0x7f {
+        return None;
+    }
+    Some(encode_valid_aarch64_hint_instruction(immediate))
+}
+
+const fn encode_valid_aarch64_hint_instruction(immediate: u8) -> [u8; 4] {
+    let word = 0xd503_201f_u32 | ((immediate as u32) << 5);
     [
         (word & 0xff) as u8,
         ((word >> 8) & 0xff) as u8,
@@ -214,7 +224,7 @@ mod tests {
                 .iter()
                 .map(|abi| abi.vector_name())
                 .collect::<Vec<_>>(),
-            vec!["x86_64-out-imm8-al-port-e7", "aarch64-hlt-imm-04c1"]
+            vec!["x86_64-out-imm8-al-port-e7", "aarch64-hint-imm-4c"]
         );
         assert_eq!(
             whitebox_doorbell_abi_for_architecture(WhiteboxDoorbellArchitecture::X86_64),
@@ -249,24 +259,26 @@ mod tests {
     }
 
     #[test]
-    fn doorbell_abi_aarch64_vector_freezes_hlt_immediate() {
+    fn doorbell_abi_aarch64_vector_freezes_inert_hint() {
         let abi = WHITEBOX_DOORBELL_AARCH64_ABI;
 
         assert_eq!(abi.version(), WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION);
         assert_eq!(abi.architecture().as_str(), "aarch64");
-        assert_eq!(abi.instruction(), WhiteboxDoorbellInstruction::Aarch64Hlt);
+        assert_eq!(abi.instruction(), WhiteboxDoorbellInstruction::Aarch64Hint);
         assert_eq!(
             abi.trap(),
-            WhiteboxDoorbellTrapAbi::Aarch64Hlt {
-                immediate: WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE,
+            WhiteboxDoorbellTrapAbi::Aarch64Hint {
+                immediate: WHITEBOX_DOORBELL_AARCH64_RESERVED_HINT,
             }
         );
         assert_eq!(abi.payload_pointer_register(), "x0");
         assert_eq!(abi.payload_length_register(), "x1");
         assert_eq!(
-            encode_aarch64_hlt_instruction(WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE),
-            WHITEBOX_DOORBELL_AARCH64_HLT_BYTES
+            encode_aarch64_hint_instruction(WHITEBOX_DOORBELL_AARCH64_RESERVED_HINT),
+            Some(WHITEBOX_DOORBELL_AARCH64_HINT_BYTES)
         );
-        assert_eq!(abi.instruction_bytes(), &[0x20, 0x98, 0x40, 0xd4]);
+        assert_eq!(abi.instruction_bytes(), &[0x9f, 0x29, 0x03, 0xd5]);
+        assert!(encode_aarch64_hint_instruction(0x7f).is_some());
+        assert_eq!(encode_aarch64_hint_instruction(0x80), None);
     }
 }

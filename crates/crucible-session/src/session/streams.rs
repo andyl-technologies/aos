@@ -516,6 +516,7 @@ impl SessionStateTransitionBus {
     pub fn subscribe(&self) -> SessionStateTransitionStream {
         SessionStateTransitionStream {
             receiver: self.tail.subscribe(),
+            sequence_floor: 0,
         }
     }
 
@@ -534,6 +535,7 @@ impl Default for SessionStateTransitionBus {
 #[derive(Debug)]
 pub struct SessionStateTransitionStream {
     receiver: broadcast::Receiver<SessionStateTransitionFrame>,
+    sequence_floor: u64,
 }
 
 impl SessionStateTransitionStream {
@@ -551,6 +553,45 @@ impl SessionStateTransitionStream {
             Err(broadcast::error::RecvError::Closed) => Ok(None),
             Err(broadcast::error::RecvError::Lagged(skipped)) => {
                 Err(SessionStateTransitionStreamError::Lagged { skipped })
+            }
+        }
+    }
+
+    /// Receives the next transition, coalescing a lagged retained tail to its
+    /// greatest immediately available sequence.
+    pub async fn recv_latest(&mut self) -> Option<SessionStateTransitionFrame> {
+        loop {
+            let frame = match self.receiver.recv().await {
+                Ok(frame) => Some(frame),
+                Err(broadcast::error::RecvError::Closed) => return None,
+                Err(broadcast::error::RecvError::Lagged(_)) => self.drain_latest_ready(),
+            };
+            let Some(frame) = frame else {
+                continue;
+            };
+            if frame.sequence <= self.sequence_floor {
+                continue;
+            }
+            self.sequence_floor = frame.sequence;
+            return Some(frame);
+        }
+    }
+
+    /// Sets the greatest state-transition sequence already represented by the
+    /// subscriber's attach snapshot.
+    pub fn set_sequence_floor(&mut self, sequence: u64) {
+        self.sequence_floor = self.sequence_floor.max(sequence);
+    }
+
+    fn drain_latest_ready(&mut self) -> Option<SessionStateTransitionFrame> {
+        let mut latest = None;
+        loop {
+            match self.receiver.try_recv() {
+                Ok(frame) => latest = Some(frame),
+                Err(broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(
+                    broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed,
+                ) => return latest,
             }
         }
     }

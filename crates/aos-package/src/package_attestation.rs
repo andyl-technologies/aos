@@ -13,7 +13,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
-use std::fs::{self, DirBuilder, OpenOptions};
+use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -48,6 +48,7 @@ const QUOTE_PCR_SELECTION: &str = "sha256:7,11,12,15";
 const PCR_BASELINE_EVENT_TYPE: &str = "aos-pcr-baseline";
 const PACKAGE_EVENT_TYPE: &str = "aos-package";
 const PACKAGE_SET_EVENT_TYPE: &str = "aos-package-set";
+const GENERATION_EVENT_TYPE: &str = "aos-generation-attestation";
 
 /// Measures the activated exposed package set into PCR 15.
 ///
@@ -62,6 +63,190 @@ const PACKAGE_SET_EVENT_TYPE: &str = "aos-package-set";
 /// events, the event log cannot be written, or live PCR extension fails.
 pub(crate) fn measure_activated_packages(root: &Path, installed: &[InstalledMeta]) -> Result<()> {
     measure_activated_packages_inner(root, installed, root == Path::new("/"), None)
+}
+
+/// Measures a canonical generation-attestation record into the shared AOS
+/// application-PCR event stream.
+///
+/// Returns `false` without mutating PCR 15 when the live system has no TPM.
+/// The canonical record is still appended to the CEL so TPM-less systems keep
+/// inspectable evidence. Once a TPM extension is attempted, its durable CEL
+/// event is retained even if the helper reports failure so a retry can recover
+/// safely from an ambiguous post-extension error.
+///
+/// # Errors
+///
+/// Returns an error if the event log cannot be updated or PCR 15 extension
+/// fails through the AOS-built systemd helper.
+pub(crate) fn measure_generation_attestation(
+    root: &Path,
+    generation_id: &str,
+    activation_id: &str,
+    canonical_record: &[u8],
+) -> Result<bool> {
+    let word = String::from_utf8(canonical_record.to_vec())
+        .context("generation attestation canonical JSON is not UTF-8")?;
+    let event = MeasurementEvent {
+        event_type: GENERATION_EVENT_TYPE,
+        digest: format!("sha256:{}", digest_for_word(&word)),
+        word,
+        extends_pcr: true,
+        pcr_value: None,
+        package: None,
+        package_count: None,
+        generation_id: Some(generation_id.to_string()),
+        activation_id: Some(activation_id.to_string()),
+    };
+    let live_root = root == Path::new("/");
+    let has_tpm = live_root && tpm2_tcti()?.is_some();
+    let recovery = generation_measurement_recovery(root, &event)?;
+    if recovery.found {
+        if recovery.has_later_extends {
+            bail!(
+                "generation attestation {generation_id:?} is followed by newer PCR 15 events; automatic quote recovery is unsafe"
+            );
+        }
+        if !has_tpm {
+            return Ok(false);
+        }
+        let current = read_current_pcr15()?;
+        if current.eq_ignore_ascii_case(&recovery.after) {
+            return Ok(true);
+        }
+        if !current.eq_ignore_ascii_case(&recovery.before) {
+            bail!(
+                "generation attestation {generation_id:?} CEL recovery disagrees with live PCR 15"
+            );
+        }
+        let pcrextend = trusted_systemd_pcrextend_path()?;
+        extend_pcr15(&pcrextend, std::slice::from_ref(&event))?;
+        return Ok(true);
+    }
+
+    let current_pcr = if has_tpm {
+        Some(read_current_pcr15()?)
+    } else {
+        None
+    };
+    let needs_baseline = has_tpm && !event_log_has_records(root)?;
+    if let Some(current) = current_pcr.as_deref()
+        && !needs_baseline
+        && !current.eq_ignore_ascii_case(&recovery.replayed)
+    {
+        bail!("generation attestation CEL prefix disagrees with live PCR 15");
+    }
+    let logged_events = if needs_baseline {
+        vec![
+            pcr_baseline_event(
+                current_pcr
+                    .as_deref()
+                    .context("missing live PCR baseline")?,
+            ),
+            event.clone(),
+        ]
+    } else {
+        vec![event.clone()]
+    };
+    append_event_log(root, &logged_events)?;
+    if !has_tpm {
+        return Ok(false);
+    }
+    let pcrextend = trusted_systemd_pcrextend_path()?;
+    // Once extension has been attempted, its outcome is ambiguous: the TPM may
+    // have committed the new PCR value even when the helper subsequently
+    // reports failure. Keep the fsynced CEL event and the caller's durable
+    // transaction marker so retry can compare live PCR 15 with the replayed
+    // before/after values and either extend once or resume without extending.
+    // Removing the event here could strand PCR 15 ahead of its only recovery
+    // evidence.
+    extend_pcr15(&pcrextend, std::slice::from_ref(&event))?;
+    Ok(true)
+}
+
+struct GenerationMeasurementRecovery {
+    found: bool,
+    before: String,
+    after: String,
+    has_later_extends: bool,
+    replayed: String,
+}
+
+fn generation_measurement_recovery(
+    root: &Path,
+    expected: &MeasurementEvent,
+) -> Result<GenerationMeasurementRecovery> {
+    let path = rooted_absolute_path(root, Path::new("/").join(AOS_PACKAGE_CEL_REL).as_path())?;
+    let log = match fs::read_to_string(&path) {
+        Ok(log) => log,
+        Err(error) if error.kind() == ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+    };
+    let mut pcr = [0_u8; 32];
+    let mut found = false;
+    let mut before = format!("sha256:{}", hex::encode(pcr));
+    let mut after = before.clone();
+    let mut has_later_extends = false;
+    for (index, line) in log.lines().enumerate() {
+        if line.trim().is_empty() {
+            bail!("package event log contains a blank line at {}", index + 1);
+        }
+        let record: OwnedEventLogRecord = serde_json::from_str(line)
+            .with_context(|| format!("parsing package event log line {}", index + 1))?;
+        validate_event_record_shape(index + 1, &record)?;
+        let recorded_digest = parse_prefixed_sha256_hex("event digest", &record.digest)?;
+        if recorded_digest != event_digest_hex(&record.event) {
+            bail!(
+                "package event log line {} has an invalid event digest",
+                index + 1
+            );
+        }
+        if record.event_type == PCR_BASELINE_EVENT_TYPE {
+            if found {
+                bail!("PCR baseline follows generation attestation in the CEL");
+            }
+            let baseline = record
+                .pcr_value
+                .as_deref()
+                .context("PCR baseline event has no pcr_value")?;
+            let baseline = parse_prefixed_sha256_hex("PCR baseline value", baseline)?;
+            pcr = parse_pcr_baseline_record(index + 1, &record, &baseline)?;
+            continue;
+        }
+        let is_expected = record.event_type == GENERATION_EVENT_TYPE
+            && record.activation_id.as_deref() == expected.activation_id.as_deref();
+        if is_expected {
+            if found {
+                bail!("activation attestation appears more than once in the CEL");
+            }
+            if record.event != expected.word || record.digest != expected.digest {
+                bail!("retained generation attestation CEL event disagrees with the transaction");
+            }
+            found = true;
+            before = format!("sha256:{}", hex::encode(pcr));
+        } else if found {
+            has_later_extends = true;
+        }
+        extend_replayed_pcr(&mut pcr, &recorded_digest)?;
+        if is_expected {
+            after = format!("sha256:{}", hex::encode(pcr));
+        }
+    }
+    Ok(GenerationMeasurementRecovery {
+        found,
+        before,
+        after,
+        has_later_extends,
+        replayed: format!("sha256:{}", hex::encode(pcr)),
+    })
+}
+
+/// Returns whether the trusted TPM transport can address a local TPM.
+///
+/// # Errors
+///
+/// Returns an error when an explicitly configured TPM transport is invalid.
+pub(crate) fn tpm_available() -> Result<bool> {
+    Ok(tpm2_tcti()?.is_some())
 }
 
 fn measure_activated_packages_inner(
@@ -116,6 +301,8 @@ struct MeasurementEvent {
     pcr_value: Option<String>,
     package: Option<MeasuredPackage>,
     package_count: Option<usize>,
+    generation_id: Option<String>,
+    activation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,6 +343,10 @@ struct EventLogRecord<'a> {
     manifest_digest: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     package_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generation_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    activation_id: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -205,6 +396,8 @@ struct OwnedEventLogRecord {
     root_digest: Option<String>,
     manifest_digest: Option<String>,
     package_count: Option<usize>,
+    generation_id: Option<String>,
+    activation_id: Option<String>,
 }
 
 /// Result of replaying and validating the package attestation event log.
@@ -212,10 +405,17 @@ struct OwnedEventLogRecord {
 pub(crate) struct PackageEventLogVerification {
     /// Replayed PCR 15 value as lowercase SHA-256 hex.
     pub pcr15: String,
+    /// Validated PCR 15 value that preceded the first AOS event, when the CEL
+    /// records a live-TPM baseline.
+    pub pcr15_baseline: Option<String>,
     /// Number of package tuple events validated against the registry catalog.
     pub package_count: usize,
     /// Package tuples in the latest completed package-set measurement.
     pub current_packages: Vec<VerifiedPackageMeasurement>,
+    /// Canonical record hashes keyed by activation identifier.
+    pub generation_attestations: BTreeMap<String, String>,
+    /// Ordered PCR-15 event digests preceding each activation record.
+    pub generation_attestation_prefix_digests: BTreeMap<String, Vec<String>>,
 }
 
 /// One package tuple validated from the latest measured package set.
@@ -301,6 +501,12 @@ pub(crate) struct PackageQuoteIdentityDigests {
 /// Result of checking a TPM quote bundle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PackageQuoteVerification {
+    /// Quoted Secure Boot policy PCR 7.
+    pub quoted_pcr7: String,
+    /// Quoted measured UKI PCR 11.
+    pub quoted_pcr11: String,
+    /// Quoted kernel-command-line PCR 12.
+    pub quoted_pcr12: String,
     /// Quoted PCR 15 value as lowercase SHA-256 hex.
     pub quoted_pcr15: String,
     /// Whether the matched identity has recorded enrollment evidence.
@@ -309,6 +515,21 @@ pub(crate) struct PackageQuoteVerification {
     pub identity_pinned: bool,
     /// Matched identity-pin label, when the catalog provided one.
     pub identity_label: Option<String>,
+    /// Exact quote-bundle bytes that were signature-checked from the private snapshot.
+    pub bundle: PackageQuoteBundleBinding,
+}
+
+/// Exact files from the race-free quote-bundle snapshot used by verification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PackageQuoteBundleBinding {
+    /// Hex-encoded TPM AK public area.
+    pub ak_public: String,
+    /// Hex-encoded TPM2B_ATTEST message.
+    pub quote_message: String,
+    /// Hex-encoded TPM signature.
+    pub quote_signature: String,
+    /// Hex-encoded serialized PCR selection and values.
+    pub quote_pcrs: String,
 }
 
 /// Result of adding a quote identity to a verifier enrollment catalog.
@@ -541,6 +762,9 @@ pub(crate) fn verify_package_event_log_against_measurement_catalog(
     let mut current_packages: Vec<VerifiedPackageMeasurement> = Vec::new();
     let mut saw_baseline = false;
     let mut saw_package_set = false;
+    let mut generation_attestations = BTreeMap::new();
+    let mut generation_attestation_prefix_digests = BTreeMap::new();
+    let mut extended_event_digests = Vec::new();
 
     for (index, line) in event_log.lines().enumerate() {
         if line.trim().is_empty() {
@@ -635,16 +859,84 @@ pub(crate) fn verify_package_event_log_against_measurement_catalog(
                     current_packages = std::mem::take(&mut pending_current_packages);
                 }
             }
+            GENERATION_EVENT_TYPE => {
+                let prefix = extended_event_digests.clone();
+                extend_replayed_pcr(&mut pcr, &recorded_digest)?;
+                let generation_id = record.generation_id.as_deref().with_context(|| {
+                    format!(
+                        "generation attestation event on line {} is missing generation_id",
+                        index + 1
+                    )
+                })?;
+                let activation_id = record.activation_id.as_deref().with_context(|| {
+                    format!(
+                        "generation attestation event on line {} is missing activation_id",
+                        index + 1
+                    )
+                })?;
+                let value: serde_json::Value =
+                    serde_json::from_str(&record.event).with_context(|| {
+                        format!("parsing generation attestation event on line {}", index + 1)
+                    })?;
+                if value.get("schema").and_then(serde_json::Value::as_str)
+                    != Some("aos.gen-attestation/v1")
+                    || value
+                        .get("generation_id")
+                        .and_then(serde_json::Value::as_str)
+                        != Some(generation_id)
+                    || value
+                        .get("activation_id")
+                        .and_then(serde_json::Value::as_str)
+                        != Some(activation_id)
+                {
+                    bail!(
+                        "generation attestation event on line {} has inconsistent identity",
+                        index + 1
+                    );
+                }
+                // `GenAttestation.quote` skips serialization while empty, so
+                // the measured pre-quote record normally omits the field. An
+                // explicit empty string is accepted for older CEL producers;
+                // any non-empty or non-string value would measure quote bytes
+                // into the record they are meant to authenticate.
+                if value
+                    .get("quote")
+                    .is_some_and(|quote| quote.as_str() != Some(""))
+                {
+                    bail!(
+                        "generation attestation event on line {} includes its quote in the measured record",
+                        index + 1
+                    );
+                }
+                if generation_attestations
+                    .insert(
+                        activation_id.to_string(),
+                        format!("sha256:{recorded_digest}"),
+                    )
+                    .is_some()
+                {
+                    bail!("activation {activation_id} is measured more than once");
+                }
+                if generation_attestation_prefix_digests
+                    .insert(activation_id.to_string(), prefix)
+                    .is_some()
+                {
+                    bail!("activation {activation_id} has ambiguous CEL history");
+                }
+            }
             _ => bail!(
                 "package event log line {} has unsupported event_type '{}'",
                 index + 1,
                 record.event_type
             ),
         }
+        if record.event_type != PCR_BASELINE_EVENT_TYPE {
+            extended_event_digests.push(format!("sha256:{recorded_digest}"));
+        }
     }
 
-    if !saw_package_set {
-        bail!("package event log contains no package-set event");
+    if !saw_package_set && generation_attestations.is_empty() {
+        bail!("package event log contains no package-set event or generation attestation");
     }
     if expected_baseline_pcr15.is_some() && !saw_baseline {
         bail!("expected baseline PCR 15 was supplied but the event log has no PCR baseline event");
@@ -663,8 +955,11 @@ pub(crate) fn verify_package_event_log_against_measurement_catalog(
 
     Ok(PackageEventLogVerification {
         pcr15,
+        pcr15_baseline: expected_baseline_pcr15,
         package_count,
         current_packages,
+        generation_attestations,
+        generation_attestation_prefix_digests,
     })
 }
 
@@ -900,13 +1195,22 @@ pub(crate) fn verify_attestation_quote_bundle(
         )
     })
     .and_then(|()| {
-        let quoted_pcr15 = quoted_pcr15_from_values_file(&quote_pcrs)?;
+        let quoted = quoted_pcrs_from_values_file(&quote_pcrs)?;
         let trust = verify_quote_bundle_trust(&snapshot_dir, trust_catalogs)?;
         Ok(PackageQuoteVerification {
-            quoted_pcr15,
+            quoted_pcr7: quoted.pcr7,
+            quoted_pcr11: quoted.pcr11,
+            quoted_pcr12: quoted.pcr12,
+            quoted_pcr15: quoted.pcr15,
             ak_ek_trusted: trust.as_ref().is_some_and(|anchor| anchor.ak_ek_trusted),
             identity_pinned: trust.is_some(),
             identity_label: trust.map(|anchor| anchor.label),
+            bundle: PackageQuoteBundleBinding {
+                ak_public: file_hex(&ak_public)?,
+                quote_message: file_hex(&quote_message)?,
+                quote_signature: file_hex(&quote_signature)?,
+                quote_pcrs: file_hex(&quote_pcrs)?,
+            },
         })
     });
 
@@ -944,6 +1248,49 @@ fn read_current_pcr15() -> Result<String> {
         );
     }
     parse_tpm2_pcrread_pcr15(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Reads the live SHA-256 PCR 11 value used by a generation quote.
+///
+/// # Errors
+///
+/// Returns an error when the trusted TPM reader cannot run or its output does
+/// not contain a canonical PCR 11 value.
+pub(crate) fn current_pcr11() -> Result<String> {
+    current_pcr_value(11)
+}
+
+/// Reads the live SHA-256 PCR 7 Secure Boot policy value.
+///
+/// # Errors
+///
+/// Returns an error when the trusted TPM reader cannot run or its output does
+/// not contain a canonical PCR 7 value.
+pub(crate) fn current_pcr7() -> Result<String> {
+    current_pcr_value(7)
+}
+
+fn current_pcr_value(index: u8) -> Result<String> {
+    let pcrread = trusted_tpm2_tool_path(TPM2_PCRREAD_ENV, "tpm2_pcrread")?;
+    let tcti = tpm2_tcti()?;
+    let mut command = Command::new(&pcrread);
+    command.arg(format!("{PCR_BANK}:{index}"));
+    if let Some(tcti) = tcti {
+        command.env("TPM2TOOLS_TCTI", tcti);
+    }
+    let output = command
+        .output()
+        .with_context(|| format!("running {}", pcrread.display()))?;
+    if !output.status.success() {
+        bail!(
+            "{} failed: {}\nstdout:\n{}\nstderr:\n{}",
+            pcrread.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    parse_tpm2_pcrread_value(&String::from_utf8_lossy(&output.stdout), index)
 }
 
 /// Replays only the PCR 15 digest for a package event log.
@@ -998,6 +1345,8 @@ fn package_event(package: MeasuredPackage) -> Result<MeasurementEvent> {
         pcr_value: None,
         package: Some(package),
         package_count: None,
+        generation_id: None,
+        activation_id: None,
     })
 }
 
@@ -1023,6 +1372,8 @@ fn package_set_event(package_events: &[MeasurementEvent]) -> MeasurementEvent {
         pcr_value: None,
         package: None,
         package_count: Some(package_events.len()),
+        generation_id: None,
+        activation_id: None,
     }
 }
 
@@ -1038,6 +1389,8 @@ fn pcr_baseline_event(pcr15: &str) -> MeasurementEvent {
         pcr_value: Some(pcr15),
         package: None,
         package_count: None,
+        generation_id: None,
+        activation_id: None,
     }
 }
 
@@ -1187,24 +1540,41 @@ fn package_measurement_catalog(
 }
 
 fn parse_tpm2_pcrread_pcr15(output: &str) -> Result<String> {
+    parse_tpm2_pcrread_value(output, PCR_INDEX)
+}
+
+fn parse_tpm2_pcrread_value(output: &str, index: u8) -> Result<String> {
     for line in output.lines() {
         let line = line.trim();
-        let Some(value) = line.strip_prefix(&format!("{PCR_INDEX}:")) else {
+        let Some((key, value)) = line.split_once(':') else {
             continue;
         };
+        if key.trim() != index.to_string() {
+            continue;
+        }
         let value = value.trim().strip_prefix("0x").unwrap_or(value.trim());
         return Ok(format!(
             "sha256:{}",
-            parse_sha256_hex("PCR 15 value", value)?
+            parse_sha256_hex(&format!("PCR {index} value"), value)?
         ));
     }
-    bail!("tpm2_pcrread output did not contain PCR 15");
+    bail!("tpm2_pcrread output did not contain PCR {index}");
 }
 
 fn quoted_pcr15_from_values_file(path: &Path) -> Result<String> {
+    Ok(quoted_pcrs_from_values_file(path)?.pcr15)
+}
+
+struct PackageQuotedPcrs {
+    pcr7: String,
+    pcr11: String,
+    pcr12: String,
+    pcr15: String,
+}
+
+fn quoted_pcrs_from_values_file(path: &Path) -> Result<PackageQuotedPcrs> {
     const SHA256_SIZE: usize = 32;
     const QUOTED_PCR_COUNT: usize = 4;
-    const PCR15_INDEX_IN_SELECTION: usize = 3;
 
     let bytes =
         fs::read(path).with_context(|| format!("reading quoted PCR values {}", path.display()))?;
@@ -1216,9 +1586,16 @@ fn quoted_pcr15_from_values_file(path: &Path) -> Result<String> {
             bytes.len()
         );
     }
-    let start = SHA256_SIZE * PCR15_INDEX_IN_SELECTION;
-    let end = start + SHA256_SIZE;
-    Ok(hex::encode(&bytes[start..end]))
+    let value = |index: usize| {
+        let start = SHA256_SIZE * index;
+        hex::encode(&bytes[start..start + SHA256_SIZE])
+    };
+    Ok(PackageQuotedPcrs {
+        pcr7: value(0),
+        pcr11: value(1),
+        pcr12: value(2),
+        pcr15: value(3),
+    })
 }
 
 fn verify_quote_bundle_trust(
@@ -1444,6 +1821,12 @@ fn quote_identity_digests(dir: &Path) -> Result<PackageQuoteIdentityDigests> {
 fn file_sha256_digest(path: &Path) -> Result<String> {
     let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     Ok(format!("sha256:{}", digest_hex(&bytes)))
+}
+
+fn file_hex(path: &Path) -> Result<String> {
+    fs::read(path)
+        .with_context(|| format!("reading {}", path.display()))
+        .map(hex::encode)
 }
 
 fn validate_quote_identity_digests(identity: &PackageQuoteIdentityDigests) -> Result<()> {
@@ -1715,6 +2098,8 @@ fn event_log_line_from_tcg_event(
         root_digest: root_digest.as_deref(),
         manifest_digest: manifest_digest.as_deref(),
         package_count,
+        generation_id: None,
+        activation_id: None,
     };
     serde_json::to_string(&record).context("serializing decoded TCG package event")
 }
@@ -1999,6 +2384,14 @@ fn append_event_log(root: &Path, events: &[MeasurementEvent]) -> Result<EventLog
         let line = event_log_line(existing_lines + index + 1, event)?;
         writeln!(file, "{line}").with_context(|| format!("writing {}", path.display()))?;
     }
+    file.sync_all()
+        .with_context(|| format!("syncing {}", path.display()))?;
+    if created_file {
+        File::open(parent)
+            .with_context(|| format!("opening {}", parent.display()))?
+            .sync_all()
+            .with_context(|| format!("syncing {}", parent.display()))?;
+    }
     Ok(EventLogAppend {
         path,
         previous_len,
@@ -2047,6 +2440,8 @@ fn event_log_line(sequence_number: usize, event: &MeasurementEvent) -> Result<St
         root_digest: package.map(|package| package.root_digest.as_str()),
         manifest_digest: package.map(|package| package.manifest_digest.as_str()),
         package_count: event.package_count,
+        generation_id: event.generation_id.as_deref(),
+        activation_id: event.activation_id.as_deref(),
     };
     serde_json::to_string(&record).context("serializing package measurement event")
 }
@@ -2356,6 +2751,7 @@ mod tests {
                         sb_signer_cert_sha256: None,
                         sbat: Vec::new(),
                         expected_pcr11: None,
+                        ukis: Vec::new(),
                         root_image: Some("root.img".into()),
                         root_verity: Some("root.verity".into()),
                         root_hash: Some(
@@ -2826,6 +3222,110 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(sequence_numbers, [1, 2]);
+    }
+
+    #[test]
+    fn generation_attestation_event_is_replayable_and_identity_bound() {
+        let tmp = TempDir::new().expect("tempdir");
+        let record = serde_json::json!({
+            "schema": "aos.gen-attestation/v1",
+            "activation_id": format!("sha256:{}", "a".repeat(64)),
+            "generation_id": "sha256:generation",
+            "manifest_hash": "sha256:manifest",
+            "inputs": {},
+            "eval_mode": "pure-eval",
+            "quote_status": "quoted"
+        });
+        let canonical = crate::graph_compile::reproject::canonical_json(&record);
+        let activation_a = format!("sha256:{}", "a".repeat(64));
+        assert!(
+            !measure_generation_attestation(
+                tmp.path(),
+                "sha256:generation",
+                &activation_a,
+                canonical.as_bytes(),
+            )
+            .expect("measure fixture")
+        );
+        assert!(
+            !measure_generation_attestation(
+                tmp.path(),
+                "sha256:generation",
+                &activation_a,
+                canonical.as_bytes(),
+            )
+            .expect("replay measured fixture idempotently")
+        );
+        let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("event log");
+        assert_eq!(
+            log.lines().count(),
+            1,
+            "retry must not duplicate the PCR event"
+        );
+        let recovery_event = MeasurementEvent {
+            event_type: GENERATION_EVENT_TYPE,
+            digest: format!("sha256:{}", digest_for_word(&canonical)),
+            word: canonical.clone(),
+            extends_pcr: true,
+            pcr_value: None,
+            package: None,
+            package_count: None,
+            generation_id: Some("sha256:generation".to_string()),
+            activation_id: Some(activation_a.clone()),
+        };
+        let recovery = generation_measurement_recovery(tmp.path(), &recovery_event)
+            .expect("recover generation measurement");
+        assert!(recovery.before.starts_with("sha256:"));
+        assert!(recovery.after.starts_with("sha256:"));
+        assert!(recovery.replayed.starts_with("sha256:"));
+        let digest = Sha256::digest(canonical.as_bytes());
+        let mut pcr_hasher = Sha256::new();
+        pcr_hasher.update([0_u8; 32]);
+        pcr_hasher.update(digest);
+        let expected_pcr = hex::encode(pcr_hasher.finalize());
+        let verified =
+            verify_package_event_log_against_measurement_catalog(&log, &expected_pcr, None, &[])
+                .expect("verify generation event");
+        assert_eq!(
+            verified.generation_attestations.get(&activation_a),
+            Some(&format!("sha256:{}", hex::encode(digest)))
+        );
+
+        let conflicting = canonical.replace("sha256:manifest", "sha256:other");
+        let error = measure_generation_attestation(
+            tmp.path(),
+            "sha256:generation",
+            &activation_a,
+            conflicting.as_bytes(),
+        )
+        .expect_err("same activation id with different record must fail");
+        assert!(error.to_string().contains("disagrees"));
+
+        let activation_b = format!("sha256:{}", "b".repeat(64));
+        let second = conflicting.replace(&activation_a, &activation_b);
+        assert!(
+            !measure_generation_attestation(
+                tmp.path(),
+                "sha256:generation",
+                &activation_b,
+                second.as_bytes(),
+            )
+            .expect("a new activation of the same generation must append")
+        );
+        let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("event log");
+        assert_eq!(log.lines().count(), 2);
+        let pcr15 = replay_package_event_log_pcr15(&log).expect("replay repeated activation");
+        let verified =
+            verify_package_event_log_against_measurement_catalog(&log, &pcr15, None, &[])
+                .expect("verify repeated activation events");
+        assert_eq!(verified.generation_attestations.len(), 2);
+        assert_eq!(
+            verified
+                .generation_attestation_prefix_digests
+                .get(&activation_b)
+                .map(Vec::len),
+            Some(1)
+        );
     }
 
     #[test]
@@ -3454,14 +3954,16 @@ mod tests {
     #[test]
     fn tpm2_pcrread_parser_extracts_pcr15() {
         let output = format!(
-            "sha256:\n  7: 0x{}\n  15: 0x{}\n",
+            "sha256:\n  7 : 0x{}\n  15 : 0x{}\n",
             "07".repeat(32),
             "ab".repeat(32)
         );
 
         let pcr15 = parse_tpm2_pcrread_pcr15(&output).expect("pcr15");
+        let pcr7 = parse_tpm2_pcrread_value(&output, 7).expect("pcr7");
 
         assert_eq!(pcr15, format!("sha256:{}", "ab".repeat(32)));
+        assert_eq!(pcr7, format!("sha256:{}", "07".repeat(32)));
     }
 
     #[test]

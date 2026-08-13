@@ -70,17 +70,14 @@ real binary** rather than trusting hand-entry:
 - signer cert → parse the PE certificate table (`sbverify --list`, sbsigntools
   already packaged) and hash the leaf.
 - SBAT → read the `.sbat` PE section (objcopy/llvm-objcopy dump).
-- expected PCR-11 → `systemd-measure` (now in the build,
-  [`measured-boot.md`](measured-boot.md)) over the assembled UKI. **Caveat:**
-  PCR 11 as extended on a real machine includes the sd-boot/stub boot-phase
-  measurements (`systemd-pcrextend`), not just the UKI. So a naive
-  `systemd-measure` over the UKI alone will *not* equal the machine's measured
-  PCR 11. The recorded `expected_pcr11` must either model the full phase
-  sequence, or be scoped/labeled as "the UKI's contribution" and the
-  attestation verifier must reconstruct the rest. This predicted-vs-measured
-  gap is a known correctness hazard — the test plan asserts equality
-  ([`test-plan.md`](test-plan.md) phase 3/4), so the prediction method must be
-  pinned down during phase-3 implementation before phase-4 records it.
+- expected PCR-11 → dump the assembled UKI's measured PE sections and feed
+  them to `systemd-measure` (now in the build,
+  [`measured-boot.md`](measured-boot.md)). The catalog records the final
+  `enter-initrd:leave-initrd:sysinit:ready` prediction. RFC-0011 orders
+  activation after `systemd-pcrphase.service`, so this value is byte-identical
+  to PCR 11 in the generation quote; the measured-boot VM checks that equality.
+  `/var` unlock instead consumes the signed multi-phase `.pcrsig` policy at
+  `enter-initrd` and does not compare this scalar.
 
 So the catalog is *derived from* the signed artifact at publish time; it
 cannot disagree with what was actually signed without detection. A

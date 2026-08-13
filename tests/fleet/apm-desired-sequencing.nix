@@ -1,10 +1,9 @@
 # tests/fleet/apm-desired-sequencing.nix - Desired add+prune ordering.
 #
-# Regression coverage for RFC-0001 P5 desired reconciliation: when a desired
-# run both installs a package that needs generated config and prunes another
-# package, exposed systemd reconciliation must happen after config
-# materialization. If pruning starts the new package target too early, the
-# config-gated service is skipped and a later start of the already-active
+# When a desired run both installs a package that needs generated config and
+# prunes another package, exposed systemd reconciliation must happen after
+# config materialization. If pruning starts the new package target too early,
+# the config-gated service is skipped and a later start of the already-active
 # target does not retry it.
 {
   mkSystem,
@@ -33,8 +32,6 @@ in {
   machines = {
     vm = {
       inherit system;
-      # Package activation measures PCR 15, including the seed profile.
-      tpm = true;
       # Seed only the package that the desired file will prune. The config
       # package is present in the image and registry fixture, but is not in the
       # package profile until `apm install --system --from` installs it.
@@ -50,6 +47,7 @@ in {
       vm.wait_until_succeeds("test -S /run/dbus/system_bus_socket", timeout=120)
       vm.wait_for_unit("aos-seed-baked-packages.service", timeout=120)
       vm.wait_until_succeeds("systemctl is-active aos-nix-db.service", timeout=120)
+      vm.wait_until_succeeds("systemctl is-active aos-graph-compile.service", timeout=120)
       vm.succeed("${pkgs.nix}/bin/nix-store --check-validity '${pkgs.desired-config-test}'")
       vm.succeed("${pkgs.nix}/bin/nix-store --check-validity '${pkgs.desired-config-test.expose}'")
       vm.wait_until_succeeds(
@@ -72,12 +70,12 @@ in {
           mkdir -p "$NIX_CONF_DIR"
           printf 'experimental-features = nix-command\\nsandbox = false\\n' > "$NIX_CONF_DIR/nix.conf"
 
-          # Publishing an RFC-0001 exposed package writes signed DSSE
-          # provenance keyed to a keys.toml roster id, so the registry must be
-          # created with a trust roster and `--expose-manifest` must publish
-          # under `--key-id`. Generate the maintainer key, seed the roster with
-          # it under id `release`, then record its private half in the
-          # publisher's registries.d config so `--key-id release` resolves.
+          # Publishing an exposed package writes signed DSSE provenance keyed
+          # to a keys.toml roster id, so the registry must be created with a
+          # trust roster and `--expose-manifest` must publish under `--key-id`.
+          # Generate the maintainer key, seed the roster with it under id
+          # `release`, then record its private half in the publisher's
+          # registries.d config so `--key-id release` resolves.
           ${pkgs.aos}/bin/apr keys generate release --registry desired-reg \
             > /tmp/desired-keygen.out 2>&1
           cat /tmp/desired-keygen.out

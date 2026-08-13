@@ -224,8 +224,8 @@ impl Stash {
         Ok(())
     }
 
-    /// Serialize [`Facts`] to `facts.json` and return its SHA-256 (the
-    /// `facts_hash`).
+    /// Serialize [`Facts`] to `facts.json` and return the SHA-256 of its
+    /// canonical typed `host.facts.*` projection (the `facts_hash`).
     ///
     /// # Errors
     ///
@@ -233,7 +233,9 @@ impl Stash {
     pub fn write_facts(&self, facts: &Facts) -> Result<String> {
         let bytes = serde_json::to_vec_pretty(facts).context("serializing facts.json")?;
         std::fs::write(self.dir.join("facts.json"), &bytes).context("writing facts.json")?;
-        Ok(sha256_hex(&bytes))
+        let canonical = serde_json::to_vec(&super::facts_render::normalize_host_facts(facts))
+            .context("serializing canonical host facts")?;
+        Ok(sha256_hex(&canonical))
     }
 
     /// Write the DHCP-less static-network seed into `network/10-aos-seed.network`.

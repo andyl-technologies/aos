@@ -203,7 +203,8 @@ no-op on the live system.
    untouched; (b) a successful module-eval switch → assert `/etc` matches the
    dry-run-predicted manifest and the expected units reloaded/restarted; (c)
    rollback to a pre-migration generation → assert its `cfg/` roots kept the old
-   config closure alive so the switch is pointer-only. Guest constraints per the
+   config closure alive so a same-ABI rollback can reactivate without evaluation
+   or fetch, while a cross-ABI rollback can re-evaluate retained inputs. Guest constraints per the
    harness (no grep/sed in guest; `/proc`/`/sys` introspection;
    `requiredSystemFeatures = ["kvm"]`).
 

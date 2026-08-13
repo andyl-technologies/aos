@@ -34,6 +34,7 @@
   systemdTypes = import ../modules/systemd/types.nix {
     inherit lib systemdLib systemdUnitOptions;
   };
+  freezePkgs = import ../build/freeze-pkgs.nix {inherit lib;};
 
   # Drive the library from a synthetic module that declares just
   # `systemd.services` and provides a handful of definitions that cover
@@ -130,6 +131,110 @@
   # units from churning their fingerprint on the next live upgrade.
   defaultRendered = (systemdLib.serviceToUnit svc.script-only).text;
 
+  # `generateUnits` is the P0 pure boundary: it must not leak the `unit`,
+  # `drv`, or `path` fields carried by the build-side compatibility records.
+  pureGenerated = systemdLib.generateUnits {
+    type = "system";
+    units = {
+      "script-only.service" = systemdLib.serviceToUnit svc.script-only;
+      "direct-only.service" = systemdLib.serviceToUnit svc.direct-only;
+    };
+    upstreamUnits = [];
+    upstreamWants = [];
+    packages = [];
+  };
+  pureScriptUnit = pureGenerated."script-only.service";
+  pureKeys = builtins.attrNames pureScriptUnit;
+  inventoryPackage = {
+    outPath = "/nix/store/00000000000000000000000000000000-inventory-fixture";
+    __toString = self: self.outPath;
+    systemdUnitInventory.system = [
+      "lib/systemd/system/demo.service"
+      "lib/systemd/system/demo.service.d/10-package.conf"
+      "lib/systemd/system/multi-user.target.wants/demo.service"
+    ];
+  };
+  frozenInventoryPackage = (freezePkgs.frozenFromJSON (freezePkgs.freezeToJSON {
+    fixture = inventoryPackage // {
+      type = "derivation";
+      name = "inventory-fixture";
+      outputs = ["out"];
+    };
+  })).fixture;
+  inventoryGenerated = systemdLib.generateUnits {
+    type = "system";
+    units."demo.service" = overlapUnit "demo.service";
+    packages = [inventoryPackage];
+  };
+  inventoryEtc = systemdLib.unitsToEtc inventoryGenerated;
+  missingInventoryRejected = !(builtins.tryEval (builtins.toJSON (systemdLib.generateUnits {
+    type = "system";
+    units = {};
+    packages = [{outPath = "/missing-inventory"; __toString = self: self.outPath;}];
+  }))).success;
+  inventoryCollisionRejected = !(builtins.tryEval (builtins.toJSON (systemdLib.generateUnits {
+    type = "system";
+    units = {};
+    packages = [inventoryPackage inventoryPackage];
+    upstreamUnits = ["demo.service"];
+    package = inventoryPackage // {
+      systemdUnitInventory.system = ["example/systemd/system/demo.service"];
+    };
+  }))).success;
+  disallowedCollisionRejected = !(builtins.tryEval (builtins.toJSON (systemdLib.generateUnits {
+    allowCollisions = false;
+    type = "system";
+    units."demo.service" = overlapUnit "demo.service";
+    packages = [inventoryPackage];
+  }))).success;
+  upstreamPackage = {
+    outPath = "/nix/store/11111111111111111111111111111111-upstream-fixture";
+    __toString = self: self.outPath;
+    systemdUnitInventory.system = [
+      "example/systemd/system/default.target"
+      {
+        path = "example/systemd/system/default.target.wants/base.service";
+        upstreamTarget = "../base.service";
+      }
+    ];
+  };
+  upstreamEtc = systemdLib.unitsToEtc (systemdLib.generateUnits {
+    type = "system";
+    units = {};
+    package = upstreamPackage;
+    upstreamUnits = ["default.target"];
+    upstreamWants = ["default.target.wants"];
+  });
+  duplicateFinalEtcRejected = !(builtins.tryEval (builtins.toJSON (systemdLib.unitsToEtc {
+    "demo.service" = {
+      name = "demo.service";
+      text = "[Service]";
+      mode = "0644";
+      enable = true;
+      overrideStrategy = "asDropinIfExists";
+      aliases = ["demo.service"];
+      wantedBy = [];
+      requiredBy = [];
+      upheldBy = [];
+    };
+  }))).success;
+  overlapUnit = name: {
+    inherit name;
+    text = "[Service]";
+    mode = "0644";
+    enable = true;
+    overrideStrategy = "asDropinIfExists";
+    aliases = [];
+    wantedBy = [];
+    requiredBy = [];
+    upheldBy = [];
+  };
+  nonAdjacentAncestorEtcRejected = !(builtins.tryEval (builtins.toJSON (systemdLib.unitsToEtc {
+    "a" = overlapUnit "a";
+    "a-escape" = overlapUnit "a-escape";
+    "a/child" = overlapUnit "a/child";
+  }))).success;
+
   # AOS lib doesn't currently expose `hasInfix`; a one-liner using
   # `builtins.match` is enough for these checks.
   containsStr = needle: haystack:
@@ -138,6 +243,61 @@
   # Each check is `{ cond; msg; }`; the fold throws `msg` on the first
   # false `cond`. Flatter than nesting `throwIfNot` calls by hand.
   checks = [
+    {
+      cond = !lib.isDerivation pureGenerated;
+      msg = "systemd-lib: generateUnits must return an attrset, not a derivation";
+    }
+    {
+      cond = builtins.all (unit: builtins.isString unit.text && builtins.isString unit.mode) (builtins.attrValues pureGenerated);
+      msg = "systemd-lib: every generated unit must expose string text/mode fields";
+    }
+    {
+      cond = pureKeys == ["aliases" "enable" "jobScriptKeys" "mode" "name" "overrideStrategy" "requiredBy" "text" "upheldBy" "wantedBy"];
+      msg = "systemd-lib: pure generated unit leaked or omitted fields: ${builtins.toJSON pureKeys}";
+    }
+    {
+      cond = pureScriptUnit.jobScriptKeys == ["script-only.service:ExecStart.0"];
+      msg = "systemd-lib: pure generated unit did not retain the job-script key";
+    }
+    {
+      cond = (builtins.tryEval (builtins.toJSON pureGenerated)).success;
+      msg = "systemd-lib: generateUnits result must serialize as pure JSON data";
+    }
+    {
+      cond =
+        inventoryEtc."systemd/system/demo.service" == {
+          kind = "symlink";
+          target = "${inventoryPackage}/lib/systemd/system/demo.service";
+        }
+        && inventoryEtc."systemd/system/demo.service.d/overrides.conf".kind == "text"
+        && inventoryEtc."systemd/system/demo.service.d/10-package.conf".kind == "symlink"
+        && inventoryEtc."systemd/system/multi-user.target.wants/demo.service".kind == "symlink";
+      msg = "systemd-lib: package inventory/drop-in/.wants merge semantics changed";
+    }
+    {
+      cond = missingInventoryRejected && inventoryCollisionRejected && disallowedCollisionRejected;
+      msg = "systemd-lib: missing inventories and forbidden/cross-source collisions must fail closed";
+    }
+    {
+      cond = frozenInventoryPackage.systemdUnitInventory == inventoryPackage.systemdUnitInventory;
+      msg = "systemd-lib: freeze-pkgs dropped package systemd inventory metadata";
+    }
+    {
+      cond =
+        upstreamEtc."systemd/system/default.target" == {
+          kind = "symlink";
+          target = "${upstreamPackage}/example/systemd/system/default.target";
+        }
+        && upstreamEtc."systemd/system/default.target.wants/base.service" == {
+          kind = "symlink";
+          target = "../base.service";
+        };
+      msg = "systemd-lib: upstreamUnits/upstreamWants inventory semantics changed";
+    }
+    {
+      cond = duplicateFinalEtcRejected && nonAdjacentAncestorEtcRejected;
+      msg = "systemd-lib: duplicate and ancestor-overlapping final /etc targets must be rejected";
+    }
     {
       cond = lib.hasPrefix "#aos-jobscript:" scriptOnlyExec;
       msg = "systemd-lib: script-only ExecStart should be a job-script placeholder, got '${scriptOnlyExec}'";

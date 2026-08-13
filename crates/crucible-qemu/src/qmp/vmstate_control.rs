@@ -1,12 +1,17 @@
 //! Checkpoint-tagged VMState control over typed QMP commands.
 
+use std::io::Write;
+use std::os::unix::net::UnixStream;
+
 use crucible::Checkpoint;
 
 use super::{
     QmpClient, QmpCommandComplete, QmpError, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpSnapshotTag,
     QmpTimeoutStream,
 };
-use crate::{QemuLoadvmCommandAuthorization, QemuNodeChannelError};
+use crate::{
+    QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QemuLoadvmCommandAuthorization, QemuNodeChannelError,
+};
 
 /// Checkpoint-tagged VMState control surface over a typed QMP client.
 ///
@@ -19,6 +24,7 @@ use crate::{QemuLoadvmCommandAuthorization, QemuNodeChannelError};
 #[derive(Debug)]
 pub struct QemuQmpVmStateControlChannel<S> {
     client: QmpClient<S>,
+    debug_guest_activation_stream: Option<UnixStream>,
 }
 
 impl<S> QemuQmpVmStateControlChannel<S>
@@ -28,7 +34,24 @@ where
     /// Builds a VMState control channel over an already-negotiated QMP client.
     #[must_use]
     pub const fn new(client: QmpClient<S>) -> Self {
-        Self { client }
+        Self {
+            client,
+            debug_guest_activation_stream: None,
+        }
+    }
+
+    /// Returns a channel with the pre-established guest activation stream.
+    #[must_use]
+    pub fn with_debug_guest_activation_stream(mut self, stream: UnixStream) -> Self {
+        self.debug_guest_activation_stream = Some(stream);
+        self
+    }
+
+    /// Returns a channel whose QEMU launch already has the inert endpoint.
+    #[must_use]
+    pub fn with_predeclared_debug_guest_endpoint(mut self) -> Self {
+        self.client = self.client.with_predeclared_debug_guest_endpoint();
+        self
     }
 
     /// Connects to an established QMP stream and negotiates capabilities.
@@ -59,6 +82,33 @@ where
     #[must_use]
     pub fn into_inner(self) -> QmpClient<S> {
         self.client
+    }
+
+    /// Sends the fixed activation token to the dormant debug guest bootstrap.
+    /// The channel retains the socket so QEMU cannot discard queued bytes while
+    /// the scheduler still has the guest paused.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when endpoint preparation fails or the
+    /// activation stream cannot deliver the fixed token.
+    pub fn activate_debug_guest(&mut self) -> Result<QmpCommandComplete, QemuNodeChannelError> {
+        let complete = self
+            .client
+            .prepare_debug_guest()
+            .map_err(QemuNodeChannelError::from)?;
+        let activation = self.debug_guest_activation_stream.as_mut().ok_or_else(|| {
+            QemuNodeChannelError::new(
+                "activate debug guest",
+                "fork-time guest activation stream is not configured",
+            )
+        })?;
+        activation
+            .write_all(QMP_DEBUG_GUEST_ACTIVATION_TOKEN.as_bytes())
+            .map_err(|error| {
+                QemuNodeChannelError::new("write debug guest activation token", error.to_string())
+            })?;
+        Ok(complete)
     }
 
     /// Saves the QEMU VMState under a tag derived from `checkpoint`.

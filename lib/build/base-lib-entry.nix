@@ -11,7 +11,7 @@
 ##!     hostModule = import <verified-host.nix>;
 ##!     system = baseLib.evalHostConfig {
 ##!       operatorModules = [ hostModule ];
-##!       configModules   = [ (import <pkg>/module.nix) … ];
+##!       packageModules  = [ { name = "pkg"; module = import <pkg>/module.nix; } … ];
 ##!     };
 ##!   in { manifest = system.config.system.build.configManifest; }
 ##! ```
@@ -26,10 +26,9 @@
 let
   # `import <base-lib>` returns this attrset directly (NOT a function), so the
   # on-host entry expression is simply `baseLib = import <store-path>;`. The
-  # target system is read from `builtins.currentSystem` — correct on-host (the
-  # box runs the image it was built for) and permitted under `restrict-eval`
-  # (only `--pure-eval`, which this evaluator does not use, would forbid it).
-  system = builtins.currentSystem;
+  # The target system is frozen into the base library at image build time.
+  # Stage 2 must not consult the evaluator host's ambient currentSystem.
+  system = "@system@";
 
   # `bash = null`: the on-host eval never invokes a builder (frozen pkgs), so
   # the derivation-building helpers in `lib` that would use bash are never
@@ -56,13 +55,20 @@ let
     builtins.fromJSON
     (builtins.unsafeDiscardStringContext (builtins.readFile ./frozen-artifacts.json));
 
+  # Immutable artifact baseline used to distinguish image-owned output from
+  # host changes to values that base modules project into aggregate files,
+  # users, units, presets, and closure pins.
+  imageManifest =
+    builtins.fromJSON
+    (builtins.unsafeDiscardStringContext (builtins.readFile ./image-manifest.json));
+
   # The bundled base module set + the image's system-variant modules. These are
   # exactly the modules the image was built from (minus the registry config
-  # packages, which arrive at stage-2 as `configModules`).
+  # packages, which arrive at stage-2 as authenticated `packageModules`).
   baseModules = import ./modules;
   systemModules = import ./system-modules.nix;
 in {
-  inherit lib;
+  inherit lib imageManifest;
 
   ## Evaluate the closed one-time provisioning projection.
   ##
@@ -70,9 +76,7 @@ in {
   ## or registry access exist. Only the provisioning schema module is declared,
   ## so unrelated `host.nix` definitions are dropped by the intentionally
   ## non-strict AOS module engine and are never forced.
-  evalProvisioningConfig = {
-    operatorModules ? [],
-  }: let
+  evalProvisioningConfig = {operatorModules ? []}: let
     evaluated = lib.evalModules {
       # This closed projection has no package modules to arbitrate. Append the
       # operator module at the normal tier so attrsOf/submodule values merge
@@ -108,9 +112,7 @@ in {
   };
 
   ## Evaluate the package-name seed required before registry module resolution.
-  evalHostSelection = {
-    operatorModules ? [],
-  }:
+  evalHostSelection = {operatorModules ? []}:
     lib.evalModules {
       modules = [./modules/base/host-selection.nix];
       pkgs = frozenPkgs;
@@ -120,29 +122,37 @@ in {
   ## Evaluate a host configuration on-host into a config manifest.
   ##
   ## `operatorModules` is the verified leaf `host.nix` (CS4 operator-provenance
-  ## seam — its bare defs win at the reserved priority-75 band). `configModules`
-  ## are the per-package config-only modules fetched from the registry. Returns
+  ## seam — its bare defs win at the reserved priority-75 band). `packageModules`
+  ## are resolver-owned `{ name; module; }` records for config-only outputs
+  ## fetched from the registry. Returns
   ## the full `evalModules` result; the caller forces
   ## `config.system.build.configManifest`.
   evalHostConfig = {
     operatorModules ? [],
-    configModules ? [],
+    packageModules ? [],
+    factsModules ? [],
+    structuredErrors ? false,
   }:
     lib.evalModules {
       modules =
         baseModules
         ++ systemModules
-        ++ configModules
+        ++ factsModules
         ++ [
           {
             aos.config.frozenArtifacts = frozenArtifacts;
-            # Keep the full stage-2 projection self-referential: the generated
-            # service must continue to name this exact ABI-pinned base library,
-            # not the build-time default or an operator value.
-            aos.config.evalAtBoot.baseLib = ./.;
+            # Keep the full stage-2 projection self-referential. A path value
+            # asks the evaluator to import this already-realized directory as
+            # a new store object, yielding a nonexistent doubled-name path in
+            # the manifest. Discarding the path context records the exact
+            # immutable store path supplied via --base-lib instead.
+            aos.config.evalAtBoot.baseLib =
+              builtins.unsafeDiscardStringContext (builtins.toString ./.);
+            aos.config.evalAtBoot.baseLibAbiHash = "@abiHash@";
           }
         ];
       pkgs = frozenPkgs;
-      inherit lib operatorModules;
+      inherit lib operatorModules packageModules;
+      specialArgs.aosStructuredErrors = structuredErrors;
     };
 }

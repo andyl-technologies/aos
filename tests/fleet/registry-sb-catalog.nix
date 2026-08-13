@@ -23,12 +23,14 @@
 #      genuine sd-stub section measurement, not a stand-in).
 #   2. REFUSE (unknown signer) — the catalog lists only a decoy db cert, so
 #      the image's real signer is not active. `apm upgrade --system` must
-#      download, then REFUSE before creating a generation. Stays gen-1.
+#      download, then REFUSE without changing either generation axis.
 #   3. REFUSE (SBAT floor) — the real signer is now active, but the SBAT
 #      floor is raised one above the image's generation. `apm upgrade` must
-#      REFUSE on the floor. Stays gen-1.
-#   4. ACCEPT — the floor is lowered to the image's generation. `apm
-#      upgrade --system` validates clean and switches to gen-2.
+#      REFUSE on the floor, again without changing either axis.
+#   4. ACCEPT CATALOG — the floor is lowered to the image's generation. The
+#      Secure Boot catalog validation passes, after which the A/B image
+#      gate rejects this legacy UKI-only fixture because it has no authenticated
+#      raw OTA payload. Both generation axes remain unchanged.
 #
 # Machines (lexicographic: registry=192.168.50.10, target=192.168.50.11):
 #   registry: aos-registry-server (gitd :9418) + static-cache package (:8000),
@@ -117,12 +119,33 @@ in {
           "systemctl is-active aos-nix-db.service", timeout=120
       )
 
-      # Target precondition: fresh gen-1, the signed toplevel absent.
+      # Target precondition: image generation 1 with its initial host-policy
+      # generation committed, and the signed upgrade toplevel absent.
       target.wait_until_succeeds("systemctl is-active aos-nix-db.service", timeout=120)
-      gen_before = target.succeed(
-          "readlink /var/lib/profiles/system/current"
-      ).strip()
-      assert gen_before == "gen-1", f"expected gen-1, got {gen_before!r}"
+      image_before = json.loads(
+          target.succeed("cat /var/lib/profiles/image/state.json")
+      )
+      config_before = json.loads(
+          target.succeed("cat /var/lib/profiles/system/state.json")
+      )
+      assert image_before["running"] == 1, image_before
+      assert len(image_before["generations"]) == 1, image_before
+      assert config_before["current"] == 1, config_before
+      assert config_before["next"] == 2, config_before
+      assert len(config_before["generations"]) == 1, config_before
+      assert config_before["generations"][0]["image_gen_parent"] == 1, config_before
+      target.succeed("test -e /var/lib/profiles/system/current")
+
+      def assert_generation_axes_unchanged(label):
+          image_after = json.loads(
+              target.succeed("cat /var/lib/profiles/image/state.json")
+          )
+          config_after = json.loads(
+              target.succeed("cat /var/lib/profiles/system/state.json")
+          )
+          assert image_after == image_before, (label, image_before, image_after)
+          assert config_after == config_before, (label, config_before, config_after)
+          target.succeed("test -e /var/lib/profiles/system/current")
       # The miss is intentional; keep nix-store's expected error off the
       # serial console so unexpected warnings remain visible.
       target.fail(
@@ -241,13 +264,12 @@ in {
           done
           systemd-measure calculate --bank=sha256 $ARGS > "$WORK/measure.out"
           # systemd-measure prints one `11:sha256=` line per boot phase
-          # (enter-initrd → …:ready). Mirror the Rust parser: take the FIRST
-          # such line (the enter-initrd phase, where /var is unsealed), and
-          # the hex after the last `=`.
+          # (enter-initrd → …:ready). Mirror the Rust parser: retain the
+          # final value, the stable ready phase quoted during activation.
           DIGEST=""
           while IFS= read -r line; do
             case "$line" in
-              11:*) rest=''${line#11:}; DIGEST=''${rest##*=}; break ;;
+              11:*) rest=''${line#11:}; DIGEST=''${rest##*=} ;;
             esac
           done < "$WORK/measure.out"
           printf '%s' "$DIGEST"
@@ -323,9 +345,7 @@ in {
       assert "active db-cert set" in out, (
           f"upgrade was not refused for an untrusted signer:\n{out}"
       )
-      assert target.succeed(
-          "readlink /var/lib/profiles/system/current"
-      ).strip() == "gen-1", "an untrusted-signer upgrade created a generation"
+      assert_generation_axes_unchanged("unknown signer")
 
       # ════ 3. REFUSE — SBAT generation below the revocation floor ══════
       # The real signer is active now, isolating the floor as the cause:
@@ -345,9 +365,7 @@ in {
       assert "revocation floor" in out, (
           f"upgrade was not refused for a below-floor SBAT generation:\n{out}"
       )
-      assert target.succeed(
-          "readlink /var/lib/profiles/system/current"
-      ).strip() == "gen-1", "a below-floor upgrade created a generation"
+      assert_generation_axes_unchanged("SBAT floor")
 
       # ════ 4. ACCEPT — signer active, no blocking floor ════════════════
       # `set-floor` only ever raises (a floor can't be walked back to
@@ -360,19 +378,19 @@ in {
           'rm -f "$REG_DIR/sb-certs.toml"',
           f"{APR} sb-certs add aos-db --cert-sha256 {signer} --registry sysreg --no-commit",
       )
-      out = target.succeed(
+      out = target.fail(
           "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH "
           "${pkgs.aos}/bin/apm upgrade --system --yes 2>&1",
           timeout=600,
       )
-      print("=== accept ===\n" + out)
+      print("=== accept catalog, reject legacy payload ===\n" + out)
       assert "Secure Boot catalog validation passed" in out, (
-          f"a valid upgrade did not report SB catalog validation:\n{out}"
+          f"a valid catalog did not report SB validation:\n{out}"
       )
-      gen_after = target.succeed(
-          "readlink /var/lib/profiles/system/current"
-      ).strip()
-      assert gen_after == "gen-2", f"expected gen-2 after accept, got {gen_after!r}"
+      assert "no authenticated raw OTA image" in out, (
+          f"a legacy UKI-only payload passed the A/B image gate:\n{out}"
+      )
+      assert_generation_axes_unchanged("catalog accepted without raw OTA")
       target.succeed("${pkgs.nix}/bin/nix-store --check-validity '${sbTop}'")
       failed = target.succeed("systemctl --failed --no-legend").strip()
       assert not failed, f"failed units after accepted upgrade: {failed!r}"

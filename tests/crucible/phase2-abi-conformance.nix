@@ -9,7 +9,7 @@
   cargoDeps = pkgs.fetchCargoDeps {
     src = crucibleSrc;
     sourceRoot = "source/crates";
-    hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
+    hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
   };
 
   harnessLib = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
@@ -213,7 +213,7 @@
     ++ failuresFor "crates/crucible-api/src/rpc_abi.rs" apiRpcAbi [
       {
         label = "explicit major version";
-        needle = "pub const RPC_PROTOCOL_MAJOR: u16 = 4;";
+        needle = "pub const RPC_PROTOCOL_MAJOR: u16 = 5;";
       }
       {
         label = "explicit minor version";
@@ -225,7 +225,7 @@
       }
       {
         label = "build identifier";
-        needle = "pub const RPC_PROTOCOL_BUILD: &str = \"crucible-rpc-abi-v4\";";
+        needle = "pub const RPC_PROTOCOL_BUILD: &str = \"crucible-rpc-abi-v5\";";
       }
       {
         label = "golden vector protocol version";

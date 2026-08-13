@@ -1,6 +1,7 @@
 ##! crucible-fixtures — minimal RFC-0010 guest root-image fixtures
 {
   lib,
+  stdenv,
   mkDerivation,
   bash,
   coreutils,
@@ -8,6 +9,7 @@
   fakeroot,
   util-linux,
   crucible-guest,
+  openssh,
 }: let
   version = "0.1.0";
   fixtureName = "aos-minimal";
@@ -20,12 +22,21 @@
   hostStoreMountTag = "crucible-store";
   ext4FeatureFlags = "^has_journal,^metadata_csum,^64bit";
   entropySeedMechanism = "scenario-seed-fw_cfg-plus-seeded-qemu-rng";
+  fixtureConsole =
+    {
+      "x86_64-linux" = "ttyS0";
+      "aarch64-linux" = "ttyAMA0";
+    }.${
+      stdenv.hostPlatform.system
+    }
+    or (throw "crucible-fixtures: unsupported system '${stdenv.hostPlatform.system}'");
 
   fixtureClosureDeps = [
     bash
     coreutils
     util-linux
     crucible-guest
+    openssh
   ];
   thirdPartyClosureDeps = [
     bash
@@ -76,7 +87,7 @@
 
   qemuLaunchFragment = ''
     -kernel $CRUCIBLE_KERNEL
-    -append "$CRUCIBLE_KERNEL_CMDLINE root=/dev/vda init=/init console=ttyS0"
+    -append "$CRUCIBLE_KERNEL_CMDLINE root=/dev/vda init=/init console=${fixtureConsole}"
     -drive id=crucible-root,file=$COW_OVERLAY,format=qcow2,if=none,cache=unsafe,discard=unmap
     -device virtio-blk-pci,drive=crucible-root,id=crucible-root0
     -fsdev local,id=crucible-store,path=/nix/store,security_model=none,readonly=on
@@ -126,6 +137,7 @@ in
       crucibleFixtureCopyOnWriteBoot = true;
       crucibleFixtureEntropySeedMechanism = entropySeedMechanism;
       crucibleFixtureEntropySeedFileName = entropySeedFileName;
+      crucibleFixtureConsole = fixtureConsole;
       crucibleFixtureNodes = fixtureNodes;
       crucibleFixtureThirdPartyGuestPath = thirdPartyGuestPath;
       crucibleFixtureQemuLaunchFragment = qemuLaunchFragment;
@@ -180,13 +192,63 @@ in
           }
 
           mkdir -p rootfs/bin rootfs/dev rootfs/etc rootfs/mnt/host-store
-          mkdir -p rootfs/nix/store rootfs/proc rootfs/run rootfs/sys rootfs/tmp
-          mkdir -p rootfs/var/tmp rootfs/usr/bin rootfs/usr/sbin
+          mkdir -p rootfs/nix/store rootfs/proc rootfs/root rootfs/run rootfs/sys rootfs/tmp
+          mkdir -p rootfs/sbin rootfs/var/empty rootfs/var/tmp rootfs/usr/bin rootfs/usr/sbin
 
           copy_closure fixture-closure rootfs
 
           ln -sfn ${bash}/bin/bash rootfs/bin/sh
           ln -sfn ${bash}/bin/bash rootfs/bin/bash
+          ln -sfn ${coreutils}/bin/cat rootfs/bin/cat
+          ln -sfn ${coreutils}/bin/echo rootfs/bin/echo
+          ln -sfn ${coreutils}/bin/true rootfs/bin/true
+          ln -sfn ${coreutils}/bin/uname rootfs/bin/uname
+
+          cat > rootfs/etc/passwd <<'PASSWD'
+          root:x:0:0:root:/root:/bin/sh
+          sshd:x:74:74:Privilege-separated SSH:/var/empty:/bin/false
+          PASSWD
+          cat > rootfs/etc/group <<'GROUP'
+          root:x:0:
+          sshd:x:74:
+          GROUP
+          cat > rootfs/etc/shadow <<'SHADOW'
+          root::1:0:99999:7:::
+          sshd:!:1:0:99999:7:::
+          SHADOW
+          chmod 0600 rootfs/etc/shadow
+
+          cat > rootfs/etc/crucible-debug-sshd_config <<'SSHD_CONFIG'
+          HostKey /run/crucible-debug-ssh-host-key
+          PidFile none
+          UsePAM no
+          PermitRootLogin yes
+          PermitEmptyPasswords yes
+          PasswordAuthentication yes
+          KbdInteractiveAuthentication no
+          PubkeyAuthentication no
+          StrictModes no
+          PrintMotd no
+          PrintLastLog no
+          X11Forwarding no
+          AllowTcpForwarding no
+          AllowAgentForwarding no
+          PermitTunnel no
+          Subsystem sftp internal-sftp
+          SSHD_CONFIG
+
+          cat > rootfs/usr/sbin/crucible-debug-sshd <<'DEBUG_SSHD'
+          #!${bash}/bin/bash
+          set -euo pipefail
+
+          host_key=/run/crucible-debug-ssh-host-key
+          [[ -f "$host_key" ]] || {
+            echo 'Crucible debug SSH host key is unavailable' >&2
+            exit 1
+          }
+          exec ${openssh}/sbin/sshd -i -e -f /etc/crucible-debug-sshd_config
+          DEBUG_SSHD
+          chmod +x rootfs/usr/sbin/crucible-debug-sshd
 
           cat > rootfs/etc/crucible-fixture.env <<'ENV'
           CRUCIBLE_FIXTURE_NAME=${fixtureName}
@@ -195,6 +257,12 @@ in
           CRUCIBLE_ENTROPY_SEED_FILE=${entropySeedFileName}
           CRUCIBLE_MAC_DERIVATION=sha256-root-image-sha256
           ENV
+          doorbell_instruction_abi_version=$(sed -n \
+            's/^doorbell_instruction_abi_version=\([0-9][0-9]*\)$/\1/p' \
+            ${crucible-guest}/nix-support/crucible-guest-build-info)
+          test -n "$doorbell_instruction_abi_version"
+          printf 'CRUCIBLE_DOORBELL_INSTRUCTION_ABI_VERSION=%s\n' \
+            "$doorbell_instruction_abi_version" >> rootfs/etc/crucible-fixture.env
 
           cat > rootfs/init <<'INIT'
           #!/bin/sh
@@ -203,11 +271,14 @@ in
           export PATH="${fixtureBootPath}"
           export HOME=/tmp
 
-          mkdir -p /proc /sys /dev /run /tmp /nix/store /mnt/host-store
+          mkdir -p /proc /sys /dev /run /root /tmp /nix/store /mnt/host-store
           mount -t proc proc /proc || true
           mount -t sysfs sysfs /sys || true
           mount -t devtmpfs devtmpfs /dev || true
+          mkdir -p /dev/pts
+          mount -t devpts devpts /dev/pts || true
           mount -t tmpfs tmpfs /run || true
+          ${openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f /run/crucible-debug-ssh-host-key
 
           if mount -t 9p -o trans=virtio,version=9p2000.L,cache=none,ro ${hostStoreMountTag} /nix/store; then
             echo 'CRUCIBLE_9P_STORE_READY'
@@ -221,11 +292,57 @@ in
           fi
           echo 'CRUCIBLE_FIXTURE_DONE'
 
+          if [ -w /proc/sys/kernel/hotplug ]; then
+            echo /sbin/crucible-debug-hotplug > /proc/sys/kernel/hotplug
+          else
+            echo 'CRUCIBLE_DEBUG_AGENT_HOTPLUG_UNAVAILABLE'
+          fi
+
+          # The activation-only port is fixed in the canonical topology. Start
+          # one blocking reader after setup so canonical execution performs no
+          # polling and only a committed debug fork can deliver the token.
+          for name_file in /sys/class/virtio-ports/*/name; do
+            if [ -f "$name_file" ] && [ "$(cat "$name_file")" = 'org.aos.crucible.debug' ]; then
+              port=$(basename "$(dirname "$name_file")")
+              ACTION=add DEVPATH="/class/virtio-ports/$port" /sbin/crucible-debug-hotplug
+              echo 'CRUCIBLE_DEBUG_ACTIVATION_READER_READY'
+            fi
+          done
+
           while :; do
             :
           done
           INIT
           chmod +x rootfs/init
+
+          cat > rootfs/sbin/crucible-debug-hotplug <<'HOTPLUG'
+          #!/bin/sh
+          set -eu
+
+          if [ "''${ACTION:-}" != add ]; then
+            exit 0
+          fi
+          name_file="/sys''${DEVPATH:?missing hotplug device path}/name"
+          if [ ! -f "$name_file" ]; then
+            name_file="/sys/class/virtio-ports/$(basename "''${DEVPATH}")/name"
+          fi
+          if [ ! -f "$name_file" ] || [ "$(cat "$name_file")" != 'org.aos.crucible.debug' ]; then
+            exit 0
+          fi
+          activation_port="/dev/$(basename "''${DEVPATH}")"
+          (
+            echo "CRUCIBLE_DEBUG_ACTIVATION_READER_OPEN port=$activation_port"
+            IFS= read -r activation_token < "$activation_port"
+            if [ "$activation_token" != 'CRUCIBLE_DEBUG_AGENT_V1' ]; then
+              echo 'CRUCIBLE_DEBUG_AGENT_ACTIVATION_REJECTED'
+              exit 1
+            fi
+            echo 'CRUCIBLE_DEBUG_AGENT_ACTIVATED'
+            exec ${crucible-guest}/bin/crucible-guest agent \
+              --ssh-program /usr/sbin/crucible-debug-sshd
+          ) &
+          HOTPLUG
+          chmod +x rootfs/sbin/crucible-debug-hotplug
 
           mkdir -p third-party-rootfs/bin third-party-rootfs/dev third-party-rootfs/etc
           mkdir -p third-party-rootfs/nix/store third-party-rootfs/proc third-party-rootfs/run
@@ -353,6 +470,7 @@ in
 
           cat > "$out/nix-support/crucible-fixtures" <<INFO
           package=crucible-fixtures
+          doorbell_instruction_abi_version=$doorbell_instruction_abi_version
           root_image=${rootImageRelativePath}
           root_image_sha256=$root_hash
           read_only_base=true
