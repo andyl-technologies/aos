@@ -9,8 +9,11 @@ use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct TimedOutage {
+    unavailable_from: u64,
     unavailable_until: u64,
     transition_sequence: u64,
+    queue_policy: crucible::model::NetworkStatePolicy,
+    table_policy: crucible::model::NetworkStatePolicy,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -168,6 +171,14 @@ pub(super) struct BoundaryNetworkApplication {
     pub(super) next_wakeup_nanos: Option<u64>,
     /// Targets whose queued frames must be discarded.
     pub(super) clear_queued_targets: BTreeSet<crucible::model::ResolvedFaultTarget>,
+    /// Forwarders whose connection and protocol state must be discarded.
+    pub(super) clear_table_targets: BTreeSet<crucible::model::ResolvedFaultTarget>,
+    /// Forwarder outages that must begin only after their queues drain.
+    pub(super) drain_queued_targets: Vec<(
+        crucible::model::ResolvedFaultTarget,
+        BTreeSet<crucible::model::ResolvedFaultTarget>,
+        u64,
+    )>,
     /// Route transitions that must update queued and in-flight path ownership.
     pub(super) route_transitions: Vec<BoundaryRouteApplication>,
     /// Attachment transitions whose pre-transition frames cannot retain addressing.
@@ -194,7 +205,7 @@ impl BoundaryNetworkState {
         self.outages
             .iter()
             .filter_map(|(key, outage)| {
-                (now < outage.unavailable_until)
+                (outage.unavailable_from <= now && now < outage.unavailable_until)
                     .then_some((key.target.clone(), outage.unavailable_until))
             })
             .collect()
@@ -212,10 +223,35 @@ impl BoundaryNetworkState {
         self.outages.insert(
             NetworkEffectStateKey::from_action(action),
             TimedOutage {
+                unavailable_from: now,
                 unavailable_until,
                 transition_sequence: action.transition_sequence,
+                queue_policy: crucible::model::NetworkStatePolicy::Preserve,
+                table_policy: crucible::model::NetworkStatePolicy::Preserve,
             },
         );
+        Ok(unavailable_until)
+    }
+
+    pub(super) fn defer_outage_until_queues_drain(
+        &mut self,
+        target: &crucible::model::ResolvedFaultTarget,
+        unavailable_from: u64,
+        downtime_nanos: u64,
+    ) -> Result<u64, SchedulerError> {
+        let unavailable_until = unavailable_from
+            .checked_add(downtime_nanos)
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("drained forwarder outage coordinate overflowed"),
+            })?;
+        for (key, outage) in &mut self.outages {
+            if &key.target == target
+                && outage.queue_policy == crucible::model::NetworkStatePolicy::Drain
+            {
+                outage.unavailable_from = unavailable_from;
+                outage.unavailable_until = unavailable_until;
+            }
+        }
         Ok(unavailable_until)
     }
 
@@ -802,8 +838,8 @@ impl BoundaryNetworkState {
         actions: impl IntoIterator<Item = ResolvedBindingAction>,
         topology: &crucible::model::WorldFaultTopology,
     ) -> Result<BoundaryNetworkApplication, SchedulerError> {
-        self.expire(coordinate.virtual_nanos);
         let mut application = BoundaryNetworkApplication::default();
+        self.expire(coordinate.virtual_nanos, &mut application);
         self.drain_completed_control_work(coordinate.virtual_nanos, &mut application)?;
         let actions = actions.into_iter().collect::<Vec<_>>();
         for action in &actions {
@@ -872,8 +908,11 @@ impl BoundaryNetworkState {
                     self.outages.insert(
                         key,
                         TimedOutage {
+                            unavailable_from: coordinate.virtual_nanos,
                             unavailable_until,
                             transition_sequence: action.transition_sequence,
+                            queue_policy: crucible::model::NetworkStatePolicy::Preserve,
+                            table_policy: crucible::model::NetworkStatePolicy::Preserve,
                         },
                     );
                     application.next_wakeup_nanos =
@@ -912,8 +951,10 @@ impl BoundaryNetworkState {
                 NetworkEffectSpecification::ForwarderLifecycle {
                     downtime_nanos,
                     queue_policy,
+                    table_policy,
                     ..
                 } => {
+                    let queue_targets = forwarder_queue_targets(topology, &action)?;
                     let unavailable_until = coordinate
                         .virtual_nanos
                         .checked_add(downtime_nanos.get())
@@ -926,13 +967,29 @@ impl BoundaryNetworkState {
                     self.outages.insert(
                         key,
                         TimedOutage {
+                            unavailable_from: coordinate.virtual_nanos,
                             unavailable_until,
                             transition_sequence: action.transition_sequence,
+                            queue_policy: *queue_policy,
+                            table_policy: *table_policy,
                         },
                     );
-                    if *queue_policy == crucible::model::NetworkStatePolicy::Clear {
+                    match queue_policy {
+                        crucible::model::NetworkStatePolicy::Clear => {
+                            application.clear_queued_targets.extend(queue_targets);
+                        }
+                        crucible::model::NetworkStatePolicy::Drain => {
+                            application.drain_queued_targets.push((
+                                action.target.clone(),
+                                queue_targets,
+                                downtime_nanos.get(),
+                            ));
+                        }
+                        crucible::model::NetworkStatePolicy::Preserve => {}
+                    }
+                    if *table_policy == crucible::model::NetworkStatePolicy::Clear {
                         application
-                            .clear_queued_targets
+                            .clear_table_targets
                             .insert(action.target.clone());
                     }
                     application.next_wakeup_nanos =
@@ -1155,14 +1212,14 @@ impl BoundaryNetworkState {
         now: u64,
         effects: &mut crucible::ResolvedNetworkFrameEffects,
     ) -> Result<(), SchedulerError> {
-        if self
-            .outages
+        if self.outages.iter().any(|(key, outage)| {
+            &key.target == target
+                && outage.unavailable_from <= now
+                && now < outage.unavailable_until
+        }) || self
+            .negotiated_modes
             .iter()
-            .any(|(key, outage)| &key.target == target && now < outage.unavailable_until)
-            || self
-                .negotiated_modes
-                .iter()
-                .any(|(key, mode)| &key.target == target && now < mode.usable_after)
+            .any(|(key, mode)| &key.target == target && now < mode.usable_after)
         {
             effects.mark_drop();
         }
@@ -1383,8 +1440,11 @@ impl BoundaryNetworkState {
         append_evidence_count(material, self.outages.len())?;
         for (key, outage) in &self.outages {
             append_network_effect_state_key(material, key)?;
+            material.extend_from_slice(&outage.unavailable_from.to_be_bytes());
             material.extend_from_slice(&outage.unavailable_until.to_be_bytes());
             material.extend_from_slice(&outage.transition_sequence.to_be_bytes());
+            material.push(network_state_policy_tag(outage.queue_policy));
+            material.push(network_state_policy_tag(outage.table_policy));
         }
         append_evidence_count(material, self.negotiated_modes.len())?;
         for (key, mode) in &self.negotiated_modes {
@@ -1514,15 +1574,21 @@ impl BoundaryNetworkState {
         Ok(())
     }
 
-    fn expire(&mut self, now: u64) {
-        self.outages
-            .retain(|_key, outage| outage.unavailable_until > now);
+    fn expire(&mut self, now: u64, application: &mut BoundaryNetworkApplication) {
+        self.outages.retain(|key, outage| {
+            let active = outage.unavailable_until > now;
+            if !active && outage.table_policy == crucible::model::NetworkStatePolicy::Drain {
+                application.clear_table_targets.insert(key.target.clone());
+            }
+            active
+        });
     }
 
     pub(super) fn next_wakeup_nanos(&self, now: u64) -> Option<u64> {
         self.outages
             .values()
-            .map(|outage| outage.unavailable_until)
+            .flat_map(|outage| [outage.unavailable_from, outage.unavailable_until])
+            .filter(|boundary| *boundary > now)
             .chain(self.negotiated_modes.values().map(|mode| mode.usable_after))
             .chain(
                 self.route_transitions
@@ -1556,6 +1622,58 @@ impl BoundaryNetworkState {
             }))
             .filter(|coordinate| *coordinate > now)
             .min()
+    }
+}
+
+fn forwarder_queue_targets(
+    topology: &crucible::model::WorldFaultTopology,
+    action: &ResolvedBindingAction,
+) -> Result<BTreeSet<crucible::model::ResolvedFaultTarget>, SchedulerError> {
+    let crucible::model::ResolvedFaultTarget::NetworkForwarder { forwarder } = &action.target
+    else {
+        return Err(network_effect_application_error(
+            action,
+            "forwarder lifecycle requires a network-forwarder target",
+        ));
+    };
+    if !topology
+        .network_forwarders
+        .iter()
+        .any(|declaration| declaration.id.as_str() == forwarder.as_str())
+    {
+        return Err(network_effect_application_error(
+            action,
+            "forwarder lifecycle target is absent from World",
+        ));
+    }
+
+    topology
+        .network_queues
+        .iter()
+        .filter(|queue| queue.owner.as_str() == forwarder.as_str())
+        .map(|queue| {
+            FaultObjectId::parse(queue.id.as_str().to_owned())
+                .map(
+                    |queue_id| crucible::model::ResolvedFaultTarget::NetworkQueue {
+                        owner: forwarder.clone(),
+                        queue: queue_id,
+                    },
+                )
+                .map_err(|_error| {
+                    network_effect_application_error(
+                        action,
+                        "forwarder queue ID is not a valid fault object ID",
+                    )
+                })
+        })
+        .collect()
+}
+
+const fn network_state_policy_tag(policy: crucible::model::NetworkStatePolicy) -> u8 {
+    match policy {
+        crucible::model::NetworkStatePolicy::Preserve => 1,
+        crucible::model::NetworkStatePolicy::Clear => 2,
+        crucible::model::NetworkStatePolicy::Drain => 3,
     }
 }
 
@@ -1803,6 +1921,67 @@ mod tests {
             mapping_output: Arc::new(ResolvedMappingOutput::Activation { active: true }),
             mapped_digest: ContentHash::from_bytes(b"flap-mapping"),
             transition_sequence: 7,
+            opportunity: None,
+            coordinate: FaultCoordinate {
+                virtual_nanos: 100,
+                retired_instructions: None,
+            },
+            cause: BindingActionCause::Signal,
+            expected_precondition: None,
+        }
+    }
+
+    fn forwarder_topology() -> crucible::model::WorldFaultTopology {
+        crucible::model::WorldFaultTopology {
+            network_forwarders: vec![crucible::model::WorldNetworkForwarder {
+                id: crucible::model::SignalId::parse("forwarder-a")
+                    .unwrap_or_else(|error| panic!("test forwarder ID: {error}")),
+                kind: crucible::model::WorldNetworkForwarderKind::Router,
+                ports: Vec::new(),
+                table_capacity: 128,
+                fault_domains: Vec::new(),
+            }],
+            network_queues: vec![crucible::model::WorldNetworkQueue {
+                id: crucible::model::SignalId::parse("forwarder-a-egress")
+                    .unwrap_or_else(|error| panic!("test queue ID: {error}")),
+                owner: crucible::model::SignalId::parse("forwarder-a")
+                    .unwrap_or_else(|error| panic!("test owner ID: {error}")),
+                capacity_packets: 64,
+                capacity_bytes: 65_536,
+                discipline: crucible::model::WorldNetworkQueueDiscipline::Fifo,
+                overflow: crucible::model::WorldNetworkQueueOverflow::DropTail,
+                fault_domains: Vec::new(),
+            }],
+            ..crucible::model::WorldFaultTopology::default()
+        }
+    }
+
+    fn forwarder_action(
+        queue_policy: crucible::model::NetworkStatePolicy,
+        table_policy: crucible::model::NetworkStatePolicy,
+    ) -> ResolvedBindingAction {
+        let effect = EffectRequest::new(
+            crucible::model::EFFECT_SEMANTIC_VERSION,
+            EffectLifetime::StateMachine,
+            EffectSpecification::Network(NetworkEffectSpecification::ForwarderLifecycle {
+                transition: crucible::model::NetworkForwarderTransition::PowerLoss,
+                downtime_nanos: positive(10),
+                queue_policy,
+                table_policy,
+            }),
+        )
+        .unwrap_or_else(|error| panic!("test lifecycle should be valid: {error}"));
+        ResolvedBindingAction {
+            kind: BindingActionKind::Apply,
+            binding: id("forwarder-lifecycle"),
+            target: crucible::model::ResolvedFaultTarget::NetworkForwarder {
+                forwarder: id("forwarder-a"),
+            },
+            phase: FaultPhase::Boundary,
+            effect: Arc::new(effect),
+            mapping_output: Arc::new(ResolvedMappingOutput::Activation { active: true }),
+            mapped_digest: ContentHash::from_bytes(b"forwarder-lifecycle"),
+            transition_sequence: 1,
             opportunity: None,
             coordinate: FaultCoordinate {
                 virtual_nanos: 100,
@@ -2101,6 +2280,94 @@ mod tests {
             )
             .unwrap_or_else(|error| panic!("test frame should resolve: {error}"));
         assert!(!recovered.is_dropped());
+    }
+
+    #[test]
+    fn forwarder_clear_addresses_owned_queues_and_tables() {
+        let mut state = BoundaryNetworkState::default();
+        let application = state
+            .apply_actions(
+                FaultCoordinate {
+                    virtual_nanos: 100,
+                    retired_instructions: None,
+                },
+                [forwarder_action(
+                    crucible::model::NetworkStatePolicy::Clear,
+                    crucible::model::NetworkStatePolicy::Clear,
+                )],
+                &forwarder_topology(),
+            )
+            .unwrap_or_else(|error| panic!("test lifecycle should apply: {error}"));
+
+        assert!(application.clear_queued_targets.contains(
+            &crucible::model::ResolvedFaultTarget::NetworkQueue {
+                owner: id("forwarder-a"),
+                queue: id("forwarder-a-egress"),
+            }
+        ));
+        assert!(application.clear_table_targets.contains(
+            &crucible::model::ResolvedFaultTarget::NetworkForwarder {
+                forwarder: id("forwarder-a"),
+            }
+        ));
+        assert!(application.drain_queued_targets.is_empty());
+    }
+
+    #[test]
+    fn forwarder_drain_defers_outage_and_clears_tables_after_recovery() {
+        let target = crucible::model::ResolvedFaultTarget::NetworkForwarder {
+            forwarder: id("forwarder-a"),
+        };
+        let mut state = BoundaryNetworkState::default();
+        let application = state
+            .apply_actions(
+                FaultCoordinate {
+                    virtual_nanos: 100,
+                    retired_instructions: None,
+                },
+                [forwarder_action(
+                    crucible::model::NetworkStatePolicy::Drain,
+                    crucible::model::NetworkStatePolicy::Drain,
+                )],
+                &forwarder_topology(),
+            )
+            .unwrap_or_else(|error| panic!("test lifecycle should apply: {error}"));
+        assert_eq!(application.drain_queued_targets.len(), 1);
+
+        assert_eq!(
+            state
+                .defer_outage_until_queues_drain(&target, 150, 10)
+                .unwrap_or_else(|error| panic!("test drain should defer: {error}")),
+            160
+        );
+        let mut before_drain = crucible::ResolvedNetworkFrameEffects::default();
+        state
+            .apply_frame(&target, None, &forwarder_topology(), 149, &mut before_drain)
+            .unwrap_or_else(|error| panic!("test frame should resolve: {error}"));
+        assert!(!before_drain.is_dropped());
+        let mut during_outage = crucible::ResolvedNetworkFrameEffects::default();
+        state
+            .apply_frame(
+                &target,
+                None,
+                &forwarder_topology(),
+                150,
+                &mut during_outage,
+            )
+            .unwrap_or_else(|error| panic!("test frame should resolve: {error}"));
+        assert!(during_outage.is_dropped());
+
+        let completion = state
+            .apply_actions(
+                FaultCoordinate {
+                    virtual_nanos: 160,
+                    retired_instructions: None,
+                },
+                [],
+                &forwarder_topology(),
+            )
+            .unwrap_or_else(|error| panic!("test drain should complete: {error}"));
+        assert!(completion.clear_table_targets.contains(&target));
     }
 
     #[test]
