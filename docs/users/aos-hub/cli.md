@@ -228,6 +228,31 @@ The probe identity pins the responder key for this immutable endpoint
 generation; its matching private seed stays in the named runtime secret
 provider and rotates only through a new generation.
 
+Verify a delivery domain by hostname or stable identity after its endpoint and
+probe signer are configured:
+
+```sh
+aos hub domain verify packages.example.com \
+  --if-version <domain-resource-version> \
+  --idempotency-key verify-packages-example \
+  --plan
+```
+
+The probe response is signed over the request nonce, hostname, endpoint
+identity, and exact endpoint generation. Applying successful evidence advances
+the domain observation and promotes that endpoint generation to healthy in one
+transaction. Enabled routes that previously failed while the endpoint was not
+ready are queued for a fresh probe automatically; they do not need to be
+recreated. A concurrently revised endpoint causes the entire reconciliation to
+fail closed without advancing either resource.
+
+Routes are created disabled and become eligible for traffic only after their
+current configuration probes successfully. Use `aos hub route explain` with
+`--access-class web`, `git`, or `nix_cache` to inspect the selected access
+policy, publication, and placement before enabling a route. Canonical route
+selection is explicit and independent for the `web`, `git`, and `cache`
+audiences.
+
 The remote client includes registry, cache, organization, project, binding,
 webhook, instance, audit, changeset, and upload operations. Authorization is
 checked against current server-side grants for every request; approval never

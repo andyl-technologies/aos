@@ -1037,6 +1037,8 @@ pub enum HubDomainCmd {
     Verify {
         #[command(flatten)]
         access: HubAccessArgs,
+        /// Select the domain by DNS hostname or stable identity
+        #[arg(value_name = "HOSTNAME_OR_ID")]
         hostname: String,
         #[command(flatten)]
         mutation: HubMutationArgs,
