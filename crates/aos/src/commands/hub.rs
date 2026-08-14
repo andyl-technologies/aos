@@ -567,8 +567,8 @@ mod tests {
 
         let pinned = publication_from_root(root, "andyl/main").unwrap();
         for object in &pinned.request.objects {
-            let expected = if aos_registry_surface::keymap::cache_control(&object.path)
-                == aos_registry_surface::keymap::MUTABLE_CACHE_CONTROL
+            let expected = if aos_package::registry::surface_keymap::cache_control(&object.path)
+                == aos_package::registry::surface_keymap::MUTABLE_CACHE_CONTROL
             {
                 "mutable_pointer"
             } else {
@@ -577,7 +577,7 @@ mod tests {
             assert_eq!(object.kind, expected, "{}", object.path);
             assert_eq!(
                 object.media_type,
-                aos_registry_surface::keymap::content_type(&object.path),
+                aos_package::registry::surface_keymap::content_type(&object.path),
                 "{}",
                 object.path
             );
@@ -8883,7 +8883,7 @@ fn collect_publication_objects(
             "publication surface contains non-file {relative}"
         );
         anyhow::ensure!(
-            aos_registry_surface::keymap::is_machine_path(&relative),
+            aos_package::registry::surface_keymap::is_machine_path(&relative),
             "publication surface contains unsupported path {relative}"
         );
         anyhow::ensure!(
@@ -8949,15 +8949,15 @@ fn publication_input(
         path: relative.to_string(),
         sha256: digest,
         byte_size: i64::try_from(metadata.len()).context("publication object is too large")?,
-        kind: if aos_registry_surface::keymap::cache_control(relative)
-            == aos_registry_surface::keymap::MUTABLE_CACHE_CONTROL
+        kind: if aos_package::registry::surface_keymap::cache_control(relative)
+            == aos_package::registry::surface_keymap::MUTABLE_CACHE_CONTROL
         {
             "mutable_pointer"
         } else {
             "immutable"
         }
         .into(),
-        media_type: aos_registry_surface::keymap::content_type(relative).into(),
+        media_type: aos_package::registry::surface_keymap::content_type(relative).into(),
     })
 }
 

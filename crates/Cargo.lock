@@ -168,7 +168,6 @@ dependencies = [
  "aos-doc",
  "aos-package",
  "aos-profile",
- "aos-registry-surface",
  "aos-remote",
  "aos-server",
  "atty",
