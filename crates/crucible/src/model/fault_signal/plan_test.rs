@@ -1,3 +1,5 @@
+//! Tests signal-plan admission, world resolution, canonical codecs, and bounds.
+
 use super::*;
 use crate::model::{
     Icount, LinkDef, MAX_REPRODUCTION_SCENARIO_BLOB_BYTES, MAX_SCENARIO_BINARY_BLOB_BYTES,

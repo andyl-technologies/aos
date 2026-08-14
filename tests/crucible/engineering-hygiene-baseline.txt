@@ -38,7 +38,6 @@ shape-line|crates/crucible-cli/src/tests/verify_dispatch.rs|3349
 shape-line|crates/crucible-cli/tests/machine_readable.rs|1369
 shape-line|crates/crucible-device/src/block.rs|716
 shape-line|crates/crucible-device/src/block/device.rs|674
-shape-line|crates/crucible-device/src/fault.rs|743
 shape-line|crates/crucible-device/src/harness.rs|794
 shape-line|crates/crucible-device/src/netlink.rs|770
 shape-line|crates/crucible-device/src/netlink/link.rs|816
@@ -148,13 +147,11 @@ shape-line|crates/crucible-sim/src/contract_a.rs|1045
 shape-line|crates/crucible-sim/tests/contract_a.rs|773
 shape-line|crates/crucible/src/backend.rs|696
 shape-line|crates/crucible/src/decision.rs|1073
-shape-line|crates/crucible/src/device.rs|1223
 shape-line|crates/crucible/src/device_subnode.rs|1565
 shape-line|crates/crucible/src/example_corpus.rs|2299
 shape-line|crates/crucible/src/model.rs|875
 shape-line|crates/crucible/src/model/binary_plan.rs|1586
 shape-line|crates/crucible/src/model/binary_state.rs|1829
-shape-line|crates/crucible/src/model/canonical.rs|761
 shape-line|crates/crucible/src/model/debug.rs|2933
 shape-line|crates/crucible/src/model/engine.rs|2384
 shape-line|crates/crucible/src/model/exploration.rs|2471
@@ -196,14 +193,9 @@ shape-line|crates/crucible/tests/gate_failure_signature.rs|1850
 shape-line|crates/crucible/tests/gate_replay_oracle.rs|1638
 shape-line|crates/crucible/tests/gate_search_strategies.rs|2009
 shape-line|crates/crucible/tests/gate_unifying_view.rs|698
-shape-line|crates/crucible/tests/guest_host_emitter_absence.rs|658
 shape-line|crates/crucible/tests/guest_marker_assertions.rs|736
-shape-line|crates/crucible/tests/node_crash_application.rs|745
-shape-line|crates/crucible/tests/random_fault_config.rs|720
 shape-line|crates/crucible/tests/scheduler_topology_change.rs|788
 shape-line|crates/crucible/tests/world_devices.rs|772
-shape-line|crates/crucible/tests/world_io_runtime.rs|1121
-shape-header|crates/crucible/tests/fault_taxonomy.rs
 shape-header|crates/crucible/tests/gate_debug_cli_surface.rs
 shape-header|crates/crucible/tests/support/mod.rs
 qemu-token|crucible-api|crates/crucible-api/src/vm_resume.rs|Qemu

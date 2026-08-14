@@ -17,8 +17,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
       {
-        label = "T-SPAT-19 completion names canonicalization test";
-        needle = "`canonicalization_hashes_meaning_not_authoring_spelling`";
+        label = "T-SPAT-19 completion names world canonicalization test";
+        needle = "`world_topology_hashes_nodes_and_links_canonically`";
+      }
+      {
+        label = "T-SPAT-19 completion names signal canonicalization test";
+        needle = "`authored_order_does_not_change_identity`";
       }
       {
         label = "T-SPAT-19 completion names gate";
@@ -36,15 +40,15 @@
       }
       {
         label = "canonical link endpoint ordering";
-        needle = "fn canonical_link_endpoint_pair(left: &NodeId, right: &NodeId) -> (NodeId, NodeId)";
+        needle = "let (endpoint_a, endpoint_b) = if left <= right";
       }
       {
-        label = "plan canonical entry ordering";
-        needle = "fn canonical_plan_entries(entries: &[PlanEntry]) -> Vec<PlanEntry>";
+        label = "signal-program canonical ordering";
+        needle = "programs.sort_by_key(SignalProgram::id)";
       }
       {
-        label = "plan stable tie break";
-        needle = "then_with(|| plan_entry_material(left).cmp(&plan_entry_material(right)))";
+        label = "fault-binding canonical ordering";
+        needle = "bindings.sort_by(|left, right| left.id().cmp(right.id()))";
       }
       {
         label = "properties canonical assertion ordering";
@@ -59,8 +63,8 @@
         needle = "link_loss_millionths={}";
       }
       {
-        label = "fixed family density model";
-        needle = "pub struct FaultDensity";
+        label = "fixed probability signal model";
+        needle = "ProbabilityMillionths(u32)";
       }
       {
         label = "content-addressed blob refs in material";
@@ -81,111 +85,50 @@
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
       {
-        label = "focused canonicalization test";
-        needle = "fn canonicalization_hashes_meaning_not_authoring_spelling()";
+        label = "focused world canonicalization test";
+        needle = "fn world_topology_hashes_nodes_and_links_canonically()";
       }
       {
         label = "test covers canonical world bytes";
-        needle = "authored_world.canonical_bytes()";
+        needle = "base_world.canonical_bytes()";
       }
       {
-        label = "test covers canonical plan bytes";
-        needle = "authored_plan.canonical_bytes()";
+        label = "test covers canonical endpoint spelling";
+        needle = "vec![link(\"b\", \"a\")]";
       }
       {
-        label = "test covers canonical properties bytes";
-        needle = "authored_properties.canonical_bytes()";
-      }
-      {
-        label = "test covers canonical scenario bytes";
-        needle = "authored_form.canonical_bytes()";
-      }
-      {
-        label = "test fixes world golden vector";
-        needle = "2f107a46c69f789cd0fa04ed4bca6e7c1d780594789e2167a80bf0dfe3bc21c3";
-      }
-      {
-        label = "test fixes plan golden vector";
-        needle = "f9e1e5c40ecbfce8d62e71476b59f2f207e6457ae947647c1e44ab1ad86f2e3a";
-      }
-      {
-        label = "test fixes properties golden vector";
-        needle = "b20bc725db83e5943ed694b56a51b3b5d099734c9185a466ac6135f1b9ceff13";
-      }
-      {
-        # Scenario-form golden vector regenerated 2026-07-09 from the passing
-        # canonicalization_hashes_meaning_not_authoring_spelling test (authored_form.id);
-        # the scenario-form serialization changed, so the prior ff875d3d… vector no
-        # longer matches. Value copied from the verified test assertion, not invented.
-        label = "test fixes scenario golden vector";
-        needle = "e13a8e94a43857719319c913ba7036109d033e47263411799a8baee73a50ea94";
-      }
-      {
-        # Compact-binary golden vector regenerated 2026-07-09 from the passing test
-        # (ContentHash::from_bytes(&authored_form.to_compact_binary())); prior
-        # 64e947f6… vector predates the serialization change. Verified test value.
-        label = "test fixes compact binary vector";
-        needle = "455912b3f3ad4878d8d40af3b41b75179d3ad06b7038081d2ed8993b42fa2a44";
-      }
-      {
-        label = "test covers compact binary magic";
-        needle = "crucible.scenario-def-form.v1";
+        label = "test covers canonical link identity";
+        needle = "assert_eq!(canonical.id, reordered.id)";
       }
       {
         label = "test covers exact probability encoding";
-        needle = "loss.millionths(), 125_000";
+        needle = "base.links()[0].loss().millionths(), 250_000";
       }
       {
-        label = "test covers exact density encoding";
-        needle = "density.millionths(), 125_000";
+        label = "test covers probability identity sensitivity";
+        needle = "assert_ne!(base.id, changed_loss.id)";
       }
       {
-        label = "test covers density affecting scenario plan";
-        needle = "zero_density_instance.form().plan().content_hash()";
+        label = "test covers bandwidth identity sensitivity";
+        needle = "assert_ne!(base.id, changed_bandwidth.id)";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/model.rs" model [
+      {
+        label = "signal authoring order identity test";
+        needle = "fn authored_order_does_not_change_identity()";
       }
       {
-        label = "test covers content-addressed refs";
-        needle = "changed_ref_world";
+        label = "signal authoring order identity assertion";
+        needle = "assert_eq!(first.id(), second.id())";
       }
       {
-        label = "test covers icount field sensitivity";
-        needle = "changed_icount_world";
+        label = "outer plan commits to signal layer";
+        needle = "fn outer_plan_identity_commits_to_the_complete_fault_layer()";
       }
       {
-        label = "test covers duration field sensitivity";
-        needle = "changed_duration_world";
-      }
-      {
-        label = "test covers bandwidth field sensitivity";
-        needle = "changed_bandwidth_world";
-      }
-      {
-        label = "test covers plan time sensitivity";
-        needle = "changed_time_plan";
-      }
-      {
-        label = "test covers plan tag sensitivity";
-        needle = "changed_tag_plan";
-      }
-      {
-        label = "test covers plan fault sensitivity";
-        needle = "changed_fault_plan";
-      }
-      {
-        label = "test covers assertion message sensitivity";
-        needle = "changed_message_properties";
-      }
-      {
-        label = "test covers predicate sensitivity";
-        needle = "changed_predicate_properties";
-      }
-      {
-        label = "test covers seed sensitivity";
-        needle = "other_seed_form";
-      }
-      {
-        label = "test covers endpoint spelling";
-        needle = "PartitionDirection::EndpointBToEndpointA";
+        label = "outer plan identity changes with signal layer";
+        needle = "assert_ne!(plan.content_hash(), baseline.content_hash())";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -242,15 +185,22 @@ in
             if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
               cd source
             fi
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-spatial-canonicalization-target" \
-              --manifest-path crates/Cargo.toml \
-              -p crucible \
-              --lib \
-              canonicalization_hashes_meaning_not_authoring_spelling \
-              -- --test-threads=1
+            for test_name in \
+              world_topology_hashes_nodes_and_links_canonically \
+              world_link_transport_material_affects_world_identity \
+              authored_order_does_not_change_identity \
+              outer_plan_identity_commits_to_the_complete_fault_layer
+            do
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-spatial-canonicalization-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible \
+                --lib \
+                "$test_name" \
+                -- --test-threads=1
+            done
           '';
         }
         {
@@ -265,6 +215,8 @@ in
             component=canonicalization
             meaning_not_spelling=true
             fixed_point_probabilities=true
+            signal_authoring_order=true
+            signal_plan_identity=true
             content_addressed_refs=true
             RESULT
           '';

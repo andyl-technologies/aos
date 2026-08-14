@@ -1,3 +1,5 @@
+//! Tests deterministic binding evaluation, checkpointing, replay, and search overrides.
+
 use super::*;
 
 struct NoArtifacts;
