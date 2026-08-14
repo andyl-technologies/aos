@@ -166,6 +166,7 @@ dependencies = [
  "aos-cache",
  "aos-core",
  "aos-doc",
+ "aos-hub-core",
  "aos-package",
  "aos-profile",
  "aos-remote",
