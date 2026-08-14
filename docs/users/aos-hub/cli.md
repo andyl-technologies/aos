@@ -202,6 +202,24 @@ Review the returned effects and apply the exact plan with `--plan-id`,
 an HTTP object API. Credentials are separate purpose-scoped secret-version
 references and can be rotated or validated without replacing the binding.
 
+Delivery resources also use reviewed plans. Creation commands generate an
+opaque stable identity and print it in the plan; pass `--stable-id` when an
+external controller needs to choose that identity. HTTPS endpoints require an
+explicit record of where TLS terminates:
+
+```sh
+aos hub endpoint add https://packages.example.com \
+  --org acme \
+  --network-boundary instance:public@1 \
+  --ingress hub \
+  --tls-provider external \
+  --certificate-ref edge-certificate:packages.example.com \
+  --idempotency-key plan-packages-endpoint
+```
+
+Use `--tls-provider hub-managed` when the Hub owns certificate issuance.
+Cleartext endpoints require `--acknowledge-cleartext` and reject TLS options.
+
 The remote client includes registry, cache, organization, project, binding,
 webhook, instance, audit, changeset, and upload operations. Authorization is
 checked against current server-side grants for every request; approval never

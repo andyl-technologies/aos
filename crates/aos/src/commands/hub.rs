@@ -205,6 +205,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn topology_stable_ids_preserve_overrides_and_generate_typed_ids() {
+        assert_eq!(
+            topology_stable_id(Some("endpoint:operator-chosen"), "delivery-endpoint"),
+            "endpoint:operator-chosen"
+        );
+
+        let generated = topology_stable_id(None, "delivery-endpoint");
+        let suffix = generated
+            .strip_prefix("delivery-endpoint:")
+            .expect("generated endpoint identity has its resource prefix");
+        assert_eq!(suffix.len(), 32);
+        assert!(suffix.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    #[test]
     fn pin_resolution_document_is_versioned_and_strict() {
         let valid = br#"{
           "schemaVersion":"aos.hub.pin-resolutions.v1",
@@ -4090,6 +4105,12 @@ fn new_idempotency_key() -> String {
     format!("aos-cli-{:032x}", rand::random::<u128>())
 }
 
+fn topology_stable_id(explicit: Option<&str>, kind: &str) -> String {
+    explicit
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{kind}:{:032x}", rand::random::<u128>()))
+}
+
 /// Adapts one explicit retained-control plan subcommand to the shared RPC
 /// executor without reintroducing the overloaded mutation flags in clap.
 fn retained_plan_mutation(idempotency_key: &str, if_version: Option<&str>) -> HubMutationArgs {
@@ -5222,6 +5243,7 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
         HubNetworkBoundaryCmd::Add {
             access,
             name,
+            stable_id,
             kind,
             org,
             provider,
@@ -5343,6 +5365,7 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
                 HubTopologyMethod::PlanCreateNetworkBoundary,
                 HubTopologyMethod::CreateNetworkBoundary,
                 &hub_types::PlanNetworkBoundaryMutationRequest {
+                    stable_id: topology_stable_id(stable_id.as_deref(), "network-boundary"),
                     owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     name: name.clone(),
                     kind: kind.into(),
@@ -5840,16 +5863,38 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
         HubEndpointCmd::Add {
             access,
             origin,
+            stable_id,
             org,
             acknowledge_cleartext,
             network_boundary,
             ingress,
+            tls_provider,
+            certificate_ref,
             mutation,
         } => {
             let (scheme, mut host, effective_port) = parse_delivery_origin(origin)?;
             if scheme == "http" && !acknowledge_cleartext {
                 anyhow::bail!("http endpoints require --acknowledge-cleartext");
             }
+            if scheme == "http" && (tls_provider.is_some() || certificate_ref.is_some()) {
+                anyhow::bail!("http endpoints reject TLS options");
+            }
+            if scheme == "https" && tls_provider.is_none() {
+                anyhow::bail!("https endpoints require --tls-provider");
+            }
+            if certificate_ref.is_some() && tls_provider.is_none() {
+                anyhow::bail!("--certificate-ref requires --tls-provider");
+            }
+            if tls_provider.as_deref() == Some("external") && certificate_ref.is_none() {
+                anyhow::bail!("external TLS requires --certificate-ref");
+            }
+            let tls = tls_provider
+                .as_ref()
+                .map(|provider| hub_types::TlsConfiguration {
+                    provider: provider.clone(),
+                    certificate_ref: certificate_ref.clone().unwrap_or_default(),
+                    ..Default::default()
+                });
             let (boundary_id, boundary_revision) = network_boundary
                 .rsplit_once('@')
                 .map(|(id, revision)| {
@@ -5884,6 +5929,7 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                 HubTopologyMethod::PlanCreateDeliveryEndpoint,
                 HubTopologyMethod::CreateDeliveryEndpoint,
                 &hub_types::PlanDeliveryEndpointMutationRequest {
+                    stable_id: topology_stable_id(stable_id.as_deref(), "delivery-endpoint"),
                     owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     scheme,
                     host: Some(host),
@@ -5892,6 +5938,7 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                     revision: Some(hub_types::DeliveryEndpointRevisionSpec {
                         boundary_revision,
                         ingress_kind: endpoint_ingress_kind(ingress)?,
+                        tls,
                         ..Default::default()
                     }),
                     idempotency_key: new_idempotency_key(),
@@ -6332,6 +6379,7 @@ async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Result<()> {
         }
         HubGatewayCmd::Add {
             access,
+            stable_id,
             binding,
             endpoint,
             client_base_path,
@@ -6355,6 +6403,7 @@ async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Result<()> {
                 HubTopologyMethod::PlanCreateStorageGateway,
                 HubTopologyMethod::CreateStorageGateway,
                 hub_types::PlanStorageGatewayMutationRequest {
+                    stable_id: topology_stable_id(stable_id.as_deref(), "storage-gateway"),
                     revision: Some(hub_types::StorageGatewayRevisionSpec {
                         storage_binding_id: binding.clone(),
                         endpoint_id,

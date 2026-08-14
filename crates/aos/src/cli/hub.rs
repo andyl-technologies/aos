@@ -1119,6 +1119,9 @@ pub enum HubNetworkBoundaryCmd {
         #[command(flatten)]
         access: HubAccessArgs,
         name: String,
+        /// Use this stable identity instead of generating one
+        #[arg(long)]
+        stable_id: Option<String>,
         #[arg(long, value_parser = ["vpn", "vpc", "tunnel", "source-allowlist", "trusted-ingress"])]
         kind: Option<String>,
         #[arg(long)]
@@ -1285,6 +1288,9 @@ pub enum HubEndpointCmd {
         #[command(flatten)]
         access: HubAccessArgs,
         origin: String,
+        /// Use this stable identity instead of generating one
+        #[arg(long)]
+        stable_id: Option<String>,
         #[arg(long)]
         org: Option<String>,
         #[arg(long)]
@@ -1293,6 +1299,12 @@ pub enum HubEndpointCmd {
         network_boundary: String,
         #[arg(long, value_parser = ["hub", "external", "layer7"])]
         ingress: String,
+        /// Record the HTTPS termination provider
+        #[arg(long, value_parser = ["hub-managed", "external"])]
+        tls_provider: Option<String>,
+        /// Pin the certificate identity used by the termination provider
+        #[arg(long)]
+        certificate_ref: Option<String>,
         #[command(flatten)]
         mutation: HubMutationArgs,
     },
@@ -1386,6 +1398,9 @@ pub enum HubGatewayCmd {
     Add {
         #[command(flatten)]
         access: HubAccessArgs,
+        /// Use this stable identity instead of generating one
+        #[arg(long)]
+        stable_id: Option<String>,
         #[arg(long)]
         binding: String,
         #[arg(long)]
