@@ -144,7 +144,7 @@ impl RegionAllocation {
         Ok(())
     }
 
-    fn ring_index(
+    pub(super) fn ring_index(
         &self,
         src_slot: u32,
         dst_slot: u32,
@@ -161,7 +161,7 @@ impl RegionAllocation {
         })
     }
 
-    fn entry_range(
+    pub(super) fn entry_range(
         &self,
         ring_index: usize,
     ) -> Result<std::ops::Range<usize>, RegionAllocationAccessError> {
@@ -189,7 +189,7 @@ impl RegionAllocation {
         Ok(start..end)
     }
 
-    fn guest_introspection_entry_range(
+    pub(super) fn guest_introspection_entry_range(
         &self,
         vm_slot: u32,
         direction: GuestIntrospectionRingDirection,

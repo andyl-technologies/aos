@@ -19,8 +19,10 @@ use crucible_shmem::{
 const SHMEM_SOURCE: &str = concat!(
     include_str!("../src/lib.rs"),
     include_str!("../src/shmem/region.rs"),
+    include_str!("../src/shmem/region/allocation_scheduler.rs"),
     include_str!("../src/shmem/ring_coverage.rs"),
     include_str!("../src/shmem/frame_node.rs"),
+    include_str!("../src/shmem/frame_node/runtime.rs"),
     include_str!("../src/shmem/delivery_errors.rs"),
 );
 
@@ -303,7 +305,7 @@ fn scheduler_wake_publication_source_orders_inbox_before_ceiling_before_wake() {
         source,
         &[
             "self.validate_scheduler_ceiling(ceiling)?;",
-            "preflight_ring_enqueue_capacity(inbox, inbox_entries, pending_inputs.len())",
+            "crate::region::helpers::preflight_ring_enqueue_capacity(",
             ".enqueue(inbox_entries, frame)",
             "let wake = self.publish_prevalidated_scheduler_ceiling(ceiling)?;",
         ],

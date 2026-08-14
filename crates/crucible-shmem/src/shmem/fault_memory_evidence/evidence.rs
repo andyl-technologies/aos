@@ -364,7 +364,7 @@ impl MemoryMutationEvidenceV1 {
         Ok(value)
     }
 
-    fn validate(&self) -> Result<(), MemoryMutationEvidenceError> {
+    pub(crate) fn validate(&self) -> Result<(), MemoryMutationEvidenceError> {
         let length = self.length as usize;
         let inline = !self.before_bytes.is_empty() || !self.after_bytes.is_empty();
         let before_inline_sha256: [u8; 32] = Sha256::digest(&self.before_bytes).into();

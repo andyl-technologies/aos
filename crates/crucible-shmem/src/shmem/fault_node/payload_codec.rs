@@ -168,7 +168,7 @@ impl NodeFaultPayloadV1 {
         Ok(value)
     }
 
-    fn validate(&self) -> Result<(), NodeFaultPayloadError> {
+    pub(super) fn validate(&self) -> Result<(), NodeFaultPayloadError> {
         if !matches!(
             self.command_kind,
             FaultCommandKind::NodeLifecycle

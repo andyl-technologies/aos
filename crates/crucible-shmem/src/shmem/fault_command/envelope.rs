@@ -77,12 +77,16 @@ impl FaultCommandHeaderV1 {
         payload_region: &'a [u8],
     ) -> Result<(Self, &'a [u8]), FaultAbiError> {
         let value = Self::decode_header(bytes)?;
-        let payload = payload_slice(payload_region, value.payload_offset, value.payload_length)?;
+        let payload = super::transport::payload_slice(
+            payload_region,
+            value.payload_offset,
+            value.payload_length,
+        )?;
         value.authenticate_payload(payload)?;
         Ok((value, payload))
     }
 
-    fn decode_header(bytes: &[u8]) -> Result<Self, FaultAbiError> {
+    pub(super) fn decode_header(bytes: &[u8]) -> Result<Self, FaultAbiError> {
         if bytes.len() != FAULT_COMMAND_HEADER_V1_BYTES {
             return Err(FaultAbiError::HeaderLength);
         }
@@ -120,14 +124,14 @@ impl FaultCommandHeaderV1 {
         Ok(value)
     }
 
-    fn authenticate_payload(&self, payload: &[u8]) -> Result<(), FaultAbiError> {
+    pub(super) fn authenticate_payload(&self, payload: &[u8]) -> Result<(), FaultAbiError> {
         if *blake3::hash(payload).as_bytes() != self.payload_hash {
             return Err(FaultAbiError::PayloadDigest);
         }
         Ok(())
     }
 
-    fn validate(&self) -> Result<(), FaultAbiError> {
+    pub(super) fn validate(&self) -> Result<(), FaultAbiError> {
         if self.abi_major != FAULT_COMMAND_ABI_MAJOR
             || self.abi_minor != FAULT_COMMAND_ABI_MINOR
             || self.semantic_version != FAULT_COMMAND_SEMANTIC_VERSION
@@ -228,12 +232,16 @@ impl FaultResultHeaderV1 {
         payload_region: &'a [u8],
     ) -> Result<(Self, &'a [u8]), FaultAbiError> {
         let value = Self::decode_header(bytes)?;
-        let payload = payload_slice(payload_region, value.result_offset, value.result_length)?;
+        let payload = super::transport::payload_slice(
+            payload_region,
+            value.result_offset,
+            value.result_length,
+        )?;
         value.authenticate_payload(payload)?;
         Ok((value, payload))
     }
 
-    fn decode_header(bytes: &[u8]) -> Result<Self, FaultAbiError> {
+    pub(super) fn decode_header(bytes: &[u8]) -> Result<Self, FaultAbiError> {
         if bytes.len() != FAULT_RESULT_HEADER_V1_BYTES {
             return Err(FaultAbiError::HeaderLength);
         }
@@ -290,7 +298,7 @@ impl FaultResultHeaderV1 {
         Ok(value)
     }
 
-    fn authenticate_payload(&self, payload: &[u8]) -> Result<(), FaultAbiError> {
+    pub(super) fn authenticate_payload(&self, payload: &[u8]) -> Result<(), FaultAbiError> {
         if *blake3::hash(payload).as_bytes() != self.result_payload_hash {
             return Err(FaultAbiError::PayloadDigest);
         }

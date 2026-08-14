@@ -55,7 +55,7 @@ pub enum NodeFaultOperationV1 {
 }
 
 impl NodeFaultOperationV1 {
-    fn decode(value: u16) -> Result<Self, NodeFaultPayloadError> {
+    pub(super) fn decode(value: u16) -> Result<Self, NodeFaultPayloadError> {
         match value {
             1 => Ok(Self::Upsert),
             2 => Ok(Self::Remove),
@@ -86,7 +86,7 @@ pub enum NodeFaultTargetKindV1 {
 }
 
 impl NodeFaultTargetKindV1 {
-    fn decode(value: u16) -> Result<Self, NodeFaultPayloadError> {
+    pub(super) fn decode(value: u16) -> Result<Self, NodeFaultPayloadError> {
         match value {
             1 => Ok(Self::Node),
             2 => Ok(Self::Vcpu),
@@ -123,7 +123,7 @@ pub enum NodeFaultFieldTypeV1 {
 }
 
 impl NodeFaultFieldTypeV1 {
-    fn decode(value: u16) -> Result<Self, NodeFaultPayloadError> {
+    pub(super) fn decode(value: u16) -> Result<Self, NodeFaultPayloadError> {
         match value {
             1 => Ok(Self::U32),
             2 => Ok(Self::U64),
@@ -242,7 +242,7 @@ impl NodeFaultFieldV1 {
         })
     }
 
-    fn validate(&self) -> Result<(), NodeFaultPayloadError> {
+    pub(super) fn validate(&self) -> Result<(), NodeFaultPayloadError> {
         if self.tag == 0 {
             return Err(NodeFaultPayloadError::FieldTag);
         }

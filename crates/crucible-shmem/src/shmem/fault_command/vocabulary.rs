@@ -180,7 +180,7 @@ pub enum FaultBoundaryPhase {
 }
 
 impl FaultBoundaryPhase {
-    fn from_u16(value: u16) -> Result<Self, FaultAbiError> {
+    pub(super) fn from_u16(value: u16) -> Result<Self, FaultAbiError> {
         match value {
             1 => Ok(Self::NodeBoundary),
             2 => Ok(Self::BeforeInstruction),
@@ -235,7 +235,7 @@ pub enum FaultResultStatus {
 }
 
 impl FaultResultStatus {
-    fn from_u16(value: u16) -> Result<Self, FaultAbiError> {
+    pub(super) fn from_u16(value: u16) -> Result<Self, FaultAbiError> {
         match value {
             1 => Ok(Self::Applied),
             2 => Ok(Self::NotApplicable),

@@ -355,7 +355,7 @@ pub(super) fn validate_setup_region_header_and_layout(
     ))
 }
 
-pub(super) fn layout_from_setup_region_header(
+pub(crate) fn layout_from_setup_region_header(
     snapshot: RegionHeaderSnapshot,
     region_len: u64,
 ) -> Result<RegionLayout, RegionSetupValidationError> {

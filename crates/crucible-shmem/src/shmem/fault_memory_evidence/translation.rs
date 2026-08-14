@@ -148,7 +148,7 @@ impl MemoryTranslationRecordV1 {
         Ok(value)
     }
 
-    fn validate(self) -> Result<(), MemoryMutationEvidenceError> {
+    pub(super) fn validate(self) -> Result<(), MemoryMutationEvidenceError> {
         if self.page_size < 4_096
             || !self.page_size.is_power_of_two()
             || !self.virtual_page_start.is_multiple_of(self.page_size)
@@ -265,7 +265,7 @@ impl MemoryMutationFragmentV1 {
         Ok(value)
     }
 
-    fn validate(self) -> Result<(), MemoryMutationEvidenceError> {
+    pub(super) fn validate(self) -> Result<(), MemoryMutationEvidenceError> {
         if self.length == 0
             || self
                 .guest_physical_start

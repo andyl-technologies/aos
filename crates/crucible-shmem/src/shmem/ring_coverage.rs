@@ -520,5 +520,4 @@ mod coverage_entry;
 mod snapshot;
 
 pub use coverage_entry::*;
-use snapshot::SnapshotByteCursor;
 pub use snapshot::SpscRingSnapshot;

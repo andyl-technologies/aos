@@ -8,7 +8,7 @@ pub(super) struct FaultByteWriter<'a> {
 }
 
 impl<'a> FaultByteWriter<'a> {
-    const fn new(bytes: &'a mut [u8]) -> Self {
+    pub(super) const fn new(bytes: &'a mut [u8]) -> Self {
         Self { bytes, cursor: 0 }
     }
 
@@ -41,7 +41,7 @@ pub(super) struct FaultByteReader<'a> {
 }
 
 impl<'a> FaultByteReader<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
+    pub(super) const fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, cursor: 0 }
     }
 
@@ -76,7 +76,7 @@ impl<'a> FaultByteReader<'a> {
         self.read()
     }
 
-    const fn exhausted(&self) -> bool {
+    pub(super) const fn exhausted(&self) -> bool {
         self.cursor == self.bytes.len()
     }
 }

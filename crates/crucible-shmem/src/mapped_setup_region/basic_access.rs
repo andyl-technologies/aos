@@ -3,7 +3,7 @@
 use super::*;
 
 impl MappedSetupRegion {
-    fn base_ptr(&self) -> *mut u8 {
+    pub(super) fn base_ptr(&self) -> *mut u8 {
         self.address as *mut u8
     }
 
@@ -28,7 +28,7 @@ impl MappedSetupRegion {
 
     /// Returns an acquire snapshot of the mapped region header.
     #[must_use]
-    pub fn header_snapshot(&self) -> super::RegionHeaderSnapshot {
+    pub fn header_snapshot(&self) -> crate::RegionHeaderSnapshot {
         self.header().snapshot()
     }
 
