@@ -256,6 +256,7 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
         None,
         SignalBoundarySnapshot::default(),
         scenario.id(),
+        super::super::fault_implementation::test_host_manifests(),
         &nodes,
     )
     .unwrap_or_else(|error| panic!("test fault runtime should build: {error}"));

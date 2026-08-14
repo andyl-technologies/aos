@@ -209,6 +209,14 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                         "signal network opportunity failed closed: {error}"
                                     ),
                                 })?;
+                            super::super::fault_implementation::require_network_actions_implemented(
+                                evaluation.actions.iter(),
+                            )
+                            .map_err(|error| SchedulerError::BoundaryViolation {
+                                message: format!(
+                                    "network frame action is absent from the production implementation registry: {error}"
+                                ),
+                            })?;
                             runtime_committed = true;
                             next_wakeup_nanos =
                                 earliest_wakeup(next_wakeup_nanos, evaluation.next_wakeup_nanos);
@@ -267,6 +275,14 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                 }
                                 frame_actions.push(action.clone());
                             }
+                            super::super::fault_implementation::require_network_actions_implemented(
+                                frame_actions.iter(),
+                            )
+                            .map_err(|error| SchedulerError::BoundaryViolation {
+                                message: format!(
+                                    "active network frame action is absent from the production implementation registry: {error}"
+                                ),
+                            })?;
                             let application = if !frame_actions.is_empty() {
                                 let base_rate_bps = output
                                     .route

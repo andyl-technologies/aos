@@ -440,20 +440,11 @@ pub(super) fn validate_qemu_action_ledger(
 
 pub(super) fn production_manifests(
     nodes: &QemuNodeSet,
+    host: HostFaultAdapterManifests,
 ) -> Result<FaultAdapterManifests, ProductionFaultRuntimeError> {
     Ok(FaultAdapterManifests {
-        network: host_production_manifest(
-            "network-host",
-            EffectKind::all().iter().copied().filter(|effect| {
-                effect.descriptor().adapter == crucible::model::FaultAdapter::Network
-            }),
-        )?,
-        storage: host_production_manifest(
-            "storage-host",
-            EffectKind::all().iter().copied().filter(|effect| {
-                effect.descriptor().adapter == crucible::model::FaultAdapter::Storage
-            }),
-        )?,
+        network: host.network,
+        storage: host.storage,
         node: nodes.fault_capability_manifest()?,
     })
 }
@@ -504,26 +495,6 @@ pub(super) fn validate_ready_marker_admission(
         }
     }
     Ok(())
-}
-
-pub(super) fn host_production_manifest(
-    backend: &str,
-    effects: impl IntoIterator<Item = EffectKind>,
-) -> Result<FaultCapabilityManifest, ProductionFaultRuntimeError> {
-    let backend = FaultObjectId::parse(backend)
-        .map_err(crucible::model::FaultRuntimeError::Contract)
-        .map_err(FaultExecutionError::from)?;
-    let capabilities = effects
-        .into_iter()
-        .map(|effect| FaultCapabilityId::parse(effect.descriptor().capability))
-        .collect::<Result<_, _>>()
-        .map_err(crucible::model::FaultRuntimeError::Contract)
-        .map_err(FaultExecutionError::from)?;
-    Ok(FaultCapabilityManifest {
-        backend,
-        capabilities,
-        bounds: BTreeMap::new(),
-    })
 }
 
 pub(super) fn hex_bytes(bytes: &[u8]) -> String {

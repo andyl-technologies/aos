@@ -4,8 +4,9 @@ use super::*;
 pub(super) use crucible::model::{
     BindingActionCause, BindingEventParent, BindingMapping, BindingMappingRegistry,
     BindingObservabilityPolicy, BindingSampling, BindingSearchPolicy, CountLimit,
-    EFFECT_SEMANTIC_VERSION, EffectLifetime, EffectRequest, EffectSpecification, EvaluatedSignal,
-    FaultBinding, FaultDirection, FaultPhase, InverseCdfTable, NetworkAvailabilityState,
+    EFFECT_SEMANTIC_VERSION, EffectKind, EffectLifetime, EffectRequest, EffectSpecification,
+    EvaluatedSignal, FaultBinding, FaultCapabilityId, FaultCapabilityManifest, FaultDirection,
+    FaultObjectId, FaultPhase, InverseCdfTable, NetworkAvailabilityState,
     NetworkEffectSpecification, NetworkInFlightPolicy, PositiveU64, ResolvedFaultTarget,
     ResolvedMappingOutput, ResolvedTargetSet, SampleObservation, SignalChoiceContext,
     SignalCoordinate, SignalDomain, SignalEvaluationError, SignalId, SignalNode, SignalNodeKind,
@@ -13,6 +14,27 @@ pub(super) use crucible::model::{
     SignalValue, SignalValueType, StateTransitionTableDeclaration, StorageEffectSpecification,
     TargetSelector,
 };
+
+pub(super) fn test_host_manifests() -> HostFaultAdapterManifests {
+    fn manifest(adapter: crucible::model::FaultAdapter, backend: &str) -> FaultCapabilityManifest {
+        FaultCapabilityManifest {
+            backend: FaultObjectId::parse(backend)
+                .unwrap_or_else(|error| panic!("test backend ID must be valid: {error}")),
+            capabilities: EffectKind::all()
+                .iter()
+                .filter(|effect| effect.descriptor().adapter == adapter)
+                .map(|effect| FaultCapabilityId::parse(effect.descriptor().capability))
+                .collect::<Result<_, _>>()
+                .unwrap_or_else(|error| panic!("test capabilities must be valid: {error}")),
+            bounds: BTreeMap::new(),
+        }
+    }
+
+    HostFaultAdapterManifests {
+        network: manifest(crucible::model::FaultAdapter::Network, "network-test-host"),
+        storage: manifest(crucible::model::FaultAdapter::Storage, "storage-test-host"),
+    }
+}
 
 pub(super) struct NoArtifacts;
 

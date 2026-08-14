@@ -9,15 +9,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crucible::model::{
-    BindingActionKind, BindingEvaluation, BindingSearchChoice, ContentHash, EffectKind,
-    EffectSpecification, FaultAdapterManifests, FaultCapabilityId, FaultCapabilityManifest,
-    FaultCoordinate, FaultExecutionError, FaultObjectId, FaultObservation, FaultObservationKind,
-    FaultOpportunity, FaultReplayMode, FaultResourceLimitError, FaultResourceLimits,
-    FaultRuntimeCheckpoint, FaultSignalPlan, HostFaultActionSink, HostFaultActionState,
-    NodeBootPolicy, NodeEffectSpecification, NodeHangScope, NodeLifecycleTransition,
-    NodeStatePolicy, NodeWatchdogPolicy, OwnedFaultExecutionRuntime, ReferencedSignalEvent,
-    ResolvedBindingAction, ResolvedEffectTrace, SearchChoiceId, SearchOverride,
-    SignalArtifactProvider, SignalBoundarySnapshot,
+    BindingActionKind, BindingEvaluation, BindingSearchChoice, ContentHash, EffectSpecification,
+    FaultAdapterManifests, FaultCoordinate, FaultExecutionError, FaultObservation,
+    FaultObservationKind, FaultOpportunity, FaultReplayMode, FaultResourceLimitError,
+    FaultResourceLimits, FaultRuntimeCheckpoint, FaultSignalPlan, HostFaultActionSink,
+    HostFaultActionState, HostFaultAdapterManifests, NodeBootPolicy, NodeEffectSpecification,
+    NodeHangScope, NodeLifecycleTransition, NodeStatePolicy, NodeWatchdogPolicy,
+    OwnedFaultExecutionRuntime, ReferencedSignalEvent, ResolvedBindingAction, ResolvedEffectTrace,
+    SearchChoiceId, SearchOverride, SignalArtifactProvider, SignalBoundarySnapshot,
 };
 use crucible::{BackendError, BackendNetworkOutput, NodeId, SchedulerNetworkCheckpoint};
 use crucible_shmem::{

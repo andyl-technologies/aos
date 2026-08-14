@@ -48,6 +48,7 @@ mod determinism_boundary;
 mod exact_snapshot_policy;
 mod fault_action_sink;
 mod fault_capability;
+mod fault_implementation;
 mod gdbstub_proxy;
 #[cfg(target_os = "linux")]
 mod host_setup;
@@ -125,6 +126,7 @@ pub use exact_snapshot_policy::{
 };
 pub use fault_action_sink::QemuFaultActionSink;
 pub use fault_capability::{QemuFaultCapabilityRequirement, QemuTargetManifestRequirement};
+pub use fault_implementation::node_effect_implementation_registry;
 pub use gdbstub_proxy::{
     QemuGdbstubBreakpointPolicy, QemuGdbstubProxy, QemuGdbstubProxyError, QemuGdbstubProxyListener,
     QemuGdbstubProxyServer, QemuGdbstubProxySessionReport,

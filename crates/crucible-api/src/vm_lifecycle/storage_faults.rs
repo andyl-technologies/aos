@@ -489,6 +489,16 @@ impl ProductionBlockFaultCoordinator {
             );
         }
         drop(runtime);
+        super::fault_implementation::require_storage_actions_implemented(actions.iter()).map_err(
+            |error| {
+                storage_error(
+                    "resolve active storage array policy",
+                    format!(
+                        "storage action is absent from the production implementation registry: {error}"
+                    ),
+                )
+            },
+        )?;
         self.active_array_policy(&actions)
             .map_err(|error| storage_error("resolve active storage array policy", error))
     }
@@ -517,6 +527,16 @@ impl ProductionBlockFaultCoordinator {
             );
         }
         drop(runtime);
+        super::fault_implementation::require_storage_actions_implemented(actions.iter()).map_err(
+            |error| {
+                storage_error(
+                    "resolve shared array rebuild service",
+                    format!(
+                        "storage action is absent from the production implementation registry: {error}"
+                    ),
+                )
+            },
+        )?;
         resolve_storage_array_rebuild_service(&self.world, &actions)
             .map_err(|error| storage_error("resolve shared array rebuild service", error))
     }
@@ -979,6 +999,17 @@ impl ProductionBlockFaultCoordinator {
             .cloned()
             .collect::<Vec<_>>();
         actions.extend(impulses);
+        if let Err(error) =
+            super::fault_implementation::require_storage_actions_implemented(actions.iter())
+        {
+            runtime.poison();
+            return Err(storage_error(
+                "evaluate block fault opportunity",
+                format!(
+                    "storage action is absent from the production implementation registry: {error}"
+                ),
+            ));
+        }
         let mut observations = match self.observations.lock() {
             Ok(observations) => observations,
             Err(_) => {
@@ -1011,7 +1042,7 @@ impl ProductionBlockFaultCoordinator {
                 "production fault runtime lock is poisoned",
             )
         })?;
-        Ok(runtime
+        let actions = runtime
             .host_state()
             .matching(target, FaultPhase::Persist)
             .filter(|action| {
@@ -1021,7 +1052,18 @@ impl ProductionBlockFaultCoordinator {
                 )
             })
             .cloned()
-            .collect())
+            .collect::<Vec<_>>();
+        super::fault_implementation::require_storage_actions_implemented(actions.iter()).map_err(
+            |error| {
+                storage_error(
+                    "resolve physical storage persistence",
+                    format!(
+                        "storage action is absent from the production implementation registry: {error}"
+                    ),
+                )
+            },
+        )?;
+        Ok(actions)
     }
 
     fn after_evaluation<T>(
@@ -1680,6 +1722,16 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
         evaluation_sequence: u64,
         actions: &[ResolvedBindingAction],
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        super::fault_implementation::require_storage_actions_implemented(actions.iter()).map_err(
+            |error| {
+                storage_error(
+                    "apply storage boundary action",
+                    format!(
+                        "storage action is absent from the production implementation registry: {error}"
+                    ),
+                )
+            },
+        )?;
         let matching = actions
             .iter()
             .filter(|action| self.targets_attached_device(&action.target))
@@ -2081,6 +2133,15 @@ impl ProductionNinepFaultCoordinator {
             .cloned()
             .collect::<Vec<_>>();
         actions.extend(impulses);
+        if let Err(error) =
+            super::fault_implementation::require_storage_actions_implemented(actions.iter())
+        {
+            runtime.poison();
+            return Err(storage_error(
+                "evaluate 9p fault opportunity",
+                format!("9p action is absent from the production implementation registry: {error}"),
+            ));
+        }
         actions.sort_by(|left, right| left.binding.cmp(&right.binding));
         self.observations
             .lock()

@@ -23,8 +23,8 @@ use crate::vm_resume::{
     launch_production_live_node_exact_snapshot_paused,
 };
 use crucible::model::{
-    FaultCoordinate, OwnedDagSignalArtifactProvider, ResolvedEffectTrace, SignalArtifactProvider,
-    SignalBoundarySnapshot,
+    FaultCoordinate, HostFaultAdapterManifests, OwnedDagSignalArtifactProvider,
+    ResolvedEffectTrace, SignalArtifactProvider, SignalBoundarySnapshot,
 };
 use crucible::{
     Action, AssertionPhase, BackendQuantumLoop, BlackBoxHostOracle, Checkpoint, CheckpointKind,
@@ -55,6 +55,7 @@ mod checkpoint_store;
 use checkpoint_store::{load_exact_checkpoint_set, persist_exact_checkpoint_set};
 mod checkpoint_dependencies;
 pub use checkpoint_dependencies::collect_signal_artifact_objects;
+mod fault_implementation;
 
 /// Default final icount available to one production CLI lifecycle session.
 const DEFAULT_RUN_CEILING_ICOUNT: u64 = 16_000_000;
@@ -834,6 +835,27 @@ pub fn build_production_vm_lifecycle_loop(
     source: &ScenarioDefForm,
     config: &ProductionVmLifecycleConfig,
 ) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
+    let network_implementations = fault_implementation::network_effect_implementation_registry()
+        .map_err(|error| {
+            loop_factory_error(format!(
+                "validate production network fault registry: {error}"
+            ))
+        })?;
+    let storage_implementations = fault_implementation::storage_effect_implementation_registry()
+        .map_err(|error| {
+            loop_factory_error(format!(
+                "validate production storage fault registry: {error}"
+            ))
+        })?;
+    let host_fault_manifests = HostFaultAdapterManifests::from_registries(
+        &network_implementations,
+        &storage_implementations,
+    )
+    .map_err(|error| {
+        loop_factory_error(format!(
+            "derive production host fault capabilities from implementations: {error}"
+        ))
+    })?;
     let restore_checkpoint = config.restore_checkpoint.clone();
     let checkpoint_dag =
         checkpoint_store::checkpoint_dag_store(&config.run_state_root, scenario.id());
@@ -1308,6 +1330,7 @@ pub fn build_production_vm_lifecycle_loop(
                 signal_artifacts,
                 scenario.id(),
                 checkpoint.fault_checkpoint.clone(),
+                host_fault_manifests.clone(),
                 &mut backends,
                 source.world().fault_topology().clone(),
                 source.world().links().to_vec(),
@@ -1332,6 +1355,7 @@ pub fn build_production_vm_lifecycle_loop(
                 signal_artifacts,
                 SignalBoundarySnapshot::default(),
                 scenario.id(),
+                host_fault_manifests,
                 &backends,
                 fault_search_overrides.clone(),
             )

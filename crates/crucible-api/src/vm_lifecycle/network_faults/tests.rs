@@ -326,6 +326,7 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
         Some(Arc::new(NoArtifacts)),
         SignalBoundarySnapshot::default(),
         ContentHash::from_bytes(b"production-availability-drop"),
+        super::super::fault_implementation::test_host_manifests(),
         &nodes,
     )
     .unwrap_or_else(|error| panic!("test fault runtime should build: {error}"));
@@ -405,14 +406,15 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
             }],
         )
         .unwrap_or_else(|error| panic!("test observation should append: {error}"));
-    let undrained_error = interceptor
+    let inconsistent_journal_error = interceptor
         .checkpoint(&scheduler, &pending_outputs, &mut nodes)
         .err()
-        .unwrap_or_else(|| panic!("checkpoint should reject an undrained journal"));
+        .unwrap_or_else(|| panic!("checkpoint should reject an inconsistent journal"));
     assert!(
-        undrained_error
+        inconsistent_journal_error
             .to_string()
-            .contains("drained observation journal")
+            .contains("observation journal is inconsistent"),
+        "unexpected checkpoint rejection: {inconsistent_journal_error}"
     );
     let mut journal = interceptor
         .observations
@@ -462,6 +464,7 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
         Some(Arc::new(NoArtifacts)),
         ContentHash::from_bytes(b"production-availability-drop"),
         checkpoint.clone(),
+        super::super::fault_implementation::test_host_manifests(),
         &mut nodes,
         world.fault_topology().clone(),
         world.links().to_vec(),
@@ -497,6 +500,7 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
         Some(Arc::new(NoArtifacts)),
         ContentHash::from_bytes(b"production-availability-drop"),
         malformed,
+        super::super::fault_implementation::test_host_manifests(),
         &mut nodes,
         world.fault_topology().clone(),
         world.links().to_vec(),
@@ -522,6 +526,7 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
         Some(Arc::new(NoArtifacts)),
         ContentHash::from_bytes(b"production-availability-drop"),
         checkpoint.clone(),
+        super::super::fault_implementation::test_host_manifests(),
         &mut nodes,
         world.fault_topology().clone(),
         world.links().to_vec(),
@@ -573,6 +578,7 @@ fn production_resolve_availability_suppresses_the_routed_frame() {
         Some(Arc::new(NoArtifacts)),
         SignalBoundarySnapshot::default(),
         ContentHash::from_bytes(b"production-resolve-availability"),
+        super::super::fault_implementation::test_host_manifests(),
         &nodes,
     )
     .unwrap_or_else(|error| panic!("test fault runtime should build: {error}"));
@@ -674,6 +680,7 @@ fn production_preserve_keeps_queued_and_inflight_frames_on_the_old_profile() {
         Some(Arc::new(NoArtifacts)),
         SignalBoundarySnapshot::default(),
         ContentHash::from_bytes(b"production-preserve-availability"),
+        super::super::fault_implementation::test_host_manifests(),
         &nodes,
     )
     .unwrap_or_else(|error| panic!("test fault runtime should build: {error}"));
@@ -786,6 +793,7 @@ fn production_reevaluate_retains_work_until_the_next_declared_phase() {
         Some(Arc::new(NoArtifacts)),
         SignalBoundarySnapshot::default(),
         ContentHash::from_bytes(b"production-reevaluate-availability"),
+        super::super::fault_implementation::test_host_manifests(),
         &nodes,
     )
     .unwrap_or_else(|error| panic!("test fault runtime should build: {error}"));

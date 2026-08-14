@@ -872,6 +872,8 @@ pub fn run_qemu_live_node_lifecycle_fault_gate(
             "crucible.live-node-lifecycle-fault-gate.v1",
             GATE_NODE,
         ),
+        crucible::model::HostFaultAdapterManifests::node_only()
+            .map_err(|error| fault_gate_invariant(format!("build node-only manifests: {error}")))?,
         &nodes,
     )
     .map_err(|error| fault_gate_invariant(format!("admit lifecycle plan: {error}")))?;

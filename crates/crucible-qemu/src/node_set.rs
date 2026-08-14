@@ -514,8 +514,6 @@ impl QemuNodeSet {
         &self,
     ) -> Result<crucible::model::FaultCapabilityManifest, BackendError> {
         use crucible::model::{FaultCapabilityId, FaultCapabilityManifest, FaultObjectId};
-        use crucible_shmem::FaultCommandKind;
-
         let mut common = self
             .nodes
             .values()
@@ -535,36 +533,25 @@ impl QemuNodeSet {
                 .collect::<std::collections::BTreeSet<_>>();
             common.retain(|kind| supported.contains(kind));
         }
-        let capability_for = |kind| match kind {
-            FaultCommandKind::NodeLifecycle => Some("qemu.node.lifecycle.v1"),
-            FaultCommandKind::NodeHang => Some("qemu.node.hang.v1"),
-            FaultCommandKind::CpuService => Some("qemu.cpu.service.v1"),
-            FaultCommandKind::CpuVcpuState => Some("qemu.cpu.vcpu-state.v1"),
-            FaultCommandKind::CpuRegisterTransform => Some("qemu.register.mutate.v1"),
-            FaultCommandKind::CpuInstructionTransform => Some("qemu.cpu.instruction-transform.v1"),
-            FaultCommandKind::CpuException => Some("qemu.cpu.exception.v1"),
-            FaultCommandKind::InterruptDisposition => Some("qemu.interrupt.control.v1"),
-            FaultCommandKind::InterruptStorm => Some("qemu.interrupt.storm.v1"),
-            FaultCommandKind::MemoryMutation => Some("qemu.memory.mutate.v1"),
-            FaultCommandKind::MemoryAccessTransform => Some("qemu.memory.access-transform.v1"),
-            FaultCommandKind::MemoryEccEvent => Some("qemu.memory.ecc-event.v1"),
-            FaultCommandKind::MemoryRegionState => Some("qemu.memory.region-state.v1"),
-            FaultCommandKind::MemoryService => Some("qemu.memory.service.v1"),
-            FaultCommandKind::ClockTransform => Some("qemu.clock.transform.v1"),
-            FaultCommandKind::ClockSourceState => Some("qemu.clock.source-state.v1"),
-            FaultCommandKind::AcceleratorLifecycle => Some("qemu.accelerator.lifecycle.v1"),
-            FaultCommandKind::AcceleratorResultTransform => {
-                Some("qemu.accelerator.result-transform.v1")
-            }
-            FaultCommandKind::AcceleratorMemoryEvent => Some("qemu.accelerator.memory-event.v1"),
-            FaultCommandKind::AcceleratorService => Some("qemu.accelerator.service.v1"),
-            FaultCommandKind::QueryCapabilities
-            | FaultCommandKind::BoundaryProbe
-            | FaultCommandKind::QueryTargetManifest => None,
-        };
+        let implementations = crate::fault_implementation::node_effect_implementation_registry()
+            .map_err(|error| BackendError::Rejected {
+                message: format!("invalid compiled node fault implementation registry: {error}"),
+            })?;
         let capabilities = common
             .into_iter()
-            .filter_map(capability_for)
+            .filter_map(crate::fault_implementation::effect_kind_for_command)
+            .map(|effect| {
+                implementations
+                    .require_implemented(effect)
+                    .map(|contract| contract.effect.descriptor().capability)
+                    .map_err(|error| BackendError::Rejected {
+                        message: format!(
+                            "live QEMU advertised an unimplemented fault command: {error}"
+                        ),
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
             .map(FaultCapabilityId::parse)
             .collect::<Result<std::collections::BTreeSet<_>, _>>()
             .map_err(|error| BackendError::Rejected {
