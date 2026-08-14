@@ -72,7 +72,6 @@ shape-line|crates/crucible-qemu-plugin/src/abi.rs|2747
 shape-line|crates/crucible-qemu-plugin/src/block_io.rs|1763
 shape-line|crates/crucible-qemu-plugin/src/coverage.rs|1696
 shape-line|crates/crucible-qemu-plugin/src/coverage/tests.rs|696
-shape-line|crates/crucible-qemu-plugin/src/device_io.rs|792
 shape-line|crates/crucible-qemu-plugin/src/idle_loop.rs|1161
 shape-line|crates/crucible-qemu-plugin/src/inbound.rs|697
 shape-line|crates/crucible-qemu-plugin/src/network_rx.rs|1343
@@ -94,7 +93,6 @@ shape-line|crates/crucible-qemu-plugin/src/whitebox_doorbell.rs|2145
 shape-line|crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs|1822
 shape-line|crates/crucible-qemu/examples/crucible-qemu-fingerprint.rs|653
 shape-line|crates/crucible-qemu/examples/crucible-qemu-live-terminal-targets.rs|716
-shape-line|crates/crucible-qemu/src/async_driver.rs|882
 shape-line|crates/crucible-qemu/src/determinism_boundary.rs|1566
 shape-line|crates/crucible-qemu/src/gdbstub_proxy.rs|672
 shape-line|crates/crucible-qemu/src/launch.rs|1560
@@ -109,7 +107,6 @@ shape-line|crates/crucible-qemu/src/node_factory/tests.rs|808
 shape-line|crates/crucible-qemu/src/qmp.rs|1024
 shape-line|crates/crucible-qemu/src/quantum.rs|2059
 shape-line|crates/crucible-qemu/src/realization.rs|2478
-shape-line|crates/crucible-qemu/src/realization/backend_executor.rs|607
 shape-line|crates/crucible-qemu/src/single_vm_fingerprint/live_runner/config.rs|1169
 shape-line|crates/crucible-qemu/src/single_vm_fingerprint/live_runner/genesis_probe.rs|1466
 shape-line|crates/crucible-qemu/src/single_vm_fingerprint/live_runner/identity.rs|955
@@ -119,7 +116,6 @@ shape-line|crates/crucible-qemu/src/single_vm_fingerprint/plugin_live_runner.rs|
 shape-line|crates/crucible-qemu/src/single_vm_fingerprint/terminal_trace.rs|866
 shape-line|crates/crucible-qemu/src/single_vm_fingerprint/trace.rs|1827
 shape-line|crates/crucible-qemu/src/single_vm_fingerprint/types.rs|1604
-shape-line|crates/crucible-qemu/src/spawn.rs|870
 shape-line|crates/crucible-qemu/src/supervision/block_io_gate.rs|691
 shape-line|crates/crucible-qemu/src/supervision/block_node_gate.rs|718
 shape-line|crates/crucible-qemu/src/supervision/ninep_io_gate.rs|906
