@@ -654,7 +654,7 @@ mod tests {
         std::fs::write(root.join("nar/hash-sha256-nar.nar.zst"), b"payload").unwrap();
         std::fs::write(
             root.join("hash.narinfo"),
-            "StorePath: /nix/store/hash-package\nURL: nar/hash-sha256-nar.nar.zst\nCompression: zstd\nFileHash: sha256:file\nFileSize: 7\nNarHash: sha256:nar\nNarSize: 9\n",
+            "StorePath: /nix/store/hash-package\nURL: nar/hash-sha256-nar.nar.zst\nCompression: zstd\nFileHash: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nFileSize: 7\nNarHash: sha256:nar\nNarSize: 9\n",
         )
         .unwrap();
 
