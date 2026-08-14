@@ -734,31 +734,46 @@ impl SurfaceFetch for R2SurfaceFetch {
         use futures_util::StreamExt as _;
 
         let key = keymap::r2_key(&self.prefix, path);
-        let Some(total) = self.contract.head(&key).await? else {
-            return Ok(None);
-        };
-        // The inclusive range actually served (clamped to the object), or `None`
-        // for a whole-object read. Construct the R2 options through raw JS so
-        // absent fields are genuinely absent: worker-rs 0.8.5 emits an invalid
-        // `suffix: undefined` alongside offset/length.
-        let served = match range {
-            Some((start, end)) if start < total => Some((start, end.min(total.saturating_sub(1)))),
-            _ => None,
-        };
-        let object = match served {
-            Some((start, end)) => {
-                r2_get_range(
-                    self.bucket.as_ref(),
-                    &key,
-                    start,
-                    end.saturating_sub(start) + 1,
-                )
-                .await?
+        // Construct range options through raw JS so absent fields are genuinely
+        // absent: worker-rs 0.8.5 emits an invalid `suffix: undefined` alongside
+        // offset/length. R2 returns the full object size on the same GET object,
+        // keeping range metadata and the body on one object snapshot.
+        let object = match range {
+            Some((start, end)) if start <= end => {
+                let length = end
+                    .checked_sub(start)
+                    .and_then(|span| span.checked_add(1))
+                    .ok_or_else(|| {
+                        aos_hub_core::placement_read::terminal_read_error(format!(
+                            "R2 range length for {key} overflows u64"
+                        ))
+                    })?;
+                r2_get_range(self.bucket.as_ref(), &key, start, length).await?
             }
             None => r2_get(self.bucket.as_ref(), &key).await?,
+            Some(_) => r2_get(self.bucket.as_ref(), &key).await?,
         };
         let Some(object) = object else {
             return Ok(None);
+        };
+        let total_value = js_sys::Reflect::get(&object, &wasm_bindgen::JsValue::from_str("size"))
+            .ok()
+            .and_then(|value| value.as_f64())
+            .filter(|value| {
+                value.is_finite()
+                    && *value >= 0.0
+                    && value.fract() == 0.0
+                    && *value <= ((1_u64 << 53) - 1) as f64
+            })
+            .ok_or_else(|| {
+                aos_hub_core::placement_read::terminal_read_error(format!(
+                    "R2 get {key} returned an invalid object size"
+                ))
+            })?;
+        let total = total_value as u64;
+        let served = match range {
+            Some((start, end)) if start < total => Some((start, end.min(total.saturating_sub(1)))),
+            _ => None,
         };
         let strong_etag = js_sys::Reflect::get(&object, &wasm_bindgen::JsValue::from_str("etag"))
             .ok()
