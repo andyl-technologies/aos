@@ -9,6 +9,7 @@
 //! reviewed plan id and confirmation hash are supplied.
 
 use anyhow::{Context as _, Result};
+use futures_util::stream::{self, StreamExt as _, TryStreamExt as _};
 
 use aos_core::output::{OutputMode, Printer};
 use aos_remote::hub_rpc as HubTopologyMethod;
@@ -8622,9 +8623,14 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
                     publication.objects.len() == pinned.request.objects.len(),
                     "Hub publication response changed the declared object count"
                 );
+                let objects = publication_objects_in_upload_order(&publication);
+                let pointer_start =
+                    objects.partition_point(|object| object.kind != "mutable_pointer");
+                let (immutable_objects, pointer_objects) = objects.split_at(pointer_start);
+
                 // The response is an inventory, not an execution order. Pointer
                 // writes open only after every immutable object verifies.
-                for object in publication_objects_in_upload_order(&publication) {
+                for object in immutable_objects {
                     let declared = pinned
                         .request
                         .objects
@@ -8642,29 +8648,63 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
                     if object.verified {
                         continue;
                     }
-                    let file = snapshot_publication_object(&pinned.root, declared)?;
-                    if object.upload_url.is_empty() {
-                        upload_publication_multipart(access, &publication_id, object, file)
-                            .await
-                            .with_context(|| {
-                                format!("uploading publication path {}", object.path)
-                            })?;
-                    } else {
-                        publication_client(access)
-                            .await?
-                            .upload_publication_object(&object.upload_url, file, &object.path)
-                            .await
-                            .with_context(|| {
-                                format!("uploading publication path {}", object.path)
-                            })?;
-                    }
+                    upload_declared_publication_object(
+                        &client,
+                        access,
+                        &publication_id,
+                        &pinned.root,
+                        declared,
+                        object,
+                    )
+                    .await?;
                 }
+
+                // Mutable pointers are independent paths, and the Hub has
+                // already closed their write gate over the complete immutable
+                // set. A small concurrency bound avoids one network round trip
+                // per pointer without creating an unbounded request fan-out.
+                let publication_inputs = &pinned.request.objects;
+                let publication_root = &pinned.root;
+                let publication_client_ref = &client;
+                let publication_id = publication_id.as_str();
+                stream::iter(pointer_objects.iter().copied().map(move |object| {
+                    let declared = publication_inputs
+                        .iter()
+                        .find(|declared| declared.path == object.path);
+                    async move {
+                        let declared = declared
+                            .context("Hub publication response introduced an undeclared path")?;
+                        anyhow::ensure!(
+                            declared.sha256 == object.sha256
+                                && declared.byte_size == object.byte_size
+                                && declared.kind == object.kind
+                                && declared.media_type == object.media_type,
+                            "Hub publication response changed the identity of {}",
+                            object.path
+                        );
+                        if object.verified {
+                            return Ok(());
+                        }
+                        upload_declared_publication_object(
+                            publication_client_ref,
+                            access,
+                            publication_id,
+                            publication_root,
+                            declared,
+                            object,
+                        )
+                        .await
+                    }
+                }))
+                .buffer_unordered(8)
+                .try_collect::<Vec<()>>()
+                .await?;
                 publication_client(access)
                     .await?
                     .call_topology(
                         HubTopologyMethod::CommitRegistryPublication,
                         &hub_types::CommitRegistryPublicationRequest {
-                            publication_id: publication_id.clone(),
+                            publication_id: publication_id.to_string(),
                         },
                     )
                     .await
@@ -8738,6 +8778,27 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
             )
             .await
         }
+    }
+}
+
+async fn upload_declared_publication_object(
+    client: &HubClient,
+    access: &HubAccessArgs,
+    publication_id: &str,
+    root: &std::os::fd::OwnedFd,
+    declared: &hub_types::RegistryPublicationObjectInput,
+    object: &hub_types::RegistryPublicationObject,
+) -> Result<()> {
+    let file = snapshot_publication_object(root, declared)?;
+    if object.upload_url.is_empty() {
+        upload_publication_multipart(access, publication_id, object, file)
+            .await
+            .with_context(|| format!("uploading publication path {}", object.path))
+    } else {
+        client
+            .upload_publication_object(&object.upload_url, file, &object.path)
+            .await
+            .with_context(|| format!("uploading publication path {}", object.path))
     }
 }
 
