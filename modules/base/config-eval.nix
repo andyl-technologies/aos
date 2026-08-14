@@ -19,6 +19,7 @@
 }: let
   cfg = config.aos.config.evalAtBoot;
   provisioningStateDir = config.aos.provisioning.stateDir;
+  espSync = config.aos.config.artifacts.esp-sync;
   exposedBundledPackages =
     lib.filterAttrs
     (_: package: package.bundle && (package.package ? expose))
@@ -823,7 +824,7 @@ in {
         # failed member is repaired.
         ${pkgs.util-linux}/bin/mount -o remount,ro /boot
         boot_writable=false
-        aos-sync-esps
+        ${espSync}/bin/aos-sync-esps
 
         ${pkgs.jq}/bin/jq --argjson running "$running" \
           '.default = $running | .pending = null' "$state" > "''${state}.new"
