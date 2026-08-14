@@ -641,9 +641,10 @@ fn file_digest(nar_path: &Path) -> Result<(String, u64)> {
 
 /// Upload a generated static cache directory to one destination.
 ///
-/// Pushes `nix-cache-info`, every top-level `*.narinfo`, and every file
-/// under `nar/` through the cache backend selected by `upload_url`'s scheme
-/// (e.g. `file://`, S3-style object stores).
+/// Pushes `nix-cache-info`, every top-level `*.narinfo`, and the canonical NAR
+/// payload referenced by each narinfo through the cache backend selected by
+/// `upload_url`'s scheme (e.g. `file://`, S3-style object stores). Superseded
+/// payloads retained in the local staging cache are not published.
 ///
 /// # Errors
 ///
@@ -660,25 +661,23 @@ pub async fn upload_static_cache(
     let cache = backend::from_url(upload_url, auth).await?;
     let cache = &*cache;
 
+    let narinfos = list_narinfo_files(output_dir)?;
+    let nars = referenced_nar_files(output_dir, &narinfos)?;
+
     // Immutable payloads first (NARs), then narinfos, then the
     // nix-cache-info marker last. A consumer racing a partial upload never
     // sees a narinfo or marker pointing at NAR bytes that are not there yet.
-    let nar_dir = output_dir.join("nar");
-    if nar_dir.exists() {
-        let nars = list_dir_files(&nar_dir)?;
-        upload_concurrently(nars.into_iter().map(|(name, path)| async move {
-            let relative_path = format!("nar/{name}");
-            if !no_skip && cache.exists(&relative_path).await? {
-                return Ok(());
-            }
-            let data =
-                std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-            cache.put_nar(&name, &data).await
-        }))
-        .await?;
-    }
+    upload_concurrently(nars.into_iter().map(|(name, path)| async move {
+        let relative_path = format!("nar/{name}");
+        if !no_skip && cache.exists(&relative_path).await? {
+            return Ok(());
+        }
+        let data = std::fs::read(&path)
+            .with_context(|| format!("reading referenced NAR {}", path.display()))?;
+        cache.put_nar(&name, &data).await
+    }))
+    .await?;
 
-    let narinfos = list_narinfo_files(output_dir)?;
     let root_hashes = root_hashes
         .iter()
         .map(String::as_str)
@@ -731,23 +730,6 @@ where
         .map(|_| ())
 }
 
-/// List the regular files directly under `dir` as `(file_name, path)`.
-fn list_dir_files(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
-    let mut files = Vec::new();
-    for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        files.push((name.to_string(), path));
-    }
-    Ok(files)
-}
-
 /// List every top-level `*.narinfo` file under `dir` as `(stem, path)`.
 fn list_narinfo_files(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
     let mut files = Vec::new();
@@ -763,6 +745,67 @@ fn list_narinfo_files(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
         files.push((stem.to_string(), path));
     }
     Ok(files)
+}
+
+/// Resolves the canonical NAR payload named by every staged narinfo.
+///
+/// The staging directory is a regenerable cache and can retain superseded
+/// payloads. Uploading the whole `nar/` directory would republish those
+/// unreferenced bytes and can violate the current content-addressed URL
+/// contract. Each selected path is therefore derived from parsed narinfo,
+/// canonicalized from its store path and file hash, and required to be a
+/// direct regular child of `nar/`.
+fn referenced_nar_files(
+    output_dir: &Path,
+    narinfos: &[(String, PathBuf)],
+) -> Result<Vec<(String, PathBuf)>> {
+    let mut names = BTreeSet::new();
+
+    for (_, narinfo_path) in narinfos {
+        let text = std::fs::read_to_string(narinfo_path)
+            .with_context(|| format!("reading {}", narinfo_path.display()))?;
+        let info = aos_core::nar::info::parse(&text)
+            .with_context(|| format!("parsing {}", narinfo_path.display()))?;
+        if info.compression != NarCompression::Zstd.name() {
+            bail!(
+                "staged narinfo {} does not declare zstd compression",
+                narinfo_path.display()
+            );
+        }
+        let file_hash = info.file_hash.as_deref().with_context(|| {
+            format!("staged narinfo {} has no FileHash", narinfo_path.display())
+        })?;
+        let expected_url = nar_url(&info.store_path, file_hash, NarCompression::Zstd)?;
+        if info.url != expected_url {
+            bail!(
+                "staged narinfo {} has non-canonical URL {}",
+                narinfo_path.display(),
+                info.url
+            );
+        }
+        let name = expected_url
+            .strip_prefix("nar/")
+            .context("canonical NAR URL does not use the nar/ prefix")?;
+        if name.is_empty() || name.contains('/') {
+            bail!("canonical NAR URL is not a direct nar/ child: {expected_url}");
+        }
+
+        let path = output_dir.join("nar").join(name);
+        let metadata = std::fs::symlink_metadata(&path)
+            .with_context(|| format!("reading referenced NAR {}", path.display()))?;
+        if !metadata.file_type().is_file() {
+            bail!("referenced NAR is not a regular file: {}", path.display());
+        }
+        names.insert(name.to_string());
+    }
+
+    Ok(names
+        .into_iter()
+        .map(|name| {
+            let path = output_dir.join("nar").join(&name);
+            (name, path)
+        })
+        .collect())
 }
 
 /// Garbage-collect old staged static-cache narinfo/NAR pairs.
@@ -1609,6 +1652,25 @@ name = "test"
         let first = TempDir::new().unwrap();
         let second = TempDir::new().unwrap();
         let printer = Printer::new(0, true, false);
+        let store_path = "/nix/store/abc123-pkg";
+        let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(b"nar-bytes")));
+        let payload_url = nar_url(store_path, &file_hash, NarCompression::Zstd).unwrap();
+        let narinfo_body = render_static_narinfo(
+            &StaticNarInfoInput {
+                store_path,
+                nar_hash: "sha256:def456",
+                nar_size: 5,
+                references: &[],
+                deriver: None,
+                signatures: &[],
+                file_hash: &file_hash,
+                file_size: 9,
+                compression: NarCompression::Zstd,
+            },
+            "/nix/store",
+            None,
+        )
+        .unwrap();
 
         std::fs::create_dir_all(source.path().join("nar")).unwrap();
         std::fs::write(
@@ -1616,16 +1678,8 @@ name = "test"
             nix_cache_info("/nix/store", 37),
         )
         .unwrap();
-        std::fs::write(
-            source.path().join("abc123.narinfo"),
-            "StorePath: /nix/store/abc123-pkg\n",
-        )
-        .unwrap();
-        std::fs::write(
-            source.path().join("nar").join("abc123.nar.zst"),
-            b"nar-bytes",
-        )
-        .unwrap();
+        std::fs::write(source.path().join("abc123.narinfo"), &narinfo_body).unwrap();
+        std::fs::write(source.path().join(&payload_url), b"nar-bytes").unwrap();
 
         let upload_urls = vec![
             format!("file://{}", first.path().display()),
@@ -1650,10 +1704,10 @@ name = "test"
             );
             assert_eq!(
                 std::fs::read_to_string(dest.join("abc123.narinfo")).unwrap(),
-                "StorePath: /nix/store/abc123-pkg\n"
+                narinfo_body
             );
             assert_eq!(
-                std::fs::read(dest.join("nar").join("abc123.nar.zst")).unwrap(),
+                std::fs::read(dest.join(&payload_url)).unwrap(),
                 b"nar-bytes"
             );
         }
@@ -1696,6 +1750,11 @@ name = "test"
         )
         .unwrap();
         std::fs::write(source.path().join(&nar_url), b"nar-bytes").unwrap();
+        std::fs::write(
+            source.path().join("nar/obsolete-legacy-name.nar.zst"),
+            b"obsolete",
+        )
+        .unwrap();
 
         upload_static_cache(
             source.path(),
@@ -1715,6 +1774,12 @@ name = "test"
             std::fs::read(dest.path().join(parsed.url)).unwrap(),
             b"nar-bytes",
         );
+        assert!(
+            !dest
+                .path()
+                .join("nar/obsolete-legacy-name.nar.zst")
+                .exists()
+        );
     }
 
     #[tokio::test]
@@ -1723,6 +1788,25 @@ name = "test"
         let first = TempDir::new().unwrap();
         let second = TempDir::new().unwrap();
         let printer = Printer::new(0, true, false);
+        let store_path = "/nix/store/abc123-pkg";
+        let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(b"nar-bytes")));
+        let payload_url = nar_url(store_path, &file_hash, NarCompression::Zstd).unwrap();
+        let narinfo_body = render_static_narinfo(
+            &StaticNarInfoInput {
+                store_path,
+                nar_hash: "sha256:def456",
+                nar_size: 5,
+                references: &[],
+                deriver: None,
+                signatures: &[],
+                file_hash: &file_hash,
+                file_size: 9,
+                compression: NarCompression::Zstd,
+            },
+            "/nix/store",
+            None,
+        )
+        .unwrap();
 
         std::fs::create_dir_all(source.path().join("nar")).unwrap();
         std::fs::write(
@@ -1730,11 +1814,8 @@ name = "test"
             nix_cache_info("/nix/store", 40),
         )
         .unwrap();
-        std::fs::write(
-            source.path().join("abc123.narinfo"),
-            "StorePath: /nix/store/abc123-pkg\n",
-        )
-        .unwrap();
+        std::fs::write(source.path().join("abc123.narinfo"), narinfo_body).unwrap();
+        std::fs::write(source.path().join(payload_url), b"nar-bytes").unwrap();
 
         let upload_urls = vec![
             format!("file://{}", first.path().display()),
