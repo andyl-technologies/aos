@@ -216,7 +216,7 @@ pub(super) fn json_bytes<T: serde::Serialize + ?Sized>(
     Ok(framed)
 }
 
-const fn lifecycle_tag(value: NodeLifecycleTransition) -> u32 {
+pub(super) const fn lifecycle_tag(value: NodeLifecycleTransition) -> u32 {
     match value {
         NodeLifecycleTransition::Boot => 1,
         NodeLifecycleTransition::Crash => 2,
@@ -226,27 +226,27 @@ const fn lifecycle_tag(value: NodeLifecycleTransition) -> u32 {
         NodeLifecycleTransition::PermanentFailure => 6,
     }
 }
-const fn state_policy_tag(value: NodeStatePolicy) -> u32 {
+pub(super) const fn state_policy_tag(value: NodeStatePolicy) -> u32 {
     match value {
         NodeStatePolicy::Preserve => 1,
         NodeStatePolicy::Clear => 2,
         NodeStatePolicy::DeviceReset => 3,
     }
 }
-const fn cpu_service_discipline_tag(value: CpuServiceDiscipline) -> u32 {
+pub(super) const fn cpu_service_discipline_tag(value: CpuServiceDiscipline) -> u32 {
     match value {
         CpuServiceDiscipline::WorkConserving => 1,
         CpuServiceDiscipline::StrictCap => 2,
     }
 }
-const fn clock_monotonicity_tag(value: ClockMonotonicityPolicy) -> u32 {
+pub(super) const fn clock_monotonicity_tag(value: ClockMonotonicityPolicy) -> u32 {
     match value {
         ClockMonotonicityPolicy::AllowBackward => 1,
         ClockMonotonicityPolicy::ClampMonotonic => 2,
         ClockMonotonicityPolicy::FaultOnBackward => 3,
     }
 }
-const fn overdue_timer_policy_tag(value: ClockOverdueTimerPolicy) -> u32 {
+pub(super) const fn overdue_timer_policy_tag(value: ClockOverdueTimerPolicy) -> u32 {
     match value {
         ClockOverdueTimerPolicy::FireAtBoundary => 1,
         ClockOverdueTimerPolicy::Drop => 2,
@@ -261,34 +261,34 @@ pub(super) fn memory_access_class_bits(value: crucible::model::MemoryAccessClass
         | (u32::from(value.dma_write) << 4)
         | (u32::from(value.page_table_walk) << 5)
 }
-const fn hang_scope_tag(value: &NodeHangScope) -> u32 {
+pub(super) const fn hang_scope_tag(value: &NodeHangScope) -> u32 {
     match value {
         NodeHangScope::Node => 1,
         NodeHangScope::Vcpus(_) => 2,
         NodeHangScope::Device(_) => 3,
     }
 }
-const fn vcpu_state_tag(value: VcpuState) -> u32 {
+pub(super) const fn vcpu_state_tag(value: VcpuState) -> u32 {
     match value {
         VcpuState::Online => 1,
         VcpuState::Offline => 2,
         VcpuState::Stalled => 3,
     }
 }
-const fn ecc_tag(value: MemoryEccKind) -> u32 {
+pub(super) const fn ecc_tag(value: MemoryEccKind) -> u32 {
     match value {
         MemoryEccKind::Corrected => 1,
         MemoryEccKind::Uncorrectable => 2,
     }
 }
-const fn memory_region_tag(value: MemoryRegionKind) -> u32 {
+pub(super) const fn memory_region_tag(value: MemoryRegionKind) -> u32 {
     match value {
         MemoryRegionKind::Failed => 1,
         MemoryRegionKind::Retention => 2,
         MemoryRegionKind::Rowhammer => 3,
     }
 }
-const fn accelerator_transition_tag(value: AcceleratorTransition) -> u32 {
+pub(super) const fn accelerator_transition_tag(value: AcceleratorTransition) -> u32 {
     match value {
         AcceleratorTransition::Disappear => 1,
         AcceleratorTransition::Reset => 2,
@@ -296,7 +296,7 @@ const fn accelerator_transition_tag(value: AcceleratorTransition) -> u32 {
     }
 }
 
-const fn phase_tag(value: FaultPhase) -> u16 {
+pub(super) const fn phase_tag(value: FaultPhase) -> u16 {
     match value {
         FaultPhase::Produce => 1,
         FaultPhase::Admit => 2,
