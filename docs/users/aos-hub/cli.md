@@ -204,8 +204,24 @@ references and can be rotated or validated without replacing the binding.
 
 Delivery resources also use reviewed plans. Creation commands generate an
 opaque stable identity and print it in the plan; pass `--stable-id` when an
-external controller needs to choose that identity. HTTPS endpoints require an
-explicit record of where TLS terminates:
+external controller needs to choose that identity. A network boundary seals a
+complete initial revision at creation time, including its transport policy and
+the controller location that will verify it:
+
+```sh
+aos hub network-boundary add packages-edge \
+  --kind trusted-ingress \
+  --org acme \
+  --provider cloudflare \
+  --provider-account production \
+  --listener-id packages-worker \
+  --protected-transport required \
+  --probe-location cloudflare-worker \
+  --idempotency-key plan-packages-boundary \
+  --plan
+```
+
+HTTPS endpoints require an explicit record of where TLS terminates:
 
 ```sh
 aos hub endpoint add https://packages.example.com \
