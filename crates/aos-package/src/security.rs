@@ -950,7 +950,7 @@ mod tests {
             references: &refs,
             deriver: None,
             signatures: &[],
-            file_hash: "sha256:file789",
+            file_hash: "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=",
             file_size: 24,
             compression: NarCompression::Zstd,
         };
