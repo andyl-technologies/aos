@@ -562,6 +562,56 @@ async fn staged_publication_bytes_remain_unaccounted_until_commit() {
 }
 
 #[tokio::test]
+async fn concurrent_pointer_uploads_share_the_phase_transition() {
+    let (db, _surface, _binding, _placement) = empty_managed().await;
+    let app = router(app_state(Arc::clone(&db)).await).await;
+    let token = bearer(
+        Principal::service_account(1),
+        &common::registry_scope(&db, "acme/infra/prod/cdn").await,
+        &[Permission::Publish],
+    );
+
+    let objects = [
+        ("objects/ab/cd", b"data".as_slice(), "immutable"),
+        ("info/refs", b"".as_slice(), "mutable_pointer"),
+        (
+            "nix-cache-info",
+            b"StoreDir: /nix/store\n".as_slice(),
+            "mutable_pointer",
+        ),
+    ];
+    let (status, publication) =
+        begin_publication(&app, &token, "acme/infra/prod/cdn", "pointer-race", &objects)
+            .await;
+    assert_eq!(status, StatusCode::OK, "{publication}");
+
+    let (status, _) = upload_publication_object(
+        &app,
+        publication_upload_url(&publication, "objects/ab/cd"),
+        &token,
+        b"data".to_vec(),
+    )
+    .await;
+    assert!(status.is_success(), "{status}");
+
+    let refs = upload_publication_object(
+        &app,
+        publication_upload_url(&publication, "info/refs"),
+        &token,
+        Vec::new(),
+    );
+    let cache_info = upload_publication_object(
+        &app,
+        publication_upload_url(&publication, "nix-cache-info"),
+        &token,
+        b"StoreDir: /nix/store\n".to_vec(),
+    );
+    let ((refs_status, _), (cache_info_status, _)) = tokio::join!(refs, cache_info);
+    assert!(refs_status.is_success(), "{refs_status}");
+    assert!(cache_info_status.is_success(), "{cache_info_status}");
+}
+
+#[tokio::test]
 async fn concurrent_publication_generation_is_rejected() {
     let (db, _surface, _binding, _placement) = empty_managed().await;
     let org = db.org_by_slug("acme").await.unwrap().unwrap();
