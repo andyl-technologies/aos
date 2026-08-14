@@ -170,12 +170,26 @@ in
             echo 'FAIL: retired normative fault or scenario-family vocabulary is present' >&2
             exit 1
           fi
+          mkdir -p "$TMPDIR/unfinished-guard/nested"
+          printf '%s\n' 'unimplemented!()' > "$TMPDIR/unfinished-guard/nested/probe.rs"
+          if ! grep -R -q -E 'todo!\(|unimplemented!\(' "$TMPDIR/unfinished-guard"
+          then
+            echo 'FAIL: unfinished-code guard does not recurse into nested modules' >&2
+            exit 1
+          fi
+
           if grep -R -n -E 'todo!\(|unimplemented!\(' \
             crates/crucible/src/model/fault_signal \
             crates/crucible-api/src/vm_lifecycle/network_faults \
             crates/crucible-api/src/vm_lifecycle/storage_faults \
+            crates/crucible-device/src/block/fault \
+            crates/crucible-device/src/netlink \
+            crates/crucible-device/src/ninep/fault \
             crates/crucible-qemu/src/fault_action_sink \
-            crates/crucible-qemu/src/production_fault_runtime.rs
+            crates/crucible-qemu/src/production_fault_runtime.rs \
+            crates/crucible-qemu/src/production_fault_runtime \
+            crates/crucible-qemu-plugin/src/fault_command \
+            crates/crucible-qemu-plugin/src/runtime/live_callbacks
           then
             echo 'FAIL: unfinished production fault implementation is present' >&2
             exit 1
