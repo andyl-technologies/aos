@@ -1,3 +1,5 @@
+//! Tests bounded search materialization for signal outcomes and mappings.
+
 use super::*;
 use crate::MemoryDagStore;
 

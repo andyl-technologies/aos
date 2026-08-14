@@ -1230,13 +1230,14 @@ authority for its shape. The contract those files may rely on:
     endpoints, plan entries, property assertions, and compound predicate sets
     before hashing or serializing. Canonical material uses fixed field order,
     explicit string lengths where needed, virtual-nanosecond durations,
-    fixed-point link-loss/fault-density millionths, and `blake3:<hash>`
+    fixed-point link-loss millionths, exact signal values, and `blake3:<hash>`
     kernel/root/initrd references. The focused
-    `canonicalization_hashes_meaning_not_authoring_spelling` test and
-    `checks.crucible.phase1.spatialCanonicalization` gate prove that different
-    authoring order and endpoint spelling produce identical canonical bytes,
-    compact binary, TOML, and content hashes, while changed probability or blob
-    references change identity.
+    `world_topology_hashes_nodes_and_links_canonically` and
+    `authored_order_does_not_change_identity` tests, together with the
+    `checks.crucible.phase1.spatialCanonicalization` gate, prove that endpoint,
+    world-node, signal-node, and binding authoring order do not change canonical
+    identity. Separate sensitivity assertions prove that changed transport,
+    signal, or content-addressed artifact material does change identity.
 - [x] **T-SPAT-20** Implement build-time validation for fault params, heal tags,
   and Plan times with precise localized errors. — satisfies [SPAT-31]; spec §9.
   - Completed in `crates/crucible/src/model.rs`: `Plan::from_entries_for_world`

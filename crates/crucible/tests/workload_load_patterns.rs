@@ -7,11 +7,11 @@
 use crucible::{
     EngineError, GuestWorkloadBinary, GuestWorkloadLoadPatternFixture, GuestWorkloadPattern,
     GuestWorkloadSpikeMode, GuestWorkloadTimeSource, Icount, NodeTemplate, Plan, Properties,
-    ScenarioBuilder, ScenarioDefForm, Seed, WORKLOAD_HOST_WALL_CLOCK_LOAD_SHAPES_ALLOWED,
-    WORKLOAD_LOAD_PATTERN_BLACK_BOX_CONFIG_SUFFICES, WORKLOAD_LOAD_PATTERN_REQUIRES_WHITE_BOX,
-    WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER, WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER,
-    WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER, WORKLOAD_TIME_VARIATION_REQUIRES_VIRTUAL_TIME,
-    WhiteBoxPolicy,
+    ResolvedFaultTarget, ScenarioBuilder, ScenarioDefForm, Seed, TargetSelector,
+    WORKLOAD_HOST_WALL_CLOCK_LOAD_SHAPES_ALLOWED, WORKLOAD_LOAD_PATTERN_BLACK_BOX_CONFIG_SUFFICES,
+    WORKLOAD_LOAD_PATTERN_REQUIRES_WHITE_BOX, WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER,
+    WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER, WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER,
+    WORKLOAD_TIME_VARIATION_REQUIRES_VIRTUAL_TIME, WhiteBoxPolicy,
 };
 
 #[test]
@@ -120,6 +120,19 @@ fn spike_fixture_can_be_guest_virtual_time_rate() -> Result<(), EngineError> {
 }
 
 #[test]
+fn spike_fixture_can_be_planned_start_node_burst() -> Result<(), EngineError> {
+    let fixture = GuestWorkloadLoadPatternFixture::spike_start_node_burst()?;
+    assert_eq!(fixture.pattern(), GuestWorkloadPattern::Spike);
+    assert_eq!(
+        fixture.spike_mode(),
+        Some(GuestWorkloadSpikeMode::StartNodeBurst)
+    );
+    assert_eq!(fixture.world().vm_nodes().len(), 2);
+    assert_eq!(fixture.plan().event_graph().events().len(), 1);
+    Ok(())
+}
+
+#[test]
 fn cardinality_growth_fixture_is_guest_key_policy() -> Result<(), EngineError> {
     let fixture = GuestWorkloadLoadPatternFixture::cardinality_growth()?;
     assert_eq!(fixture.pattern(), GuestWorkloadPattern::CardinalityGrowth);
@@ -141,6 +154,33 @@ fn cardinality_growth_fixture_is_guest_key_policy() -> Result<(), EngineError> {
     assert!(node.cmdline.contains("initial_keys=8"));
     assert!(node.cmdline.contains("key_growth_per_sec=4"));
     assert!(node.cmdline.contains("key_cap=1024"));
+    Ok(())
+}
+
+#[test]
+fn correlated_failure_fixture_uses_one_signal_for_both_nodes() -> Result<(), EngineError> {
+    let fixture = GuestWorkloadLoadPatternFixture::correlated_failure_campaign()?;
+    let faults = fixture.plan().fault_signals();
+    assert_eq!(faults.programs().len(), 1);
+    assert_eq!(faults.bindings().len(), 2);
+
+    let program = faults.programs()[0].id();
+    let mut nodes = faults
+        .bindings()
+        .iter()
+        .map(|binding| {
+            assert_eq!(binding.program(), program);
+            let TargetSelector::Exact(targets) = binding.selector() else {
+                panic!("correlated workload binding must resolve one exact node");
+            };
+            let [ResolvedFaultTarget::Node { node }] = targets.targets() else {
+                panic!("correlated workload binding must select one node");
+            };
+            node.as_str()
+        })
+        .collect::<Vec<_>>();
+    nodes.sort_unstable();
+    assert_eq!(nodes, ["client-a", "client-b"]);
     Ok(())
 }
 

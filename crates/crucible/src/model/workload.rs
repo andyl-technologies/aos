@@ -1,6 +1,11 @@
 //! Guest workload parameters, fixtures, and black-box configuration.
 
 use super::*;
+
+mod correlated_failure;
+
+use correlated_failure::{correlated_failure_binding, workload_fault_model_error};
+
 /// Default app-random draw cap for scenarios that do not opt into a tighter cap.
 pub const DEFAULT_APP_RANDOM_DRAW_CAP: u64 = u64::MAX;
 
@@ -920,8 +925,9 @@ impl GuestWorkloadLoadPatternFixture {
     ///
     /// # Errors
     ///
-    /// Returns a world or fault-plan validation error if the fixture topology,
-    /// reserved command-line parameters, or fault campaign is invalid.
+    /// Returns a world or signal-driven fault validation error if the fixture
+    /// topology, reserved command-line parameters, or shared-cause campaign is
+    /// invalid.
     pub fn correlated_failure_campaign() -> Result<Self, EngineError> {
         let left = workload_pattern_node(
             "client-a",
@@ -943,12 +949,53 @@ impl GuestWorkloadLoadPatternFixture {
         );
         let link = LinkDef::new(left.id.clone(), right.id.clone())?;
         let world = World::from_nodes_and_links(vec![left, right], vec![link])?;
+        let event =
+            SignalId::parse("correlated-node-outage").map_err(workload_fault_model_error)?;
+        let schema =
+            SignalId::parse("correlated-node-outage-v1").map_err(workload_fault_model_error)?;
+        let program = SignalProgram::new(
+            vec![SignalNode {
+                id: event.clone(),
+                domain: SignalDomain::Event,
+                output: SignalShape::new(
+                    SignalValueType::Event(schema.clone()),
+                    SignalUnit::Dimensionless,
+                    0,
+                )
+                .map_err(workload_fault_model_error)?,
+                inputs: Vec::new(),
+                kind: SignalNodeKind::Source(SignalSourceSpecification::EventSequence {
+                    events: vec![SignalPoint {
+                        coordinate: SignalCoordinate::Event {
+                            parent: Box::new(SignalCoordinate::VirtualTime { nanos: 50 }),
+                            sequence: 0,
+                        },
+                        sequence: 0,
+                        value: SignalValue::Event {
+                            schema,
+                            payload: b"correlated-node-outage".to_vec(),
+                        },
+                    }],
+                }),
+            }],
+            vec![event.clone()],
+            SignalResourceLimits::default(),
+        )
+        .map_err(workload_fault_model_error)?;
+        let bindings = ["client-a", "client-b"]
+            .into_iter()
+            .map(|node| correlated_failure_binding(node, &event, &program))
+            .collect::<Result<Vec<_>, _>>()?;
+        let fault_signals =
+            FaultSignalPlan::new(vec![program], bindings, FaultResourceLimits::default())
+                .map_err(workload_fault_model_error)?;
+        let plan = Plan::empty().with_fault_signals_for_world(&world, fault_signals)?;
         Ok(Self {
             pattern: GuestWorkloadPattern::CorrelatedFailure,
             spike_mode: None,
             time_source: None,
             world,
-            plan: Plan::empty(),
+            plan,
         })
     }
 
