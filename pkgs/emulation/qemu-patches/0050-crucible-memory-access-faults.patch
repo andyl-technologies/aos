@@ -1,5 +1,5 @@
 diff --git a/accel/tcg/atomic_template.h b/accel/tcg/atomic_template.h
-index 89593b2..40c4ae0 100644
+index 89593b250..40c4ae084 100644
 --- a/accel/tcg/atomic_template.h
 +++ b/accel/tcg/atomic_template.h
 @@ -20,35 +20,52 @@
@@ -271,7 +271,7 @@ index 89593b2..40c4ae0 100644
 +#undef CRUCIBLE_ATOMIC_FALLBACK
 +#endif
 diff --git a/accel/tcg/cpu-exec-common.c b/accel/tcg/cpu-exec-common.c
-index c5c513f..d752ee4 100644
+index c5c513f1e..d752ee41c 100644
 --- a/accel/tcg/cpu-exec-common.c
 +++ b/accel/tcg/cpu-exec-common.c
 @@ -21,6 +21,7 @@
@@ -293,7 +293,7 @@ index c5c513f..d752ee4 100644
      return cflags;
  }
 diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
-index 5eeef83..dc1fe90 100644
+index 5eeef83e6..dc1fe9034 100644
 --- a/accel/tcg/cpu-exec.c
 +++ b/accel/tcg/cpu-exec.c
 @@ -33,6 +33,7 @@
@@ -422,7 +422,7 @@ index 5eeef83..dc1fe90 100644
              /* Try to align the host and virtual clocks
                 if the guest is in advance */
 diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
-index fb22048..40c17f0 100644
+index fb2204887..40c17f020 100644
 --- a/accel/tcg/cputlb.c
 +++ b/accel/tcg/cputlb.c
 @@ -35,6 +35,7 @@
@@ -1430,7 +1430,7 @@ index fb22048..40c17f0 100644
  
  uint32_t cpu_ldub_code(CPUArchState *env, abi_ptr addr)
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index 67dc558..285d361 100644
+index 67dc55855..285d36133 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
 @@ -192,6 +192,40 @@ int64_t icount_get_raw_observed(void)
@@ -1485,7 +1485,7 @@ index 67dc558..285d361 100644
           * The sim guest is clamped at the observer's max-advance boundary
           * (the terminal target icount): it cannot retire instructions, so
 diff --git a/accel/tcg/internal-common.h b/accel/tcg/internal-common.h
-index c243eda..98cd2d9 100644
+index c243eda43..98cd2d9cf 100644
 --- a/accel/tcg/internal-common.h
 +++ b/accel/tcg/internal-common.h
 @@ -58,6 +58,9 @@ void tb_reset_jump(TranslationBlock *tb, int n);
@@ -1499,7 +1499,7 @@ index c243eda..98cd2d9 100644
  /**
   * tlb_init - initialize a CPU's TLB
 diff --git a/accel/tcg/translate-all.c b/accel/tcg/translate-all.c
-index 82bc16b..87e597d 100644
+index 82bc16bd5..87e597d47 100644
 --- a/accel/tcg/translate-all.c
 +++ b/accel/tcg/translate-all.c
 @@ -18,6 +18,7 @@
@@ -1585,7 +1585,7 @@ index 82bc16b..87e597d 100644
  }
  
 diff --git a/accel/tcg/translator.c b/accel/tcg/translator.c
-index ef1538b..d56305f 100644
+index ef1538b4f..d56305f97 100644
 --- a/accel/tcg/translator.c
 +++ b/accel/tcg/translator.c
 @@ -10,6 +10,7 @@
@@ -1773,7 +1773,7 @@ index ef1538b..d56305f 100644
  
  static void record_save(DisasContextBase *db, vaddr pc,
 diff --git a/hw/core/cpu-common.c b/hw/core/cpu-common.c
-index 9064dd2..9ceb785 100644
+index 9064dd24f..9ceb7859f 100644
 --- a/hw/core/cpu-common.c
 +++ b/hw/core/cpu-common.c
 @@ -125,6 +125,9 @@ static void cpu_common_reset_hold(Object *obj, ResetType type)
@@ -1787,7 +1787,7 @@ index 9064dd2..9ceb785 100644
      cpu->neg.can_do_io = true;
      cpu->exception_index = -1;
 diff --git a/hw/core/cpu-system.c b/hw/core/cpu-system.c
-index 6d1775e..c1aa5a3 100644
+index 6d1775e9b..c1aa5a3f5 100644
 --- a/hw/core/cpu-system.c
 +++ b/hw/core/cpu-system.c
 @@ -20,6 +20,7 @@
@@ -1854,7 +1854,7 @@ index 6d1775e..c1aa5a3 100644
 +    g_assert_not_reached();
  }
 diff --git a/hw/intc/apic.c b/hw/intc/apic.c
-index 1284d02..b6b1b60 100644
+index 1284d02de..b6b1b605d 100644
 --- a/hw/intc/apic.c
 +++ b/hw/intc/apic.c
 @@ -336,7 +336,7 @@ static void crucible_sim_det_ipi_deliver_event(
@@ -1876,7 +1876,7 @@ index 1284d02..b6b1b60 100644
          ++crucible_sim_det_ipi_next_event_id, delivery_icount, src_vcpu,
          dst_cpu->cpu_index, APIC_DM_FIXED, vector);
 diff --git a/hw/virtio/virtio.c b/hw/virtio/virtio.c
-index 5c11542..ea6d5f9 100644
+index 5c1154221..ea6d5f934 100644
 --- a/hw/virtio/virtio.c
 +++ b/hw/virtio/virtio.c
 @@ -248,6 +248,8 @@ void virtio_init_region_cache(VirtIODevice *vdev, int n)
@@ -2035,7 +2035,7 @@ index 5c11542..ea6d5f9 100644
              if (len < desc.len) {
                  error_setg(errp, "Cannot map indirect buffer");
 diff --git a/include/exec/memory.h b/include/exec/memory.h
-index 1a444df..f16e3d2 100644
+index 1a444df77..f16e3d281 100644
 --- a/include/exec/memory.h
 +++ b/include/exec/memory.h
 @@ -2775,6 +2775,23 @@ MemTxResult address_space_write_rom(AddressSpace *as, hwaddr addr,
@@ -2163,7 +2163,7 @@ index 1a444df..f16e3d2 100644
          memcpy(cache->ptr + addr, buf, len);
          return MEMTX_OK;
 diff --git a/include/exec/memory_ldst_cached.h.inc b/include/exec/memory_ldst_cached.h.inc
-index d7834f8..2811b72 100644
+index d7834f852..2811b72a9 100644
 --- a/include/exec/memory_ldst_cached.h.inc
 +++ b/include/exec/memory_ldst_cached.h.inc
 @@ -27,7 +27,18 @@
@@ -2284,7 +2284,7 @@ index d7834f8..2811b72 100644
          ST_P(q)(cache->ptr + addr, val);
      } else {
 diff --git a/include/exec/translator.h b/include/exec/translator.h
-index d70942a..545fcff 100644
+index d70942a10..545fcff19 100644
 --- a/include/exec/translator.h
 +++ b/include/exec/translator.h
 @@ -87,6 +87,11 @@ struct DisasContextBase {
@@ -2300,7 +2300,7 @@ index d70942a..545fcff 100644
  
  /**
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index 0258271..310314c 100644
+index 025827193..310314cbd 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
 @@ -424,6 +424,14 @@ struct qemu_work_item;
@@ -2389,7 +2389,7 @@ index 0258271..310314c 100644
  /**
   * cpu_get_phys_page_attrs_debug:
 diff --git a/include/hw/core/sysemu-cpu-ops.h b/include/hw/core/sysemu-cpu-ops.h
-index 06b7cb0..b8dcbd2 100644
+index 06b7cb016..b8dcbd290 100644
 --- a/include/hw/core/sysemu-cpu-ops.h
 +++ b/include/hw/core/sysemu-cpu-ops.h
 @@ -47,7 +47,16 @@ typedef struct SysemuCPUOps {
@@ -2410,7 +2410,7 @@ index 06b7cb0..b8dcbd2 100644
       * @asidx_from_attrs: Callback to return the CPU AddressSpace to use for
       *       a memory access with the specified memory transaction attributes.
 diff --git a/include/hw/virtio/virtio.h b/include/hw/virtio/virtio.h
-index 6386910..006d49b 100644
+index 638691028..006d49b12 100644
 --- a/include/hw/virtio/virtio.h
 +++ b/include/hw/virtio/virtio.h
 @@ -160,6 +160,7 @@ struct VirtIODevice
@@ -2422,7 +2422,7 @@ index 6386910..006d49b 100644
      QTAILQ_ENTRY(VirtIODevice) next;
      /**
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index bbe9daa..a9b6bb3 100644
+index bbe9daa2b..a9b6bb375 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -10,9 +10,12 @@
@@ -2600,7 +2600,7 @@ index bbe9daa..a9b6bb3 100644
 +
  #endif
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index a837a4e..4f866e5 100644
+index a837a4e85..4f866e5aa 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1847,6 +1847,30 @@ struct qemu_plugin_crucible_fault_result {
@@ -2669,7 +2669,7 @@ index a837a4e..4f866e5 100644
   * qemu_plugin_register_crucible_fault_completion_cb() - register completion
   * @cb: callback invoked after each boundary-dispatched result, or NULL to clear
 diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
-index ed2d445..8c62f98 100644
+index ed2d445e0..8c62f9823 100644
 --- a/include/system/cpu-timers.h
 +++ b/include/system/cpu-timers.h
 @@ -49,6 +49,9 @@ int64_t icount_get_raw(void);
@@ -2683,7 +2683,7 @@ index ed2d445..8c62f98 100644
  int64_t icount_get(void);
  /*
 diff --git a/include/system/dma.h b/include/system/dma.h
-index e142f7e..64ca041 100644
+index e142f7efa..64ca04103 100644
 --- a/include/system/dma.h
 +++ b/include/system/dma.h
 @@ -12,6 +12,7 @@
@@ -2787,7 +2787,7 @@ index e142f7e..64ca041 100644
  
  #define DEFINE_LDST_DMA(_lname, _sname, _bits, _end) \
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index df9ebab..39e92ce 100644
+index df9ebabf8..39e92ceab 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -24,6 +24,7 @@
@@ -2830,7 +2830,7 @@ index df9ebab..39e92ce 100644
                                     uint64_t *entry_icount)
  {
 diff --git a/plugins/api.c b/plugins/api.c
-index 964a40a..5fa29d6 100644
+index 964a40aa4..5fa29d640 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
 @@ -1514,7 +1514,13 @@ int qemu_plugin_crucible_process_argv_attestation(
@@ -2849,7 +2849,7 @@ index 964a40a..5fa29d6 100644
  
  bool qemu_plugin_crucible_vm_non_running(void)
 diff --git a/plugins/crucible-fault-memory.c b/plugins/crucible-fault-memory.c
-index b1422b8..6e6c2b3 100644
+index b1422b8e9..6e6c2b3fb 100644
 --- a/plugins/crucible-fault-memory.c
 +++ b/plugins/crucible-fault-memory.c
 @@ -648,7 +648,8 @@ static int crucible_memory_translate(CrucibleMemoryMutation *mutation)
@@ -2864,7 +2864,7 @@ index b1422b8..6e6c2b3 100644
              return -EFAULT;
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
 new file mode 100644
-index 0000000..3d7d502
+index 000000000..3d7d5024b
 --- /dev/null
 +++ b/plugins/crucible-fault-node.c
 @@ -0,0 +1,9711 @@
@@ -12580,7 +12580,7 @@ index 0000000..3d7d502
 +
 +type_init(crucible_memory_access_faults_register)
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
-index b2e1dfc..333af60 100644
+index b2e1dfca2..333af60e9 100644
 --- a/plugins/crucible-fault.c
 +++ b/plugins/crucible-fault.c
 @@ -44,6 +44,8 @@ static QTAILQ_HEAD(, CrucibleCompletedFault) crucible_completed_faults =
@@ -12767,7 +12767,7 @@ index b2e1dfc..333af60 100644
  }
  
 diff --git a/plugins/meson.build b/plugins/meson.build
-index e5bd2ce..dffdd97 100644
+index e5bd2ce7c..dffdd9734 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
 @@ -60,6 +60,6 @@ endif
@@ -12779,7 +12779,7 @@ index e5bd2ce..dffdd97 100644
  
  common_ss.add(files('loader.c', 'api.c', 'core.c'))
 diff --git a/system/physmem.c b/system/physmem.c
-index a16c3ad..d29aabf 100644
+index a16c3ad01..d29aabf24 100644
 --- a/system/physmem.c
 +++ b/system/physmem.c
 @@ -78,6 +78,7 @@
@@ -13401,7 +13401,7 @@ index a16c3ad..d29aabf 100644
          buf += l;
          mr_addr += l;
 diff --git a/target/arm/cpu.c b/target/arm/cpu.c
-index 6657597..a513671 100644
+index 6657597e5..a51367113 100644
 --- a/target/arm/cpu.c
 +++ b/target/arm/cpu.c
 @@ -84,7 +84,7 @@ int crucible_sim_det_ipi_deliver_commanded(unsigned int target_vcpu,
@@ -13424,7 +13424,7 @@ index 6657597..a513671 100644
      .write_elf32_note = arm_cpu_write_elf32_note,
      .write_elf64_note = arm_cpu_write_elf64_note,
 diff --git a/target/arm/cpu.h b/target/arm/cpu.h
-index 290efb9..83b3596 100644
+index 290efb9c2..83b3596b1 100644
 --- a/target/arm/cpu.h
 +++ b/target/arm/cpu.h
 @@ -1205,7 +1205,15 @@ void arm_v7m_cpu_do_interrupt(CPUState *cpu);
@@ -13444,7 +13444,7 @@ index 290efb9..83b3596 100644
  
  int arm_cpu_gdb_read_register(CPUState *cpu, GByteArray *buf, int reg);
 diff --git a/target/arm/internals.h b/target/arm/internals.h
-index 28585c0..4641218 100644
+index 28585c075..4641218a5 100644
 --- a/target/arm/internals.h
 +++ b/target/arm/internals.h
 @@ -981,6 +981,10 @@ G_NORETURN void arm_cpu_do_unaligned_access(CPUState *cs, vaddr vaddr,
@@ -13459,7 +13459,7 @@ index 28585c0..4641218 100644
   * (eg "no device/memory present at address") by raising an external abort
   * exception
 diff --git a/target/arm/ptw.c b/target/arm/ptw.c
-index 011358e..b42acb3 100644
+index 011358e86..b42acb36b 100644
 --- a/target/arm/ptw.c
 +++ b/target/arm/ptw.c
 @@ -12,6 +12,7 @@
@@ -13664,7 +13664,7 @@ index 011358e..b42acb3 100644
 +                      cpu_mmu_index(cs, false), &fi);
 +}
 diff --git a/target/arm/tcg/tlb_helper.c b/target/arm/tcg/tlb_helper.c
-index 8841f03..47616e5 100644
+index 8841f039b..47616e5f8 100644
 --- a/target/arm/tcg/tlb_helper.c
 +++ b/target/arm/tcg/tlb_helper.c
 @@ -11,6 +11,8 @@
@@ -13731,7 +13731,7 @@ index 8841f03..47616e5 100644
          res.f.extra.arm.shareability = res.cacheattrs.shareability;
          *out = res.f;
 diff --git a/target/i386/cpu.c b/target/i386/cpu.c
-index deee0bf..f593c0e 100644
+index deee0bfa7..f593c0ee4 100644
 --- a/target/i386/cpu.c
 +++ b/target/i386/cpu.c
 @@ -8897,6 +8897,9 @@ static const struct SysemuCPUOps i386_sysemu_ops = {
@@ -13745,7 +13745,7 @@ index deee0bf..f593c0e 100644
      .get_crash_info = x86_cpu_get_crash_info,
      .write_elf32_note = x86_cpu_write_elf32_note,
 diff --git a/target/i386/cpu.h b/target/i386/cpu.h
-index 0b07cae..1ada85b 100644
+index 0b07cae57..1ada85b2e 100644
 --- a/target/i386/cpu.h
 +++ b/target/i386/cpu.h
 @@ -2376,7 +2376,15 @@ int x86_cpu_pending_interrupt(CPUState *cs, int interrupt_request);
@@ -13765,7 +13765,7 @@ index 0b07cae..1ada85b 100644
  
  /* MS-DOS compatibility mode FPU exception support */
 diff --git a/target/i386/tcg/system/excp_helper.c b/target/i386/tcg/system/excp_helper.c
-index f7e2288..22e9dbc 100644
+index f7e228874..22e9dbc84 100644
 --- a/target/i386/tcg/system/excp_helper.c
 +++ b/target/i386/tcg/system/excp_helper.c
 @@ -22,6 +22,8 @@
@@ -14099,7 +14099,7 @@ index f7e2288..22e9dbc 100644
           * avoid filling it too fast.
 diff --git a/tests/tcg/plugins/crucible-memory-access.c b/tests/tcg/plugins/crucible-memory-access.c
 new file mode 100644
-index 0000000..25d0b04
+index 000000000..25d0b04cb
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-memory-access.c
 @@ -0,0 +1,1008 @@
@@ -15113,7 +15113,7 @@ index 0000000..25d0b04
 +}
 diff --git a/tests/tcg/plugins/crucible-memory-dma.c b/tests/tcg/plugins/crucible-memory-dma.c
 new file mode 100644
-index 0000000..e1e096d
+index 000000000..e1e096d68
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-memory-dma.c
 @@ -0,0 +1,433 @@
@@ -15551,7 +15551,7 @@ index 0000000..e1e096d
 +    return 0;
 +}
 diff --git a/tests/tcg/plugins/meson.build b/tests/tcg/plugins/meson.build
-index 24a8a7b..6b2c7aa 100644
+index 24a8a7b92..6b2c7aa5a 100644
 --- a/tests/tcg/plugins/meson.build
 +++ b/tests/tcg/plugins/meson.build
 @@ -1,6 +1,8 @@

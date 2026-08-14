@@ -116,6 +116,30 @@ fn live_block_wait_preserves_an_earlier_timer_deadline() {
 }
 
 #[test]
+fn live_block_wait_arms_from_its_fresh_raw_coordinate() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    slot.store_device_completion_deadline_icount(12);
+    let state = test_live_state(48, 1, 0, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    TEST_CLOCK_DEADLINE_NS.set(-1);
+    LAST_QUEUED_ADVANCE_NS.set(-1);
+    TEST_ICOUNT_RAW.set(4);
+
+    let result = state.on_block_wait(1);
+    TEST_ICOUNT_RAW.set(0);
+
+    result.unwrap_or_else(|error| panic!("device wait should arm from its sampled time: {error}"));
+    assert_eq!(state.last_raw_icount.load(Ordering::Acquire), 4);
+    assert_eq!(state.last_icount.load(Ordering::Acquire), 4);
+    assert_eq!(slot.snapshot().current_icount, 4);
+    assert_eq!(LAST_QUEUED_ADVANCE_NS.get(), 12);
+}
+
+#[test]
 fn live_completion_joins_buffered_tx_inbound_ring_rx_and_clock_commit() {
     let _runtime_state = crate::runtime::isolate_runtime_state_for_test();
     let slot = NodeSlot::new(KIND_VM);

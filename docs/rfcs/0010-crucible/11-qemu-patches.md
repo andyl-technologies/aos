@@ -259,6 +259,7 @@ SIGNAL-DRIVEN FAULT EXECUTION                          class  enforces
   crucible-fault-vmstate aggregate fault-state identity D QFP-STATE-1, QFP-STATE-2, QFP-STATE-3
   crucible-lifecycle-precondition atomic lifecycle VM-state precondition D QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
   crucible-typed-node-result-schema fixed typed result and occurrence evidence D QFP-RESULT-1, QFP-EVENT-1, FAULT-ORDER
+  crucible-device-wait-vmstop nonblocking exact control/device-completion pause D QFP-STATE-2, DET-1, INV-10
 
 GUEST↔HOST CHANNEL (coordinate with 16)                class  enforces
   (no new patch required — see §11.7)                   —     GHC reuse

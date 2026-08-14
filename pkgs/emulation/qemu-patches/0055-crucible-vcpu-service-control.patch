@@ -1,5 +1,5 @@
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index 285d361..7a657ff 100644
+index 285d36133..7a657fff1 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
 @@ -270,6 +270,23 @@ int64_t icount_to_ns(int64_t icount)
@@ -27,7 +27,7 @@ index 285d361..7a657ff 100644
   * Correlation between real and virtual time is always going to be
   * fairly approximate, so ignore small variation.
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index e5a54f3..8bc1b21 100644
+index e5a54f3b6..8bc1b2109 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -120,7 +120,8 @@ static bool rr_crucible_sim_skip_second_events_pass(CPUState *cpu)
@@ -100,7 +100,7 @@ index e5a54f3..8bc1b21 100644
                      break;
                  }
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 9d38f98..8b3eced 100644
+index 9d38f9825..8b3eced85 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -229,6 +229,21 @@ bool qemu_crucible_fault_hardware_exception_delivered(
@@ -126,7 +126,7 @@ index 9d38f98..8b3eced 100644
   * Architecture interrupt-controller interception contract.  These objects are
   * private QEMU process state: only their closed scalar projection is exported
 diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
-index 8c62f98..fe2bc7c 100644
+index 8c62f9823..fe2bc7c3c 100644
 --- a/include/system/cpu-timers.h
 +++ b/include/system/cpu-timers.h
 @@ -62,6 +62,10 @@ int64_t icount_get(void);
@@ -141,7 +141,7 @@ index 8c62f98..fe2bc7c 100644
   * icount_configure: configure the icount options, including "shift"
   * @opts: Options to parse
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index 7b1f756..ec77da2 100644
+index 7b1f75620..ec77da29b 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -3275,6 +3275,16 @@ static int node_prepare(
@@ -230,7 +230,7 @@ index 7b1f756..ec77da2 100644
      case CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE:
 diff --git a/plugins/crucible-fault-vcpu-service.c b/plugins/crucible-fault-vcpu-service.c
 new file mode 100644
-index 0000000..ff1e179
+index 000000000..ff1e179e4
 --- /dev/null
 +++ b/plugins/crucible-fault-vcpu-service.c
 @@ -0,0 +1,950 @@
@@ -1185,7 +1185,7 @@ index 0000000..ff1e179
 +
 +type_init(crucible_vcpu_service_register)
 diff --git a/plugins/meson.build b/plugins/meson.build
-index 09bbc6c..30ff5ba 100644
+index 09bbc6c4e..30ff5ba97 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
 @@ -64,6 +64,7 @@ system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c',

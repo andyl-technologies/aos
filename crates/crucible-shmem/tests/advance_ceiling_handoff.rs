@@ -6,14 +6,14 @@
 
 use crucible_shmem::{
     FrameEntry, FutexWait, FutexWakeResult, KIND_VM, NODE_SLOT_ALIGN,
-    NODE_SLOT_CURRENT_ICOUNT_OFFSET, NODE_SLOT_CURRENT_NS_OFFSET,
-    NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET, NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET, NODE_SLOT_KIND_OFFSET,
-    NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET, NODE_SLOT_PUBLISH_GEN_OFFSET, NODE_SLOT_SIZE,
-    NODE_SLOT_STATUS_OFFSET, NODE_SLOT_WAKE_SIGNAL_OFFSET, NodeSlot, NodeSlotError,
-    PendingInputPublication, RegionAllocation, RegionAllocationAccessError, RegionConfig,
-    RingHeader, SLOT_BLK_IO, SLOT_NET_ROUTER, STATUS_IDLE, STATUS_RUNNING,
-    SchedulerWakePublicationError, SpscRingError, WakeAction, authorize_advance_ceiling,
-    icount_to_virtual_ns,
+    NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET, NODE_SLOT_CURRENT_ICOUNT_OFFSET,
+    NODE_SLOT_CURRENT_NS_OFFSET, NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET,
+    NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET, NODE_SLOT_KIND_OFFSET, NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET,
+    NODE_SLOT_PUBLISH_GEN_OFFSET, NODE_SLOT_SIZE, NODE_SLOT_STATUS_OFFSET,
+    NODE_SLOT_WAKE_SIGNAL_OFFSET, NodeSlot, NodeSlotError, PendingInputPublication,
+    RegionAllocation, RegionAllocationAccessError, RegionConfig, RingHeader, SLOT_BLK_IO,
+    SLOT_NET_ROUTER, STATUS_IDLE, STATUS_RUNNING, SchedulerWakePublicationError, SpscRingError,
+    WakeAction, authorize_advance_ceiling, icount_to_virtual_ns,
 };
 
 const SHMEM_SOURCE: &str = concat!(
@@ -45,6 +45,7 @@ fn node_slot_layout_matches_wire_contract() {
     assert_eq!(NODE_SLOT_KIND_OFFSET, 37);
     assert_eq!(NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET, 38);
     assert_eq!(NODE_SLOT_PUBLISH_GEN_OFFSET, 40);
+    assert_eq!(NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET, 44);
 }
 
 #[test]
@@ -348,6 +349,61 @@ fn mark_running_participates_in_publish_generation() {
     assert_eq!(snapshot.status, STATUS_RUNNING);
     assert_eq!(snapshot.publish_gen, before + 2);
     assert_eq!(snapshot.publish_gen % 2, 0);
+}
+
+#[test]
+fn control_boundary_request_release_acknowledges_publication() {
+    let slot = NodeSlot::new(KIND_VM);
+    slot.publish_idle(0, 10, 0)
+        .unwrap_or_else(|error| panic!("future idle deadline should publish: {error}"));
+    let before = slot.snapshot();
+
+    let request = slot
+        .request_control_boundary()
+        .unwrap_or_else(|error| panic!("control boundary request should publish: {error}"));
+
+    let requested = slot.snapshot();
+    assert_eq!(before.control_boundary_ack, 1);
+    assert_eq!(request, 2);
+    assert_eq!(requested.control_boundary_ack, request);
+    assert!(slot.control_boundary_is_requested());
+    assert_eq!(requested.publish_gen, before.publish_gen);
+    assert_eq!(requested.current_icount, before.current_icount);
+    assert_eq!(requested.status, before.status);
+
+    slot.publish_control_boundary(0, 0, 0)
+        .unwrap_or_else(|error| panic!("control boundary should publish: {error}"));
+    assert_eq!(slot.acknowledge_control_boundary(), 3);
+    let published = slot.snapshot();
+    assert_eq!(published.control_boundary_ack, request + 1);
+    assert!(!slot.control_boundary_is_requested());
+    assert_eq!(published.status, STATUS_IDLE);
+    assert_eq!(published.idle_wake_icount, before.idle_wake_icount);
+
+    slot.publish_scheduler_ceiling(ceiling(0, 1))
+        .unwrap_or_else(|error| panic!("running ceiling should publish: {error}"));
+    slot.mark_running();
+    let running_before = slot.snapshot();
+    let running_request = slot
+        .request_control_boundary()
+        .unwrap_or_else(|error| panic!("running control boundary should publish: {error}"));
+    slot.publish_control_boundary(0, 0, 0)
+        .unwrap_or_else(|error| panic!("running control boundary should publish: {error}"));
+    assert_eq!(slot.acknowledge_control_boundary(), running_request + 1);
+    assert_eq!(slot.snapshot().status, running_before.status);
+
+    slot.publish_scheduler_ceiling(ceiling(0, 0))
+        .unwrap_or_else(|error| panic!("fenced ceiling should publish: {error}"));
+    slot.mark_running();
+    let fenced_request = slot
+        .request_control_boundary()
+        .unwrap_or_else(|error| panic!("fenced control boundary should publish: {error}"));
+    slot.publish_control_boundary(0, 0, 0)
+        .unwrap_or_else(|error| panic!("fenced control boundary should publish: {error}"));
+    assert_eq!(slot.acknowledge_control_boundary(), fenced_request + 1);
+    let fenced = slot.snapshot();
+    assert_eq!(fenced.status, STATUS_IDLE);
+    assert_eq!(fenced.idle_wake_icount, fenced.current_icount);
 }
 
 #[test]

@@ -112,7 +112,7 @@ pub enum QemuLiveNodeStepGateError {
         source: QemuMappedQuantumShmemHotPathError,
     },
     /// A priming quantum boundary could not be published or read.
-    #[error("{operation} failed")]
+    #[error("{operation} failed: {source}")]
     Prime {
         /// Priming operation that failed.
         operation: &'static str,

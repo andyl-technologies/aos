@@ -1,5 +1,5 @@
 diff --git a/hw/intc/apic.c b/hw/intc/apic.c
-index b6b1b60..4406617 100644
+index b6b1b605d..4406617ee 100644
 --- a/hw/intc/apic.c
 +++ b/hw/intc/apic.c
 @@ -28,6 +28,7 @@
@@ -555,7 +555,7 @@ index b6b1b60..4406617 100644
  }
  
 diff --git a/hw/intc/apic_common.c b/hw/intc/apic_common.c
-index 2a3e878..7bddd0f 100644
+index 2a3e878c4..7bddd0f70 100644
 --- a/hw/intc/apic_common.c
 +++ b/hw/intc/apic_common.c
 @@ -210,6 +210,14 @@ void apic_init_reset(DeviceState *dev)
@@ -619,7 +619,7 @@ index 2a3e878..7bddd0f 100644
      }
  };
 diff --git a/hw/intc/arm_gic.c b/hw/intc/arm_gic.c
-index 3581ff8..cb6cdcd 100644
+index 3581ff8e8..cb6cdcd17 100644
 --- a/hw/intc/arm_gic.c
 +++ b/hw/intc/arm_gic.c
 @@ -19,6 +19,8 @@
@@ -938,7 +938,7 @@ index 3581ff8..cb6cdcd 100644
      /* Extra core-specific regions for the CPU interfaces. This is
       * necessary for "franken-GIC" implementations, for example on
 diff --git a/hw/intc/arm_gic_common.c b/hw/intc/arm_gic_common.c
-index 5ac56e3..99c0858 100644
+index 5ac56e338..99c085868 100644
 --- a/hw/intc/arm_gic_common.c
 +++ b/hw/intc/arm_gic_common.c
 @@ -98,6 +98,42 @@ static const VMStateDescription vmstate_gic_virt_state = {
@@ -1012,7 +1012,7 @@ index 5ac56e3..99c0858 100644
  
      if (s->virt_extn) {
 diff --git a/hw/intc/arm_gicv3.c b/hw/intc/arm_gicv3.c
-index 58e18ff..c6f0a15 100644
+index 58e18fff5..c6f0a155a 100644
 --- a/hw/intc/arm_gicv3.c
 +++ b/hw/intc/arm_gicv3.c
 @@ -17,6 +17,8 @@
@@ -1301,7 +1301,7 @@ index 58e18ff..c6f0a15 100644
  }
  
 diff --git a/hw/intc/arm_gicv3_common.c b/hw/intc/arm_gicv3_common.c
-index 76b2283..12f56cf 100644
+index 76b2283c9..12f56cf38 100644
 --- a/hw/intc/arm_gicv3_common.c
 +++ b/hw/intc/arm_gicv3_common.c
 @@ -25,6 +25,7 @@
@@ -1454,7 +1454,7 @@ index 76b2283..12f56cf 100644
      /* GICD_IROUTER are UNKNOWN at reset so in theory the guest must
       * write these to get sane behaviour and we need not populate the
 diff --git a/hw/intc/arm_gicv3_cpuif.c b/hw/intc/arm_gicv3_cpuif.c
-index de37465..42e7b80 100644
+index de37465bc..42e7b80c1 100644
 --- a/hw/intc/arm_gicv3_cpuif.c
 +++ b/hw/intc/arm_gicv3_cpuif.c
 @@ -16,6 +16,7 @@
@@ -1733,7 +1733,7 @@ index de37465..42e7b80 100644
      trace_gicv3_icc_nmiar1_read(gicv3_redist_affid(cs), intid);
      return intid;
 diff --git a/hw/intc/arm_gicv3_redist.c b/hw/intc/arm_gicv3_redist.c
-index 90b238f..ebdfe02 100644
+index 90b238fac..ebdfe0258 100644
 --- a/hw/intc/arm_gicv3_redist.c
 +++ b/hw/intc/arm_gicv3_redist.c
 @@ -11,6 +11,7 @@
@@ -1843,7 +1843,7 @@ index 90b238f..ebdfe02 100644
          src_pend = 0;
          address_space_write(as, src_baddr + i, MEMTXATTRS_UNSPECIFIED,
 diff --git a/hw/intc/gic_internal.h b/hw/intc/gic_internal.h
-index 8ddbf55..367098d 100644
+index 8ddbf554c..367098dfa 100644
 --- a/hw/intc/gic_internal.h
 +++ b/hw/intc/gic_internal.h
 @@ -319,7 +319,9 @@ static inline int gic_get_priority(GICState *s, int irq, int cpu)
@@ -1858,7 +1858,7 @@ index 8ddbf55..367098d 100644
  }
  
 diff --git a/hw/intc/i8259.c b/hw/intc/i8259.c
-index d88b20f..63fc57e 100644
+index d88b20f40..63fc57e0e 100644
 --- a/hw/intc/i8259.c
 +++ b/hw/intc/i8259.c
 @@ -23,6 +23,10 @@
@@ -2124,7 +2124,7 @@ index d88b20f..63fc57e 100644
  }
  
 diff --git a/hw/intc/i8259_common.c b/hw/intc/i8259_common.c
-index c77ff68..ce8756c 100644
+index c77ff683b..ce8756c63 100644
 --- a/hw/intc/i8259_common.c
 +++ b/hw/intc/i8259_common.c
 @@ -50,6 +50,15 @@ void pic_reset_common(PICCommonState *s)
@@ -2188,7 +2188,7 @@ index c77ff68..ce8756c 100644
      }
  };
 diff --git a/hw/intc/ioapic.c b/hw/intc/ioapic.c
-index 8cd1d85..9013d6d 100644
+index 8cd1d85e0..9013d6da7 100644
 --- a/hw/intc/ioapic.c
 +++ b/hw/intc/ioapic.c
 @@ -21,6 +21,7 @@
@@ -2252,7 +2252,7 @@ index 8cd1d85..9013d6d 100644
      s->machine_done.notify = ioapic_machine_done_notify;
      qemu_add_machine_init_done_notifier(&s->machine_done);
 diff --git a/hw/pci/msi.c b/hw/pci/msi.c
-index b9f5b45..ece0270 100644
+index b9f5b4592..ece027037 100644
 --- a/hw/pci/msi.c
 +++ b/hw/pci/msi.c
 @@ -22,6 +22,7 @@
@@ -2291,7 +2291,7 @@ index b9f5b45..ece0270 100644
  
  /* Normally called by pci_default_write_config(). */
 diff --git a/hw/pci/msix.c b/hw/pci/msix.c
-index 66f27b9..53de0d0 100644
+index 66f27b9d7..53de0d09c 100644
 --- a/hw/pci/msix.c
 +++ b/hw/pci/msix.c
 @@ -15,6 +15,7 @@
@@ -2337,7 +2337,7 @@ index 66f27b9..53de0d0 100644
  
  void msix_reset(PCIDevice *dev)
 diff --git a/include/hw/i386/apic_internal.h b/include/hw/i386/apic_internal.h
-index d6e8583..8adfed4 100644
+index d6e85833d..8adfed4b2 100644
 --- a/include/hw/i386/apic_internal.h
 +++ b/include/hw/i386/apic_internal.h
 @@ -171,6 +171,10 @@ struct APICCommonState {
@@ -2352,7 +2352,7 @@ index d6e8583..8adfed4 100644
      uint32_t esr; /* error register */
      uint32_t icr[2];
 diff --git a/include/hw/intc/arm_gic_common.h b/include/hw/intc/arm_gic_common.h
-index 97fea41..540c09f 100644
+index 97fea4102..540c09f92 100644
 --- a/include/hw/intc/arm_gic_common.h
 +++ b/include/hw/intc/arm_gic_common.h
 @@ -95,6 +95,12 @@ struct GICState {
@@ -2369,7 +2369,7 @@ index 97fea41..540c09f 100644
      uint16_t priority_mask[GIC_NCPU_VCPU];
      uint16_t running_priority[GIC_NCPU_VCPU];
 diff --git a/include/hw/intc/arm_gicv3_common.h b/include/hw/intc/arm_gicv3_common.h
-index a3d6a0e..d04f9b7 100644
+index a3d6a0e50..d04f9b76e 100644
 --- a/include/hw/intc/arm_gicv3_common.h
 +++ b/include/hw/intc/arm_gicv3_common.h
 @@ -152,6 +152,11 @@ struct GICv3CPUState {
@@ -2398,7 +2398,7 @@ index a3d6a0e..d04f9b7 100644
       * in the IROUTER registers
       */
 diff --git a/include/hw/isa/i8259_internal.h b/include/hw/isa/i8259_internal.h
-index f9dcc41..d5c5294 100644
+index f9dcc4163..d5c5294fe 100644
 --- a/include/hw/isa/i8259_internal.h
 +++ b/include/hw/isa/i8259_internal.h
 @@ -62,6 +62,11 @@ struct PICCommonState {
@@ -2414,7 +2414,7 @@ index f9dcc41..d5c5294 100644
      uint32_t master; /* reflects /SP input pin */
      uint32_t iobase;
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 4ff5163..92f634d 100644
+index 4ff51630a..92f634dd2 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -208,6 +208,107 @@ bool qemu_crucible_fault_instruction_ensure_registered(void);
@@ -2526,7 +2526,7 @@ index 4ff5163..92f634d 100644
      QEMU_CRUCIBLE_MEMORY_FETCH = 0x01,
      QEMU_CRUCIBLE_MEMORY_CPU_LOAD = 0x02,
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index a3645bf..acf0acb 100644
+index a3645bf1a..acf0acba7 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1727,6 +1727,44 @@ size_t qemu_plugin_crucible_fault_instruction_manifest(
@@ -2576,7 +2576,7 @@ index a3645bf..acf0acb 100644
  int qemu_plugin_crucible_fault_register_bind_architecture(
 diff --git a/plugins/crucible-fault-interrupt.c b/plugins/crucible-fault-interrupt.c
 new file mode 100644
-index 0000000..c376c92
+index 000000000..c376c9236
 --- /dev/null
 +++ b/plugins/crucible-fault-interrupt.c
 @@ -0,0 +1,1852 @@
@@ -4433,7 +4433,7 @@ index 0000000..c376c92
 +    return true;
 +}
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index 76b092a..9fbb681 100644
+index 76b092a32..9fbb68197 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -2198,6 +2198,7 @@ static bool node_operation_valid(uint16_t command_kind, uint16_t operation)
@@ -4499,7 +4499,7 @@ index 76b092a..9fbb681 100644
      case CRUCIBLE_FAULT_COMMAND_CPU_EXCEPTION:
          handler->capability.required_feature_bits =
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
-index 8f34479..566e349 100644
+index 8f34479d1..566e349a8 100644
 --- a/plugins/crucible-fault.c
 +++ b/plugins/crucible-fault.c
 @@ -394,7 +394,8 @@ size_t qemu_plugin_crucible_fault_capabilities(
@@ -4513,7 +4513,7 @@ index 8f34479..566e349 100644
      }
      qemu_crucible_fault_registry_seal();
 diff --git a/plugins/meson.build b/plugins/meson.build
-index 75bafa1..dd93f06 100644
+index 75bafa1d4..dd93f06d4 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
 @@ -62,6 +62,7 @@ user_ss.add(files('user.c', 'api-user.c'))
@@ -4526,7 +4526,7 @@ index 75bafa1..dd93f06 100644
  
  common_ss.add(files('loader.c', 'api.c', 'core.c'))
 diff --git a/target/arm/helper.c b/target/arm/helper.c
-index 72dba9c..6dd86e2 100644
+index 72dba9ce5..6dd86e210 100644
 --- a/target/arm/helper.c
 +++ b/target/arm/helper.c
 @@ -28,6 +28,7 @@

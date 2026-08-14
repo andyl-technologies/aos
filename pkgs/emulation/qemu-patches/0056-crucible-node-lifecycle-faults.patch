@@ -1,5 +1,5 @@
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index 8bc1b21..8502efe 100644
+index 8bc1b2109..8502efe20 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -32,6 +32,7 @@
@@ -177,7 +177,7 @@ index 8bc1b21..8502efe 100644
              /*
               * When all cpus are sleeping (e.g in WFI), to avoid a deadlock
 diff --git a/hw/intc/apic_common.c b/hw/intc/apic_common.c
-index 7bddd0f..7033020 100644
+index 7bddd0f70..703302097 100644
 --- a/hw/intc/apic_common.c
 +++ b/hw/intc/apic_common.c
 @@ -509,6 +509,7 @@ static void apic_common_class_init(ObjectClass *klass, void *data)
@@ -189,7 +189,7 @@ index 7bddd0f..7033020 100644
      device_class_set_props(dc, apic_properties_common);
      dc->realize = apic_common_realize;
 diff --git a/hw/intc/arm_gic_common.c b/hw/intc/arm_gic_common.c
-index 99c0858..620d00c 100644
+index 99c085868..620d00cf5 100644
 --- a/hw/intc/arm_gic_common.c
 +++ b/hw/intc/arm_gic_common.c
 @@ -417,6 +417,7 @@ static void arm_gic_common_class_init(ObjectClass *klass, void *data)
@@ -201,7 +201,7 @@ index 99c0858..620d00c 100644
      dc->realize = arm_gic_common_realize;
      device_class_set_props(dc, arm_gic_common_properties);
 diff --git a/hw/intc/arm_gicv3_common.c b/hw/intc/arm_gicv3_common.c
-index 12f56cf..25464c7 100644
+index 12f56cf38..25464c762 100644
 --- a/hw/intc/arm_gicv3_common.c
 +++ b/hw/intc/arm_gicv3_common.c
 @@ -722,6 +722,7 @@ static void arm_gicv3_common_class_init(ObjectClass *klass, void *data)
@@ -213,7 +213,7 @@ index 12f56cf..25464c7 100644
      dc->realize = arm_gicv3_common_realize;
      device_class_set_props(dc, arm_gicv3_common_properties);
 diff --git a/hw/intc/i8259_common.c b/hw/intc/i8259_common.c
-index ce8756c..e0d38e1 100644
+index ce8756c63..e0d38e1ca 100644
 --- a/hw/intc/i8259_common.c
 +++ b/hw/intc/i8259_common.c
 @@ -244,6 +244,7 @@ static void pic_common_class_init(ObjectClass *klass, void *data)
@@ -225,7 +225,7 @@ index ce8756c..e0d38e1 100644
      device_class_set_props(dc, pic_properties_common);
      dc->realize = pic_common_realize;
 diff --git a/hw/intc/ioapic_common.c b/hw/intc/ioapic_common.c
-index 7698963..a6abec5 100644
+index 769896353..a6abec554 100644
 --- a/hw/intc/ioapic_common.c
 +++ b/hw/intc/ioapic_common.c
 @@ -202,6 +202,7 @@ static void ioapic_common_class_init(ObjectClass *klass, void *data)
@@ -237,7 +237,7 @@ index 7698963..a6abec5 100644
      dc->vmsd = &vmstate_ioapic_common;
      ic->print_info = ioapic_print_info;
 diff --git a/hw/rtc/mc146818rtc.c b/hw/rtc/mc146818rtc.c
-index e322fc2..d727879 100644
+index e322fc2ff..d727879ed 100644
 --- a/hw/rtc/mc146818rtc.c
 +++ b/hw/rtc/mc146818rtc.c
 @@ -1024,6 +1024,7 @@ static void rtc_class_initfn(ObjectClass *klass, void *data)
@@ -249,7 +249,7 @@ index e322fc2..d727879 100644
      dc->vmsd = &vmstate_rtc;
      rc->phases.enter = rtc_reset_enter;
 diff --git a/hw/rtc/pl031.c b/hw/rtc/pl031.c
-index ed439bd..29c87a3 100644
+index ed439bd3a..29c87a3d9 100644
 --- a/hw/rtc/pl031.c
 +++ b/hw/rtc/pl031.c
 @@ -336,6 +336,7 @@ static void pl031_class_init(ObjectClass *klass, void *data)
@@ -261,7 +261,7 @@ index ed439bd..29c87a3 100644
      device_class_set_props(dc, pl031_properties);
  }
 diff --git a/hw/timer/arm_timer.c b/hw/timer/arm_timer.c
-index 1213b77..c972392 100644
+index 1213b77aa..c972392c6 100644
 --- a/hw/timer/arm_timer.c
 +++ b/hw/timer/arm_timer.c
 @@ -396,6 +396,7 @@ static void sp804_class_init(ObjectClass *klass, void *data)
@@ -273,7 +273,7 @@ index 1213b77..c972392 100644
      device_class_set_props(k, sp804_properties);
      k->vmsd = &vmstate_sp804;
 diff --git a/hw/timer/hpet.c b/hw/timer/hpet.c
-index ccb97b6..14dafd9 100644
+index ccb97b680..14dafd921 100644
 --- a/hw/timer/hpet.c
 +++ b/hw/timer/hpet.c
 @@ -740,6 +740,7 @@ static void hpet_device_class_init(ObjectClass *klass, void *data)
@@ -285,7 +285,7 @@ index ccb97b6..14dafd9 100644
      device_class_set_legacy_reset(dc, hpet_reset);
      dc->vmsd = &vmstate_hpet;
 diff --git a/hw/timer/i8254_common.c b/hw/timer/i8254_common.c
-index 29105af..900b0e1 100644
+index 29105afcc..900b0e183 100644
 --- a/hw/timer/i8254_common.c
 +++ b/hw/timer/i8254_common.c
 @@ -246,6 +246,7 @@ static void pit_common_class_init(ObjectClass *klass, void *data)
@@ -297,7 +297,7 @@ index 29105af..900b0e1 100644
      dc->vmsd = &vmstate_pit_common;
      /*
 diff --git a/include/hw/qdev-core.h b/include/hw/qdev-core.h
-index 530f3da..bed976a 100644
+index 530f3da70..bed976ac0 100644
 --- a/include/hw/qdev-core.h
 +++ b/include/hw/qdev-core.h
 @@ -160,6 +160,13 @@ struct DeviceClass {
@@ -315,7 +315,7 @@ index 530f3da..bed976a 100644
      /**
       * @legacy_reset: deprecated device reset method pointer
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 8b3eced..565a84c 100644
+index 8b3eced85..565a84c57 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -72,6 +72,7 @@ void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
@@ -354,7 +354,7 @@ index 8b3eced..565a84c 100644
  /*
   * Architecture interrupt-controller interception contract.  These objects are
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index e384dc8..c227d35 100644
+index e384dc8bc..c227d3593 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -2044,6 +2044,20 @@ QEMU_PLUGIN_API
@@ -379,7 +379,7 @@ index e384dc8..c227d35 100644
   * qemu_plugin_crucible_fault_submit() - copy and arm a validated command
   * @command: plugin-validated fixed command fields
 diff --git a/migration/savevm.c b/migration/savevm.c
-index 3c3c64d..238a29e 100644
+index 3c3c64dff..238a29ec7 100644
 --- a/migration/savevm.c
 +++ b/migration/savevm.c
 @@ -28,6 +28,8 @@
@@ -473,7 +473,7 @@ index 3c3c64d..238a29e 100644
          }
          ret = vmstate_save(f, se, NULL, &local_err);
 diff --git a/migration/savevm.h b/migration/savevm.h
-index 58761d8..0df53f1 100644
+index 58761d88e..0df53f173 100644
 --- a/migration/savevm.h
 +++ b/migration/savevm.h
 @@ -62,6 +62,12 @@ void qemu_savevm_send_postcopy_ram_discard(QEMUFile *f, const char *name,
@@ -491,7 +491,7 @@ index 58761d8..0df53f1 100644
  
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
 new file mode 100644
-index 0000000..310a425
+index 000000000..310a425f7
 --- /dev/null
 +++ b/plugins/crucible-fault-lifecycle.c
 @@ -0,0 +1,1558 @@
@@ -2054,7 +2054,7 @@ index 0000000..310a425
 +
 +type_init(crucible_lifecycle_register)
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index ec77da2..ecaf099 100644
+index ec77da29b..ecaf0998a 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -1670,18 +1670,34 @@ static bool node_json_watchdog(const QObject *object)
@@ -2186,7 +2186,7 @@ index ec77da2..ecaf099 100644
      QemuCrucibleFaultEventReservation *reservation)
  {
 diff --git a/plugins/crucible-fault-vcpu-service.c b/plugins/crucible-fault-vcpu-service.c
-index ff1e179..1327286 100644
+index ff1e179e4..132728656 100644
 --- a/plugins/crucible-fault-vcpu-service.c
 +++ b/plugins/crucible-fault-vcpu-service.c
 @@ -513,6 +513,11 @@ bool qemu_crucible_fault_vcpu_service_eligible(CPUState *cpu)
@@ -2202,7 +2202,7 @@ index ff1e179..1327286 100644
          return true;
      }
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
-index 31b19e1..fe7b0ca 100644
+index 31b19e1e4..fe7b0ca9e 100644
 --- a/plugins/crucible-fault.c
 +++ b/plugins/crucible-fault.c
 @@ -685,6 +685,13 @@ uint64_t qemu_crucible_fault_next_icount(uint16_t phase)
@@ -2220,7 +2220,7 @@ index 31b19e1..fe7b0ca 100644
           crucible_boundary_deadlines && i < crucible_boundary_deadlines->len;
           i++) {
 diff --git a/plugins/meson.build b/plugins/meson.build
-index 30ff5ba..3c76bd9 100644
+index 30ff5ba97..3c76bd91d 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
 @@ -65,6 +65,7 @@ system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c',
@@ -2233,7 +2233,7 @@ index 30ff5ba..3c76bd9 100644
  
  common_ss.add(files('loader.c', 'api.c', 'core.c'))
 diff --git a/system/runstate.c b/system/runstate.c
-index d426fee..b66a53b 100644
+index d426fee75..b66a53bfc 100644
 --- a/system/runstate.c
 +++ b/system/runstate.c
 @@ -42,6 +42,7 @@

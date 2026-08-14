@@ -233,6 +233,7 @@
   # patch -p1 < ${./qemu-patches/0070-crucible-fault-vmstate.patch}
   # patch -p1 < ${./qemu-patches/0071-crucible-lifecycle-precondition.patch}
   # patch -p1 < ${./qemu-patches/0072-crucible-typed-node-result-schema.patch}
+  # patch -p1 < ${./qemu-patches/0073-crucible-device-wait-vmstop.patch} # nonblocking exact-callback VM-stop handoff
 in
   assert _testArtifactPolicy == null;
   mkDerivation {

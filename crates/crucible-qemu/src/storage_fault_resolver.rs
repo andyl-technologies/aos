@@ -2143,17 +2143,26 @@ fn validate_request_opportunity(
         }
         BlockOp::Flush | BlockOp::GetLength => (None, None),
     };
-    let payload_matches = matches!(
-        opportunity.payload(),
+    let payload_matches = match opportunity.payload() {
         OpportunityPayload::StorageRequest {
             request_sequence: payload_sequence,
             start_byte,
             length_bytes,
             request_digest: payload_digest,
-        } if *payload_sequence == request_sequence
-            && (*start_byte, *length_bytes) == expected_range
-            && *payload_digest == request_digest
-    );
+        }
+        | OpportunityPayload::StorageCompletion {
+            request_sequence: payload_sequence,
+            start_byte,
+            length_bytes,
+            request_digest: payload_digest,
+            ..
+        } => {
+            *payload_sequence == request_sequence
+                && (*start_byte, *length_bytes) == expected_range
+                && *payload_digest == request_digest
+        }
+        _ => false,
+    };
     if opportunity.target() != target
         || opportunity.operation() != block_fault_operation(request.op)
         || opportunity.sequence() != request_sequence

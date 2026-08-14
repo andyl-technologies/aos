@@ -61,7 +61,7 @@ pub struct NodeSlot {
     device_io_active: AtomicU8,
     _pad0: u8,
     publish_gen: AtomicU32,
-    _pad1: [u8; 4],
+    control_boundary_ack: AtomicU32,
     device_completion_deadline_icount: AtomicU64,
     preemption_at_icount: AtomicU64,
     preemption_deadline_icount: AtomicU64,
@@ -91,7 +91,7 @@ impl Clone for NodeSlot {
             device_io_active: AtomicU8::new(self.device_io_active.load(Ordering::Acquire)),
             _pad0: 0,
             publish_gen: AtomicU32::new(self.publish_gen.load(Ordering::Acquire)),
-            _pad1: [0; 4],
+            control_boundary_ack: AtomicU32::new(self.control_boundary_ack.load(Ordering::Acquire)),
             device_completion_deadline_icount: AtomicU64::new(
                 self.device_completion_deadline_icount
                     .load(Ordering::Acquire),
@@ -152,6 +152,9 @@ pub const NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET: usize =
 pub const NODE_SLOT_PAD0_OFFSET: usize = core::mem::offset_of!(NodeSlot, _pad0);
 /// Byte offset of [`NodeSlot`]'s publish-generation field.
 pub const NODE_SLOT_PUBLISH_GEN_OFFSET: usize = core::mem::offset_of!(NodeSlot, publish_gen);
+/// Byte offset of the plugin-published drained-control-boundary acknowledgement.
+pub const NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, control_boundary_ack);
 /// Byte offset of [`NodeSlot`]'s host-owned device-completion-deadline field.
 pub const NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET: usize =
     core::mem::offset_of!(NodeSlot, device_completion_deadline_icount);
@@ -208,7 +211,7 @@ const _: () = assert!(NODE_SLOT_KIND_OFFSET == 37);
 const _: () = assert!(NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET == 38);
 const _: () = assert!(NODE_SLOT_PAD0_OFFSET == 39);
 const _: () = assert!(NODE_SLOT_PUBLISH_GEN_OFFSET == 40);
-const _: () = assert!(core::mem::offset_of!(NodeSlot, _pad1) == 44);
+const _: () = assert!(NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET == 44);
 const _: () = assert!(NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET == 48);
 const _: () = assert!(NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET == 56);
 const _: () = assert!(NODE_SLOT_PREEMPTION_DEADLINE_ICOUNT_OFFSET == 64);
@@ -245,7 +248,9 @@ impl NodeSlot {
             device_io_active: AtomicU8::new(0),
             _pad0: 0,
             publish_gen: AtomicU32::new(0),
-            _pad1: [0; 4],
+            // Odd values are acknowledged; the host publishes the even
+            // successor while one main-loop control boundary is requested.
+            control_boundary_ack: AtomicU32::new(1),
             device_completion_deadline_icount: AtomicU64::new(0),
             preemption_at_icount: AtomicU64::new(0),
             preemption_deadline_icount: AtomicU64::new(0),
@@ -468,6 +473,48 @@ impl NodeSlot {
         Ok(())
     }
 
+    /// Republishes the exact coordinate observed by a QEMU control callback.
+    ///
+    /// At the scheduler ceiling, the callback publishes an exact idle boundary:
+    /// the vCPU has yielded, the ceiling prevents another dispatch, and QEMU has
+    /// already run the preceding device bottom halves. An existing idle
+    /// publication retains its future wake deadline so the scheduler can still
+    /// classify an early pause against the original quantum horizon. A
+    /// previously running node instead receives the exact ceiling as its idle
+    /// coordinate. Below the ceiling, the publication preserves the preceding
+    /// classification because an arbitrary main-loop yield is not proof of
+    /// scheduler idleness. Device work is represented independently by
+    /// `device_io_active`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError`] when `reached_icount` exceeds the scheduler
+    /// ceiling or virtual-time conversion fails under `shift_bits`.
+    pub fn publish_control_boundary(
+        &self,
+        reached_icount: u64,
+        raw_icount: u64,
+        shift_bits: u8,
+    ) -> Result<(), NodeSlotError> {
+        self.check_node_may_advance_to(reached_icount)?;
+        let current_ns = icount_to_virtual_ns(reached_icount, shift_bits)?;
+        let was_idle = self.status.load(Ordering::Acquire) == STATUS_IDLE;
+        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        self.current_icount.store(reached_icount, Ordering::Release);
+        self.current_ns.store(current_ns, Ordering::Release);
+        self.logical_time_raw_icount
+            .store(raw_icount, Ordering::Release);
+        if reached_icount == self.max_advance_icount.load(Ordering::Acquire) {
+            if !was_idle {
+                self.idle_wake_icount
+                    .store(reached_icount, Ordering::Release);
+            }
+            self.status.store(STATUS_IDLE, Ordering::Release);
+        }
+        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
     /// Arms one host-to-plugin logical-time restore transaction.
     ///
     /// The caller must hold the external executor stopped. The returned
@@ -575,6 +622,12 @@ impl NodeSlot {
             if !before.is_multiple_of(2) {
                 continue;
             }
+            // Read the independently published control acknowledgement before
+            // the fields it orders. Its acquire pairs with the plugin's release
+            // only for operations that follow this load; reading it later could
+            // return a new acknowledgement beside slot fields fetched before
+            // the corresponding control callback published them.
+            let control_boundary_ack = self.control_boundary_ack.load(Ordering::Acquire);
             let snapshot = NodeSlotSnapshot {
                 current_icount: self.current_icount.load(Ordering::Acquire),
                 current_ns: self.current_ns.load(Ordering::Acquire),
@@ -585,6 +638,7 @@ impl NodeSlot {
                 kind: self.kind.load(Ordering::Acquire),
                 device_io_active: self.device_io_active.load(Ordering::Acquire),
                 publish_gen: before,
+                control_boundary_ack,
                 logical_time_raw_icount: self.logical_time_raw_icount.load(Ordering::Acquire),
                 logical_time_restore_target: self
                     .logical_time_restore_target
@@ -604,9 +658,66 @@ impl NodeSlot {
     /// Returns `true` when all forward-compatible reserved slot bytes are zero.
     #[must_use]
     pub fn reserved_bytes_are_zero(&self) -> bool {
-        self._pad0 == 0
-            && self._pad1.iter().all(|byte| *byte == 0)
-            && self._pad2.iter().all(|byte| *byte == 0)
+        self._pad0 == 0 && self._pad2.iter().all(|byte| *byte == 0)
+    }
+
+    /// Requests one QEMU main-loop control boundary and wakes an idle plugin.
+    ///
+    /// Odd values are acknowledged tokens. The host publishes their even
+    /// successor as the request and leaves an already-outstanding even request
+    /// unchanged. The plugin must publish the boundary state before storing the
+    /// odd successor as its release acknowledgement.
+    ///
+    /// The plugin's vCPU-resume callback recognizes the outstanding even token
+    /// and preserves its halt/idle classification while returning control to
+    /// QEMU's main loop. The caller also rings QEMU's eventfd after publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError::FutexWake`] when the non-private futex wake
+    /// syscall fails.
+    pub fn request_control_boundary(&self) -> Result<u32, NodeSlotError> {
+        let request = loop {
+            let observed = self.control_boundary_ack.load(Ordering::Acquire);
+            if observed & 1 == 0 {
+                break observed;
+            }
+            let request = observed.wrapping_add(1);
+            match self.control_boundary_ack.compare_exchange(
+                observed,
+                request,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break request,
+                Err(_) => continue,
+            }
+        };
+        self.wake_after_signal_increment()
+            .map_err(|source| NodeSlotError::FutexWake { source })?;
+        Ok(request)
+    }
+
+    /// Returns whether the host has published an unacknowledged even request.
+    #[must_use]
+    pub fn control_boundary_is_requested(&self) -> bool {
+        self.control_boundary_ack.load(Ordering::Acquire) & 1 == 0
+    }
+
+    /// Release-acknowledges the currently requested QEMU main-loop boundary.
+    ///
+    /// The caller must publish the exact boundary state first. If no request is
+    /// pending, this method is an idempotent no-op and returns the current odd
+    /// acknowledgement.
+    pub fn acknowledge_control_boundary(&self) -> u32 {
+        let request = self.control_boundary_ack.load(Ordering::Acquire);
+        if request & 1 != 0 {
+            return request;
+        }
+        let acknowledgement = request.wrapping_add(1);
+        self.control_boundary_ack
+            .store(acknowledgement, Ordering::Release);
+        acknowledgement
     }
 
     /// Publishes the host-computed device-completion deadline icount for this slot.
@@ -727,6 +838,8 @@ pub struct NodeSlotSnapshot {
     pub device_io_active: u8,
     /// The even publish generation observed for this snapshot.
     pub publish_gen: u32,
+    /// Plugin acknowledgement count for drained QEMU control boundaries.
+    pub control_boundary_ack: u32,
     /// QEMU's raw retired-instruction count paired with the published logical time.
     pub logical_time_raw_icount: u64,
     /// Logical target carried by the most recent restore request.
@@ -761,4 +874,38 @@ pub fn icount_to_virtual_ns(icount: u64, shift_bits: u8) -> Result<u64, NodeSlot
     icount
         .checked_mul(nanos_per_icount)
         .ok_or(NodeSlotError::VirtualTimeOverflow { icount, shift_bits })
+}
+
+#[cfg(test)]
+mod control_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn repeated_request_and_acknowledgement_are_idempotent() {
+        let slot = NodeSlot::new(KIND_VM);
+        let request = slot
+            .request_control_boundary()
+            .unwrap_or_else(|error| panic!("first request should publish: {error}"));
+        let repeated = slot
+            .request_control_boundary()
+            .unwrap_or_else(|error| panic!("repeated request should publish: {error}"));
+
+        assert_eq!(request, 2);
+        assert_eq!(repeated, request);
+        assert_eq!(slot.acknowledge_control_boundary(), 3);
+        assert_eq!(slot.acknowledge_control_boundary(), 3);
+    }
+
+    #[test]
+    fn request_and_acknowledgement_wrap_through_zero() {
+        let slot = NodeSlot::new(KIND_VM);
+        slot.control_boundary_ack.store(u32::MAX, Ordering::Release);
+
+        let request = slot
+            .request_control_boundary()
+            .unwrap_or_else(|error| panic!("wrapped request should publish: {error}"));
+
+        assert_eq!(request, 0);
+        assert_eq!(slot.acknowledge_control_boundary(), 1);
+    }
 }

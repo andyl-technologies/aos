@@ -1,5 +1,5 @@
 diff --git a/MAINTAINERS b/MAINTAINERS
-index c03d797..b5b12db 100644
+index c03d7973b..b5b12db2e 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
 @@ -3839,6 +3839,7 @@ S: Maintained
@@ -11,7 +11,7 @@ index c03d797..b5b12db 100644
  F: tests/functional/test_aarch64_tcg_plugins.py
  F: contrib/plugins/
 diff --git a/hw/core/cpu-system.c b/hw/core/cpu-system.c
-index aed5076..6d1775e 100644
+index aed5076ec..6d1775e9b 100644
 --- a/hw/core/cpu-system.c
 +++ b/hw/core/cpu-system.c
 @@ -303,3 +303,18 @@ void cpu_vmstate_unregister(CPUState *cpu)
@@ -34,7 +34,7 @@ index aed5076..6d1775e 100644
 +    return ops->get_fault_translation(cpu, addr, result);
 +}
 diff --git a/include/exec/memory.h b/include/exec/memory.h
-index 2b1dd71..1a444df 100644
+index 2b1dd7183..1a444df77 100644
 --- a/include/exec/memory.h
 +++ b/include/exec/memory.h
 @@ -2027,6 +2027,21 @@ MemoryRegion *memory_region_from_host(void *ptr, ram_addr_t *offset);
@@ -60,7 +60,7 @@ index 2b1dd71..1a444df 100644
   *
   * Resizing RAM while migrating can result in the migration being canceled.
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index abd8764..0258271 100644
+index abd8764e8..025827193 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
 @@ -702,6 +702,44 @@ enum CPUDumpFlags {
@@ -109,7 +109,7 @@ index abd8764..0258271 100644
   * cpu_get_phys_page_attrs_debug:
   * @cpu: The CPU to obtain the physical page address for.
 diff --git a/include/hw/core/sysemu-cpu-ops.h b/include/hw/core/sysemu-cpu-ops.h
-index 8778923..06b7cb0 100644
+index 877892373..06b7cb016 100644
 --- a/include/hw/core/sysemu-cpu-ops.h
 +++ b/include/hw/core/sysemu-cpu-ops.h
 @@ -42,6 +42,12 @@ typedef struct SysemuCPUOps {
@@ -126,7 +126,7 @@ index 8778923..06b7cb0 100644
       * @asidx_from_attrs: Callback to return the CPU AddressSpace to use for
       *       a memory access with the specified memory transaction attributes.
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 926623a..bbe9daa 100644
+index 926623a8f..bbe9daa2b 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -48,6 +48,7 @@ struct QemuCrucibleFaultHandler {
@@ -138,7 +138,7 @@ index 926623a..bbe9daa 100644
  void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
                                             uint64_t observed_icount);
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 999a102..a837a4e 100644
+index 999a10281..a837a4e85 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1409,6 +1409,22 @@ QEMU_PLUGIN_API
@@ -165,7 +165,7 @@ index 999a102..a837a4e 100644
   * qemu_plugin_crucible_write_memory_vaddr() - write guest virtual memory
   * @addr: virtual address at which to begin the write
 diff --git a/plugins/api.c b/plugins/api.c
-index 8c1f5b4..964a40a 100644
+index 8c1f5b41d..964a40aa4 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
 @@ -468,6 +468,21 @@ bool qemu_plugin_read_memory_vaddr(uint64_t addr, GByteArray *data, size_t len)
@@ -192,7 +192,7 @@ index 8c1f5b4..964a40a 100644
                                               size_t len)
 diff --git a/plugins/crucible-fault-memory.c b/plugins/crucible-fault-memory.c
 new file mode 100644
-index 0000000..b1422b8
+index 000000000..b1422b8e9
 --- /dev/null
 +++ b/plugins/crucible-fault-memory.c
 @@ -0,0 +1,1394 @@
@@ -1591,7 +1591,7 @@ index 0000000..b1422b8
 +    registered = true;
 +}
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
-index 17a0eb3..b2e1dfc 100644
+index 17a0eb3b4..b2e1dfca2 100644
 --- a/plugins/crucible-fault.c
 +++ b/plugins/crucible-fault.c
 @@ -14,6 +14,7 @@
@@ -1733,7 +1733,7 @@ index 17a0eb3..b2e1dfc 100644
                                            command->semantic_version);
      if (!handler) {
 diff --git a/plugins/meson.build b/plugins/meson.build
-index 955a3ec..e5bd2ce 100644
+index 955a3ec97..e5bd2ce7c 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
 @@ -59,6 +59,7 @@ if host_os == 'windows'
@@ -1746,7 +1746,7 @@ index 955a3ec..e5bd2ce 100644
  
  common_ss.add(files('loader.c', 'api.c', 'core.c'))
 diff --git a/system/physmem.c b/system/physmem.c
-index 333a5eb..a16c3ad 100644
+index 333a5eb94..a16c3ad01 100644
 --- a/system/physmem.c
 +++ b/system/physmem.c
 @@ -2835,6 +2835,26 @@ static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
@@ -1777,7 +1777,7 @@ index 333a5eb..a16c3ad 100644
  {
      /*
 diff --git a/target/arm/cpu.c b/target/arm/cpu.c
-index 7413b57..6657597 100644
+index 7413b57aa..6657597e5 100644
 --- a/target/arm/cpu.c
 +++ b/target/arm/cpu.c
 @@ -37,6 +37,7 @@
@@ -1809,7 +1809,7 @@ index 7413b57..6657597 100644
  
  type_init(arm_cpu_register_types)
 diff --git a/target/arm/cpu.h b/target/arm/cpu.h
-index a8177c6..290efb9 100644
+index a8177c6c2..290efb9c2 100644
 --- a/target/arm/cpu.h
 +++ b/target/arm/cpu.h
 @@ -1204,6 +1204,8 @@ void arm_v7m_cpu_do_interrupt(CPUState *cpu);
@@ -1822,7 +1822,7 @@ index a8177c6..290efb9 100644
  
  int arm_cpu_gdb_read_register(CPUState *cpu, GByteArray *buf, int reg);
 diff --git a/target/arm/ptw.c b/target/arm/ptw.c
-index 4330900..011358e 100644
+index 433090034..011358e86 100644
 --- a/target/arm/ptw.c
 +++ b/target/arm/ptw.c
 @@ -3645,3 +3645,32 @@ hwaddr arm_cpu_get_phys_page_attrs_debug(CPUState *cs, vaddr addr,
@@ -1859,7 +1859,7 @@ index 4330900..011358e 100644
 +    return true;
 +}
 diff --git a/target/i386/cpu.c b/target/i386/cpu.c
-index 1b64cea..deee0bf 100644
+index 1b64ceaab..deee0bfa7 100644
 --- a/target/i386/cpu.c
 +++ b/target/i386/cpu.c
 @@ -36,6 +36,7 @@
@@ -1891,7 +1891,7 @@ index 1b64cea..deee0bf 100644
  
  type_init(x86_cpu_register_types)
 diff --git a/target/i386/cpu.h b/target/i386/cpu.h
-index 76f2444..0b07cae 100644
+index 76f24446a..0b07cae57 100644
 --- a/target/i386/cpu.h
 +++ b/target/i386/cpu.h
 @@ -2375,6 +2375,8 @@ int x86_cpu_pending_interrupt(CPUState *cs, int interrupt_request);
@@ -1904,7 +1904,7 @@ index 76f2444..0b07cae 100644
  
  /* MS-DOS compatibility mode FPU exception support */
 diff --git a/target/i386/tcg/system/excp_helper.c b/target/i386/tcg/system/excp_helper.c
-index 6876329..f7e2288 100644
+index 6876329de..f7e228874 100644
 --- a/target/i386/tcg/system/excp_helper.c
 +++ b/target/i386/tcg/system/excp_helper.c
 @@ -31,6 +31,7 @@ typedef struct TranslateParams {
@@ -2055,7 +2055,7 @@ index 6876329..f7e2288 100644
                        bool probe, uintptr_t retaddr)
 diff --git a/tests/tcg/plugins/crucible-memory.c b/tests/tcg/plugins/crucible-memory.c
 new file mode 100644
-index 0000000..e3b95f9
+index 000000000..e3b95f917
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-memory.c
 @@ -0,0 +1,954 @@
@@ -3014,7 +3014,7 @@ index 0000000..e3b95f9
 +    return 0;
 +}
 diff --git a/tests/tcg/plugins/meson.build b/tests/tcg/plugins/meson.build
-index 41f02f2..24a8a7b 100644
+index 41f02f2c7..24a8a7b92 100644
 --- a/tests/tcg/plugins/meson.build
 +++ b/tests/tcg/plugins/meson.build
 @@ -1,15 +1,18 @@

@@ -1,5 +1,5 @@
 diff --git a/MAINTAINERS b/MAINTAINERS
-index c02c8af..c03d797 100644
+index c02c8afa8..c03d7973b 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
 @@ -3838,6 +3838,7 @@ R: Pierrick Bouvier <pierrick.bouvier@linaro.org>
@@ -12,7 +12,7 @@ index c02c8af..c03d797 100644
  F: contrib/plugins/
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
 new file mode 100644
-index 0000000..4ba3752
+index 000000000..4ba375282
 --- /dev/null
 +++ b/include/qemu/crucible-fault.h
 @@ -0,0 +1,57 @@
@@ -74,7 +74,7 @@ index 0000000..4ba3752
 +
 +#endif
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index a9bf018..bd4f5e6 100644
+index a9bf01808..bd4f5e6c6 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1775,6 +1775,139 @@ uint64_t qemu_plugin_crucible_ram_hash(uint64_t *bytes_out);
@@ -219,7 +219,7 @@ index a9bf018..bd4f5e6 100644
   *
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
 new file mode 100644
-index 0000000..dd80672
+index 000000000..dd80672c8
 --- /dev/null
 +++ b/plugins/crucible-fault.c
 @@ -0,0 +1,595 @@
@@ -819,7 +819,7 @@ index 0000000..dd80672
 +
 +type_init(crucible_fault_register_abi_handlers)
 diff --git a/plugins/meson.build b/plugins/meson.build
-index 3be8245..955a3ec 100644
+index 3be8245a6..955a3ec97 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
 @@ -59,7 +59,6 @@ if host_os == 'windows'

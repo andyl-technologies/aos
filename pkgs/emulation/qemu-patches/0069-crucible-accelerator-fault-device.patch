@@ -1,5 +1,5 @@
 diff --git a/hw/virtio/Kconfig b/hw/virtio/Kconfig
-index 7648a2d..805bea4 100644
+index 7648a2d68..805bea400 100644
 --- a/hw/virtio/Kconfig
 +++ b/hw/virtio/Kconfig
 @@ -6,6 +6,11 @@ config VIRTIO_RNG
@@ -15,7 +15,7 @@ index 7648a2d..805bea4 100644
     bool
     depends on LIBCBOR && VIRTIO
 diff --git a/hw/virtio/meson.build b/hw/virtio/meson.build
-index 164f6fd..2a90eff 100644
+index 164f6fd99..2a90eff26 100644
 --- a/hw/virtio/meson.build
 +++ b/hw/virtio/meson.build
 @@ -55,6 +55,7 @@ specific_virtio_ss.add(when: 'CONFIG_VIRTIO_PMEM', if_true: files('virtio-pmem.c
@@ -36,7 +36,7 @@ index 164f6fd..2a90eff 100644
  virtio_pci_ss.add(when: 'CONFIG_VIRTIO_9P', if_true: files('virtio-9p-pci.c'))
 diff --git a/hw/virtio/virtio-crucible-accelerator-pci.c b/hw/virtio/virtio-crucible-accelerator-pci.c
 new file mode 100644
-index 0000000..63b8124
+index 000000000..63b812455
 --- /dev/null
 +++ b/hw/virtio/virtio-crucible-accelerator-pci.c
 @@ -0,0 +1,77 @@
@@ -119,7 +119,7 @@ index 0000000..63b8124
 +type_init(accelerator_pci_register)
 diff --git a/hw/virtio/virtio-crucible-accelerator.c b/hw/virtio/virtio-crucible-accelerator.c
 new file mode 100644
-index 0000000..5df609e
+index 000000000..5df609e9f
 --- /dev/null
 +++ b/hw/virtio/virtio-crucible-accelerator.c
 @@ -0,0 +1,493 @@
@@ -618,7 +618,7 @@ index 0000000..5df609e
 +type_init(accelerator_register_types)
 diff --git a/include/hw/virtio/virtio-crucible-accelerator.h b/include/hw/virtio/virtio-crucible-accelerator.h
 new file mode 100644
-index 0000000..d15d5f9
+index 000000000..d15d5f9b1
 --- /dev/null
 +++ b/include/hw/virtio/virtio-crucible-accelerator.h
 @@ -0,0 +1,58 @@
@@ -681,7 +681,7 @@ index 0000000..d15d5f9
 +
 +#endif
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 0f0fee9..ef4ece2 100644
+index 0f0fee953..ef4ece29e 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -20,6 +20,9 @@ typedef struct QemuCrucibleFaultEventReservation
@@ -735,7 +735,7 @@ index 0f0fee9..ef4ece2 100644
  bool qemu_crucible_fault_register_ensure_registered(void);
  bool qemu_crucible_fault_register_rules_active(void);
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 3584c8d..c3a4ee7 100644
+index 3584c8d89..c3a4ee710 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -324,6 +324,43 @@ typedef int (*qemu_plugin_blk_transport_restore_cb_t)(
@@ -843,7 +843,7 @@ index 3584c8d..c3a4ee7 100644
  int qemu_plugin_crucible_fault_clock_bind(
 diff --git a/plugins/crucible-fault-accelerator.c b/plugins/crucible-fault-accelerator.c
 new file mode 100644
-index 0000000..61b8623
+index 000000000..61b862304
 --- /dev/null
 +++ b/plugins/crucible-fault-accelerator.c
 @@ -0,0 +1,1563 @@
@@ -2411,7 +2411,7 @@ index 0000000..61b8623
 +    qemu_crucible_fault_vmstate_register(&accelerator_vmstate_section);
 +}
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index 1710ab3..6ceef8d 100644
+index 1710ab361..6ceef8dd2 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -2008,7 +2008,7 @@ static const NodeSchemaField schema_accel_result[] = {
@@ -2490,7 +2490,7 @@ index 1710ab3..6ceef8d 100644
              qemu_crucible_fault_event_reservation_release(
                  staging->event_reservation);
 diff --git a/plugins/meson.build b/plugins/meson.build
-index a100e60..a9448a7 100644
+index a100e609e..a9448a764 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
 @@ -69,5 +69,6 @@ system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c',

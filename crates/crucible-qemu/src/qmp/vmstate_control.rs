@@ -91,6 +91,10 @@ where
     /// Returns [`QemuNodeChannelError`] when QEMU cannot enter and confirm the
     /// paused run state.
     pub fn stop_for_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
+        let state = self.client.query_status()?;
+        if !state.running && state.status == crate::QmpRunStateKind::Paused {
+            return Ok(());
+        }
         self.client
             .stop()
             .map(|_complete| ())

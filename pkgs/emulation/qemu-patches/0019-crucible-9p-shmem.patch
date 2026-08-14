@@ -1,5 +1,5 @@
 diff --git a/hw/9pfs/virtio-9p-device.c b/hw/9pfs/virtio-9p-device.c
-index cd7cd42..6ab1622 100644
+index cd7cd42e4..6ab1622ce 100644
 --- a/hw/9pfs/virtio-9p-device.c
 +++ b/hw/9pfs/virtio-9p-device.c
 @@ -27,6 +27,8 @@
@@ -334,7 +334,7 @@ index cd7cd42..6ab1622 100644
      virtio_cleanup(vdev);
      v9fs_device_unrealize_common(s);
 diff --git a/hw/9pfs/virtio-9p.h b/hw/9pfs/virtio-9p.h
-index 20fa118..d15fa1e 100644
+index 20fa118f3..d15fa1e55 100644
 --- a/hw/9pfs/virtio-9p.h
 +++ b/hw/9pfs/virtio-9p.h
 @@ -3,6 +3,7 @@

@@ -160,13 +160,19 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             .map_err(|_| SchedulerError::BoundaryViolation {
                 message: String::from("production fault observation journal lock is poisoned"),
             })?;
-        let storage_observations = queued.snapshot();
+        let storage_observations = queued.drain_ready(
+            self.inner
+                .loop_impl()
+                .condition_event_log_prefix()
+                .point()
+                .at()
+                .ticks,
+        );
         if !storage_observations.is_empty() {
             let append = self
                 .inner
                 .loop_impl_mut()
                 .append_fault_observations(storage_observations)?;
-            queued.clear();
             merge_event_log_append(&mut outcome, append);
         }
         drop(queued);
@@ -1830,7 +1836,13 @@ impl ProductionVmLifecycleLoop {
     fn evaluate_signal_fault_boundary(
         &mut self,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
-        let coordinate = self.inner.loop_impl().frontier().ticks;
+        let coordinate = self
+            .inner
+            .loop_impl()
+            .condition_event_log_prefix()
+            .point()
+            .at()
+            .ticks;
         let append = {
             let (scheduler, backend, interceptor, pending_outputs) =
                 self.inner.network_transaction_parts_mut();

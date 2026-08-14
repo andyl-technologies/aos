@@ -356,12 +356,16 @@
       symbols = ["qemu_plugin_crucible_fault_system_manifest"];
     };
     "0071-crucible-lifecycle-precondition.patch" = {
-      kind = "interface";
-      symbols = ["qemu_crucible_fault_lifecycle_precondition"];
+      kind = "recorded";
+      symbols = [];
     };
     "0072-crucible-typed-node-result-schema.patch" = {
       kind = "recorded";
       symbols = [];
+    };
+    "0073-crucible-device-wait-vmstop.patch" = {
+      kind = "interface";
+      symbols = ["qemu_plugin_register_control_boundary_cb"];
     };
   };
 

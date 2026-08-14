@@ -362,12 +362,12 @@ pub(super) fn gate_shutdown_policy() -> QemuShutdownPolicy {
     }
 }
 
-/// Returns an async-driver policy whose advance budget is the per-step timeout.
+/// Returns an async-driver policy whose lifecycle and advance budgets share the configured bound.
 pub(super) fn gate_async_policy(completion_timeout: Duration) -> QemuAsyncDriverPolicy {
     QemuAsyncDriverPolicy::new(
-        Duration::from_secs(5),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        completion_timeout,
+        completion_timeout,
+        completion_timeout,
         completion_timeout,
     )
 }

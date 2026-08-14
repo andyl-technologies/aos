@@ -15,10 +15,15 @@
     "0012-crucible-plugin-vcpu-exit.patch"
     "0013-crucible-plugin-wake-fd.patch"
     "0014-crucible-plugin-tcg-exec-cb.patch"
+    "0025-crucible-sim-idle-callbacks.patch"
+    "0028-crucible-det-ipi.patch"
     "0063-crucible-plugin-vmstop.patch"
+    "0068-crucible-guest-clock-faults.patch"
+    "0073-crucible-device-wait-vmstop.patch"
   ];
   taskIds =
     if patchName == "0063-crucible-plugin-vmstop.patch"
+    || patchName == "0073-crucible-device-wait-vmstop.patch"
     then ["T-QEMU-0063"]
     else ["T-PATCH-11"];
   qemuPackageResultLines =
@@ -167,7 +172,8 @@
         needle = "icount_get_raw_observed";
       }
     ]
-    else [
+    else if patchName == "0063-crucible-plugin-vmstop.patch"
+    then [
       {
         label = "native VM stop export";
         needle = "qemu_plugin_request_vmstop";
@@ -203,6 +209,52 @@
       {
         label = "failed-flush QMP continue rejection";
         needle = "VM stop failed to flush devices";
+      }
+    ]
+    else [
+      {
+        label = "shared VM-stop admission helper";
+        needle = "qemu_plugin_crucible_vmstop_begin";
+      }
+      {
+        label = "synchronous drained-control stop";
+        needle = "qemu_plugin_crucible_vmstop_at_control_boundary";
+      }
+      {
+        label = "exact callback scope validation";
+        needle = "qemu_plugin_crucible_exact_boundary_depth == 0";
+      }
+      {
+        label = "non-vCPU exact callback admission";
+        needle = "qemu_system_vmstop_request_prepare()";
+      }
+      {
+        label = "asynchronous main-loop stop request";
+        needle = "qemu_system_vmstop_request(RUN_STATE_PAUSED)";
+      }
+      {
+        label = "vCPU exit preservation";
+        needle = "cpu_stop_current()";
+      }
+      {
+        label = "control-boundary coalescing state";
+        needle = "qemu_plugin_control_boundary_scheduled";
+      }
+      {
+        label = "atomic duplicate control-boundary coalescing";
+        needle = "qatomic_cmpxchg(&qemu_plugin_control_boundary_scheduled, 0, 1)";
+      }
+      {
+        label = "two-pass post-device control barrier";
+        needle = "qemu_plugin_control_boundary_barrier_bh";
+      }
+      {
+        label = "idle-time advance overlap deferral";
+        needle = "qatomic_load_acquire(&qemu_plugin_time_advance_pending)";
+      }
+      {
+        label = "post-idle-advance control reschedule";
+        needle = "qemu_plugin_schedule_control_boundary();";
       }
     ];
 
@@ -443,6 +495,19 @@ in
             #endif
             RUNSTATE_FIXTURE
 
+            cat > include/system/cpus.h <<'CPUS_FIXTURE'
+            #ifndef SYSTEM_CPUS_H
+            #define SYSTEM_CPUS_H
+
+            #include "system/runstate.h"
+
+            void qemu_system_vmstop_request_prepare(void);
+            void qemu_system_vmstop_request(RunState state);
+            void cpu_stop_current(void);
+
+            #endif
+            CPUS_FIXTURE
+
             cat > qemu/osdep.h <<'OSDEP_FIXTURE'
             #ifndef QEMU_OSDEP_H
             #define QEMU_OSDEP_H
@@ -452,14 +517,15 @@ in
             #include <stdint.h>
             #include <sys/types.h>
 
-#include <errno.h>
-#include <limits.h>
+            #include <errno.h>
+            #include <limits.h>
 
             #define qatomic_set_mb(ptr, value) (*(ptr) = (value))
             #define qatomic_cmpxchg(ptr, old, value) \
                 ((*(ptr) == (old)) ? (*(ptr) = (value), (old)) : *(ptr))
             #define qatomic_read(ptr) (*(ptr))
             #define qatomic_set(ptr, value) (*(ptr) = (value))
+            #define qatomic_load_acquire(ptr) (*(ptr))
             #define g_assert(condition) do { if (!(condition)) __builtin_trap(); } while (0)
 
             #endif
@@ -861,7 +927,36 @@ in
             done
 
             for patch in ${builtins.concatStringsSep " " allPatchNames}; do
-              if [ "$patch" = 0063-crucible-plugin-vmstop.patch ]; then
+              if [ "$patch" = 0025-crucible-sim-idle-callbacks.patch ]; then
+                # Preserve only the public/internal callback API and its
+                # implementation. The RR-loop behavior has its own focused
+                # microtest and requires the full QEMU scheduler fixture.
+                gawk '
+                  /^diff --git / {
+                    selected_file = ($3 == "a/include/qemu/plugin.h" ||
+                                     $3 == "a/plugins/api-system.c")
+                  }
+                  selected_file { print }
+                ' "${patchDir}/$patch" > focused-idle-callbacks.patch
+                patch --batch --fuzz=0 -p1 < focused-idle-callbacks.patch
+              elif [ "$patch" = 0028-crucible-det-ipi.patch ]; then
+                # Patch 0073 is based on the IPI callback globals and function
+                # that follow the idle/resume API. Retain those exact preimage
+                # contexts without pulling the APIC implementation into this
+                # API-only fixture.
+                gawk '
+                  /^diff --git / {
+                    internal_header = ($3 == "a/include/qemu/plugin.h")
+                    api_system = ($3 == "a/plugins/api-system.c")
+                    selected_file = internal_header || api_system
+                    if (selected_file) print
+                    next
+                  }
+                  !selected_file { next }
+                  { print }
+                ' "${patchDir}/$patch" > focused-det-ipi.patch
+                patch --batch --fuzz=0 -p1 < focused-det-ipi.patch
+              elif [ "$patch" = 0063-crucible-plugin-vmstop.patch ]; then
                 # This focused fixture owns only the public declaration, stop
                 # admission implementation, and post-TCG exact callback. The
                 # full-source patch gate applies and compiles every RR, sim
@@ -869,22 +964,57 @@ in
                 gawk '
                   /^diff --git / {
                     public_header = ($3 == "a/include/qemu/qemu-plugin.h")
+                    internal_header = ($3 == "a/include/qemu/plugin.h")
                     api_system = ($3 == "a/plugins/api-system.c")
-                    selected_file = public_header || api_system
+                    selected_file = public_header || internal_header || api_system
                     in_hunk = 0
                     if (selected_file) print
                     next
                   }
                   !selected_file { next }
-                  public_header { print; next }
+                  public_header || internal_header { print; next }
                   /^@@/ {
                     in_hunk = 1
                     selected_hunk = ($0 ~ /qemu_plugin_force_vcpu_exit/ ||
-                                     $0 ~ /qemu_plugin_fire_tcg_exec_cb/)
+                                     $0 ~ /qemu_plugin_fire_tcg_exec_cb/ ||
+                                     $0 ~ /qemu_plugin_fire_vcpu_idle_cb/ ||
+                                     $0 ~ /qemu_plugin_fire_vcpu_resume_cb/)
                   }
                   !in_hunk || selected_hunk { print }
                 ' "${patchDir}/$patch" > focused-vmstop.patch
                 patch --batch --fuzz=0 -p1 < focused-vmstop.patch
+              elif [ "$patch" = 0068-crucible-guest-clock-faults.patch ]; then
+                # Patch 0068 splits public validation from the reusable VM-stop
+                # admission helper. Patch 0073 builds on that boundary.
+                gawk '
+                  /^diff --git / {
+                    selected_file = ($3 == "a/plugins/api-system.c")
+                  }
+                  selected_file { print }
+                ' "${patchDir}/$patch" > focused-vmstop-admission.patch
+                patch --batch --fuzz=0 -p1 < focused-vmstop-admission.patch
+              elif [ "$patch" = 0073-crucible-device-wait-vmstop.patch ]; then
+                # Device callback wrappers are compile-tested with their owning
+                # device gates. This fixture compiles the public/internal API
+                # and complete VM-stop implementation from patch 0073.
+                gawk '
+                  /^diff --git / {
+                    internal_header = ($3 == "a/include/qemu/plugin.h")
+                    api_system = ($3 == "a/plugins/api-system.c")
+                    selected_file = internal_header || api_system
+                    in_hunk = 0
+                    if (selected_file) print
+                    next
+                  }
+                  !selected_file { next }
+                  internal_header { print; next }
+                  /^@@/ {
+                    in_hunk = 1
+                    selected_hunk = ($0 !~ /qemu_plugin_time_advance_complete_bh/)
+                  }
+                  !in_hunk || selected_hunk { print }
+                ' "${patchDir}/$patch" > focused-device-wait-vmstop.patch
+                patch --batch --fuzz=0 -p1 < focused-device-wait-vmstop.patch
               else
                 patch --batch --fuzz=0 -p1 < "${patchDir}/$patch"
               fi
@@ -909,6 +1039,20 @@ in
             grep -q 'VM stop admission has not reached paused state' "${patchDir}/0063-crucible-plugin-vmstop.patch"
             grep -q 'VM stop failed to flush devices' "${patchDir}/0063-crucible-plugin-vmstop.patch"
             grep -q 'qemu_plugin_crucible_exact_boundary_depth == 0' plugins/api-system.c
+            grep -q 'qemu_plugin_crucible_vmstop_begin' "${patchDir}/0073-crucible-device-wait-vmstop.patch"
+            grep -q 'qemu_plugin_crucible_vmstop_at_control_boundary' "${patchDir}/0073-crucible-device-wait-vmstop.patch"
+            grep -q 'qemu_plugin_crucible_control_boundary_depth' "${patchDir}/0073-crucible-device-wait-vmstop.patch"
+            grep -q 'qemu_system_vmstop_request_prepare();' "${patchDir}/0073-crucible-device-wait-vmstop.patch"
+            grep -q 'qemu_system_vmstop_request(RUN_STATE_PAUSED);' "${patchDir}/0073-crucible-device-wait-vmstop.patch"
+            grep -q 'cpu_stop_current();' "${patchDir}/0073-crucible-device-wait-vmstop.patch"
+            grep -q 'qemu_plugin_register_control_boundary_cb' "${patchDir}/0073-crucible-device-wait-vmstop.patch"
+            grep -q 'qemu_plugin_fire_control_boundary_cb(first_cpu);' "${patchDir}/0073-crucible-device-wait-vmstop.patch"
+            grep -q 'qatomic_load_acquire(&qemu_plugin_time_advance_pending)' "${patchDir}/0073-crucible-device-wait-vmstop.patch"
+            grep -q '^diff --git a/block/crucible-shmem.c ' "${patchDir}/0073-crucible-device-wait-vmstop.patch"
+            grep -q '^diff --git a/hw/9pfs/virtio-9p-device.c ' "${patchDir}/0073-crucible-device-wait-vmstop.patch"
+            grep -q '^diff --git a/hw/virtio/virtio-crucible-accelerator.c ' "${patchDir}/0073-crucible-device-wait-vmstop.patch"
+            test "$(grep -c '^+.*qemu_plugin_crucible_exact_boundary_enter();' "${patchDir}/0073-crucible-device-wait-vmstop.patch")" -eq 5
+            test "$(grep -c '^+.*qemu_plugin_crucible_exact_boundary_leave();' "${patchDir}/0073-crucible-device-wait-vmstop.patch")" -eq 5
             awk '
               /icount_process_data\(cpu\);/ { saw_icount = NR }
               /qemu_plugin_maybe_fire_tcg_exec_cb\(cpu\);/ { saw_callback = NR }
@@ -917,6 +1061,7 @@ in
 
             cp "$microtestSourcePath" phase1-plugin-runtime-apis.c
             cc -std=c11 -O2 -Wall -Wextra -Werror -DCONFIG_PLUGIN \
+              ${lib.optionalString (patchName == "0073-crucible-device-wait-vmstop.patch") "-DCRUCIBLE_DEVICE_WAIT_VMSTOP"} \
               -I include \
               -I . \
               phase1-plugin-runtime-apis.c \
@@ -934,6 +1079,10 @@ in
             grep -q '^request_vmstop_native_pause_admission=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^request_vmstop_rejects_nonexact_modes=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^request_vmstop_rejects_unsafe_callback_context=true$' "$out/plugin-runtime-apis-microtest"
+            ${lib.optionalString (patchName == "0073-crucible-device-wait-vmstop.patch") ''
+              grep -q '^request_vmstop_accepts_nonvcpu_exact_callback=true$' "$out/plugin-runtime-apis-microtest"
+              grep -q '^request_vmstop_control_boundary_synchronous=true$' "$out/plugin-runtime-apis-microtest"
+            ''}
             grep -q '^request_vmstop_rejects_duplicate_admission=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^request_vmstop_preserves_async_flush_failure=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^wake_fd_registered=true$' "$out/plugin-runtime-apis-microtest"
@@ -986,6 +1135,8 @@ in
             request_vmstop_native_pause_admission=true
             request_vmstop_rejects_nonexact_modes=true
             request_vmstop_rejects_unsafe_callback_context=true
+            ${lib.optionalString (patchName == "0073-crucible-device-wait-vmstop.patch") "request_vmstop_accepts_nonvcpu_exact_callback=true"}
+            ${lib.optionalString (patchName == "0073-crucible-device-wait-vmstop.patch") "request_vmstop_control_boundary_synchronous=true"}
             request_vmstop_rejects_duplicate_admission=true
             request_vmstop_preserves_async_flush_failure=true
             wake_fd_registration_symbol=qemu_plugin_register_wake_fd

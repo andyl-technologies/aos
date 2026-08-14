@@ -16,7 +16,7 @@
 #define CRUCIBLE_SHMEM_STATIC_ASSERT(COND, MSG) _Static_assert((COND), MSG)
 
 #define CRUCIBLE_SHMEM_REGION_MAGIC UINT64_C(0x314d485343555243)
-#define CRUCIBLE_SHMEM_ABI_VERSION 13u
+#define CRUCIBLE_SHMEM_ABI_VERSION 14u
 #define CRUCIBLE_SHMEM_MAX_FRAME_DATA 4608u
 #define CRUCIBLE_SHMEM_DEFAULT_QUEUE_CAPACITY 64u
 #define CRUCIBLE_SHMEM_COVERAGE_QUEUE_CAPACITY 65536u
@@ -84,6 +84,7 @@
 #define CRUCIBLE_SHMEM_NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET 38u
 #define CRUCIBLE_SHMEM_NODE_SLOT_PAD0_OFFSET 39u
 #define CRUCIBLE_SHMEM_NODE_SLOT_PUBLISH_GEN_OFFSET 40u
+#define CRUCIBLE_SHMEM_NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET 44u
 #define CRUCIBLE_SHMEM_NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET 48u
 #define CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET 56u
 #define CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_DEADLINE_ICOUNT_OFFSET 64u
@@ -204,7 +205,7 @@ typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_node_slot {
     _Atomic uint8_t device_io_active;
     uint8_t pad0;
     _Atomic uint32_t publish_gen;
-    uint8_t pad1[4];
+    _Atomic uint32_t control_boundary_ack;
     _Atomic uint64_t device_completion_deadline_icount;
     _Atomic uint64_t preemption_at_icount;
     _Atomic uint64_t preemption_deadline_icount;
@@ -233,6 +234,7 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, kind) == CRUCIBL
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, device_io_active) == CRUCIBLE_SHMEM_NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET, "crucible_shmem_node_slot.device_io_active offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, pad0) == CRUCIBLE_SHMEM_NODE_SLOT_PAD0_OFFSET, "crucible_shmem_node_slot.pad0 offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, publish_gen) == CRUCIBLE_SHMEM_NODE_SLOT_PUBLISH_GEN_OFFSET, "crucible_shmem_node_slot.publish_gen offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, control_boundary_ack) == CRUCIBLE_SHMEM_NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET, "crucible_shmem_node_slot.control_boundary_ack offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, device_completion_deadline_icount) == CRUCIBLE_SHMEM_NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET, "crucible_shmem_node_slot.device_completion_deadline_icount offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, preemption_at_icount) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET, "crucible_shmem_node_slot.preemption_at_icount offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, preemption_deadline_icount) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_DEADLINE_ICOUNT_OFFSET, "crucible_shmem_node_slot.preemption_deadline_icount offset");

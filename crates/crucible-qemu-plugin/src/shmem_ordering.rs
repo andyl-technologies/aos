@@ -110,6 +110,27 @@ impl PluginShmemOrdering {
         slot.publish_pause_quiesced(reached_icount, raw_icount, shift_bits)
     }
 
+    /// Returns whether the host requested a QEMU main-loop control boundary.
+    #[must_use]
+    pub fn control_boundary_is_requested(slot: &NodeSlot) -> bool {
+        slot.control_boundary_is_requested()
+    }
+
+    /// Release-acknowledges a drained host-control request after publication.
+    pub fn acknowledge_control_boundary(slot: &NodeSlot) -> u32 {
+        slot.acknowledge_control_boundary()
+    }
+
+    /// Publishes the exact boundary, classifying a scheduler ceiling as idle.
+    pub fn publish_control_boundary(
+        slot: &NodeSlot,
+        reached_icount: u64,
+        raw_icount: u64,
+        shift_bits: u8,
+    ) -> Result<(), NodeSlotError> {
+        slot.publish_control_boundary(reached_icount, raw_icount, shift_bits)
+    }
+
     /// Returns a pending host request to reconstruct plugin logical time.
     #[must_use]
     pub fn pending_logical_time_restore(

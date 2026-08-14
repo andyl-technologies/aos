@@ -29,16 +29,18 @@ use crate::{
     PluginRawStateDump, PluginShmemOrdering, PluginShutdownRequested, PreemptionError,
     PreemptionWindow, QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL, QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_BLK_EVENT_CB_SYMBOL, QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL,
-    QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL, QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL,
-    QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL, QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL,
-    QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL, QemuAdvanceTimeNsFn, QemuClockDeadlineFn,
-    QemuForceVcpuExitFn, QemuIcountRawFn, QemuLosslessNetworkRxQueue, QemuPluginExecutionModel,
-    QemuPluginId, QemuPluginNetFlushFn, QemuPluginNetSendFn, QemuPluginTargetArchitecture,
-    QemuRegisterBlkCbFn, QemuRegisterBlkEventCbFn, QemuRegisterBlkWaitCbFn, QemuRegisterNetTxCbFn,
-    QemuRegisterNinePCbFn, QemuRegisterSimShmemDispatchCbFn, QemuRegisterTimeAdvanceCbFn,
-    QemuRegisterVcpuIdleResumeCbFn, QemuRegisterVcpuInitCbFn, QueuedIdleAdvance,
-    QueuedIdleAdvanceError, RoundRobinError, SchedulerCeiling, TimeAdvanceCompletion,
-    VcpuHaltTracker, compute_idle_wake_plan, handle_network_rx_idle_callback,
+    QEMU_PLUGIN_REGISTER_CONTROL_BOUNDARY_CB_SYMBOL, QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL, QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL, QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL,
+    QemuAdvanceTimeNsFn, QemuClockDeadlineFn, QemuForceVcpuExitFn, QemuIcountRawFn,
+    QemuLosslessNetworkRxQueue, QemuPluginExecutionModel, QemuPluginId, QemuPluginNetFlushFn,
+    QemuPluginNetSendFn, QemuPluginTargetArchitecture, QemuRegisterBlkCbFn,
+    QemuRegisterBlkEventCbFn, QemuRegisterBlkWaitCbFn, QemuRegisterControlBoundaryCbFn,
+    QemuRegisterNetTxCbFn, QemuRegisterNinePCbFn, QemuRegisterSimShmemDispatchCbFn,
+    QemuRegisterTimeAdvanceCbFn, QemuRegisterVcpuIdleResumeCbFn, QemuRegisterVcpuInitCbFn,
+    QueuedIdleAdvance, QueuedIdleAdvanceError, RoundRobinError, SchedulerCeiling,
+    TimeAdvanceCompletion, VcpuHaltTracker, compute_idle_wake_plan,
+    handle_network_rx_idle_callback,
 };
 
 use super::{
@@ -70,6 +72,7 @@ pub(crate) struct LiveVcpuTimeCallbackCapabilities {
     pub(crate) advance_time_ns: Option<QemuAdvanceTimeNsFn>,
     pub(crate) register_vcpu_init: Option<QemuRegisterVcpuInitCbFn>,
     pub(crate) register_vcpu_idle_resume: Option<QemuRegisterVcpuIdleResumeCbFn>,
+    pub(crate) register_control_boundary: Option<QemuRegisterControlBoundaryCbFn>,
     pub(crate) register_sim_shmem_dispatch: Option<QemuRegisterSimShmemDispatchCbFn>,
     pub(crate) register_time_advance_cb: Option<QemuRegisterTimeAdvanceCbFn>,
     pub(crate) register_net_tx: Option<QemuRegisterNetTxCbFn>,
@@ -126,6 +129,11 @@ impl LiveVcpuTimeCallbackRegistrar {
         let register_vcpu_idle_resume = self.capabilities.register_vcpu_idle_resume.ok_or(
             LiveVcpuTimeCallbackError::CapabilityUnavailable {
                 symbol: QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL,
+            },
+        )?;
+        let register_control_boundary = self.capabilities.register_control_boundary.ok_or(
+            LiveVcpuTimeCallbackError::CapabilityUnavailable {
+                symbol: QEMU_PLUGIN_REGISTER_CONTROL_BOUNDARY_CB_SYMBOL,
             },
         )?;
         let register_sim_shmem_dispatch = self.capabilities.register_sim_shmem_dispatch.ok_or(
@@ -191,6 +199,7 @@ impl LiveVcpuTimeCallbackRegistrar {
             queued_idle_advance,
             register_vcpu_init,
             register_vcpu_idle_resume,
+            register_control_boundary,
             register_sim_shmem_dispatch,
             register_time_advance_cb,
             register_net_tx,
@@ -279,6 +288,10 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
         (capabilities.register_vcpu_idle_resume)(
             Some(crucible_qemu_plugin_live_vcpu_idle_cb),
             Some(crucible_qemu_plugin_live_vcpu_resume_cb),
+            callback_state.cast(),
+        );
+        (capabilities.register_control_boundary)(
+            Some(crucible_qemu_plugin_live_control_boundary_cb),
             callback_state.cast(),
         );
         (capabilities.register_sim_shmem_dispatch)(
@@ -376,6 +389,7 @@ struct RequiredLiveVcpuTimeCapabilities {
     queued_idle_advance: QueuedIdleAdvance,
     register_vcpu_init: QemuRegisterVcpuInitCbFn,
     register_vcpu_idle_resume: QemuRegisterVcpuIdleResumeCbFn,
+    register_control_boundary: QemuRegisterControlBoundaryCbFn,
     register_sim_shmem_dispatch: QemuRegisterSimShmemDispatchCbFn,
     register_time_advance_cb: QemuRegisterTimeAdvanceCbFn,
     register_net_tx: QemuRegisterNetTxCbFn,
@@ -1011,7 +1025,7 @@ impl LiveVcpuTimeCallbackState {
         if self.idle_advance_is_pending() {
             return Err(LiveVcpuTimeCallbackError::IdleAdvanceAlreadyPending);
         }
-        self.publish_current_icount(raw_icount)?;
+        self.publish_current_icount_for_boundary(raw_icount, true, "vcpu-idle")?;
         let current_icount = self.last_icount.load(Ordering::Acquire);
         let next_inbound_delivery_icount = if let Some(network) = self.network.as_ref() {
             let inbound = network.inbound.inbound();
@@ -1089,6 +1103,10 @@ impl LiveVcpuTimeCallbackState {
                     return Ok(None);
                 }
                 RegionControlAction::Pause => {
+                    if PluginShmemOrdering::device_io_active(self.slot.get()) {
+                        wait = PluginShmemOrdering::prepare_futex_wait(self.slot.get());
+                        continue;
+                    }
                     PluginShmemOrdering::publish_pause_quiesced(
                         self.slot.get(),
                         request.plan().current_icount(),
@@ -1096,13 +1114,20 @@ impl LiveVcpuTimeCallbackState {
                         self.icount_shift,
                     )
                     .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
-                    self.request_checkpoint_vmstop()?;
+                    self.request_checkpoint_vmstop("vcpu-idle-wait")?;
                     // Leave the callback without authorizing an idle advance.
                     // This hands QEMU's execution path back to its main loop so
-                    // the host can complete the queued QMP `stop` transaction.
+                    // it can consume the queued asynchronous stop request and
+                    // remain QMP-responsive at the fenced coordinate.
                     return Ok(None);
                 }
                 RegionControlAction::Continue => {}
+            }
+            if PluginShmemOrdering::control_boundary_is_requested(self.slot.get()) {
+                // Return to QEMU's main loop without authorizing guest or idle
+                // time. The registered eventfd callback publishes and
+                // acknowledges the requested post-device boundary.
+                return Ok(None);
             }
             let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
             if let Some(network) = self.network.as_ref() {
@@ -1157,7 +1182,14 @@ impl LiveVcpuTimeCallbackState {
         raw_icount: u64,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
         self.require_initialized_vcpu(vcpu_index)?;
-        if self.publish_pause_if_requested(raw_icount)? {
+        if self.publish_pause_for_boundary(raw_icount, true, "vcpu-resume")? {
+            return Ok(());
+        }
+        if PluginShmemOrdering::control_boundary_is_requested(self.slot.get()) {
+            // A control request wakes the idle futex only to return execution
+            // to QEMU's main loop. It is not guest execution authorization and
+            // must not clear halt tracking or replace the published future idle
+            // deadline before the post-device control callback acknowledges it.
             return Ok(());
         }
         if self.idle_advance_is_pending() {
@@ -1177,13 +1209,45 @@ impl LiveVcpuTimeCallbackState {
             return Ok(());
         }
         self.all_halted_idle_handled.store(false, Ordering::Release);
-        self.publish_current_icount(raw_icount)?;
+        self.publish_current_icount_for_boundary(raw_icount, true, "vcpu-resume")?;
         PluginShmemOrdering::mark_running_after_wake(self.slot.get());
         Ok(())
     }
 
+    fn on_control_boundary(&self, raw_icount: u64) -> Result<(), LiveVcpuTimeCallbackError> {
+        // A drained wake is an exact host-control opportunity, not a vCPU
+        // lifecycle transition. Publish before the release acknowledgement so
+        // a host acquire-load of the odd successor orders every boundary field.
+        // Halt tracking and idle publication remain owned by the real
+        // idle/resume callbacks.
+        if !self.publish_pause_for_boundary(raw_icount, true, "control-boundary")? {
+            let current_icount = self.logical_icount_for_raw(raw_icount)?;
+            PluginShmemOrdering::publish_control_boundary(
+                self.slot.get(),
+                current_icount,
+                raw_icount,
+                self.icount_shift,
+            )
+            .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
+            self.last_raw_icount.store(raw_icount, Ordering::Release);
+            self.last_icount.store(current_icount, Ordering::Release);
+        }
+        PluginShmemOrdering::acknowledge_control_boundary(self.slot.get());
+        Ok(())
+    }
+
+    #[cfg(test)]
     fn publish_current_icount(&self, raw_icount: u64) -> Result<(), LiveVcpuTimeCallbackError> {
-        if self.publish_pause_if_requested(raw_icount)? {
+        self.publish_current_icount_for_boundary(raw_icount, true, "progress-publication")
+    }
+
+    fn publish_current_icount_for_boundary(
+        &self,
+        raw_icount: u64,
+        checkpoint_handoff: bool,
+        boundary: &'static str,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        if self.publish_pause_for_boundary(raw_icount, checkpoint_handoff, boundary)? {
             return Ok(());
         }
         let raw_icount_at_entry = self.last_raw_icount.load(Ordering::Acquire);
@@ -1247,9 +1311,19 @@ impl LiveVcpuTimeCallbackState {
     /// guests acknowledge from the idle futex loop. Calling this helper from
     /// every progress/resume entry also closes races where a pause arrives
     /// between those two steady states.
+    #[cfg(test)]
     fn publish_pause_if_requested(
         &self,
         raw_icount: u64,
+    ) -> Result<bool, LiveVcpuTimeCallbackError> {
+        self.publish_pause_for_boundary(raw_icount, true, "progress-publication")
+    }
+
+    fn publish_pause_for_boundary(
+        &self,
+        raw_icount: u64,
+        checkpoint_handoff: bool,
+        boundary: &'static str,
     ) -> Result<bool, LiveVcpuTimeCallbackError> {
         self.restore_logical_time_if_requested(raw_icount)?;
         match PluginShmemOrdering::observe_control_action(self.header.get()) {
@@ -1258,6 +1332,9 @@ impl LiveVcpuTimeCallbackState {
                 Ok(true)
             }
             RegionControlAction::Pause => {
+                if PluginShmemOrdering::device_io_active(self.slot.get()) {
+                    return Ok(true);
+                }
                 let previous_raw_icount = self.last_raw_icount.load(Ordering::Acquire);
                 if raw_icount < previous_raw_icount {
                     return Err(LiveVcpuTimeCallbackError::IcountRegressed {
@@ -1282,7 +1359,9 @@ impl LiveVcpuTimeCallbackState {
                 .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
                 self.last_raw_icount.store(raw_icount, Ordering::Release);
                 self.last_icount.store(current_icount, Ordering::Release);
-                self.request_checkpoint_vmstop()?;
+                if checkpoint_handoff {
+                    self.request_checkpoint_vmstop(boundary)?;
+                }
                 Ok(true)
             }
             RegionControlAction::Continue => Ok(false),
@@ -1319,12 +1398,20 @@ impl LiveVcpuTimeCallbackState {
     }
 
     /// Requests QEMU's native stopped runstate after publishing the boundary.
-    fn request_checkpoint_vmstop(&self) -> Result<(), LiveVcpuTimeCallbackError> {
+    fn request_checkpoint_vmstop(
+        &self,
+        boundary: &'static str,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
         let status = (self.request_vmstop)();
-        if status == 0 {
+        // Multiple exact callbacks can observe the same level-triggered pause
+        // before QEMU's main loop consumes the first admitted stop request.
+        // QEMU reports that race as -EALREADY; the required stop is already
+        // fenced and queued, so this callback has satisfied its handoff too.
+        const NEGATIVE_EALREADY: i32 = -114;
+        if status == 0 || status == NEGATIVE_EALREADY {
             Ok(())
         } else {
-            Err(LiveVcpuTimeCallbackError::CheckpointVmStopRejected { status })
+            Err(LiveVcpuTimeCallbackError::CheckpointVmStopRejected { boundary, status })
         }
     }
 
@@ -1590,7 +1677,7 @@ impl LiveVcpuTimeCallbackState {
         drop(pending_slot);
 
         let mut outbound = network.outbound.outbound();
-        let current_icount = self.callback_current_icount()?;
+        let current_icount = self.callback_current_icount_without_pause()?;
         network
             .tx
             .enqueue_guest_frame(&mut outbound, current_icount, payload)
@@ -1603,7 +1690,7 @@ impl LiveVcpuTimeCallbackState {
             return Ok(());
         }
 
-        let current_icount = self.callback_current_icount()?;
+        let current_icount = self.callback_current_icount_without_pause()?;
         let device_deadline =
             PluginShmemOrdering::device_completion_deadline_icount(self.slot.get());
         if device_deadline == 0 {
@@ -1653,7 +1740,11 @@ impl LiveVcpuTimeCallbackState {
         let Some(pending) = self.enqueue_idle_advance_or_defer(target_virtual_ns)? else {
             return Ok(());
         };
-        self.arm_idle_advance((self.icount_raw)(), target_icount, pending)
+        self.arm_idle_advance(
+            self.last_raw_icount.load(Ordering::Acquire),
+            target_icount,
+            pending,
+        )
     }
 
     /// Enqueues an idle advance or defers behind QEMU's outstanding barrier.
@@ -1678,8 +1769,58 @@ impl LiveVcpuTimeCallbackState {
     }
 
     fn callback_current_icount(&self) -> Result<u64, LiveVcpuTimeCallbackError> {
-        self.publish_current_icount((self.icount_raw)())?;
-        Ok(self.last_icount.load(Ordering::Acquire))
+        self.callback_current_icount_without_pause()
+    }
+
+    /// Samples callback time without publishing a pause acknowledgement.
+    ///
+    /// Device callbacks can be nested inside operations that QEMU must drain
+    /// before entering paused runstate. They first finish work already admitted
+    /// by the scheduler; the completion callback that clears the final active
+    /// marker then acknowledges and hands off a pending checkpoint pause.
+    fn callback_current_icount_without_pause(&self) -> Result<u64, LiveVcpuTimeCallbackError> {
+        // Capture the publication coordinate before sampling QEMU. Another
+        // exact callback can finish between the raw read and our commit. In
+        // that case its newer publication supersedes this callback; loading
+        // the baseline after sampling would misclassify the overlap as a real
+        // QEMU clock regression.
+        let raw_icount_at_entry = self.last_raw_icount.load(Ordering::Acquire);
+        let raw_icount = (self.icount_raw)();
+        self.restore_logical_time_if_requested(raw_icount)?;
+        let latest_raw_icount = self.last_raw_icount.load(Ordering::Acquire);
+        if raw_icount_publication_is_superseded(raw_icount_at_entry, raw_icount, latest_raw_icount)?
+        {
+            return self.logical_icount_for_raw(latest_raw_icount);
+        }
+        let current_icount = self.logical_icount_for_raw(raw_icount)?;
+        let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
+        if current_icount > ceiling_icount {
+            return Err(LiveVcpuTimeCallbackError::IcountBeyondCeiling {
+                current_icount,
+                ceiling_icount,
+            });
+        }
+        PluginShmemOrdering::publish_reached_icount(
+            self.slot.get(),
+            current_icount,
+            self.icount_shift,
+        )
+        .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
+        self.last_raw_icount.store(raw_icount, Ordering::Release);
+        self.last_icount.store(current_icount, Ordering::Release);
+        Ok(current_icount)
+    }
+
+    /// Publishes a deferred checkpoint pause after device completion quiesces.
+    fn publish_device_completion_pause_if_quiesced(
+        &self,
+        boundary: &'static str,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        if !PluginShmemOrdering::device_io_active(self.slot.get()) {
+            let raw_icount = (self.icount_raw)();
+            let _pause_observed = self.publish_pause_for_boundary(raw_icount, true, boundary)?;
+        }
+        Ok(())
     }
 
     /// Returns the logical icount for a device callback dispatched from QEMU's
@@ -1764,7 +1905,7 @@ impl LiveVcpuTimeCallbackState {
     /// patch.
     fn max_advance_icount(&self) -> Result<u64, LiveVcpuTimeCallbackError> {
         let raw_icount = (self.icount_raw)();
-        if self.publish_pause_if_requested(raw_icount)? {
+        if self.publish_pause_for_boundary(raw_icount, true, "max-advance")? {
             return Ok(raw_icount);
         }
         self.pump_fault_commands(raw_icount)?;
@@ -1983,7 +2124,23 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_publish_icount_cb(
     let Some(_in_flight) = state.callback_guard() else {
         return;
     };
-    if let Err(error) = state.publish_current_icount(current_icount) {
+    if let Err(error) =
+        state.publish_current_icount_for_boundary(current_icount, true, "sim-publication")
+    {
+        abort_live_callback(error);
+    }
+}
+
+pub(crate) extern "C" fn crucible_qemu_plugin_live_control_boundary_cb(
+    _vcpu_index: u32,
+    raw_icount: u64,
+    userdata: *mut c_void,
+) {
+    let state = callback_userdata_or_abort(userdata);
+    let Some(_in_flight) = state.callback_guard() else {
+        return;
+    };
+    if let Err(error) = state.on_control_boundary(raw_icount) {
         abort_live_callback(error);
     }
 }

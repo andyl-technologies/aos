@@ -2491,6 +2491,11 @@ pub(super) fn write_node_slot_bytes(bytes: &mut [u8], snapshot: NodeSlotSnapshot
         snapshot.device_io_active,
     );
     write_u32_at(bytes, NODE_SLOT_PUBLISH_GEN_OFFSET, snapshot.publish_gen);
+    write_u32_at(
+        bytes,
+        NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET,
+        snapshot.control_boundary_ack,
+    );
 }
 
 pub(super) fn write_ring_header_bytes(bytes: &mut [u8], ring_header: &RingHeader) {

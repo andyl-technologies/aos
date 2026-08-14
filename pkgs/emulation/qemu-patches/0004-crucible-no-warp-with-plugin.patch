@@ -1,5 +1,5 @@
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index a1a2d14..55e0a1a 100644
+index a1a2d1400..55e0a1a7f 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
 @@ -30,6 +30,8 @@
@@ -30,7 +30,7 @@ index a1a2d14..55e0a1a 100644
      clock = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL_RT);
      deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index 9726a9e..d90db9b 100644
+index 9726a9ebf..d90db9b39 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
 @@ -175,6 +175,8 @@ void qemu_plugin_flush_cb(void);
@@ -55,7 +55,7 @@ index 9726a9e..d90db9b 100644
                                           QemuPluginList *head)
  {
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index cc190b1..29bf39a 100644
+index cc190b167..29bf39ae0 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -100,15 +100,16 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)

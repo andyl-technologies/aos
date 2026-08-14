@@ -1,5 +1,5 @@
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index 819a468..94bae04 100644
+index 819a46860..94bae0426 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
 @@ -197,6 +197,7 @@ bool qemu_plugin_crucible_vmstop_admission_pending(void);
@@ -23,7 +23,7 @@ index 819a468..94bae04 100644
      uint64_t event_id, uint64_t delivery_icount, unsigned int src_vcpu,
      unsigned int dst_vcpu, unsigned int delivery_mode, unsigned int vector)
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index 094f118..2502cee 100644
+index 094f118ac..2502ceec6 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
 @@ -79,6 +79,7 @@ void qmp_cont(Error **errp)
@@ -46,7 +46,7 @@ index 094f118..2502cee 100644
      /* if there is a dump in background, we should wait until the dump
       * finished */
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
-index 310a425..58cd2d2 100644
+index 310a425f7..58cd2d292 100644
 --- a/plugins/crucible-fault-lifecycle.c
 +++ b/plugins/crucible-fault-lifecycle.c
 @@ -28,7 +28,12 @@

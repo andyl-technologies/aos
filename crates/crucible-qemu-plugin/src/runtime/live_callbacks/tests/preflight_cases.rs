@@ -24,6 +24,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
             advance_time_ns: Some(test_queue_idle_advance),
             register_vcpu_init: Some(test_register_vcpu_init),
             register_vcpu_idle_resume: Some(test_register_vcpu_idle_resume),
+            register_control_boundary: Some(test_register_control_boundary),
             register_sim_shmem_dispatch: Some(test_register_sim_dispatch),
             register_time_advance_cb: Some(test_register_time_advance_cb),
             register_net_tx: Some(test_register_net_tx),
@@ -62,6 +63,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
             advance_time_ns: Some(test_queue_idle_advance),
             register_vcpu_init: None,
             register_vcpu_idle_resume: Some(test_register_vcpu_idle_resume),
+            register_control_boundary: Some(test_register_control_boundary),
             register_sim_shmem_dispatch: Some(test_register_sim_dispatch),
             register_time_advance_cb: Some(test_register_time_advance_cb),
             register_net_tx: Some(test_register_net_tx),
@@ -85,6 +87,24 @@ fn live_registrar_preflight_names_each_missing_capability() {
         })
     ));
 
+    let mut missing_control_capabilities = missing_init.capabilities;
+    missing_control_capabilities.register_vcpu_init = Some(test_register_vcpu_init);
+    missing_control_capabilities.register_control_boundary = None;
+    let missing_control_boundary = LiveVcpuTimeCallbackRegistrar::new(
+        1,
+        execution_model,
+        crate::QemuPluginTargetArchitecture::X86_64,
+        missing_control_capabilities,
+    );
+    assert!(matches!(
+        missing_control_boundary.preflight(&args),
+        Err(OwnedCallbackRegistrationError::LiveVcpuTime {
+            source: LiveVcpuTimeCallbackError::CapabilityUnavailable {
+                symbol: QEMU_PLUGIN_REGISTER_CONTROL_BOUNDARY_CB_SYMBOL,
+            }
+        })
+    ));
+
     let missing_sim_dispatch = LiveVcpuTimeCallbackRegistrar::new(
         1,
         execution_model,
@@ -98,6 +118,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
             advance_time_ns: Some(test_queue_idle_advance),
             register_vcpu_init: Some(test_register_vcpu_init),
             register_vcpu_idle_resume: Some(test_register_vcpu_idle_resume),
+            register_control_boundary: Some(test_register_control_boundary),
             register_sim_shmem_dispatch: None,
             register_time_advance_cb: Some(test_register_time_advance_cb),
             register_net_tx: Some(test_register_net_tx),
@@ -134,6 +155,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
             advance_time_ns: Some(test_queue_idle_advance),
             register_vcpu_init: Some(test_register_vcpu_init),
             register_vcpu_idle_resume: Some(test_register_vcpu_idle_resume),
+            register_control_boundary: Some(test_register_control_boundary),
             register_sim_shmem_dispatch: Some(test_register_sim_dispatch),
             register_time_advance_cb: None,
             register_net_tx: Some(test_register_net_tx),
@@ -170,6 +192,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
             advance_time_ns: Some(test_queue_idle_advance),
             register_vcpu_init: Some(test_register_vcpu_init),
             register_vcpu_idle_resume: Some(test_register_vcpu_idle_resume),
+            register_control_boundary: Some(test_register_control_boundary),
             register_sim_shmem_dispatch: Some(test_register_sim_dispatch),
             register_time_advance_cb: Some(test_register_time_advance_cb),
             register_net_tx: Some(test_register_net_tx),

@@ -214,7 +214,8 @@ pub(super) fn ninep_binding_for_vm(
 }
 
 /// Globally sequenced fault-observation journal shared by every live adapter.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ProductionFaultObservationJournal {
     batches: std::collections::BTreeMap<u64, Vec<FaultObservation>>,
     observations: usize,
@@ -279,17 +280,54 @@ impl ProductionFaultObservationJournal {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn snapshot(&self) -> Vec<FaultObservation> {
         self.batches.values().flatten().cloned().collect()
     }
 
-    pub(super) fn clear(&mut self) {
-        self.observations = 0;
-        self.batches.clear();
+    pub(super) fn drain_ready(&mut self, frontier: u64) -> Vec<FaultObservation> {
+        let mut ready = Vec::new();
+        for (sequence, observations) in &mut self.batches {
+            let mut retained = Vec::new();
+            for (index, observation) in std::mem::take(observations).into_iter().enumerate() {
+                if observation.coordinate.virtual_nanos <= frontier {
+                    ready.push((
+                        observation.coordinate.virtual_nanos,
+                        *sequence,
+                        index,
+                        observation,
+                    ));
+                } else {
+                    retained.push(observation);
+                }
+            }
+            *observations = retained;
+        }
+        self.batches
+            .retain(|_sequence, observations| !observations.is_empty());
+        self.observations = self.batches.values().map(Vec::len).sum();
+        ready.sort_by_key(|(nanos, sequence, index, _observation)| (*nanos, *sequence, *index));
+        ready
+            .into_iter()
+            .map(|(_nanos, _sequence, _index, observation)| observation)
+            .collect()
     }
 
-    pub(super) fn is_empty(&self) -> bool {
-        self.observations == 0
+    pub(super) fn validate(&self, next_sequence: u64) -> bool {
+        let actual = self
+            .batches
+            .values()
+            .try_fold(0_usize, |count, batch| count.checked_add(batch.len()));
+        self.observations <= HARD_STORAGE_FAULT_OBSERVATIONS
+            && actual == Some(self.observations)
+            && self.batches.iter().all(|(sequence, batch)| {
+                *sequence < next_sequence
+                    && !batch.is_empty()
+                    && batch.iter().all(|observation| {
+                        observation.semantic_version == FAULT_RUNTIME_STATE_VERSION
+                            && observation.evidence != ContentHash::default()
+                    })
+            })
     }
 
     pub(super) fn contains_sequence(&self, sequence: u64) -> bool {
@@ -1196,12 +1234,12 @@ impl ProductionBlockFaultCoordinator {
     fn admit_head_request(
         &mut self,
         servicer: &mut QemuLiveBlockIoServicer,
-    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+    ) -> Result<bool, QemuAsyncDriverRuntimeError> {
         let pin = servicer
             .pin_next_request_completion()
             .map_err(|error| storage_error("pin live block request", error))?;
         let Some(observed) = pin.observed else {
-            return Ok(());
+            return Ok(false);
         };
         let request = observed.request.ok_or_else(|| {
             storage_error(
@@ -1260,7 +1298,8 @@ impl ProductionBlockFaultCoordinator {
         self.after_evaluation(
             "install block admission directive",
             servicer.install_storage_fault_directive(request.identity(), directive),
-        )
+        )?;
+        Ok(true)
     }
 
     fn settle_opportunities(
@@ -1911,12 +1950,13 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
         }
         self.record_device_outcomes(servicer, guest_icount)?;
         self.service_array_rebuild(servicer, now_nanos)?;
-        self.admit_head_request(servicer)?;
-        let intake = servicer
-            .process_one_storage_request()
-            .map_err(|error| storage_error("consume coordinated block request", error))?;
         let mut aggregate = QemuLiveBlockIoServiceStep::default();
-        absorb_intake(&mut aggregate, intake)?;
+        if self.admit_head_request(servicer)? {
+            let intake = servicer
+                .process_one_storage_request()
+                .map_err(|error| storage_error("consume coordinated block request", error))?;
+            absorb_intake(&mut aggregate, intake)?;
+        }
         self.settle_opportunities(servicer, guest_icount, now_nanos, &mut aggregate)?;
         Ok(aggregate)
     }
@@ -2578,11 +2618,15 @@ mod tests {
     use super::*;
 
     fn observation(evidence: &'static [u8]) -> FaultObservation {
+        observation_at(0, evidence)
+    }
+
+    fn observation_at(nanos: u64, evidence: &'static [u8]) -> FaultObservation {
         FaultObservation {
             semantic_version: FAULT_RUNTIME_STATE_VERSION,
             kind: FaultObservationKind::EffectApplied,
             coordinate: FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_nanos: nanos,
                 retired_instructions: None,
             },
             binding: None,
@@ -2610,8 +2654,8 @@ mod tests {
             .unwrap_or_else(|error| panic!("same-sequence mutation should append: {error}"));
 
         assert_eq!(journal.snapshot(), vec![earlier, same_sequence, later]);
-        journal.clear();
-        assert!(journal.is_empty());
+        let drained = journal.drain_ready(u64::MAX);
+        assert_eq!(drained.len(), 3);
         assert!(journal.snapshot().is_empty());
     }
 
@@ -2634,5 +2678,33 @@ mod tests {
 
         assert_eq!(journal.snapshot(), vec![retained]);
         assert!(!journal.contains_sequence(5));
+    }
+
+    #[test]
+    fn observation_journal_retains_future_batches_across_frontiers() {
+        let earlier = observation_at(4, b"earlier");
+        let future = observation_at(9, b"future");
+        let same_time_later_sequence = observation_at(4, b"same-time-later-sequence");
+        let mut journal = ProductionFaultObservationJournal::default();
+        journal
+            .append(7, vec![future.clone()])
+            .unwrap_or_else(|error| panic!("future observation should append: {error}"));
+        journal
+            .append(2, vec![earlier.clone()])
+            .unwrap_or_else(|error| panic!("earlier observation should append: {error}"));
+        journal
+            .append(5, vec![same_time_later_sequence.clone()])
+            .unwrap_or_else(|error| panic!("same-time observation should append: {error}"));
+
+        assert!(!journal.validate(7));
+        assert_eq!(
+            journal.drain_ready(4),
+            vec![earlier, same_time_later_sequence]
+        );
+        assert_eq!(journal.snapshot(), vec![future.clone()]);
+        assert!(journal.validate(8));
+        assert_eq!(journal.drain_ready(9), vec![future]);
+        assert!(journal.snapshot().is_empty());
+        assert!(journal.validate(8));
     }
 }

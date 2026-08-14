@@ -1,5 +1,5 @@
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 5e3be23..a706e82 100644
+index 5e3be233d..a706e822e 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -21,6 +21,58 @@ typedef struct QemuCrucibleFaultEventReservation
@@ -110,7 +110,7 @@ index 5e3be23..a706e82 100644
      CPUState *cpu, const uint8_t register_identity[32],
      const QObject *mutation, uint16_t model_phase);
 diff --git a/plugins/crucible-fault-hardware-error.c b/plugins/crucible-fault-hardware-error.c
-index 3a8523d..963b672 100644
+index 3a8523d67..963b672c9 100644
 --- a/plugins/crucible-fault-hardware-error.c
 +++ b/plugins/crucible-fault-hardware-error.c
 @@ -89,8 +89,14 @@ typedef struct CrucibleHardwarePending {
@@ -761,7 +761,7 @@ index 3a8523d..963b672 100644
  {
      CPUState *cpu = qemu_get_cpu(0);
 diff --git a/plugins/crucible-fault-instruction.c b/plugins/crucible-fault-instruction.c
-index c8bfb5a..061b6e0 100644
+index c8bfb5a83..061b6e087 100644
 --- a/plugins/crucible-fault-instruction.c
 +++ b/plugins/crucible-fault-instruction.c
 @@ -14,6 +14,7 @@
@@ -1026,7 +1026,7 @@ index c8bfb5a..061b6e0 100644
      const QemuCrucibleFaultRule *rule, uint64_t observed_icount,
      uint8_t before_hash[32], uint8_t after_hash[32], GByteArray *evidence,
 diff --git a/plugins/crucible-fault-interrupt.c b/plugins/crucible-fault-interrupt.c
-index c376c92..cd1a116 100644
+index c376c9236..cd1a116b7 100644
 --- a/plugins/crucible-fault-interrupt.c
 +++ b/plugins/crucible-fault-interrupt.c
 @@ -240,6 +240,59 @@ typedef struct CrucibleInterruptProvenanceKey {
@@ -1932,7 +1932,7 @@ index c376c92..cd1a116 100644
  {
      uint32_t boundary = 1U << (CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY - 1);
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
-index 1ecf099..73cffb6 100644
+index 1ecf09976..73cffb61b 100644
 --- a/plugins/crucible-fault-lifecycle.c
 +++ b/plugins/crucible-fault-lifecycle.c
 @@ -21,6 +21,7 @@
@@ -2536,7 +2536,7 @@ index 1ecf099..73cffb6 100644
  
  type_init(crucible_lifecycle_register)
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index ecaf099..e75bc75 100644
+index ecaf0998a..e75bc75e8 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -43,6 +43,8 @@
@@ -3982,7 +3982,7 @@ index ecaf099..e75bc75 100644
  
  type_init(crucible_memory_access_faults_register)
 diff --git a/plugins/crucible-fault-register.c b/plugins/crucible-fault-register.c
-index 1eaae5e..8f82e57 100644
+index 8a25157b3..ac0fb4ee4 100644
 --- a/plugins/crucible-fault-register.c
 +++ b/plugins/crucible-fault-register.c
 @@ -8,6 +8,7 @@
@@ -3993,7 +3993,7 @@ index 1eaae5e..8f82e57 100644
  #include "qemu/crucible-fault.h"
  #include "qemu/error-report.h"
  #include "qemu/qemu-plugin.h"
-@@ -338,6 +339,46 @@ int qemu_crucible_fault_register_numeric_id(
+@@ -352,6 +353,46 @@ int qemu_crucible_fault_register_numeric_id(
      return 0;
  }
  
@@ -4041,7 +4041,7 @@ index 1eaae5e..8f82e57 100644
                                      uint16_t tag, uint16_t type,
                                      const uint8_t **data, uint32_t *length)
 diff --git a/plugins/crucible-fault-vcpu-service.c b/plugins/crucible-fault-vcpu-service.c
-index 1327286..ca55e1a 100644
+index 132728656..ca55e1aee 100644
 --- a/plugins/crucible-fault-vcpu-service.c
 +++ b/plugins/crucible-fault-vcpu-service.c
 @@ -67,6 +67,12 @@ typedef struct CrucibleVcpuRuleApply {
@@ -4585,7 +4585,7 @@ index 1327286..ca55e1a 100644
  type_init(crucible_vcpu_service_register)
 diff --git a/plugins/crucible-fault-vmstate.c b/plugins/crucible-fault-vmstate.c
 new file mode 100644
-index 0000000..629eb40
+index 000000000..629eb40dc
 --- /dev/null
 +++ b/plugins/crucible-fault-vmstate.c
 @@ -0,0 +1,514 @@
@@ -5104,7 +5104,7 @@ index 0000000..629eb40
 +    return 0;
 +}
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
-index fe7b0ca..67071aa 100644
+index fe7b0ca9e..67071aa63 100644
 --- a/plugins/crucible-fault.c
 +++ b/plugins/crucible-fault.c
 @@ -11,6 +11,7 @@
@@ -5673,7 +5673,7 @@ index fe7b0ca..67071aa 100644
  
  type_init(crucible_fault_register_abi_handlers)
 diff --git a/plugins/meson.build b/plugins/meson.build
-index 3c76bd9..c02bdf7 100644
+index 3c76bd91d..c02bdf799 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
 @@ -60,6 +60,7 @@ endif

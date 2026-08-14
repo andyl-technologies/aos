@@ -36,6 +36,40 @@ fn classify_recorded_control_boundary(
 }
 
 impl ProductionVmLifecycleLoop {
+    /// Reports whether every live node can enter an exact checkpoint now.
+    ///
+    /// A false result means an already-admitted device coroutine crosses the
+    /// current scheduler boundary. The caller may drive another ordinary
+    /// quantum and retry; checkpoint capture itself never advances through the
+    /// deterministic completion coordinate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when a live node is missing from the backend
+    /// set or its shared device-I/O state cannot be inspected consistently.
+    pub fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
+        let live_nodes = self
+            .source
+            .world()
+            .vm_nodes()
+            .iter()
+            .filter(|node| {
+                self.node_service_states.get(&node.id) == Some(&ProductionNodeServiceState::Running)
+            })
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+        for node in live_nodes {
+            if !self
+                .inner
+                .backend_mut()
+                .checkpoint_device_io_is_quiescent(&node)?
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// Captures read-only evidence from every production fault adapter.
     ///
     /// The snapshot is intended for gates, diagnostics, and artifact capture.
@@ -116,6 +150,22 @@ impl ProductionVmLifecycleLoop {
                     message: format!("inspect production durable frontier: {error}"),
                 }
             })?;
+            let length =
+                handle
+                    .storage_length()
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: format!("inspect production storage length: {error}"),
+                    })?;
+            let count = u32::try_from(length.min(4_096)).map_err(|_error| {
+                SchedulerError::BoundaryViolation {
+                    message: String::from("production visible-prefix length conversion failed"),
+                }
+            })?;
+            let visible = handle.inspect_storage_visible(0, count).map_err(|error| {
+                SchedulerError::BoundaryViolation {
+                    message: format!("inspect production visible storage: {error}"),
+                }
+            })?;
             block_devices.push(ProductionBlockFaultEvidence {
                 device: *device,
                 volatile_entries,
@@ -123,6 +173,8 @@ impl ProductionVmLifecycleLoop {
                     bytes: volatile_entries_digest,
                 },
                 actual_durable_frontier,
+                visible_prefix_bytes: count,
+                visible_prefix_digest: ContentHash::from_bytes(&visible),
             });
         }
         drop(devices);

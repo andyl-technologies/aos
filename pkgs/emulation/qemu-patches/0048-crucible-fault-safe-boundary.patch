@@ -1,5 +1,5 @@
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index dfdaeb4..e5a54f3 100644
+index dfdaeb493..e5a54f3b6 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -40,6 +40,7 @@
@@ -76,7 +76,7 @@ index dfdaeb4..e5a54f3 100644
                          crucible_sim_observer_notify_current_icount(
                              current_icount);
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 4ba3752..926623a 100644
+index 4ba375282..926623a8f 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -52,6 +52,9 @@ void qemu_crucible_fault_registry_seal(void);
@@ -91,7 +91,7 @@ index 4ba3752..926623a 100644
  
  #endif
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index bd4f5e6..999a102 100644
+index bd4f5e6c6..999a10281 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -164,6 +164,17 @@ typedef void (*qemu_plugin_tcg_exec_cb_t)(unsigned int vcpu_index,
@@ -133,7 +133,7 @@ index bd4f5e6..999a102 100644
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
   *
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
-index dd80672..17a0eb3 100644
+index dd80672c8..17a0eb3b4 100644
 --- a/plugins/crucible-fault.c
 +++ b/plugins/crucible-fault.c
 @@ -31,6 +31,9 @@ typedef struct CrucibleCompletedFault {

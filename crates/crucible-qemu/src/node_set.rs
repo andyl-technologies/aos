@@ -693,6 +693,19 @@ impl QemuNodeSet {
             .map_err(BackendError::from)
     }
 
+    /// Reports whether one live node has no device coroutine crossing its boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when `node` is unknown or its shared device-I/O
+    /// state cannot be inspected consistently.
+    pub fn checkpoint_device_io_is_quiescent(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<bool, BackendError> {
+        Ok(self.node_mut(node)?.checkpoint_device_io_is_quiescent()?)
+    }
+
     /// Completes one authenticated terminal lifecycle decision over QMP.
     ///
     /// # Errors

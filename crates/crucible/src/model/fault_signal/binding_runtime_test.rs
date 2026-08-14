@@ -996,6 +996,55 @@ fn event_parent_drives_exactly_one_impulse() {
 }
 
 #[test]
+fn sampled_inactive_event_checkpoint_restores_before_event() {
+    let program = event_program("future-event", vec![1], 7);
+    let binding = FaultBinding::new(
+        object_id("binding-future-event"),
+        vec![signal_id("output")],
+        BindingSampling::AtEvent(BindingEventParent::VirtualTime),
+        BindingMapping::ImpulseOnEvent,
+        TargetSelector::Exact(target_set()),
+        [FaultPhase::Boundary].into_iter().collect(),
+        forwarder_lifecycle_effect(EffectLifetime::Impulse),
+        None,
+        BindingSearchPolicy::Fixed,
+        observability(),
+        &program,
+    )
+    .unwrap_or_else(|error| panic!("invalid future event binding: {error}"));
+    let seed = ContentHash::from_bytes(b"future-event-seed");
+    let mut runtime = FaultBindingRuntime::new(
+        &program,
+        vec![binding.clone()],
+        &NoArtifacts,
+        SignalBoundarySnapshot::default(),
+        seed,
+        FaultResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("invalid future event runtime: {error}"));
+
+    let before_event = runtime
+        .evaluate_boundary(coordinate(1), 0, &mut AcceptActions::default())
+        .unwrap_or_else(|error| panic!("inactive event sample failed: {error}"));
+    assert!(before_event.actions.is_empty());
+    let checkpoint = runtime
+        .checkpoint()
+        .unwrap_or_else(|error| panic!("inactive event checkpoint failed: {error}"));
+
+    let restored = FaultBindingRuntime::restore(
+        &program,
+        vec![binding],
+        &NoArtifacts,
+        seed,
+        FaultResourceLimits::default(),
+        &checkpoint,
+    )
+    .unwrap_or_else(|error| panic!("inactive event checkpoint should restore: {error}"));
+    assert_eq!(restored.states(), runtime.states());
+    assert_eq!(restored.active(), runtime.active());
+}
+
+#[test]
 fn state_transition_uses_the_exhaustive_default_for_an_unknown_request() {
     let request = SignalValue::Event {
         schema: signal_id("link-event"),
@@ -1156,6 +1205,130 @@ fn opportunity_before_boundary_is_rejected() {
         .evaluate_opportunity(&opportunity, 0, &mut AcceptActions::default())
         .unwrap_or_else(|error| panic!("ordered opportunity evaluation failed: {error}"));
     assert!(opportunity_evaluation.actions.is_empty());
+}
+
+#[test]
+fn opportunity_after_latest_completed_boundary_is_accepted() {
+    let program = constant_program(
+        SignalValue::ProbabilityMillionths(1_000_000),
+        SignalShape::new(
+            SignalValueType::ProbabilityMillionths,
+            SignalUnit::ProbabilityMillionths,
+            0,
+        )
+        .unwrap_or_else(|error| panic!("invalid test shape: {error}")),
+    );
+    let effect = EffectRequest::new(
+        EFFECT_SEMANTIC_VERSION,
+        EffectLifetime::Opportunity,
+        EffectSpecification::Network(NetworkEffectSpecification::Jitter {
+            maximum_nanos: PositiveU64::new("maximum_nanos", 5)
+                .unwrap_or_else(|error| panic!("invalid jitter bound: {error}")),
+            distribution: NetworkDistribution::Uniform,
+            distribution_lookup: None,
+        }),
+    )
+    .unwrap_or_else(|error| panic!("invalid opportunity effect: {error}"));
+    let binding = FaultBinding::new(
+        object_id("binding-in-quantum-opportunity"),
+        vec![signal_id("output")],
+        BindingSampling::AtOpportunity,
+        BindingMapping::Hazard,
+        TargetSelector::Exact(target_set()),
+        [FaultPhase::Resolve].into_iter().collect(),
+        effect,
+        Some(OpportunityFilter {
+            adapter: FaultAdapter::Network,
+            operations: OperationSet::new(vec![FaultOperation::NetworkTraverse])
+                .unwrap_or_else(|error| panic!("invalid opportunity operations: {error}")),
+            phases: [FaultPhase::Resolve].into_iter().collect(),
+            target_kinds: [FaultTargetKind::NetworkSegment].into_iter().collect(),
+        }),
+        BindingSearchPolicy::Fixed,
+        observability(),
+        &program,
+    )
+    .unwrap_or_else(|error| panic!("invalid opportunity binding: {error}"));
+    let mut runtime = FaultBindingRuntime::new(
+        &program,
+        vec![binding],
+        &NoArtifacts,
+        SignalBoundarySnapshot::default(),
+        ContentHash::from_bytes(b"seed"),
+        FaultResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("invalid opportunity runtime: {error}"));
+    runtime
+        .evaluate_boundary(coordinate(3), 0, &mut AcceptActions::default())
+        .unwrap_or_else(|error| panic!("boundary evaluation failed: {error}"));
+    let opportunity = FaultOpportunity::new(
+        target_set().targets()[0].clone(),
+        FaultOperation::NetworkTraverse,
+        FaultPhase::Resolve,
+        coordinate(4),
+        0,
+        Some(FaultDirection::AToB),
+        OpportunityPayload::None,
+    )
+    .unwrap_or_else(|error| panic!("invalid test opportunity: {error}"));
+
+    let evaluation = runtime
+        .evaluate_opportunity(&opportunity, 0, &mut AcceptActions::default())
+        .unwrap_or_else(|error| panic!("in-quantum opportunity should be ordered: {error}"));
+    assert_eq!(evaluation.actions.len(), 1);
+}
+
+#[test]
+fn undeclared_opportunity_sampling_does_not_advance_the_global_cursor() {
+    let program = constant_program(
+        SignalValue::Bool(true),
+        SignalShape::new(SignalValueType::Bool, SignalUnit::Dimensionless, 0)
+            .unwrap_or_else(|error| panic!("invalid test shape: {error}")),
+    );
+    let binding = FaultBinding::new(
+        object_id("boundary-only-binding"),
+        vec![signal_id("output")],
+        BindingSampling::AtBoundary,
+        BindingMapping::ActiveWhenTrue { invert: false },
+        TargetSelector::Exact(target_set()),
+        [FaultPhase::Admit].into_iter().collect(),
+        availability_effect(),
+        None,
+        BindingSearchPolicy::Fixed,
+        observability(),
+        &program,
+    )
+    .unwrap_or_else(|error| panic!("invalid boundary binding: {error}"));
+    let mut runtime = FaultBindingRuntime::new(
+        &program,
+        vec![binding],
+        &NoArtifacts,
+        SignalBoundarySnapshot::default(),
+        ContentHash::from_bytes(b"seed"),
+        FaultResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("invalid boundary runtime: {error}"));
+    runtime
+        .evaluate_boundary(coordinate(3), 0, &mut AcceptActions::default())
+        .unwrap_or_else(|error| panic!("initial boundary failed: {error}"));
+    let opportunity = FaultOpportunity::new(
+        target_set().targets()[0].clone(),
+        FaultOperation::NetworkTraverse,
+        FaultPhase::Resolve,
+        coordinate(9),
+        0,
+        Some(FaultDirection::AToB),
+        OpportunityPayload::None,
+    )
+    .unwrap_or_else(|error| panic!("invalid irrelevant opportunity: {error}"));
+
+    let evaluation = runtime
+        .evaluate_opportunity(&opportunity, 0, &mut AcceptActions::default())
+        .unwrap_or_else(|error| panic!("irrelevant opportunity should be inert: {error}"));
+    assert_eq!(evaluation, BindingEvaluation::default());
+    runtime
+        .evaluate_boundary(coordinate(4), 0, &mut AcceptActions::default())
+        .unwrap_or_else(|error| panic!("later global boundary should remain monotone: {error}"));
 }
 
 #[test]
