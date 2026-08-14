@@ -132,7 +132,6 @@ shape-line|crates/crucible-session/src/tests/actor_runtime.rs|2274
 shape-line|crates/crucible-session/src/tests/engine_state.rs|2960
 shape-line|crates/crucible-session/tests/gate_control_responsive.rs|839
 shape-line|crates/crucible-session/tests/gate_exploration_fork.rs|632
-shape-line|crates/crucible-shmem/src/shmem/region.rs|2002
 shape-line|crates/crucible-shmem/tests/advance_ceiling_handoff.rs|652
 shape-line|crates/crucible-shmem/tests/gate_abi_conformance.rs|1022
 shape-line|crates/crucible-shmem/tests/gate_layer1_injection.rs|724
