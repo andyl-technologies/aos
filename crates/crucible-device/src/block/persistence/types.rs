@@ -64,9 +64,9 @@ pub struct BlockPersistenceNode {
     pub persistence_deadline_nanos: Option<u64>,
     /// Whether a flush/FUA/transaction barrier contributed an immutable edge.
     pub barrier_protected: bool,
-    ordering_group: Option<[u8; 32]>,
-    ordering: BlockPersistenceOrdering,
-    keyed_rank: [u8; 32],
+    pub(super) ordering_group: Option<[u8; 32]>,
+    pub(super) ordering: BlockPersistenceOrdering,
+    pub(super) keyed_rank: [u8; 32],
 }
 
 /// Before/after identity of the most recently admitted graph transformation.
@@ -89,9 +89,9 @@ pub struct BlockPersistenceTransformationEvidence {
 /// Complete bounded persistence DAG continuation.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockPersistenceGraph {
-    nodes: BTreeMap<u64, BlockPersistenceNode>,
-    edge_count: usize,
-    edge_limit: usize,
-    next_writeback_sequence: u64,
-    transformation_evidence: Vec<BlockPersistenceTransformationEvidence>,
+    pub(super) nodes: BTreeMap<u64, BlockPersistenceNode>,
+    pub(super) edge_count: usize,
+    pub(super) edge_limit: usize,
+    pub(super) next_writeback_sequence: u64,
+    pub(super) transformation_evidence: Vec<BlockPersistenceTransformationEvidence>,
 }

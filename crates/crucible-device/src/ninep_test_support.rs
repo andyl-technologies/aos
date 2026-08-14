@@ -177,4 +177,20 @@ pub(super) fn rlerror_code(frame: &[u8]) -> u32 {
     u32::from_le_bytes([frame[7], frame[8], frame[9], frame[10]])
 }
 
+/// Decodes directory-entry names from a packed `Rreaddir` reply.
+pub(super) fn readdir_names(reply: &[u8]) -> Vec<String> {
+    let count = u32::from_le_bytes([reply[7], reply[8], reply[9], reply[10]]) as usize;
+    let data = &reply[11..11 + count];
+    let mut names = Vec::new();
+    let mut pos = 0;
+    while pos + codec::QID_LEN + 8 + 1 + 2 <= data.len() {
+        let name_off = pos + codec::QID_LEN + 8 + 1;
+        let name_len = u16::from_le_bytes([data[name_off], data[name_off + 1]]) as usize;
+        let name_start = name_off + 2;
+        names.push(String::from_utf8_lossy(&data[name_start..name_start + name_len]).to_string());
+        pos = name_start + name_len;
+    }
+    names
+}
+
 // ---- version negotiation (IO-16) -------------------------------------

@@ -1,8 +1,6 @@
 //! Shared network-link test fixtures.
 
 use super::*;
-use crate::{DeviceError, PendingResponse, Response, ResponseStatus};
-
 /// Unwraps a result in tests, panicking with the error on failure.
 pub(super) fn ok<T, E: std::fmt::Debug>(result: Result<T, E>) -> T {
     result.unwrap_or_else(|error| panic!("expected Ok, got {error:?}"))

@@ -88,7 +88,7 @@ pub(super) fn persistence_rank(
     *hasher.finalize().as_bytes()
 }
 
-const fn ordering_tag(ordering: BlockPersistenceOrdering) -> u8 {
+pub(super) const fn ordering_tag(ordering: BlockPersistenceOrdering) -> u8 {
     match ordering {
         BlockPersistenceOrdering::Preserve => 0,
         BlockPersistenceOrdering::ReverseReady => 1,

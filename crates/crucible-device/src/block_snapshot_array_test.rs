@@ -2,10 +2,6 @@
 
 use super::test_support::*;
 use super::*;
-use crate::DeviceError;
-use crate::subnode::IoCore;
-use crucible_shmem::{FrameEntry, KIND_VM, NodeSlot, RingHeader};
-
 #[test]
 fn completion_is_host_timing_independent() {
     let a = run_sequence(0);

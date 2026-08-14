@@ -2,7 +2,7 @@
 
 use super::test_support::*;
 use super::*;
-use crate::{DeviceError, PendingResponse, Response, ResponseStatus};
+use crate::DeviceError;
 
 #[test]
 fn corrupt_flips_exactly_the_seeded_bits() {

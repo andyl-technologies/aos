@@ -2,10 +2,6 @@
 
 use super::test_support::*;
 use super::*;
-use crate::DeviceError;
-use crate::subnode::IoCore;
-use crucible_shmem::{FrameEntry, KIND_VM, NodeSlot, RingHeader};
-
 #[test]
 fn read_falls_through_to_base_when_overlay_empty() {
     let base = ramp_base(PAGE_SIZE * 3);

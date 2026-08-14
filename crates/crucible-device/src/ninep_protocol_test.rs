@@ -1,10 +1,7 @@
 //! Core 9p protocol traversal, metadata, and read tests.
 
-use std::collections::BTreeMap;
-
 use super::test_support::*;
 use super::*;
-use crate::subnode::IoCore;
 
 #[test]
 fn version_pins_protocol_and_clamps_msize_down() {

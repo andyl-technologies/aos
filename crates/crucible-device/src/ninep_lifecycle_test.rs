@@ -1,10 +1,7 @@
 //! 9p lifecycle, restore, latency, and structured-fuzz tests.
 
-use std::collections::BTreeMap;
-
 use super::test_support::*;
 use super::*;
-use crate::subnode::IoCore;
 
 #[test]
 fn snapshot_restore_round_trips_fid_table_and_msize() {
