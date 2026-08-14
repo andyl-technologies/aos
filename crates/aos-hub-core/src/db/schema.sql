@@ -1599,15 +1599,6 @@ CREATE TABLE registry_publication_multipart_uploads(
   expires_at INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
   finished_at INTEGER,
-  hashed_size INTEGER NOT NULL DEFAULT 0,
-  sha256_state LONGTEXT NOT NULL
-    DEFAULT '6a09e667bb67ae853c6ef372a54ff53a510e527f9b05688c1f83d9ab5be0cd19',
-  pending_part INTEGER,
-  pending_hash LONGTEXT,
-  pending_token KEYTEXT64,
-  pending_since INTEGER,
-  completion_token KEYTEXT64,
-  completion_since INTEGER,
   UNIQUE(publication_id, surface_object_id, active_object_slot),
   CHECK(state IN('active', 'completing', 'completed', 'aborted', 'failed')),
   CHECK((state IN('active', 'completing') AND active_object_slot = 1
@@ -1636,7 +1627,6 @@ CREATE TABLE registry_publication_multipart_backends(
   placement_id INTEGER NOT NULL REFERENCES surface_placements(id),
   placement_resource_version INTEGER NOT NULL,
   backend_upload_id KEYTEXT1024,
-  completion_etag LONGTEXT,
   state KEYTEXT16 NOT NULL,
   PRIMARY KEY(upload_id, placement_id),
   CHECK(state IN('creating', 'ready', 'uncertain')),
