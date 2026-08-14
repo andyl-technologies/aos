@@ -1868,7 +1868,11 @@ mod tests {
     #[tokio::test]
     async fn transient_surface_error_records_pending_not_failed() {
         let db = Database::open_in_memory().await.unwrap();
-        let id = db.register_registry("acme/app", &[], false).await.unwrap();
+        let org = db.create_org("acme", "Acme").await.unwrap();
+        let id = db
+            .create_managed_registry(org, "", "app", "public", &[], false)
+            .await
+            .unwrap();
         let registry = db.registry_by_slug("acme/app").await.unwrap().unwrap();
         let fetch = FailingFetch {
             error: "R2 get acme/app/info/refs: get: We encountered an internal error. \
@@ -1906,7 +1910,10 @@ mod tests {
     #[tokio::test]
     async fn permanent_surface_error_still_fails() {
         let db = Database::open_in_memory().await.unwrap();
-        db.register_registry("acme/bad", &[], false).await.unwrap();
+        let org = db.create_org("acme", "Acme").await.unwrap();
+        db.create_managed_registry(org, "", "bad", "public", &[], false)
+            .await
+            .unwrap();
         let registry = db.registry_by_slug("acme/bad").await.unwrap().unwrap();
         // A non-transient error (e.g. a malformed surface) is a real failure.
         let fetch = FailingFetch {
