@@ -55,7 +55,7 @@ index 6ab1622ce..d58bf5d4b 100644
          return CRUCIBLE_9P_FORWARD_PENDING;
      }
 diff --git a/hw/virtio/virtio-crucible-accelerator.c b/hw/virtio/virtio-crucible-accelerator.c
-index 5df609e9f..1ac4c1b69 100644
+index 49756ef03..d74054192 100644
 --- a/hw/virtio/virtio-crucible-accelerator.c
 +++ b/hw/virtio/virtio-crucible-accelerator.c
 @@ -14,6 +14,7 @@

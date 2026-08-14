@@ -1,7 +1,7 @@
 //! Deterministic virtio Crucible accelerator attachment.
 //!
 //! ```text
-//! -device virtio-crucible-accelerator-pci,id=crucible-accelerator0
+//! -device virtio-crucible-accelerator-pci,id=crucible-accelerator0,disable-legacy=on
 //! ```
 
 use super::QemuLaunchCommandError;
@@ -40,7 +40,10 @@ impl CrucibleAcceleratorDevice {
     pub(super) fn append_qemu_args(&self, args: &mut Vec<String>) {
         args.extend([
             "-device".to_owned(),
-            format!("virtio-crucible-accelerator-pci,id={}", self.device_id),
+            format!(
+                "virtio-crucible-accelerator-pci,id={},disable-legacy=on",
+                self.device_id
+            ),
         ]);
     }
 
@@ -48,6 +51,7 @@ impl CrucibleAcceleratorDevice {
         lines.extend([
             "crucible_accelerator=present".to_owned(),
             "crucible_accelerator_protocol=1".to_owned(),
+            "crucible_accelerator_transport=modern-only".to_owned(),
             format!("crucible_accelerator_device_id={}", self.device_id),
         ]);
     }
@@ -66,5 +70,36 @@ impl CrucibleAcceleratorDevice {
 impl Default for CrucibleAcceleratorDevice {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn launch_arguments_require_the_modern_only_transport() {
+        let mut arguments = Vec::new();
+        CrucibleAcceleratorDevice::new().append_qemu_args(&mut arguments);
+
+        assert_eq!(
+            arguments,
+            [
+                "-device",
+                "virtio-crucible-accelerator-pci,id=crucible-accelerator0,disable-legacy=on",
+            ]
+        );
+    }
+
+    #[test]
+    fn launch_identity_attests_the_transport_mode() {
+        let mut material = Vec::new();
+        CrucibleAcceleratorDevice::new().append_hash_material(&mut material);
+
+        assert!(
+            material
+                .iter()
+                .any(|line| line == "crucible_accelerator_transport=modern-only")
+        );
     }
 }

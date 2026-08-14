@@ -119,10 +119,10 @@ index 000000000..63b812455
 +type_init(accelerator_pci_register)
 diff --git a/hw/virtio/virtio-crucible-accelerator.c b/hw/virtio/virtio-crucible-accelerator.c
 new file mode 100644
-index 000000000..5df609e9f
+index 000000000..49756ef03
 --- /dev/null
 +++ b/hw/virtio/virtio-crucible-accelerator.c
-@@ -0,0 +1,493 @@
+@@ -0,0 +1,503 @@
 +/*
 + * Crucible deterministic accelerator co-simulation device
 + *
@@ -523,6 +523,14 @@ index 000000000..5df609e9f
 +    memcpy(config, &dev->config, sizeof(dev->config));
 +}
 +
++static uint64_t accelerator_get_features(VirtIODevice *vdev,
++                                         uint64_t features, Error **errp)
++{
++    (void)vdev;
++    (void)errp;
++    return features;
++}
++
 +static void accelerator_realize(DeviceState *device, Error **errp)
 +{
 +    VirtIOCrucibleAccelerator *dev = VIRTIO_CRUCIBLE_ACCELERATOR(device);
@@ -532,8 +540,9 @@ index 000000000..5df609e9f
 +        error_setg(errp, "virtio-crucible-accelerator requires -accel sim");
 +        return;
 +    }
-+    virtio_init(vdev, VIRTIO_ID_CRUCIBLE_ACCELERATOR,
-+                sizeof(dev->config));
++    virtio_init_named(vdev, VIRTIO_ID_CRUCIBLE_ACCELERATOR,
++                      sizeof(dev->config),
++                      "virtio-crucible-accelerator");
 +    dev->vq = virtio_add_queue(vdev,
 +                               VIRTIO_CRUCIBLE_ACCELERATOR_QUEUE_SIZE,
 +                               accelerator_handle_output);
@@ -597,6 +606,7 @@ index 000000000..5df609e9f
 +    set_bit(DEVICE_CATEGORY_MISC, dc->categories);
 +    vdc->realize = accelerator_realize;
 +    vdc->unrealize = accelerator_unrealize;
++    vdc->get_features = accelerator_get_features;
 +    vdc->get_config = accelerator_get_config;
 +    device_class_set_legacy_reset(dc, accelerator_reset);
 +    vdc->save = accelerator_save;
@@ -616,6 +626,41 @@ index 000000000..5df609e9f
 +}
 +
 +type_init(accelerator_register_types)
+diff --git a/hw/virtio/virtio.c b/hw/virtio/virtio.c
+index 91caba2e8..0b17824e8 100644
+--- a/hw/virtio/virtio.c
++++ b/hw/virtio/virtio.c
+@@ -3511,12 +3511,21 @@ void virtio_instance_init_common(Object *proxy_obj, void *data,
+ }
+ 
+ void virtio_init(VirtIODevice *vdev, uint16_t device_id, size_t config_size)
++{
++    virtio_init_named(vdev, device_id, config_size,
++                      virtio_id_to_name(device_id));
++}
++
++void virtio_init_named(VirtIODevice *vdev, uint16_t device_id,
++                       size_t config_size, const char *device_name)
+ {
+     BusState *qbus = qdev_get_parent_bus(DEVICE(vdev));
+     VirtioBusClass *k = VIRTIO_BUS_GET_CLASS(qbus);
+     int i;
+     int nvectors = k->query_nvectors ? k->query_nvectors(qbus->parent) : 0;
+ 
++    assert(device_name != NULL);
++
+     if (nvectors) {
+         vdev->vector_queues =
+             g_malloc0(sizeof(*vdev->vector_queues) * nvectors);
+@@ -3540,7 +3549,7 @@ void virtio_init(VirtIODevice *vdev, uint16_t device_id, size_t config_size)
+         vdev->vq[i].host_notifier_enabled = false;
+     }
+ 
+-    vdev->name = virtio_id_to_name(device_id);
++    vdev->name = device_name;
+     vdev->config_len = config_size;
+     if (vdev->config_len) {
+         vdev->config = g_malloc0(config_size);
 diff --git a/include/hw/virtio/virtio-crucible-accelerator.h b/include/hw/virtio/virtio-crucible-accelerator.h
 new file mode 100644
 index 000000000..d15d5f9b1
@@ -680,6 +725,31 @@ index 000000000..d15d5f9b1
 +};
 +
 +#endif
+diff --git a/include/hw/virtio/virtio.h b/include/hw/virtio/virtio.h
+index 15c9f88d4..edeeda738 100644
+--- a/include/hw/virtio/virtio.h
++++ b/include/hw/virtio/virtio.h
+@@ -242,6 +242,20 @@ void virtio_instance_init_common(Object *proxy_obj, void *data,
+  */
+ void virtio_init(VirtIODevice *vdev, uint16_t device_id, size_t config_size);
+ 
++/**
++ * virtio_init_named() - initialise a VirtIODevice with an explicit name
++ * @vdev: pointer to VirtIODevice
++ * @device_id: the VirtIO device ID (see virtio_ids.h)
++ * @config_size: size of the config space
++ * @device_name: static-lifetime diagnostic name for the device
++ *
++ * Vendor-specific device IDs are not present in QEMU's standard device-name
++ * table. Such devices must use this entry point rather than weakening the
++ * table validation performed by virtio_init().
++ */
++void virtio_init_named(VirtIODevice *vdev, uint16_t device_id,
++                       size_t config_size, const char *device_name);
++
+ void virtio_cleanup(VirtIODevice *vdev);
+ 
+ void virtio_error(VirtIODevice *vdev, const char *fmt, ...) G_GNUC_PRINTF(2, 3);
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
 index 0f0fee953..ef4ece29e 100644
 --- a/include/qemu/crucible-fault.h

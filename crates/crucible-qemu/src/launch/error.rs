@@ -45,6 +45,9 @@ pub enum QemuLaunchCommandError {
     /// The VM and plugin target do not match the manifest's scenario node.
     #[error("QEMU VM, plugin, and fault-capability node identities do not match")]
     FaultCapabilityNodeMismatch,
+    /// The realized accelerator attachment differs from the admitted manifest.
+    #[error("QEMU accelerator attachment does not match the fault-capability manifest")]
+    AcceleratorCapabilityMismatch,
     /// The QEMU system executable architecture differs from the World manifest.
     #[error("QEMU executable architecture does not match the fault-capability manifest")]
     FaultCapabilityArchitectureMismatch,

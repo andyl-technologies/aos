@@ -24,6 +24,10 @@
       else if lib.hasPrefix "0069-" patchName
       then [
         {label = "real accelerator device"; needle = "virtio-crucible-accelerator-device";}
+        {label = "vendor-specific virtio name API"; needle = "void virtio_init_named";}
+        {label = "explicit accelerator diagnostic name"; needle = "virtio_init_named(vdev, VIRTIO_ID_CRUCIBLE_ACCELERATOR";}
+        {label = "standard virtio ID validation retained"; needle = "virtio_id_to_name(device_id)";}
+        {label = "mandatory virtio feature negotiation"; needle = "vdc->get_features = accelerator_get_features;";}
         {label = "accelerator VMState section"; needle = "accelerator_vmstate_section";}
         {label = "realized accelerator manifest"; needle = "qemu_plugin_crucible_fault_accelerator_manifest";}
       ]
