@@ -428,13 +428,7 @@ async fn begin_publication(
                 "sha256": hex::encode(Sha256::digest(bytes)),
                 "byteSize": bytes.len(),
                 "kind": kind,
-                "mediaType": if path.ends_with(".json") {
-                    "application/json"
-                } else if path.ends_with(".toml") {
-                    "application/toml"
-                } else {
-                    "application/octet-stream"
-                },
+                "mediaType": aos_hub_core::keymap::content_type(path),
             })).collect::<Vec<_>>(),
         }),
         Some(auth),
