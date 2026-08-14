@@ -176,6 +176,305 @@ fn action_with_network_effect(specification: NetworkEffectSpecification) -> Reso
     action
 }
 
+fn apply_frame_effect(
+    specification: NetworkEffectSpecification,
+    sequence: u64,
+    payload: &mut Vec<u8>,
+) -> crucible::ResolvedNetworkFrameEffects {
+    apply_frame_effect_with_topology(
+        specification,
+        sequence,
+        payload,
+        &crucible::model::WorldFaultTopology::default(),
+    )
+}
+
+fn apply_frame_effect_with_topology(
+    specification: NetworkEffectSpecification,
+    sequence: u64,
+    payload: &mut Vec<u8>,
+    topology: &crucible::model::WorldFaultTopology,
+) -> crucible::ResolvedNetworkFrameEffects {
+    let action = action_with_network_effect(specification);
+    let opportunity = opportunity(sequence);
+    let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+    let mut state = NetworkEffectRuntimeState::default();
+    apply_network_frame_action(
+        payload,
+        &mut effects,
+        &action,
+        &opportunity,
+        ContentHash::from_bytes(b"frame-effect-production-path"),
+        topology,
+        &mut state,
+    )
+    .unwrap_or_else(|error| panic!("production frame effect application: {error}"));
+    effects
+}
+
+#[test]
+fn frame_effect_variants_mutate_production_frame_outcomes() {
+    let mut payload = vec![0x55];
+    let profile = apply_frame_effect(
+        NetworkEffectSpecification::ProfileDelta {
+            latency_nanos: Some(-5),
+            rate_cap_bps: Some(positive(1_000)),
+            loss_hazard: None,
+            corruption_hazard: None,
+            technology_metrics: None,
+        },
+        1,
+        &mut payload,
+    );
+    assert_eq!(profile.latency_delta_nanos(), -5);
+    assert_eq!(profile.serialization_rate_cap_bps(), Some(1_000));
+
+    let propagation = apply_frame_effect(
+        NetworkEffectSpecification::PropagationDelay {
+            delay_nanos: Some(positive(11)),
+            distance_velocity_lookup: None,
+        },
+        2,
+        &mut payload,
+    );
+    assert_eq!(propagation.additional_delay_nanos(), 11);
+
+    let access = apply_frame_effect(
+        NetworkEffectSpecification::AccessDelay {
+            delay_nanos: positive(13),
+            cause: id("test-access-contention"),
+        },
+        3,
+        &mut payload,
+    );
+    assert_eq!(access.additional_delay_nanos(), 13);
+
+    let jitter = apply_frame_effect(
+        NetworkEffectSpecification::Jitter {
+            maximum_nanos: positive(17),
+            distribution: crucible::model::NetworkDistribution::Uniform,
+            distribution_lookup: None,
+        },
+        4,
+        &mut payload,
+    );
+    assert!(jitter.additional_delay_nanos() <= 17);
+
+    let loss = apply_frame_effect(
+        NetworkEffectSpecification::FrameLoss {
+            probability: None,
+            outcome: Some(crucible::model::NetworkLossDecision::Drop),
+        },
+        5,
+        &mut payload,
+    );
+    assert!(loss.is_dropped());
+
+    let duplicate = apply_frame_effect(
+        NetworkEffectSpecification::Duplicate {
+            probability: crucible::model::ProbabilityMillionths::new(1_000_000)
+                .unwrap_or_else(|error| panic!("test duplicate probability: {error}")),
+            gap_nanos: 7,
+            copies: crucible::model::BoundedCount::new(
+                CountLimit::DuplicatesOrInstructionReplay,
+                2,
+            )
+            .unwrap_or_else(|error| panic!("test duplicate count: {error}")),
+        },
+        6,
+        &mut payload,
+    );
+    assert_eq!(duplicate.duplicate_gaps_nanos(), &[7, 14]);
+
+    let reorder = apply_frame_effect(
+        NetworkEffectSpecification::Reorder {
+            window_nanos: positive(19),
+            selection: crucible::model::NetworkSelection::Newest,
+        },
+        7,
+        &mut payload,
+    );
+    assert_eq!(reorder.additional_delay_nanos(), 19);
+
+    let mut transformed_payload = vec![0x55];
+    let transformed = apply_frame_effect(
+        NetworkEffectSpecification::PayloadTransform {
+            mutation: crucible::model::NetworkPayloadMutation::BitFlip {
+                offset_bytes: 0,
+                length_bytes: positive(1),
+                mask: 0x0f,
+            },
+        },
+        8,
+        &mut transformed_payload,
+    );
+    assert_eq!(transformed_payload, vec![0x5a]);
+    assert!(!transformed.is_dropped());
+
+    let membership_version = id("test-membership-v1");
+    let dropped_members = crucible::model::ObjectIdSet::new(vec![id("receiver")])
+        .unwrap_or_else(|error| panic!("test dropped recipient set: {error}"));
+    let mut topology = crucible::model::WorldFaultTopology::default();
+    topology
+        .network_policy_artifacts
+        .push(crucible::model::WorldNetworkPolicyArtifact {
+            id: membership_version.clone(),
+            semantic_version: 1,
+            artifact: crucible::model::NetworkPolicyArtifactKind::RecipientMembership {
+                members: vec![crucible::model::NetworkPolicyRecipient {
+                    member: id("receiver"),
+                    joined_sequence: 1,
+                }],
+            },
+        });
+    let recipient = apply_frame_effect_with_topology(
+        NetworkEffectSpecification::RecipientSubset {
+            membership_version,
+            drop_members: Some(dropped_members),
+            selection: None,
+            retain_count: None,
+        },
+        9,
+        &mut payload,
+        &topology,
+    );
+    assert!(recipient.is_dropped());
+}
+
+#[test]
+fn queue_policy_typed_effect_reserves_real_production_service() {
+    let queue = action_with_network_effect(NetworkEffectSpecification::QueuePolicy {
+        capacity_bytes: positive(64),
+        capacity_frames: crucible::model::BoundedCount::new(CountLimit::QueueEntries, 4)
+            .unwrap_or_else(|error| panic!("test queue frame capacity: {error}")),
+        discipline: crucible::model::NetworkQueueDiscipline::Fifo,
+        discipline_parameters: None,
+        overflow: crucible::model::NetworkQueueOverflow::TailDrop,
+        typed_error: None,
+    });
+    let mut payload = vec![0x42];
+    let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+    let mut state = NetworkEffectRuntimeState::default();
+    let application = apply_network_frame_actions(
+        &mut payload,
+        &mut effects,
+        &[queue],
+        &opportunity(10),
+        ContentHash::from_bytes(b"queue-policy-production-path"),
+        &crucible::model::WorldFaultTopology::default(),
+        &mut state,
+        &mut Vec::new(),
+        Some(8),
+        None,
+    )
+    .unwrap_or_else(|error| panic!("production queue policy application: {error}"));
+
+    assert_eq!(application.defer_until, Some(1_000_000_000));
+    assert!(effects.serialization_is_accounted());
+    let reservations = state
+        .queues
+        .values()
+        .next()
+        .map(|queue| queue.reservations.len());
+    assert_eq!(reservations, Some(1));
+}
+
+#[test]
+fn service_curve_typed_effect_changes_real_production_service_time() {
+    let segments = crucible::model::NetworkServiceSegments::new(vec![
+        crucible::model::NetworkServiceSegment {
+            at_nanos: 0,
+            rate_bps: positive(8),
+        },
+        crucible::model::NetworkServiceSegment {
+            at_nanos: 500_000_000,
+            rate_bps: positive(16),
+        },
+    ])
+    .unwrap_or_else(|error| panic!("test service-curve segments: {error}"));
+    let service = action_with_network_effect(NetworkEffectSpecification::ServiceCurve { segments });
+    let mut payload = vec![0x42];
+    let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+    let mut state = NetworkEffectRuntimeState::default();
+    let application = apply_network_frame_actions(
+        &mut payload,
+        &mut effects,
+        &[service],
+        &opportunity(12),
+        ContentHash::from_bytes(b"service-curve-production-path"),
+        &crucible::model::WorldFaultTopology::default(),
+        &mut state,
+        &mut Vec::new(),
+        None,
+        None,
+    )
+    .unwrap_or_else(|error| panic!("production service-curve application: {error}"));
+
+    assert_eq!(application.defer_until, Some(750_000_000));
+    assert!(effects.serialization_is_accounted());
+}
+
+#[test]
+fn burst_error_typed_effect_advances_retained_state_and_drops_frame() {
+    let good = id("burst-good");
+    let bad = id("burst-bad");
+    let parameters = id("burst-error-parameters");
+    let never = crucible::model::ProbabilityMillionths::new(0)
+        .unwrap_or_else(|error| panic!("test zero probability: {error}"));
+    let always = crucible::model::ProbabilityMillionths::new(1_000_000)
+        .unwrap_or_else(|error| panic!("test certain probability: {error}"));
+    let mut topology = crucible::model::WorldFaultTopology::default();
+    topology
+        .network_policy_artifacts
+        .push(crucible::model::WorldNetworkPolicyArtifact {
+            id: parameters.clone(),
+            semantic_version: 1,
+            artifact: crucible::model::NetworkPolicyArtifactKind::ErrorStateTable {
+                good: good.clone(),
+                bad: bad.clone(),
+                initial: good.clone(),
+                states: vec![
+                    crucible::model::NetworkPolicyErrorState {
+                        state: good,
+                        loss: never,
+                        corruption: never,
+                        corruption_transform: None,
+                    },
+                    crucible::model::NetworkPolicyErrorState {
+                        state: bad,
+                        loss: always,
+                        corruption: never,
+                        corruption_transform: None,
+                    },
+                ],
+            },
+        });
+    let action = action_with_network_effect(NetworkEffectSpecification::BurstErrorState {
+        good_to_bad: always,
+        bad_to_good: never,
+        state_parameters: parameters,
+    });
+    let mut payload = vec![0x42];
+    let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+    let mut state = NetworkEffectRuntimeState::default();
+    apply_network_burst_error(
+        &mut payload,
+        &mut effects,
+        &mut state,
+        &action,
+        &opportunity(11),
+        ContentHash::from_bytes(b"burst-error-production-path"),
+        &topology,
+        always,
+        never,
+        &id("burst-error-parameters"),
+    )
+    .unwrap_or_else(|error| panic!("production burst-error application: {error}"));
+
+    assert!(effects.is_dropped());
+    assert_eq!(state.burst_states.len(), 1);
+}
+
 fn medium_action(
     resources: crucible::model::ObjectIdSet,
     policy: FaultObjectId,
