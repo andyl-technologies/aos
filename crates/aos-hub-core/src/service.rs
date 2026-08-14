@@ -24098,8 +24098,8 @@ impl RpcService {
                     "registry publication lease is held by {holder}"
                 ))
             })?;
-        if publication.state == "preparing"
-            && !self
+        if publication.state == "preparing" {
+            let advanced = self
                 .db
                 .advance_registry_publication(
                     &publication.publication_id,
@@ -24108,11 +24108,23 @@ impl RpcService {
                     clock::now_unix_secs(),
                 )
                 .await
-                .map_err(RpcError::internal)?
-        {
-            return Err(RpcError::FailedPrecondition(
-                "publication pointer phase changed concurrently".into(),
-            ));
+                .map_err(RpcError::internal)?;
+            if !advanced {
+                // Independent pointer writes may all observe `preparing` before
+                // one of them opens the pointer phase. The losing requests are
+                // valid only when that exact transition won the race.
+                let current = self
+                    .db
+                    .registry_publication(&publication.publication_id)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| RpcError::not_found("registry publication"))?;
+                if current.state != "writing_pointers" {
+                    return Err(RpcError::FailedPrecondition(
+                        "publication pointer phase changed concurrently".into(),
+                    ));
+                }
+            }
         } else if !matches!(publication.state.as_str(), "preparing" | "writing_pointers") {
             return Err(RpcError::FailedPrecondition(
                 "publication no longer accepts pointer uploads".into(),
