@@ -1970,14 +1970,7 @@ impl Database {
                        AND r.endpoint_id = ?5 AND r.endpoint_generation = ?6
                        AND h.configuration_generation = ?7
                        AND h.configuration_digest = ?8
-                       AND e.resource_version = ?9 AND e.desired_generation = ?6
-                       AND NOT EXISTS (SELECT 1 FROM topology_operations o
-                         WHERE o.operation_kind = 'delivery_route_probe'
-                           AND o.primary_target_kind = 'delivery_route'
-                           AND o.primary_target_stable_id = r.id
-                           AND o.primary_target_generation_key = h.configuration_generation
-                           AND o.primary_target_configuration_digest = h.configuration_digest
-                           AND o.state IN ('pending', 'running'))",
+                       AND e.resource_version = ?9 AND e.desired_generation = ?6",
                         vals![
                             route_operation_id,
                             route_detail,
