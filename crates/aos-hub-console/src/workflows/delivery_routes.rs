@@ -9,12 +9,12 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
-use crate::mutation::{idempotency_key, PendingPlan};
+use crate::mutation::{PendingPlan, idempotency_key};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
 use super::access_policy::{
-    access_policy_name, canonical_path, AccessPolicyFields, AccessPolicySignals,
+    AccessPolicyFields, AccessPolicySignals, access_policy_name, canonical_path,
 };
 use super::cache_integrations::CacheIntegrationWorkflow;
 
@@ -439,7 +439,10 @@ fn CanonicalRoutes(
     canonical: Vec<aos_proto_types::CanonicalRoute>,
     routes: Vec<aos_proto_types::DeliveryRoute>,
 ) -> impl IntoView {
-    let audience = RwSignal::new("web".to_string());
+    // Keep the initial signal aligned with the first server-rendered option.
+    // Otherwise hydration displays Git while submissions retain Web until the
+    // user changes the select to a different value and back.
+    let audience = RwSignal::new("git".to_string());
     let initial_route = routes
         .iter()
         .find(|value| value.spec.as_ref().is_some_and(|spec| spec.enabled))
