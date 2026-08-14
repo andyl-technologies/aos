@@ -249,6 +249,34 @@ mod tests {
     }
 
     #[test]
+    fn network_boundary_kinds_use_wire_spelling() {
+        assert_eq!(
+            canonical_network_boundary_kind("source-allowlist"),
+            "source_allowlist"
+        );
+        assert_eq!(
+            canonical_network_boundary_kind("trusted-ingress"),
+            "trusted_ingress"
+        );
+        assert_eq!(canonical_network_boundary_kind("vpc"), "vpc");
+    }
+
+    #[test]
+    fn network_boundaries_start_with_an_explicit_untrusted_revision() {
+        use hub_types::trusted_ingress_configuration::Configuration;
+
+        let revision = initial_network_boundary_revision("required", "edge-probe");
+        assert!(revision.protected_transport_required);
+        assert_eq!(revision.probe_location_configuration_ref, "edge-probe");
+        assert!(matches!(
+            revision
+                .trusted_ingress
+                .and_then(|trusted| trusted.configuration),
+            Some(Configuration::None(true))
+        ));
+    }
+
+    #[test]
     fn endpoint_probe_configuration_is_complete_and_canonical() {
         assert_eq!(
             endpoint_probe_configuration(
@@ -4257,6 +4285,30 @@ fn topology_stable_id(explicit: Option<&str>, kind: &str) -> String {
         .unwrap_or_else(|| format!("{kind}:{:032x}", rand::random::<u128>()))
 }
 
+fn canonical_network_boundary_kind(kind: &str) -> &str {
+    match kind {
+        "source-allowlist" => "source_allowlist",
+        "trusted-ingress" => "trusted_ingress",
+        other => other,
+    }
+}
+
+fn initial_network_boundary_revision(
+    protected_transport: &str,
+    probe_location: &str,
+) -> hub_types::NetworkBoundaryRevisionSpec {
+    hub_types::NetworkBoundaryRevisionSpec {
+        protected_transport_required: protected_transport == "required",
+        trusted_ingress: Some(hub_types::TrustedIngressConfiguration {
+            configuration: Some(
+                hub_types::trusted_ingress_configuration::Configuration::None(true),
+            ),
+        }),
+        probe_location_configuration_ref: probe_location.into(),
+        ..Default::default()
+    }
+}
+
 /// Adapts one explicit retained-control plan subcommand to the shared RPC
 /// executor without reintroducing the overloaded mutation flags in clap.
 fn retained_plan_mutation(idempotency_key: &str, if_version: Option<&str>) -> HubMutationArgs {
@@ -4533,7 +4585,7 @@ async fn storage_binding(printer: &Printer, command: &HubStorageBindingCmd) -> R
                 &client,
                 HubTopologyMethod::ListStorageBindings,
                 &hub_types::ListStorageBindingsRequest {
-                    owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
+                    owner_scope_key: organization_scope_key(&client, Some(org)).await?,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
                 },
@@ -4560,6 +4612,7 @@ async fn storage_binding(printer: &Printer, command: &HubStorageBindingCmd) -> R
             token,
             org,
             name,
+            stable_id,
             kind,
             root,
             endpoint,
@@ -4689,10 +4742,10 @@ async fn storage_binding(printer: &Printer, command: &HubStorageBindingCmd) -> R
                 HubTopologyMethod::PlanCreateStorageBinding,
                 HubTopologyMethod::CreateStorageBinding,
                 &hub_types::PlanStorageBindingMutationRequest {
+                    stable_id: topology_stable_id(stable_id.as_deref(), "storage-binding"),
                     owner_scope_key: organization_scope_key(&client, Some(org)).await?,
                     spec: Some(spec),
                     idempotency_key: new_idempotency_key(),
-                    update_mask: vec!["spec".into()],
                     ..Default::default()
                 },
                 mutation,
@@ -5227,6 +5280,21 @@ async fn domain(printer: &Printer, command: &HubDomainCmd) -> Result<()> {
     }
 }
 
+async fn domain_stable_id(client: &HubClient, domain_ref: &str) -> Result<String> {
+    let response: hub_types::DomainResponse = client
+        .call_topology(
+            HubTopologyMethod::GetDomain,
+            &hub_types::GetTopologyResourceRequest {
+                stable_id: domain_ref.into(),
+            },
+        )
+        .await?;
+    response
+        .domain
+        .map(|domain| domain.stable_id)
+        .context("the Hub returned a domain response without a domain")
+}
+
 async fn domain_dns(printer: &Printer, command: &HubDomainDnsCmd) -> Result<()> {
     let HubDomainDnsCmd::Configure {
         access,
@@ -5239,6 +5307,7 @@ async fn domain_dns(printer: &Printer, command: &HubDomainDnsCmd) -> Result<()> 
         mutation,
     } = command;
     let client = hub_client(&access.hub, access.token.as_deref())?;
+    let domain_id = domain_stable_id(&client, hostname).await?;
     let configuration = if mode == "external" {
         if provider.is_some() || zone_id.is_some() || record_ttl.is_some() {
             anyhow::bail!("external DNS rejects Hub-managed DNS options");
@@ -5272,7 +5341,7 @@ async fn domain_dns(printer: &Printer, command: &HubDomainDnsCmd) -> Result<()> 
         HubTopologyMethod::PlanConfigureDomainDns,
         HubTopologyMethod::ConfigureDomainDns,
         &hub_types::PlanDomainDnsRequest {
-            stable_id: hostname.clone(),
+            stable_id: domain_id,
             configuration: Some(hub_types::DnsConfiguration {
                 configuration: Some(configuration),
             }),
@@ -5298,6 +5367,7 @@ async fn domain_certificate(printer: &Printer, command: &HubDomainCertificateCmd
         mutation,
     } = command;
     let client = hub_client(&access.hub, access.token.as_deref())?;
+    let domain_id = domain_stable_id(&client, hostname).await?;
     let configuration = if mode == "external" {
         hub_types::certificate_configuration::Configuration::External(
             hub_types::ExternalCertificateConfiguration {
@@ -5320,7 +5390,7 @@ async fn domain_certificate(printer: &Printer, command: &HubDomainCertificateCmd
         HubTopologyMethod::PlanConfigureDomainCertificate,
         HubTopologyMethod::ConfigureDomainCertificate,
         &hub_types::PlanDomainCertificateRequest {
-            stable_id: hostname.clone(),
+            stable_id: domain_id,
             configuration: Some(hub_types::CertificateConfiguration {
                 configuration: Some(configuration),
             }),
@@ -5397,6 +5467,8 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
             resource_id,
             allowlist_id,
             listener_id,
+            protected_transport,
+            probe_location,
             mutation,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
@@ -5421,6 +5493,12 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
             let kind = kind
                 .as_deref()
                 .context("network-boundary add requires --kind when creating a plan")?;
+            let protected_transport = protected_transport.as_deref().context(
+                "network-boundary add requires --protected-transport when creating a plan",
+            )?;
+            let probe_location = probe_location
+                .as_deref()
+                .context("network-boundary add requires --probe-location when creating a plan")?;
             match kind {
                 "vpn" | "vpc" | "tunnel" if allowlist_id.is_some() || listener_id.is_some() => {
                     anyhow::bail!("provider network boundaries reject allowlist/listener options");
@@ -5500,6 +5578,7 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
                 }
                 _ => anyhow::bail!("unsupported network boundary kind '{kind}'"),
             };
+            let canonical_kind = canonical_network_boundary_kind(kind);
             topology_mutation::<
                 _,
                 hub_types::ApplyNetworkBoundaryMutationRequest,
@@ -5514,11 +5593,14 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
                     stable_id: topology_stable_id(stable_id.as_deref(), "network-boundary"),
                     owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     name: name.clone(),
-                    kind: kind.into(),
+                    kind: canonical_kind.into(),
                     identity: Some(hub_types::NetworkBoundaryIdentity {
                         identity: Some(identity),
                     }),
-                    initial_revision: Some(hub_types::NetworkBoundaryRevisionSpec::default()),
+                    initial_revision: Some(initial_network_boundary_revision(
+                        protected_transport,
+                        probe_location,
+                    )),
                     idempotency_key: new_idempotency_key(),
                     expected_resource_version: mutation.if_version.clone().unwrap_or_default(),
                     ..Default::default()
