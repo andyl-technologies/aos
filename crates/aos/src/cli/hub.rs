@@ -1576,6 +1576,9 @@ pub enum HubRouteCmd {
         route: String,
         #[arg(long)]
         path: Option<String>,
+        /// Select the route capability to explain
+        #[arg(long, value_parser = ["web", "git", "nix_cache"], default_value = "web")]
+        access_class: String,
     },
     /// Enable a successfully probed route
     Enable {

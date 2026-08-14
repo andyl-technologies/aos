@@ -7202,6 +7202,7 @@ async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
             access,
             route,
             path,
+            access_class,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
             topology_read::<_, hub_types::ExplainRouteResponse>(
@@ -7211,6 +7212,7 @@ async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
                 &hub_types::ExplainRouteRequest {
                     route_id: route.clone(),
                     machine_path: path.clone().unwrap_or_default(),
+                    access_class: access_class.clone(),
                     ..Default::default()
                 },
             )
