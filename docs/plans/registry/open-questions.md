@@ -412,8 +412,8 @@ This is two distinct decisions, each large enough for its own section:
 **What is decided.** The blob is served at `{cache}/nar/<key>.nar.zst`, where the
 emitted narinfo `URL:` field carries the relative key verbatim and the consumer
 fetches it via `join_cache_url(mirror, narinfo.url)` (`download.rs:65-71`,
-`:184`). The producer-side `nar_url` helper now writes
-`nar/{store_hash}-{nar_hash with ':' -> '-'}.{ext}`. For a NAR hash like
+`:184`). The producer-side `nar_url` helper writes
+`nar/{store_hash}-{file_hash with ':' -> '-'}.{ext}`. For a compressed-file hash like
 `sha256:<hex>`, the served static object and narinfo `URL:` are both
 `nar/<storehash>-sha256-<hex>.nar.zst`.
 

@@ -543,6 +543,8 @@ mod tests {
 
     #[test]
     fn publication_object_contract_matches_delivery_path_contract() {
+        use sha2::Digest as _;
+
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path();
         std::fs::create_dir_all(root.join("info")).unwrap();
@@ -553,17 +555,31 @@ mod tests {
         std::fs::write(root.join("HEAD"), format!("{commit}\n")).unwrap();
         std::fs::write(root.join("info/refs"), b"").unwrap();
         for path in [
-            "hash.narinfo",
             "nix-cache-info",
             "index.html",
             "objects/info/packs",
             "web/config.json",
             "web/index.json",
             "web/packages/aos.json",
-            "nar/hash.nar.zst",
         ] {
             std::fs::write(root.join(path), path.as_bytes()).unwrap();
         }
+        let nar = b"compressed-nar";
+        let file_hash = format!("sha256:{:x}", sha2::Sha256::digest(nar));
+        let nar_url = aos_core::nar::cache::nar_url(
+            "/nix/store/hash-package",
+            &file_hash,
+            aos_core::nar::cache::NarCompression::Zstd,
+        );
+        std::fs::write(root.join(&nar_url), nar).unwrap();
+        std::fs::write(
+            root.join("hash.narinfo"),
+            format!(
+                "StorePath: /nix/store/hash-package\nURL: {nar_url}\nCompression: zstd\nFileHash: {file_hash}\nFileSize: {}\nNarHash: sha256:nar\nNarSize: 99\n",
+                nar.len()
+            ),
+        )
+        .unwrap();
 
         let pinned = publication_from_root(root, "andyl/main").unwrap();
         for object in &pinned.request.objects {
@@ -591,6 +607,32 @@ mod tests {
                 .unwrap()
                 .kind,
             "mutable_pointer"
+        );
+    }
+
+    #[test]
+    fn publication_rejects_nar_urls_that_do_not_identify_file_hash() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        std::fs::create_dir_all(root.join("info")).unwrap();
+        std::fs::create_dir_all(root.join("objects/aa")).unwrap();
+        std::fs::create_dir_all(root.join("nar")).unwrap();
+        let commit = "a".repeat(64);
+        std::fs::write(root.join("HEAD"), format!("{commit}\n")).unwrap();
+        std::fs::write(root.join("info/refs"), b"").unwrap();
+        std::fs::write(root.join("objects/aa/object"), b"object").unwrap();
+        std::fs::write(root.join("nar/hash-sha256-nar.nar.zst"), b"payload").unwrap();
+        std::fs::write(
+            root.join("hash.narinfo"),
+            "StorePath: /nix/store/hash-package\nURL: nar/hash-sha256-nar.nar.zst\nCompression: zstd\nFileHash: sha256:file\nFileSize: 7\nNarHash: sha256:nar\nNarSize: 9\n",
+        )
+        .unwrap();
+
+        let error = publication_from_root(root, "andyl/main").err().unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("does not identify its compressed FileHash")
         );
     }
 
@@ -8787,6 +8829,7 @@ fn publication_from_root(root: &std::path::Path, registry: &str) -> Result<Pinne
     let mut entries = 0;
     let root = open_publication_root(root)?;
     collect_publication_objects(&root, "", 0, &mut entries, &mut objects)?;
+    validate_publication_nar_urls(&root, &objects)?;
     let refs_object = objects
         .get("info/refs")
         .context("publication surface has no info/refs")?;
@@ -8821,6 +8864,61 @@ fn publication_from_root(root: &std::path::Path, registry: &str) -> Result<Pinne
         },
         root,
     })
+}
+
+fn validate_publication_nar_urls(
+    root: &std::os::fd::OwnedFd,
+    objects: &std::collections::BTreeMap<String, hub_types::RegistryPublicationObjectInput>,
+) -> Result<()> {
+    for (path, object) in objects
+        .iter()
+        .filter(|(path, _)| path.ends_with(".narinfo"))
+    {
+        anyhow::ensure!(
+            object.byte_size <= 1024 * 1024,
+            "publication narinfo exceeds its 1048576 byte limit: {path}"
+        );
+        let file = snapshot_publication_object(root, object)?;
+        let bytes = read_pinned_publication_file(file, path, 1024 * 1024)?;
+        let text = std::str::from_utf8(&bytes)
+            .with_context(|| format!("publication narinfo is not UTF-8: {path}"))?;
+        let narinfo = aos_core::nar::info::parse(text)
+            .with_context(|| format!("parsing publication narinfo {path}"))?;
+        let file_hash = narinfo
+            .file_hash
+            .as_deref()
+            .with_context(|| format!("publication narinfo has no FileHash: {path}"))?;
+        let compression = match narinfo.compression.as_str() {
+            "none" => aos_core::nar::cache::NarCompression::None,
+            "zstd" => aos_core::nar::cache::NarCompression::Zstd,
+            "xz" => aos_core::nar::cache::NarCompression::Xz,
+            value => {
+                anyhow::bail!("publication narinfo uses unsupported compression '{value}': {path}")
+            }
+        };
+        let expected_url =
+            aos_core::nar::cache::nar_url(&narinfo.store_path, file_hash, compression);
+        anyhow::ensure!(
+            narinfo.url == expected_url,
+            "publication narinfo URL does not identify its compressed FileHash: {path}"
+        );
+        let nar_object = objects.get(&expected_url).with_context(|| {
+            format!("publication narinfo names missing NAR object {expected_url}: {path}")
+        })?;
+        let expected_sha256 = aos_package::verify::sha256_digest_hex(file_hash)
+            .with_context(|| format!("publication narinfo FileHash is not SHA-256: {path}"))?;
+        let expected_size = i64::try_from(
+            narinfo
+                .file_size
+                .with_context(|| format!("publication narinfo has no FileSize: {path}"))?,
+        )
+        .with_context(|| format!("publication narinfo FileSize is too large: {path}"))?;
+        anyhow::ensure!(
+            nar_object.sha256 == expected_sha256 && nar_object.byte_size == expected_size,
+            "publication NAR object does not match narinfo FileHash/FileSize: {path}"
+        );
+    }
+    Ok(())
 }
 
 fn collect_publication_objects(

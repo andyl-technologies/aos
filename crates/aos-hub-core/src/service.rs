@@ -2333,6 +2333,22 @@ fn publication_media_type(path: &str) -> &'static str {
     keymap::content_type(path)
 }
 
+/// Returns whether a NAR object key identifies the exact declared wire bytes.
+fn publication_nar_path_matches_sha256(path: &str, sha256: &str) -> bool {
+    if !path.starts_with("nar/") {
+        return true;
+    }
+    ["nar", "nar.zst", "nar.xz"].iter().any(|extension| {
+        path.strip_suffix(&format!(".{extension}"))
+            .and_then(|stem| stem.strip_suffix(&format!("-sha256-{sha256}")))
+            .is_some_and(|prefix| {
+                prefix
+                    .strip_prefix("nar/")
+                    .is_some_and(|store_hash| !store_hash.is_empty() && !store_hash.contains('/'))
+            })
+    })
+}
+
 /// The shared, transport-free implementation of the `aos.hub.v1` services.
 ///
 /// Holds only data the method bodies need — the [`Database`], the [`JwtKeys`]
@@ -23716,6 +23732,11 @@ impl RpcService {
                     "publication objects require a lowercase SHA-256 and non-negative size",
                 ));
             }
+            if !publication_nar_path_matches_sha256(&object.path, &object.sha256) {
+                return Err(RpcError::invalid(
+                    "publication NAR object path must identify its declared SHA-256",
+                ));
+            }
             canonical.push((
                 object.path.clone(),
                 object.sha256.clone(),
@@ -34470,7 +34491,8 @@ mod image_body_tests {
 #[cfg(test)]
 mod publication_upload_limit_tests {
     use super::{
-        is_mutable_pointer, publication_media_type, registry_publication_complete_upload_bytes,
+        is_mutable_pointer, publication_media_type, publication_nar_path_matches_sha256,
+        registry_publication_complete_upload_bytes,
     };
     use crate::connect::CONNECT_REQUEST_BODY_LIMIT_BYTES;
 
@@ -34509,6 +34531,23 @@ mod publication_upload_limit_tests {
             publication_media_type("images/disk.qcow2"),
             "application/vnd.aos.disk-image.qcow2"
         );
+    }
+
+    #[test]
+    fn publication_nar_paths_are_bound_to_wire_digest() {
+        let digest = "a".repeat(64);
+        assert!(publication_nar_path_matches_sha256(
+            &format!("nar/storehash-sha256-{digest}.nar.zst"),
+            &digest
+        ));
+        assert!(!publication_nar_path_matches_sha256(
+            "nar/storehash-sha256-old.nar.zst",
+            &digest
+        ));
+        assert!(publication_nar_path_matches_sha256(
+            "images/disk.qcow2",
+            &digest
+        ));
     }
 }
 
