@@ -136,6 +136,35 @@ fn endpoint_ingress_kind(value: &str) -> Result<i32> {
     Ok(kind as i32)
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EndpointProbeIdentity<'a> {
+    provider: &'a str,
+    signer_secret_ref: &'a str,
+    public_key: &'a str,
+}
+
+fn endpoint_probe_configuration(
+    provider: Option<&str>,
+    signer_secret_ref: Option<&str>,
+    public_key: Option<&str>,
+) -> Result<Option<String>> {
+    match (provider, signer_secret_ref, public_key) {
+        (Some(provider), Some(signer_secret_ref), Some(public_key)) => {
+            let provider = provider.replace('-', "_");
+            Ok(Some(serde_json::to_string(&EndpointProbeIdentity {
+                provider: &provider,
+                signer_secret_ref,
+                public_key,
+            })?))
+        }
+        (None, None, None) => Ok(None),
+        _ => anyhow::bail!(
+            "--probe-provider, --probe-signer-secret-ref, and --probe-public-key must be supplied together"
+        ),
+    }
+}
+
 /// Handles `aos hub login` through device authorization or explicit bootstrap.
 async fn login(
     printer: &Printer,
@@ -217,6 +246,27 @@ mod tests {
             .expect("generated endpoint identity has its resource prefix");
         assert_eq!(suffix.len(), 32);
         assert!(suffix.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn endpoint_probe_configuration_is_complete_and_canonical() {
+        assert_eq!(
+            endpoint_probe_configuration(
+                Some("worker-secret"),
+                Some("endpoint-v1"),
+                Some("public-key"),
+            )
+            .unwrap()
+            .as_deref(),
+            Some(
+                r#"{"provider":"worker_secret","signerSecretRef":"endpoint-v1","publicKey":"public-key"}"#
+            )
+        );
+        assert!(endpoint_probe_configuration(Some("external"), None, None).is_err());
+        assert_eq!(
+            endpoint_probe_configuration(None, None, None).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -5868,8 +5918,13 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
             acknowledge_cleartext,
             network_boundary,
             ingress,
+            listener_provider,
+            listener_resource_id,
             tls_provider,
             certificate_ref,
+            probe_provider,
+            probe_signer_secret_ref,
+            probe_public_key,
             mutation,
         } => {
             let (scheme, mut host, effective_port) = parse_delivery_origin(origin)?;
@@ -5895,6 +5950,12 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                     certificate_ref: certificate_ref.clone().unwrap_or_default(),
                     ..Default::default()
                 });
+            let probe_configuration_ref = endpoint_probe_configuration(
+                Some(probe_provider),
+                Some(probe_signer_secret_ref),
+                Some(probe_public_key),
+            )?
+            .context("endpoint creation requires probe signing identity")?;
             let (boundary_id, boundary_revision) = network_boundary
                 .rsplit_once('@')
                 .map(|(id, revision)| {
@@ -5938,8 +5999,11 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                     revision: Some(hub_types::DeliveryEndpointRevisionSpec {
                         boundary_revision,
                         ingress_kind: endpoint_ingress_kind(ingress)?,
+                        listener_configuration_ref: format!(
+                            "{listener_provider}:{listener_resource_id}"
+                        ),
                         tls,
-                        ..Default::default()
+                        probe_configuration_ref,
                     }),
                     idempotency_key: new_idempotency_key(),
                     ..Default::default()
@@ -5964,8 +6028,9 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
             listener_resource_id,
             tls_provider,
             certificate_ref,
-            probe_location,
-            clear_probe_location,
+            probe_provider,
+            probe_signer_secret_ref,
+            probe_public_key,
             mutation,
         } => {
             if mutation.plan_id.is_some() {
@@ -5993,8 +6058,9 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                 && listener_resource_id.is_none()
                 && tls_provider.is_none()
                 && certificate_ref.is_none()
-                && probe_location.is_none()
-                && !clear_probe_location
+                && probe_provider.is_none()
+                && probe_signer_secret_ref.is_none()
+                && probe_public_key.is_none()
             {
                 anyhow::bail!("endpoint stage requires at least one changed field");
             }
@@ -6018,6 +6084,11 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                     certificate_ref: certificate_ref.clone().unwrap_or_default(),
                     ..Default::default()
                 });
+            let probe_configuration_ref = endpoint_probe_configuration(
+                probe_provider.as_deref(),
+                probe_signer_secret_ref.as_deref(),
+                probe_public_key.as_deref(),
+            )?;
             let client = hub_client(&access.hub, access.token.as_deref())?;
             topology_mutation::<
                 _,
@@ -6043,11 +6114,9 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                             .unwrap_or_default(),
                         listener_configuration_ref,
                         tls,
-                        probe_configuration_ref: if *clear_probe_location {
-                            String::new()
-                        } else {
-                            probe_location.clone().unwrap_or_default()
-                        },
+                        probe_configuration_ref: probe_configuration_ref
+                            .clone()
+                            .unwrap_or_default(),
                     }),
                     expected_resource_version: mutation.if_version.clone().unwrap_or_default(),
                     idempotency_key: new_idempotency_key(),
@@ -6060,8 +6129,9 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                             .as_ref()
                             .map(|_| "revision.listener_configuration_ref"),
                         tls_provider.as_ref().map(|_| "revision.tls"),
-                        ((probe_location.is_some() || *clear_probe_location)
-                            .then_some("revision.probe_configuration_ref")),
+                        probe_configuration_ref
+                            .as_ref()
+                            .map(|_| "revision.probe_configuration_ref"),
                     ]
                     .into_iter()
                     .flatten()
