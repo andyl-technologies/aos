@@ -86,7 +86,9 @@ facts describe the platform and do not override explicit authorization policy.
 
 Global resolvers and search domains are written to `resolved.conf`.
 DNS-over-TLS is opportunistic, multicast DNS and LLMNR are disabled, and the
-default DNSSEC mode is `allow-downgrade`.
+default DNSSEC mode is `allow-downgrade`. When systemd-resolved is enabled,
+`/etc/resolv.conf` follows its local stub resolver so package tools and other
+applications use the same live DNS configuration.
 
 Require DNSSEC only when every deployment network supports it:
 

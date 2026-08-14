@@ -251,36 +251,49 @@ in {
   config = {
     system.checks.networking-base = {
       description = "Base networking checks";
-      checks = [
-        {
-          name = "loopback-exists";
-          description = "Loopback interface exists";
-          script = ''
-            vm.succeed("test -d /sys/class/net/lo")
-          '';
-        }
-        {
-          name = "loopback-up";
-          description = "Loopback interface is up";
-          script = ''
-            assert "unknown" in vm.succeed("cat /sys/class/net/lo/operstate")
-          '';
-        }
-        {
-          name = "proc-net";
-          description = "/proc/net is available";
-          script = ''
-            vm.succeed("test -d /proc/net")
-          '';
-        }
-        {
-          name = "hostname-file";
-          description = "/etc/hostname exists";
-          script = ''
-            vm.succeed("test -f /etc/hostname")
-          '';
-        }
-      ];
+      checks =
+        [
+          {
+            name = "loopback-exists";
+            description = "Loopback interface exists";
+            script = ''
+              vm.succeed("test -d /sys/class/net/lo")
+            '';
+          }
+          {
+            name = "loopback-up";
+            description = "Loopback interface is up";
+            script = ''
+              assert "unknown" in vm.succeed("cat /sys/class/net/lo/operstate")
+            '';
+          }
+          {
+            name = "proc-net";
+            description = "/proc/net is available";
+            script = ''
+              vm.succeed("test -d /proc/net")
+            '';
+          }
+          {
+            name = "hostname-file";
+            description = "/etc/hostname exists";
+            script = ''
+              vm.succeed("test -f /etc/hostname")
+            '';
+          }
+        ]
+        ++ lib.optionals cfg.resolved.enable [
+          {
+            name = "resolver-compatibility-link";
+            description = "libc resolver configuration points at systemd-resolved";
+            script = ''
+              vm.wait_for_unit("systemd-resolved.service")
+              vm.succeed("test -L /etc/resolv.conf")
+              vm.succeed("test \"$(readlink /etc/resolv.conf)\" = /run/systemd/resolve/stub-resolv.conf")
+              vm.succeed("test -s /etc/resolv.conf")
+            '';
+          }
+        ];
     };
 
     # Per-interface network files.
@@ -305,6 +318,14 @@ in {
       resolvedFile = lib.optionalAttrs cfg.resolved.enable {
         "systemd/resolved.conf" = {
           text = resolvedConf;
+        };
+        "tmpfiles.d/aos-resolved.conf" = {
+          text = ''
+            # Keep libc, language runtimes, and static tools on the same
+            # resolver path as nss-resolve. The target is generated at runtime
+            # by systemd-resolved, after the immutable /etc lower is mounted.
+            L /etc/resolv.conf - - - - /run/systemd/resolve/stub-resolv.conf
+          '';
         };
       };
 
