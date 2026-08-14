@@ -145,7 +145,6 @@ shape-line|crates/crucible/src/backend.rs|696
 shape-line|crates/crucible/src/decision.rs|1073
 shape-line|crates/crucible/src/device_subnode.rs|1565
 shape-line|crates/crucible/src/example_corpus.rs|2299
-shape-line|crates/crucible/src/model.rs|875
 shape-line|crates/crucible/src/model/binary_plan.rs|1586
 shape-line|crates/crucible/src/model/binary_state.rs|1829
 shape-line|crates/crucible/src/model/debug.rs|2933
@@ -158,7 +157,6 @@ shape-line|crates/crucible/src/model/material.rs|1740
 shape-line|crates/crucible/src/model/materialized.rs|1505
 shape-line|crates/crucible/src/model/plan_properties.rs|1693
 shape-line|crates/crucible/src/model/runtime.rs|1891
-shape-line|crates/crucible/src/model/scenario.rs|687
 shape-line|crates/crucible/src/model/temporal_graph/core.rs|1814
 shape-line|crates/crucible/src/model/temporal_graph/search_storage.rs|1741
 shape-line|crates/crucible/src/model/toml.rs|2479
