@@ -306,11 +306,7 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
                 "sha256": hex::encode(Sha256::digest(bytes)),
                 "byteSize": bytes.len(),
                 "kind": kind,
-                "mediaType": match path.rsplit_once('.').map(|(_, extension)| extension) {
-                    Some("json") => "application/json",
-                    Some("qcow2") => "application/x-qemu-disk",
-                    _ => "application/octet-stream",
-                },
+                "mediaType": aos_hub_core::keymap::content_type(path),
             })
         })
         .collect::<Vec<_>>();
