@@ -8747,7 +8747,7 @@ async fn upload_publication_object_class(
     const CONCURRENT_UPLOADS: usize = 32;
     const SNAPSHOT_PERMIT_BYTES: u64 = 1024 * 1024;
     const SNAPSHOT_BUDGET_PERMITS: u32 = 128;
-    const CONCURRENT_MULTIPART_UPLOADS: usize = 2;
+    const CONCURRENT_MULTIPART_UPLOADS: usize = 1;
 
     let snapshot_budget = std::sync::Arc::new(tokio::sync::Semaphore::new(
         SNAPSHOT_BUDGET_PERMITS as usize,
@@ -8791,9 +8791,9 @@ async fn upload_publication_object_class(
                 .acquire_many_owned(snapshot_permits)
                 .await
                 .context("publication snapshot budget closed unexpectedly")?;
-            // Multipart requests carry one bounded part buffer through the Hub
-            // coordinator. Keep their independent memory pressure well below
-            // the provider's per-isolate limit.
+            // Multipart requests carry one bounded part buffer and load the
+            // publication coordinator's durable state. Serialize them so a
+            // large manifest cannot amplify coordinator memory use.
             let _multipart_permit = if object.upload_url.is_empty() {
                 Some(
                     multipart_budget
