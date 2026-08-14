@@ -178,6 +178,9 @@ pub async fn index_and_record_from_placement(
     registry: &RegistryRecord,
     indexed_placement_id: Option<i64>,
 ) -> Result<IndexOutcome> {
+    if db.registry_has_active_publication(registry.id).await? {
+        return Ok(pending_outcome());
+    }
     match index_registry(db, fetch, registry, indexed_placement_id).await {
         Ok(outcome) => Ok(outcome),
         Err(err) => {

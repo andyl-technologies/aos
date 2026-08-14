@@ -4384,10 +4384,8 @@ impl Database {
                 )?);
             }
         }
-        let mut checked_stmts = stmts
-            .into_iter()
-            .map(Statement::unchecked)
-            .collect::<Vec<_>>();
+        let mut checked_stmts = vec![Self::registry_index_publication_guard(registry_id)];
+        checked_stmts.extend(stmts.into_iter().map(Statement::unchecked));
         if let Some((objects, observed_at)) = image_presence {
             let placement_id = indexed_placement_id
                 .context("signed image presence requires an exact indexed placement")?;
@@ -4453,12 +4451,16 @@ impl Database {
     /// Returns an error on database failure.
     pub async fn mark_index_failed(&self, registry_id: i64, error: &str) -> Result<()> {
         self.backend
-            .execute(
-                "INSERT INTO registry_index (registry_id, state, error)
+            .checked_batch(&[
+                Self::registry_index_publication_guard(registry_id),
+                Statement::new(
+                    "INSERT INTO registry_index (registry_id, state, error)
              VALUES (?1, 'failed', ?2)
              ON CONFLICT(registry_id) DO UPDATE SET state = 'failed', error = excluded.error",
-                &vals![registry_id, error],
-            )
+                    vals![registry_id, error],
+                )
+                .unchecked(),
+            ])
             .await?;
         Ok(())
     }
@@ -4475,12 +4477,16 @@ impl Database {
     /// Returns an error on database failure.
     pub async fn mark_index_pending(&self, registry_id: i64) -> Result<()> {
         self.backend
-            .execute(
-                "INSERT INTO registry_index (registry_id, state, error)
+            .checked_batch(&[
+                Self::registry_index_publication_guard(registry_id),
+                Statement::new(
+                    "INSERT INTO registry_index (registry_id, state, error)
              VALUES (?1, 'pending', NULL)
              ON CONFLICT(registry_id) DO UPDATE SET state = 'pending', error = NULL",
-                &vals![registry_id],
-            )
+                    vals![registry_id],
+                )
+                .unchecked(),
+            ])
             .await?;
         Ok(())
     }
@@ -4613,17 +4619,19 @@ impl Database {
             ),
         ];
         let statement_count = statements.len();
-        let checked = statements
-            .into_iter()
-            .enumerate()
-            .map(|(index, statement)| {
-                if index + 2 >= statement_count {
-                    statement.expecting(1)
-                } else {
-                    statement.unchecked()
-                }
-            })
-            .collect::<Vec<_>>();
+        let mut checked = vec![Self::registry_index_publication_guard(registry_id)];
+        checked.extend(
+            statements
+                .into_iter()
+                .enumerate()
+                .map(|(index, statement)| {
+                    if index + 2 >= statement_count {
+                        statement.expecting(1)
+                    } else {
+                        statement.unchecked()
+                    }
+                }),
+        );
         self.backend.checked_batch(&checked).await
     }
 
@@ -4639,12 +4647,16 @@ impl Database {
     /// Returns an error on database failure.
     pub async fn mark_index_stale(&self, registry_id: i64, error: &str) -> Result<()> {
         self.backend
-            .execute(
-                "INSERT INTO registry_index (registry_id, state, error)
+            .checked_batch(&[
+                Self::registry_index_publication_guard(registry_id),
+                Statement::new(
+                    "INSERT INTO registry_index (registry_id, state, error)
              VALUES (?1, 'stale', ?2)
              ON CONFLICT(registry_id) DO UPDATE SET state = 'stale', error = excluded.error",
-                &vals![registry_id, error],
-            )
+                    vals![registry_id, error],
+                )
+                .unchecked(),
+            ])
             .await?;
         Ok(())
     }
@@ -4705,7 +4717,7 @@ impl Database {
         // no mid-flight `last_insert_rowid`; the per-registry sequential indexer
         // rules out a concurrent writer colliding on the id base.
         let mut next_channel = self.max_id("channels").await?;
-        let mut stmts: Vec<CheckedStatement> = Vec::new();
+        let mut stmts = vec![Self::registry_index_publication_guard(registry_id)];
         stmts.push(
             Statement::new(
                 "UPDATE channels SET active = 0 WHERE registry_id = ?1",
@@ -4813,6 +4825,9 @@ impl Database {
         registry_id: i64,
         indexed_placement_id: Option<i64>,
     ) -> Result<()> {
+        if self.registry_has_active_publication(registry_id).await? {
+            bail!("registry index mutation is blocked by an active publication");
+        }
         let allowed = match indexed_placement_id {
             Some(placement_id) => {
                 self.reconciled_surface_reader(SurfaceTarget::Registry(registry_id))
@@ -4837,6 +4852,37 @@ impl Database {
             bail!("registry index mutation requires the authoritative placement");
         }
         Ok(())
+    }
+
+    /// Reports whether a publication can still change a registry's visible surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn registry_has_active_publication(&self, registry_id: i64) -> Result<bool> {
+        Ok(self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM registry_publications
+                 WHERE registry_id = ?1 AND state IN ('preparing', 'writing_pointers')
+                 LIMIT 1",
+                &vals![registry_id],
+            )
+            .await?
+            .is_some())
+    }
+
+    /// Fences one index transaction against an in-flight publication.
+    fn registry_index_publication_guard(registry_id: i64) -> CheckedStatement {
+        Statement::new(
+            "UPDATE registries SET updated_at = updated_at
+             WHERE id = ?1 AND NOT EXISTS (
+               SELECT 1 FROM registry_publications publication
+               WHERE publication.registry_id = registries.id
+                 AND publication.state IN ('preparing', 'writing_pointers'))",
+            vals![registry_id],
+        )
+        .expecting(1)
     }
 
     // -- anti-rollback floors ------------------------------------------------
@@ -28619,6 +28665,60 @@ source_nar_hash = ""
             .retry_failed_registry_publication("publication-history-2", unix_now())
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn registry_index_mutation_waits_for_an_active_publication() {
+        let db = Database::open_in_memory().await.unwrap();
+        let registry_id = db
+            .register_registry("publication-index-fence", &[], false)
+            .await
+            .unwrap();
+        db.mark_index_failed(registry_id, "prior failure")
+            .await
+            .unwrap();
+        let prior = db.index_status(registry_id).await.unwrap().unwrap();
+
+        let publication_id = "publication-index-fence-1";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: publication_id.into(),
+            registry_id,
+            generation: "generation-1".into(),
+            manifest_digest: "a".repeat(64),
+            refs_digest: "b".repeat(64),
+            default_commit: None,
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+
+        assert!(db
+            .registry_has_active_publication(registry_id)
+            .await
+            .unwrap());
+        assert!(db.mark_index_pending(registry_id).await.is_err());
+        assert!(db.mark_index_stale(registry_id, "transient").await.is_err());
+        assert!(db
+            .mark_index_failed(registry_id, "replacement")
+            .await
+            .is_err());
+        let retained = db.index_status(registry_id).await.unwrap().unwrap();
+        assert_eq!(retained.state, prior.state);
+        assert_eq!(retained.error, prior.error);
+        assert_eq!(retained.generation, prior.generation);
+
+        db.fail_registry_publication(publication_id, unix_now())
+            .await
+            .unwrap();
+        assert!(!db
+            .registry_has_active_publication(registry_id)
+            .await
+            .unwrap());
+        db.mark_index_pending(registry_id).await.unwrap();
+        assert_eq!(
+            db.index_status(registry_id).await.unwrap().unwrap().state,
+            "pending"
+        );
     }
 
     #[tokio::test]
