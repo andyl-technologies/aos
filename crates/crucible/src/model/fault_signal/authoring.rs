@@ -16,6 +16,7 @@ use crate::model::{
     format_content_hash_ref,
 };
 
+use super::wire::toml_codec::{from_toml_value, to_toml_value};
 use super::*;
 
 mod error;

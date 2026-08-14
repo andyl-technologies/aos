@@ -6,6 +6,8 @@
 //! display-only documentation: an adapter must reject a target or phase that is
 //! absent from an effect's descriptor.
 
+use std::fmt;
+
 /// The implementation version shared by every initial effect contract.
 pub const EFFECT_SEMANTIC_VERSION: u16 = 1;
 

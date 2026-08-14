@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 
-mod toml_codec;
+pub(super) mod toml_codec;
 
 pub(crate) use toml_codec::*;
 

@@ -1,7 +1,5 @@
 //! Replay authentication and checkpoint-capacity tests for fault execution.
 
-use std::collections::{BTreeMap, BTreeSet};
-
 use super::test_support::*;
 use super::*;
 

@@ -6,11 +6,11 @@ use super::*;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ScenarioDef {
     /// The content address of the scenario definition.
-    pub(super) id: ContentHash,
+    pub(in crate::model) id: ContentHash,
     /// The root entropy carried by this scenario definition.
-    pub(super) seed: Seed,
+    pub(in crate::model) seed: Seed,
     /// The maximum number of app-random decisions admitted for one run.
-    pub(super) app_random_draw_cap: u64,
+    pub(in crate::model) app_random_draw_cap: u64,
 }
 
 impl ScenarioDef {

@@ -1,7 +1,5 @@
 //! Checkpoint and network-outcome tests for fault execution.
 
-use std::collections::{BTreeMap, BTreeSet};
-
 use super::test_support::*;
 use super::*;
 

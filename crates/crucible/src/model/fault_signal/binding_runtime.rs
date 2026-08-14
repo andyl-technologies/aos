@@ -972,6 +972,18 @@ impl<'a> FaultBindingRuntime<'a> {
         verify_replay_outcomes: bool,
     ) -> Result<BindingEvaluation, BindingRuntimeError> {
         self.ensure_usable()?;
+        let cursor = FaultSchedulerCursor {
+            virtual_nanos: coordinate.virtual_nanos,
+            same_coordinate_sequence,
+        };
+        self.ensure_monotone(cursor)?;
+        if opportunity.is_some()
+            && !self.boundary_completed_cursor.is_some_and(|boundary| {
+                boundary.virtual_nanos < cursor.virtual_nanos || boundary <= cursor
+            })
+        {
+            return Err(BindingRuntimeError::OpportunityBeforeBoundary);
+        }
         if opportunity.is_some()
             && !self.bindings.iter().any(|binding| {
                 matches!(
@@ -985,18 +997,6 @@ impl<'a> FaultBindingRuntime<'a> {
             })
         {
             return Ok(BindingEvaluation::default());
-        }
-        let cursor = FaultSchedulerCursor {
-            virtual_nanos: coordinate.virtual_nanos,
-            same_coordinate_sequence,
-        };
-        self.ensure_monotone(cursor)?;
-        if opportunity.is_some()
-            && !self.boundary_completed_cursor.is_some_and(|boundary| {
-                boundary.virtual_nanos < cursor.virtual_nanos || boundary <= cursor
-            })
-        {
-            return Err(BindingRuntimeError::OpportunityBeforeBoundary);
         }
         if opportunity.is_none() && self.boundary_completed_cursor == Some(cursor) {
             return Ok(BindingEvaluation {

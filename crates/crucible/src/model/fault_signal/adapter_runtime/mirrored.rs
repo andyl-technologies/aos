@@ -3,7 +3,7 @@
 use super::*;
 
 /// One transaction mirrored into canonical adapter state and a live backend.
-pub(super) struct MirroredFaultActionSink<'a, B> {
+pub(in crate::model::fault_signal) struct MirroredFaultActionSink<'a, B> {
     state: &'a mut TransactionalFaultAdapters,
     backend: &'a mut B,
     prepared: Option<PreparedMirroredBatch>,
@@ -23,7 +23,10 @@ where
 {
     /// Couples canonical adapter state to one live production backend.
     #[must_use]
-    pub(super) fn new(state: &'a mut TransactionalFaultAdapters, backend: &'a mut B) -> Self {
+    pub(in crate::model::fault_signal) fn new(
+        state: &'a mut TransactionalFaultAdapters,
+        backend: &'a mut B,
+    ) -> Self {
         Self {
             state,
             backend,

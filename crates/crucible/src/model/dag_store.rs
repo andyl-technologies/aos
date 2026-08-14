@@ -442,15 +442,15 @@ pub struct TemporalGraphReferenceCounts {
 }
 
 impl TemporalGraphReferenceCounts {
-    fn increment_checkpoint(&mut self, checkpoint: ContentHash) {
+    pub(in crate::model) fn increment_checkpoint(&mut self, checkpoint: ContentHash) {
         *self.checkpoint_nodes.entry(checkpoint).or_insert(0) += 1;
     }
 
-    fn increment_cached_snapshot(&mut self, checkpoint: ContentHash) {
+    pub(in crate::model) fn increment_cached_snapshot(&mut self, checkpoint: ContentHash) {
         *self.cached_snapshots.entry(checkpoint).or_insert(0) += 1;
     }
 
-    fn increment_cow_delta(&mut self, cow_ref: CowDeltaRef) {
+    pub(in crate::model) fn increment_cow_delta(&mut self, cow_ref: CowDeltaRef) {
         *self.cow_deltas.entry(cow_ref).or_insert(0) += 1;
     }
 }
