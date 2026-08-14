@@ -378,6 +378,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("identity_incarnation.sql"),
     include_str!("operation_scope_inventory.sql"),
     include_str!("publication_multipart.sql"),
+    include_str!("publication_multipart_progress.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -24349,14 +24350,6 @@ source_nar_hash = ""
         for script in earlier {
             connection.execute_batch(script).unwrap();
         }
-        connection
-            .execute_batch(
-                "DROP TABLE registry_publication_multipart_parts;
-                 DROP TABLE registry_publication_multipart_backends;
-                 DROP TABLE registry_publication_multipart_uploads;",
-            )
-            .unwrap();
-
         connection.execute_batch(multipart_migration).unwrap();
         let tables: i64 = connection
             .query_row(
@@ -24379,6 +24372,18 @@ source_nar_hash = ""
             .unwrap();
         assert!(columns.iter().any(|column| column == "hashed_size"));
         assert!(columns.iter().any(|column| column == "sha256_state"));
+        assert!(columns.iter().any(|column| column == "pending_token"));
+        assert!(columns.iter().any(|column| column == "completion_token"));
+        let backend_columns: Vec<String> = connection
+            .prepare("PRAGMA table_info(registry_publication_multipart_backends)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(backend_columns
+            .iter()
+            .any(|column| column == "completion_etag"));
     }
 
     #[test]
