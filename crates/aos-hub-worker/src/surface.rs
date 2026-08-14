@@ -480,6 +480,72 @@ async fn r2_get(
     }
 }
 
+/// Run an R2 ranged `get` without worker-rs's invalid `suffix: undefined` field.
+async fn r2_get_range(
+    bucket: &wasm_bindgen::JsValue,
+    key: &str,
+    offset: u64,
+    length: u64,
+) -> Result<Option<wasm_bindgen::JsValue>> {
+    use js_sys::{Function, Object, Promise, Reflect};
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_futures::JsFuture;
+
+    const MAX_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
+    if offset > MAX_SAFE_INTEGER || length > MAX_SAFE_INTEGER {
+        return Err(aos_hub_core::placement_read::terminal_read_error(format!(
+            "R2 range for {key} exceeds JavaScript's exact integer range"
+        )));
+    }
+
+    let range = Object::new();
+    Reflect::set(
+        &range,
+        &JsValue::from_str("offset"),
+        &JsValue::from_f64(offset as f64),
+    )
+    .map_err(|e| anyhow::anyhow!("R2 get {key}: range offset: {e:?}"))?;
+    Reflect::set(
+        &range,
+        &JsValue::from_str("length"),
+        &JsValue::from_f64(length as f64),
+    )
+    .map_err(|e| anyhow::anyhow!("R2 get {key}: range length: {e:?}"))?;
+    let options = Object::new();
+    Reflect::set(&options, &JsValue::from_str("range"), &range)
+        .map_err(|e| anyhow::anyhow!("R2 get {key}: range options: {e:?}"))?;
+
+    let get_fn: Function = Reflect::get(bucket, &JsValue::from_str("get"))
+        .map_err(|e| anyhow::anyhow!("R2 get {key}: get method: {e:?}"))?
+        .dyn_into()
+        .map_err(|e| anyhow::anyhow!("R2 get {key}: get is not a function: {e:?}"))?;
+    let mut attempt = 0u32;
+    loop {
+        let promise: Promise = get_fn
+            .call2(bucket, &JsValue::from_str(key), &options)
+            .map_err(|e| anyhow::anyhow!("R2 get {key}: ranged call: {e:?}"))?
+            .dyn_into()
+            .map_err(|e| {
+                anyhow::anyhow!("R2 get {key}: ranged get did not return a promise: {e:?}")
+            })?;
+        match JsFuture::from(promise).await {
+            Ok(v) if v.is_null() || v.is_undefined() => return Ok(None),
+            Ok(v) => return Ok(Some(v)),
+            Err(e) if attempt < 2 && is_transient_r2(&format!("{e:?}")) => attempt += 1,
+            Err(e) if is_transient_r2(&format!("{e:?}")) => {
+                return Err(aos_hub_core::placement_read::retryable_read_error(format!(
+                    "R2 ranged get {key}: {e:?}"
+                )));
+            }
+            Err(e) => {
+                return Err(aos_hub_core::placement_read::terminal_read_error(format!(
+                    "R2 ranged get {key}: {e:?}"
+                )));
+            }
+        }
+    }
+}
+
 /// Adapt an R2 object's `body` ([`web_sys::ReadableStream`]-shaped `JsValue`)
 /// into a byte-chunk stream by driving its default reader.
 ///
@@ -668,20 +734,30 @@ impl SurfaceFetch for R2SurfaceFetch {
         use futures_util::StreamExt as _;
 
         let key = keymap::r2_key(&self.prefix, path);
-        // NOTE: we deliberately do *not* push the byte range into the R2 `get`
-        // (`GetOptionsBuilder::range`). workers-rs serializes every `Range`
-        // variant with an explicit `suffix: undefined` property (still true in
-        // 0.8.5 — `r2::builder::Range`'s `OffsetWithLength` arm emits
-        // `"suffix" => JsValue::UNDEFINED`), and the runtime's R2 binding rejects
-        // the *presence* of the `suffix` key alongside `offset` ("Suffix is
-        // incompatible with offset"), so a pushed-down range errors on
-        // workerd. Instead we open the whole-object stream and trim it chunk by
-        // chunk below — the isolate still never holds the whole object in memory
-        // (it streams through, dropping pre-`start` bytes and stopping at the
-        // range end), so the memory-safety property the streaming path guarantees
-        // is preserved; only the discarded pre-`start` bytes cross R2→isolate
-        // (nil for the whole-object and prefix reads nix actually issues).
-        let Some(object) = r2_get(self.bucket.as_ref(), &key).await? else {
+        let Some(total) = self.contract.head(&key).await? else {
+            return Ok(None);
+        };
+        // The inclusive range actually served (clamped to the object), or `None`
+        // for a whole-object read. Construct the R2 options through raw JS so
+        // absent fields are genuinely absent: worker-rs 0.8.5 emits an invalid
+        // `suffix: undefined` alongside offset/length.
+        let served = match range {
+            Some((start, end)) if start < total => Some((start, end.min(total.saturating_sub(1)))),
+            _ => None,
+        };
+        let object = match served {
+            Some((start, end)) => {
+                r2_get_range(
+                    self.bucket.as_ref(),
+                    &key,
+                    start,
+                    end.saturating_sub(start) + 1,
+                )
+                .await?
+            }
+            None => r2_get(self.bucket.as_ref(), &key).await?,
+        };
+        let Some(object) = object else {
             return Ok(None);
         };
         let strong_etag = js_sys::Reflect::get(&object, &wasm_bindgen::JsValue::from_str("etag"))
@@ -689,18 +765,6 @@ impl SurfaceFetch for R2SurfaceFetch {
             .and_then(|value| value.as_string())
             .map(|value| value.trim().to_string())
             .filter(|value| aos_hub_core::surface_write::strong_if_match_etag(value).is_ok());
-        // Read `size` and `body` off the raw R2 object via `js_sys` (worker-rs
-        // `Object` is unreachable here — see `r2_get`).
-        let total = js_sys::Reflect::get(&object, &wasm_bindgen::JsValue::from_str("size"))
-            .ok()
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0) as u64;
-        // The inclusive range actually served (clamped to the object), or `None`
-        // for a whole-object read.
-        let served = match range {
-            Some((start, end)) if start < total => Some((start, end.min(total.saturating_sub(1)))),
-            _ => None,
-        };
         let body_js = js_sys::Reflect::get(&object, &wasm_bindgen::JsValue::from_str("body"))
             .unwrap_or(wasm_bindgen::JsValue::UNDEFINED);
         if body_js.is_null() || body_js.is_undefined() {
@@ -717,12 +781,10 @@ impl SurfaceFetch for R2SurfaceFetch {
             }));
         }
         let stream = r2_body_stream(body_js);
-        // Trim the whole-object stream to the served byte range without buffering:
-        // `skip` leading bytes are dropped (splitting a straddling chunk) and at
-        // most `remaining` bytes are emitted (truncating the final chunk, then
-        // ending the stream). For a whole-object read both bounds are wide open.
+        // Bound a ranged R2 body to the exact requested length. The R2 read
+        // already starts at `start`, so no leading bytes are discarded.
         let (skip, remaining) = match served {
-            Some((start, end)) => (start, end - start + 1),
+            Some((start, end)) => (0, end - start + 1),
             None => (0, u64::MAX),
         };
         let trimmed = futures_util::stream::try_unfold(
@@ -1352,8 +1414,8 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
     use std::rc::Rc;
 
     use js_sys::{Array, Object, Promise, Reflect, Uint8Array};
-    use wasm_bindgen::closure::Closure;
     use wasm_bindgen::JsValue;
+    use wasm_bindgen::closure::Closure;
 
     fn set_method(target: &Object, name: &str, value: &JsValue) -> Result<()> {
         Reflect::set(target, &JsValue::from_str(name), value)
@@ -1452,12 +1514,29 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
     set_method(&body, "arrayBuffer", array_buffer.as_ref())?;
     let get_calls = Rc::clone(&calls);
     let get_body = body.clone();
-    let get = Closure::wrap(Box::new(move |key: JsValue| -> JsValue {
-        get_calls
-            .borrow_mut()
-            .push(format!("get:{}", key.as_string().unwrap_or_default()));
+    let get = Closure::wrap(Box::new(move |key: JsValue, options: JsValue| -> JsValue {
+        let rendered_range = if options.is_undefined() {
+            "<absent>".to_string()
+        } else {
+            let range =
+                Reflect::get(&options, &JsValue::from_str("range")).unwrap_or(JsValue::UNDEFINED);
+            let offset = Reflect::get(&range, &JsValue::from_str("offset"))
+                .ok()
+                .and_then(|value| value.as_f64())
+                .unwrap_or_default() as u64;
+            let length = Reflect::get(&range, &JsValue::from_str("length"))
+                .ok()
+                .and_then(|value| value.as_f64())
+                .unwrap_or_default() as u64;
+            let suffix = Reflect::has(&range, &JsValue::from_str("suffix")).unwrap_or(true);
+            format!("{offset}:{length}:suffix={suffix}")
+        };
+        get_calls.borrow_mut().push(format!(
+            "get:{}:{rendered_range}",
+            key.as_string().unwrap_or_default()
+        ));
         Promise::resolve(&get_body).into()
-    }) as Box<dyn FnMut(JsValue) -> JsValue>);
+    }) as Box<dyn FnMut(JsValue, JsValue) -> JsValue>);
     set_method(&bucket, "get", get.as_ref())?;
 
     let create_calls = Rc::clone(&calls);
@@ -1542,8 +1621,9 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
     );
     set_method(&bucket, "resumeMultipartUpload", resume.as_ref())?;
 
+    let bucket_value: JsValue = bucket.into();
     let contract = R2Contract::new(WorkerR2BucketAdapter {
-        bucket: bucket.into(),
+        bucket: bucket_value.clone(),
     });
     contract.put("fixture/object", &[1, 2, 3]).await?;
     contract.delete("fixture/deleted").await?;
@@ -1564,6 +1644,12 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
     anyhow::ensure!(
         contract.read_bounded("fixture/object", 3).await? == Some(vec![1, 2, 3]),
         "R2 HEAD/get/arrayBuffer shape did not round-trip"
+    );
+    anyhow::ensure!(
+        r2_get_range(&bucket_value, "fixture/object", 7, 11)
+            .await?
+            .is_some(),
+        "R2 ranged get response shape did not round-trip"
     );
     anyhow::ensure!(
         contract.create_multipart("fixture/object").await? == "upload-1",
@@ -1599,8 +1685,9 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
         "list:fixture/:<absent>:2",
         "list:fixture/:cursor-1:2",
         "head:fixture/object",
-        "get:fixture/object",
+        "get:fixture/object:<absent>",
         "arrayBuffer",
+        "get:fixture/object:7:11:suffix=false",
         "createMultipartUpload:fixture/object",
         "resumeMultipartUpload:fixture/object:upload-1",
         "uploadPart:2:[4, 5]",
