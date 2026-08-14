@@ -191,6 +191,18 @@ inventory, pass
 `--manifest publication.json`; every declared size and digest is still checked
 against the local file before upload.
 
+An interrupted upload remains resumable: rerun the same command with the same
+staging root and manifest. The CLI revalidates the local bytes, skips objects
+whose exact placement evidence is already durable, and continues the existing
+generation. While a publication is preparing or writing mutable pointers, the
+Hub defers background registry indexing so a partial surface cannot replace the
+last good index or invalidate in-flight presence evidence. The successful
+publication commit advances the delivery watermark and schedules a signed-index
+refresh; hosted deployments process that work through their durable queue and
+periodic reconciliation. Use
+`aos hub registry publish abort <publication-id>` only when abandoning that
+generation.
+
 Use the exact public URL reported by your Hub; deployment prefixes can differ.
 The local staging directory may be removed after the publication reports
 `ready`.

@@ -25135,10 +25135,18 @@ impl RpcService {
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         self.lease.release(registry.id, &req.publication_id).await;
-        self.reindexer
-            .reindex(&registry)
-            .await
-            .map_err(RpcError::internal)?;
+        if let Err(error) = self.reindexer.reindex(&registry).await {
+            // Publication and its current-pointer selection are already durable.
+            // The periodic reconciler is the recovery path, so an indexing
+            // wakeup failure must not turn a successful commit into an ambiguous
+            // client-visible error.
+            tracing::warn!(
+                registry = %registry.slug,
+                publication_id = %req.publication_id,
+                error = %format!("{error:#}"),
+                "registry publication could not schedule index reconciliation"
+            );
+        }
         self.registry_publication_response(&req.publication_id)
             .await
     }
