@@ -2322,30 +2322,15 @@ pub enum SurfaceWriteOutcome {
 /// Whether a surface-relative path is a *mutable pointer* (vs. an immutable
 /// content-addressed object).
 ///
-/// Mirrors the producer's classification (`StaticOriginClass` in
-/// `static_upload.rs` and [`keymap::cache_control`]): `HEAD`, `info/refs`,
-/// `objects/info/**`, `channels/**`, and `nix-cache-info` are pointers rewritten
-/// on each publish; everything else (loose objects, release packs, narinfos,
-/// NARs) is content-addressed and immutable. Only pointer writes take the
-/// publish lease and trigger a re-index.
+/// This derives directly from [`keymap::cache_control`], the shared serving
+/// contract. Only pointer writes take the publish lease and trigger a re-index.
 fn is_mutable_pointer(path: &str) -> bool {
-    path == "HEAD"
-        || path == "info/refs"
-        || path == "nix-cache-info"
-        || path.starts_with("objects/info/")
-        || path.starts_with("channels/")
+    keymap::cache_control(path) == keymap::MUTABLE_CACHE_CONTROL
 }
 
 /// Returns a stable media type for a declared registry object.
 fn publication_media_type(path: &str) -> &'static str {
-    match path.rsplit_once('.').map(|(_, extension)| extension) {
-        Some("json") => "application/json",
-        Some("toml") => "application/toml",
-        Some("qcow2") => "application/x-qemu-disk",
-        Some("vmdk") => "application/x-vmdk",
-        Some("vhd") | Some("vhdx") => "application/x-vhd",
-        _ => "application/octet-stream",
-    }
+    keymap::content_type(path)
 }
 
 /// The shared, transport-free implementation of the `aos.hub.v1` services.
@@ -34476,7 +34461,9 @@ mod image_body_tests {
 
 #[cfg(test)]
 mod publication_upload_limit_tests {
-    use super::registry_publication_complete_upload_bytes;
+    use super::{
+        is_mutable_pointer, publication_media_type, registry_publication_complete_upload_bytes,
+    };
     use crate::connect::CONNECT_REQUEST_BODY_LIMIT_BYTES;
 
     #[test]
@@ -34485,9 +34472,34 @@ mod publication_upload_limit_tests {
             registry_publication_complete_upload_bytes(20 * 1024 * 1024),
             CONNECT_REQUEST_BODY_LIMIT_BYTES
         );
+        assert_eq!(registry_publication_complete_upload_bytes(1024), 1024);
+    }
+
+    #[test]
+    fn publication_metadata_uses_the_delivery_path_contract() {
+        for path in [
+            "hash.narinfo",
+            "nix-cache-info",
+            "index.html",
+            "objects/info/packs",
+            "web/config.json",
+            "web/index.json",
+            "web/packages/aos.json",
+        ] {
+            assert!(is_mutable_pointer(path), "{path}");
+        }
+        for path in [
+            "objects/aa/object",
+            "releases/aos.json",
+            "nar/hash.nar.zst",
+            "images/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/disk.qcow2",
+        ] {
+            assert!(!is_mutable_pointer(path), "{path}");
+        }
+        assert_eq!(publication_media_type("hash.narinfo"), "text/x-nix-narinfo");
         assert_eq!(
-            registry_publication_complete_upload_bytes(1024),
-            1024
+            publication_media_type("images/disk.qcow2"),
+            "application/vnd.aos.disk-image.qcow2"
         );
     }
 }
