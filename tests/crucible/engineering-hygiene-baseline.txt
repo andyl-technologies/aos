@@ -36,12 +36,9 @@ shape-line|crates/crucible-cli/src/tests/state_workflows.rs|2645
 shape-line|crates/crucible-cli/src/tests/surface.rs|2795
 shape-line|crates/crucible-cli/src/tests/verify_dispatch.rs|3349
 shape-line|crates/crucible-cli/tests/machine_readable.rs|1369
-shape-line|crates/crucible-device/src/block.rs|716
 shape-line|crates/crucible-device/src/block/device.rs|674
 shape-line|crates/crucible-device/src/harness.rs|794
-shape-line|crates/crucible-device/src/netlink.rs|770
 shape-line|crates/crucible-device/src/netlink/link.rs|816
-shape-line|crates/crucible-device/src/ninep.rs|1280
 shape-line|crates/crucible-device/src/ninep/codec.rs|1011
 shape-line|crates/crucible-device/src/ninep/server.rs|641
 shape-line|crates/crucible-device/src/ninep/tree.rs|903
