@@ -658,6 +658,7 @@ aos hub endpoint list [--org <org>]
 aos hub endpoint show <endpoint>
 aos hub endpoint add <https://host[:port]> [--org <org>]
   --network-boundary <boundary> --ingress hub|external|layer7
+  --tls-provider hub-managed|external [--certificate-ref <ref>]
 aos hub endpoint add <http://host[:port]> [--org <org>]
   --acknowledge-cleartext --network-boundary <boundary>
   --ingress hub|external|layer7
