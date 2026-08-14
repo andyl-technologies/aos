@@ -1591,7 +1591,7 @@ pub enum HubRouteCmd {
         #[arg(long, value_parser = ["web", "git", "nix_cache"], default_value = "web")]
         access_class: String,
     },
-    /// Enable a successfully probed route
+    /// Enable a route and queue its current configuration probe
     Enable {
         #[command(flatten)]
         access: HubAccessArgs,
