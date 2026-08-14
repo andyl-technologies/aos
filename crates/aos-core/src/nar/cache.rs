@@ -5,8 +5,7 @@
 //! `nix-cache-info` file, one `<hash>.narinfo` per store path, and the
 //! NAR files under `nar/`. This module produces all three artifacts:
 //!
-//! - [`nar_url`] / [`hash_path_fragment`] compute the cache-relative
-//!   NAR file name for a store path.
+//! - [`nar_url`] computes the cache-relative NAR file name for a store path.
 //! - [`render_static_narinfo`] / [`static_narinfo`] turn a
 //!   [`StaticNarInfoInput`] into a narinfo body, optionally signed.
 //! - [`NarInfoSigner`] signs narinfo fingerprints with a Nix-style
@@ -273,33 +272,68 @@ fn parse_key_data(content: &str) -> Result<(String, Vec<u8>)> {
     Ok((name.to_string(), secret))
 }
 
-/// Builds the cache-relative `URL:` path for a static NAR, e.g.
-/// `nar/<store-hash>-<file-hash>.nar.zst`.
+/// Converts a SHA-256 hash to its canonical lowercase hexadecimal digest.
 ///
-/// The compressed file hash makes the URL identify the exact bytes transferred
-/// by a binary-cache client. It is passed through [`hash_path_fragment`] so SRI
-/// hashes containing `/`, `+`, or `=` remain filesystem- and URL-safe.
-pub fn nar_url(store_path: &str, file_hash: &str, compression: NarCompression) -> String {
-    format!(
-        "nar/{}-{}.{}",
-        store_hash(store_path),
-        hash_path_fragment(file_hash),
-        compression.extension(),
-    )
+/// Accepts Nix SRI (`sha256-<base64>`), hexadecimal
+/// (`sha256:<64 hex digits>`), and Nix base32 (`sha256:<52 nix32 digits>`)
+/// forms. The returned value contains only the 64 digest characters, without
+/// an algorithm prefix.
+///
+/// # Errors
+///
+/// Returns an error if `hash` is not a supported, well-formed SHA-256 hash.
+pub fn canonical_sha256_hex(hash: &str) -> Result<String> {
+    let hash = hash.trim();
+    if let Some(encoded) = hash.strip_prefix("sha256-") {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .with_context(|| format!("decoding SRI SHA-256 hash '{hash}'"))?;
+        if bytes.len() != 32 {
+            bail!(
+                "SRI SHA-256 hash '{hash}' decoded to {} bytes, expected 32",
+                bytes.len()
+            );
+        }
+        return Ok(hex::encode(bytes));
+    }
+
+    let encoded = hash
+        .strip_prefix("sha256:")
+        .ok_or_else(|| anyhow::anyhow!("SHA-256 hash must use a sha256: or sha256- prefix"))?;
+    let bytes = match encoded.len() {
+        64 if encoded.bytes().all(|byte| byte.is_ascii_hexdigit()) => hex::decode(encoded)
+            .with_context(|| format!("decoding hexadecimal SHA-256 hash '{hash}'"))?,
+        52 => decode_nix_base32(encoded)
+            .ok_or_else(|| anyhow::anyhow!("invalid nixbase32 SHA-256 hash '{hash}'"))?,
+        _ => bail!("invalid SHA-256 hash '{hash}'"),
+    };
+    if bytes.len() != 32 {
+        bail!(
+            "SHA-256 hash '{hash}' decoded to {} bytes, expected 32",
+            bytes.len()
+        );
+    }
+    Ok(hex::encode(bytes))
 }
 
-/// Converts a hash string into one filesystem- and URL-path-safe segment.
+/// Builds the cache-relative `URL:` path for a static NAR, e.g.
+/// `nar/<store-hash>-sha256-<lowercase-hex>.nar.zst`.
 ///
-/// Alphanumerics and `.`/`_`/`-` pass through, `:` becomes `-`, and
-/// every other character (notably base64's `/`, `+`, `=`) becomes `_`.
-pub fn hash_path_fragment(hash: &str) -> String {
-    hash.chars()
-        .map(|ch| match ch {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '.' | '_' | '-' => ch,
-            ':' => '-',
-            _ => '_',
-        })
-        .collect()
+/// The compressed file hash makes the URL identify the exact bytes transferred
+/// by a binary-cache client. Every accepted Nix SHA-256 representation is
+/// canonicalized to one injective, filesystem-safe lowercase-hex path.
+///
+/// # Errors
+///
+/// Returns an error if `file_hash` is not a supported, well-formed SHA-256 hash.
+pub fn nar_url(store_path: &str, file_hash: &str, compression: NarCompression) -> Result<String> {
+    let digest = canonical_sha256_hex(file_hash)?;
+    Ok(format!(
+        "nar/{}-sha256-{}.{}",
+        store_hash(store_path),
+        digest,
+        compression.extension(),
+    ))
 }
 
 /// Renders one static narinfo body for the given input.
@@ -311,11 +345,16 @@ pub fn hash_path_fragment(hash: &str) -> String {
 /// over the [`NarInfoSigner::fingerprint`] of the re-rooted path and
 /// full-path references is appended to any signatures already present
 /// in the input.
+///
+/// # Errors
+///
+/// Returns an error if the compressed NAR's file hash is not a supported,
+/// well-formed SHA-256 hash.
 pub fn render_static_narinfo(
     input: &StaticNarInfoInput<'_>,
     store_dir: &str,
     signer: Option<&NarInfoSigner>,
-) -> String {
+) -> Result<String> {
     let store_path = format!("{store_dir}/{}", basename(input.store_path));
     let references: Vec<String> = input
         .references
@@ -328,7 +367,7 @@ pub fn render_static_narinfo(
         .map(|reference| format!("{store_dir}/{}", basename(reference)))
         .collect();
     let deriver = input.deriver.map(basename);
-    let url = nar_url(input.store_path, input.file_hash, input.compression);
+    let url = nar_url(input.store_path, input.file_hash, input.compression)?;
 
     let mut signatures = input.signatures.to_vec();
     if let Some(signer) = signer {
@@ -355,23 +394,23 @@ pub fn render_static_narinfo(
         compression: input.compression.name(),
         nar_url: &url,
     });
-    info::format(&info)
+    Ok(info::format(&info))
 }
 
 /// Builds a structured [`NarInfo`] for callers that need data rather
 /// than text; equivalent to parsing [`render_static_narinfo`] output.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if the rendered narinfo fails to parse, which would indicate
-/// a bug in [`render_static_narinfo`] itself.
+/// Returns an error if rendering rejects the file hash, or if the generated
+/// narinfo unexpectedly fails to parse.
 pub fn static_narinfo(
     input: &StaticNarInfoInput<'_>,
     store_dir: &str,
     signer: Option<&NarInfoSigner>,
-) -> NarInfo {
-    info::parse(&render_static_narinfo(input, store_dir, signer))
-        .expect("rendered static narinfo is parseable")
+) -> Result<NarInfo> {
+    let rendered = render_static_narinfo(input, store_dir, signer)?;
+    info::parse(&rendered).context("parsing rendered static narinfo")
 }
 
 /// Renders a stock Nix `nix-cache-info` file body advertising
@@ -395,34 +434,59 @@ mod tests {
 
     #[test]
     fn nar_url_uses_store_hash_and_file_hash() {
+        let digest = "de".repeat(32);
         assert_eq!(
             nar_url(
                 "/nix/store/abc123-hello",
-                "sha256:def456",
+                &format!("sha256:{digest}"),
                 NarCompression::Zstd
-            ),
-            "nar/abc123-sha256-def456.nar.zst"
+            )
+            .unwrap(),
+            format!("nar/abc123-sha256-{digest}.nar.zst")
         );
     }
 
     #[test]
     fn nar_url_changes_when_compressed_bytes_change() {
         let store_path = "/nix/store/abc123-hello";
-        let first = nar_url(store_path, "sha256:first", NarCompression::Zstd);
-        let second = nar_url(store_path, "sha256:second", NarCompression::Zstd);
+        let first = nar_url(
+            store_path,
+            &format!("sha256:{}", "11".repeat(32)),
+            NarCompression::Zstd,
+        )
+        .unwrap();
+        let second = nar_url(
+            store_path,
+            &format!("sha256:{}", "22".repeat(32)),
+            NarCompression::Zstd,
+        )
+        .unwrap();
 
         assert_ne!(first, second);
     }
 
     #[test]
-    fn nar_url_escapes_sri_hash_path_separators() {
+    fn nar_url_canonicalizes_sri_hash() {
         assert_eq!(
             nar_url(
                 "/nix/store/abc123-hello",
                 "sha256-/zAxVUL1gFIy9KJWVLMtN8dFXaIq11tx+2AucyOskko=",
                 NarCompression::Zstd,
-            ),
-            "nar/abc123-sha256-_zAxVUL1gFIy9KJWVLMtN8dFXaIq11tx_2AucyOskko_.nar.zst"
+            )
+            .unwrap(),
+            "nar/abc123-sha256-ff30315542f5805232f4a25654b32d37c7455da22ad75b71fb602e7323ac924a.nar.zst"
+        );
+    }
+
+    #[test]
+    fn nar_url_rejects_malformed_hashes() {
+        assert!(
+            nar_url(
+                "/nix/store/abc123-hello",
+                "sha256:not-a-digest",
+                NarCompression::Zstd,
+            )
+            .is_err()
         );
     }
 
@@ -436,18 +500,24 @@ mod tests {
             references: &refs,
             deriver: Some("/nix/store/drv111-hello.drv"),
             signatures: &[],
-            file_hash: "sha256:file789",
+            file_hash: "sha256:abababababababababababababababababababababababababababababababab",
             file_size: 24,
             compression: NarCompression::Zstd,
         };
 
-        let text = render_static_narinfo(&input, "/nix/store", Some(&test_signer()));
+        let text = render_static_narinfo(&input, "/nix/store", Some(&test_signer())).unwrap();
         let parsed = info::parse(&text).unwrap();
 
         assert_eq!(parsed.store_path, "/nix/store/abc123-hello");
-        assert_eq!(parsed.url, "nar/abc123-sha256-file789.nar.zst");
+        assert_eq!(
+            parsed.url,
+            format!("nar/abc123-sha256-{}.nar.zst", "ab".repeat(32))
+        );
         assert_eq!(parsed.compression, "zstd");
-        assert_eq!(parsed.file_hash.as_deref(), Some("sha256:file789"));
+        assert_eq!(
+            parsed.file_hash.as_deref(),
+            Some("sha256:abababababababababababababababababababababababababababababababab")
+        );
         assert_eq!(parsed.file_size, Some(24));
         assert_eq!(parsed.references, vec!["ref111-libc"]);
         assert_eq!(parsed.deriver.as_deref(), Some("drv111-hello.drv"));
@@ -465,12 +535,12 @@ mod tests {
             references: &refs,
             deriver: None,
             signatures: &[],
-            file_hash: "sha256:file789",
+            file_hash: "sha256-ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=",
             file_size: 24,
             compression: NarCompression::Zstd,
         };
 
-        let text = render_static_narinfo(&input, "/nix/store", Some(&test_signer()));
+        let text = render_static_narinfo(&input, "/nix/store", Some(&test_signer())).unwrap();
         let parsed = info::parse(&text).unwrap();
         let (_, sig_b64) = parsed.signatures[0].split_once(':').unwrap();
         let sig_bytes = base64::engine::general_purpose::STANDARD
