@@ -17,6 +17,7 @@ use crate::compress::{Compression, compute_file_hash_size};
 use crate::config::CompressionConfig;
 use crate::sign::NarInfoSigner;
 use crate::store::DbPathInfo;
+use anyhow::Context as _;
 use aos_core::nar::cache::{NarCompression, StaticNarInfoInput, render_static_narinfo};
 
 /// Resolves the configured algorithm name to the narinfo `Compression:` enum.
@@ -52,17 +53,15 @@ fn compression_from_config(config: &CompressionConfig) -> Compression {
 /// configured compression (`.nar`, `.nar.zst`, or `.nar.xz`). `FileHash` and
 /// `FileSize` always describe the bytes the client will actually download:
 /// for uncompressed responses they equal `NarHash`/`NarSize`, while for
-/// zstd/xz the compression pipeline is run once to measure them. If that
-/// measurement fails, the function logs a warning and falls back to the
-/// uncompressed values rather than failing the request.
+/// zstd/xz the compression pipeline is run once to measure them.
 ///
 /// When `signer` is provided, a fresh `Sig:` line is appended in addition to
 /// any signatures already stored in the database.
 ///
 /// # Errors
 ///
-/// Returns an error if the stored or computed file hash is not a supported,
-/// well-formed SHA-256 hash.
+/// Returns an error if compressed-byte measurement fails, or if the stored or
+/// computed file hash is not a supported, well-formed SHA-256 hash.
 pub fn format_narinfo(
     info: &DbPathInfo,
     store_dir: &str,
@@ -82,17 +81,8 @@ pub fn format_narinfo(
     let (file_hash, file_size): (String, u64) = if nar_compression == NarCompression::None {
         (nar_hash.clone(), info.nar_size as u64)
     } else {
-        match compute_file_hash_size(&info.path, compression_from_config(compression)) {
-            Ok(pair) => pair,
-            Err(e) => {
-                tracing::warn!(
-                    path = %info.path,
-                    error = %e,
-                    "FileHash/FileSize computation failed; falling back to NarHash"
-                );
-                (nar_hash.clone(), info.nar_size as u64)
-            }
-        }
+        compute_file_hash_size(&info.path, compression_from_config(compression))
+            .with_context(|| format!("measuring compressed NAR for {}", info.path))?
     };
 
     render_static_narinfo(
@@ -110,4 +100,26 @@ pub fn format_narinfo(
         store_dir,
         signer,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compressed_narinfo_fails_when_payload_measurement_fails() {
+        let info = DbPathInfo {
+            id: 1,
+            path: "/path/that/does/not/exist".to_string(),
+            nar_hash: format!("sha256:{}", "11".repeat(32)),
+            nar_size: 7,
+            deriver: None,
+            sigs: Vec::new(),
+            refs: Vec::new(),
+        };
+
+        let error =
+            format_narinfo(&info, "/nix/store", &CompressionConfig::default(), None).unwrap_err();
+        assert!(error.to_string().contains("measuring compressed NAR"));
+    }
 }

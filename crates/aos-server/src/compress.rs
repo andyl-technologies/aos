@@ -226,7 +226,10 @@ pub fn nar_bytes(store_path: &str, compression: Compression) -> Result<Vec<u8>> 
                 .stderr(Stdio::null())
                 .output()
                 .context("spawning zstd")?;
-            dump.wait().ok();
+            let dump_status = dump.wait().context("waiting for nix-store --dump")?;
+            if !dump_status.success() {
+                anyhow::bail!("NAR dump failed for {store_path}");
+            }
             out
         }
         Compression::Xz { level } => {
@@ -246,7 +249,10 @@ pub fn nar_bytes(store_path: &str, compression: Compression) -> Result<Vec<u8>> 
                 .stderr(Stdio::null())
                 .output()
                 .context("spawning xz")?;
-            dump.wait().ok();
+            let dump_status = dump.wait().context("waiting for nix-store --dump")?;
+            if !dump_status.success() {
+                anyhow::bail!("NAR dump failed for {store_path}");
+            }
             out
         }
     };
