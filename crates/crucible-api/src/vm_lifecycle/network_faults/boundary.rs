@@ -1931,6 +1931,42 @@ mod tests {
         }
     }
 
+    fn negotiated_mode_action() -> ResolvedBindingAction {
+        let effect = EffectRequest::new(
+            crucible::model::EFFECT_SEMANTIC_VERSION,
+            EffectLifetime::StateMachine,
+            EffectSpecification::Network(NetworkEffectSpecification::NegotiatedMode {
+                rate_bps: positive(123),
+                duplex: crucible::model::NetworkDuplex::Half,
+                lanes: crucible::model::BoundedCount::new(
+                    crucible::model::CountLimit::LanesOrVcpus,
+                    2,
+                )
+                .unwrap_or_else(|error| panic!("test negotiated lanes: {error}")),
+                fec: crucible::model::NetworkFecMode::Ldpc,
+                training_nanos: positive(25),
+            }),
+        )
+        .unwrap_or_else(|error| panic!("test negotiated mode should be valid: {error}"));
+        ResolvedBindingAction {
+            kind: BindingActionKind::Apply,
+            binding: id("negotiated-mode-binding"),
+            target: target(),
+            phase: FaultPhase::Boundary,
+            effect: Arc::new(effect),
+            mapping_output: Arc::new(ResolvedMappingOutput::Activation { active: true }),
+            mapped_digest: ContentHash::from_bytes(b"negotiated-mode-mapping"),
+            transition_sequence: 8,
+            opportunity: None,
+            coordinate: FaultCoordinate {
+                virtual_nanos: 100,
+                retired_instructions: None,
+            },
+            cause: BindingActionCause::Signal,
+            expected_precondition: None,
+        }
+    }
+
     fn forwarder_topology() -> crucible::model::WorldFaultTopology {
         crucible::model::WorldFaultTopology {
             network_forwarders: vec![crucible::model::WorldNetworkForwarder {
@@ -2280,6 +2316,57 @@ mod tests {
             )
             .unwrap_or_else(|error| panic!("test frame should resolve: {error}"));
         assert!(!recovered.is_dropped());
+    }
+
+    #[test]
+    fn negotiated_mode_trains_then_constrains_real_frame_service() {
+        let mut state = BoundaryNetworkState::default();
+        let application = state
+            .apply_actions(
+                FaultCoordinate {
+                    virtual_nanos: 100,
+                    retired_instructions: None,
+                },
+                [negotiated_mode_action()],
+                &crucible::model::WorldFaultTopology::default(),
+            )
+            .unwrap_or_else(|error| panic!("test negotiated mode should apply: {error}"));
+        assert_eq!(application.next_wakeup_nanos, Some(125));
+
+        let mode = state
+            .negotiated_modes
+            .values()
+            .next()
+            .unwrap_or_else(|| panic!("negotiated mode should be retained"));
+        assert_eq!(mode.duplex, crucible::model::NetworkDuplex::Half);
+        assert_eq!(mode.lanes, 2);
+        assert_eq!(mode.fec, crucible::model::NetworkFecMode::Ldpc);
+        assert_eq!(mode.transition_sequence, 8);
+
+        let mut training = crucible::ResolvedNetworkFrameEffects::default();
+        state
+            .apply_frame(
+                &target(),
+                None,
+                &crucible::model::WorldFaultTopology::default(),
+                124,
+                &mut training,
+            )
+            .unwrap_or_else(|error| panic!("test training frame should resolve: {error}"));
+        assert!(training.is_dropped());
+
+        let mut active = crucible::ResolvedNetworkFrameEffects::default();
+        state
+            .apply_frame(
+                &target(),
+                None,
+                &crucible::model::WorldFaultTopology::default(),
+                125,
+                &mut active,
+            )
+            .unwrap_or_else(|error| panic!("test active frame should resolve: {error}"));
+        assert!(!active.is_dropped());
+        assert_eq!(active.serialization_rate_cap_bps(), Some(123));
     }
 
     #[test]
