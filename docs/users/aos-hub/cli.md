@@ -262,8 +262,9 @@ ready are queued for a fresh probe automatically; they do not need to be
 recreated. A concurrently revised endpoint causes the entire reconciliation to
 fail closed without advancing either resource.
 
-Routes are created disabled and become eligible for traffic only after their
-current configuration probes successfully. Use `aos hub route explain` with
+Routes are created disabled. Enabling a route queues its current configuration
+probe, and the route remains ineligible for traffic until that probe succeeds.
+Use `aos hub route explain` with
 `--access-class web`, `git`, or `nix_cache` to inspect the selected access
 policy, publication, and placement before enabling a route. Canonical route
 selection is explicit and independent for the `web`, `git`, and `nix_cache`

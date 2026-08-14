@@ -8852,6 +8852,7 @@ impl RpcService {
             )
             .await?
         {
+            self.wake_route_probe_controller().await;
             return Ok(response);
         }
         self.begin_control_plan_apply(
@@ -8957,7 +8958,20 @@ impl RpcService {
         };
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
             .await?;
+        self.wake_route_probe_controller().await;
         Ok(response)
+    }
+
+    /// Wakes the controller after a route mutation has durably queued probe work.
+    async fn wake_route_probe_controller(&self) {
+        if let Err(error) = self.topology_probes.wake_controller().await {
+            // The operation is already durable and the periodic controller can
+            // recover it. Do not report a failed mutation after it committed.
+            tracing::warn!(
+                error = %format!("{error:#}"),
+                "waking delivery-route probe controller"
+            );
+        }
     }
 
     /// Applies a route creation plan exactly once.
@@ -9137,6 +9151,7 @@ impl RpcService {
             };
             self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
                 .await?;
+            self.wake_route_probe_controller().await;
             Ok(Ok(response))
         }
     }
@@ -9157,6 +9172,7 @@ impl RpcService {
             )
             .await?
         {
+            self.wake_route_probe_controller().await;
             return Ok(response);
         }
         self.apply_route_lifecycle(auth, req, "enable")
