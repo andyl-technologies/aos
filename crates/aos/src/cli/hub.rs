@@ -1541,6 +1541,9 @@ pub enum HubRouteCmd {
         #[command(flatten)]
         access: HubAccessArgs,
         surface_ref: String,
+        /// Use this stable identity instead of generating one
+        #[arg(long)]
+        stable_id: Option<String>,
         #[command(flatten)]
         spec: HubRouteSpecArgs,
         #[command(flatten)]
