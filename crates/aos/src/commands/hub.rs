@@ -8628,76 +8628,30 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
                     objects.partition_point(|object| object.kind != "mutable_pointer");
                 let (immutable_objects, pointer_objects) = objects.split_at(pointer_start);
 
-                // The response is an inventory, not an execution order. Pointer
-                // writes open only after every immutable object verifies.
-                for object in immutable_objects {
-                    let declared = pinned
-                        .request
-                        .objects
-                        .iter()
-                        .find(|declared| declared.path == object.path)
-                        .context("Hub publication response introduced an undeclared path")?;
-                    anyhow::ensure!(
-                        declared.sha256 == object.sha256
-                            && declared.byte_size == object.byte_size
-                            && declared.kind == object.kind
-                            && declared.media_type == object.media_type,
-                        "Hub publication response changed the identity of {}",
-                        object.path
-                    );
-                    if object.verified {
-                        continue;
-                    }
-                    upload_declared_publication_object(
-                        &client,
-                        access,
-                        &publication_id,
-                        &pinned.root,
-                        declared,
-                        object,
-                    )
-                    .await?;
-                }
+                // The response is an inventory, not an execution order. The
+                // Hub independently verifies each immutable object and opens
+                // the pointer gate only after the entire class is complete.
+                upload_publication_object_class(
+                    &client,
+                    access,
+                    &publication_id,
+                    &pinned.root,
+                    &pinned.request.objects,
+                    immutable_objects,
+                )
+                .await?;
 
                 // Mutable pointers are independent paths, and the Hub has
                 // already closed their write gate over the complete immutable
-                // set. A small concurrency bound avoids one network round trip
-                // per pointer without creating an unbounded request fan-out.
-                let publication_inputs = &pinned.request.objects;
-                let publication_root = &pinned.root;
-                let publication_client_ref = &client;
-                let publication_id = publication_id.as_str();
-                stream::iter(pointer_objects.iter().copied().map(move |object| {
-                    let declared = publication_inputs
-                        .iter()
-                        .find(|declared| declared.path == object.path);
-                    async move {
-                        let declared = declared
-                            .context("Hub publication response introduced an undeclared path")?;
-                        anyhow::ensure!(
-                            declared.sha256 == object.sha256
-                                && declared.byte_size == object.byte_size
-                                && declared.kind == object.kind
-                                && declared.media_type == object.media_type,
-                            "Hub publication response changed the identity of {}",
-                            object.path
-                        );
-                        if object.verified {
-                            return Ok(());
-                        }
-                        upload_declared_publication_object(
-                            publication_client_ref,
-                            access,
-                            publication_id,
-                            publication_root,
-                            declared,
-                            object,
-                        )
-                        .await
-                    }
-                }))
-                .buffer_unordered(8)
-                .try_collect::<Vec<()>>()
+                // set, so the same bounded uploader can publish this class.
+                upload_publication_object_class(
+                    &client,
+                    access,
+                    &publication_id,
+                    &pinned.root,
+                    &pinned.request.objects,
+                    pointer_objects,
+                )
                 .await?;
                 publication_client(access)
                     .await?
@@ -8779,6 +8733,92 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
             .await
         }
     }
+}
+
+/// Uploads one publication class with bounded request concurrency.
+async fn upload_publication_object_class(
+    client: &HubClient,
+    access: &HubAccessArgs,
+    publication_id: &str,
+    root: &std::os::fd::OwnedFd,
+    inputs: &[hub_types::RegistryPublicationObjectInput],
+    objects: &[&hub_types::RegistryPublicationObject],
+) -> Result<()> {
+    const CONCURRENT_UPLOADS: usize = 32;
+    const SNAPSHOT_PERMIT_BYTES: u64 = 1024 * 1024;
+    const SNAPSHOT_BUDGET_PERMITS: u32 = 128;
+    const CONCURRENT_MULTIPART_UPLOADS: usize = 2;
+
+    let snapshot_budget = std::sync::Arc::new(tokio::sync::Semaphore::new(
+        SNAPSHOT_BUDGET_PERMITS as usize,
+    ));
+    let multipart_budget = std::sync::Arc::new(tokio::sync::Semaphore::new(
+        CONCURRENT_MULTIPART_UPLOADS,
+    ));
+
+    stream::iter(objects.iter().copied().map(move |object| {
+        let declared = inputs.iter().find(|declared| declared.path == object.path);
+        let snapshot_budget = std::sync::Arc::clone(&snapshot_budget);
+        let multipart_budget = std::sync::Arc::clone(&multipart_budget);
+        async move {
+            let declared =
+                declared.context("Hub publication response introduced an undeclared path")?;
+            anyhow::ensure!(
+                declared.sha256 == object.sha256
+                    && declared.byte_size == object.byte_size
+                    && declared.kind == object.kind
+                    && declared.media_type == object.media_type,
+                "Hub publication response changed the identity of {}",
+                object.path
+            );
+            if object.verified {
+                return Ok(());
+            }
+
+            let byte_size = u64::try_from(object.byte_size)
+                .context("Hub publication response returned a negative object size")?;
+            let snapshot_permits = u32::try_from(
+                byte_size
+                    .div_ceil(SNAPSHOT_PERMIT_BYTES)
+                    .max(1)
+                    .min(u64::from(SNAPSHOT_BUDGET_PERMITS)),
+            )
+            .context("publication snapshot permit count overflowed")?;
+            // The permit is held across snapshotting and upload. Objects larger
+            // than the aggregate budget run exclusively; smaller snapshots can
+            // overlap only while their declared sizes fit the byte budget.
+            let _snapshot_permit = snapshot_budget
+                .acquire_many_owned(snapshot_permits)
+                .await
+                .context("publication snapshot budget closed unexpectedly")?;
+            // Multipart requests carry one bounded part buffer through the Hub
+            // coordinator. Keep their independent memory pressure well below
+            // the provider's per-isolate limit.
+            let _multipart_permit = if object.upload_url.is_empty() {
+                Some(
+                    multipart_budget
+                        .acquire_owned()
+                        .await
+                        .context("publication multipart budget closed unexpectedly")?,
+                )
+            } else {
+                None
+            };
+            upload_declared_publication_object(
+                client,
+                access,
+                publication_id,
+                root,
+                declared,
+                object,
+            )
+            .await
+        }
+    }))
+    .buffer_unordered(CONCURRENT_UPLOADS)
+    .try_collect::<Vec<()>>()
+    .await?;
+    Ok(())
 }
 
 async fn upload_declared_publication_object(
