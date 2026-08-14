@@ -71,6 +71,36 @@
   },
   {
     "service": "PublishService",
+    "method": "BeginRegistryPublicationMultipartUpload",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": true
+  },
+  {
+    "service": "PublishService",
+    "method": "CompleteRegistryPublicationMultipartUpload",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": true
+  },
+  {
+    "service": "PublishService",
+    "method": "AbortRegistryPublicationMultipartUpload",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": true
+  },
+  {
+    "service": "PublishService",
     "method": "ListRegistryPublications",
     "exposure": "public",
     "durability": "read_only",
