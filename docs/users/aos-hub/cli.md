@@ -250,8 +250,15 @@ Routes are created disabled and become eligible for traffic only after their
 current configuration probes successfully. Use `aos hub route explain` with
 `--access-class web`, `git`, or `nix_cache` to inspect the selected access
 policy, publication, and placement before enabling a route. Canonical route
-selection is explicit and independent for the `web`, `git`, and `cache`
-audiences.
+selection is explicit and independent for the `web`, `git`, and `nix_cache`
+audiences, and includes the typed surface so one route identity cannot be
+selected for the wrong registry or cache:
+
+```sh
+aos hub route canonical registry:acme/packages route:packages-public \
+  --audience nix_cache \
+  --plan
+```
 
 The remote client includes registry, cache, organization, project, binding,
 webhook, instance, audit, changeset, and upload operations. Authorization is

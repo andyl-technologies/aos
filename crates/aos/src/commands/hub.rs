@@ -7318,6 +7318,7 @@ async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
         }
         HubRouteCmd::Canonical {
             access,
+            surface_ref,
             route,
             audience,
             mutation,
@@ -7334,6 +7335,7 @@ async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
                 HubTopologyMethod::PlanSetCanonicalRoute,
                 HubTopologyMethod::SetCanonicalRoute,
                 &hub_types::PlanCanonicalRouteRequest {
+                    surface: Some(surface_message(surface_ref)?),
                     audience: audience.clone(),
                     route_id: route.clone(),
                     expected_resource_version: mutation.if_version.clone().unwrap_or_default(),

@@ -1610,8 +1610,10 @@ pub enum HubRouteCmd {
     Canonical {
         #[command(flatten)]
         access: HubAccessArgs,
+        /// Typed surface ref (`registry:<slug>` or `cache:<slug>`)
+        surface_ref: String,
         route: String,
-        #[arg(long, value_parser = ["git", "cache", "web"])]
+        #[arg(long, value_parser = ["git", "nix_cache", "web"])]
         audience: String,
         #[command(flatten)]
         mutation: HubMutationArgs,
@@ -3185,6 +3187,37 @@ mod tests {
                     command: HubRouteCmd::Add { .. }
                 }
             }
+        ));
+    }
+
+    #[test]
+    fn canonical_route_requires_a_typed_surface() {
+        let cli = parse_cli([
+            "aos",
+            "hub",
+            "route",
+            "canonical",
+            "registry:andyl/main",
+            "route:public",
+            "--audience",
+            "nix_cache",
+            "--plan",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Hub {
+                command: HubCmd::Route {
+                    command: HubRouteCmd::Canonical {
+                        ref surface_ref,
+                        ref route,
+                        ref audience,
+                        ..
+                    }
+                }
+            } if surface_ref == "registry:andyl/main"
+                && route == "route:public"
+                && audience == "nix_cache"
         ));
     }
 
