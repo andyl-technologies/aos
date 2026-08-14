@@ -4780,19 +4780,21 @@ mod tests {
         let initial_route_operation =
             automatic_route_probe_operation_id("create", &route.id, 1, &route_digest);
         let now = unix_now();
-        assert_eq!(
-            db.backend
-                .execute(
-                    "UPDATE topology_operations
-                     SET state = 'failed', started_at = ?2, finished_at = ?2,
-                         error = 'endpoint was not ready'
-                     WHERE operation_id = ?1 AND state = 'pending'",
-                    &vals![initial_route_operation, now],
-                )
-                .await
-                .unwrap(),
-            1
-        );
+        let initial_route_operation = db
+            .topology_operation(&initial_route_operation)
+            .await
+            .unwrap()
+            .unwrap();
+        let claimed_route_operation = db
+            .claim_delivery_route_probe_operation(
+                &initial_route_operation.operation_id,
+                initial_route_operation.resource_version,
+                120,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed_route_operation.state, "running");
 
         let domain = db
             .delivery_domain_by_hostname("route-probes.example.test")
@@ -4918,6 +4920,19 @@ mod tests {
         assert_eq!(
             observation.observed_generation,
             Some(spec.endpoint_generation)
+        );
+        assert_eq!(
+            db.backend
+                .execute(
+                    "UPDATE topology_operations
+                     SET state = 'failed', finished_at = ?2,
+                         error = 'probe used the pre-promotion endpoint observation'
+                     WHERE operation_id = ?1 AND state = 'running'",
+                    &vals![claimed_route_operation.operation_id, now],
+                )
+                .await
+                .unwrap(),
+            1
         );
 
         let pending = db
