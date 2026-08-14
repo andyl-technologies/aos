@@ -21,7 +21,6 @@ aos-remote = { workspace = true }
 aos-doc = { workspace = true }
 aos-package = { workspace = true }
 aos-profile = { workspace = true }
-aos-registry-surface = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 anyhow = { workspace = true }

@@ -41,6 +41,9 @@ pub mod tuf;
 pub mod verify;
 pub mod webgen;
 
+/// Re-exports the canonical machine-surface path and response classification.
+pub use aos_registry_surface::keymap as surface_keymap;
+
 use std::collections::HashMap;
 use std::path::Path;
 
