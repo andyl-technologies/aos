@@ -616,10 +616,24 @@ async fn download_nar_from(
         .file_size
         .is_some_and(|size| size > NAR_RANGE_CHUNK_BYTES)
     {
-        if url::Url::parse(url)
+        let is_http = url::Url::parse(url)
             .ok()
-            .is_some_and(|parsed| matches!(parsed.scheme(), "http" | "https"))
-        {
+            .is_some_and(|parsed| matches!(parsed.scheme(), "http" | "https"));
+        let supports_ranges = if is_http {
+            engine
+                .head(url)
+                .await
+                .ok()
+                .and_then(|result| result.header("accept-ranges").map(str::to_string))
+                .is_some_and(|value| {
+                    value
+                        .split(',')
+                        .any(|token| token.trim().eq_ignore_ascii_case("bytes"))
+                })
+        } else {
+            false
+        };
+        if supports_ranges {
             return download_nar_in_ranges(engine, url, dest, expected_hex, narinfo, label).await;
         }
         return download_nar_to_tempfile(engine, url, dest, expected_hex, narinfo, label).await;
@@ -678,7 +692,8 @@ async fn download_nar_to_tempfile(
         .with_context(|| format!("creating a temporary NAR beside {}", dest.display()))?
         .into_temp_path();
     let request = TransferRequest::get_to_file(url, temporary.to_path_buf())
-        .with_hash(HashAlgorithm::Sha256, expected_hex);
+        .with_hash(HashAlgorithm::Sha256, expected_hex)
+        .with_maximum_bytes(expected_size);
     let pb = create_download_bar(expected_size, label);
 
     let result = async {
@@ -737,8 +752,14 @@ async fn download_nar_in_ranges(
         while start < expected_size {
             let end = (start + NAR_RANGE_CHUNK_BYTES - 1).min(expected_size - 1);
             let expected_chunk_size = end - start + 1;
-            let request = TransferRequest::get(url)
-                .with_header("Range", &format!("bytes={start}-{end}"));
+            let chunk = tempfile::Builder::new()
+                .prefix(".nar-range-")
+                .tempfile_in(parent)
+                .with_context(|| format!("creating a temporary range for {url}"))?
+                .into_temp_path();
+            let request = TransferRequest::get_to_file(url, chunk.to_path_buf())
+                .with_header("Range", &format!("bytes={start}-{end}"))
+                .with_maximum_bytes(expected_chunk_size);
             let response = engine
                 .execute(request)
                 .await
@@ -756,17 +777,22 @@ async fn download_nar_in_ranges(
                     response.header("content-range")
                 );
             }
-            let body = response.body.context("ranged NAR response has no body")?;
-            if body.len() as u64 != expected_chunk_size {
+            let actual_chunk_size = tokio::fs::metadata(&chunk)
+                .await
+                .with_context(|| format!("checking downloaded bytes {start}-{end} from {url}"))?
+                .len();
+            if actual_chunk_size != expected_chunk_size {
                 bail!(
                     "ranged download from {url} returned {} bytes for {start}-{end}, expected {expected_chunk_size}",
-                    body.len()
+                    actual_chunk_size
                 );
             }
-            output
-                .write_all(&body)
+            let mut chunk_file = tokio::fs::File::open(&chunk)
                 .await
-                .with_context(|| format!("writing temporary NAR for {}", dest.display()))?;
+                .with_context(|| format!("opening downloaded bytes {start}-{end} from {url}"))?;
+            tokio::io::copy(&mut chunk_file, &mut output)
+                .await
+                .with_context(|| format!("assembling temporary NAR for {}", dest.display()))?;
             pb.inc(expected_chunk_size);
             start = end + 1;
         }

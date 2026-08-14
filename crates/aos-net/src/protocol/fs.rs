@@ -329,6 +329,7 @@ mod tests {
             headers: Vec::new(),
             body: None,
             hash: None,
+            maximum_bytes: None,
             resume: false,
             output: TransferOutput::Memory,
         };

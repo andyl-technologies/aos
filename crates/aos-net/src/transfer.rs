@@ -6,8 +6,8 @@
 //! bandwidth limiting, and progress tracking happen per-chunk during the
 //! transfer rather than after it completes.
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -20,7 +20,7 @@ use crate::hash::StreamingHasher;
 use crate::pool::{ConnectionPool, PoolConfig};
 use crate::progress::{BatchProgressHandler, NoopProgress, ProgressHandler};
 use crate::protocol;
-use crate::retry::{self, classify_error, ErrorClass, RetryConfig};
+use crate::retry::{self, ErrorClass, RetryConfig, classify_error};
 use crate::types::{Method, TransferOutput, TransferRequest, TransferResult};
 
 /// Configuration for the transfer engine.
@@ -126,6 +126,7 @@ impl TransferEngine {
     /// - the transfer fails with a permanent error (e.g. HTTP 4xx), or
     ///   keeps failing transiently until retries are exhausted,
     /// - the computed hash does not match the request's [`HashSpec`](crate::types::HashSpec),
+    /// - the response body exceeds [`TransferRequest::maximum_bytes`],
     /// - the average speed stays below the configured minimum after
     ///   the grace period, or
     /// - writing to the output destination fails.
@@ -194,6 +195,24 @@ impl TransferEngine {
 
             match stream_result {
                 Ok((mut result, mut stream)) => {
+                    if let (Some(maximum), Some(content_length)) =
+                        (request.maximum_bytes, result.content_length)
+                    {
+                        let projected = result
+                            .bytes_transferred
+                            .checked_add(content_length)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("transfer byte count overflow for {url}")
+                            })?;
+                        if projected > maximum {
+                            let err = anyhow::anyhow!(
+                                "response from {url} exceeds the {maximum} byte limit"
+                            );
+                            self.progress.on_error(&url, &err);
+                            return Err(err);
+                        }
+                    }
+
                     // Set up the streaming pipeline.
                     let mut hasher = hash_spec
                         .as_ref()
@@ -233,6 +252,20 @@ impl TransferEngine {
                     // Stream chunks with per-chunk hash/bandwidth/progress.
                     while let Some(chunk_result) = stream.next().await {
                         let chunk = chunk_result?;
+                        let next_bytes = bytes_transferred
+                            .checked_add(chunk.len() as u64)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("transfer byte count overflow for {url}")
+                            })?;
+                        if let Some(maximum) = request.maximum_bytes {
+                            if next_bytes > maximum {
+                                let err = anyhow::anyhow!(
+                                    "response from {url} exceeds the {maximum} byte limit"
+                                );
+                                self.progress.on_error(&url, &err);
+                                return Err(err);
+                            }
+                        }
 
                         // Hash update.
                         if let Some(ref mut h) = hasher {
@@ -254,7 +287,7 @@ impl TransferEngine {
                         }
 
                         // Track progress.
-                        bytes_transferred += chunk.len() as u64;
+                        bytes_transferred = next_bytes;
                         self.progress
                             .on_progress(&url, bytes_transferred, result.content_length);
 
@@ -439,6 +472,7 @@ impl TransferEngine {
             let method = request.method;
             let headers = request.headers.clone();
             let resume = request.resume;
+            let maximum_bytes = request.maximum_bytes;
             let host = extract_host(&url).unwrap_or_else(|| "unknown".to_string());
             let credential = self.auth.get(&url);
             let retry_config = self.retry.clone();
@@ -473,6 +507,7 @@ impl TransferEngine {
                         headers: headers.clone(),
                         body: None,
                         hash: None,
+                        maximum_bytes,
                         resume,
                         output: TransferOutput::Memory,
                     };
@@ -772,6 +807,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_execute_rejects_response_over_maximum_bytes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "five!").unwrap();
+
+        let url = format!("file://{}", file_path.display());
+        let engine = TransferEngine::new(TransferEngineConfig::default());
+        let err = engine
+            .execute(TransferRequest::get(&url).with_maximum_bytes(4))
+            .await
+            .unwrap_err();
+
+        assert!(format!("{err}").contains("exceeds the 4 byte limit"));
+    }
+
+    #[tokio::test]
     async fn test_execute_file_get_callback() {
         let dir = tempfile::TempDir::new().unwrap();
         let file_path = dir.path().join("test.txt");
@@ -789,6 +840,7 @@ mod tests {
             headers: Vec::new(),
             body: None,
             hash: None,
+            maximum_bytes: None,
             resume: false,
             output: TransferOutput::Callback(Box::new(move |data| {
                 received_clone.lock().unwrap().extend_from_slice(data);
