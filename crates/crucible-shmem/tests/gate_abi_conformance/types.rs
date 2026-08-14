@@ -1,7 +1,5 @@
 //! Golden-vector primitive codecs and typed fixture records.
 
-use super::*;
-
 pub(super) fn read_u8(bytes: &[u8], offset: usize) -> u8 {
     bytes[offset]
 }

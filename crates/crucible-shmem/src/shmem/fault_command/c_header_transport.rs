@@ -1,7 +1,5 @@
 //! Generated C transport structs and nested fault-payload declarations.
 
-use super::*;
-
 pub(super) fn emit_fault_transport_c_header(out: &mut String) {
     out.push_str(
         r#"

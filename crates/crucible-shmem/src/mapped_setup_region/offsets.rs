@@ -23,7 +23,9 @@ pub(super) fn verify_setup_region_shrink_seal(
 }
 
 #[cfg(not(target_os = "linux"))]
-const fn verify_setup_region_shrink_seal(_fd: BorrowedFd<'_>) -> Result<(), SetupRegionMapError> {
+pub(super) const fn verify_setup_region_shrink_seal(
+    _fd: BorrowedFd<'_>,
+) -> Result<(), SetupRegionMapError> {
     Ok(())
 }
 

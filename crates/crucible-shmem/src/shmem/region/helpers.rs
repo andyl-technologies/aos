@@ -56,7 +56,7 @@ pub(super) fn compiled_layout_target() -> &'static str {
     }
 }
 
-pub(super) fn directed_rings(vm_node_count: u32) -> Result<Vec<DirectedRing>, RegionLayoutError> {
+pub(crate) fn directed_rings(vm_node_count: u32) -> Result<Vec<DirectedRing>, RegionLayoutError> {
     let mut rings = Vec::new();
     for vm_slot in 0..vm_node_count {
         for executor in ReservedExecutorSlot::all() {
@@ -399,7 +399,7 @@ pub(super) fn write_u64_at(bytes: &mut [u8], offset: usize, value: u64) {
     bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
 
-pub(super) fn validate_pending_input_source(
+pub(crate) fn validate_pending_input_source(
     input_index: usize,
     expected_src_slot: u32,
     frame: &FrameEntry,
@@ -415,7 +415,7 @@ pub(super) fn validate_pending_input_source(
     }
 }
 
-pub(super) fn preflight_ring_enqueue_capacity(
+pub(crate) fn preflight_ring_enqueue_capacity(
     ring: &RingHeader,
     entries: &[FrameEntry],
     batch_count: impl TryInto<u64>,

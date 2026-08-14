@@ -10,12 +10,12 @@ use super::*;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C, align(64))]
 pub struct CoverageEntry {
-    pub(super) current_icount: u64,
-    pub(super) guest_pc: u64,
-    pub(super) map_index: u64,
-    pub(super) vcpu_index: u32,
-    pub(super) block_len: u32,
-    pub(super) _reserved: [u8; 32],
+    pub(crate) current_icount: u64,
+    pub(crate) guest_pc: u64,
+    pub(crate) map_index: u64,
+    pub(crate) vcpu_index: u32,
+    pub(crate) block_len: u32,
+    pub(crate) _reserved: [u8; 32],
 }
 
 /// Byte offset of [`CoverageEntry`]'s exact TB-entry icount.

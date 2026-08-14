@@ -6,6 +6,8 @@ use std::ptr::NonNull;
 
 use thiserror::Error;
 
+use crate::region::{helpers::directed_rings, layout_from_setup_region_header};
+
 use super::{
     ACCELERATOR_ENTRY_ALIGN, ACCELERATOR_ENTRY_SIZE, AcceleratorEntry, AcceleratorRingDirection,
     COVERAGE_ENTRY_ALIGN, COVERAGE_ENTRY_SIZE, CoverageEntry, DirectedRing,
@@ -18,8 +20,7 @@ use super::{
     REGION_HEADER_ALIGN, REGION_HEADER_SIZE, RING_HEADER_ALIGN, RING_HEADER_SIZE, RegionHeader,
     RegionLayout, RegionLayoutError, RegionSetupValidationError, RingHeader, SpscRingError,
     ValidatedSetupRegion, WHITEBOX_MARKER_ENTRY_ALIGN, WHITEBOX_MARKER_ENTRY_SIZE,
-    WhiteboxMarkerEntry, directed_rings, layout_from_setup_region_header,
-    validate_setup_region_header,
+    WhiteboxMarkerEntry, validate_setup_region_header,
 };
 
 #[path = "mapped_setup_region/views.rs"]

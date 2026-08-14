@@ -535,7 +535,11 @@ fn read_raw_u64(bytes: &[u8], offset: usize) -> u64 {
         .unwrap_or(0)
 }
 
-fn payload_slice(region: &[u8], offset: u64, length: u32) -> Result<&[u8], FaultAbiError> {
+pub(super) fn payload_slice(
+    region: &[u8],
+    offset: u64,
+    length: u32,
+) -> Result<&[u8], FaultAbiError> {
     let start = usize::try_from(offset).map_err(|_| FaultAbiError::PayloadBounds)?;
     let length = usize::try_from(length).map_err(|_| FaultAbiError::PayloadBounds)?;
     let end = start

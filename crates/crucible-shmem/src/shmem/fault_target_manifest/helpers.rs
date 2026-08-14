@@ -85,7 +85,7 @@ pub(super) struct FaultIdentityHasher {
 }
 
 impl FaultIdentityHasher {
-    const fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self {
             lanes: [
                 0x243f_6a88_85a3_08d3,

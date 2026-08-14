@@ -1,7 +1,5 @@
 //! Generated guest-introspection geometry helpers.
 
-use super::*;
-
 pub(super) fn emit_guest_introspection_geometry_helpers(out: &mut String) {
     out.push_str(
         r#"typedef struct crucible_shmem_guest_introspection_layout {

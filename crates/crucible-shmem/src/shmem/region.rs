@@ -15,7 +15,7 @@ mod errors;
 #[path = "region/header.rs"]
 mod header;
 #[path = "region/helpers.rs"]
-mod helpers;
+pub(crate) mod helpers;
 #[path = "region/layout.rs"]
 mod layout;
 #[path = "region/types.rs"]
@@ -23,6 +23,7 @@ mod types;
 
 pub use errors::*;
 pub use header::*;
+pub use helpers::validate_layout_target;
 use helpers::*;
 pub use layout::*;
 pub use types::*;

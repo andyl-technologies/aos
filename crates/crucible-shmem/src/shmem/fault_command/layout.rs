@@ -1,7 +1,5 @@
 //! Fault transport constants, slots, and payload-arena layout.
 
-use super::*;
-
 /// Fault command ABI major version.
 pub const FAULT_COMMAND_ABI_MAJOR: u16 = 1;
 /// Fault command ABI minor version.

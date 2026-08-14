@@ -9,7 +9,7 @@ impl NodeSlot {
         Self::new_with_status(kind, STATUS_IDLE)
     }
 
-    pub(super) const fn new_with_status(kind: u8, status: u8) -> Self {
+    pub(crate) const fn new_with_status(kind: u8, status: u8) -> Self {
         Self {
             current_icount: AtomicU64::new(0),
             current_ns: AtomicU64::new(0),
@@ -113,10 +113,14 @@ impl NodeSlot {
     ) -> Result<SchedulerWakePublication, SchedulerWakePublicationError> {
         self.validate_scheduler_ceiling(ceiling)?;
         for (input_index, frame) in pending_inputs.iter().enumerate() {
-            validate_pending_input_source(input_index, src_slot, frame)?;
+            crate::region::helpers::validate_pending_input_source(input_index, src_slot, frame)?;
         }
-        preflight_ring_enqueue_capacity(inbox, inbox_entries, pending_inputs.len())
-            .map_err(RegionAllocationAccessError::from)?;
+        crate::region::helpers::preflight_ring_enqueue_capacity(
+            inbox,
+            inbox_entries,
+            pending_inputs.len(),
+        )
+        .map_err(RegionAllocationAccessError::from)?;
 
         for frame in pending_inputs {
             inbox
@@ -540,7 +544,7 @@ impl NodeSlot {
         self.publish_gen.fetch_add(1, Ordering::AcqRel);
     }
 
-    pub(super) fn validate_scheduler_ceiling(
+    pub(crate) fn validate_scheduler_ceiling(
         &self,
         ceiling: AdvanceCeiling,
     ) -> Result<(), NodeSlotError> {
@@ -555,7 +559,7 @@ impl NodeSlot {
         }
     }
 
-    pub(super) fn publish_prevalidated_scheduler_ceiling(
+    pub(crate) fn publish_prevalidated_scheduler_ceiling(
         &self,
         ceiling: AdvanceCeiling,
     ) -> Result<WakeAction, NodeSlotError> {
@@ -566,14 +570,14 @@ impl NodeSlot {
             .map_err(|source| NodeSlotError::FutexWake { source })
     }
 
-    fn is_runnable_after_idle_publish(&self) -> bool {
+    pub(super) fn is_runnable_after_idle_publish(&self) -> bool {
         let status = self.status.load(Ordering::Acquire);
         let max_advance_icount = self.max_advance_icount.load(Ordering::Acquire);
         let idle_wake_icount = self.idle_wake_icount.load(Ordering::Acquire);
         status != STATUS_IDLE || max_advance_icount >= idle_wake_icount
     }
 
-    pub(super) fn wake_after_signal_increment(&self) -> Result<WakeAction, FutexError> {
+    pub(crate) fn wake_after_signal_increment(&self) -> Result<WakeAction, FutexError> {
         let previous = self.wake_signal.fetch_add(1, Ordering::Release);
         let futex = self.futex_wake_nonprivate(1)?;
         Ok(WakeAction::Wake {
