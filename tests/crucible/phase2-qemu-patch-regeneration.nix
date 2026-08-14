@@ -171,6 +171,10 @@ in
             git config user.email "${series.deterministicAuthorEmail}"
             git config commit.gpgsign false
             git config core.autocrlf false
+            # Patch files carry nine-character abbreviated blob IDs. Pin the
+            # abbreviation length so regeneration is independent of Git's
+            # version-specific default and matches the committed byte stream.
+            git config core.abbrev 9
             git config gc.auto 0
             git config maintenance.auto false
             git add -A

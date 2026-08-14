@@ -392,12 +392,28 @@ impl QemuFaultCapabilityRequirement {
         architecture: LivePluginGuestArchitecture,
         cpu_model: impl Into<String>,
         node_name: &str,
+        accelerator: bool,
     ) -> Self {
-        Self::current_v1(
+        let mut requirement = Self::current_v1(
             architecture,
             cpu_model,
             crate::qemu_fault_target_hash(node_name),
-        )
+        );
+        if accelerator {
+            let manifest = canonical_accelerator_manifest_v1();
+            if let Some(target) = requirement.target_manifest.as_mut() {
+                target.exact_accelerator_manifest = Some(manifest);
+            }
+            requirement.rows.extend(accelerator_capability_rows());
+            requirement.rows.sort_by_key(|row| {
+                (
+                    row.command_kind as u16,
+                    row.semantic_version,
+                    row.scope as u16,
+                )
+            });
+        }
+        requirement
     }
 
     /// Builds an exact replay requirement for a loaded-QEMU conformance gate.
@@ -874,51 +890,7 @@ impl QemuFaultCapabilityRequirement {
         target.exact_clock_manifest = Some(clock_manifest.clone());
         target.exact_accelerator_manifest = accelerator_manifest.clone();
         if accelerator_manifest.is_some() {
-            let boundary = FaultBoundaryPhase::NodeBoundary.bit();
-            let device = FaultBoundaryPhase::Device.bit();
-            let mut rows = [
-                capability_row(
-                    FaultCommandKind::AcceleratorLifecycle,
-                    FaultCapabilityScope::Accelerator,
-                    b"qemu.accelerator.lifecycle.v1",
-                    NODE_FAULT_PAYLOAD_SCHEMA,
-                    HARD_FAULT_PAYLOAD_BYTES,
-                    DEFAULT_FAULT_COMMAND_CAPACITY,
-                    0,
-                ),
-                capability_row(
-                    FaultCommandKind::AcceleratorResultTransform,
-                    FaultCapabilityScope::Accelerator,
-                    b"qemu.accelerator.result-transform.v1",
-                    NODE_FAULT_PAYLOAD_SCHEMA,
-                    HARD_FAULT_PAYLOAD_BYTES,
-                    DEFAULT_FAULT_COMMAND_CAPACITY,
-                    0,
-                ),
-                capability_row(
-                    FaultCommandKind::AcceleratorMemoryEvent,
-                    FaultCapabilityScope::Accelerator,
-                    b"qemu.accelerator.memory-event.v1",
-                    NODE_FAULT_PAYLOAD_SCHEMA,
-                    HARD_FAULT_PAYLOAD_BYTES,
-                    DEFAULT_FAULT_COMMAND_CAPACITY,
-                    0,
-                ),
-                capability_row(
-                    FaultCommandKind::AcceleratorService,
-                    FaultCapabilityScope::Accelerator,
-                    b"qemu.accelerator.service.v1",
-                    NODE_FAULT_PAYLOAD_SCHEMA,
-                    HARD_FAULT_PAYLOAD_BYTES,
-                    DEFAULT_FAULT_COMMAND_CAPACITY,
-                    0,
-                ),
-            ];
-            rows[0].phase_mask = boundary | device;
-            rows[1].phase_mask = device;
-            rows[2].phase_mask = boundary | device;
-            rows[3].phase_mask = boundary | device;
-            requirement.rows.extend(rows);
+            requirement.rows.extend(accelerator_capability_rows());
         }
         requirement.rows = requirement.rows_for_manifests(
             Some(&manifest),
@@ -1235,6 +1207,74 @@ fn target_manifest_capability_hash(
     *hasher.finalize().as_bytes()
 }
 
+fn canonical_accelerator_manifest_v1() -> FaultAcceleratorCapabilityManifestV1 {
+    FaultAcceleratorCapabilityManifestV1 {
+        rows: vec![crucible_shmem::FaultAcceleratorCapabilityRowV1 {
+            id: "accelerator-0".to_owned(),
+            implementation: "virtio-crucible-accelerator-v1".to_owned(),
+            class_mask: 0x7,
+            fault_family_mask: 0xf,
+            queue_start: 0,
+            queue_end: 0,
+            queue_depth: 64,
+            maximum_input_bytes: 4_608,
+            maximum_output_bytes: 4_608,
+            device_memory_bytes: 65_536,
+            ecc_mode_mask: 0x3,
+            job_kind_count: 3,
+            vmstate: true,
+        }],
+    }
+}
+
+fn accelerator_capability_rows() -> [FaultCapabilityRowV1; 4] {
+    let boundary = FaultBoundaryPhase::NodeBoundary.bit();
+    let device = FaultBoundaryPhase::Device.bit();
+    let mut rows = [
+        capability_row(
+            FaultCommandKind::AcceleratorLifecycle,
+            FaultCapabilityScope::Accelerator,
+            b"qemu.accelerator.lifecycle.v1",
+            NODE_FAULT_PAYLOAD_SCHEMA,
+            HARD_FAULT_PAYLOAD_BYTES,
+            DEFAULT_FAULT_COMMAND_CAPACITY,
+            0,
+        ),
+        capability_row(
+            FaultCommandKind::AcceleratorResultTransform,
+            FaultCapabilityScope::Accelerator,
+            b"qemu.accelerator.result-transform.v1",
+            NODE_FAULT_PAYLOAD_SCHEMA,
+            HARD_FAULT_PAYLOAD_BYTES,
+            DEFAULT_FAULT_COMMAND_CAPACITY,
+            0,
+        ),
+        capability_row(
+            FaultCommandKind::AcceleratorMemoryEvent,
+            FaultCapabilityScope::Accelerator,
+            b"qemu.accelerator.memory-event.v1",
+            NODE_FAULT_PAYLOAD_SCHEMA,
+            HARD_FAULT_PAYLOAD_BYTES,
+            DEFAULT_FAULT_COMMAND_CAPACITY,
+            0,
+        ),
+        capability_row(
+            FaultCommandKind::AcceleratorService,
+            FaultCapabilityScope::Accelerator,
+            b"qemu.accelerator.service.v1",
+            NODE_FAULT_PAYLOAD_SCHEMA,
+            HARD_FAULT_PAYLOAD_BYTES,
+            DEFAULT_FAULT_COMMAND_CAPACITY,
+            0,
+        ),
+    ];
+    rows[0].phase_mask = boundary | device;
+    rows[1].phase_mask = device;
+    rows[2].phase_mask = boundary | device;
+    rows[3].phase_mask = boundary | device;
+    rows
+}
+
 fn register_capability_hash(
     architecture: FaultCapabilityScope,
     manifest_digest: [u8; 32],
@@ -1462,6 +1502,53 @@ mod tests {
             };
             assert_eq!(digest, requirement.digest());
         }
+    }
+
+    #[test]
+    fn live_gate_accelerator_attachment_is_manifest_bound() {
+        let requirement = QemuFaultCapabilityRequirement::live_gate_v1(
+            LivePluginGuestArchitecture::X86_64,
+            "crucible-x86-64-v1",
+            "vm-a",
+            true,
+        );
+        let target = requirement
+            .target_manifest()
+            .unwrap_or_else(|| panic!("live gate should retain a target manifest"));
+
+        assert_eq!(
+            target.exact_accelerator_manifest(),
+            Some(&canonical_accelerator_manifest_v1())
+        );
+        assert_eq!(
+            requirement
+                .rows()
+                .iter()
+                .filter(|row| row.scope == FaultCapabilityScope::Accelerator)
+                .count(),
+            4
+        );
+    }
+
+    #[test]
+    fn live_gate_without_accelerator_forbids_accelerator_capabilities() {
+        let requirement = QemuFaultCapabilityRequirement::live_gate_v1(
+            LivePluginGuestArchitecture::X86_64,
+            "crucible-x86-64-v1",
+            "vm-a",
+            false,
+        );
+        let target = requirement
+            .target_manifest()
+            .unwrap_or_else(|| panic!("live gate should retain a target manifest"));
+
+        assert_eq!(target.exact_accelerator_manifest(), None);
+        assert!(
+            requirement
+                .rows()
+                .iter()
+                .all(|row| row.scope != FaultCapabilityScope::Accelerator)
+        );
     }
 
     #[test]

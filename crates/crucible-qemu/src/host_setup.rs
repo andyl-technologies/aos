@@ -1350,6 +1350,7 @@ pub(crate) mod tests {
             crate::LivePluginGuestArchitecture::X86_64,
             "qemu64",
             "different-node",
+            false,
         );
 
         let error =

@@ -32,6 +32,19 @@ Each class requires a live fixture driver/workload, strict job schema, and resul
 semantics. Arbitrary vendor command streams, passthrough/VFIO hardware, host GPU
 libraries, and host device timing are forbidden.
 
+The device uses the virtio specification's vendor-specific device ID `65535`.
+QEMU's ordinary `virtio_init()` path deliberately accepts only IDs present in
+its standard device-name table, so patch 0069 adds `virtio_init_named()` for an
+explicit static-lifetime diagnostic name and uses it only for the co-sim device.
+The ordinary path retains both of its fail-fast table assertions. A generic
+unknown-ID fallback is forbidden: every other vendor-specific device must make
+the same explicit naming decision. The live gate must realize the PCI function;
+starting QEMU and reaching guest execution is the regression for this contract.
+The device class also supplies the mandatory `get_features` callback. It passes
+through only the transport feature set supplied by QEMU and advertises no
+device-specific optional feature bits; a missing callback is a realization
+failure, not an admissible reduced mode.
+
 ## Device/job manifest
 
 The realized-device manifest reports stable device and implementation IDs,
@@ -98,16 +111,19 @@ requests, completions, or host jobs remain live.
 
 ## Live microtests
 
-1. Run one real guest virtio transport job per co-sim GPU/TPU/FPGA class.
-2. Apply every lifecycle transition and queue/memory state policy with work
+1. Realize device ID `65535` through `virtio_init_named()` and prove that QEMU
+   reaches guest execution with the mandatory feature callback and without
+   weakening `virtio_init()` validation.
+2. Run one real guest virtio transport job per co-sim GPU/TPU/FPGA class.
+3. Apply every lifecycle transition and queue/memory state policy with work
    unadmitted, queued, executing, completed, and DMA-in-flight; verify the exact
    treatment.
-3. Corrupt typed scalar/vector/buffer results and prove exact guest observation.
-4. Inject corrected/uncorrectable device-memory errors and verify device/guest
+4. Corrupt typed scalar/vector/buffer results and prove exact guest observation.
+5. Inject corrected/uncorrectable device-memory errors and verify device/guest
    outcome plus platform record where declared.
-5. Throttle service at exact ratios and checkpoint mid-job/queue.
-6. Fuzz descriptor/job schemas and limits; no malformed input escapes validation.
-7. Revert patch and fail live device gates; prove machines without the co-sim
+6. Throttle service at exact ratios and checkpoint mid-job/queue.
+7. Fuzz descriptor/job schemas and limits; no malformed input escapes validation.
+8. Revert patch and fail live device gates; prove machines without the co-sim
    device do not advertise accelerator fault capability.
 
 ## Licensing checklist

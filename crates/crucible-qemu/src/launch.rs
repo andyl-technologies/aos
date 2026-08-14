@@ -619,6 +619,7 @@ impl QemuLaunchCommandBuilder {
             architecture,
             profile.cpu_model.clone(),
             node_name,
+            vm.crucible_accelerator.is_some(),
         );
         let mut builder = Self::new(profile, vm, executable, plugin, requirement);
         builder.allow_live_gate_manifest_discovery = true;
@@ -719,6 +720,11 @@ impl QemuLaunchCommandBuilder {
             || required_target.node_hash() != self.plugin.fault_node_hash()
         {
             return Err(QemuLaunchCommandError::FaultCapabilityNodeMismatch);
+        }
+        if self.vm.crucible_accelerator.is_some()
+            != required_target.exact_accelerator_manifest().is_some()
+        {
+            return Err(QemuLaunchCommandError::AcceleratorCapabilityMismatch);
         }
         let executable_architecture = if self.executable.ends_with("qemu-system-x86_64") {
             crucible_shmem::FaultCapabilityScope::X86_64
