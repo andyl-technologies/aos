@@ -542,6 +542,59 @@ mod tests {
     }
 
     #[test]
+    fn publication_object_contract_matches_delivery_path_contract() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        std::fs::create_dir_all(root.join("info")).unwrap();
+        std::fs::create_dir_all(root.join("objects/info")).unwrap();
+        std::fs::create_dir_all(root.join("web/packages")).unwrap();
+        std::fs::create_dir_all(root.join("nar")).unwrap();
+        let commit = "e".repeat(64);
+        std::fs::write(root.join("HEAD"), format!("{commit}\n")).unwrap();
+        std::fs::write(root.join("info/refs"), b"").unwrap();
+        for path in [
+            "hash.narinfo",
+            "nix-cache-info",
+            "index.html",
+            "objects/info/packs",
+            "web/config.json",
+            "web/index.json",
+            "web/packages/aos.json",
+            "nar/hash.nar.zst",
+        ] {
+            std::fs::write(root.join(path), path.as_bytes()).unwrap();
+        }
+
+        let pinned = publication_from_root(root, "andyl/main").unwrap();
+        for object in &pinned.request.objects {
+            let expected = if aos_hub_core::keymap::cache_control(&object.path)
+                == aos_hub_core::keymap::MUTABLE_CACHE_CONTROL
+            {
+                "mutable_pointer"
+            } else {
+                "immutable"
+            };
+            assert_eq!(object.kind, expected, "{}", object.path);
+            assert_eq!(
+                object.media_type,
+                aos_hub_core::keymap::content_type(&object.path),
+                "{}",
+                object.path
+            );
+        }
+        assert_eq!(
+            pinned
+                .request
+                .objects
+                .iter()
+                .find(|object| object.path == "hash.narinfo")
+                .unwrap()
+                .kind,
+            "mutable_pointer"
+        );
+    }
+
+    #[test]
     fn publication_uploads_immutable_objects_before_pointers() {
         let object = |path: &str, kind: &str| hub_types::RegistryPublicationObject {
             path: path.into(),
@@ -8830,7 +8883,7 @@ fn collect_publication_objects(
             "publication surface contains non-file {relative}"
         );
         anyhow::ensure!(
-            publication_machine_path(&relative),
+            aos_hub_core::keymap::is_machine_path(&relative),
             "publication surface contains unsupported path {relative}"
         );
         anyhow::ensure!(
@@ -8896,13 +8949,15 @@ fn publication_input(
         path: relative.to_string(),
         sha256: digest,
         byte_size: i64::try_from(metadata.len()).context("publication object is too large")?,
-        kind: if publication_mutable_pointer(relative) {
+        kind: if aos_hub_core::keymap::cache_control(relative)
+            == aos_hub_core::keymap::MUTABLE_CACHE_CONTROL
+        {
             "mutable_pointer"
         } else {
             "immutable"
         }
         .into(),
-        media_type: publication_object_media_type(relative).into(),
+        media_type: aos_hub_core::keymap::content_type(relative).into(),
     })
 }
 
@@ -9065,45 +9120,6 @@ fn copy_and_hash_exact(
         "publication object is longer than its declared size: {label}"
     );
     Ok(format!("{:x}", digest.finalize()))
-}
-
-fn publication_machine_path(path: &str) -> bool {
-    path == "HEAD"
-        || path == "nix-cache-info"
-        || path == "index.html"
-        || path.ends_with(".narinfo")
-        || [
-            "info/",
-            "objects/",
-            "channels/",
-            "releases/",
-            "publication-receipts/",
-            "nar/",
-            "images/",
-            "web/",
-            "browse/",
-        ]
-        .iter()
-        .any(|prefix| path.starts_with(prefix))
-}
-
-fn publication_mutable_pointer(path: &str) -> bool {
-    path == "HEAD"
-        || path == "info/refs"
-        || path == "nix-cache-info"
-        || path.starts_with("objects/info/")
-        || path.starts_with("channels/")
-}
-
-fn publication_object_media_type(path: &str) -> &'static str {
-    match path.rsplit_once('.').map(|(_, extension)| extension) {
-        Some("json") => "application/json",
-        Some("toml") => "application/toml",
-        Some("qcow2") => "application/x-qemu-disk",
-        Some("vmdk") => "application/x-vmdk",
-        Some("vhd") | Some("vhdx") => "application/x-vhd",
-        _ => "application/octet-stream",
-    }
 }
 
 fn publication_default_commit(head: &[u8], refs: &[u8]) -> Result<String> {
