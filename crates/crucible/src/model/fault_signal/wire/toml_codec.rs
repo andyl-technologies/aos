@@ -167,7 +167,7 @@ impl FaultSignalPlanWire {
 
 const TOML_U64_PREFIX: &str = "u64:";
 
-pub(super) fn to_toml_value<T: Serialize>(
+pub(in crate::model::fault_signal) fn to_toml_value<T: Serialize>(
     value: &T,
 ) -> Result<toml::Value, FaultSignalTomlWireError> {
     json_to_toml(serde_json::to_value(value).map_err(FaultSignalTomlWireError::Json)?)?
@@ -206,13 +206,15 @@ fn json_to_toml(value: serde_json::Value) -> Result<Option<toml::Value>, FaultSi
     })
 }
 
-pub(super) fn from_toml_value<T: for<'de> Deserialize<'de>>(
+pub(in crate::model::fault_signal) fn from_toml_value<T: for<'de> Deserialize<'de>>(
     value: toml::Value,
 ) -> Result<T, FaultSignalTomlWireError> {
     serde_json::from_value(toml_to_json(value)?).map_err(FaultSignalTomlWireError::Json)
 }
 
-fn toml_to_json(value: toml::Value) -> Result<serde_json::Value, FaultSignalTomlWireError> {
+pub(super) fn toml_to_json(
+    value: toml::Value,
+) -> Result<serde_json::Value, FaultSignalTomlWireError> {
     Ok(match value {
         toml::Value::String(value) => {
             if let Some(encoded) = value.strip_prefix(TOML_U64_PREFIX) {

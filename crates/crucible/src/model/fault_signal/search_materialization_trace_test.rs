@@ -1,6 +1,7 @@
 //! Trace-artifact mutation materialization tests.
 
 use super::*;
+use crate::model::MemoryDagStore;
 
 fn object_id(value: &str) -> FaultObjectId {
     FaultObjectId::parse(value).unwrap_or_else(|error| panic!("valid object ID: {error}"))

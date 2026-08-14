@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use super::EffectKind;
+
 /// A canonical fine-grained production-backend capability identifier.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct FaultCapabilityId(String);
