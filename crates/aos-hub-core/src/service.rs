@@ -7961,12 +7961,21 @@ impl RpcService {
         req: pb::PlanVerifyDomainRequest,
     ) -> Result<pb::OperationResponse, RpcError> {
         self.require_claims(auth)?;
-        let domain = self
+        let domain = match self
             .db
             .delivery_domain(&req.stable_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("domain"))?;
+        {
+            Some(domain) => Some(domain),
+            None if crate::db::canonical_delivery_hostname(&req.stable_id).is_ok() => self
+                .db
+                .delivery_domain_by_hostname(&req.stable_id)
+                .await
+                .map_err(RpcError::internal)?,
+            None => None,
+        }
+        .ok_or_else(|| RpcError::not_found("domain"))?;
         if let Err(error) = self
             .require_delivery_scope(auth, &domain.owner_scope_key, Permission::DomainManage)
             .await

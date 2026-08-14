@@ -24,6 +24,20 @@ use crate::value::Row;
 
 use super::{unix_now, Database};
 
+fn endpoint_ready_route_probe_operation_id(
+    domain_operation_id: &str,
+    route_id: &str,
+    generation: i64,
+    digest: &str,
+) -> String {
+    hex::encode(Sha256::digest(
+        format!(
+            "delivery-route-endpoint-ready-v1\0{domain_operation_id}\0{route_id}\0{generation}\0{digest}"
+        )
+        .as_bytes(),
+    ))
+}
+
 /// Canonicalizes and validates a public delivery hostname.
 ///
 /// # Errors
@@ -1696,12 +1710,19 @@ impl Database {
             .is_some())
     }
 
-    /// Atomically claims and completes one durable domain-probe operation.
+    /// Completes a domain probe and promotes its exact responding endpoint.
+    ///
+    /// The domain observation, endpoint observation, endpoint resource-version
+    /// advance, and any route-probe retries are committed in one checked batch.
+    /// This keeps signed evidence bound to the endpoint generation that
+    /// produced it and prevents a domain from becoming verified against stale
+    /// topology.
     ///
     /// # Errors
     ///
     /// Returns an error for invalid evidence, an operation/target mismatch, a
-    /// stale domain, a replayed operation, or a database failure.
+    /// stale domain or endpoint generation, a replayed operation, an outbox
+    /// conflict, or a database failure.
     #[allow(clippy::too_many_arguments)]
     pub async fn complete_delivery_domain_probe(
         &self,
@@ -1716,6 +1737,8 @@ impl Database {
         evidence_digest: &str,
         probe_location: &str,
         observed_at: i64,
+        endpoint_id: &str,
+        endpoint_generation: i64,
     ) -> Result<DeliveryDomainRecord> {
         if !matches!(
             dns_state,
@@ -1749,77 +1772,289 @@ impl Database {
         if current.resource_version != expected_version {
             bail!("domain is stale");
         }
+        let endpoint = self
+            .delivery_endpoint(endpoint_id)
+            .await?
+            .context("domain probe endpoint does not exist")?;
+        if endpoint.domain_id != Some(current.id)
+            || endpoint.desired_generation != Some(endpoint_generation)
+        {
+            bail!("domain probe endpoint is no longer the desired terminator");
+        }
+        let endpoint_revision = self
+            .delivery_endpoint_revision(endpoint_id, endpoint_generation)
+            .await?
+            .context("domain probe endpoint generation does not exist")?;
+        let endpoint_observation = self.delivery_endpoint_observation(endpoint_id).await?;
+        let promote_endpoint = !endpoint_observation.as_ref().is_some_and(|observation| {
+            observation.observed_generation == Some(endpoint_generation)
+                && observation.boundary_revision == Some(endpoint_revision.boundary_revision)
+                && observation.state == "healthy"
+                && observation.listener_observed
+                && observation.tls_observed
+        });
+        let dependent_routes = if promote_endpoint {
+            self.backend
+                .query(
+                    "SELECT r.id, h.configuration_generation, h.configuration_digest,
+                            h.access_policy_digest
+                       FROM delivery_routes r
+                       JOIN delivery_route_heads h ON h.delivery_route_id = r.id
+                      WHERE r.endpoint_id = ?1 AND r.endpoint_generation = ?2
+                        AND r.enabled = 1
+                      ORDER BY r.id",
+                    &vals![endpoint_id, endpoint_generation],
+                )
+                .await?
+                .iter()
+                .map(|row| {
+                    Ok((
+                        row.get::<String>(0)?,
+                        row.get::<i64>(1)?,
+                        row.get::<String>(2)?,
+                        row.get::<String>(3)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
         let now = unix_now();
         let verified_at = if dns_state == "verified" && certificate_state == "active" {
             current.verified_at.or(Some(observed_at))
         } else {
             None
         };
-        self.backend
-            .checked_batch(&[
-                Statement::new(
-                    "UPDATE topology_operations SET state = 'running'
+        let endpoint_version_after = endpoint.resource_version + i64::from(promote_endpoint);
+        let mut statements = vec![Statement::new(
+            "UPDATE topology_operations SET state = 'running'
                  WHERE operation_id = ?1 AND operation_kind = 'domain_probe'
                    AND state = 'running' AND resource_version = ?4
                    AND primary_target_kind = 'domain'
                    AND primary_target_stable_id = ?2
                    AND primary_target_generation_key = ?3",
+            vals![
+                operation_id,
+                stable_id,
+                expected_version,
+                expected_operation_version
+            ],
+        )
+        .expecting(1)];
+        if promote_endpoint {
+            let endpoint_event_id = format!("topology-event:{}", Uuid::new_v4().simple());
+            let endpoint_event_payload = serde_json::to_string(&serde_json::json!({
+                "type": "topology.delivery_endpoint.reconciled",
+                "resource_kind": "delivery_endpoint",
+                "resource_stable_id": endpoint_id,
+                "resource_generation": endpoint_generation,
+                "resource_version": endpoint_version_after,
+                "state": "healthy",
+            }))?;
+            statements.extend([
+                Statement::new(
+                    "INSERT INTO delivery_endpoint_generation_observations
+                     (endpoint_id, observed_generation, boundary_id, boundary_revision,
+                      state, listener_observed, tls_observed, observed_at, error)
+                     SELECT e.id, ?2, e.network_boundary_id, ?3, 'healthy', 1, 1, ?4, NULL
+                     FROM delivery_endpoints e
+                     JOIN delivery_endpoint_revisions r ON r.endpoint_id = e.id
+                       AND r.generation = ?2 AND r.boundary_revision = ?3
+                     WHERE e.id = ?1 AND e.resource_version = ?5
+                       AND e.domain_id = ?6 AND e.desired_generation = ?2
+                     ON CONFLICT(endpoint_id, observed_generation) DO UPDATE SET
+                       boundary_id = excluded.boundary_id,
+                       boundary_revision = excluded.boundary_revision,
+                       state = excluded.state,
+                       listener_observed = excluded.listener_observed,
+                       tls_observed = excluded.tls_observed,
+                       observed_at = CASE
+                         WHEN delivery_endpoint_generation_observations.observed_at
+                           >= excluded.observed_at
+                         THEN delivery_endpoint_generation_observations.observed_at + 1
+                         ELSE excluded.observed_at END,
+                       error = NULL",
                     vals![
-                        operation_id,
-                        stable_id,
-                        expected_version,
-                        expected_operation_version
+                        endpoint_id,
+                        endpoint_generation,
+                        endpoint_revision.boundary_revision,
+                        observed_at,
+                        endpoint.resource_version,
+                        current.id
                     ],
                 )
                 .expecting(1),
                 Statement::new(
-                    "INSERT INTO domain_probe_observations
+                    "UPDATE delivery_endpoint_observations
+                     SET observed_generation = ?2, boundary_revision = ?3,
+                         state = 'healthy', listener_observed = 1, tls_observed = 1,
+                         observed_at = CASE WHEN observed_at >= ?4
+                           THEN observed_at + 1 ELSE ?4 END, error = NULL
+                     WHERE endpoint_id = ?1 AND EXISTS (
+                       SELECT 1 FROM delivery_endpoints e
+                       JOIN delivery_endpoint_revisions r ON r.endpoint_id = e.id
+                         AND r.generation = ?2 AND r.boundary_revision = ?3
+                       WHERE e.id = ?1 AND e.resource_version = ?5
+                         AND e.domain_id = ?6 AND e.desired_generation = ?2)",
+                    vals![
+                        endpoint_id,
+                        endpoint_generation,
+                        endpoint_revision.boundary_revision,
+                        observed_at,
+                        endpoint.resource_version,
+                        current.id
+                    ],
+                )
+                .expecting(1),
+                Statement::new(
+                    "UPDATE delivery_endpoints
+                     SET resource_version = resource_version + 1, updated_at = ?3
+                     WHERE id = ?1 AND resource_version = ?2
+                       AND domain_id = ?4 AND desired_generation = ?5",
+                    vals![
+                        endpoint_id,
+                        endpoint.resource_version,
+                        now,
+                        current.id,
+                        endpoint_generation
+                    ],
+                )
+                .expecting(1),
+                Database::topology_event_statement(&crate::db::NewTopologyEvent {
+                    event_id: &endpoint_event_id,
+                    event_name: "topology.delivery_endpoint.reconciled",
+                    owner_scope_key: &endpoint.owner_scope_key,
+                    resource_kind: "delivery_endpoint",
+                    resource_stable_id: endpoint_id,
+                    resource_generation_key: endpoint_generation,
+                    actor_kind: "system",
+                    actor_id: None,
+                    actor_label: "domain-probe-controller",
+                    payload_json: &endpoint_event_payload,
+                    occurred_at: now,
+                }),
+            ]);
+            for (route_id, generation, digest, access_policy_digest) in &dependent_routes {
+                let route_operation_id = endpoint_ready_route_probe_operation_id(
+                    operation_id,
+                    route_id,
+                    *generation,
+                    digest,
+                );
+                let route_detail = serde_json::json!({
+                    "trigger": "endpoint_ready",
+                    "deliveryRouteId": route_id,
+                    "generation": generation,
+                    "configurationDigest": digest,
+                    "accessPolicyDigest": access_policy_digest,
+                    "endpointId": endpoint_id,
+                    "endpointGeneration": endpoint_generation,
+                })
+                .to_string();
+                statements.push(
+                    Statement::new(
+                        "INSERT INTO topology_operations
+                     (operation_id, operation_kind, authorization_scope_key,
+                      control_permission, primary_target_kind,
+                      primary_target_stable_id, primary_target_generation_key,
+                      primary_target_configuration_digest, state, progress_total,
+                      detail_json, created_at)
+                     SELECT ?1, 'delivery_route_probe', e.owner_scope_key,
+                       'route.manage', 'delivery_route', r.id,
+                       h.configuration_generation, h.configuration_digest,
+                       'pending', 1, ?2, ?3
+                     FROM delivery_routes r
+                     JOIN delivery_route_heads h ON h.delivery_route_id = r.id
+                     JOIN delivery_endpoints e ON e.id = r.endpoint_id
+                     WHERE r.id = ?4 AND r.enabled = 1
+                       AND r.endpoint_id = ?5 AND r.endpoint_generation = ?6
+                       AND h.configuration_generation = ?7
+                       AND h.configuration_digest = ?8
+                       AND e.resource_version = ?9 AND e.desired_generation = ?6
+                       AND NOT EXISTS (SELECT 1 FROM topology_operations o
+                         WHERE o.operation_kind = 'delivery_route_probe'
+                           AND o.primary_target_kind = 'delivery_route'
+                           AND o.primary_target_stable_id = r.id
+                           AND o.primary_target_generation_key = h.configuration_generation
+                           AND o.primary_target_configuration_digest = h.configuration_digest
+                           AND o.state IN ('pending', 'running'))",
+                        vals![
+                            route_operation_id,
+                            route_detail,
+                            now,
+                            route_id,
+                            endpoint_id,
+                            endpoint_generation,
+                            generation,
+                            digest,
+                            endpoint_version_after
+                        ],
+                    )
+                    .unchecked(),
+                );
+            }
+        }
+        statements.extend([
+            Statement::new(
+                "UPDATE delivery_endpoints SET updated_at = updated_at
+                 WHERE id = ?1 AND resource_version = ?2
+                   AND domain_id = ?3 AND desired_generation = ?4",
+                vals![
+                    endpoint_id,
+                    endpoint_version_after,
+                    current.id,
+                    endpoint_generation
+                ],
+            )
+            .expecting(1),
+            Statement::new(
+                "INSERT INTO domain_probe_observations
                  (operation_id, domain_id, desired_resource_version, evidence_json,
                   evidence_digest, probe_location, observed_at)
                  SELECT ?1, id, ?3, ?4, ?5, ?6, ?7 FROM domains
                   WHERE stable_id = ?2 AND resource_version = ?3",
-                    vals![
-                        operation_id,
-                        stable_id,
-                        expected_version,
-                        evidence_json,
-                        evidence_digest,
-                        probe_location,
-                        observed_at
-                    ],
-                )
-                .expecting(1),
-                Statement::new(
-                    "UPDATE domains SET dns_state = ?3, certificate_state = ?4,
+                vals![
+                    operation_id,
+                    stable_id,
+                    expected_version,
+                    evidence_json,
+                    evidence_digest,
+                    probe_location,
+                    observed_at
+                ],
+            )
+            .expecting(1),
+            Statement::new(
+                "UPDATE domains SET dns_state = ?3, certificate_state = ?4,
                    verified_at = ?5, observed_at = ?6, observation_error = ?7,
                    observation_digest = ?8, probe_location = ?9,
                    resource_version = resource_version + 1, updated_at = ?10
                  WHERE stable_id = ?2 AND resource_version = ?1",
-                    vals![
-                        expected_version,
-                        stable_id,
-                        dns_state,
-                        certificate_state,
-                        verified_at,
-                        observed_at,
-                        error,
-                        evidence_digest,
-                        probe_location,
-                        now
-                    ],
-                )
-                .expecting(1),
-                Statement::new(
-                    "UPDATE topology_operations SET state = 'succeeded',
+                vals![
+                    expected_version,
+                    stable_id,
+                    dns_state,
+                    certificate_state,
+                    verified_at,
+                    observed_at,
+                    error,
+                    evidence_digest,
+                    probe_location,
+                    now
+                ],
+            )
+            .expecting(1),
+            Statement::new(
+                "UPDATE topology_operations SET state = 'succeeded',
                    progress_current = 1, progress_total = 1, detail_json = ?2,
                    finished_at = ?3, resource_version = resource_version + 1
                  WHERE operation_id = ?1 AND state = 'running'
                    AND resource_version = ?4",
-                    vals![operation_id, evidence_json, now, expected_operation_version],
-                )
-                .expecting(1),
-            ])
-            .await?;
+                vals![operation_id, evidence_json, now, expected_operation_version],
+            )
+            .expecting(1),
+        ]);
+        self.backend.checked_batch(&statements).await?;
         self.delivery_domain(stable_id)
             .await?
             .context("reconciled domain disappeared")

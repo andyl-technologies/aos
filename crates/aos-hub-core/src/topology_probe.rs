@@ -2419,6 +2419,8 @@ impl DomainProbeController {
                 &digest,
                 &evidence.probe_location,
                 evidence.observed_at,
+                &evidence.responder_endpoint_id,
+                evidence.responder_endpoint_generation,
             )
             .await?;
         Ok(())
