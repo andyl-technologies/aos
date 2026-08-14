@@ -160,6 +160,11 @@
         system.config.systemd.services.aos-image-boot-commit.script)
     then throw "image boot success must require a durable committed configuration manifest"
     else if
+      !(containsStr
+        "${system.config.aos.config.artifacts.esp-sync}/bin/aos-sync-esps"
+        system.config.systemd.services.aos-image-boot-commit.script)
+    then throw "image boot success must invoke ESP synchronization by its immutable store path"
+    else if
       !(builtins.elem
         (toString system.config.aos.config.evalAtBoot.baseLib)
         system.config.systemd.services.aos-eval.serviceConfig.ReadOnlyPaths)
