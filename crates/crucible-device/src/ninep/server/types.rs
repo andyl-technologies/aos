@@ -26,7 +26,7 @@ pub(super) const MAX_RWALK_LEN: usize = HEADER_LEN + 2 + codec::MAX_WALK_NAMES *
 ///
 /// `header[7] valid[8] qid[13]` + 7 fixed `u64`/`u32` attribute words + 9 fixed
 /// timestamp `u64`s. Computed here so the `msize` floor provably accommodates it.
-const RGETATTR_LEN: usize = HEADER_LEN + 8 + QID_LEN + (4 * 3 + 8 * 4) + 9 * 8;
+pub(super) const RGETATTR_LEN: usize = HEADER_LEN + 8 + QID_LEN + (4 * 3 + 8 * 4) + 9 * 8;
 
 /// The minimum `msize` the server will negotiate ([IO-16], [IO-18]).
 ///
@@ -57,7 +57,7 @@ const _: () = {
 };
 
 /// The iounit reported in `Rlopen`: zero means "no fixed I/O unit" ([IO-16]).
-const IOUNIT_ANY: u32 = 0;
+pub(super) const IOUNIT_ANY: u32 = 0;
 
 /// The open state of a fid: closed (walk target) or opened for reading.
 ///

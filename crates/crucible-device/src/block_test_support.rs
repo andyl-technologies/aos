@@ -1,9 +1,7 @@
 //! Shared block-device test fixtures.
 
 use super::*;
-use crate::DeviceError;
 use crate::subnode::IoCore;
-use crucible_shmem::{FrameEntry, KIND_VM, NodeSlot, RingHeader};
 
 /// Unwraps a result in tests, panicking with the error on failure.
 pub(super) fn ok<T, E: std::fmt::Debug>(result: Result<T, E>) -> T {
@@ -29,4 +27,34 @@ pub(super) fn device_with_latency(base_len: usize, latency: BlockLatency) -> Blo
     let src = crucible_shmem::SLOT_BLK_IO as u32;
     let core = ok(IoCore::new(8, src, 16, 16));
     BlockDevice::new(core, ramp_base(base_len), latency)
+}
+
+/// Drives a fixed request sequence under artificial host-side compute skew.
+pub(super) fn run_sequence(skew: usize) -> Vec<(u64, Vec<u8>)> {
+    let mut dev = device(PAGE_SIZE * 4);
+    let reqs = [
+        BlockRequest::read(1, 0, 16),
+        BlockRequest::write(2, 100, vec![0x33; 32]),
+        BlockRequest::read(3, 100, 32),
+        BlockRequest::flush(4),
+        BlockRequest::get_length(5),
+    ];
+    let mut out = Vec::new();
+    let mut t = 0_u64;
+    for req in &reqs {
+        let mut sink = 0_u64;
+        for i in 0..skew {
+            sink = sink.wrapping_add(i as u64);
+        }
+        std::hint::black_box(sink);
+
+        ok(dev.submit(t, req));
+        let lim = dev.core().next_exact_local_event().unwrap_or(t);
+        ok(dev.advance_to(lim));
+        while let Some(pending) = dev.core_mut().pop_response() {
+            out.push((pending.delivery_icount(), pending.response.payload));
+        }
+        t = lim;
+    }
+    out
 }

@@ -4,8 +4,6 @@ use super::test_support::*;
 use super::*;
 use crate::DeviceError;
 use crate::subnode::IoCore;
-use crucible_shmem::{FrameEntry, KIND_VM, NodeSlot, RingHeader};
-
 #[test]
 fn block_snapshot_codec_round_trips_complete_device_state() {
     let device = device_with_latency(8_192, BlockLatency::new(1, 2, 3, 4, 5));

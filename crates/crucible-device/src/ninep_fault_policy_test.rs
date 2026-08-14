@@ -4,8 +4,6 @@ use std::collections::BTreeMap;
 
 use super::test_support::*;
 use super::*;
-use crate::subnode::IoCore;
-
 fn file_object(path: &str, version: u32, data: &[u8]) -> NinepObjectVersion {
     NinepObjectVersion {
         path: path.to_owned(),

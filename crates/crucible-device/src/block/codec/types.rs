@@ -197,7 +197,7 @@ pub struct BlockTransportReset {
 impl BlockTransportReset {
     const PAYLOAD_LEN: usize = 32;
 
-    fn encode(self) -> [u8; Self::PAYLOAD_LEN] {
+    pub(super) fn encode(self) -> [u8; Self::PAYLOAD_LEN] {
         let mut payload = [0_u8; Self::PAYLOAD_LEN];
         payload[..8].copy_from_slice(&self.next_epoch.to_le_bytes());
         payload[8..16].copy_from_slice(&self.recovery_nanos.to_le_bytes());
@@ -232,7 +232,7 @@ impl BlockTransportReset {
         payload
     }
 
-    fn decode(payload: &[u8]) -> Result<Self, BlockCodecError> {
+    pub(super) fn decode(payload: &[u8]) -> Result<Self, BlockCodecError> {
         if payload.len() != Self::PAYLOAD_LEN || payload[27..].iter().any(|byte| *byte != 0) {
             return Err(BlockCodecError::InvalidResetPayload { len: payload.len() });
         }

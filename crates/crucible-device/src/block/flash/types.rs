@@ -151,5 +151,5 @@ pub struct BlockFlashMutationOutcome {
 /// Canonical sparse flash state owned by one block device.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockFlashState {
-    continuations: BTreeMap<[u8; 32], BlockFlashContinuation>,
+    pub(super) continuations: BTreeMap<[u8; 32], BlockFlashContinuation>,
 }

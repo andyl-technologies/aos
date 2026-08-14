@@ -1,7 +1,5 @@
 //! Block wire primitive decoders and malformed-message errors.
 
-use super::*;
-
 /// Reads a little-endian `u32` at `offset` from a slice known to be long enough.
 ///
 /// # Panics

@@ -2,8 +2,6 @@
 
 use super::test_support::*;
 use super::*;
-use crate::DeviceError;
-use crate::subnode::IoCore;
 use crucible_shmem::{FrameEntry, KIND_VM, NodeSlot, RingHeader};
 
 #[test]
@@ -328,37 +326,4 @@ fn latency_depends_only_on_op_and_count() {
     // Saturating: a hostile per-byte parameter cannot overflow.
     let huge = BlockLatency::new(1000, 1500, 500, 100, u64::MAX);
     assert_eq!(huge.latency_for(BlockOp::Read, u32::MAX), u64::MAX);
-}
-
-/// Drives a fixed request sequence and returns the (delivery_icount, payload)
-/// of every response. `skew` is artificial host work that must NOT affect the
-/// result ([IO-22]).
-fn run_sequence(skew: usize) -> Vec<(u64, Vec<u8>)> {
-    let mut dev = device(PAGE_SIZE * 4);
-    let reqs = [
-        BlockRequest::read(1, 0, 16),
-        BlockRequest::write(2, 100, vec![0x33; 32]),
-        BlockRequest::read(3, 100, 32),
-        BlockRequest::flush(4),
-        BlockRequest::get_length(5),
-    ];
-    let mut out = Vec::new();
-    let mut t = 0u64;
-    for req in &reqs {
-        // Artificial COMPUTE-time host skew: pure busy work, no clock read.
-        let mut sink = 0u64;
-        for i in 0..skew {
-            sink = sink.wrapping_add(i as u64);
-        }
-        std::hint::black_box(sink);
-
-        ok(dev.submit(t, req));
-        let lim = dev.core().next_exact_local_event().unwrap_or(t);
-        ok(dev.advance_to(lim));
-        while let Some(pending) = dev.core_mut().pop_response() {
-            out.push((pending.delivery_icount(), pending.response.payload));
-        }
-        t = lim;
-    }
-    out
 }

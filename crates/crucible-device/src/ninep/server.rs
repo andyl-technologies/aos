@@ -30,10 +30,10 @@ use super::tree::{FsTree, STATFS_NAMELEN};
 #[path = "server/types.rs"]
 mod types;
 
+use types::IOUNIT_ANY;
 pub use types::{
     FidEntry, FidState, MAX_DIRENT_LEN, MAX_MSIZE, MIN_MSIZE, NinepServer, NinepServerSnapshot,
 };
-use types::{IOUNIT_ANY, MAX_RWALK_LEN, RGETATTR_LEN};
 
 impl NinepServer {
     /// Builds a server over `tree` with `msize` un-negotiated (the fixed max).
