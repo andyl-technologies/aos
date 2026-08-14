@@ -802,9 +802,9 @@ pub enum HubStorageBindingCmd {
         /// Hub access JWT; defaults to AOS_TOKEN or the matching active profile
         #[arg(long, env = "AOS_TOKEN")]
         token: Option<String>,
-        /// Limit results to one organization
+        /// Organization slug
         #[arg(long)]
-        org: Option<String>,
+        org: String,
         #[command(flatten)]
         pagination: HubPaginationArgs,
     },
@@ -822,6 +822,9 @@ pub enum HubStorageBindingCmd {
         /// Binding name
         #[arg(long)]
         name: String,
+        /// Stable resource identity (generated when omitted)
+        #[arg(long)]
+        stable_id: Option<String>,
         /// Backend kind: local-fs, s3, r2, or deployment-r2
         #[arg(long, value_parser = ["local-fs", "s3", "r2", "deployment-r2"])]
         kind: Option<String>,
@@ -1138,6 +1141,12 @@ pub enum HubNetworkBoundaryCmd {
         allowlist_id: Option<String>,
         #[arg(long)]
         listener_id: Option<String>,
+        /// Require or waive protected transport for the initial revision
+        #[arg(long, value_parser = ["required", "not-required"])]
+        protected_transport: Option<String>,
+        /// Probe-location configuration for the initial revision
+        #[arg(long)]
+        probe_location: Option<String>,
         #[command(flatten)]
         mutation: HubMutationArgs,
     },
@@ -3138,6 +3147,8 @@ mod tests {
             "andyl",
             "--name",
             "worker-objects",
+            "--stable-id",
+            "storage-binding:worker-objects",
             "--kind",
             "deployment-r2",
             "--bucket-binding",
@@ -3149,12 +3160,28 @@ mod tests {
             Commands::Hub {
                 command: HubCmd::StorageBinding {
                     command: HubStorageBindingCmd::Create {
+                        stable_id: Some(ref stable_id),
                         bucket_binding: Some(ref binding),
                         ..
                     }
                 }
-            } if binding == "STORAGE"
+            } if stable_id == "storage-binding:worker-objects" && binding == "STORAGE"
         ));
+    }
+
+    #[test]
+    fn storage_binding_list_requires_an_organization() {
+        assert!(
+            parse_cli([
+                "aos",
+                "hub",
+                "storage-binding",
+                "list",
+                "--hub",
+                "https://aos.example",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

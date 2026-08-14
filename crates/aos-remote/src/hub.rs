@@ -40,6 +40,8 @@ use crate::client::validate_base_url;
 
 /// Default per-request timeout for hub RPC calls.
 const HUB_TIMEOUT_SECS: u64 = 30;
+/// Deadline for one bounded multipart publication part.
+const PUBLICATION_PART_TIMEOUT_SECS: u64 = 120;
 
 /// A Connect-JSON client for an `aos-hub`'s services.
 ///
@@ -1805,6 +1807,9 @@ impl HubClient {
         let mut request = self
             .upload_http
             .put(target.clone())
+            .timeout(std::time::Duration::from_secs(
+                PUBLICATION_PART_TIMEOUT_SECS,
+            ))
             .header(reqwest::header::CONTENT_LENGTH, size)
             .body(bytes);
         if let Some(token) = &self.token {

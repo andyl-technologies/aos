@@ -24389,6 +24389,11 @@ impl RpcService {
             if existing.state == "active" && (existing.expires_at <= now || claim_expired) {
                 self.abort_registry_publication_multipart_record(auth, existing)
                     .await?;
+            } else if existing.state == "active" && existing.pending_token.is_some() {
+                return Err(RpcError::Unavailable(
+                    "publication multipart part outcome is still unresolved; retry after the claim timeout"
+                        .into(),
+                ));
             } else {
                 let state = existing.state.clone();
                 let next_part_number = multipart_next_part(&existing, expected_size)?;
