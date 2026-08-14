@@ -3025,12 +3025,17 @@ impl Database {
         ))
     }
 
-    /// Resolves the first placement eligible for a whole-surface read.
+    /// Resolves the authoritative placement eligible for a whole-surface read.
     ///
     /// This is used by background consumers that enumerate a complete surface
     /// (indexing, scans, and maintenance). Request-path object reads use the
-    /// stricter object-evidence planner. Selection is deterministic and never
-    /// falls back to a resource-global binding or deployment bucket.
+    /// stricter object-evidence planner. A reconciled writer is preferred over
+    /// replicas because it owns the current mutable surface. When a write
+    /// authority exists, selection fails closed unless that writer is also an
+    /// eligible reader; an unproven replica cannot stand in for mutable state.
+    /// `read_order` orders replicas only for surfaces without a write authority.
+    /// Selection is deterministic and never falls back to a resource-global
+    /// binding or deployment bucket.
     ///
     /// # Errors
     ///
@@ -3047,6 +3052,7 @@ impl Database {
                     "SELECT {PLACEMENT_COLUMNS} FROM surface_placement_effective
                      WHERE (registry_id = ?1 OR cache_id = ?2)
                        AND effective_read_enabled = 1
+                       AND (write_authority_id IS NULL OR effective_write_enabled = 1)
                      ORDER BY read_order, name, id LIMIT 1"
                 ),
                 &vals![registry_id, cache_id],
@@ -4385,7 +4391,10 @@ impl Database {
                 )?);
             }
         }
-        let mut checked_stmts = vec![Self::registry_index_publication_guard(registry_id)];
+        let mut checked_stmts = vec![Self::registry_index_mutation_guard(
+            registry_id,
+            indexed_placement_id,
+        )];
         checked_stmts.extend(stmts.into_iter().map(Statement::unchecked));
         if let Some((objects, observed_at)) = image_presence {
             let placement_id = indexed_placement_id
@@ -4592,22 +4601,8 @@ impl Database {
             ),
             Statement::new(
                 "DELETE FROM registry_index
-                     WHERE registry_id = ?1 AND generation = ?3
-                       AND EXISTS (
-                         SELECT 1 FROM surface_placement_effective selected
-                         WHERE selected.id = ?2 AND selected.registry_id = ?1
-                           AND selected.effective_read_enabled = 1
-                           AND NOT EXISTS (
-                             SELECT 1 FROM surface_placement_effective better
-                             WHERE better.registry_id = ?1
-                               AND better.effective_read_enabled = 1
-                               AND (better.read_order < selected.read_order
-                                 OR (better.read_order = selected.read_order
-                                   AND better.name < selected.name)
-                                 OR (better.read_order = selected.read_order
-                                   AND better.name = selected.name
-                                   AND better.id < selected.id))))",
-                vals![registry_id, placement_id, generation].to_vec(),
+                     WHERE registry_id = ?1 AND generation = ?2",
+                vals![registry_id, generation].to_vec(),
             ),
             Statement::new(
                 "INSERT INTO registry_index
@@ -4620,7 +4615,10 @@ impl Database {
             ),
         ];
         let statement_count = statements.len();
-        let mut checked = vec![Self::registry_index_publication_guard(registry_id)];
+        let mut checked = vec![Self::registry_index_mutation_guard(
+            registry_id,
+            Some(placement_id),
+        )];
         checked.extend(
             statements
                 .into_iter()
@@ -4718,7 +4716,10 @@ impl Database {
         // no mid-flight `last_insert_rowid`; the per-registry sequential indexer
         // rules out a concurrent writer colliding on the id base.
         let mut next_channel = self.max_id("channels").await?;
-        let mut stmts = vec![Self::registry_index_publication_guard(registry_id)];
+        let mut stmts = vec![Self::registry_index_mutation_guard(
+            registry_id,
+            indexed_placement_id,
+        )];
         stmts.push(
             Statement::new(
                 "UPDATE channels SET active = 0 WHERE registry_id = ?1",
@@ -4884,6 +4885,55 @@ impl Database {
             vals![registry_id],
         )
         .expecting(1)
+    }
+
+    /// Fences one index transaction against publication and source-topology changes.
+    fn registry_index_mutation_guard(
+        registry_id: i64,
+        indexed_placement_id: Option<i64>,
+    ) -> CheckedStatement {
+        let source_predicate = match indexed_placement_id {
+            Some(placement_id) => Statement::new(
+                "UPDATE registries SET updated_at = updated_at
+                 WHERE id = ?1
+                   AND NOT EXISTS (
+                     SELECT 1 FROM registry_publications publication
+                     WHERE publication.registry_id = registries.id
+                       AND publication.state IN ('preparing', 'writing_pointers'))
+                   AND EXISTS (
+                     SELECT 1 FROM surface_placement_effective selected
+                     WHERE selected.id = ?2 AND selected.registry_id = registries.id
+                       AND selected.effective_read_enabled = 1
+                       AND (selected.write_authority_id IS NULL
+                         OR selected.effective_write_enabled = 1)
+                       AND NOT EXISTS (
+                         SELECT 1 FROM surface_placement_effective better
+                         WHERE better.registry_id = registries.id
+                           AND better.effective_read_enabled = 1
+                           AND (better.write_authority_id IS NULL
+                             OR better.effective_write_enabled = 1)
+                           AND (better.read_order < selected.read_order
+                             OR (better.read_order = selected.read_order
+                               AND better.name < selected.name)
+                             OR (better.read_order = selected.read_order
+                               AND better.name = selected.name
+                               AND better.id < selected.id))))",
+                vals![registry_id, placement_id],
+            ),
+            None => Statement::new(
+                "UPDATE registries SET updated_at = updated_at
+                 WHERE id = ?1
+                   AND NOT EXISTS (
+                     SELECT 1 FROM registry_publications publication
+                     WHERE publication.registry_id = registries.id
+                       AND publication.state IN ('preparing', 'writing_pointers'))
+                   AND (SELECT COUNT(*) FROM surface_placements placement
+                        WHERE placement.registry_id = registries.id
+                          AND placement.desired_state <> 'offline') <= 1",
+                vals![registry_id],
+            ),
+        };
+        source_predicate.expecting(1)
     }
 
     // -- anti-rollback floors ------------------------------------------------
@@ -28518,6 +28568,95 @@ source_nar_hash = ""
         assert!(
             surface_placement_create_failure(&error).is_none(),
             "infrastructure failures must remain unclassified and internal"
+        );
+    }
+
+    #[tokio::test]
+    async fn whole_surface_reads_prefer_the_reconciled_writer() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org = db.create_org("reader", "Reader").await.unwrap();
+        let binding = create_test_binding(&db, org, "reader", "/tmp/reader").await;
+        let registry = db
+            .create_managed_registry(org, "", "registry", "public", &[], false)
+            .await
+            .unwrap();
+
+        let mut replica =
+            topology_placement(SurfaceTarget::Registry(registry), "replica", "replica", 0);
+        replica.storage_binding_id = binding;
+        let replica = db.create_surface_placement(&replica).await.unwrap();
+        db.observe_surface_placement(replica.id, "ready", "complete", 1)
+            .await
+            .unwrap();
+
+        let mut writer =
+            topology_placement(SurfaceTarget::Registry(registry), "writer", "writer", 100);
+        writer.storage_binding_id = binding;
+        let writer = db.create_surface_placement(&writer).await.unwrap();
+        let writer = db
+            .observe_surface_placement(writer.id, "ready", "complete", 1)
+            .await
+            .unwrap();
+        let generation =
+            create_valid_write_credential(&db, binding, "secret://binding/reader/v1").await;
+        let revision = db
+            .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
+                storage_binding_id: binding,
+                write_credential_generation: generation,
+                writes_supported: true,
+                conditional_writes_supported: true,
+                revision_fingerprint: "reader-write-v1".to_string(),
+                capability_fingerprint: "reader-writes-and-conditional".to_string(),
+            })
+            .await
+            .unwrap();
+        db.observe_storage_binding_write_revision(binding, revision.revision, "valid", None, None)
+            .await
+            .unwrap();
+        db.bind_surface_placement_write_capability(writer.id, revision.revision)
+            .await
+            .unwrap();
+        db.create_surface_write_authority(
+            SurfaceTarget::Registry(registry),
+            "reader-authority-v1",
+            writer.id,
+            writer.resource_version,
+            writer.write_spec_version,
+            revision.revision,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            db.reconciled_surface_reader(SurfaceTarget::Registry(registry))
+                .await
+                .unwrap()
+                .id,
+            writer.id,
+            "a lower-order replica must not supersede the current mutable surface"
+        );
+        db.assert_registry_index_mutation_source(registry, Some(writer.id))
+            .await
+            .unwrap();
+
+        db.observe_surface_placement(writer.id, "offline", "complete", 2)
+            .await
+            .unwrap();
+        assert!(
+            db.reconciled_surface_reader(SurfaceTarget::Registry(registry))
+                .await
+                .is_err(),
+            "an unavailable writer must not fall back to an unproven replica"
+        );
+        assert!(
+            db.backend
+                .checked_batch(&[Database::registry_index_mutation_guard(
+                    registry,
+                    Some(writer.id),
+                )])
+                .await
+                .is_err(),
+            "the commit guard must reject authority changes after preflight"
         );
     }
 
