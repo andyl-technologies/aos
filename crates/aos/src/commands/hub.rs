@@ -7082,9 +7082,7 @@ async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
                 hub_types::PlanRouteMutationRequest {
                     stable_id: topology_stable_id(stable_id.as_deref(), "delivery-route"),
                     spec: Some(route_spec(Some(surface_ref), spec, true)?),
-                    expected_resource_version: mutation.if_version.clone().unwrap_or_default(),
                     idempotency_key: new_idempotency_key(),
-                    update_mask: vec!["spec".into()],
                     ..Default::default()
                 },
                 mutation,
