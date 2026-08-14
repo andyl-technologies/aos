@@ -58,12 +58,17 @@ fn compression_from_config(config: &CompressionConfig) -> Compression {
 ///
 /// When `signer` is provided, a fresh `Sig:` line is appended in addition to
 /// any signatures already stored in the database.
+///
+/// # Errors
+///
+/// Returns an error if the stored or computed file hash is not a supported,
+/// well-formed SHA-256 hash.
 pub fn format_narinfo(
     info: &DbPathInfo,
     store_dir: &str,
     compression: &CompressionConfig,
     signer: Option<&NarInfoSigner>,
-) -> String {
+) -> anyhow::Result<String> {
     // The NarHash in the DB is stored as "sha256:{base16}" — narinfo needs it as-is.
     let nar_hash = &info.nar_hash;
     let nar_compression = nar_compression(compression);

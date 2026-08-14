@@ -954,7 +954,7 @@ mod tests {
             file_size: 24,
             compression: NarCompression::Zstd,
         };
-        let rendered = render_static_narinfo(&input, "/nix/store", Some(&signer));
+        let rendered = render_static_narinfo(&input, "/nix/store", Some(&signer)).unwrap();
         let parsed = info::parse(&rendered).unwrap();
         let (sig_name, sig_b64) = parsed.signatures[0].split_once(':').unwrap();
         assert_eq!(sig_name, registry);

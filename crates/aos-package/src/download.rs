@@ -37,7 +37,7 @@ use super::store::filter_missing;
 use super::types::RegistryConfig;
 use super::verify::{sha256_digest_hex, verify_download_hash};
 use aos_core::error::AosError;
-use aos_core::nar::cache::hash_path_fragment;
+use aos_core::nar::cache::canonical_sha256_hex;
 use aos_core::nar::info::{self as narinfo, NarInfo};
 use aos_core::output::Printer;
 use aos_net::{HashAlgorithm, TransferEngine, TransferEngineConfig, TransferRequest};
@@ -724,7 +724,7 @@ pub async fn download_nars(
     let mut handles = Vec::with_capacity(resolved.len());
 
     for r in resolved {
-        let filename = nar_cache_filename(&r.narinfo.nar_hash);
+        let filename = nar_cache_filename(&r.narinfo.nar_hash)?;
         let dest = cache_dir.join(&filename);
 
         let r = r.clone();
@@ -764,10 +764,12 @@ pub async fn download_nars(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Generate a cache filename from a NAR hash (path-hostile characters such
-/// as `:`, `/`, `+`, `=` are escaped).
-fn nar_cache_filename(nar_hash: &str) -> String {
-    format!("{}.nar.zst", hash_path_fragment(nar_hash))
+/// Generates an injective cache filename from a canonical SHA-256 digest.
+fn nar_cache_filename(nar_hash: &str) -> Result<String> {
+    Ok(format!(
+        "sha256-{}.nar.zst",
+        canonical_sha256_hex(nar_hash)?
+    ))
 }
 
 /// Extract a short label from a store path for progress display
@@ -873,18 +875,18 @@ mod tests {
     }
 
     #[test]
-    fn nar_cache_filename_replaces_colon() {
+    fn nar_cache_filename_canonicalizes_hex() {
         assert_eq!(
-            nar_cache_filename("sha256:abcdef0123456789"),
-            "sha256-abcdef0123456789.nar.zst",
+            nar_cache_filename(&format!("sha256:{}", "ab".repeat(32))).unwrap(),
+            format!("sha256-{}.nar.zst", "ab".repeat(32)),
         );
     }
 
     #[test]
-    fn nar_cache_filename_escapes_sri_path_separators() {
+    fn nar_cache_filename_canonicalizes_sri() {
         assert_eq!(
-            nar_cache_filename("sha256-/zAx+ko="),
-            "sha256-_zAx_ko_.nar.zst",
+            nar_cache_filename("sha256-/zAxVUL1gFIy9KJWVLMtN8dFXaIq11tx+2AucyOskko=").unwrap(),
+            "sha256-ff30315542f5805232f4a25654b32d37c7455da22ad75b71fb602e7323ac924a.nar.zst",
         );
     }
 
@@ -1010,8 +1012,10 @@ mod tests {
         let cache_dir = tempfile::TempDir::new().unwrap();
         let nar_bytes = b"cached-nar-bytes";
         let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(nar_bytes)));
-        let nar_hash = "sha256:abcdef0123456789";
-        let local_path = cache_dir.path().join(nar_cache_filename(nar_hash));
+        let nar_hash = format!("sha256:{}", "ab".repeat(32));
+        let local_path = cache_dir
+            .path()
+            .join(nar_cache_filename(&nar_hash).unwrap());
         std::fs::write(&local_path, nar_bytes).unwrap();
 
         let resolved = ResolvedDownload {
@@ -1051,9 +1055,11 @@ mod tests {
         let cache_dir = tempfile::TempDir::new().unwrap();
         let nar_bytes = b"fresh-nar-bytes";
         let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(nar_bytes)));
-        let nar_hash = "sha256:freshnarhash";
+        let nar_hash = format!("sha256:{}", "cd".repeat(32));
         let nar_url = "nar/fresh.nar.zst";
-        let local_path = cache_dir.path().join(nar_cache_filename(nar_hash));
+        let local_path = cache_dir
+            .path()
+            .join(nar_cache_filename(&nar_hash).unwrap());
 
         std::fs::create_dir_all(source.path().join("nar")).unwrap();
         std::fs::write(source.path().join(nar_url), nar_bytes).unwrap();

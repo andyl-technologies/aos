@@ -33,8 +33,8 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context, Result, bail};
 use aos_cache::backend::{self, AuthOptions};
 use aos_core::nar::cache::{
-    NarCompression, NarInfoSigner, StaticNarInfoInput, nar_url, nix_cache_info,
-    render_static_narinfo,
+    NarCompression, NarInfoSigner, StaticNarInfoInput, canonical_sha256_hex, nar_url,
+    nix_cache_info, render_static_narinfo,
 };
 use aos_core::nar::info::{basename, store_hash};
 use aos_core::nix::aos_nix_env;
@@ -436,17 +436,34 @@ fn reusable_nar_basename(output_dir: &Path, info: &CachePathInfo) -> Result<Opti
     if existing.nar_hash != info.nar_hash {
         return Ok(None);
     }
+    if existing.compression != NarCompression::Zstd.name() {
+        return Ok(None);
+    }
     let Some(file_hash) = existing.file_hash.as_deref() else {
         return Ok(None);
     };
-    let expected_url = nar_url(&info.path, file_hash, NarCompression::Zstd);
+    let Some(file_size) = existing.file_size else {
+        return Ok(None);
+    };
+    let Ok(expected_url) = nar_url(&info.path, file_hash, NarCompression::Zstd) else {
+        return Ok(None);
+    };
     if existing.url != expected_url {
         return Ok(None);
     }
     let Some(name) = expected_url.strip_prefix("nar/") else {
         return Ok(None);
     };
-    if name.contains('/') || !output_dir.join("nar").join(name).is_file() {
+    let nar_path = output_dir.join("nar").join(name);
+    if name.contains('/') || !nar_path.is_file() {
+        return Ok(None);
+    }
+
+    let (actual_hash, actual_size) = file_digest(&nar_path)?;
+    let Ok(declared_hash) = canonical_sha256_hex(file_hash) else {
+        return Ok(None);
+    };
+    if actual_size != file_size || canonical_sha256_hex(&actual_hash)? != declared_hash {
         return Ok(None);
     }
     Ok(Some(name.to_string()))
@@ -463,6 +480,7 @@ fn write_cache_entry(
     threads: u32,
 ) -> Result<()> {
     let info = &entry.info;
+    let previous_nar_path = staged_nar_path(output_dir, info);
     let (file_hash, file_size, nar_path) = if entry.skip {
         let nar_name = entry
             .nar_name
@@ -477,7 +495,7 @@ fn write_cache_entry(
             .join(format!(".{}.nar.zst.pending", store_hash(&info.path)));
         let (file_hash, file_size) =
             compress_nar_to_file(&info.path, &pending_path, NAR_ZSTD_LEVEL, threads)?;
-        let url = nar_url(&info.path, &file_hash, NarCompression::Zstd);
+        let url = nar_url(&info.path, &file_hash, NarCompression::Zstd)?;
         let nar_name = url
             .strip_prefix("nar/")
             .context("generated NAR URL does not use the nar/ prefix")?;
@@ -506,22 +524,44 @@ fn write_cache_entry(
         },
         store_dir,
         signer,
-    );
+    )?;
     let hash = store_hash(&info.path);
     let narinfo_path = output_dir.join(format!("{hash}.narinfo"));
     std::fs::write(&narinfo_path, body)
         .with_context(|| format!("writing {}", narinfo_path.display()))?;
     touch_path(&nar_path)?;
     touch_path(&narinfo_path)?;
+    if let Some(previous_nar_path) = previous_nar_path
+        && previous_nar_path != nar_path
+    {
+        std::fs::remove_file(&previous_nar_path).with_context(|| {
+            format!(
+                "removing superseded staged NAR {}",
+                previous_nar_path.display()
+            )
+        })?;
+    }
     Ok(())
 }
 
-/// Recover a reused NAR's `(file_hash, file_size)` without recompressing.
-///
-/// Prefers the sibling narinfo's `FileHash`/`FileSize` (no I/O over the NAR
-/// itself); falls back to streaming the existing `.nar.zst` through a hasher,
-/// which is still far cheaper than a fresh dump-and-compress and keeps memory
-/// bounded regardless of NAR size.
+/// Resolves the currently staged NAR for one narinfo without accepting escapes.
+fn staged_nar_path(output_dir: &Path, info: &CachePathInfo) -> Option<PathBuf> {
+    let narinfo_path = output_dir.join(format!("{}.narinfo", store_hash(&info.path)));
+    let text = std::fs::read_to_string(narinfo_path).ok()?;
+    let existing = aos_core::nar::info::parse(&text).ok()?;
+    let name = existing.url.strip_prefix("nar/")?;
+    if name.is_empty() || name.contains('/') {
+        return None;
+    }
+    let path = output_dir.join("nar").join(name);
+    std::fs::symlink_metadata(&path)
+        .ok()?
+        .file_type()
+        .is_file()
+        .then_some(path)
+}
+
+/// Verify and recover a reused NAR's `(file_hash, file_size)` without recompressing.
 fn reuse_file_digest(
     output_dir: &Path,
     info: &CachePathInfo,
@@ -529,17 +569,35 @@ fn reuse_file_digest(
 ) -> Result<(String, u64)> {
     let hash = store_hash(&info.path);
     let narinfo_path = output_dir.join(format!("{hash}.narinfo"));
-    if let Ok(text) = std::fs::read_to_string(&narinfo_path)
-        && let Ok(existing) = aos_core::nar::info::parse(&text)
-        && existing.nar_hash == info.nar_hash
-        && let (Some(file_hash), Some(file_size)) = (existing.file_hash, existing.file_size)
-    {
-        return Ok((file_hash, file_size));
+    let text = std::fs::read_to_string(&narinfo_path)
+        .with_context(|| format!("reading reused narinfo {}", narinfo_path.display()))?;
+    let existing = aos_core::nar::info::parse(&text)
+        .with_context(|| format!("parsing reused narinfo {}", narinfo_path.display()))?;
+    if existing.nar_hash != info.nar_hash || existing.compression != NarCompression::Zstd.name() {
+        bail!("reused NAR metadata changed while generating {}", info.path);
+    }
+    let declared_hash = existing
+        .file_hash
+        .context("reused narinfo has no FileHash")?;
+    let declared_size = existing
+        .file_size
+        .context("reused narinfo has no FileSize")?;
+    let expected_url = nar_url(&info.path, &declared_hash, NarCompression::Zstd)?;
+    if existing.url != expected_url {
+        bail!("reused narinfo URL changed while generating {}", info.path);
     }
 
-    // Stream the compressed NAR through the hasher rather than buffering it:
-    // a sysroot-image `.nar.zst` can be multiple GB. `io::copy` chunks the
-    // read, and the byte count doubles as the file size.
+    let (actual_hash, actual_size) = file_digest(nar_path)?;
+    if actual_size != declared_size
+        || canonical_sha256_hex(&actual_hash)? != canonical_sha256_hex(&declared_hash)?
+    {
+        bail!("reused NAR bytes changed while generating {}", info.path);
+    }
+    Ok((actual_hash, actual_size))
+}
+
+/// Streams a potentially multi-gigabyte NAR through a bounded-memory hasher.
+fn file_digest(nar_path: &Path) -> Result<(String, u64)> {
     let mut file =
         File::open(nar_path).with_context(|| format!("reading {}", nar_path.display()))?;
     let mut hasher = HashingWriter::new(io::sink());
@@ -1291,8 +1349,8 @@ mod tests {
             references: Vec::new(),
             deriver: None,
         };
-        let file_hash = "sha256:file";
-        let expected = nar_url(&info.path, file_hash, NarCompression::Zstd);
+        let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(b"payload")));
+        let expected = nar_url(&info.path, &file_hash, NarCompression::Zstd).unwrap();
         std::fs::write(output.path().join(&expected), b"payload").unwrap();
         std::fs::write(
             output.path().join("abc123.narinfo"),
@@ -1308,7 +1366,20 @@ mod tests {
             expected.strip_prefix("nar/").map(str::to_string)
         );
 
-        let legacy = nar_url(&info.path, &info.nar_hash, NarCompression::Zstd);
+        std::fs::write(output.path().join(&expected), b"PAYLOAD").unwrap();
+        assert_eq!(reusable_nar_basename(output.path(), &info).unwrap(), None);
+        std::fs::write(output.path().join(&expected), b"payload").unwrap();
+        std::fs::write(
+            output.path().join("abc123.narinfo"),
+            format!(
+                "StorePath: {}\nURL: {expected}\nCompression: xz\nFileHash: {file_hash}\nFileSize: 7\nNarHash: {}\nNarSize: 7\n",
+                info.path, info.nar_hash
+            ),
+        )
+        .unwrap();
+        assert_eq!(reusable_nar_basename(output.path(), &info).unwrap(), None);
+
+        let legacy = format!("nar/{}-legacy.nar.zst", store_hash(&info.path));
         std::fs::write(
             output.path().join("abc123.narinfo"),
             format!(
@@ -1524,8 +1595,8 @@ name = "test"
         let printer = Printer::new(0, true, false);
         let store_path = "/nix/store/abc123-package";
         let nar_hash = "sha256:def456";
-        let file_hash = "sha256:0123456789abcdef";
-        let nar_url = nar_url(store_path, file_hash, NarCompression::Zstd);
+        let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(b"nar-bytes")));
+        let nar_url = nar_url(store_path, &file_hash, NarCompression::Zstd).unwrap();
 
         std::fs::create_dir_all(source.path().join("nar")).unwrap();
         std::fs::write(
@@ -1543,13 +1614,14 @@ name = "test"
                     references: &[],
                     deriver: None,
                     signatures: &[],
-                    file_hash,
+                    file_hash: &file_hash,
                     file_size: 9,
                     compression: NarCompression::Zstd,
                 },
                 "/nix/store",
                 None,
-            ),
+            )
+            .unwrap(),
         )
         .unwrap();
         std::fs::write(source.path().join(&nar_url), b"nar-bytes").unwrap();
@@ -1623,8 +1695,8 @@ name = "test"
         let source = TempDir::new().unwrap();
         let store_path = "/nix/store/abc123-package";
         let nar_hash = "sha256:def456";
-        let file_hash = "sha256:0123456789abcdef";
-        let nar_url = nar_url(store_path, file_hash, NarCompression::Zstd);
+        let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(b"nar-bytes")));
+        let nar_url = nar_url(store_path, &file_hash, NarCompression::Zstd).unwrap();
         std::fs::create_dir_all(source.path().join("nar")).unwrap();
         std::fs::write(
             source.path().join("abc123.narinfo"),
@@ -1636,13 +1708,14 @@ name = "test"
                     references: &[],
                     deriver: None,
                     signatures: &[],
-                    file_hash,
+                    file_hash: &file_hash,
                     file_size: 9,
                     compression: NarCompression::Zstd,
                 },
                 "/nix/store",
                 None,
-            ),
+            )
+            .unwrap(),
         )
         .unwrap();
         std::fs::write(source.path().join(&nar_url), b"nar-bytes").unwrap();
@@ -1667,8 +1740,8 @@ name = "test"
         let source = TempDir::new().unwrap();
         let store_path = "/nix/store/abc123-package";
         let nar_hash = "sha256:def456";
-        let file_hash = "sha256:0123456789abcdef";
-        let nar_url = nar_url(store_path, file_hash, NarCompression::Zstd);
+        let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(b"nar-bytes")));
+        let nar_url = nar_url(store_path, &file_hash, NarCompression::Zstd).unwrap();
         std::fs::create_dir_all(source.path().join("nar")).unwrap();
         std::fs::write(
             source.path().join("abc123.narinfo"),
@@ -1680,13 +1753,14 @@ name = "test"
                     references: &[],
                     deriver: None,
                     signatures: &[],
-                    file_hash,
+                    file_hash: &file_hash,
                     file_size: 9,
                     compression: NarCompression::Zstd,
                 },
                 "/nix/store",
                 None,
-            ),
+            )
+            .unwrap(),
         )
         .unwrap();
         std::fs::write(source.path().join(&nar_url), b"nar-bytes").unwrap();

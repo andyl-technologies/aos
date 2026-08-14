@@ -570,7 +570,8 @@ mod tests {
             "/nix/store/hash-package",
             &file_hash,
             aos_core::nar::cache::NarCompression::Zstd,
-        );
+        )
+        .unwrap();
         std::fs::write(root.join(&nar_url), nar).unwrap();
         std::fs::write(
             root.join("hash.narinfo"),
@@ -8897,7 +8898,8 @@ fn validate_publication_nar_urls(
             }
         };
         let expected_url =
-            aos_core::nar::cache::nar_url(&narinfo.store_path, file_hash, compression);
+            aos_core::nar::cache::nar_url(&narinfo.store_path, file_hash, compression)
+                .with_context(|| format!("publication narinfo FileHash is not SHA-256: {path}"))?;
         anyhow::ensure!(
             narinfo.url == expected_url,
             "publication narinfo URL does not identify its compressed FileHash: {path}"
@@ -8905,7 +8907,7 @@ fn validate_publication_nar_urls(
         let nar_object = objects.get(&expected_url).with_context(|| {
             format!("publication narinfo names missing NAR object {expected_url}: {path}")
         })?;
-        let expected_sha256 = aos_package::verify::sha256_digest_hex(file_hash)
+        let expected_sha256 = aos_core::nar::cache::canonical_sha256_hex(file_hash)
             .with_context(|| format!("publication narinfo FileHash is not SHA-256: {path}"))?;
         let expected_size = i64::try_from(
             narinfo
