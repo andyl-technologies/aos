@@ -6,9 +6,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
+use aos_core::nar::cache::{
+    NarCompression, StaticNarInfoInput, nar_url, render_static_narinfo,
+};
 use aos_core::nar::export::ExportTrailer;
 use aos_package::security::parse_signing_key;
 use serde_json::Value;
+use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
@@ -959,19 +963,35 @@ fn apr_origin_upload_uploads_cache_and_git_origin() -> Result<()> {
         &["create", registry_name],
     )?;
 
-    // Fabricate a minimal static cache directory; `apr origin upload` PUTs the
-    // bytes verbatim and never parses them.
+    // Fabricate one valid content-addressed cache entry. Origin upload parses
+    // staged narinfos so it cannot publish dangling or non-canonical NAR URLs.
     let cache_dir = tmp.path().join("cache");
     fs::create_dir_all(cache_dir.join("nar"))?;
     fs::write(
         cache_dir.join("nix-cache-info"),
         "StoreDir: /nix/store\nWantMassQuery: 1\nPriority: 40\n",
     )?;
-    fs::write(
-        cache_dir.join("abc123.narinfo"),
-        b"StorePath: /nix/store/x\n",
+    let nar = b"zstd-nar-bytes";
+    let store_path = "/nix/store/abc123-x";
+    let file_hash = format!("sha256:{:x}", Sha256::digest(nar));
+    let payload_url = nar_url(store_path, &file_hash, NarCompression::Zstd)?;
+    let narinfo = render_static_narinfo(
+        &StaticNarInfoInput {
+            store_path,
+            nar_hash: "sha256:def456",
+            nar_size: nar.len() as u64,
+            references: &[],
+            deriver: None,
+            signatures: &[],
+            file_hash: &file_hash,
+            file_size: nar.len() as u64,
+            compression: NarCompression::Zstd,
+        },
+        "/nix/store",
+        None,
     )?;
-    fs::write(cache_dir.join("nar/abc123.nar.zst"), b"zstd-nar-bytes")?;
+    fs::write(cache_dir.join("abc123.narinfo"), narinfo)?;
+    fs::write(cache_dir.join(&payload_url), nar)?;
 
     let dest = tmp.path().join("origin-dest");
     run_apr_with_aos_root(
@@ -996,7 +1016,7 @@ fn apr_origin_upload_uploads_cache_and_git_origin() -> Result<()> {
     );
     assert!(dest.join("abc123.narinfo").is_file(), "missing narinfo");
     assert!(
-        dest.join("nar/abc123.nar.zst").is_file(),
+        dest.join(&payload_url).is_file(),
         "missing NAR under nar/",
     );
     // Git origin surface landed in the same upload.
