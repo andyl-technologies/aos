@@ -212,13 +212,21 @@ aos hub endpoint add https://packages.example.com \
   --org acme \
   --network-boundary instance:public@1 \
   --ingress hub \
+  --listener-provider hub-worker \
+  --listener-resource-id packages-edge \
   --tls-provider external \
   --certificate-ref edge-certificate:packages.example.com \
+  --probe-provider worker-secret \
+  --probe-signer-secret-ref packages-endpoint-v1 \
+  --probe-public-key '<base64url-no-padding Ed25519 public key>' \
   --idempotency-key plan-packages-endpoint
 ```
 
 Use `--tls-provider hub-managed` when the Hub owns certificate issuance.
 Cleartext endpoints require `--acknowledge-cleartext` and reject TLS options.
+The probe identity pins the responder key for this immutable endpoint
+generation; its matching private seed stays in the named runtime secret
+provider and rotates only through a new generation.
 
 The remote client includes registry, cache, organization, project, binding,
 webhook, instance, audit, changeset, and upload operations. Authorization is

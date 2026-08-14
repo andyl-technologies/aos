@@ -658,7 +658,11 @@ aos hub endpoint list [--org <org>]
 aos hub endpoint show <endpoint>
 aos hub endpoint add <https://host[:port]> [--org <org>]
   --network-boundary <boundary> --ingress hub|external|layer7
+  --listener-provider hub-native|hub-worker|external|layer7
+  --listener-resource-id <stable-provider-id>
   --tls-provider hub-managed|external [--certificate-ref <ref>]
+  --probe-provider native-file|worker-secret|external
+  --probe-signer-secret-ref <ref> --probe-public-key <base64url-key>
 aos hub endpoint add <http://host[:port]> [--org <org>]
   --acknowledge-cleartext --network-boundary <boundary>
   --ingress hub|external|layer7
@@ -668,7 +672,8 @@ aos hub endpoint update <endpoint>
   [--listener-provider hub-native|hub-worker|external|layer7]
   [--listener-resource-id <stable-provider-id>]
   [--tls-provider hub-managed|external --certificate-ref <ref>]
-  [--probe-location <location-ref> | --clear-probe-location]
+  [--probe-provider native-file|worker-secret|external
+   --probe-signer-secret-ref <ref> --probe-public-key <base64url-key>]
 aos hub endpoint grant <endpoint> --consumer-scope <scope>
 aos hub endpoint revoke <endpoint> --consumer-scope <scope>
 aos hub endpoint status|probe|reconcile <endpoint>
@@ -769,8 +774,9 @@ flags replace the complete normalized collection; their paired `--clear-*`
 flag is the only way to select an empty/null value and is mutually exclusive
 with the repeated setter. In particular, boundary `--cidr` replaces all CIDRs,
 `--client-san` replaces all SANs, route `--serves` replaces the complete
-non-empty capability set, and probe-location clear is explicit. A trusted
-ingress kind change supplies its complete required kind-specific fields.
+non-empty capability set, and an endpoint probe-identity replacement supplies
+its provider, secret reference, and public key together. A trusted ingress
+kind change supplies its complete required kind-specific fields.
 
 `<access-policy-options>` is the kind-specific suffix in the following closed,
 kind-discriminated grammar (the command's displayed `--access` flag is not

@@ -1124,7 +1124,7 @@ fn network_boundary_revision_digest(
     Ok(hex::encode(hasher.finalize()))
 }
 
-fn validate_endpoint_revision_spec(spec: &DeliveryEndpointRevisionSpec) -> Result<()> {
+pub(crate) fn validate_endpoint_revision_spec(spec: &DeliveryEndpointRevisionSpec) -> Result<()> {
     if spec.boundary_revision <= 0 {
         bail!("endpoint boundary revision must be positive");
     }

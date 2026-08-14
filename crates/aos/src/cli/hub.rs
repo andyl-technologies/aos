@@ -1299,12 +1299,23 @@ pub enum HubEndpointCmd {
         network_boundary: String,
         #[arg(long, value_parser = ["hub", "external", "layer7"])]
         ingress: String,
+        #[arg(long, value_parser = ["hub-native", "hub-worker", "external", "layer7"])]
+        listener_provider: String,
+        #[arg(long)]
+        listener_resource_id: String,
         /// Record the HTTPS termination provider
         #[arg(long, value_parser = ["hub-managed", "external"])]
         tls_provider: Option<String>,
         /// Pin the certificate identity used by the termination provider
         #[arg(long)]
         certificate_ref: Option<String>,
+        #[arg(long, value_parser = ["native-file", "worker-secret", "external"])]
+        probe_provider: String,
+        #[arg(long)]
+        probe_signer_secret_ref: String,
+        /// Pin the base64url-no-padding Ed25519 probe public key
+        #[arg(long)]
+        probe_public_key: String,
         #[command(flatten)]
         mutation: HubMutationArgs,
     },
@@ -1325,10 +1336,13 @@ pub enum HubEndpointCmd {
         tls_provider: Option<String>,
         #[arg(long)]
         certificate_ref: Option<String>,
-        #[arg(long, conflicts_with = "clear_probe_location")]
-        probe_location: Option<String>,
-        #[arg(long, conflicts_with = "probe_location")]
-        clear_probe_location: bool,
+        #[arg(long, value_parser = ["native-file", "worker-secret", "external"])]
+        probe_provider: Option<String>,
+        #[arg(long)]
+        probe_signer_secret_ref: Option<String>,
+        /// Pin the base64url-no-padding Ed25519 probe public key
+        #[arg(long)]
+        probe_public_key: Option<String>,
         #[command(flatten)]
         mutation: HubMutationArgs,
     },

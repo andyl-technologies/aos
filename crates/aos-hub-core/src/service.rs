@@ -5603,6 +5603,8 @@ impl RpcService {
             )
         };
         let revision = Self::delivery_endpoint_revision_spec(req.revision.clone())?;
+        crate::db::validate_endpoint_revision_spec(&revision)
+            .map_err(|error| RpcError::invalid(format!("invalid endpoint revision: {error:#}")))?;
         if (req.scheme == "http" && revision.tls_configuration != "{}")
             || (req.scheme == "https" && revision.tls_configuration == "{}")
         {
