@@ -350,6 +350,10 @@ pub struct ProductionBlockFaultEvidence {
     pub volatile_entries_digest: ContentHash,
     /// Exclusive durable write frontier.
     pub actual_durable_frontier: u64,
+    /// Number of leading guest-visible bytes covered by `visible_prefix_digest`.
+    pub visible_prefix_bytes: u32,
+    /// Canonical digest of the bounded guest-visible prefix.
+    pub visible_prefix_digest: ContentHash,
 }
 
 /// Read-only evidence for one production QEMU node continuation.
@@ -628,7 +632,11 @@ fn production_run_directory(
     LifecycleApiError,
 > {
     let scenario_identity = scenario.id().to_hex();
-    let scenario_directory = config.run_state_root.join(&scenario_identity);
+    // QEMU control channels use filesystem-backed AF_UNIX sockets. Leave room
+    // below the caller-provided root for the run, node, role, and socket names
+    // while retaining the complete identity in every run manifest. A prefix
+    // collision therefore fails closed during manifest validation below.
+    let scenario_directory = config.run_state_root.join(&scenario_identity[..32]);
     fs::create_dir_all(&scenario_directory).map_err(|error| {
         loop_factory_error(format!(
             "create durable lifecycle state directory {}: {error}",

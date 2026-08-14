@@ -86,6 +86,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0070-crucible-fault-vmstate.patch",
     "0071-crucible-lifecycle-precondition.patch",
     "0072-crucible-typed-node-result-schema.patch",
+    "0073-crucible-device-wait-vmstop.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

@@ -38,7 +38,7 @@ pub enum BindingRuntimeError {
     InactiveSignal(SignalId),
     /// An adapter delivered an older opportunity sequence for the same scope.
     NonMonotoneOpportunity,
-    /// An adapter opportunity arrived before its same-time boundary completed.
+    /// An adapter opportunity arrived before any preceding boundary completed.
     OpportunityBeforeBoundary,
     /// One scope reused an opportunity sequence for different immutable input.
     OpportunitySequenceCollision,

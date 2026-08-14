@@ -54,12 +54,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
+use crucible::model::{FaultActionCommitError, FaultActionSink};
 use crucible::{
     AdvanceOutcome, BasicBlockCoverageConfig, Checkpoint, CheckpointKind, ContentHash,
     ExecutionFingerprint, Icount, NodeId, SchedulerError, SchedulerNodeId,
     SchedulerSendAuthorization, SchedulerSendAuthorizer, VirtualTime,
 };
-use crucible::model::{FaultActionCommitError, FaultActionSink};
 use crucible_device::block::{BaseImage, BlockDurabilityConfig, BlockLatency};
 use crucible_device::{FsTree, NinepLatency};
 use crucible_shmem::{
@@ -80,11 +80,11 @@ use crate::{
     CrucibleAcceleratorDevice, CrucibleShmem9pDevice, CrucibleShmemBlockDevice,
     CrucibleShmemNetworkDevice, IcountShiftSetting, LaunchProfileCandidate, LaunchProfileError,
     LivePluginGuestArchitecture, ProductionFaultActionSink, ProductionFaultRuntime,
-    QemuAsyncDriverPolicy, QemuCrashDetector, QemuGdbstubChannelConfig,
-    QemuHostPluginSetupError, QemuLaunchAppRandomConfig,
-    QemuLaunchArtifact, QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchPluginConfig,
-    QemuLaunchPluginSwitch, QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError,
-    QemuNode, QemuNodeChannelError, QemuNodeError, QemuNodeFactoryError, QemuNodeFactoryRuntime,
+    QemuAsyncDriverPolicy, QemuCrashDetector, QemuGdbstubChannelConfig, QemuHostPluginSetupError,
+    QemuLaunchAppRandomConfig, QemuLaunchArtifact, QemuLaunchCommandBuilder,
+    QemuLaunchCommandError, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
+    QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError, QemuNode,
+    QemuNodeChannelError, QemuNodeError, QemuNodeFactoryError, QemuNodeFactoryRuntime,
     QemuNodeRestorePlan, QemuNodeSet, QemuQmpChannelConfig, QemuQuantumShmemConfig,
     QemuRootImageFormat, QemuShmemHotPathChannel, QemuShutdownPolicy, QemuVmLaunchConfig,
     QemuVmSnapshot, QemuWhiteboxSetupError, QmpError, build_qemu_node_from_completed_setup,
@@ -958,9 +958,7 @@ fn prove_cross_adapter_rejection_rollback(
     config: &QemuLiveNodeStepGateConfig,
     committed_actions: &[crucible::model::ResolvedBindingAction],
 ) -> Result<(), QemuLiveNodeStepGateError> {
-    let run_directory = config
-        .run_directory
-        .join("signal-rollback");
+    let run_directory = config.run_directory.join("signal-rollback");
     let mut node = build_live_node(
         config,
         &run_directory,
@@ -974,9 +972,7 @@ fn prove_cross_adapter_rejection_rollback(
     )?;
     let observed_icount = node
         .current_icount()
-        .map_err(|source| {
-            QemuLiveNodeStepGateError::node_op("read rejection boundary", source)
-        })?
+        .map_err(|source| QemuLiveNodeStepGateError::node_op("read rejection boundary", source))?
         .retired;
     let mut nodes = QemuNodeSet::new();
     if nodes.insert(node_id(GATE_NODE), node).is_some() {
@@ -1002,27 +998,24 @@ fn prove_cross_adapter_rejection_rollback(
         )));
     }
 
-    let mut host = crucible::model::HostFaultActionSink::new(
-        crucible::model::FaultResourceLimits::default(),
-    );
-    let before = host
-        .state()
-        .canonical_bytes()
-        .map_err(|error| fault_gate_invariant(format!("encode host state before rejection: {error}")))?;
+    let mut host =
+        crucible::model::HostFaultActionSink::new(crucible::model::FaultResourceLimits::default());
+    let before = host.state().canonical_bytes().map_err(|error| {
+        fault_gate_invariant(format!("encode host state before rejection: {error}"))
+    })?;
     let before_digest = host.state().digest();
     let mut sink = ProductionFaultActionSink::new(&mut host, &mut nodes);
-    let prepared = sink
-        .prepare_batch(&actions)
-        .map_err(|error| fault_gate_invariant(format!("prepare rejection transaction: {}", error.error)))?;
+    let prepared = sink.prepare_batch(&actions).map_err(|error| {
+        fault_gate_invariant(format!("prepare rejection transaction: {}", error.error))
+    })?;
     let rejected = matches!(
         sink.commit_batch(prepared.transaction),
         Err(FaultActionCommitError::Rejected(_))
     );
     drop(sink);
-    let after = host
-        .state()
-        .canonical_bytes()
-        .map_err(|error| fault_gate_invariant(format!("encode host state after rejection: {error}")))?;
+    let after = host.state().canonical_bytes().map_err(|error| {
+        fault_gate_invariant(format!("encode host state after rejection: {error}"))
+    })?;
     if !rejected
         || !host.state().is_empty()
         || host.state().digest() != before_digest

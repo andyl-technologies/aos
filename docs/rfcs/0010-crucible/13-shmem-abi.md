@@ -365,7 +365,9 @@ pub struct NodeSlot {
     /// reader/snapshotter detect a torn or in-progress publish without locking
     /// (the seqlock protocol, §13.3.4). Even == stable, odd == write in progress.
     pub publish_gen: AtomicU32, // @ 40
-    pub(crate) _pad1: [u8; 4], // @ 44
+    /// Wrapping acknowledgement count incremented only after QEMU drains the
+    /// registered host-control wake fd and invokes the exact control callback.
+    pub control_boundary_ack: AtomicU32, // @ 44
     /// Host-published exact completion icount, or zero when none is pending.
     pub device_completion_deadline_icount: AtomicU64, // @ 48
     /// Exact icount at which the plugin must apply the pending preemption.
@@ -774,7 +776,7 @@ NodeSlot      (size 128, align 128)
   @ 38  device_io_active   u8
   @ 39  _pad0              u8
   @ 40  publish_gen        u32
-  @ 44  _pad1[4]
+  @ 44  control_boundary_ack u32
   @ 48  device_completion_deadline_icount u64
   @ 56  preemption_at_icount              u64
   @ 64  preemption_deadline_icount        u64
@@ -1114,9 +1116,35 @@ word no longer equals `v`.
   `gate:layer1-injection`.
   *Spec:* §13.7, forward-ref [`20-session-control-plane.md`](20-session-control-plane.md).
 
+The plugin eventfd has a separate exact acknowledgement from the slot-state
+seqlock. `control_boundary_ack` starts at odd token `1`. The host atomically
+changes an odd acknowledgement to its even successor to request a boundary;
+repeating a request while that even token is outstanding is idempotent. It then
+wakes the node futex and writes the eventfd. An idle callback that observes the
+even token returns to QEMU's main loop without authorizing guest time, and the
+paired vCPU-resume callback preserves halt tracking, idle status, and any future
+wake deadline while the request remains outstanding.
+
+QEMU drains the eventfd, runs device bottom halves through the patch's
+coalesced two-pass barrier, and invokes the registered control-boundary callback.
+The plugin republishes the callback's exact logical/raw coordinate through the
+`publish_gen` seqlock before release-storing the request's odd successor. At a
+clamped scheduler ceiling this publication is exact idle: it retains an
+existing future idle deadline, or uses the current coordinate when fencing a
+previously running node. Below the ceiling it preserves the prior vCPU
+classification. Device activity remains an independent field.
+
+The host accepts the immediate odd successor or a later odd token in wrapping
+serial-number order. A completed-quantum clamp additionally requires that the
+acknowledged snapshot is idle at the clamped coordinate with no active device
+I/O. This prevents a pre-wake idle snapshot, a post-device transient, or an
+overlapping handshake from escaping as a completed scheduler boundary.
+
 ## 13.8 Versioning and conformance
 
-The region carries an ABI version in its header. The handshake
+The region carries an ABI version in its header. ABI v14 assigns the former
+node-slot padding at offset 44 to `control_boundary_ack`; v13 peers are rejected
+rather than inferred or supported through a compatibility path. The handshake
 ([`14-protocol.md`](14-protocol.md)) validates it before any node trusts a byte of
 the region. ABI v2 is intentionally incompatible with v1 because v2 adds the
 coverage tail: a v2 host rejects a v1 plugin/region, and a v2 plugin rejects a

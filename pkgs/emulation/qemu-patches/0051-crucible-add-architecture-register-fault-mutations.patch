@@ -1,5 +1,5 @@
 diff --git a/accel/tcg/cpu-exec-common.c b/accel/tcg/cpu-exec-common.c
-index d752ee4..fab8b1c 100644
+index d752ee41c..fab8b1c89 100644
 --- a/accel/tcg/cpu-exec-common.c
 +++ b/accel/tcg/cpu-exec-common.c
 @@ -54,7 +54,8 @@ uint32_t curr_cflags(CPUState *cpu)
@@ -13,7 +13,7 @@ index d752ee4..fab8b1c 100644
      }
  
 diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
-index dc1fe90..777ccac 100644
+index dc1fe9034..777ccacd0 100644
 --- a/accel/tcg/cpu-exec.c
 +++ b/accel/tcg/cpu-exec.c
 @@ -501,7 +501,8 @@ cpu_tb_exec(CPUState *cpu, TranslationBlock *itb, int *tb_exit)
@@ -100,7 +100,7 @@ index dc1fe90..777ccac 100644
                  cflags |= CF_NO_GOTO_TB | CF_NO_GOTO_PTR | 1;
                  last_tb = NULL;
 diff --git a/gdbstub/gdbstub.c b/gdbstub/gdbstub.c
-index 282e13e..30d645b 100644
+index 282e13e16..30d645b43 100644
 --- a/gdbstub/gdbstub.c
 +++ b/gdbstub/gdbstub.c
 @@ -2484,4 +2484,3 @@ void gdb_create_default_process(GDBState *s)
@@ -109,7 +109,7 @@ index 282e13e..30d645b 100644
  }
 -
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index 310314c..1d4589f 100644
+index 310314cbd..1d4589fd4 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
 @@ -63,6 +63,7 @@ typedef int (*WriteCoreDumpFunction)(const void *buf, size_t size,
@@ -185,7 +185,7 @@ index 310314c..1d4589f 100644
      sigjmp_buf jmp_env;
  
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index a9b6bb3..1622d08 100644
+index a9b6bb375..1622d08db 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -17,6 +17,9 @@
@@ -234,7 +234,7 @@ index a9b6bb3..1622d08 100644
      QEMU_CRUCIBLE_MEMORY_FETCH = 0x01,
      QEMU_CRUCIBLE_MEMORY_CPU_LOAD = 0x02,
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 4f866e5..63c6619 100644
+index 4f866e5aa..63c6619c3 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1688,6 +1688,43 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
@@ -282,7 +282,7 @@ index 4f866e5..63c6619 100644
   * qemu_plugin_read_vcpu_regs() - read canonical register bytes for a vCPU
   * @vcpu_index: the vCPU index to inspect
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index 3d7d502..6c36ed5 100644
+index 3d7d5024b..6c36ed529 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -2719,6 +2719,22 @@ static int node_parse(const struct qemu_plugin_crucible_fault_command *command,
@@ -395,7 +395,7 @@ index 3d7d502..6c36ed5 100644
  {
 diff --git a/plugins/crucible-fault-register.c b/plugins/crucible-fault-register.c
 new file mode 100644
-index 0000000..94b81ff
+index 000000000..1f83b6e43
 --- /dev/null
 +++ b/plugins/crucible-fault-register.c
 @@ -0,0 +1,873 @@
@@ -1273,7 +1273,7 @@ index 0000000..94b81ff
 +    return true;
 +}
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
-index 333af60..6e96e52 100644
+index 333af60e9..6e96e52f2 100644
 --- a/plugins/crucible-fault.c
 +++ b/plugins/crucible-fault.c
 @@ -323,6 +323,9 @@ size_t qemu_plugin_crucible_fault_capabilities(
@@ -1287,7 +1287,7 @@ index 333af60..6e96e52 100644
      g_mutex_lock(&crucible_fault_lock);
      required = crucible_fault_handlers->len;
 diff --git a/plugins/meson.build b/plugins/meson.build
-index dffdd97..550ed0d 100644
+index dffdd9734..550ed0dee 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
 @@ -60,6 +60,7 @@ endif
@@ -1300,7 +1300,7 @@ index dffdd97..550ed0d 100644
  
  common_ss.add(files('loader.c', 'api.c', 'core.c'))
 diff --git a/system/vl.c b/system/vl.c
-index 9d56aeb..c06dd6f 100644
+index 9d56aeb0a..c06dd6f8b 100644
 --- a/system/vl.c
 +++ b/system/vl.c
 @@ -2707,12 +2707,18 @@ static void qemu_init_board(void)
@@ -1326,7 +1326,7 @@ index 9d56aeb..c06dd6f 100644
          bool ambigous;
  
 diff --git a/target/arm/cpu.h b/target/arm/cpu.h
-index 83b3596..e468874 100644
+index 83b3596b1..e468874bc 100644
 --- a/target/arm/cpu.h
 +++ b/target/arm/cpu.h
 @@ -3218,6 +3218,21 @@ void arm_register_el_change_hook(ARMCPU *cpu, ARMELChangeHookFn *hook, void
@@ -1352,7 +1352,7 @@ index 83b3596..e468874 100644
   * aa32_vfp_dreg:
   * Return a pointer to the Dn register within env in 32-bit mode.
 diff --git a/target/arm/cpu64.c b/target/arm/cpu64.c
-index 8188ede..c69f47f 100644
+index 8188ede5c..c69f47fdb 100644
 --- a/target/arm/cpu64.c
 +++ b/target/arm/cpu64.c
 @@ -824,6 +824,15 @@ static void aarch64_cpu_class_init(ObjectClass *oc, void *data)
@@ -1373,7 +1373,7 @@ index 8188ede..c69f47f 100644
  
 diff --git a/target/arm/crucible-register.c b/target/arm/crucible-register.c
 new file mode 100644
-index 0000000..4039fbe
+index 000000000..6e1a76766
 --- /dev/null
 +++ b/target/arm/crucible-register.c
 @@ -0,0 +1,543 @@
@@ -1921,7 +1921,7 @@ index 0000000..4039fbe
 +    return expected;
 +}
 diff --git a/target/arm/meson.build b/target/arm/meson.build
-index 3065081..bdc30bc 100644
+index 3065081d2..bdc30bcf1 100644
 --- a/target/arm/meson.build
 +++ b/target/arm/meson.build
 @@ -21,6 +21,7 @@ arm_system_ss.add(files(
@@ -1933,7 +1933,7 @@ index 3065081..bdc30bc 100644
    'machine.c',
    'ptw.c',
 diff --git a/target/i386/cpu.c b/target/i386/cpu.c
-index f593c0e..9375caf 100644
+index f593c0ee4..9375caf99 100644
 --- a/target/i386/cpu.c
 +++ b/target/i386/cpu.c
 @@ -8910,6 +8910,7 @@ static const struct SysemuCPUOps i386_sysemu_ops = {
@@ -1963,7 +1963,7 @@ index f593c0e..9375caf 100644
  
  #ifndef CONFIG_USER_ONLY
 diff --git a/target/i386/cpu.h b/target/i386/cpu.h
-index 1ada85b..840519b 100644
+index 1ada85b2e..840519b99 100644
 --- a/target/i386/cpu.h
 +++ b/target/i386/cpu.h
 @@ -2365,6 +2365,20 @@ void x86_cpu_dump_state(CPUState *cs, FILE *f, int flags);
@@ -1989,7 +1989,7 @@ index 1ada85b..840519b 100644
  void x86_cpu_list(void);
 diff --git a/target/i386/crucible-register.c b/target/i386/crucible-register.c
 new file mode 100644
-index 0000000..e221992
+index 000000000..c5ca60dd8
 --- /dev/null
 +++ b/target/i386/crucible-register.c
 @@ -0,0 +1,996 @@
@@ -2990,7 +2990,7 @@ index 0000000..e221992
 +    return expected;
 +}
 diff --git a/target/i386/meson.build b/target/i386/meson.build
-index 2e9c472..1257e54 100644
+index 2e9c472f4..1257e5425 100644
 --- a/target/i386/meson.build
 +++ b/target/i386/meson.build
 @@ -16,6 +16,7 @@ i386_system_ss = ss.source_set()
@@ -3003,7 +3003,7 @@ index 2e9c472..1257e54 100644
    'cpu-apic.c',
 diff --git a/tests/tcg/plugins/crucible-register.c b/tests/tcg/plugins/crucible-register.c
 new file mode 100644
-index 0000000..301d2ed
+index 000000000..301d2eded
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-register.c
 @@ -0,0 +1,988 @@

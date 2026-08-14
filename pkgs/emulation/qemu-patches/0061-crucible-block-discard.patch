@@ -1,5 +1,5 @@
 diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
-index 1788515..afc442b 100644
+index 178851578..afc442b02 100644
 --- a/block/crucible-shmem.c
 +++ b/block/crucible-shmem.c
 @@ -357,6 +357,26 @@ crucible_shmem_co_flush(BlockDriverState *bs)
@@ -38,7 +38,7 @@ index 1788515..afc442b 100644
  };
  
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 627f986..853254e 100644
+index 627f9869e..853254eae 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -222,9 +222,9 @@ typedef uint64_t (*qemu_plugin_sim_shmem_max_advance_icount_cb_t)(void *userdata

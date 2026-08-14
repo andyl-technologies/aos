@@ -418,8 +418,7 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
         .observations
         .lock()
         .unwrap_or_else(|error| panic!("test observation journal should lock: {error}"));
-    let drained = journal.snapshot();
-    journal.clear();
+    let drained = journal.drain_ready(u64::MAX);
     assert_eq!(drained.len(), 1);
     drop(journal);
     let checkpoint = interceptor
@@ -962,6 +961,7 @@ fn shared_medium_checkpoint_joins_pending_frames_and_hashes_every_reservation_fi
         coordinate: Some(30),
         coordinate_sequence: 1,
         journal_sequence: 2,
+        observations: super::storage_faults::ProductionFaultObservationJournal::default(),
         effect_state: state.clone(),
     };
     let encoded = serde_json::to_vec(&checkpoint)

@@ -150,7 +150,7 @@ const HARD_PENDING_NETWORK_FRAMES: usize = 65_536;
 const HARD_PENDING_NETWORK_BYTES: usize = 1_073_741_824;
 const HARD_CONTACT_SERVICE_RESERVATIONS: usize = 262_144;
 const HARD_CONTACT_SERVICE_STATES: usize = 262_144;
-const NETWORK_ADAPTER_CHECKPOINT_VERSION: u16 = 6;
+const NETWORK_ADAPTER_CHECKPOINT_VERSION: u16 = 7;
 
 fn stage_pending_network_output(
     pending: &mut Vec<crucible::BackendNetworkOutput>,
@@ -243,6 +243,9 @@ fn validate_network_adapter_checkpoint(
         || checkpoint.coordinate.is_none() && checkpoint.journal_sequence != 0
         || checkpoint.coordinate.is_some()
             && checkpoint.journal_sequence <= checkpoint.coordinate_sequence
+        || !checkpoint
+            .observations
+            .validate(checkpoint.journal_sequence)
         || checkpoint.effect_state.token_buckets.len() > 65_536
         || checkpoint.effect_state.queues.len() > 65_536
         || checkpoint.effect_state.burst_states.len() > 65_536
@@ -910,6 +913,7 @@ struct NetworkAdapterCheckpoint {
     coordinate: Option<u64>,
     coordinate_sequence: u64,
     journal_sequence: u64,
+    observations: super::storage_faults::ProductionFaultObservationJournal,
     effect_state: NetworkEffectRuntimeState,
 }
 
@@ -955,6 +959,7 @@ fn stage_network_restore(
         adapter.coordinate,
         adapter.coordinate_sequence,
         adapter.journal_sequence,
+        &adapter.observations,
         &adapter.effect_state,
     )?;
     if actual != identity {
@@ -1332,6 +1337,7 @@ fn network_state_digest_from_parts(
     coordinate: Option<u64>,
     coordinate_sequence: u64,
     journal_sequence: u64,
+    observations: &super::storage_faults::ProductionFaultObservationJournal,
     effect_state: &NetworkEffectRuntimeState,
 ) -> Result<ContentHash, SchedulerError> {
     let mut material = Vec::new();
@@ -1339,6 +1345,11 @@ fn network_state_digest_from_parts(
     material.extend_from_slice(&coordinate.unwrap_or(u64::MAX).to_be_bytes());
     material.extend_from_slice(&coordinate_sequence.to_be_bytes());
     material.extend_from_slice(&journal_sequence.to_be_bytes());
+    let encoded_observations =
+        serde_json::to_vec(observations).map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("encode pending production fault observations: {error}"),
+        })?;
+    material.extend_from_slice(&encoded_observations);
     let pending_count = u64::try_from(pending_outputs.len()).map_err(|_error| {
         SchedulerError::BoundaryViolation {
             message: String::from("pending network output count exceeds the checkpoint width"),
@@ -1545,6 +1556,11 @@ impl ProductionFaultNetworkInterceptor {
                 ),
             });
         }
+        *observations
+            .lock()
+            .map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("production fault observation journal lock is poisoned"),
+            })? = staged.adapter.observations.clone();
         let restored = Self {
             runtime: Arc::new(Mutex::new(runtime)),
             cursor: Arc::new(Mutex::new(ProductionFaultEvaluationCursor {
@@ -1593,11 +1609,9 @@ impl ProductionFaultNetworkInterceptor {
                 .map_err(|_| SchedulerError::BoundaryViolation {
                     message: String::from("production fault observation journal lock is poisoned"),
                 })?;
-        if !observations.is_empty() {
+        if !observations.validate(cursor_guard.journal_sequence) {
             return Err(SchedulerError::BoundaryViolation {
-                message: String::from(
-                    "production fault checkpoint requires a drained observation journal",
-                ),
+                message: String::from("production fault observation journal is inconsistent"),
             });
         }
         let cursor = *cursor_guard;
@@ -1612,6 +1626,7 @@ impl ProductionFaultNetworkInterceptor {
             cursor.coordinate,
             cursor.coordinate_sequence,
             cursor.journal_sequence,
+            &observations,
             &effect_state,
         )?;
         let adapter_state = serde_json::to_vec(&NetworkAdapterCheckpoint {
@@ -1619,6 +1634,7 @@ impl ProductionFaultNetworkInterceptor {
             coordinate: cursor.coordinate,
             coordinate_sequence: cursor.coordinate_sequence,
             journal_sequence: cursor.journal_sequence,
+            observations: observations.clone(),
             effect_state,
         })
         .map_err(|error| SchedulerError::BoundaryViolation {
@@ -2059,8 +2075,13 @@ impl ProductionFaultNetworkInterceptor {
                                 "production fault observation journal lock is poisoned",
                             ),
                         })?;
-                let append = staged_scheduler.append_fault_observations(journal.snapshot())?;
-                journal.clear();
+                let committed = staged_scheduler
+                    .condition_event_log_prefix()
+                    .point()
+                    .at()
+                    .ticks;
+                let append =
+                    staged_scheduler.append_fault_observations(journal.drain_ready(committed))?;
                 Ok(append)
             })();
             let append = match journal_commit {

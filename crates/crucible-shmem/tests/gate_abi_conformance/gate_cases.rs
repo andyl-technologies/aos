@@ -53,6 +53,7 @@ fn generated_header_carries_static_asserts_for_every_shared_struct() {
         "offsetof(crucible_shmem_node_slot, device_io_active)",
         "offsetof(crucible_shmem_node_slot, pad0)",
         "offsetof(crucible_shmem_node_slot, publish_gen)",
+        "offsetof(crucible_shmem_node_slot, control_boundary_ack)",
         "offsetof(crucible_shmem_node_slot, preemption_at_icount)",
         "offsetof(crucible_shmem_node_slot, preemption_deadline_icount)",
         "offsetof(crucible_shmem_node_slot, preemption_ceiling_icount)",

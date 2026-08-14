@@ -1063,9 +1063,12 @@ impl LiveVcpuTimeCallbackState {
             return Ok(QEMU_PLUGIN_BLOCK_POLL_PENDING);
         }
         let current_icount = self.callback_current_icount()?;
-        self.lock_devices()?
+        let result = self
+            .lock_devices()?
             .poll_block(self.slot.get(), current_icount, epoch, request_id, output)
-            .map_err(LiveVcpuTimeCallbackError::live_device)
+            .map_err(LiveVcpuTimeCallbackError::live_device)?;
+        self.publish_device_completion_pause_if_quiesced("block-poll")?;
+        Ok(result)
     }
 
     fn block_event_poll(&self, output: &mut [u8]) -> Result<i64, LiveVcpuTimeCallbackError> {
@@ -1136,9 +1139,12 @@ impl LiveVcpuTimeCallbackState {
             return Ok(QEMU_PLUGIN_NINEP_POLL_PENDING);
         }
         let current_icount = self.callback_current_icount()?;
-        self.lock_devices()?
+        let result = self
+            .lock_devices()?
             .poll_ninep(self.slot.get(), current_icount, request_id, output)
-            .map_err(LiveVcpuTimeCallbackError::live_device)
+            .map_err(LiveVcpuTimeCallbackError::live_device)?;
+        self.publish_device_completion_pause_if_quiesced("ninep-poll")?;
+        Ok(result)
     }
 
     fn ninep_burst_done(&self) -> Result<(), LiveVcpuTimeCallbackError> {
@@ -1148,7 +1154,8 @@ impl LiveVcpuTimeCallbackState {
         // it must remain legal at that boundary.
         self.lock_devices()?
             .finish_ninep_burst(self.slot.get())
-            .map_err(LiveVcpuTimeCallbackError::live_device)
+            .map_err(LiveVcpuTimeCallbackError::live_device)?;
+        self.publish_device_completion_pause_if_quiesced("ninep-burst-done")
     }
 
     #[allow(
@@ -1193,9 +1200,12 @@ impl LiveVcpuTimeCallbackState {
         if self.idle_advance_is_pending() {
             return Ok((0, QEMU_PLUGIN_ACCELERATOR_POLL_PENDING));
         }
-        self.lock_devices()?
+        let result = self
+            .lock_devices()?
             .poll_accelerator(self.slot.get(), sequence, output)
-            .map_err(LiveVcpuTimeCallbackError::live_device)
+            .map_err(LiveVcpuTimeCallbackError::live_device)?;
+        self.publish_device_completion_pause_if_quiesced("accelerator-poll")?;
+        Ok(result)
     }
 }
 

@@ -2462,6 +2462,7 @@ in rec {
     };
   };
   phase7 = {
+    signalSharedCause = import ./phase7-signal-shared-cause.nix {inherit pkgs lib;};
     debuggerPackage = import ./phase7-debugger-package.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.debuggerPackage";
@@ -2785,6 +2786,7 @@ in rec {
           liveBlock = phase2.qemuLiveBlockIo;
           liveNineP = phase2.qemuLive9pIo;
           liveNodeLifecycle = phase2.qemuLiveNodeLifecycleFault;
+          sharedCause = phase7.signalSharedCause;
           patchMicrotests = phase2.gates.patchMicrotests.rawGate;
           checkpointMaterialization = phase6.checkpointMaterialization.rawGate;
           replayOracle = phase6.gates.replayOracle.rawGate;
@@ -2804,6 +2806,7 @@ in rec {
           phase2.qemuLiveBlockIo
           phase2.qemuLive9pIo
           phase2.qemuLiveNodeLifecycleFault
+          phase7.signalSharedCause
           phase2.gates.patchMicrotests
           phase6.checkpointMaterialization
           phase6.gates.replayOracle

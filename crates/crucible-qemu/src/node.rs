@@ -1895,6 +1895,20 @@ impl QemuNode {
             })
     }
 
+    /// Reports whether no live device coroutine crosses the current boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the production host runtime cannot inspect
+    /// its shared node slot.
+    pub(crate) fn checkpoint_device_io_is_quiescent(&mut self) -> Result<bool, QemuNodeError> {
+        self.host_io_runtime
+            .checkpoint_device_io_is_quiescent()
+            .map_err(|source| {
+                QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
+            })
+    }
+
     pub(crate) fn restore_node_continuation(
         &mut self,
         checkpoint: &crate::QemuNodeContinuationCheckpoint,

@@ -14,7 +14,7 @@ mod preemption;
 mod preflight_cases;
 
 extern "C" fn test_icount_raw() -> u64 {
-    0
+    TEST_ICOUNT_RAW.get()
 }
 
 thread_local! {
@@ -23,6 +23,7 @@ thread_local! {
     static TEST_QUEUED_ADVANCE_STATUS: Cell<std::os::raw::c_int> = const { Cell::new(0) };
     static TEST_REQUEST_VMSTOP_CALLS: Cell<u64> = const { Cell::new(0) };
     static TEST_REQUEST_VMSTOP_STATUS: Cell<std::os::raw::c_int> = const { Cell::new(0) };
+    static TEST_ICOUNT_RAW: Cell<u64> = const { Cell::new(0) };
 }
 static TEST_RX_SEND_COUNT: AtomicU64 = AtomicU64::new(0);
 static TEST_RX_FLUSH_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -292,6 +293,72 @@ fn busy_max_advance_acknowledges_pause_without_advancing_or_pumping_work() {
 }
 
 #[test]
+fn drained_control_boundary_acknowledges_pause_without_resuming_halted_vcpu() {
+    TEST_REQUEST_VMSTOP_CALLS.set(0);
+    TEST_REQUEST_VMSTOP_STATUS.set(0);
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 2, 0))
+        .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
+    let header = RegionHeader::new(layout);
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 12, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let (sender, receiver) = mpsc::channel();
+    std::mem::forget(receiver);
+    let state = test_live_state_with_teardown(78, 1, 0, 0, &header, &slot, sender)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    state
+        .on_vcpu_init(78, 0)
+        .unwrap_or_else(|error| panic!("test vCPU should initialize: {error}"));
+    state
+        .halted_vcpus
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .mark_halted(0)
+        .unwrap_or_else(|error| panic!("test vCPU should halt: {error}"));
+
+    slot.request_control_boundary()
+        .unwrap_or_else(|error| panic!("ordinary control request should publish: {error}"));
+    state
+        .on_vcpu_resume(0, 0)
+        .unwrap_or_else(|error| panic!("control-only resume should be inert: {error}"));
+    assert!(
+        state
+            .halted_vcpus
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_halted(0)
+            .unwrap_or_else(|error| panic!("halt state should remain readable: {error}"))
+    );
+    assert_eq!(slot.snapshot().status, STATUS_IDLE);
+    state
+        .on_control_boundary(0)
+        .unwrap_or_else(|error| panic!("ordinary control wake should be inert: {error}"));
+    assert_eq!(slot.snapshot().control_boundary_ack, 3);
+    header
+        .request_pause([&slot])
+        .unwrap_or_else(|error| panic!("pause request should publish: {error}"));
+    slot.request_control_boundary()
+        .unwrap_or_else(|error| panic!("pause control request should publish: {error}"));
+    state
+        .on_control_boundary(0)
+        .unwrap_or_else(|error| panic!("control wake should acknowledge pause: {error}"));
+
+    assert!(
+        state
+            .halted_vcpus
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_halted(0)
+            .unwrap_or_else(|error| panic!("halt state should remain readable: {error}"))
+    );
+    assert_eq!(slot.snapshot().status, STATUS_IDLE);
+    assert_eq!(slot.snapshot().control_boundary_ack, 5);
+    assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 1);
+}
+
+#[test]
 fn busy_pause_publishes_exact_boundary_before_vmstop_rejection_is_reported() {
     TEST_REQUEST_VMSTOP_CALLS.set(0);
     TEST_REQUEST_VMSTOP_STATUS.set(-7);
@@ -313,7 +380,10 @@ fn busy_pause_publishes_exact_boundary_before_vmstop_rejection_is_reported() {
 
     assert_eq!(
         state.max_advance_icount(),
-        Err(LiveVcpuTimeCallbackError::CheckpointVmStopRejected { status: -7 })
+        Err(LiveVcpuTimeCallbackError::CheckpointVmStopRejected {
+            boundary: "max-advance",
+            status: -7,
+        })
     );
     let paused = slot.snapshot();
     assert_eq!(paused.status, STATUS_IDLE);
@@ -321,6 +391,58 @@ fn busy_pause_publishes_exact_boundary_before_vmstop_rejection_is_reported() {
     assert_eq!(paused.idle_wake_icount, 0);
     assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 1);
     TEST_REQUEST_VMSTOP_STATUS.set(0);
+}
+
+#[test]
+fn duplicate_checkpoint_vmstop_admission_is_idempotent() {
+    TEST_REQUEST_VMSTOP_STATUS.set(-114);
+    let slot = NodeSlot::new(KIND_VM);
+    let state = test_live_state(76, 1, 0, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+
+    state
+        .request_checkpoint_vmstop("block-wait")
+        .expect("an already-admitted exact stop satisfies the handoff");
+    TEST_REQUEST_VMSTOP_STATUS.set(0);
+}
+
+#[test]
+fn final_device_completion_publishes_pause_before_vmstop_handoff() {
+    TEST_REQUEST_VMSTOP_CALLS.set(0);
+    TEST_REQUEST_VMSTOP_STATUS.set(0);
+    TEST_ICOUNT_RAW.set(9);
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 2, 0))
+        .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
+    let header = RegionHeader::new(layout);
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 12, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let (sender, receiver) = mpsc::channel();
+    std::mem::forget(receiver);
+    let state = test_live_state_with_teardown(77, 1, 0, 0, &header, &slot, sender)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    header
+        .request_pause([&slot])
+        .unwrap_or_else(|error| panic!("pause request should publish: {error}"));
+    slot.mark_device_io_active();
+
+    state
+        .publish_device_completion_pause_if_quiesced("block-poll")
+        .unwrap_or_else(|error| panic!("active device should defer pause: {error}"));
+    assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 0);
+    slot.clear_device_io_active();
+    state
+        .publish_device_completion_pause_if_quiesced("block-poll")
+        .unwrap_or_else(|error| panic!("final completion should hand off pause: {error}"));
+
+    let paused = slot.snapshot();
+    assert_eq!(paused.status, STATUS_IDLE);
+    assert_eq!(paused.current_icount, 9);
+    assert_eq!(paused.idle_wake_icount, 9);
+    assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 1);
+    TEST_ICOUNT_RAW.set(0);
 }
 
 #[test]
@@ -919,6 +1041,12 @@ extern "C" fn test_register_vcpu_idle_resume(
     _idle_callback: Option<crate::QemuVcpuIdleResumeCbFn>,
     _resume_callback: Option<crate::QemuVcpuIdleResumeCbFn>,
     _userdata: *mut c_void,
+) {
+}
+
+extern "C" fn test_register_control_boundary(
+    _callback: Option<crate::QemuVcpuIdleResumeCbFn>,
+    _userdata: *mut std::ffi::c_void,
 ) {
 }
 

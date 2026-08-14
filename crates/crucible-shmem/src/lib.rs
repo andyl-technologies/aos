@@ -59,7 +59,7 @@
 //! 38      1     device_io_active
 //! 39      1     padding
 //! 40      4     publish_gen
-//! 44      4     padding
+//! 44      4     control_boundary_ack
 //! 48      8     device_completion_deadline_icount
 //! 56      8     preemption_at_icount
 //! 64      8     preemption_deadline_icount
@@ -188,7 +188,10 @@ pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// Version 11 appends bounded accelerator request/completion rings per VM.
 /// Version 12 adds an explicit accelerator completion-capacity field and moves
 /// accelerator payload bytes to preserve a canonical bounded result envelope.
-pub const ABI_VERSION: u32 = 13;
+/// Version 13 adds the canonical typed fault-command/result/event transports.
+/// Version 14 assigns the former node-slot padding at offset 44 to the plugin's
+/// drained-control-boundary publication acknowledgement.
+pub const ABI_VERSION: u32 = 14;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of entries in each plugin-to-host coverage queue.
 ///

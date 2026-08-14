@@ -379,8 +379,10 @@ pub enum LiveVcpuTimeCallbackError {
         source: NodeSlotError,
     },
     /// QEMU rejected the native stopped-runstate handoff.
-    #[error("QEMU rejected checkpoint VM-stop with status {status}")]
+    #[error("QEMU rejected checkpoint VM-stop from {boundary} with status {status}")]
     CheckpointVmStopRejected {
+        /// Plugin callback boundary that requested the native handoff.
+        boundary: &'static str,
         /// Status returned by the GPL-side QEMU capability.
         status: i32,
     },

@@ -147,6 +147,20 @@ pub enum QemuAsyncDriverOperation {
 
 /// Host-I/O runtime used by the bounded async driver.
 pub trait QemuHostIoRuntime: Send {
+    /// Reports whether QEMU owns no in-flight device coroutine at this boundary.
+    ///
+    /// Runtimes without a live external executor are always quiescent. A live
+    /// runtime overrides this method with an acquire snapshot of its shared
+    /// node slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when the live node slot cannot be
+    /// inspected consistently.
+    fn checkpoint_device_io_is_quiescent(&mut self) -> Result<bool, QemuAsyncDriverRuntimeError> {
+        Ok(true)
+    }
+
     /// Requests a coordinated shared-memory pause and waits for quiescence.
     ///
     /// Runtimes without a live external executor have nothing to pause. A live

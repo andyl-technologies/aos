@@ -503,6 +503,13 @@
       enforces = "QFP-RESULT-1,QFP-EVENT-1,FAULT-ORDER";
       capability = "fixed typed-command results with command-specific evidence retained on authenticated occurrence events";
     }
+    {
+      file = "0073-crucible-device-wait-vmstop.patch";
+      catalogName = "crucible-device-wait-vmstop";
+      class = "F";
+      enforces = "QFP-STATE-2,DET-1,INV-10";
+      capability = "synchronous exact stop at drained control wakes with nonblocking admission from device-completion callbacks";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

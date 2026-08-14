@@ -14,7 +14,7 @@ pub(super) fn emit_node_slot(out: &mut String) {
     out.push_str("    _Atomic uint8_t device_io_active;\n");
     out.push_str("    uint8_t pad0;\n");
     out.push_str("    _Atomic uint32_t publish_gen;\n");
-    out.push_str("    uint8_t pad1[4];\n");
+    out.push_str("    _Atomic uint32_t control_boundary_ack;\n");
     out.push_str("    _Atomic uint64_t device_completion_deadline_icount;\n");
     out.push_str("    _Atomic uint64_t preemption_at_icount;\n");
     out.push_str("    _Atomic uint64_t preemption_deadline_icount;\n");
@@ -46,6 +46,7 @@ pub(super) fn emit_node_slot(out: &mut String) {
             ("device_io_active", "DEVICE_IO_ACTIVE"),
             ("pad0", "PAD0"),
             ("publish_gen", "PUBLISH_GEN"),
+            ("control_boundary_ack", "CONTROL_BOUNDARY_ACK"),
             (
                 "device_completion_deadline_icount",
                 "DEVICE_COMPLETION_DEADLINE_ICOUNT",

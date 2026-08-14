@@ -561,6 +561,47 @@ fn delivery_opportunity_binds_the_computed_response() {
 }
 
 #[test]
+fn delivery_completion_payload_authenticates_the_original_request() {
+    let request = BlockRequest::read(7, 512, 4);
+    let wire = request
+        .encode()
+        .unwrap_or_else(|error| panic!("test request should encode: {error}"));
+    let delivery = BlockDeliveryOpportunity {
+        request_sequence: 11,
+        request: request.clone(),
+        request_icount: 20,
+        ready_nanos: 40,
+        wire_digest: *blake3::hash(&wire).as_bytes(),
+        response: BlockResponse::ok(request.request_id, b"good".to_vec()),
+        resolved: ResolvedBlockFaultDirective::fault_free(&request, 4096),
+        required_durable_frontier: None,
+    };
+    let opportunity = block_delivery_fault_opportunity(
+        target(),
+        &delivery,
+        FaultCoordinate {
+            virtual_nanos: 40,
+            retired_instructions: Some(20),
+        },
+    )
+    .unwrap_or_else(|error| panic!("delivery opportunity should be valid: {error}"));
+
+    let resolved = resolve_block_fault_directive_with_capacity(
+        &opaque_world(),
+        &target(),
+        &request,
+        delivery.request_sequence,
+        &opportunity,
+        4096,
+        context(),
+        &mut unexpected_read_source,
+        [],
+    )
+    .unwrap_or_else(|error| panic!("delivery request identity should validate: {error}"));
+    assert_eq!(resolved.request_sequence, delivery.request_sequence);
+}
+
+#[test]
 fn keyed_choices_are_reproducible_and_scenario_owned() {
     let latency = action(
         "keyed-choice",

@@ -1,6 +1,6 @@
 diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
 new file mode 100644
-index 0000000..3fbb446
+index 000000000..3fbb446ce
 --- /dev/null
 +++ b/block/crucible-shmem.c
 @@ -0,0 +1,274 @@
@@ -279,7 +279,7 @@ index 0000000..3fbb446
 +block_init(bdrv_crucible_shmem_init);
 +
 diff --git a/block/meson.build b/block/meson.build
-index 34b1b2a..2977e76 100644
+index 34b1b2a30..2977e76f1 100644
 --- a/block/meson.build
 +++ b/block/meson.build
 @@ -164,6 +164,7 @@ block_ss.add(block_gen_c)
@@ -291,7 +291,7 @@ index 34b1b2a..2977e76 100644
  subdir('export')
  subdir('monitor')
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 138f791..477db80 100644
+index 138f79142..477db8019 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -164,6 +164,44 @@ typedef void (*qemu_plugin_tcg_exec_cb_t)(unsigned int vcpu_index,

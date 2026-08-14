@@ -1,5 +1,5 @@
 diff --git a/include/net/queue.h b/include/net/queue.h
-index 2e686b1..7709f15 100644
+index 2e686b1b6..7709f157a 100644
 --- a/include/net/queue.h
 +++ b/include/net/queue.h
 @@ -46,6 +46,13 @@ typedef ssize_t (NetQueueDeliverFunc)(NetClientState *sender,
@@ -17,7 +17,7 @@ index 2e686b1..7709f15 100644
                                 NetClientState *sender,
                                 unsigned flags,
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index c3a6c95..128f8c3 100644
+index c3a6c9596..128f8c346 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -728,6 +728,52 @@ const void *qemu_plugin_request_time_control(void);
@@ -74,7 +74,7 @@ index c3a6c95..128f8c3 100644
  (*qemu_plugin_vcpu_syscall_cb_t)(qemu_plugin_id_t id, unsigned int vcpu_index,
                                   int64_t num, uint64_t a1, uint64_t a2,
 diff --git a/net/queue.c b/net/queue.c
-index fb33856..e7987fd 100644
+index fb33856c1..e7987fdf0 100644
 --- a/net/queue.c
 +++ b/net/queue.c
 @@ -113,6 +113,22 @@ static void qemu_net_queue_append(NetQueue *queue,
@@ -101,7 +101,7 @@ index fb33856..e7987fd 100644
                                 NetClientState *sender,
                                 unsigned flags,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index bdd5ac2..f6ad1d0 100644
+index bdd5ac235..f6ad1d0dc 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -12,6 +12,7 @@

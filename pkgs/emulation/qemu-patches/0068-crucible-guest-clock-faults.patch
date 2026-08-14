@@ -1,5 +1,5 @@
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index 5617692..a47e73e 100644
+index 56176924c..a47e73e93 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -218,6 +218,21 @@ static bool rr_crucible_sim_all_vcpus_halted(void)
@@ -150,7 +150,7 @@ index 5617692..a47e73e 100644
              /*
               * When all cpus are sleeping (e.g in WFI), to avoid a deadlock
 diff --git a/hw/acpi/core.c b/hw/acpi/core.c
-index 58f8964..41fe09c 100644
+index 58f8964e1..41fe09c52 100644
 --- a/hw/acpi/core.c
 +++ b/hw/acpi/core.c
 @@ -20,6 +20,8 @@
@@ -380,7 +380,7 @@ index 58f8964..41fe09c 100644
  }
  
 diff --git a/hw/acpi/ich9.c b/hw/acpi/ich9.c
-index c7a735b..d1f5e3f 100644
+index c7a735bf6..d1f5e3f8a 100644
 --- a/hw/acpi/ich9.c
 +++ b/hw/acpi/ich9.c
 @@ -240,6 +240,29 @@ static const VMStateDescription vmstate_pcihp_state = {
@@ -422,7 +422,7 @@ index c7a735b..d1f5e3f 100644
      }
  };
 diff --git a/hw/acpi/piix4.c b/hw/acpi/piix4.c
-index 6d023e5..92ae132 100644
+index 6d023e595..92ae13275 100644
 --- a/hw/acpi/piix4.c
 +++ b/hw/acpi/piix4.c
 @@ -236,6 +236,26 @@ static bool vmstate_test_migrate_acpi_index(void *opaque, int version_id)
@@ -461,7 +461,7 @@ index 6d023e5..92ae132 100644
      }
  };
 diff --git a/hw/intc/apic.c b/hw/intc/apic.c
-index 4406617..e873a02 100644
+index 4406617ee..e873a0286 100644
 --- a/hw/intc/apic.c
 +++ b/hw/intc/apic.c
 @@ -43,6 +43,34 @@
@@ -677,7 +677,7 @@ index 4406617..e873a02 100644
      /*
       * The --machine none does not call apic_set_max_apic_id before creating
 diff --git a/hw/intc/apic_common.c b/hw/intc/apic_common.c
-index 7033020..a8f1a7b 100644
+index 703302097..a8f1a7ba6 100644
 --- a/hw/intc/apic_common.c
 +++ b/hw/intc/apic_common.c
 @@ -19,6 +19,7 @@
@@ -760,7 +760,7 @@ index 7033020..a8f1a7b 100644
      }
  };
 diff --git a/hw/rtc/mc146818rtc.c b/hw/rtc/mc146818rtc.c
-index d727879..74a207c 100644
+index d727879ed..74a207c92 100644
 --- a/hw/rtc/mc146818rtc.c
 +++ b/hw/rtc/mc146818rtc.c
 @@ -26,6 +26,8 @@
@@ -1597,7 +1597,7 @@ index d727879..74a207c 100644
  
      s->suspend_notifier.notify = rtc_notify_suspend;
 diff --git a/hw/rtc/pl031.c b/hw/rtc/pl031.c
-index 29c87a3..ab11a64 100644
+index 29c87a3d9..ab11a6459 100644
 --- a/hw/rtc/pl031.c
 +++ b/hw/rtc/pl031.c
 @@ -21,6 +21,8 @@
@@ -1915,7 +1915,7 @@ index 29c87a3..ab11a64 100644
      }
  };
 diff --git a/hw/timer/hpet.c b/hw/timer/hpet.c
-index 14dafd9..c4d7aa2 100644
+index 14dafd921..c4d7aa2a9 100644
 --- a/hw/timer/hpet.c
 +++ b/hw/timer/hpet.c
 @@ -25,9 +25,10 @@
@@ -2378,7 +2378,7 @@ index 14dafd9..c4d7aa2 100644
  
  static const Property hpet_device_properties[] = {
 diff --git a/hw/timer/i8254.c b/hw/timer/i8254.c
-index 058fc61..28b3d64 100644
+index 058fc61ce..28b3d6457 100644
 --- a/hw/timer/i8254.c
 +++ b/hw/timer/i8254.c
 @@ -25,6 +25,8 @@
@@ -2672,7 +2672,7 @@ index 058fc61..28b3d64 100644
  
  static void pit_class_initfn(ObjectClass *klass, void *data)
 diff --git a/hw/timer/i8254_common.c b/hw/timer/i8254_common.c
-index 900b0e1..663b5ea 100644
+index 900b0e183..663b5eab3 100644
 --- a/hw/timer/i8254_common.c
 +++ b/hw/timer/i8254_common.c
 @@ -199,6 +199,29 @@ static const VMStateDescription vmstate_pit_channel = {
@@ -2717,7 +2717,7 @@ index 900b0e1..663b5ea 100644
  };
  
 diff --git a/include/hw/acpi/acpi.h b/include/hw/acpi/acpi.h
-index d1a4fa2..ca26320 100644
+index d1a4fa2af..ca26320d9 100644
 --- a/include/hw/acpi/acpi.h
 +++ b/include/hw/acpi/acpi.h
 @@ -115,6 +115,9 @@ struct ACPIPMTimer {
@@ -2731,7 +2731,7 @@ index d1a4fa2..ca26320 100644
      acpi_update_sci_fn update_sci;
  };
 diff --git a/include/hw/i386/apic_internal.h b/include/hw/i386/apic_internal.h
-index 8adfed4..e742af0 100644
+index 8adfed4b2..e742af078 100644
 --- a/include/hw/i386/apic_internal.h
 +++ b/include/hw/i386/apic_internal.h
 @@ -186,6 +186,9 @@ struct APICCommonState {
@@ -2745,7 +2745,7 @@ index 8adfed4..e742af0 100644
      int wait_for_sipi;
  
 diff --git a/include/hw/rtc/mc146818rtc.h b/include/hw/rtc/mc146818rtc.h
-index 64893be..c2c6826 100644
+index 64893be15..c2c6826da 100644
 --- a/include/hw/rtc/mc146818rtc.h
 +++ b/include/hw/rtc/mc146818rtc.h
 @@ -43,6 +43,18 @@ struct MC146818RtcState {
@@ -2768,7 +2768,7 @@ index 64893be..c2c6826 100644
      LostTickPolicy lost_tick_policy;
      Notifier suspend_notifier;
 diff --git a/include/hw/rtc/pl031.h b/include/hw/rtc/pl031.h
-index 9fd4be1..808825e 100644
+index 9fd4be1ab..808825e9e 100644
 --- a/include/hw/rtc/pl031.h
 +++ b/include/hw/rtc/pl031.h
 @@ -43,6 +43,10 @@ struct PL031State {
@@ -2783,7 +2783,7 @@ index 9fd4be1..808825e 100644
  
  #endif
 diff --git a/include/hw/timer/i8254_internal.h b/include/hw/timer/i8254_internal.h
-index 1761deb..94130ea 100644
+index 1761deb4c..94130eae8 100644
 --- a/include/hw/timer/i8254_internal.h
 +++ b/include/hw/timer/i8254_internal.h
 @@ -48,6 +48,9 @@ typedef struct PITChannelState {
@@ -2797,7 +2797,7 @@ index 1761deb..94130ea 100644
  
  struct PITCommonState {
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index a706e82..0f0fee9 100644
+index a706e822e..0f0fee953 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -75,6 +75,11 @@ int qemu_crucible_fault_vmstate_enable(void);
@@ -2960,7 +2960,7 @@ index a706e82..0f0fee9 100644
  int qemu_crucible_fault_vcpu_service_validate(
      const QemuCrucibleFaultRule *rule);
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 6486f49..3584c8d 100644
+index 6486f49dd..3584c8d89 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -69,7 +69,7 @@ typedef uint64_t qemu_plugin_id_t;
@@ -3014,7 +3014,7 @@ index 6486f49..3584c8d 100644
  QEMU_PLUGIN_API
  int qemu_plugin_crucible_fault_hardware_error_bind(
 diff --git a/migration/savevm.c b/migration/savevm.c
-index 238a29e..dc27b91 100644
+index 238a29ec7..dc27b9190 100644
 --- a/migration/savevm.c
 +++ b/migration/savevm.c
 @@ -264,7 +264,8 @@ static uint32_t crucible_lifecycle_state_domain(const SaveStateEntry *se)
@@ -3028,7 +3028,7 @@ index 238a29e..dc27b91 100644
          }
          if (strcmp(name, "cpu") == 0 ||
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fa09645..134ff9f 100644
+index fa0964588..134ff9fbb 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -345,13 +345,11 @@ enum {
@@ -3064,7 +3064,7 @@ index fa09645..134ff9f 100644
      g_assert(qemu_plugin_crucible_exact_boundary_depth < UINT_MAX);
 diff --git a/plugins/crucible-fault-clock.c b/plugins/crucible-fault-clock.c
 new file mode 100644
-index 0000000..8cf6f51
+index 000000000..8cf6f5177
 --- /dev/null
 +++ b/plugins/crucible-fault-clock.c
 @@ -0,0 +1,4327 @@
@@ -7396,7 +7396,7 @@ index 0000000..8cf6f51
 +
 +type_init(crucible_clock_register)
 diff --git a/plugins/crucible-fault-interrupt.c b/plugins/crucible-fault-interrupt.c
-index cd1a116..f2f7e08 100644
+index cd1a116b7..f2f7e088b 100644
 --- a/plugins/crucible-fault-interrupt.c
 +++ b/plugins/crucible-fault-interrupt.c
 @@ -924,9 +924,9 @@ int qemu_crucible_fault_interrupt_validate(const QemuCrucibleFaultRule *rule)
@@ -7413,7 +7413,7 @@ index cd1a116..f2f7e08 100644
      bool storm_retain_pending;
      uint32_t storm_burst, storm_total;
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
-index 73cffb6..7f4c1ad 100644
+index 73cffb61b..7f4c1adf4 100644
 --- a/plugins/crucible-fault-lifecycle.c
 +++ b/plugins/crucible-fault-lifecycle.c
 @@ -20,6 +20,7 @@
@@ -7477,7 +7477,7 @@ index 73cffb6..7f4c1ad 100644
              return -EINVAL;
          }
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index e75bc75..1710ab3 100644
+index e75bc75e8..1710ab361 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -2303,6 +2303,16 @@ static bool node_ratio_capacity_valid(QemuCrucibleFaultRule *rule, uint16_t tag)
@@ -7908,7 +7908,7 @@ index e75bc75..1710ab3 100644
      crucible_memory_vmstate_free(state);
  }
 diff --git a/plugins/crucible-fault-vmstate.c b/plugins/crucible-fault-vmstate.c
-index 629eb40..486b17a 100644
+index 629eb40dc..486b17a13 100644
 --- a/plugins/crucible-fault-vmstate.c
 +++ b/plugins/crucible-fault-vmstate.c
 @@ -43,6 +43,7 @@ static bool crucible_fault_vmstate_has_expected_reservations;
@@ -7944,7 +7944,7 @@ index 629eb40..486b17a 100644
          goto cleanup;
      }
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
-index 67071aa..4e95b1d 100644
+index 67071aa63..4e95b1d42 100644
 --- a/plugins/crucible-fault.c
 +++ b/plugins/crucible-fault.c
 @@ -547,7 +547,8 @@ size_t qemu_plugin_crucible_fault_capabilities(
@@ -7987,7 +7987,7 @@ index 67071aa..4e95b1d 100644
              crucible_fault_queue_result(&result, result_payload);
              result_payload = NULL;
 diff --git a/plugins/meson.build b/plugins/meson.build
-index c02bdf7..a100e60 100644
+index c02bdf799..a100e609e 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
 @@ -61,6 +61,7 @@ endif
@@ -7999,7 +7999,7 @@ index c02bdf7..a100e60 100644
                      'crucible-fault-register.c',
                      'crucible-fault-instruction.c',
 diff --git a/system/vl.c b/system/vl.c
-index c06dd6f..3dcf011 100644
+index c06dd6f8b..3dcf01144 100644
 --- a/system/vl.c
 +++ b/system/vl.c
 @@ -2703,6 +2703,11 @@ static void qemu_init_displays(void)
@@ -8049,7 +8049,7 @@ index c06dd6f..3dcf011 100644
          return;
      }
 diff --git a/target/arm/cpu.c b/target/arm/cpu.c
-index 95680db..b75f4d7 100644
+index 95680db84..b75f4d76a 100644
 --- a/target/arm/cpu.c
 +++ b/target/arm/cpu.c
 @@ -2673,6 +2673,46 @@ static void arm_cpu_realizefn(DeviceState *dev, Error **errp)
@@ -8100,7 +8100,7 @@ index 95680db..b75f4d7 100644
  
  static ObjectClass *arm_cpu_class_by_name(const char *cpu_model)
 diff --git a/target/arm/cpu.h b/target/arm/cpu.h
-index 6392838..4ce9330 100644
+index 63928381e..4ce933083 100644
 --- a/target/arm/cpu.h
 +++ b/target/arm/cpu.h
 @@ -906,6 +906,9 @@ struct ArchCPU {
@@ -8114,7 +8114,7 @@ index 6392838..4ce9330 100644
       * Timer used by the PMU. Its state is restored after migration by
       * pmu_op_finish() - it does not need other handling during migration
 diff --git a/target/arm/helper.c b/target/arm/helper.c
-index c5c52b4..faf56fd 100644
+index c5c52b46b..faf56fda6 100644
 --- a/target/arm/helper.c
 +++ b/target/arm/helper.c
 @@ -8,7 +8,7 @@
@@ -8410,7 +8410,7 @@ index c5c52b4..faf56fd 100644
  
  static const ARMCPRegInfo generic_timer_cp_reginfo[] = {
 diff --git a/target/arm/internals.h b/target/arm/internals.h
-index 4641218..32fdee9 100644
+index 4641218a5..32fdee9f6 100644
 --- a/target/arm/internals.h
 +++ b/target/arm/internals.h
 @@ -1956,6 +1956,7 @@ int delete_hw_watchpoint(target_ulong addr, target_ulong len, int type);
@@ -8422,7 +8422,7 @@ index 4641218..32fdee9 100644
   * Return the currently applicable offset between the system counter
   * and the counter for the specified timer, as used for direct register
 diff --git a/target/arm/machine.c b/target/arm/machine.c
-index 3409223..9f075bb 100644
+index 3409223fb..9f075bb53 100644
 --- a/target/arm/machine.c
 +++ b/target/arm/machine.c
 @@ -1080,6 +1080,34 @@ static int cpu_post_load(void *opaque, int version_id)
@@ -8469,7 +8469,7 @@ index 3409223..9f075bb 100644
          &vmstate_wfxt_timer,
          NULL
 diff --git a/target/i386/cpu.c b/target/i386/cpu.c
-index d79bb71..2f20027 100644
+index d79bb7182..2f2002722 100644
 --- a/target/i386/cpu.c
 +++ b/target/i386/cpu.c
 @@ -8090,6 +8090,24 @@ static bool x86_cpu_update_smp_cache_topo(MachineState *ms, X86CPU *cpu,
@@ -8537,7 +8537,7 @@ index d79bb71..2f20027 100644
  out:
      if (local_err != NULL) {
 diff --git a/target/i386/tcg/misc_helper.c b/target/i386/tcg/misc_helper.c
-index 2b5f092..970cd9a 100644
+index 2b5f092a2..970cd9a6b 100644
 --- a/target/i386/tcg/misc_helper.c
 +++ b/target/i386/tcg/misc_helper.c
 @@ -18,6 +18,8 @@
@@ -8573,7 +8573,7 @@ index 2b5f092..970cd9a 100644
      env->regs[R_EDX] = (uint32_t)(val >> 32);
  }
 diff --git a/target/i386/tcg/system/svm_helper.c b/target/i386/tcg/system/svm_helper.c
-index f9982b7..ead3000 100644
+index f9982b72d..ead30002a 100644
 --- a/target/i386/tcg/system/svm_helper.c
 +++ b/target/i386/tcg/system/svm_helper.c
 @@ -19,6 +19,8 @@

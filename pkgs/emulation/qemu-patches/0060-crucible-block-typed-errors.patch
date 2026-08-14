@@ -1,5 +1,5 @@
 diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
-index b8d9057..1788515 100644
+index b8d9057d8..178851578 100644
 --- a/block/crucible-shmem.c
 +++ b/block/crucible-shmem.c
 @@ -239,6 +239,25 @@ crucible_shmem_poll_until_ready(BlockDriverState *bs, uint32_t request_id,
@@ -45,7 +45,7 @@ index b8d9057..1788515 100644
  
  static int coroutine_fn GRAPH_RDLOCK
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index c227d35..627f986 100644
+index c227d3593..627f9869e 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -243,8 +243,11 @@ typedef int (*qemu_plugin_blk_submit_cb_t)(uint32_t request_id,

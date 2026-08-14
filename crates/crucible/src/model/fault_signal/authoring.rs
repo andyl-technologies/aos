@@ -1690,7 +1690,7 @@ fn selector_to_toml(selector: &TargetSelector) -> Result<toml::Value, FaultSigna
             let [target] = targets.targets() else {
                 return Err(FaultSignalAuthoringError::InvalidSelector);
             };
-            let mut value = table(flatten_tagged(to_toml_value(target)?)?, "selector")?;
+            let mut value = table(resolved_target_to_authored_toml(target)?, "selector")?;
             if targets.allow_empty() {
                 value.insert(String::from("allow_empty"), toml::Value::Boolean(true));
             }
@@ -1721,7 +1721,7 @@ fn selector_to_toml(selector: &TargetSelector) -> Result<toml::Value, FaultSigna
             let values = targets
                 .targets()
                 .iter()
-                .map(|target| flatten_tagged(to_toml_value(target)?))
+                .map(resolved_target_to_authored_toml)
                 .collect::<Result<Vec<_>, FaultSignalAuthoringError>>()?;
             let mut value = toml::map::Map::new();
             insert_string(&mut value, "kind", "target_set");
@@ -1753,6 +1753,29 @@ fn selector_to_toml(selector: &TargetSelector) -> Result<toml::Value, FaultSigna
             Ok(toml::Value::Table(value))
         }
     }
+}
+
+fn resolved_target_to_authored_toml(
+    target: &ResolvedFaultTarget,
+) -> Result<toml::Value, FaultSignalAuthoringError> {
+    let mut value = table(flatten_tagged(to_toml_value(target)?)?, "selector target")?;
+    match target {
+        ResolvedFaultTarget::BlockDevice { device }
+        | ResolvedFaultTarget::NinePDevice { device } => {
+            value.insert(
+                String::from("device"),
+                toml::Value::String(format_content_hash_ref(*device)),
+            );
+        }
+        ResolvedFaultTarget::BlockRange { device, .. } => {
+            value.insert(
+                String::from("device"),
+                toml::Value::String(format_content_hash_ref(*device)),
+            );
+        }
+        _ => {}
+    }
+    Ok(toml::Value::Table(value))
 }
 
 fn selector_from_toml(
@@ -2357,12 +2380,15 @@ fn resolve_authored_target(
         "node" => {
             let node: FaultObjectId = take_typed(&mut value, "node")?;
             ensure_empty(&value, "node selector")?;
-            if !world
-                .fault_topology()
-                .node_capabilities
-                .iter()
-                .any(|candidate| candidate.node.as_str() == node.as_str())
-            {
+            if !world.vm_nodes().iter().any(|candidate| {
+                candidate.id.name.as_str() == node.as_str()
+                    && (world.fault_topology().node_capabilities.is_empty()
+                        || world
+                            .fault_topology()
+                            .node_capabilities
+                            .iter()
+                            .any(|capabilities| capabilities.node.as_str() == node.as_str()))
+            }) {
                 return Err(FaultSignalAuthoringError::UnknownWorldTarget {
                     kind,
                     id: node.to_string(),
@@ -2897,5 +2923,85 @@ fn hex_digit(value: u8) -> Result<u8, FaultSignalAuthoringError> {
         b'0'..=b'9' => Ok(value - b'0'),
         b'a'..=b'f' => Ok(value - b'a' + 10),
         _ => Err(FaultSignalAuthoringError::InvalidHex),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{
+        Icount, LinkDef, NodeId, ReadyPoint, VmArchitecture, WhiteBoxPolicy, WorldNode,
+    };
+
+    fn authored_test_world() -> World {
+        let nodes = ["left", "right"].map(|name| WorldNode {
+            id: NodeId {
+                name: String::from(name),
+            },
+            arch: VmArchitecture::X86_64,
+            memory_mib: 128,
+            cmdline: String::new(),
+            ready_point: ReadyPoint::FixedIcount {
+                icount: Icount { retired: 0 },
+            },
+            white_box: WhiteBoxPolicy::Disabled,
+            smp_vcpus: 1,
+            icount_shift: 0,
+            kernel: None,
+            root_image: None,
+            initrd: None,
+        });
+        let link = LinkDef::new(nodes[0].id.clone(), nodes[1].id.clone())
+            .unwrap_or_else(|error| panic!("test link should be valid: {error}"));
+        World::from_nodes_and_links(nodes.to_vec(), vec![link])
+            .unwrap_or_else(|error| panic!("test world should be valid: {error}"))
+    }
+
+    #[test]
+    fn content_addressed_targets_use_the_public_hash_reference_syntax() {
+        let device = ContentHash::from_bytes(b"authored-device");
+        let expected = toml::Value::String(format_content_hash_ref(device));
+        let targets = [
+            ResolvedFaultTarget::BlockDevice { device },
+            ResolvedFaultTarget::NinePDevice { device },
+            ResolvedFaultTarget::BlockRange {
+                device,
+                start_byte: 512,
+                length_bytes: 4_096,
+            },
+        ];
+
+        for target in targets {
+            let value = resolved_target_to_authored_toml(&target)
+                .unwrap_or_else(|error| panic!("target should serialize: {error}"));
+            let table = value
+                .as_table()
+                .unwrap_or_else(|| panic!("resolved target should be an authored table"));
+            assert_eq!(table.get("device"), Some(&expected));
+        }
+    }
+
+    #[test]
+    fn node_selector_accepts_a_declared_vm_without_optional_capability_rows() {
+        let mut selector = toml::map::Map::new();
+        selector.insert(
+            String::from("kind"),
+            toml::Value::String(String::from("node")),
+        );
+        selector.insert(
+            String::from("node"),
+            toml::Value::String(String::from("left")),
+        );
+
+        let resolved =
+            resolve_authored_target(toml::Value::Table(selector), &authored_test_world())
+                .unwrap_or_else(|error| panic!("declared VM node should resolve: {error}"));
+        assert_eq!(
+            resolved,
+            vec![ResolvedFaultTarget::Node {
+                node: FaultObjectId::parse("left")
+                    .unwrap_or_else(|error| panic!("test node ID should be valid: {error}")),
+            }]
+        );
     }
 }

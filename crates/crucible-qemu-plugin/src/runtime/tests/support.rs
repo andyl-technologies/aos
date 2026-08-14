@@ -235,6 +235,7 @@ pub(super) const fn test_capabilities() -> LiveInstallCapabilities {
         basic_block_coverage: None,
         register_vcpu_init: Some(test_register_vcpu_init),
         register_vcpu_idle_resume: Some(test_register_vcpu_idle_resume),
+        register_control_boundary: Some(test_register_control_boundary),
         register_sim_shmem_dispatch: Some(test_register_sim_shmem_dispatch),
         register_net_tx: Some(test_register_net_tx),
         net_send: Some(test_net_send),
@@ -384,6 +385,12 @@ extern "C" fn test_register_vcpu_init(
 extern "C" fn test_register_vcpu_idle_resume(
     _idle_callback: Option<crate::QemuVcpuIdleResumeCbFn>,
     _resume_callback: Option<crate::QemuVcpuIdleResumeCbFn>,
+    _userdata: *mut std::ffi::c_void,
+) {
+}
+
+extern "C" fn test_register_control_boundary(
+    _callback: Option<crate::QemuVcpuIdleResumeCbFn>,
     _userdata: *mut std::ffi::c_void,
 ) {
 }

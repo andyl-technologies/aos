@@ -584,6 +584,14 @@ extern "C" fn capture_vcpu_idle_resume_registration(
     LIVE_IDLE_RESUME_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
 }
 
+extern "C" fn capture_control_boundary_registration(
+    callback: Option<crate::QemuVcpuIdleResumeCbFn>,
+    userdata: *mut std::ffi::c_void,
+) {
+    assert!(callback.is_some());
+    assert!(!userdata.is_null());
+}
+
 extern "C" fn capture_sim_dispatch_registration(
     publish: Option<crate::QemuSimShmemPublishIcountCbFn>,
     ceiling: Option<crate::QemuSimShmemMaxAdvanceIcountCbFn>,
@@ -901,6 +909,7 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
                 advance_time_ns: Some(test_direct_advance),
                 register_vcpu_init: Some(capture_vcpu_init_registration),
                 register_vcpu_idle_resume: Some(capture_vcpu_idle_resume_registration),
+                register_control_boundary: Some(capture_control_boundary_registration),
                 register_sim_shmem_dispatch: Some(capture_sim_dispatch_registration),
                 register_time_advance_cb: Some(capture_time_advance_completion_registration),
                 register_net_tx: Some(capture_network_tx_registration),

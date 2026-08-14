@@ -1,5 +1,5 @@
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index c792d98..67f7480 100644
+index c792d98b9..67f748038 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -222,20 +222,44 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
@@ -125,7 +125,7 @@ index c792d98..67f7480 100644
                  }
              }
 diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.c b/accel/tcg/tcg-accel-ops-sim-shmem.c
-index 0a7de70..702e9bf 100644
+index 0a7de7063..702e9bf18 100644
 --- a/accel/tcg/tcg-accel-ops-sim-shmem.c
 +++ b/accel/tcg/tcg-accel-ops-sim-shmem.c
 @@ -11,6 +11,8 @@ static qemu_plugin_sim_shmem_publish_icount_cb_t crucible_publish_icount_cb;
@@ -236,7 +236,7 @@ index 0a7de70..702e9bf 100644
  {
      return candidate_icount <= crucible_sim_shmem_max_advance_icount();
 diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.h b/accel/tcg/tcg-accel-ops-sim-shmem.h
-index 69553f3..913017c 100644
+index 69553f35f..913017c3e 100644
 --- a/accel/tcg/tcg-accel-ops-sim-shmem.h
 +++ b/accel/tcg/tcg-accel-ops-sim-shmem.h
 @@ -2,11 +2,16 @@
@@ -257,7 +257,7 @@ index 69553f3..913017c 100644
  
  #endif /* TCG_ACCEL_OPS_SIM_SHMEM_H */
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 9041f88..e267931 100644
+index 9041f8843..e26793161 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1064,17 +1064,20 @@ void qemu_plugin_register_sim_shmem_dispatch_cb(

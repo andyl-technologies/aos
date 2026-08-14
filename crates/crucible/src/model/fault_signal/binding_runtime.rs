@@ -972,6 +972,20 @@ impl<'a> FaultBindingRuntime<'a> {
         verify_replay_outcomes: bool,
     ) -> Result<BindingEvaluation, BindingRuntimeError> {
         self.ensure_usable()?;
+        if opportunity.is_some()
+            && !self.bindings.iter().any(|binding| {
+                matches!(
+                    binding.sampling(),
+                    BindingSampling::AtOpportunity
+                        | BindingSampling::AtEvent(
+                            BindingEventParent::OpportunityOperation
+                                | BindingEventParent::OpportunityState
+                        )
+                )
+            })
+        {
+            return Ok(BindingEvaluation::default());
+        }
         let cursor = FaultSchedulerCursor {
             virtual_nanos: coordinate.virtual_nanos,
             same_coordinate_sequence,
@@ -979,7 +993,7 @@ impl<'a> FaultBindingRuntime<'a> {
         self.ensure_monotone(cursor)?;
         if opportunity.is_some()
             && !self.boundary_completed_cursor.is_some_and(|boundary| {
-                boundary.virtual_nanos == cursor.virtual_nanos && boundary <= cursor
+                boundary.virtual_nanos < cursor.virtual_nanos || boundary <= cursor
             })
         {
             return Err(BindingRuntimeError::OpportunityBeforeBoundary);
@@ -2917,7 +2931,9 @@ fn validate_checkpoint_mapping_values(
                         .is_some_and(|shape| value.value_type().as_ref() == Some(&shape.value_type))
                 })
         }
-        (_, None) => state.sample_count == 0 && state.mapped_values.is_empty(),
+        (_, None) => {
+            state.mapped_parameters.is_none() && state.mapped_values.is_empty() && !state.active
+        }
         _ => false,
     };
     if valid {

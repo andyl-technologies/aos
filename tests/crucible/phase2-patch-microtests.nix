@@ -465,6 +465,13 @@
         patchName = "0072-crucible-typed-node-result-schema.patch";
       };
     }
+    {
+      patch = "0073-crucible-device-wait-vmstop.patch";
+      check = import ./phase1-plugin-runtime-apis.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0073-crucible-device-wait-vmstop.patch";
+      };
+    }
   ];
 
   microtestPatchNames =

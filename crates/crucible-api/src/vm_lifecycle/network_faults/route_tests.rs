@@ -1992,6 +1992,8 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
             coordinate: Some(release),
             coordinate_sequence: 0,
             journal_sequence: 1,
+            observations: super::super::storage_faults::ProductionFaultObservationJournal::default(
+            ),
             effect_state: overlapping_ledger,
         })
         .is_err()
@@ -2010,6 +2012,8 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
             coordinate: Some(release),
             coordinate_sequence: 0,
             journal_sequence: 1,
+            observations: super::super::storage_faults::ProductionFaultObservationJournal::default(
+            ),
             effect_state: mismatched_expiry,
         })
         .is_err()
@@ -2029,6 +2033,8 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
             coordinate: Some(release),
             coordinate_sequence: 0,
             journal_sequence: 1,
+            observations: super::super::storage_faults::ProductionFaultObservationJournal::default(
+            ),
             effect_state: over_byte_capacity,
         })
         .is_err()
@@ -2064,6 +2070,8 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
             coordinate: Some(release),
             coordinate_sequence: 0,
             journal_sequence: 1,
+            observations: super::super::storage_faults::ProductionFaultObservationJournal::default(
+            ),
             effect_state: over_bundle_capacity,
         })
         .is_err()

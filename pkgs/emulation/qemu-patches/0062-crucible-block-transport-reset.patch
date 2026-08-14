@@ -1,5 +1,5 @@
 diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
-index afc442b..157a655 100644
+index afc442b02..157a65596 100644
 --- a/block/crucible-shmem.c
 +++ b/block/crucible-shmem.c
 @@ -15,6 +15,9 @@
@@ -648,7 +648,7 @@ index afc442b..157a655 100644
  
  static void bdrv_crucible_shmem_init(void)
 diff --git a/block/io.c b/block/io.c
-index 1ba8d1a..d2e5041 100644
+index 1ba8d1aee..d2e5041e8 100644
 --- a/block/io.c
 +++ b/block/io.c
 @@ -3533,6 +3533,12 @@ bdrv_parent_cb_resize(BlockDriverState *bs)
@@ -665,7 +665,7 @@ index 1ba8d1a..d2e5041 100644
   * Truncate file to 'offset' bytes (needed only for file protocols)
   *
 diff --git a/hw/block/virtio-blk.c b/hw/block/virtio-blk.c
-index b69d099..9bf1347 100644
+index b69d0997a..9bf1347b6 100644
 --- a/hw/block/virtio-blk.c
 +++ b/hw/block/virtio-blk.c
 @@ -74,8 +74,19 @@ static int virtio_blk_handle_rw_error(VirtIOBlockReq *req, int error,
@@ -904,7 +904,7 @@ index b69d099..9bf1347 100644
  
  static const Property virtio_blk_properties[] = {
 diff --git a/hw/virtio/virtio.c b/hw/virtio/virtio.c
-index ea6d5f9..91caba2 100644
+index ea6d5f934..91caba2e8 100644
 --- a/hw/virtio/virtio.c
 +++ b/hw/virtio/virtio.c
 @@ -2111,19 +2111,30 @@ typedef struct VirtQueueElementOld {
@@ -968,7 +968,7 @@ index ea6d5f9..91caba2 100644
                                  VirtQueueElement *elem)
  {
 diff --git a/include/block/block_int-common.h b/include/block/block_int-common.h
-index ebb4e56..deeb3e8 100644
+index ebb4e56a5..deeb3e800 100644
 --- a/include/block/block_int-common.h
 +++ b/include/block/block_int-common.h
 @@ -379,6 +379,13 @@ struct BlockDriver {
@@ -986,7 +986,7 @@ index ebb4e56..deeb3e8 100644
       * Try to get @bs's logical and physical block size.
       * On success, store them in @bsz and return zero.
 diff --git a/include/block/block_int-io.h b/include/block/block_int-io.h
-index 4a7cf2b..401b0ee 100644
+index 4a7cf2b4f..401b0ee02 100644
 --- a/include/block/block_int-io.h
 +++ b/include/block/block_int-io.h
 @@ -130,6 +130,12 @@ bdrv_co_refresh_total_sectors(BlockDriverState *bs, int64_t hint);
@@ -1003,7 +1003,7 @@ index 4a7cf2b..401b0ee 100644
  BdrvChild * GRAPH_RDLOCK bdrv_filter_child(BlockDriverState *bs);
  BdrvChild * GRAPH_RDLOCK bdrv_filter_or_cow_child(BlockDriverState *bs);
 diff --git a/include/hw/virtio/virtio-blk.h b/include/hw/virtio/virtio-blk.h
-index 3d8dee7..881c160 100644
+index 3d8dee7ec..881c16031 100644
 --- a/include/hw/virtio/virtio-blk.h
 +++ b/include/hw/virtio/virtio-blk.h
 @@ -56,6 +56,7 @@ struct VirtIOBlock {
@@ -1015,7 +1015,7 @@ index 3d8dee7..881c160 100644
      unsigned short sector_mask;
      bool original_wce;
 diff --git a/include/hw/virtio/virtio.h b/include/hw/virtio/virtio.h
-index 006d49b..15c9f88 100644
+index 006d49b12..15c9f88d4 100644
 --- a/include/hw/virtio/virtio.h
 +++ b/include/hw/virtio/virtio.h
 @@ -273,6 +273,8 @@ void virtqueue_map(VirtIODevice *vdev, VirtQueueElement *elem);
@@ -1028,7 +1028,7 @@ index 006d49b..15c9f88 100644
                                  VirtQueueElement *elem);
  int virtqueue_avail_bytes(VirtQueue *vq, unsigned int in_bytes,
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 853254e..1fcbe07 100644
+index 853254eae..1fcbe07da 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -220,7 +220,8 @@ typedef uint64_t (*qemu_plugin_sim_shmem_max_advance_icount_cb_t)(void *userdata
@@ -1169,7 +1169,7 @@ index 853254e..1fcbe07 100644
   * qemu_plugin_register_blk_wait_cb() - register the shmem block wait hook
   * @wait_cb: callback fired before a pending block coroutine parks
 diff --git a/qapi/block-core.json b/qapi/block-core.json
-index b193778..724dc27 100644
+index b1937780e..724dc2768 100644
 --- a/qapi/block-core.json
 +++ b/qapi/block-core.json
 @@ -3184,6 +3184,8 @@

@@ -16,8 +16,9 @@ use crucible_shmem::{
     FRAME_ENTRY_LEN_OFFSET, FRAME_ENTRY_SEQ_OFFSET, FRAME_ENTRY_SIZE, FRAME_ENTRY_SRC_NODE_OFFSET,
     FrameEntry, GUEST_INTROSPECTION_ENTRY_DATA_OFFSET, GUEST_INTROSPECTION_ENTRY_LEN_OFFSET,
     GUEST_INTROSPECTION_ENTRY_SEQUENCE_OFFSET, GUEST_INTROSPECTION_ENTRY_SIZE, MAX_FRAME_DATA,
-    NODE_SLOT_CURRENT_ICOUNT_OFFSET, NODE_SLOT_CURRENT_NS_OFFSET,
-    NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET, NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET, NODE_SLOT_KIND_OFFSET,
+    NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET, NODE_SLOT_CURRENT_ICOUNT_OFFSET,
+    NODE_SLOT_CURRENT_NS_OFFSET, NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET,
+    NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET, NODE_SLOT_KIND_OFFSET,
     NODE_SLOT_LOGICAL_TIME_RAW_ICOUNT_OFFSET, NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET,
     NODE_SLOT_LOGICAL_TIME_RESTORE_REQUEST_OFFSET, NODE_SLOT_LOGICAL_TIME_RESTORE_TARGET_OFFSET,
     NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET, NODE_SLOT_PREEMPTION_ARG0_OFFSET,
@@ -236,6 +237,11 @@ fn live_golden_bytes() -> Vec<u8> {
         &mut bytes,
         GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PUBLISH_GEN_OFFSET,
         4,
+    );
+    write_u32(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET,
+        11,
     );
     write_u64(
         &mut bytes,
@@ -602,6 +608,10 @@ fn decode_golden_state(bytes: &[u8]) -> Result<GoldenState, String> {
                 GOLDEN_NODE_SLOT_BASE + NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET,
             ),
             publish_gen: read_u32(bytes, GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PUBLISH_GEN_OFFSET),
+            control_boundary_ack: read_u32(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET,
+            ),
             preemption_at_icount: read_u64(
                 bytes,
                 GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET,
@@ -871,6 +881,11 @@ fn encode_golden_state(state: &GoldenState) -> Vec<u8> {
         &mut bytes,
         GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PUBLISH_GEN_OFFSET,
         state.node.publish_gen,
+    );
+    write_u32(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET,
+        state.node.control_boundary_ack,
     );
     write_u64(
         &mut bytes,
@@ -1169,6 +1184,7 @@ struct NodeSlotState {
     kind: u8,
     device_io_active: u8,
     publish_gen: u32,
+    control_boundary_ack: u32,
     preemption_at_icount: u64,
     preemption_deadline_icount: u64,
     preemption_ceiling_icount: u64,

@@ -1,5 +1,5 @@
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fb43566..df9ebab 100644
+index fb43566c7..df9ebabf8 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -128,6 +128,9 @@ void *qemu_plugin_crucible_ipi_delivery_userdata;

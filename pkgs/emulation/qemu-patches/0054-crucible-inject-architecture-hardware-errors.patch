@@ -1,5 +1,5 @@
 diff --git a/hw/acpi/ghes-stub.c b/hw/acpi/ghes-stub.c
-index 7cec181..4237d71 100644
+index 7cec1812d..4237d716a 100644
 --- a/hw/acpi/ghes-stub.c
 +++ b/hw/acpi/ghes-stub.c
 @@ -20,3 +20,29 @@ bool acpi_ghes_present(void)
@@ -33,7 +33,7 @@ index 7cec181..4237d71 100644
 +    return -1;
 +}
 diff --git a/hw/acpi/ghes.c b/hw/acpi/ghes.c
-index b85bb48..dd74c74 100644
+index b85bb4819..dd74c74da 100644
 --- a/hw/acpi/ghes.c
 +++ b/hw/acpi/ghes.c
 @@ -20,6 +20,7 @@
@@ -415,7 +415,7 @@ index b85bb48..dd74c74 100644
 +    return true;
 +}
 diff --git a/hw/core/cpu-system.c b/hw/core/cpu-system.c
-index c1aa5a3..dabbca2 100644
+index c1aa5a3f5..dabbca2a0 100644
 --- a/hw/core/cpu-system.c
 +++ b/hw/core/cpu-system.c
 @@ -82,6 +82,58 @@ hwaddr cpu_get_phys_page_debug(CPUState *cpu, vaddr addr)
@@ -505,7 +505,7 @@ index c1aa5a3..dabbca2 100644
                                  const CPUFaultException *exception,
                                  uintptr_t retaddr)
 diff --git a/include/hw/acpi/ghes.h b/include/hw/acpi/ghes.h
-index 578a582..a8a7710 100644
+index 578a58220..a8a771091 100644
 --- a/include/hw/acpi/ghes.h
 +++ b/include/hw/acpi/ghes.h
 @@ -59,7 +59,7 @@ enum AcpiGhesNotifyType {
@@ -555,7 +555,7 @@ index 578a582..a8a7710 100644
 +    uint16_t source_id, const AcpiGhesMemoryErrorState *state);
  #endif
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index c330074..db2f5f2 100644
+index c33007482..db2f5f2d4 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
 @@ -812,8 +812,53 @@ typedef struct CPUFaultException {
@@ -633,7 +633,7 @@ index c330074..db2f5f2 100644
      CPUState *cpu, const CPUFaultException *exception, uintptr_t retaddr);
  G_NORETURN void cpu_inject_fault_access_error(
 diff --git a/include/hw/core/sysemu-cpu-ops.h b/include/hw/core/sysemu-cpu-ops.h
-index b8dcbd2..658ae05 100644
+index b8dcbd290..658ae058b 100644
 --- a/include/hw/core/sysemu-cpu-ops.h
 +++ b/include/hw/core/sysemu-cpu-ops.h
 @@ -49,8 +49,19 @@ typedef struct SysemuCPUOps {
@@ -657,7 +657,7 @@ index b8dcbd2..658ae05 100644
          CPUState *cpu, const CPUFaultException *exception,
          uintptr_t retaddr);
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 92f634d..9d38f98 100644
+index 92f634dd2..9d38f9825 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -214,6 +214,21 @@ int qemu_crucible_fault_interrupt_validate(
@@ -683,7 +683,7 @@ index 92f634d..9d38f98 100644
   * Architecture interrupt-controller interception contract.  These objects are
   * private QEMU process state: only their closed scalar projection is exported
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index acf0acb..e384dc8 100644
+index acf0acba7..e384dc8bc 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1755,6 +1755,52 @@ size_t qemu_plugin_crucible_fault_interrupt_manifest(
@@ -741,7 +741,7 @@ index acf0acb..e384dc8 100644
  int qemu_plugin_crucible_fault_interrupt_bind(
 diff --git a/plugins/crucible-fault-hardware-error.c b/plugins/crucible-fault-hardware-error.c
 new file mode 100644
-index 0000000..3a8523d
+index 000000000..3a8523d67
 --- /dev/null
 +++ b/plugins/crucible-fault-hardware-error.c
 @@ -0,0 +1,1216 @@
@@ -1962,7 +1962,7 @@ index 0000000..3a8523d
 +    return true;
 +}
 diff --git a/plugins/crucible-fault-instruction.c b/plugins/crucible-fault-instruction.c
-index 8c56d0d..c8bfb5a 100644
+index 8c56d0d15..c8bfb5a83 100644
 --- a/plugins/crucible-fault-instruction.c
 +++ b/plugins/crucible-fault-instruction.c
 @@ -142,6 +142,15 @@ typedef struct CrucibleInstructionContext {
@@ -2336,7 +2336,7 @@ index 8c56d0d..c8bfb5a 100644
  {
      return crucible_instruction_index &&
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index 9fbb681..7b1f756 100644
+index 9fbb68197..7b1f75620 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -1416,17 +1416,19 @@ static bool node_json_exception(const QObject *object)
@@ -2472,7 +2472,7 @@ index 9fbb681..7b1f756 100644
      case CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE:
          handler->capability.payload_schema =
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
-index 566e349..31b19e1 100644
+index 566e349a8..31b19e1e4 100644
 --- a/plugins/crucible-fault.c
 +++ b/plugins/crucible-fault.c
 @@ -395,7 +395,8 @@ size_t qemu_plugin_crucible_fault_capabilities(
@@ -2486,7 +2486,7 @@ index 566e349..31b19e1 100644
      }
      qemu_crucible_fault_registry_seal();
 diff --git a/plugins/meson.build b/plugins/meson.build
-index dd93f06..09bbc6c 100644
+index dd93f06d4..09bbc6c4e 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
 @@ -63,6 +63,7 @@ system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c',
@@ -2499,7 +2499,7 @@ index dd93f06..09bbc6c 100644
  
  common_ss.add(files('loader.c', 'api.c', 'core.c'))
 diff --git a/target/arm/cpu.c b/target/arm/cpu.c
-index a513671..95680db 100644
+index a51367113..95680db84 100644
 --- a/target/arm/cpu.c
 +++ b/target/arm/cpu.c
 @@ -178,6 +178,7 @@ static bool arm_cpu_has_work(CPUState *cs)
@@ -2579,7 +2579,7 @@ index a513671..95680db 100644
      .inject_fault_access_error = arm_cpu_inject_fault_access_error,
      .asidx_from_attrs = arm_asidx_from_attrs,
 diff --git a/target/arm/cpu.h b/target/arm/cpu.h
-index e468874..6392838 100644
+index e468874bc..63928381e 100644
 --- a/target/arm/cpu.h
 +++ b/target/arm/cpu.h
 @@ -63,6 +63,7 @@
@@ -2635,7 +2635,7 @@ index e468874..6392838 100644
      CPUState *cpu, const CPUFaultException *exception, uintptr_t retaddr);
  G_NORETURN void arm_cpu_inject_fault_access_error(
 diff --git a/target/arm/helper.c b/target/arm/helper.c
-index 6dd86e2..c5c52b4 100644
+index 6dd86e210..c5c52b46b 100644
 --- a/target/arm/helper.c
 +++ b/target/arm/helper.c
 @@ -9913,6 +9913,7 @@ void arm_log_exception(CPUState *cs)
@@ -2701,7 +2701,7 @@ index 6dd86e2..c5c52b4 100644
              cs, crucible_vector, crucible_syndrome,
              crucible_has_address, crucible_address);
 diff --git a/target/arm/machine.c b/target/arm/machine.c
-index 978249f..3409223 100644
+index 978249fb7..3409223fb 100644
 --- a/target/arm/machine.c
 +++ b/target/arm/machine.c
 @@ -343,6 +343,55 @@ static const VMStateDescription vmstate_serror = {
@@ -2769,7 +2769,7 @@ index 978249f..3409223 100644
          &vmstate_wfxt_timer,
          NULL
 diff --git a/target/arm/ptw.c b/target/arm/ptw.c
-index 5e32dfb..978fa39 100644
+index 5e32dfb46..978fa3982 100644
 --- a/target/arm/ptw.c
 +++ b/target/arm/ptw.c
 @@ -3730,13 +3730,49 @@ bool arm_cpu_get_fault_translation(CPUState *cs, vaddr addr,
@@ -2948,7 +2948,7 @@ index 5e32dfb..978fa39 100644
      case CPU_FAULT_AARCH64_UNDEFINED:
          exception_index = EXCP_UDEF;
 diff --git a/target/i386/cpu.c b/target/i386/cpu.c
-index 9375caf..d79bb71 100644
+index 9375caf99..d79bb7182 100644
 --- a/target/i386/cpu.c
 +++ b/target/i386/cpu.c
 @@ -8897,7 +8897,16 @@ static const struct SysemuCPUOps i386_sysemu_ops = {
@@ -2969,7 +2969,7 @@ index 9375caf..d79bb71 100644
      .inject_fault_access_error = x86_cpu_inject_fault_access_error,
      .asidx_from_attrs = x86_asidx_from_attrs,
 diff --git a/target/i386/cpu.h b/target/i386/cpu.h
-index 840519b..336d55f 100644
+index 840519b99..336d55fd0 100644
 --- a/target/i386/cpu.h
 +++ b/target/i386/cpu.h
 @@ -2392,8 +2392,19 @@ hwaddr x86_cpu_get_phys_page_attrs_debug(CPUState *cpu, vaddr addr,
@@ -2993,7 +2993,7 @@ index 840519b..336d55f 100644
      CPUState *cpu, const CPUFaultException *exception, uintptr_t retaddr);
  G_NORETURN void x86_cpu_inject_fault_access_error(
 diff --git a/target/i386/tcg/system/excp_helper.c b/target/i386/tcg/system/excp_helper.c
-index 5763a15..3b8a0b6 100644
+index 5763a1518..3b8a0b6bc 100644
 --- a/target/i386/tcg/system/excp_helper.c
 +++ b/target/i386/tcg/system/excp_helper.c
 @@ -729,11 +729,74 @@ bool x86_cpu_get_fault_translation(CPUState *cs, vaddr addr,

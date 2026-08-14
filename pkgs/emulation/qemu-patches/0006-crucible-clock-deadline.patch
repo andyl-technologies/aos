@@ -1,5 +1,5 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 00ebbbe..c3a6c95 100644
+index 00ebbbe7d..c3a6c9596 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1059,6 +1059,18 @@ uint64_t qemu_plugin_crucible_rr_switch_quantum(void);
@@ -22,7 +22,7 @@ index 00ebbbe..c3a6c95 100644
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
   *
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index 29bf39a..bdd5ac2 100644
+index 29bf39ae0..bdd5ac235 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -15,6 +15,7 @@

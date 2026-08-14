@@ -463,13 +463,18 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                 .map_err(|error| SchedulerError::BoundaryViolation {
                     message: error.to_string(),
                 })?;
-            let observations = journal.snapshot();
+            let observations = journal.drain_ready(
+                staged_scheduler
+                    .condition_event_log_prefix()
+                    .point()
+                    .at()
+                    .ticks,
+            );
             let appends = if observations.is_empty() {
                 Vec::new()
             } else {
                 vec![staged_scheduler.append_fault_observations(observations)?]
             };
-            journal.clear();
             Ok(appends)
         })();
         let appends = match staged {

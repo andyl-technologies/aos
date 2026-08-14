@@ -1,5 +1,5 @@
 diff --git a/hw/core/machine-qmp-cmds.c b/hw/core/machine-qmp-cmds.c
-index 3130c5c..e7a6088 100644
+index 3130c5cd4..e7a608829 100644
 --- a/hw/core/machine-qmp-cmds.c
 +++ b/hw/core/machine-qmp-cmds.c
 @@ -19,6 +19,7 @@
@@ -23,7 +23,7 @@ index 3130c5c..e7a6088 100644
  }
  
 diff --git a/include/exec/memory.h b/include/exec/memory.h
-index e1c196a..2b1dd71 100644
+index e1c196a0c..2b1dd7183 100644
 --- a/include/exec/memory.h
 +++ b/include/exec/memory.h
 @@ -1180,6 +1180,29 @@ typedef bool (*flatview_cb)(Int128 start,
@@ -57,7 +57,7 @@ index e1c196a..2b1dd71 100644
                                            MemoryRegionSection *b)
  {
 diff --git a/include/migration/misc.h b/include/migration/misc.h
-index 8fd36eb..f9cd4f1 100644
+index 8fd36eba1..f9cd4f110 100644
 --- a/include/migration/misc.h
 +++ b/include/migration/misc.h
 @@ -59,6 +59,17 @@ void migration_shutdown(void);
@@ -79,7 +79,7 @@ index 8fd36eb..f9cd4f1 100644
      MIG_EVENT_PRECOPY_SETUP,
      MIG_EVENT_PRECOPY_DONE,
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index e3112d3..02dfd45 100644
+index e3112d324..02dfd45e3 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
 @@ -25,6 +25,8 @@
@@ -92,7 +92,7 @@ index e3112d3..02dfd45 100644
   * Construct a qemu_plugin_meminfo_t.
   */
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index c53bd5f..d23f7bf 100644
+index c53bd5fb7..d23f7bfc4 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1413,6 +1413,139 @@ QEMU_PLUGIN_API
@@ -236,7 +236,7 @@ index c53bd5f..d23f7bf 100644
   * Capture length-framed RAM and device-state fingerprint material.
   *
 diff --git a/migration/migration.c b/migration/migration.c
-index d46e776..bc5689a 100644
+index d46e776e2..bc5689ab4 100644
 --- a/migration/migration.c
 +++ b/migration/migration.c
 @@ -101,6 +101,9 @@ enum mig_rp_message_type {
@@ -356,7 +356,7 @@ index d46e776..bc5689a 100644
          if (s->state != MIGRATION_STATUS_POSTCOPY_PAUSED) {
              error_setg(errp, "Cannot resume if there is no "
 diff --git a/migration/savevm.c b/migration/savevm.c
-index ab5afbe..3c3c64d 100644
+index ab5afbe25..3c3c64dff 100644
 --- a/migration/savevm.c
 +++ b/migration/savevm.c
 @@ -54,6 +54,7 @@
@@ -419,7 +419,7 @@ index ab5afbe..3c3c64d 100644
          return false;
      }
 diff --git a/plugins/api.c b/plugins/api.c
-index df34473..9fb02d1 100644
+index df34473f3..9fb02d1ad 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
 @@ -36,6 +36,7 @@
@@ -803,7 +803,7 @@ index df34473..9fb02d1 100644
                                        uint64_t material_length,
                                        uint8_t digest_out[32])
 diff --git a/system/cpus.c b/system/cpus.c
-index 2cc5f88..bdaa7bb 100644
+index 2cc5f887a..bdaa7bba2 100644
 --- a/system/cpus.c
 +++ b/system/cpus.c
 @@ -650,6 +650,11 @@ void resume_all_vcpus(void)
@@ -836,7 +836,7 @@ index 2cc5f88..bdaa7bb 100644
  }
 -
 diff --git a/system/memory.c b/system/memory.c
-index 4c82979..78478af 100644
+index 4c829793a..78478af9f 100644
 --- a/system/memory.c
 +++ b/system/memory.c
 @@ -705,6 +705,23 @@ void flatview_for_each_range(FlatView *fv, flatview_cb cb , void *opaque)
@@ -864,7 +864,7 @@ index 4c82979..78478af 100644
  {
      while (mr->enabled) {
 diff --git a/system/runstate.c b/system/runstate.c
-index 272801d..d426fee 100644
+index 272801d30..d426fee75 100644
 --- a/system/runstate.c
 +++ b/system/runstate.c
 @@ -46,6 +46,7 @@

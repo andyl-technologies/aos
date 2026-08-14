@@ -1,5 +1,5 @@
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 565a84c..5e3be23 100644
+index 565a84c57..5e3be233d 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -160,6 +160,10 @@ qemu_crucible_fault_event_reservation_split(
@@ -14,7 +14,7 @@ index 565a84c..5e3be23 100644
  int qemu_crucible_fault_register_validate(const QemuCrucibleFaultRule *rule);
  bool qemu_crucible_fault_register_ensure_registered(void);
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index 94bae04..b9d0c5a 100644
+index 94bae0426..b9d0c5a72 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
 @@ -197,7 +197,10 @@ bool qemu_plugin_crucible_vmstop_admission_pending(void);
@@ -50,7 +50,7 @@ index 94bae04..b9d0c5a 100644
  
  static inline void qemu_plugin_crucible_maybe_fire_ipi_delivery_cb(
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index 2502cee..17b283b 100644
+index 2502ceec6..17b283b0b 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
 @@ -79,7 +79,6 @@ void qmp_cont(Error **errp)
@@ -99,7 +99,7 @@ index 2502cee..17b283b 100644
                      bool has_skipauth, bool skipauth, bool has_tls, bool tls,
                      Error **errp)
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
-index 58cd2d2..5dba33f 100644
+index 58cd2d292..5dba33f7b 100644
 --- a/plugins/crucible-fault-lifecycle.c
 +++ b/plugins/crucible-fault-lifecycle.c
 @@ -115,6 +115,12 @@ static GPtrArray *crucible_lifecycle_hangs;
@@ -256,7 +256,7 @@ index 58cd2d2..5dba33f 100644
              }
          }
 diff --git a/qapi/misc.json b/qapi/misc.json
-index 559b66f..3c51a07 100644
+index 559b66f20..3c51a075c 100644
 --- a/qapi/misc.json
 +++ b/qapi/misc.json
 @@ -175,6 +175,27 @@

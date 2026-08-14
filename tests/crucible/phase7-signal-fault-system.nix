@@ -7,6 +7,7 @@
   liveBlock,
   liveNineP,
   liveNodeLifecycle,
+  sharedCause,
   patchMicrotests,
   checkpointMaterialization,
   replayOracle,
@@ -35,6 +36,7 @@ in
         liveBlock
         liveNineP
         liveNodeLifecycle
+        sharedCause
         patchMicrotests
         checkpointMaterialization
         replayOracle
@@ -221,6 +223,14 @@ in
           grep -Fxq 'lifecycle_impulse_committed=true' "$node_result"
           grep -Fxq 'cross_adapter_rejection_rolled_back=true' "$node_result"
 
+          shared_result=${sharedCause}/result
+          grep -Fxq PASS "$shared_result"
+          grep -Fxq 'gate=gate:signal-shared-cause' "$shared_result"
+          grep -Fxq 'pre_event_queue_and_volatile_cache=true' "$shared_result"
+          grep -Fxq 'network_storage_node_same_event=true' "$shared_result"
+          grep -Fxq 'exact_checkpoint_evidence_match=true' "$shared_result"
+          grep -Fxq 'locked_effect_replay_evidence_match=true' "$shared_result"
+
           patch_result=${patchMicrotests}/result
           grep -Fxq PASS "$patch_result"
           grep -Fxq 'gate=gate:patch-microtests' "$patch_result"
@@ -256,6 +266,7 @@ in
           cp ${liveBlock}/result "$out/evidence/live-block.result"
           cp ${liveNineP}/result "$out/evidence/live-9p.result"
           cp ${liveNodeLifecycle}/result "$out/evidence/live-node-lifecycle.result"
+          cp ${sharedCause}/result "$out/evidence/signal-shared-cause.result"
           cp ${patchMicrotests}/result "$out/evidence/patch-microtests.result"
           cp ${checkpointMaterialization}/result "$out/evidence/checkpoint.result"
           cp ${replayOracle}/result "$out/evidence/replay.result"

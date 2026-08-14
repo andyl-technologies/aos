@@ -110,6 +110,9 @@ pub const QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL: &str = "qemu_plugin_register
 /// QEMU plugin API symbol used to register Crucible all-idle/resume callbacks.
 pub const QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL: &str =
     "qemu_plugin_register_vcpu_idle_resume_cb";
+/// QEMU plugin API symbol used to register exact drained-control boundaries.
+pub const QEMU_PLUGIN_REGISTER_CONTROL_BOUNDARY_CB_SYMBOL: &str =
+    "qemu_plugin_register_control_boundary_cb";
 /// QEMU plugin API symbol used to connect the sim loop to shared-memory time state.
 pub const QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL: &str =
     "qemu_plugin_register_sim_shmem_dispatch_cb";
@@ -152,6 +155,8 @@ const QEMU_PLUGIN_REGISTER_ACCELERATOR_CB_SYMBOL_C: &[u8] =
 const QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_vcpu_init_cb\0";
 const QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL_C: &[u8] =
     b"qemu_plugin_register_vcpu_idle_resume_cb\0";
+const QEMU_PLUGIN_REGISTER_CONTROL_BOUNDARY_CB_SYMBOL_C: &[u8] =
+    b"qemu_plugin_register_control_boundary_cb\0";
 const QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL_C: &[u8] =
     b"qemu_plugin_register_sim_shmem_dispatch_cb\0";
 const QEMU_PLUGIN_REQUEST_TIME_CONTROL_SYMBOL_C: &[u8] = b"qemu_plugin_request_time_control\0";
@@ -432,6 +437,9 @@ pub type QemuVcpuIdleResumeCbFn = extern "C" fn(c_uint, u64, *mut c_void);
 /// QEMU registration function for Crucible all-idle and resume callbacks.
 pub type QemuRegisterVcpuIdleResumeCbFn =
     extern "C" fn(Option<QemuVcpuIdleResumeCbFn>, Option<QemuVcpuIdleResumeCbFn>, *mut c_void);
+/// QEMU registration function for exact drained-control boundaries.
+pub type QemuRegisterControlBoundaryCbFn =
+    extern "C" fn(Option<QemuVcpuIdleResumeCbFn>, *mut c_void);
 /// Sim-loop callback that publishes the raw aggregate instruction count.
 pub type QemuSimShmemPublishIcountCbFn = extern "C" fn(u64, *mut c_void);
 /// Sim-loop callback that reads the scheduler-published instruction ceiling.
@@ -1948,6 +1956,37 @@ pub const fn resolve_qemu_register_vcpu_idle_resume_cb_symbol()
     None
 }
 
+/// Resolves QEMU's exact drained-control-boundary callback registration export.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_register_control_boundary_cb_symbol() -> Option<QemuRegisterControlBoundaryCbFn>
+{
+    // SAFETY: `dlsym` receives a static NUL-terminated symbol name. The
+    // Crucible patch declares this symbol with the exact callback ABI above.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_REGISTER_CONTROL_BOUNDARY_CB_SYMBOL_C
+                .as_ptr()
+                .cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: the exact patched API name establishes the function type.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuRegisterControlBoundaryCbFn>(symbol) })
+    }
+}
+
+/// Resolves no control-boundary registration export outside Unix QEMU environments.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_register_control_boundary_cb_symbol()
+-> Option<QemuRegisterControlBoundaryCbFn> {
+    None
+}
+
 /// Resolves QEMU's sim-loop shared-memory dispatch registration export.
 #[cfg(unix)]
 #[must_use]
@@ -2150,6 +2189,7 @@ fn install_owned_boundary(
     let register_tcg_exec_cb = resolve_qemu_register_tcg_exec_cb_symbol();
     let register_vcpu_init = resolve_qemu_register_vcpu_init_cb_symbol();
     let register_vcpu_idle_resume = resolve_qemu_register_vcpu_idle_resume_cb_symbol();
+    let register_control_boundary = resolve_qemu_register_control_boundary_cb_symbol();
     let register_sim_shmem_dispatch = resolve_qemu_register_sim_shmem_dispatch_cb_symbol();
     let register_net_tx = crate::resolve_qemu_register_net_tx_cb_symbol();
     let net_send = crate::resolve_qemu_net_send_symbol();
@@ -2212,6 +2252,7 @@ fn install_owned_boundary(
         basic_block_coverage,
         register_vcpu_init,
         register_vcpu_idle_resume,
+        register_control_boundary,
         register_sim_shmem_dispatch,
         register_net_tx,
         net_send,
