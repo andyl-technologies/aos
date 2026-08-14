@@ -126,6 +126,7 @@ fn production_checkpoints_referenced_storage_recovery_events() {
         Some(Arc::clone(&artifacts)),
         SignalBoundarySnapshot::default(),
         seed,
+        test_host_manifests(),
         &nodes,
     )
     .unwrap_or_else(|error| panic!("production plan should be admitted: {error}"));
@@ -158,9 +159,15 @@ fn production_checkpoints_referenced_storage_recovery_events() {
     let checkpoint = runtime
         .checkpoint(&mut nodes)
         .unwrap_or_else(|error| panic!("production checkpoint should succeed: {error}"));
-    let restored =
-        ProductionFaultRuntime::restore(plan, Some(artifacts), seed, checkpoint, &mut nodes)
-            .unwrap_or_else(|error| panic!("production checkpoint should restore: {error}"));
+    let restored = ProductionFaultRuntime::restore(
+        plan,
+        Some(artifacts),
+        seed,
+        checkpoint,
+        test_host_manifests(),
+        &mut nodes,
+    )
+    .unwrap_or_else(|error| panic!("production checkpoint should restore: {error}"));
     assert_eq!(restored.emitted_events(), runtime.emitted_events());
 }
 
@@ -174,6 +181,7 @@ fn rejected_qemu_event_validation_retains_the_raw_event() {
         None,
         SignalBoundarySnapshot::default(),
         ContentHash::from_bytes(b"retain-rejected-qemu-event"),
+        test_host_manifests(),
         &nodes,
     )
     .unwrap_or_else(|error| panic!("empty runtime should initialize: {error}"));

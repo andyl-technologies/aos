@@ -166,6 +166,7 @@ fn production_search_choices_must_cross_scheduler_boundary_before_checkpoint() {
         Some(Arc::new(NoArtifacts)),
         SignalBoundarySnapshot::default(),
         ContentHash::from_bytes(b"production-search-choice"),
+        test_host_manifests(),
         &nodes,
     )
     .unwrap_or_else(|error| panic!("search runtime should initialize: {error}"));
@@ -195,34 +196,6 @@ fn production_search_choices_must_cross_scheduler_boundary_before_checkpoint() {
 }
 
 #[test]
-fn production_host_manifest_advertises_every_implemented_network_effect() {
-    let network = host_production_manifest(
-        "network-host",
-        EffectKind::all()
-            .iter()
-            .copied()
-            .filter(|effect| effect.descriptor().adapter == crucible::model::FaultAdapter::Network),
-    )
-    .unwrap_or_else(|error| panic!("network manifest should build: {error}"));
-    let availability =
-        FaultCapabilityId::parse(EffectKind::NetworkAvailability.descriptor().capability)
-            .unwrap_or_else(|error| panic!("availability capability should parse: {error}"));
-    let mtu = FaultCapabilityId::parse(EffectKind::NetworkMtu.descriptor().capability)
-        .unwrap_or_else(|error| panic!("MTU capability should parse: {error}"));
-    let expected_network_capabilities = EffectKind::all()
-        .iter()
-        .filter(|effect| effect.descriptor().adapter == crucible::model::FaultAdapter::Network)
-        .count();
-    assert_eq!(network.capabilities.len(), expected_network_capabilities);
-    assert!(network.capabilities.contains(&availability));
-    assert!(network.capabilities.contains(&mtu));
-
-    let storage = host_production_manifest("storage-host", std::iter::empty())
-        .unwrap_or_else(|error| panic!("empty storage manifest should build: {error}"));
-    assert!(storage.capabilities.is_empty());
-}
-
-#[test]
 fn empty_plan_checkpoint_preserves_custom_resource_identity() {
     let mut limits = FaultResourceLimits::default();
     limits.event_records -= 1;
@@ -235,14 +208,22 @@ fn empty_plan_checkpoint_preserves_custom_resource_identity() {
         None,
         SignalBoundarySnapshot::default(),
         seed,
+        test_host_manifests(),
         &nodes,
     )
     .unwrap_or_else(|error| panic!("empty runtime should initialize: {error}"));
     let checkpoint = runtime
         .checkpoint(&mut nodes)
         .unwrap_or_else(|error| panic!("empty checkpoint should encode: {error}"));
-    ProductionFaultRuntime::restore(plan, None, seed, checkpoint, &mut nodes)
-        .unwrap_or_else(|error| panic!("custom empty checkpoint should restore: {error}"));
+    ProductionFaultRuntime::restore(
+        plan,
+        None,
+        seed,
+        checkpoint,
+        test_host_manifests(),
+        &mut nodes,
+    )
+    .unwrap_or_else(|error| panic!("custom empty checkpoint should restore: {error}"));
 }
 
 #[test]
@@ -270,6 +251,7 @@ fn production_availability_survives_checkpoint_restore() {
         Some(Arc::clone(&artifacts)),
         SignalBoundarySnapshot::default(),
         seed,
+        test_host_manifests(),
         &nodes,
     )
     .unwrap_or_else(|error| panic!("production plan should be admitted: {error}"));
@@ -294,9 +276,15 @@ fn production_availability_survives_checkpoint_restore() {
     let checkpoint = runtime
         .checkpoint(&mut nodes)
         .unwrap_or_else(|error| panic!("production checkpoint should succeed: {error}"));
-    let restored =
-        ProductionFaultRuntime::restore(plan, Some(artifacts), seed, checkpoint, &mut nodes)
-            .unwrap_or_else(|error| panic!("production checkpoint should restore: {error}"));
+    let restored = ProductionFaultRuntime::restore(
+        plan,
+        Some(artifacts),
+        seed,
+        checkpoint,
+        test_host_manifests(),
+        &mut nodes,
+    )
+    .unwrap_or_else(|error| panic!("production checkpoint should restore: {error}"));
     assert_eq!(
         restored
             .host_state()
@@ -370,6 +358,7 @@ fn production_admits_every_availability_target_phase_state_and_policy() {
                             Some(Arc::new(NoArtifacts)),
                             SignalBoundarySnapshot::default(),
                             ContentHash::from_bytes(b"availability-admission-matrix"),
+                            test_host_manifests(),
                             &nodes,
                         );
                         assert!(

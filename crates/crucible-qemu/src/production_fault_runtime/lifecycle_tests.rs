@@ -153,6 +153,7 @@ fn qemu_action_ledger_retains_impulses_and_removed_rules_for_events() {
         None,
         SignalBoundarySnapshot::default(),
         ContentHash::from_bytes(b"qemu-action-ledger"),
+        test_host_manifests(),
         &nodes,
     )
     .unwrap_or_else(|error| panic!("empty runtime should initialize: {error}"));
@@ -232,6 +233,7 @@ fn checkpoint_rejects_unacknowledged_node_boot_edge() {
         None,
         SignalBoundarySnapshot::default(),
         ContentHash::from_bytes(b"pending-node-boot"),
+        test_host_manifests(),
         &nodes,
     )
     .unwrap_or_else(|error| panic!("empty runtime should initialize: {error}"));

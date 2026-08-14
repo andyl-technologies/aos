@@ -14,6 +14,7 @@ impl ProductionFaultRuntime {
         artifacts: Option<Arc<dyn SignalArtifactProvider>>,
         boundary: SignalBoundarySnapshot,
         scenario_seed: ContentHash,
+        host_manifests: HostFaultAdapterManifests,
         nodes: &QemuNodeSet,
     ) -> Result<Self, ProductionFaultRuntimeError> {
         Self::new_with_search_overrides(
@@ -21,6 +22,7 @@ impl ProductionFaultRuntime {
             artifacts,
             boundary,
             scenario_seed,
+            host_manifests,
             nodes,
             BTreeMap::new(),
         )
@@ -37,11 +39,12 @@ impl ProductionFaultRuntime {
         artifacts: Option<Arc<dyn SignalArtifactProvider>>,
         boundary: SignalBoundarySnapshot,
         scenario_seed: ContentHash,
+        host_manifests: HostFaultAdapterManifests,
         nodes: &QemuNodeSet,
         search_overrides: BTreeMap<SearchChoiceId, SearchOverride>,
     ) -> Result<Self, ProductionFaultRuntimeError> {
         validate_ready_marker_admission(&plan, nodes)?;
-        let manifests = production_manifests(nodes)?;
+        let manifests = production_manifests(nodes, host_manifests)?;
         let plan_id = plan.id();
         let resource_limits = plan.resource_limits();
         let runtime = if plan.programs().is_empty() {
@@ -87,10 +90,11 @@ impl ProductionFaultRuntime {
         artifacts: Option<Arc<dyn SignalArtifactProvider>>,
         scenario_seed: ContentHash,
         checkpoint: ProductionFaultRuntimeCheckpoint,
+        host_manifests: HostFaultAdapterManifests,
         nodes: &mut QemuNodeSet,
     ) -> Result<Self, ProductionFaultRuntimeError> {
         validate_ready_marker_admission(&plan, nodes)?;
-        let manifests = production_manifests(nodes)?;
+        let manifests = production_manifests(nodes, host_manifests)?;
         let plan_id = plan.id();
         let resource_limits = plan.resource_limits();
         validate_production_event_state(

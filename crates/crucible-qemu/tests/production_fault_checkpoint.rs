@@ -4,7 +4,9 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup.
 #![allow(clippy::expect_used)]
 
-use crucible::model::{ContentHash, FaultSignalPlan, SignalBoundarySnapshot};
+use crucible::model::{
+    ContentHash, FaultSignalPlan, HostFaultAdapterManifests, SignalBoundarySnapshot,
+};
 use crucible_qemu::{ProductionFaultRuntime, QemuNodeSet};
 
 #[test]
@@ -17,6 +19,7 @@ fn empty_production_continuation_round_trips_with_the_same_identity() {
         None,
         SignalBoundarySnapshot::default(),
         seed,
+        HostFaultAdapterManifests::node_only().expect("node-only manifests should be valid"),
         &nodes,
     )
     .expect("empty production runtime should admit");
@@ -25,8 +28,15 @@ fn empty_production_continuation_round_trips_with_the_same_identity() {
         .expect("empty production runtime should checkpoint");
     let expected = checkpoint.id();
 
-    let restored = ProductionFaultRuntime::restore(plan, None, seed, checkpoint, &mut nodes)
-        .expect("authenticated production checkpoint should restore");
+    let restored = ProductionFaultRuntime::restore(
+        plan,
+        None,
+        seed,
+        checkpoint,
+        HostFaultAdapterManifests::node_only().expect("node-only manifests should be valid"),
+        &mut nodes,
+    )
+    .expect("authenticated production checkpoint should restore");
     let round_trip = restored
         .checkpoint(&mut nodes)
         .expect("restored production runtime should checkpoint");

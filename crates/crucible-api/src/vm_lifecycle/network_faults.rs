@@ -1519,6 +1519,7 @@ impl ProductionFaultNetworkInterceptor {
         artifacts: Option<Arc<dyn SignalArtifactProvider>>,
         scenario_seed: ContentHash,
         checkpoint: ProductionFaultRuntimeCheckpoint,
+        host_manifests: crucible::model::HostFaultAdapterManifests,
         nodes: &mut ProductionNodeSet,
         topology: crucible::model::WorldFaultTopology,
         links: Vec<crucible::LinkDef>,
@@ -1537,11 +1538,17 @@ impl ProductionFaultNetworkInterceptor {
             &staged.pending_outputs,
             &topology,
         )?;
-        let mut runtime =
-            ProductionFaultRuntime::restore(plan, artifacts, scenario_seed, checkpoint, nodes)
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!("restore production signal fault continuation: {error}"),
-                })?;
+        let mut runtime = ProductionFaultRuntime::restore(
+            plan,
+            artifacts,
+            scenario_seed,
+            checkpoint,
+            host_manifests,
+            nodes,
+        )
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("restore production signal fault continuation: {error}"),
+        })?;
         let authenticated = runtime.take_restored_network_state().ok_or_else(|| {
             SchedulerError::BoundaryViolation {
                 message: String::from(
@@ -1717,6 +1724,14 @@ impl ProductionFaultNetworkInterceptor {
                 })
                 .cloned()
                 .collect::<Vec<_>>();
+            super::fault_implementation::require_network_actions_implemented(
+                network_actions.iter(),
+            )
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "network action is absent from the production implementation registry: {error}"
+                ),
+            })?;
             let mut network_boundary_actions = network_actions
                 .iter()
                 .filter(|action| action.phase == FaultPhase::Boundary)
@@ -1725,7 +1740,17 @@ impl ProductionFaultNetworkInterceptor {
             let mut storage_boundary_actions = Vec::new();
             for action in impulses {
                 match action.effect.specification() {
-                    EffectSpecification::Network(_) => network_boundary_actions.push(action),
+                    EffectSpecification::Network(_) => {
+                        super::fault_implementation::require_network_actions_implemented([
+                            &action,
+                        ])
+                        .map_err(|error| SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "network impulse is absent from the production implementation registry: {error}"
+                            ),
+                        })?;
+                        network_boundary_actions.push(action);
+                    }
                     EffectSpecification::Storage(_) => storage_boundary_actions.push(action),
                     EffectSpecification::Node(_) => {
                         return Err(SchedulerError::BoundaryViolation {
@@ -1802,6 +1827,14 @@ impl ProductionFaultNetworkInterceptor {
                     evaluation.next_wakeup_nanos,
                     control_evaluation.next_wakeup_nanos,
                 );
+                super::fault_implementation::require_network_actions_implemented(
+                    control_evaluation.actions.iter(),
+                )
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "network control action is absent from the production implementation registry: {error}"
+                    ),
+                })?;
                 let transformed = apply_network_control_transforms(
                     event,
                     &control_evaluation.actions,

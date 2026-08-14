@@ -71,13 +71,21 @@ impl FaultActionSink for ProductionFaultActionSink<'_> {
         let mut host_actions = Vec::new();
         let mut qemu_actions = Vec::new();
         let mut seen = BTreeSet::new();
+        let node_implementations =
+            crate::fault_implementation::node_effect_implementation_registry()
+                .map_err(|_| Self::reject(FaultRuntimeError::AdapterActionMismatch))?;
         for action in actions {
             if !seen.insert(action.id()) {
                 return Err(Self::reject(FaultRuntimeError::DuplicateAdapterAction));
             }
             match action.effect.kind().descriptor().adapter {
                 FaultAdapter::Network | FaultAdapter::Storage => host_actions.push(action.clone()),
-                FaultAdapter::Node => qemu_actions.push(action.clone()),
+                FaultAdapter::Node => {
+                    node_implementations
+                        .require_implemented(action.effect.kind())
+                        .map_err(|_| Self::reject(FaultRuntimeError::AdapterActionMismatch))?;
+                    qemu_actions.push(action.clone());
+                }
             }
         }
 
