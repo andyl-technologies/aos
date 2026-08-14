@@ -639,7 +639,10 @@ async fn download_nar_from(
         return download_nar_to_tempfile(engine, url, dest, expected_hex, narinfo, label).await;
     }
 
-    let transfer_req = TransferRequest::get(url).with_hash(HashAlgorithm::Sha256, expected_hex);
+    let maximum_bytes = narinfo.file_size.unwrap_or(NAR_RANGE_CHUNK_BYTES);
+    let transfer_req = TransferRequest::get(url)
+        .with_hash(HashAlgorithm::Sha256, expected_hex)
+        .with_maximum_bytes(maximum_bytes);
 
     let pb_size = narinfo.file_size.unwrap_or(0);
     let pb = create_download_bar(pb_size, label);
@@ -1235,6 +1238,44 @@ mod tests {
         assert_eq!(results[0].download_hash, file_hash);
         assert_eq!(std::fs::read(&results[0].local_path).unwrap(), nar_bytes);
         assert_eq!(std::fs::read_dir(cache_dir.path()).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn download_nars_rejects_payload_larger_than_declared_file_size() {
+        let printer = Printer::new(0, true, false);
+        let source = tempfile::TempDir::new().unwrap();
+        let cache_dir = tempfile::TempDir::new().unwrap();
+        let nar_bytes = b"oversized";
+        let nar_url = "nar/oversized.nar.zst";
+
+        std::fs::create_dir_all(source.path().join("nar")).unwrap();
+        std::fs::write(source.path().join(nar_url), nar_bytes).unwrap();
+        let resolved = ResolvedDownload {
+            req: DownloadRequest {
+                store_path: "/nix/store/abc123-oversized".to_string(),
+                mirror_url: format!("file://{}", source.path().display()),
+                fallback_mirrors: Vec::new(),
+            },
+            narinfo: NarInfo {
+                store_path: "/nix/store/abc123-oversized".to_string(),
+                url: nar_url.to_string(),
+                compression: "zstd".to_string(),
+                file_hash: Some(format!("sha256:{}", hex::encode(Sha256::digest(nar_bytes)))),
+                file_size: Some(nar_bytes.len() as u64 - 1),
+                nar_hash: format!("sha256:{}", "fa".repeat(32)),
+                nar_size: 5,
+                references: Vec::new(),
+                deriver: None,
+                signatures: Vec::new(),
+            },
+        };
+
+        let err = download_nars(&[resolved], cache_dir.path(), 1, &printer)
+            .await
+            .unwrap_err();
+
+        assert!(format!("{err:#}").contains("exceeds the 8 byte limit"));
+        assert_eq!(std::fs::read_dir(cache_dir.path()).unwrap().count(), 0);
     }
 
     #[tokio::test]
