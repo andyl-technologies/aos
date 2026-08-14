@@ -40,7 +40,6 @@ shape-line|crates/crucible-device/src/block/device.rs|674
 shape-line|crates/crucible-device/src/harness.rs|794
 shape-line|crates/crucible-device/src/netlink/link.rs|816
 shape-line|crates/crucible-device/src/ninep/codec.rs|1011
-shape-line|crates/crucible-device/src/ninep/server.rs|641
 shape-line|crates/crucible-device/src/ninep/tree.rs|903
 shape-line|crates/crucible-device/src/subnode.rs|618
 shape-line|crates/crucible-device/tests/device_harness.rs|644
