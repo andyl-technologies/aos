@@ -99,8 +99,9 @@ pub struct StaticCacheGcReport {
 struct CacheEntry {
     /// Re-rooted path metadata from `nix path-info`.
     info: CachePathInfo,
-    /// Backend-relative NAR filename (the `nar/` prefix stripped).
-    nar_name: String,
+    /// Reusable backend-relative NAR filename (the `nar/` prefix stripped).
+    /// Absent when this entry must be compressed.
+    nar_name: Option<String>,
     /// Whether the compressed NAR is already present in the output.
     skip: bool,
 }
@@ -177,8 +178,6 @@ pub async fn generate_static_cache(
 
     let workers = resolve_jobs(jobs);
     let output_dir = Arc::new(output_dir.to_path_buf());
-    let nar_dir = output_dir.join("nar");
-
     // `--no-skip` forces full regeneration by ignoring remote membership.
     let membership = if no_skip { None } else { membership };
 
@@ -217,8 +216,11 @@ pub async fn generate_static_cache(
     let mut entries = Vec::with_capacity(infos.len());
     let mut pending_bytes = 0u64;
     for info in infos {
-        let nar_name = nar_basename(&info)?;
-        let skip = !no_skip && nar_dir.join(&nar_name).exists();
+        let nar_name = (!no_skip)
+            .then(|| reusable_nar_basename(output_dir.as_path(), &info))
+            .transpose()?
+            .flatten();
+        let skip = nar_name.is_some();
         if !skip {
             pending_bytes += info.nar_size;
         }
@@ -422,12 +424,32 @@ fn gather_path_info(path: &str, store_graph: &StoreMap) -> Result<CachePathInfo>
     Ok(info)
 }
 
-/// The backend-relative NAR filename for a path (the `nar/` prefix stripped).
-fn nar_basename(info: &CachePathInfo) -> Result<String> {
-    let url = nar_url(&info.path, &info.nar_hash, NarCompression::Zstd);
-    url.strip_prefix("nar/")
-        .map(str::to_string)
-        .ok_or_else(|| anyhow::anyhow!("unexpected NAR URL '{url}'"))
+/// Returns a reusable FileHash-addressed NAR filename, when the local pair is complete.
+fn reusable_nar_basename(output_dir: &Path, info: &CachePathInfo) -> Result<Option<String>> {
+    let narinfo_path = output_dir.join(format!("{}.narinfo", store_hash(&info.path)));
+    let Ok(text) = std::fs::read_to_string(&narinfo_path) else {
+        return Ok(None);
+    };
+    let Ok(existing) = aos_core::nar::info::parse(&text) else {
+        return Ok(None);
+    };
+    if existing.nar_hash != info.nar_hash {
+        return Ok(None);
+    }
+    let Some(file_hash) = existing.file_hash.as_deref() else {
+        return Ok(None);
+    };
+    let expected_url = nar_url(&info.path, file_hash, NarCompression::Zstd);
+    if existing.url != expected_url {
+        return Ok(None);
+    }
+    let Some(name) = expected_url.strip_prefix("nar/") else {
+        return Ok(None);
+    };
+    if name.contains('/') || !output_dir.join("nar").join(name).is_file() {
+        return Ok(None);
+    }
+    Ok(Some(name.to_string()))
 }
 
 /// Write one cache entry: produce (or reuse) the compressed NAR, then render
@@ -441,12 +463,33 @@ fn write_cache_entry(
     threads: u32,
 ) -> Result<()> {
     let info = &entry.info;
-    let nar_path = output_dir.join("nar").join(&entry.nar_name);
-
-    let (file_hash, file_size) = if entry.skip {
-        reuse_file_digest(output_dir, info, &nar_path)?
+    let (file_hash, file_size, nar_path) = if entry.skip {
+        let nar_name = entry
+            .nar_name
+            .as_deref()
+            .context("reused cache entry has no NAR filename")?;
+        let nar_path = output_dir.join("nar").join(nar_name);
+        let (file_hash, file_size) = reuse_file_digest(output_dir, info, &nar_path)?;
+        (file_hash, file_size, nar_path)
     } else {
-        compress_nar_to_file(&info.path, &nar_path, NAR_ZSTD_LEVEL, threads)?
+        let pending_path = output_dir
+            .join("nar")
+            .join(format!(".{}.nar.zst.pending", store_hash(&info.path)));
+        let (file_hash, file_size) =
+            compress_nar_to_file(&info.path, &pending_path, NAR_ZSTD_LEVEL, threads)?;
+        let url = nar_url(&info.path, &file_hash, NarCompression::Zstd);
+        let nar_name = url
+            .strip_prefix("nar/")
+            .context("generated NAR URL does not use the nar/ prefix")?;
+        let nar_path = output_dir.join("nar").join(nar_name);
+        std::fs::rename(&pending_path, &nar_path).with_context(|| {
+            format!(
+                "renaming {} -> {}",
+                pending_path.display(),
+                nar_path.display()
+            )
+        })?;
+        (file_hash, file_size, nar_path)
     };
 
     let body = render_static_narinfo(
@@ -1238,6 +1281,46 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn local_reuse_requires_file_hash_addressed_nar_url() {
+        let output = TempDir::new().unwrap();
+        std::fs::create_dir_all(output.path().join("nar")).unwrap();
+        let info = CachePathInfo {
+            path: "/nix/store/abc123-package".into(),
+            nar_hash: "sha256:nar".into(),
+            nar_size: 7,
+            references: Vec::new(),
+            deriver: None,
+        };
+        let file_hash = "sha256:file";
+        let expected = nar_url(&info.path, file_hash, NarCompression::Zstd);
+        std::fs::write(output.path().join(&expected), b"payload").unwrap();
+        std::fs::write(
+            output.path().join("abc123.narinfo"),
+            format!(
+                "StorePath: {}\nURL: {expected}\nCompression: zstd\nFileHash: {file_hash}\nFileSize: 7\nNarHash: {}\nNarSize: 7\n",
+                info.path, info.nar_hash
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(
+            reusable_nar_basename(output.path(), &info).unwrap(),
+            expected.strip_prefix("nar/").map(str::to_string)
+        );
+
+        let legacy = nar_url(&info.path, &info.nar_hash, NarCompression::Zstd);
+        std::fs::write(
+            output.path().join("abc123.narinfo"),
+            format!(
+                "StorePath: {}\nURL: {legacy}\nCompression: zstd\nFileHash: {file_hash}\nFileSize: 7\nNarHash: {}\nNarSize: 7\n",
+                info.path, info.nar_hash
+            ),
+        )
+        .unwrap();
+        assert_eq!(reusable_nar_basename(output.path(), &info).unwrap(), None);
+    }
+
+    #[test]
     fn collect_store_paths_reads_all_package_outputs() {
         let mut paths = BTreeSet::new();
         let value: TomlValue = toml::from_str(
@@ -1441,7 +1524,8 @@ name = "test"
         let printer = Printer::new(0, true, false);
         let store_path = "/nix/store/abc123-package";
         let nar_hash = "sha256:def456";
-        let nar_url = nar_url(store_path, nar_hash, NarCompression::Zstd);
+        let file_hash = "sha256:0123456789abcdef";
+        let nar_url = nar_url(store_path, file_hash, NarCompression::Zstd);
 
         std::fs::create_dir_all(source.path().join("nar")).unwrap();
         std::fs::write(
@@ -1459,7 +1543,7 @@ name = "test"
                     references: &[],
                     deriver: None,
                     signatures: &[],
-                    file_hash: "sha256:0123456789abcdef",
+                    file_hash,
                     file_size: 9,
                     compression: NarCompression::Zstd,
                 },
@@ -1483,7 +1567,6 @@ name = "test"
 
         let uploaded_narinfo = std::fs::read_to_string(dest.path().join("abc123.narinfo")).unwrap();
         let parsed = narinfo::parse(&uploaded_narinfo).unwrap();
-        assert_eq!(parsed.url, "nar/abc123-sha256-def456.nar.zst");
         assert_eq!(parsed.url, nar_url);
         assert_eq!(
             std::fs::read(dest.path().join(parsed.url)).unwrap(),
@@ -1540,7 +1623,8 @@ name = "test"
         let source = TempDir::new().unwrap();
         let store_path = "/nix/store/abc123-package";
         let nar_hash = "sha256:def456";
-        let nar_url = nar_url(store_path, nar_hash, NarCompression::Zstd);
+        let file_hash = "sha256:0123456789abcdef";
+        let nar_url = nar_url(store_path, file_hash, NarCompression::Zstd);
         std::fs::create_dir_all(source.path().join("nar")).unwrap();
         std::fs::write(
             source.path().join("abc123.narinfo"),
@@ -1552,7 +1636,7 @@ name = "test"
                     references: &[],
                     deriver: None,
                     signatures: &[],
-                    file_hash: "sha256:0123456789abcdef",
+                    file_hash,
                     file_size: 9,
                     compression: NarCompression::Zstd,
                 },
@@ -1583,7 +1667,8 @@ name = "test"
         let source = TempDir::new().unwrap();
         let store_path = "/nix/store/abc123-package";
         let nar_hash = "sha256:def456";
-        let nar_url = nar_url(store_path, nar_hash, NarCompression::Zstd);
+        let file_hash = "sha256:0123456789abcdef";
+        let nar_url = nar_url(store_path, file_hash, NarCompression::Zstd);
         std::fs::create_dir_all(source.path().join("nar")).unwrap();
         std::fs::write(
             source.path().join("abc123.narinfo"),
@@ -1595,7 +1680,7 @@ name = "test"
                     references: &[],
                     deriver: None,
                     signatures: &[],
-                    file_hash: "sha256:0123456789abcdef",
+                    file_hash,
                     file_size: 9,
                     compression: NarCompression::Zstd,
                 },

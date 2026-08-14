@@ -516,10 +516,13 @@ pointing at a **static `.nar.zst` file the producer uploaded**. The format logic
 and consumer already agree on it:
 
 1. **`URL:` written into the static narinfo.** `nar_url` writes
-   `nar/{store_hash}-{nar_hash with ':' -> '-'}.{ext}`. The colon in the
-   `sha256:<hex>` nar hash is rewritten to a dash, so the key is colon-free
+   `nar/{store_hash}-{file_hash with ':' -> '-'}.{ext}`. The colon in the
+   compressed file's `sha256:<hex>` hash is rewritten to a dash, so the key is colon-free
    (e.g. `nar/<storehash>-sha256-<hex>.nar.zst`). The producer uploads the
    compressed NAR to exactly this static `.nar.zst` / `.nar.xz` / `.nar` path.
+   Because `FileHash` identifies the transferred bytes, changing compression
+   output produces a new immutable URL even when the uncompressed `NarHash`
+   remains unchanged.
 2. **Consumer resolution (CURRENT).** `apm` downloads from the cache base joined
    with the narinfo-supplied `URL:` — `join_cache_url(mirror_url, narinfo.url)`
    (`crates/aos-package/src/download.rs:65-71`, applied at `download.rs:184`). It
@@ -536,7 +539,7 @@ and consumer already agree on it:
         └── narinfo URL: nar/<storehash>-sha256-<hex>.nar.zst
 ```
 
-> **Colon-in-filename:** because the format logic rewrites the nar-hash colon to
+> **Colon-in-filename:** because the format logic rewrites the file-hash colon to
 > a dash in the `URL:`, the static object key is colon-free, so
 > CDN/edge layers that mangle a literal `:` are not a concern for the
 > generated static files. (The `aos-cache` backend keys —

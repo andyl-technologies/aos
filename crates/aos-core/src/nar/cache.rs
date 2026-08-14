@@ -274,15 +274,16 @@ fn parse_key_data(content: &str) -> Result<(String, Vec<u8>)> {
 }
 
 /// Builds the cache-relative `URL:` path for a static NAR, e.g.
-/// `nar/<store-hash>-<nar-hash>.nar.zst`.
+/// `nar/<store-hash>-<file-hash>.nar.zst`.
 ///
-/// The NAR hash is passed through [`hash_path_fragment`] so SRI hashes
-/// containing `/`, `+`, or `=` remain filesystem- and URL-safe.
-pub fn nar_url(store_path: &str, nar_hash: &str, compression: NarCompression) -> String {
+/// The compressed file hash makes the URL identify the exact bytes transferred
+/// by a binary-cache client. It is passed through [`hash_path_fragment`] so SRI
+/// hashes containing `/`, `+`, or `=` remain filesystem- and URL-safe.
+pub fn nar_url(store_path: &str, file_hash: &str, compression: NarCompression) -> String {
     format!(
         "nar/{}-{}.{}",
         store_hash(store_path),
-        hash_path_fragment(nar_hash),
+        hash_path_fragment(file_hash),
         compression.extension(),
     )
 }
@@ -327,7 +328,7 @@ pub fn render_static_narinfo(
         .map(|reference| format!("{store_dir}/{}", basename(reference)))
         .collect();
     let deriver = input.deriver.map(basename);
-    let url = nar_url(input.store_path, input.nar_hash, input.compression);
+    let url = nar_url(input.store_path, input.file_hash, input.compression);
 
     let mut signatures = input.signatures.to_vec();
     if let Some(signer) = signer {
@@ -393,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn nar_url_uses_store_hash_and_nar_hash() {
+    fn nar_url_uses_store_hash_and_file_hash() {
         assert_eq!(
             nar_url(
                 "/nix/store/abc123-hello",
@@ -402,6 +403,15 @@ mod tests {
             ),
             "nar/abc123-sha256-def456.nar.zst"
         );
+    }
+
+    #[test]
+    fn nar_url_changes_when_compressed_bytes_change() {
+        let store_path = "/nix/store/abc123-hello";
+        let first = nar_url(store_path, "sha256:first", NarCompression::Zstd);
+        let second = nar_url(store_path, "sha256:second", NarCompression::Zstd);
+
+        assert_ne!(first, second);
     }
 
     #[test]
@@ -435,7 +445,7 @@ mod tests {
         let parsed = info::parse(&text).unwrap();
 
         assert_eq!(parsed.store_path, "/nix/store/abc123-hello");
-        assert_eq!(parsed.url, "nar/abc123-sha256-def456.nar.zst");
+        assert_eq!(parsed.url, "nar/abc123-sha256-file789.nar.zst");
         assert_eq!(parsed.compression, "zstd");
         assert_eq!(parsed.file_hash.as_deref(), Some("sha256:file789"));
         assert_eq!(parsed.file_size, Some(24));
