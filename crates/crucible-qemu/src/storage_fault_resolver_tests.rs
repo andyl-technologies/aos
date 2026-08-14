@@ -3,13 +3,17 @@
 use std::sync::Arc;
 
 use crucible::model::{
-    BindingActionCause, BoundedCount, ContentHash, CountLimit, EFFECT_SEMANTIC_VERSION,
-    EffectLifetime, EffectRequest, FaultCoordinate, FaultOperation, FaultPhase, OperationSet,
-    PositiveU64, SignalId, StoragePolicyArtifactKind, StoragePolicyResult,
-    StoragePolicyServiceClass, StoragePolicyTypedResult, WorldFaultTopology,
-    WorldStoragePolicyArtifact,
+    BindingActionCause, BoundedCount, ByteRange, ContentAddressedBlobRef, ContentHash, CountLimit,
+    EFFECT_SEMANTIC_VERSION, EffectLifetime, EffectRequest, FaultCoordinate, FaultOperation,
+    FaultPhase, HexBytes, Icount, NodeId, NodeTemplate, OperationSet, PositiveU64, ReadyPoint,
+    SignalId, StoragePolicyArtifactKind, StoragePolicyDuplicateCompletion,
+    StoragePolicyPersistence, StoragePolicyResult, StoragePolicyService, StoragePolicyServiceClass,
+    StoragePolicyTypedResult, VmArchitecture, WhiteBoxPolicy, WorldBlockLatency,
+    WorldFaultTopology, WorldFlushSemantics, WorldIoCoreConfig, WorldIoNode, WorldNode,
+    WorldNodeDef, WorldStorageFaultDevice, WorldStorageKind, WorldStorageMedia,
+    WorldStoragePersistence, WorldStoragePolicyArtifact,
 };
-use crucible_device::block::BlockErrorCode;
+use crucible_device::block::{BlockErrorCode, ResolvedBlockDuplicateCompletion};
 
 use super::*;
 
@@ -81,6 +85,106 @@ fn world_with_block_result(id_value: &str, result: StoragePolicyResult) -> World
         .unwrap_or_else(|error| panic!("test storage policy should be valid: {error}"))
 }
 
+fn world_with_storage_policies(
+    artifacts: impl IntoIterator<Item = WorldStoragePolicyArtifact>,
+) -> World {
+    let mut topology = WorldFaultTopology::default();
+    topology.storage_policy_artifacts.extend(artifacts);
+    topology
+        .storage_policy_artifacts
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    opaque_world()
+        .with_fault_topology(topology)
+        .unwrap_or_else(|error| panic!("test storage policies should be valid: {error}"))
+}
+
+fn storage_policy_artifact(
+    id_value: &str,
+    artifact: StoragePolicyArtifactKind,
+) -> WorldStoragePolicyArtifact {
+    WorldStoragePolicyArtifact {
+        id: id(id_value),
+        semantic_version: 1,
+        artifact,
+    }
+}
+
+fn world_with_declared_block(
+    artifacts: impl IntoIterator<Item = WorldStoragePolicyArtifact>,
+) -> (World, ResolvedFaultTarget) {
+    let vm_id = NodeId {
+        name: String::from("storage-owner"),
+    };
+    let block_id = NodeId {
+        name: String::from("block-device"),
+    };
+    let vm = WorldNode {
+        id: vm_id.clone(),
+        arch: VmArchitecture::X86_64,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::new(),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 1 },
+        },
+        white_box: WhiteBoxPolicy::Disabled,
+        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    };
+    let block = WorldIoNode::block(
+        block_id,
+        vm_id,
+        WorldIoCoreConfig::new(0),
+        ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(b"block-base-image")),
+        4096,
+        WorldBlockLatency::new(1, 1, 1, 1, 1),
+    );
+    let resolved_target = ResolvedFaultTarget::BlockDevice {
+        device: block.fault_target_hash(),
+    };
+    let mut topology = WorldFaultTopology::default();
+    topology.storage_policy_artifacts.extend(artifacts);
+    topology
+        .storage_policy_artifacts
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    topology.storage_devices.push(WorldStorageFaultDevice {
+        id: SignalId::parse("block-contract")
+            .unwrap_or_else(|error| panic!("test contract ID should be valid: {error}")),
+        device: SignalId::parse("block-device")
+            .unwrap_or_else(|error| panic!("test device ID should be valid: {error}")),
+        kind: WorldStorageKind::Block,
+        persistence: WorldStoragePersistence {
+            logical_block_bytes: 512,
+            physical_sector_bytes: 512,
+            atomic_write_bytes: 512,
+            length_bytes: 4096,
+            discard_granularity_bytes: 512,
+            maximum_request_bytes: 4096,
+            volatile_cache_bytes: 4096,
+            controller_buffer_bytes: 0,
+            flush_semantics: WorldFlushSemantics::WritebackBarrier,
+            discard_semantics: WorldDiscardSemantics::DeterministicZero,
+            completion_durability: WorldCompletionDurability::VolatileCacheAccepted,
+            cache_entries: 16,
+            controller_entries: 0,
+            persistence_dependencies: 64,
+            retained_versions_per_interval: 4,
+        },
+        media: WorldStorageMedia::Ram { page_bytes: 4096 },
+        fault_domains: Vec::new(),
+    });
+    let world = World::from_node_defs_and_links(
+        vec![WorldNodeDef::Vm(vm), WorldNodeDef::Io(block)],
+        Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("test block world should build: {error}"))
+    .with_fault_topology(topology)
+    .unwrap_or_else(|error| panic!("test block topology should be valid: {error}"));
+    (world, resolved_target)
+}
+
 fn context() -> StorageFaultResolutionContext {
     StorageFaultResolutionContext::new(ContentHash::from_bytes(b"storage-resolver-seed"))
 }
@@ -94,11 +198,19 @@ fn unexpected_read_source(
 }
 
 fn opportunity(request: &BlockRequest, phase: FaultPhase) -> FaultOpportunity {
+    opportunity_for_target(target(), request, phase)
+}
+
+fn opportunity_for_target(
+    target: ResolvedFaultTarget,
+    request: &BlockRequest,
+    phase: FaultPhase,
+) -> FaultOpportunity {
     let wire = request
         .encode()
         .unwrap_or_else(|error| panic!("test request should encode: {error}"));
     block_request_fault_opportunity(
-        target(),
+        target,
         request,
         *blake3::hash(&wire).as_bytes(),
         phase,
@@ -109,6 +221,61 @@ fn opportunity(request: &BlockRequest, phase: FaultPhase) -> FaultOpportunity {
         1,
     )
     .unwrap_or_else(|error| panic!("test opportunity should be valid: {error}"))
+}
+
+fn resolve_single_effect(
+    world: &World,
+    request: &BlockRequest,
+    phase: FaultPhase,
+    binding: &str,
+    lifetime: EffectLifetime,
+    specification: StorageEffectSpecification,
+    mapping_output: ResolvedMappingOutput,
+) -> ResolvedBlockFaultDirective {
+    resolve_single_effect_for_target(
+        world,
+        target(),
+        request,
+        phase,
+        binding,
+        lifetime,
+        specification,
+        mapping_output,
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the test helper keeps the typed production mutation inputs explicit"
+)]
+fn resolve_single_effect_for_target(
+    world: &World,
+    resolved_target: ResolvedFaultTarget,
+    request: &BlockRequest,
+    phase: FaultPhase,
+    binding: &str,
+    lifetime: EffectLifetime,
+    specification: StorageEffectSpecification,
+    mapping_output: ResolvedMappingOutput,
+) -> ResolvedBlockFaultDirective {
+    let opportunity = opportunity_for_target(resolved_target.clone(), request, phase);
+    let mut resolved_action = action(binding, lifetime, phase, specification, mapping_output);
+    resolved_action.target = resolved_target.clone();
+    if lifetime == EffectLifetime::Opportunity {
+        resolved_action = bind_to_opportunity(resolved_action, &opportunity);
+    }
+    resolve_block_fault_directive_with_capacity(
+        world,
+        &resolved_target,
+        request,
+        1,
+        &opportunity,
+        4096,
+        context(),
+        &mut unexpected_read_source,
+        [&resolved_action],
+    )
+    .unwrap_or_else(|error| panic!("production storage effect should resolve: {error}"))
 }
 
 #[test]
@@ -437,6 +604,232 @@ fn latency_uses_typed_dynamic_value_and_checked_sum() {
     )
     .unwrap_or_else(|error| panic!("latency should resolve: {error}"));
     assert_eq!(directive.additional_latency_nanos, 18);
+}
+
+#[test]
+fn production_resolver_mutates_capacity_service_and_delivery_directives() {
+    let world = world_with_storage_policies([
+        storage_policy_artifact(
+            "duplicate-policy",
+            StoragePolicyArtifactKind::DuplicateCompletion(
+                StoragePolicyDuplicateCompletion::Ignore,
+            ),
+        ),
+        storage_policy_artifact(
+            "service-policy",
+            StoragePolicyArtifactKind::Service(StoragePolicyService {
+                discipline: StoragePolicyQueueDiscipline::Fifo,
+                classes: Vec::new(),
+                rebuild_shares_service: true,
+            }),
+        ),
+    ]);
+    let read = BlockRequest::read(41, 0, 4);
+
+    let capacity = resolve_single_effect(
+        &world,
+        &read,
+        FaultPhase::Admit,
+        "reported-capacity",
+        EffectLifetime::Persistent,
+        StorageEffectSpecification::ReportedCapacity {
+            length_bytes: PositiveU64::new("length_bytes", 2048)
+                .unwrap_or_else(|error| panic!("test capacity should be valid: {error}")),
+            shrink_policy: crucible::model::StorageTransitionPolicy::Drain,
+        },
+        ResolvedMappingOutput::Activation { active: true },
+    );
+    assert_eq!(capacity.reported_capacity_bytes, 2048);
+
+    let service = resolve_single_effect(
+        &world,
+        &read,
+        FaultPhase::Queue,
+        "bounded-service",
+        EffectLifetime::Persistent,
+        StorageEffectSpecification::Service {
+            bytes_per_second: PositiveU64::new("bytes_per_second", 4096)
+                .unwrap_or_else(|error| panic!("test rate should be valid: {error}")),
+            iops: Some(
+                PositiveU64::new("iops", 32)
+                    .unwrap_or_else(|error| panic!("test IOPS should be valid: {error}")),
+            ),
+            queue_depth: BoundedCount::new(CountLimit::QueueEntries, 8)
+                .unwrap_or_else(|error| panic!("test queue depth should be valid: {error}")),
+            service_policy: id("service-policy"),
+        },
+        ResolvedMappingOutput::Activation { active: true },
+    );
+    assert_eq!(service.service_rules.len(), 1);
+    assert_eq!(service.service_rules[0].bytes_per_second, 4096);
+    assert_eq!(service.service_rules[0].iops, Some(32));
+    assert_eq!(service.service_rules[0].queue_depth, 8);
+    assert!(service.service_rules[0].rebuild_shares_service);
+
+    let reordered = resolve_single_effect(
+        &world,
+        &read,
+        FaultPhase::Deliver,
+        "completion-reorder",
+        EffectLifetime::Opportunity,
+        StorageEffectSpecification::CompletionReorder {
+            window_nanos: PositiveU64::new("window_nanos", 75)
+                .unwrap_or_else(|error| panic!("test reorder window should be valid: {error}")),
+            selection: StorageSelection::CanonicalLast,
+        },
+        ResolvedMappingOutput::Hazard {
+            probability_millionths: 1_000_000,
+        },
+    );
+    assert_eq!(reordered.additional_latency_nanos, 75);
+
+    let duplicated = resolve_single_effect(
+        &world,
+        &read,
+        FaultPhase::Deliver,
+        "duplicate-completion",
+        EffectLifetime::Opportunity,
+        StorageEffectSpecification::DuplicateCompletion {
+            copies: BoundedCount::new(CountLimit::DuplicatesOrInstructionReplay, 2)
+                .unwrap_or_else(|error| panic!("test duplicate count should be valid: {error}")),
+            gap_nanos: 9,
+            protocol_policy: id("duplicate-policy"),
+        },
+        ResolvedMappingOutput::Hazard {
+            probability_millionths: 1_000_000,
+        },
+    );
+    assert_eq!(duplicated.duplicate_completions.len(), 2);
+    assert!(matches!(
+        duplicated.duplicate_completions.as_slice(),
+        [
+            ResolvedBlockDuplicateCompletion::Ignore { gap_nanos: 9 },
+            ResolvedBlockDuplicateCompletion::Ignore { gap_nanos: 18 }
+        ]
+    ));
+}
+
+#[test]
+fn production_resolver_mutates_read_and_media_directives() {
+    let read = BlockRequest::read(42, 512, 4);
+    let transformed = resolve_single_effect(
+        &opaque_world(),
+        &read,
+        FaultPhase::Resolve,
+        "read-transform",
+        EffectLifetime::Opportunity,
+        StorageEffectSpecification::ReadTransform {
+            mutation: StorageReadMutation::BitFlip {
+                range: ByteRange::new(1, 2)
+                    .unwrap_or_else(|error| panic!("test byte range should be valid: {error}")),
+                mask: HexBytes::parse("a55a", 2)
+                    .unwrap_or_else(|error| panic!("test XOR mask should be valid: {error}")),
+            },
+        },
+        ResolvedMappingOutput::Activation { active: true },
+    );
+    assert_eq!(
+        transformed.read_transforms,
+        [BlockFaultReadTransform::Xor {
+            offset: 1,
+            mask: vec![0xa5, 0x5a],
+        }]
+    );
+
+    let media = resolve_single_effect(
+        &opaque_world(),
+        &read,
+        FaultPhase::Resolve,
+        "media-range",
+        EffectLifetime::Persistent,
+        StorageEffectSpecification::MediaRange {
+            range: ByteRange::new(512, 1024)
+                .unwrap_or_else(|error| panic!("test media range should be valid: {error}")),
+            state: StorageMediaState::Latent,
+            operations: OperationSet::new(vec![FaultOperation::StorageRead])
+                .unwrap_or_else(|error| panic!("test media operations should be valid: {error}")),
+            count_threshold: Some(
+                PositiveU64::new("count_threshold", 3).unwrap_or_else(|error| {
+                    panic!("test count threshold should be valid: {error}")
+                }),
+            ),
+            time_threshold_nanos: Some(
+                PositiveU64::new("time_threshold_nanos", 50)
+                    .unwrap_or_else(|error| panic!("test time threshold should be valid: {error}")),
+            ),
+        },
+        ResolvedMappingOutput::Activation { active: true },
+    );
+    assert_eq!(media.media_rules.len(), 1);
+    assert_eq!(media.media_rules[0].start, 512);
+    assert_eq!(media.media_rules[0].length, 1024);
+    assert_eq!(media.media_rules[0].state, BlockMediaRangeState::Latent);
+    assert_eq!(media.media_rules[0].operations, [BlockOp::Read]);
+    assert_eq!(media.media_rules[0].count_threshold, Some(3));
+    assert_eq!(media.media_rules[0].time_threshold_nanos, Some(50));
+}
+
+#[test]
+fn production_resolver_mutates_write_and_persistence_directives() {
+    let (world, block_target) = world_with_declared_block([
+        storage_policy_artifact(
+            "ordering-policy",
+            StoragePolicyArtifactKind::Persistence(StoragePolicyPersistence {
+                ordering: StoragePolicyPersistenceOrdering::DescendingRange,
+                delay_nanos: 125,
+                preserve_barriers: true,
+            }),
+        ),
+        storage_policy_artifact(
+            "write-success",
+            StoragePolicyArtifactKind::TypedResult(StoragePolicyTypedResult::Block {
+                result: StoragePolicyResult::Success,
+            }),
+        ),
+    ]);
+    let write = BlockRequest::write(43, 1024, vec![0x5a; 512]);
+
+    let disposition = resolve_single_effect_for_target(
+        &world,
+        block_target.clone(),
+        &write,
+        FaultPhase::Persist,
+        "write-disposition",
+        EffectLifetime::Opportunity,
+        StorageEffectSpecification::WriteDisposition {
+            disposition: StorageWriteDispositionKind::Lost {
+                selection: StorageSelection::All,
+            },
+            acknowledged_status: id("write-success"),
+        },
+        ResolvedMappingOutput::Activation { active: true },
+    );
+    assert_eq!(
+        disposition.write_disposition,
+        BlockFaultWriteDisposition::Lost
+    );
+
+    let persistence = resolve_single_effect_for_target(
+        &world,
+        block_target,
+        &write,
+        FaultPhase::Persist,
+        "persistence-order",
+        EffectLifetime::Persistent,
+        StorageEffectSpecification::PersistenceOrder {
+            ordering_group: id("database-wal"),
+            ordering_rule: id("ordering-policy"),
+        },
+        ResolvedMappingOutput::Activation { active: true },
+    );
+    assert_eq!(persistence.persistence_transforms.len(), 1);
+    assert_eq!(
+        persistence.persistence_transforms[0].ordering,
+        BlockPersistenceOrdering::DescendingRange
+    );
+    assert_eq!(persistence.persistence_transforms[0].delay_nanos, 125);
+    assert!(persistence.persistence_transforms[0].preserve_barriers);
+    assert_eq!(persistence.persistence_admitted_nanos, 10);
 }
 
 #[test]
