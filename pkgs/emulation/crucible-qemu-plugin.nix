@@ -18,7 +18,7 @@ in
       inherit src;
       name = "crucible-vendor-${version}";
       sourceRoot = "source/crates";
-      hash = "sha256-fyzTqIKN9jBtjjXtcMM5/uF3oitow3NgiOovjRweuMc=";
+      hash = "sha256-RvgGglI1TqzOmlqgt3qG+GBHEGd3ZHT9M4CueO0Q/W4=";
     };
 
     cargoFlags = "-p crucible-qemu-plugin";

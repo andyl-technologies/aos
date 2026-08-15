@@ -36,7 +36,7 @@
     if stdenv.hostPlatform.system == "x86_64-linux"
     then "x86_64"
     else "aarch64";
-  cargoDepsHash = "sha256-fyzTqIKN9jBtjjXtcMM5/uF3oitow3NgiOovjRweuMc=";
+  cargoDepsHash = "sha256-RvgGglI1TqzOmlqgt3qG+GBHEGd3ZHT9M4CueO0Q/W4=";
   liveDebuggerMatrixScript = ../../../examples/codex-skills/crucible-debugger/scripts/live-matrix.sh;
   src = import ./_source.nix {inherit lib;};
   packages = import ./_packages.nix;
