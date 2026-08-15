@@ -12,7 +12,7 @@ scheduler.
 - Provides `qemu.fault-safe-boundary.v1`.
 - Depends on 0047, existing sim observer, forced vCPU exit, RR cursor,
   preemption injection, and time-advance commit barrier patches.
-- Required by 0049–0059.
+- Required by 0049–0070.
 
 ## Boundary phases
 
@@ -84,7 +84,7 @@ handler state are committed.
 
 ## VMState
 
-Patch 0059 serializes armed/reached states, command bytes, order keys, boundary
+Patch 0067 serializes armed/reached states, command bytes, order keys, boundary
 generation, and partially published result state. Snapshot is forbidden while a
 handler is in `applying`; QEMU first completes or rolls back before acknowledging
 the save barrier.
@@ -102,7 +102,7 @@ the save barrier.
 5. Consume a preparation result through the GPL-side completion callback,
    submit its authorized commit, and prove both results carry the same icount
    and byte-for-byte identical handler evidence.
-6. Save before armed, after armed, and after applied states; patch 0059's later
+6. Save before armed, after armed, and after applied states; patch 0070's later
    aggregate test must resume identically.
 7. Revert this patch and prove exact-boundary probe gate fails.
 8. Prove non-sim QEMU matches the unpatched corpus.

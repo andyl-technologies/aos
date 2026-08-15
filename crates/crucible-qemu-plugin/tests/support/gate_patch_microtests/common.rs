@@ -67,10 +67,21 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0048-crucible-fault-safe-boundary.patch",
     "0049-crucible-memory-boundary-mutate.patch",
     "0050-crucible-memory-access-faults.patch",
+    "0051-crucible-add-architecture-register-fault-mutations.patch",
+    "0052-crucible-instruction-and-exception-faults.patch",
+    "0053-crucible-interrupt-faults.patch",
+    "0054-crucible-inject-architecture-hardware-errors.patch",
+    "0055-crucible-vcpu-service-control.patch",
+    "0056-crucible-node-lifecycle-faults.patch",
     "0060-crucible-block-typed-errors.patch",
     "0061-crucible-block-discard.patch",
     "0062-crucible-block-transport-reset.patch",
     "0063-crucible-plugin-vmstop.patch",
+    "0064-crucible-terminal-lifecycle-completion.patch",
+    "0065-crucible-authenticated-terminal-lifecycle.patch",
+    "0066-crucible-immutable-process-generation.patch",
+    "0067-crucible-serialize-and-harden-core-fault-state.patch",
+    "0068-crucible-guest-clock-faults.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

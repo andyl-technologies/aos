@@ -221,6 +221,9 @@
   # patch -p1 < ${./qemu-patches/0063-crucible-plugin-vmstop.patch}
   # patch -p1 < ${./qemu-patches/0064-crucible-terminal-lifecycle-completion.patch}
   # patch -p1 < ${./qemu-patches/0065-crucible-authenticated-terminal-lifecycle.patch}
+  # patch -p1 < ${./qemu-patches/0066-crucible-immutable-process-generation.patch}
+  # patch -p1 < ${./qemu-patches/0067-crucible-serialize-and-harden-core-fault-state.patch}
+  # patch -p1 < ${./qemu-patches/0068-crucible-guest-clock-faults.patch}
 in
   mkDerivation {
     inherit pname;

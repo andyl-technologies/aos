@@ -233,6 +233,8 @@ const _: () = assert!(MAX_FRAME_DATA <= u16::MAX as usize);
 
 #[path = "shmem/delivery_errors.rs"]
 mod delivery_errors;
+#[path = "shmem/fault_clock_evidence.rs"]
+mod fault_clock_evidence;
 #[path = "shmem/fault_command.rs"]
 mod fault_command;
 #[path = "shmem/fault_event.rs"]
@@ -267,6 +269,7 @@ mod ring_guest_introspection;
 mod ring_whitebox_marker;
 
 pub use delivery_errors::*;
+pub use fault_clock_evidence::*;
 pub use fault_command::*;
 pub use fault_event::*;
 pub use fault_instruction_evidence::*;

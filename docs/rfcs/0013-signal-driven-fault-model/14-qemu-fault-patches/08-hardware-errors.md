@@ -88,7 +88,7 @@ and command order key.
 Evidence includes manifest and machine/firmware identity, target, raw typed
 record fields, prior/new bank/platform record state, linked memory state,
 architecture injection acknowledgement, guest-visible entry where observable,
-fatal lifecycle transition, and fingerprints. Patch 0059 serializes platform
+fatal lifecycle transition, and fingerprints. Patch 0067 serializes platform
 device queues, bank/record state, pending delivery, and links to memory commands.
 
 ## Live microtests

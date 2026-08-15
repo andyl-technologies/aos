@@ -83,7 +83,7 @@ icount, vCPU context, and node fingerprint.
 ## VMState
 
 Applied RAM changes flow through ordinary RAM/dirty snapshot state. Pending
-commands are serialized by patch 0059. No separate mutation shadow memory exists.
+commands are serialized by patch 0067. No separate mutation shadow memory exists.
 
 ## Live microtests
 

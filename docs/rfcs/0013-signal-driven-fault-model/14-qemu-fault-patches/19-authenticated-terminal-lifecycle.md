@@ -28,7 +28,7 @@ owned child and verify status `70`, `71`, or `72` before committing supervision.
 
 ## State and recovery
 
-Patch 0059 serializes the pending decision, both digests, authorization state,
+Patch 0067 serializes the pending decision, both digests, authorization state,
 and launch-provisioned process generation. Restore rejects a snapshot whose
 generation differs from the process launch contract. Restoring an unauthorized
 decision permits the same command. Restoring an authorized decision preserves

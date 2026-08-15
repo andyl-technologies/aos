@@ -543,15 +543,15 @@ mod tests {
 
     #[test]
     fn process_generation_is_canonical_and_nonzero() {
-        let config = QemuLaunchPluginConfig::new("/nix/store/plugin.so", 0)
-            .with_process_generation(42);
+        let config =
+            QemuLaunchPluginConfig::new("/nix/store/plugin.so", 0).with_process_generation(42);
 
         assert_eq!(config.process_generation(), 42);
         assert!(config.plugin_args_raw().contains("process_generation=42"));
         assert_eq!(config.validate(), Ok(()));
 
-        let zero = QemuLaunchPluginConfig::new("/nix/store/plugin.so", 0)
-            .with_process_generation(0);
+        let zero =
+            QemuLaunchPluginConfig::new("/nix/store/plugin.so", 0).with_process_generation(0);
         assert_eq!(
             zero.validate(),
             Err(QemuLaunchCommandError::ZeroProcessGeneration)

@@ -167,7 +167,7 @@ cannot be implemented by blocking a host thread or deadlocking QEMU.
 Evidence includes old/new lifecycle state, QMP/run state, process generation,
 reset/power reason, every state-treatment policy and affected-state digest,
 terminal/pre-restart fingerprints, process exit status, deterministic
-realization identity, and ready-marker result. Patch 0059 serializes nonterminal lifecycle,
+realization identity, and ready-marker result. Patch 0067 serializes nonterminal lifecycle,
 hang/recovery, ready-marker wait, retry count, and reset policy. A crashed
 process is reconstructed by the host from the same authenticated deterministic
 realization and verified state.

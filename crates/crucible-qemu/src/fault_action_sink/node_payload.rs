@@ -908,6 +908,16 @@ mod tests {
     }
 
     #[test]
+    fn clock_phase_tags_match_the_closed_model_phase_registry() {
+        assert_eq!(phase_tag(FaultPhase::ClockRead), 28);
+        assert_eq!(phase_tag(FaultPhase::Arm), 29);
+        assert_eq!(phase_tag(FaultPhase::Fire), 30);
+        assert_eq!(phase_tag(FaultPhase::Synchronize), 31);
+        assert_eq!(phase_tag(FaultPhase::SourceSwitch), 32);
+        assert_eq!(phase_tag(FaultPhase::Submit), 33);
+    }
+
+    #[test]
     fn remove_payload_discards_all_target_fields() {
         let mut target = vec![NodeFaultFieldV1::u32(node_fault_field::T1, 7)];
         assert_eq!(

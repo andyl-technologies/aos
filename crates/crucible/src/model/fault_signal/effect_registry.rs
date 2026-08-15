@@ -629,7 +629,7 @@ effect_registry! {
     /// Shared latency, bandwidth, and service constraints for memory.
     MemoryService => { key: "memory.service", adapter: Node, targets: MEMORY_TARGETS, phases: [Fetch, Load, Store, DmaRead, DmaWrite, PageTableWalk, Queue], lifetimes: [Persistent, StateMachine], composition: Composite, capability: "qemu.memory.service.v1", evidence: ["access_service_ledger", "page_table_walk"] },
     /// Offset, drift, jump, freeze, jitter, or wander clock transform.
-    ClockTransform => { key: "clock.transform", adapter: Node, targets: CLOCK_TARGETS, phases: [ClockRead, Arm, Fire], lifetimes: [Persistent, Opportunity, Impulse], composition: Composite, capability: "qemu.clock.transform.v1", evidence: ["raw_value", "transformed_value", "timer_consequences", "state"] },
+    ClockTransform => { key: "clock.transform", adapter: Node, targets: CLOCK_TARGETS, phases: [ClockRead, Arm, Fire], lifetimes: [Persistent, Impulse], composition: Composite, capability: "qemu.clock.transform.v1", evidence: ["raw_value", "transformed_value", "timer_consequences", "state"] },
     /// Guest clock failure, fallback, source selection, and synchronization state.
     ClockSourceState => { key: "clock.source_state", adapter: Node, targets: CLOCK_TARGETS, phases: [SourceSwitch, Synchronize], lifetimes: [StateMachine], composition: Conflict, capability: "qemu.clock.source-state.v1", evidence: ["old_source", "new_source", "offset", "rate", "timer_rearm"] },
     /// Accelerator disappearance, reset, or reconnect transition.

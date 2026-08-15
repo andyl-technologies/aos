@@ -73,7 +73,7 @@ the interrupt policy for stalled/offline targets.
 
 Evidence includes service contributors, share/cap, window, credits/remainder,
 retired budget, old/new vCPU state, RR cursor, skipped selections, idle jumps,
-interrupt treatment, and fingerprints. Patch 0059 serializes rule generations,
+interrupt treatment, and fingerprints. Patch 0067 serializes rule generations,
 window coordinate, credits, remainder, state, recovery timers, and cursor.
 
 ## Live microtests

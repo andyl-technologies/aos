@@ -12,7 +12,7 @@ mutation; it does not expose a generic host pointer or debugger interface.
   `qemu.register.mutate.aarch64.v1`.
 - Depends on 0047–0048 and existing per-vCPU register/RR introspection.
 - Persistent access transforms also depend on the architecture hook portion of
-  this patch and are VMState-complete under 0059.
+  this patch and are VMState-complete under 0067.
 
 ## Architecture register manifests
 
@@ -226,7 +226,7 @@ event.
 ## VMState
 
 Architectural values already participate in CPU VMState; persistent rule tables
-and pending commands are added by 0059. Save/load validates identical register
+and pending commands are added by 0067. Save/load validates identical register
 manifest hash and CPU model.
 
 ## Live microtests

@@ -1,4 +1,4 @@
-# Patch 0058 — `crucible-accelerator-fault-device`
+# Patch 0069 — `crucible-accelerator-fault-device`
 
 ## Purpose
 
@@ -11,7 +11,7 @@ in-memory host test double.
 
 - Provides `qemu.accelerator.lifecycle.v1`, `qemu.accelerator.result.v1`,
   `qemu.accelerator.memory.v1`, and `qemu.accelerator.service.v1`.
-- Depends on 0047–0057, existing device callback/shared-memory infrastructure,
+- Depends on 0047–0068, existing device callback/shared-memory infrastructure,
   memory/DMA hooks, hardware-error support, and deterministic service queues.
 
 ## Production device coverage
@@ -71,7 +71,7 @@ typed virtio errors without host memory unsafety.
 
 Evidence includes manifest/device identity, lifecycle/queue state, job schema and
 ID, input/output digests, service ledger, DMA/device-memory changes, ECC record,
-guest completion/status, and fingerprints. Patch 0059 serializes device
+guest completion/status, and fingerprints. Patch 0070 validates device
 realization/lifecycle, queues, active jobs, service remainder, device memory,
 fault rules, and pending completions.
 

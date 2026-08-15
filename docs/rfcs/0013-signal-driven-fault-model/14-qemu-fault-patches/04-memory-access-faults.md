@@ -177,7 +177,7 @@ an error. Refresh events are exact modeled events and are checkpointed.
 Evidence contains rule generation, access ID, matched rules, original/final
 bytes or digests, suppressed/applied byte mask, outcome, service ledger,
 counter/state transitions, physical mutations, and fingerprints. QEMU dirty
-tracking/TB invalidation applies to persistent changes. Patch 0059 serializes
+tracking/TB invalidation applies to persistent changes. Patch 0067 serializes
 rule generations, sparse region state, counters, service state, and pending
 access delay. Mapped DMA evidence records both the admitted mapping-grant length
 and the exact used length, so a partial writeback is distinguishable from an
