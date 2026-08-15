@@ -12,16 +12,18 @@ The world declares VM nodes, logical links, deterministic link characteristics,
 and device sub-nodes. Node configuration includes architecture, memory, vCPU
 count, instruction-count shift, kernel command line, and ready-point policy.
 
-The topology is static. Declare every node and link that may participate before
-the run. Model membership changes through faults such as crash, restart,
-partition, isolation, and heal; do not attempt to create an undeclared VM or
-link during execution.
+The topology's objects are declared before the run. Signal bindings may change
+route, association, availability, lifecycle, and isolation state during
+execution, but they cannot create an undeclared VM, interface, segment, path,
+or device.
 
 ### Plan
 
-The plan declares timed or condition-triggered actions. It can activate and
-heal faults, start or stop nodes, arm timers, create savepoints, fork, log, or
-terminate the scenario.
+The plan declares the signal program, typed fault bindings, and timed or
+condition-triggered control actions. Signals and mappings determine when an
+effect contributes; control actions start or stop nodes, arm timers, create
+savepoints, fork, log, or terminate the scenario. There is no separate fault
+activation or healing command.
 
 The plan is not the schedule. Probabilistic choices, competing events, and
 exploration overrides are resolved into the schedule as the run executes.
@@ -48,8 +50,8 @@ while preserving a zero-guest-component black-box path.
 
 The built-in partition-recovery, crash-restart, and fault-campaign examples use
 this structured guest-assertion path for application semantics. Their host-side
-graphs still own readiness, lifecycle, injected-fault state, timers, I/O facts,
-and quiescence. The happy-path example remains the intentionally opaque
+graphs still own readiness, lifecycle, signal and binding state, timers, I/O
+facts, and quiescence. The happy-path example remains the intentionally opaque
 `ConsoleMatch` reference case.
 
 ### Seed
@@ -80,7 +82,7 @@ Canonical TOML is the CLI and storage format. Its top-level sections are:
 # VM nodes, I/O sub-nodes, and links.
 
 [plan]
-# Timed faults or an event graph.
+# Signal programs, typed bindings, and an event graph.
 
 [properties]
 # Named assertions.
@@ -152,7 +154,7 @@ failures include:
 - duplicate node IDs or invalid link endpoints;
 - link latency below the deterministic minimum, or jitter that crosses it;
 - invalid loss or bandwidth values;
-- references to missing nodes, links, assertions, or fault tags;
+- references to missing nodes, links, assertions, signals, or bindings;
 - invalid ready-point, vCPU, or instruction-count configuration;
 - malformed content-addressed artifact references; and
 - mismatched derived IDs in canonical TOML.
