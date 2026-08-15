@@ -249,6 +249,23 @@ in {
   };
 
   config = {
+    # `/etc/hostname` belongs to the generation overlay, so changing it after
+    # boot does not update the kernel hostname by itself. Keep that runtime
+    # state in the activation graph so every committed generation converges it
+    # immediately instead of requiring a reboot.
+    systemd.services.aos-hostname = {
+      description = "Apply the configured system hostname";
+      wantedBy = ["multi-user.target"];
+      after = ["dbus.service"];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = ''
+        ${pkgs.systemd}/bin/hostnamectl hostname ${lib.escapeShellArg cfg.hostName}
+      '';
+    };
+
     system.checks.networking-base = {
       description = "Base networking checks";
       checks =
@@ -276,9 +293,10 @@ in {
           }
           {
             name = "hostname-file";
-            description = "/etc/hostname exists";
+            description = "Configured hostname is active";
             script = ''
               vm.succeed("test -f /etc/hostname")
+              vm.succeed("test \"$(cat /etc/hostname)\" = \"$(cat /proc/sys/kernel/hostname)\"")
             '';
           }
         ]
