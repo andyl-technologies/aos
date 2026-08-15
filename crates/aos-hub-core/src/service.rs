@@ -25078,6 +25078,26 @@ impl RpcService {
         Ok(())
     }
 
+    /// Reconciles the derived registry index after a publication is visible.
+    ///
+    /// Publication readiness is the durable source of truth. Indexing is a
+    /// recoverable derived-state update, so failure is logged without making a
+    /// completed publication ambiguous to its producer.
+    async fn refresh_registry_index_after_publication(
+        &self,
+        registry: &crate::db::RegistryRecord,
+        publication_id: &str,
+    ) {
+        if let Err(error) = self.reindexer.reindex(registry).await {
+            tracing::warn!(
+                registry = %registry.slug,
+                publication_id,
+                error = %format!("{error:#}"),
+                "registry publication could not schedule index reconciliation"
+            );
+        }
+    }
+
     /// Commits an exactly complete publication and makes it discoverable.
     ///
     /// # Errors
@@ -25106,6 +25126,12 @@ impl RpcService {
         self.require_permission(&claims, Permission::Publish, &scope)
             .await?;
         if publication.state == "ready" {
+            // A retry is also the explicit recovery path when publication
+            // succeeded but its derived index did not. Returning immediately
+            // here would leave operators waiting for a periodic reconciliation
+            // even though the commit request is safe and idempotent.
+            self.refresh_registry_index_after_publication(&registry, &req.publication_id)
+                .await;
             return self
                 .registry_publication_response(&req.publication_id)
                 .await;
@@ -25189,18 +25215,8 @@ impl RpcService {
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         self.lease.release(registry.id, &req.publication_id).await;
-        if let Err(error) = self.reindexer.reindex(&registry).await {
-            // Publication and its current-pointer selection are already durable.
-            // The periodic reconciler is the recovery path, so an indexing
-            // wakeup failure must not turn a successful commit into an ambiguous
-            // client-visible error.
-            tracing::warn!(
-                registry = %registry.slug,
-                publication_id = %req.publication_id,
-                error = %format!("{error:#}"),
-                "registry publication could not schedule index reconciliation"
-            );
-        }
+        self.refresh_registry_index_after_publication(&registry, &req.publication_id)
+            .await;
         self.registry_publication_response(&req.publication_id)
             .await
     }
@@ -35086,6 +35102,37 @@ mod cache_upload_tests {
             response.registry.unwrap().trust_keys,
             vec![trust_key.to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn publication_index_refresh_is_safe_to_retry() {
+        let reindex_calls = Arc::new(AtomicUsize::new(0));
+        let (service, db, _lease, _auth) = injected_service_with_reindexer(Arc::new(
+            InjectedReindexer {
+                calls: Some(Arc::clone(&reindex_calls)),
+            },
+        ))
+        .await;
+        let org_id = db
+            .create_org("publication-retry", "Publication retry")
+            .await
+            .unwrap();
+        db.create_managed_registry(org_id, "", "packages", "public", &[], true)
+            .await
+            .unwrap();
+        let registry = db
+            .registry_by_slug("publication-retry/packages")
+            .await
+            .unwrap()
+            .unwrap();
+        service
+            .refresh_registry_index_after_publication(&registry, "ready-publication")
+            .await;
+        service
+            .refresh_registry_index_after_publication(&registry, "ready-publication")
+            .await;
+
+        assert_eq!(reindex_calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]
