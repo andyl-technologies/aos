@@ -213,6 +213,7 @@ DEVICE CO-SIM (shmem transport)                        class  enforces
   crucible-blk-shmem-io-fixes ... blk I/O correctness        D    PATCH-27, DET-16, E19
   crucible-blk-write-sentinel ... write/flush 0-len sentinel D    PATCH-28, DET-16, E19
   crucible-9p-shmem ............. virtio-9p over shmem       F    PATCH-29, DET-16, E19
+  crucible-9p-completion-wake-registration realize-time notifier lifetime D PATCH-20, DET-1, INV-10
   crucible-dev-cb-api ........... register blk/9p callbacks  F    PATCH-30, PLUG, SHM-17
   crucible-net-tx-callback ...... intercept guest TX         F    PATCH-31, DET-18, E18, SHM-17
   crucible-net-flush-api ........ lossless RX inject + flush F    PATCH-32, DET-18, E18
@@ -1070,6 +1071,39 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   upstream ioeventfd predicate is unchanged; other virtio devices are unchanged.
 - **Risk:** D.
 
+### crucible-9p-completion-wake-registration — bind notifier lifetime to the device
+
+- **Patch:** `0076-crucible-9p-completion-wake-registration.patch`.
+- **Enforces:** [PATCH-20], [DET-1], [INV-10].
+- **Mechanism:** registers the virtio-9p completion-wake notifier whenever the
+  device is realized and unregisters it when the device is unrealized. Notifier
+  lifetime is therefore owned by the QEMU device, not by whether plugin callback
+  registration happened to precede device realization. The notifier remains
+  inert until a Crucible-forwarded PDU is pending. At a drained wake it still
+  checks that the complete 9p callback family is installed before polling; a
+  missing callback family with pending Crucible work fails through the existing
+  device-error and shutdown path. No callback is invoked merely by registering
+  the notifier.
+- **Ordering requirement:** plugin installation may occur before or after
+  virtio-9p realization. In either order, once runtime request forwarding is
+  admitted, every host response doorbell reaches `virtio_9p_crucible_wake`, the
+  response is polled once, and `crucible_9p_finish_burst` releases the shared
+  `device_io_active` hold before the scheduler certifies quiescence. Registration
+  must not be conditional on the earlier, transient value of
+  `crucible_9p_callbacks_ready()`.
+- **Micro-test:** reconstruct the patch prefix through 0075 and prove the old
+  realize path conditionally registers the notifier; apply 0076 and require
+  unconditional add, symmetric unrealize removal, and the retained callback-
+  readiness guard in the pending-wake handler. The live 9p gate is the
+  integration test: a request submitted after device realization must stop at
+  its request icount, consume its deterministic response from a later doorbell,
+  clear `device_io_active`, and close the scheduler ceiling in both reference
+  and host-load legs.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — stock 9p processing never creates a
+  Crucible pending PDU, so the registered notifier observes no work and leaves
+  upstream device behavior unchanged when sim forwarding is not installed.
+- **Risk:** D.
+
 ### crucible-whitebox-guest-write — return synchronous doorbell replies
 
 - **Enforces:** [PLUG-34], [PLUG-51], [GHC-32], [GHC-37].
@@ -1615,7 +1649,11 @@ time-control primitives the whole design rests on.
     hold clears, including a run with host CPU load and a deliberately delayed
     response. Drop-one runtime probes for patches 0017 and 0019 prove the live
     block and 9p handoffs are patch-attributed rather than supplied by a later
-    patch.
+    patch. Patch `0076-crucible-9p-completion-wake-registration.patch` closes the
+    device/plugin initialization-order case by binding notifier registration to
+    virtio-9p realization; the same live gate proves a plugin installed after
+    device realization still consumes the response doorbell and releases the
+    device-I/O hold.
 - [x] **T-PATCH-10** Implement `crucible-clock-deadline` (exact next
   `QEMU_CLOCK_VIRTUAL` deadline, REQUIRED) and ban the overshoot-and-correct
   fallback; fail loudly if the capability is unavailable. — satisfies [PATCH-21],

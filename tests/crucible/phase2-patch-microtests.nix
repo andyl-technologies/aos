@@ -486,6 +486,13 @@
         patchName = "0075-crucible-restore-authenticated-fault-event-requests.patch";
       };
     }
+    {
+      patch = "0076-crucible-9p-completion-wake-registration.patch";
+      check = import ./phase1-qemu-9p-shmem.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0076-crucible-9p-completion-wake-registration.patch";
+      };
+    }
   ];
 
   microtestPatchNames =

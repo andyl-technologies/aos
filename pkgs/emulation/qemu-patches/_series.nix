@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "89d6e21cdf4bd8f00b0232d08744747a93ee588c0b7ae1f67484caf1487616da";
+  patchBranchBundleSha256 = "fd996a9ffe11ad7b73b86b641b91f72c8be7b6a2683c63fef543b8040d86c55c";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "a4c6e3822fa756a4ef12eaa4965e470e64ac2308";
+  patchBranchHeadCommit = "eb95903e6489ccce60f3a33b7bf817638de3e53f";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -685,6 +685,16 @@ let
       class = "F";
       enforces = "QFP-STATE-2,QFP-ACCEL-3,QFP-EVENT-1,FAULT-ORDER";
       capability = "mandatory authenticated request/evidence envelopes for fresh-process restore and exact accelerator-opportunity binding";
+    }
+    {
+      file = "0076-crucible-9p-completion-wake-registration.patch";
+      branchSubject = "crucible: register 9p completion wakes before plugin install";
+      branchCommit = "eb95903e6489ccce60f3a33b7bf817638de3e53f";
+      branchTree = "0841c27c892856f0febba12746fd3eabcd66e6f6";
+      catalogName = "crucible-9p-completion-wake-registration";
+      class = "D";
+      enforces = "PATCH-20,DET-1,INV-10";
+      capability = "realize-time 9p completion notifier registration independent of plugin installation order";
     }
   ];
   catalogOnlyCapabilities = [
