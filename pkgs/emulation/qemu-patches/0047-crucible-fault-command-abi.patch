@@ -1,0 +1,713 @@
+diff --git a/MAINTAINERS b/MAINTAINERS
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -3836,6 +3836,7 @@ R: Pierrick Bouvier <pierrick.bouvier@linaro.org>
+ S: Maintained
+ F: docs/devel/tcg-plugins.rst
+ F: plugins/
++F: include/qemu/crucible-fault.h
+ F: tests/tcg/plugins/
+ F: tests/functional/test_aarch64_tcg_plugins.py
+ F: contrib/plugins/
+diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
+new file mode 100644
+--- /dev/null
++++ b/include/qemu/crucible-fault.h
+@@ -0,0 +1,44 @@
++/*
++ * Crucible deterministic fault command registry
++ *
++ * Copyright (c) 2026 ANDYL Technologies
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef QEMU_CRUCIBLE_FAULT_H
++#define QEMU_CRUCIBLE_FAULT_H
++
++#include "qemu/qemu-plugin.h"
++
++typedef struct QemuCrucibleFaultHandler QemuCrucibleFaultHandler;
++
++typedef int (*QemuCrucibleFaultValidateFn)(
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len);
++typedef int (*QemuCrucibleFaultArmFn)(
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len, void **state_out);
++typedef int (*QemuCrucibleFaultApplyFn)(
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len, void *state,
++    struct qemu_plugin_crucible_fault_result *result,
++    GByteArray *result_payload);
++typedef void (*QemuCrucibleFaultFreeFn)(void *state);
++
++struct QemuCrucibleFaultHandler {
++    struct qemu_plugin_crucible_fault_capability capability;
++    QemuCrucibleFaultValidateFn validate;
++    QemuCrucibleFaultArmFn arm;
++    QemuCrucibleFaultApplyFn apply;
++    QemuCrucibleFaultFreeFn free_state;
++};
++
++void qemu_crucible_fault_register(const QemuCrucibleFaultHandler *handler);
++void qemu_crucible_fault_registry_seal(void);
++void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
++                                           uint64_t observed_icount);
++bool qemu_crucible_fault_has_pending_at_or_before(uint64_t icount);
++uint64_t qemu_crucible_fault_next_icount(void);
++
++#endif
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1787,6 +1787,126 @@ void qemu_plugin_crucible_pause_vm(void);
+ QEMU_PLUGIN_API
+ int64_t qemu_plugin_clock_deadline_ns(void);
+ 
++/**
++ * struct qemu_plugin_crucible_fault_command - validated fault command copy
++ *
++ * This GPL-side structure is populated only after the plugin validates the
++ * public byte ABI and copies its payload out of shared memory. QEMU revalidates
++ * every scalar bound before retaining it.
++ */
++struct qemu_plugin_crucible_fault_command {
++    uint16_t abi_major;
++    uint16_t abi_minor;
++    uint16_t command_kind;
++    uint16_t command_flags;
++    uint16_t phase;
++    uint16_t reserved;
++    uint32_t semantic_version;
++    uint64_t command_sequence;
++    uint8_t target_node_hash[32];
++    uint64_t target_icount;
++    uint64_t authorization_ceiling_icount;
++    uint8_t binding_hash[32];
++    uint8_t opportunity_hash[32];
++    uint8_t expected_precondition_hash[32];
++};
++
++/**
++ * struct qemu_plugin_crucible_fault_result - QEMU mutation result
++ *
++ * The plugin converts this fixed GPL-side value and its separately copied
++ * payload into the public byte-level result ABI.
++ */
++struct qemu_plugin_crucible_fault_result {
++    uint16_t command_kind;
++    uint16_t status;
++    uint16_t phase;
++    uint16_t reserved;
++    uint32_t semantic_version;
++    uint32_t capability_version;
++    uint64_t command_sequence;
++    uint64_t observed_icount;
++    uint64_t applied_icount;
++    uint8_t before_hash[32];
++    uint8_t after_hash[32];
++    uint8_t evidence_hash[32];
++};
++
++enum qemu_plugin_crucible_fault_scope {
++    QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_ALL = 1,
++    QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64 = 2,
++    QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_AARCH64 = 3,
++    QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_VIRTIO = 4,
++};
++
++/**
++ * struct qemu_plugin_crucible_fault_capability - immutable handler descriptor
++ *
++ * Strings have process lifetime and are copied synchronously by the plugin.
++ */
++struct qemu_plugin_crucible_fault_capability {
++    uint16_t command_kind;
++    uint16_t scope;
++    uint32_t semantic_version;
++    uint32_t phase_mask;
++    uint32_t maximum_payload_bytes;
++    uint32_t maximum_pending_commands;
++    uint64_t required_feature_bits;
++    const char *name;
++    const char *payload_schema;
++};
++
++/**
++ * qemu_plugin_crucible_fault_capabilities() - copy the sorted registry
++ * @out: destination array, or NULL to query the required row count
++ * @capacity: number of rows available at @out
++ *
++ * Returns the required row count. No rows are copied unless @capacity is large
++ * enough for the complete immutable registry.
++ */
++QEMU_PLUGIN_API
++size_t qemu_plugin_crucible_fault_capabilities(
++    struct qemu_plugin_crucible_fault_capability *out, size_t capacity);
++
++/**
++ * qemu_plugin_crucible_fault_submit() - copy and arm a validated command
++ * @command: plugin-validated fixed command fields
++ * @payload: copied canonical payload bytes
++ * @payload_len: exact payload byte count
++ *
++ * Returns zero after arming or queuing a canonical rejection, or a negative
++ * errno when transport resources cannot preserve a result.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fault_submit(
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len);
++
++/**
++ * qemu_plugin_crucible_fault_cancel() - cancel one command not yet applied
++ * @command_sequence: exact live sequence to cancel
++ *
++ * Returns zero on cancellation or -ENOENT once absent or applied.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fault_cancel(uint64_t command_sequence);
++
++/**
++ * qemu_plugin_crucible_fault_poll() - copy one completed result
++ * @result: fixed result destination
++ * @payload: result payload destination
++ * @payload_capacity: bytes available at @payload
++ * @payload_length: required/copied result payload bytes
++ *
++ * Returns one when a result was consumed, zero when none is ready, -ENOSPC
++ * without consumption when the payload buffer is too small, or -EINVAL for an
++ * invalid pointer contract.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fault_poll(
++    struct qemu_plugin_crucible_fault_result *result,
++    uint8_t *payload, size_t payload_capacity, size_t *payload_length);
++
+ /**
+  * qemu_plugin_scoreboard_new() - alloc a new scoreboard
+  *
+diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
+new file mode 100644
+--- /dev/null
++++ b/plugins/crucible-fault.c
+@@ -0,0 +1,506 @@
++/*
++ * Crucible deterministic fault command registry and dispatcher
++ *
++ * Copyright (c) 2026 ANDYL Technologies
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/crucible-fault.h"
++#include "qemu/module.h"
++#include "qemu/queue.h"
++#include "system/cpu-timers.h"
++
++#include <aos/crucible/crucible_shmem_abi.h>
++
++#define CRUCIBLE_FAULT_RESULT_QUEUE_CAPACITY 4096
++
++typedef struct CruciblePendingFault {
++    QTAILQ_ENTRY(CruciblePendingFault) link;
++    struct qemu_plugin_crucible_fault_command command;
++    const QemuCrucibleFaultHandler *handler;
++    uint8_t *payload;
++    size_t payload_len;
++    void *handler_state;
++} CruciblePendingFault;
++
++typedef struct CrucibleCompletedFault {
++    QTAILQ_ENTRY(CrucibleCompletedFault) link;
++    struct qemu_plugin_crucible_fault_result result;
++    GByteArray *payload;
++} CrucibleCompletedFault;
++
++static GMutex crucible_fault_lock;
++static GPtrArray *crucible_fault_handlers;
++static QTAILQ_HEAD(, CruciblePendingFault) crucible_pending_faults =
++    QTAILQ_HEAD_INITIALIZER(crucible_pending_faults);
++static QTAILQ_HEAD(, CrucibleCompletedFault) crucible_completed_faults =
++    QTAILQ_HEAD_INITIALIZER(crucible_completed_faults);
++static size_t crucible_pending_count;
++static size_t crucible_completed_count;
++static bool crucible_registry_sealed;
++static uint64_t crucible_last_command_sequence;
++
++static void crucible_fault_ensure_registry(void)
++{
++    if (!crucible_fault_handlers) {
++        crucible_fault_handlers = g_ptr_array_new();
++    }
++}
++
++static int crucible_fault_capability_compare(gconstpointer left,
++                                             gconstpointer right)
++{
++    const QemuCrucibleFaultHandler *a = *(const void * const *)left;
++    const QemuCrucibleFaultHandler *b = *(const void * const *)right;
++
++    if (a->capability.command_kind != b->capability.command_kind) {
++        return a->capability.command_kind < b->capability.command_kind ? -1 : 1;
++    }
++    if (a->capability.semantic_version != b->capability.semantic_version) {
++        return a->capability.semantic_version < b->capability.semantic_version
++                   ? -1
++                   : 1;
++    }
++    if (a->capability.scope != b->capability.scope) {
++        return a->capability.scope < b->capability.scope ? -1 : 1;
++    }
++    return 0;
++}
++
++void qemu_crucible_fault_register(const QemuCrucibleFaultHandler *handler)
++{
++    size_t i;
++
++    g_assert(handler);
++    g_assert(handler->capability.command_kind != 0);
++    g_assert(handler->capability.semantic_version != 0);
++    g_assert(handler->capability.phase_mask != 0);
++    g_assert(handler->capability.maximum_pending_commands != 0);
++    g_assert(handler->capability.name);
++    g_assert(handler->capability.payload_schema);
++
++    g_mutex_lock(&crucible_fault_lock);
++    crucible_fault_ensure_registry();
++    g_assert(!crucible_registry_sealed);
++    for (i = 0; i < crucible_fault_handlers->len; i++) {
++        const QemuCrucibleFaultHandler *existing =
++            g_ptr_array_index(crucible_fault_handlers, i);
++        g_assert(existing->capability.command_kind !=
++                 handler->capability.command_kind ||
++                 existing->capability.semantic_version !=
++                 handler->capability.semantic_version ||
++                 existing->capability.scope != handler->capability.scope);
++    }
++    g_ptr_array_add(crucible_fault_handlers, (void *)handler);
++    g_mutex_unlock(&crucible_fault_lock);
++}
++
++void qemu_crucible_fault_registry_seal(void)
++{
++    g_mutex_lock(&crucible_fault_lock);
++    crucible_fault_ensure_registry();
++    if (!crucible_registry_sealed) {
++        g_ptr_array_sort(crucible_fault_handlers,
++                         crucible_fault_capability_compare);
++        crucible_registry_sealed = true;
++    }
++    g_mutex_unlock(&crucible_fault_lock);
++}
++
++static const QemuCrucibleFaultHandler *
++crucible_fault_find_handler(uint16_t kind, uint32_t version)
++{
++    size_t i;
++
++    for (i = 0; i < crucible_fault_handlers->len; i++) {
++        const QemuCrucibleFaultHandler *handler =
++            g_ptr_array_index(crucible_fault_handlers, i);
++        if (handler->capability.command_kind == kind &&
++            handler->capability.semantic_version == version) {
++            return handler;
++        }
++    }
++    return NULL;
++}
++
++static size_t crucible_fault_handler_pending_count(
++    const QemuCrucibleFaultHandler *handler)
++{
++    CruciblePendingFault *pending;
++    size_t count = 0;
++
++    QTAILQ_FOREACH(pending, &crucible_pending_faults, link) {
++        if (pending->handler == handler) {
++            count++;
++        }
++    }
++    return count;
++}
++
++static void crucible_fault_insert_pending(CruciblePendingFault *pending)
++{
++    CruciblePendingFault *cursor;
++
++    QTAILQ_FOREACH(cursor, &crucible_pending_faults, link) {
++        if (pending->command.target_icount < cursor->command.target_icount ||
++            (pending->command.target_icount == cursor->command.target_icount &&
++             pending->command.command_sequence <
++                 cursor->command.command_sequence)) {
++            QTAILQ_INSERT_BEFORE(cursor, pending, link);
++            return;
++        }
++    }
++    QTAILQ_INSERT_TAIL(&crucible_pending_faults, pending, link);
++}
++
++static void crucible_fault_result_rejected(
++    struct qemu_plugin_crucible_fault_result *result,
++    const struct qemu_plugin_crucible_fault_command *command,
++    uint16_t status, uint64_t observed_icount)
++{
++    memset(result, 0, sizeof(*result));
++    result->command_kind = command->command_kind;
++    result->status = status;
++    result->phase = command->phase;
++    result->semantic_version = command->semantic_version;
++    result->command_sequence = command->command_sequence;
++    result->observed_icount = observed_icount;
++    result->capability_version = 1;
++}
++
++static void crucible_fault_queue_result(
++    const struct qemu_plugin_crucible_fault_result *result,
++    GByteArray *payload)
++{
++    CrucibleCompletedFault *completed;
++
++    g_assert(crucible_completed_count < CRUCIBLE_FAULT_RESULT_QUEUE_CAPACITY);
++    completed = g_new0(CrucibleCompletedFault, 1);
++    completed->result = *result;
++    completed->payload = payload ? payload : g_byte_array_new();
++    QTAILQ_INSERT_TAIL(&crucible_completed_faults, completed, link);
++    crucible_completed_count++;
++}
++
++static int crucible_fault_reject_submit(
++    const struct qemu_plugin_crucible_fault_command *command,
++    uint16_t status)
++{
++    struct qemu_plugin_crucible_fault_result result;
++
++    crucible_fault_result_rejected(&result, command, status,
++                                   qemu_plugin_icount_raw());
++    if (crucible_completed_count >= CRUCIBLE_FAULT_RESULT_QUEUE_CAPACITY) {
++        return -ENOSPC;
++    }
++    crucible_fault_queue_result(&result, NULL);
++    return 0;
++}
++
++size_t qemu_plugin_crucible_fault_capabilities(
++    struct qemu_plugin_crucible_fault_capability *out, size_t capacity)
++{
++    size_t required;
++    size_t i;
++
++    qemu_crucible_fault_registry_seal();
++    g_mutex_lock(&crucible_fault_lock);
++    required = crucible_fault_handlers->len;
++    if (out && capacity >= required) {
++        for (i = 0; i < required; i++) {
++            const QemuCrucibleFaultHandler *handler =
++                g_ptr_array_index(crucible_fault_handlers, i);
++            out[i] = handler->capability;
++        }
++    }
++    g_mutex_unlock(&crucible_fault_lock);
++    return required;
++}
++
++int qemu_plugin_crucible_fault_submit(
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len)
++{
++    const QemuCrucibleFaultHandler *handler;
++    CruciblePendingFault *pending;
++    int status;
++
++    if (!command || (payload_len != 0 && !payload)) {
++        return -EINVAL;
++    }
++    if (!qemu_plugin_crucible_single_threaded_rr()) {
++        return -EPERM;
++    }
++    qemu_crucible_fault_registry_seal();
++    g_mutex_lock(&crucible_fault_lock);
++    if (crucible_completed_count >= CRUCIBLE_FAULT_RESULT_QUEUE_CAPACITY) {
++        g_mutex_unlock(&crucible_fault_lock);
++        return -ENOSPC;
++    }
++    if (command->abi_major != CRUCIBLE_FAULT_COMMAND_ABI_MAJOR ||
++        command->abi_minor > CRUCIBLE_FAULT_COMMAND_ABI_MINOR ||
++        command->command_flags != 0 || command->command_sequence == 0 ||
++        command->target_icount > command->authorization_ceiling_icount ||
++        command->phase < CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY ||
++        command->phase > CRUCIBLE_FAULT_PHASE_DEVICE ||
++        payload_len > CRUCIBLE_FAULT_HARD_PAYLOAD_BYTES) {
++        status = crucible_fault_reject_submit(
++            command, CRUCIBLE_FAULT_STATUS_MALFORMED_COMMAND);
++        g_mutex_unlock(&crucible_fault_lock);
++        return status;
++    }
++    if (command->command_sequence <= crucible_last_command_sequence) {
++        status = crucible_fault_reject_submit(
++            command, CRUCIBLE_FAULT_STATUS_DUPLICATE_SEQUENCE);
++        g_mutex_unlock(&crucible_fault_lock);
++        return status;
++    }
++    crucible_last_command_sequence = command->command_sequence;
++    handler = crucible_fault_find_handler(command->command_kind,
++                                          command->semantic_version);
++    if (!handler) {
++        status = crucible_fault_reject_submit(
++            command, CRUCIBLE_FAULT_STATUS_UNSUPPORTED_CAPABILITY);
++        g_mutex_unlock(&crucible_fault_lock);
++        return status;
++    }
++    if (!(handler->capability.phase_mask &
++          (1U << (command->phase - 1)))) {
++        status = crucible_fault_reject_submit(
++            command, CRUCIBLE_FAULT_STATUS_INVALID_PHASE);
++        g_mutex_unlock(&crucible_fault_lock);
++        return status;
++    }
++    if (payload_len > handler->capability.maximum_payload_bytes ||
++        crucible_fault_handler_pending_count(handler) >=
++            handler->capability.maximum_pending_commands ||
++        crucible_pending_count + crucible_completed_count >=
++            CRUCIBLE_FAULT_RESULT_QUEUE_CAPACITY) {
++        status = crucible_fault_reject_submit(
++            command, CRUCIBLE_FAULT_STATUS_RESOURCE_LIMIT);
++        g_mutex_unlock(&crucible_fault_lock);
++        return status;
++    }
++    if (handler->validate) {
++        status = handler->validate(command, payload, payload_len);
++        if (status != 0) {
++            status = crucible_fault_reject_submit(
++                command, CRUCIBLE_FAULT_STATUS_MALFORMED_COMMAND);
++            g_mutex_unlock(&crucible_fault_lock);
++            return status;
++        }
++    }
++
++    pending = g_new0(CruciblePendingFault, 1);
++    pending->command = *command;
++    pending->handler = handler;
++    pending->payload = g_memdup2(payload, payload_len);
++    pending->payload_len = payload_len;
++    if (handler->arm) {
++        status = handler->arm(command, pending->payload, payload_len,
++                              &pending->handler_state);
++        if (status != 0) {
++            g_clear_pointer(&pending->payload, g_free);
++            g_free(pending);
++            status = crucible_fault_reject_submit(
++                command, CRUCIBLE_FAULT_STATUS_GUEST_REJECTED);
++            g_mutex_unlock(&crucible_fault_lock);
++            return status;
++        }
++    }
++    crucible_fault_insert_pending(pending);
++    crucible_pending_count++;
++    g_mutex_unlock(&crucible_fault_lock);
++    return 0;
++}
++
++int qemu_plugin_crucible_fault_cancel(uint64_t command_sequence)
++{
++    CruciblePendingFault *pending;
++
++    g_mutex_lock(&crucible_fault_lock);
++    QTAILQ_FOREACH(pending, &crucible_pending_faults, link) {
++        if (pending->command.command_sequence == command_sequence) {
++            QTAILQ_REMOVE(&crucible_pending_faults, pending, link);
++            crucible_pending_count--;
++            if (pending->handler->free_state) {
++                pending->handler->free_state(pending->handler_state);
++            }
++            g_clear_pointer(&pending->payload, g_free);
++            g_free(pending);
++            g_mutex_unlock(&crucible_fault_lock);
++            return 0;
++        }
++    }
++    g_mutex_unlock(&crucible_fault_lock);
++    return -ENOENT;
++}
++
++void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
++                                           uint64_t observed_icount)
++{
++    CruciblePendingFault *pending;
++    CruciblePendingFault *next;
++
++    g_mutex_lock(&crucible_fault_lock);
++    QTAILQ_FOREACH_SAFE(pending, &crucible_pending_faults, link, next) {
++        struct qemu_plugin_crucible_fault_result result;
++        GByteArray *result_payload = g_byte_array_new();
++        int status;
++
++        if (pending->command.phase != phase ||
++            pending->command.target_icount > observed_icount) {
++            continue;
++        }
++        QTAILQ_REMOVE(&crucible_pending_faults, pending, link);
++        crucible_pending_count--;
++        memset(&result, 0, sizeof(result));
++        result.command_kind = pending->command.command_kind;
++        result.phase = phase;
++        result.semantic_version = pending->command.semantic_version;
++        result.command_sequence = pending->command.command_sequence;
++        result.observed_icount = observed_icount;
++        result.capability_version = 1;
++        if (observed_icount > pending->command.target_icount ||
++            observed_icount > pending->command.authorization_ceiling_icount) {
++            result.status = CRUCIBLE_FAULT_STATUS_PAST_BOUNDARY;
++        } else {
++            status = pending->handler->apply(
++                &pending->command, pending->payload, pending->payload_len,
++                pending->handler_state, &result, result_payload);
++            if (status != 0 && result.status == 0) {
++                result.status = CRUCIBLE_FAULT_STATUS_INTERNAL_ERROR;
++            }
++        }
++        if (result.status != CRUCIBLE_FAULT_STATUS_APPLIED) {
++            result.applied_icount = 0;
++            memcpy(result.after_hash, result.before_hash,
++                   sizeof(result.after_hash));
++        }
++        crucible_fault_queue_result(&result, result_payload);
++        if (pending->handler->free_state) {
++            pending->handler->free_state(pending->handler_state);
++        }
++        g_clear_pointer(&pending->payload, g_free);
++        g_free(pending);
++    }
++    g_mutex_unlock(&crucible_fault_lock);
++}
++
++bool qemu_crucible_fault_has_pending_at_or_before(uint64_t icount)
++{
++    CruciblePendingFault *pending;
++    bool found = false;
++
++    g_mutex_lock(&crucible_fault_lock);
++    QTAILQ_FOREACH(pending, &crucible_pending_faults, link) {
++        if (pending->command.target_icount <= icount) {
++            found = true;
++            break;
++        }
++    }
++    g_mutex_unlock(&crucible_fault_lock);
++    return found;
++}
++
++uint64_t qemu_crucible_fault_next_icount(void)
++{
++    CruciblePendingFault *pending;
++    uint64_t next = UINT64_MAX;
++
++    g_mutex_lock(&crucible_fault_lock);
++    QTAILQ_FOREACH(pending, &crucible_pending_faults, link) {
++        next = MIN(next, pending->command.target_icount);
++    }
++    g_mutex_unlock(&crucible_fault_lock);
++    return next;
++}
++
++int qemu_plugin_crucible_fault_poll(
++    struct qemu_plugin_crucible_fault_result *result,
++    uint8_t *payload, size_t payload_capacity, size_t *payload_length)
++{
++    CrucibleCompletedFault *completed;
++
++    if (!result || !payload_length) {
++        return -EINVAL;
++    }
++    g_mutex_lock(&crucible_fault_lock);
++    completed = QTAILQ_FIRST(&crucible_completed_faults);
++    if (!completed) {
++        g_mutex_unlock(&crucible_fault_lock);
++        return 0;
++    }
++    *payload_length = completed->payload->len;
++    if (completed->payload->len > payload_capacity ||
++        (completed->payload->len != 0 && !payload)) {
++        g_mutex_unlock(&crucible_fault_lock);
++        return -ENOSPC;
++    }
++    *result = completed->result;
++    if (completed->payload->len != 0) {
++        memcpy(payload, completed->payload->data, completed->payload->len);
++    }
++    QTAILQ_REMOVE(&crucible_completed_faults, completed, link);
++    crucible_completed_count--;
++    g_byte_array_unref(completed->payload);
++    g_free(completed);
++    g_mutex_unlock(&crucible_fault_lock);
++    return 1;
++}
++
++static int crucible_boundary_probe_apply(
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len, void *state,
++    struct qemu_plugin_crucible_fault_result *result,
++    GByteArray *result_payload)
++{
++    (void)command;
++    (void)payload;
++    (void)payload_len;
++    (void)state;
++    (void)result_payload;
++    result->status = CRUCIBLE_FAULT_STATUS_APPLIED;
++    result->applied_icount = result->observed_icount;
++    return 0;
++}
++
++static const QemuCrucibleFaultHandler crucible_boundary_probe_handler = {
++    .capability = {
++        .command_kind = CRUCIBLE_FAULT_COMMAND_BOUNDARY_PROBE,
++        .scope = QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_ALL,
++        .semantic_version = CRUCIBLE_FAULT_COMMAND_SEMANTIC_VERSION,
++        .phase_mask = 1U << (CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY - 1),
++        .maximum_payload_bytes = 0,
++        .maximum_pending_commands = CRUCIBLE_FAULT_DEFAULT_COMMAND_CAPACITY,
++        .required_feature_bits = 0,
++        .name = "qemu.fault-boundary-probe.v1",
++        .payload_schema = "empty",
++    },
++    .apply = crucible_boundary_probe_apply,
++};
++
++static const QemuCrucibleFaultHandler crucible_capability_query_handler = {
++    .capability = {
++        .command_kind = CRUCIBLE_FAULT_COMMAND_QUERY_CAPABILITIES,
++        .scope = QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_ALL,
++        .semantic_version = CRUCIBLE_FAULT_COMMAND_SEMANTIC_VERSION,
++        .phase_mask = 1U << (CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY - 1),
++        .maximum_payload_bytes = 0,
++        .maximum_pending_commands = 1,
++        .required_feature_bits = 0,
++        .name = "qemu.fault-command-abi.v1",
++        .payload_schema = "empty; use capability query API",
++    },
++    .apply = crucible_boundary_probe_apply,
++};
++
++static void crucible_fault_register_abi_handlers(void)
++{
++    qemu_crucible_fault_register(&crucible_capability_query_handler);
++    qemu_crucible_fault_register(&crucible_boundary_probe_handler);
++}
++
++type_init(crucible_fault_register_abi_handlers)
+diff --git a/plugins/meson.build b/plugins/meson.build
+--- a/plugins/meson.build
++++ b/plugins/meson.build
+@@ -59,7 +59,6 @@ if host_os == 'windows'
+ endif
+ 
+ user_ss.add(files('user.c', 'api-user.c'))
+-system_ss.add(files('system.c', 'api-system.c'))
++system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c'))
+ 
+ common_ss.add(files('loader.c', 'api.c', 'core.c'))
+-
