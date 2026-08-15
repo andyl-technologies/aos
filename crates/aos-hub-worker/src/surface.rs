@@ -20,12 +20,13 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
+use sha2::{Digest as _, Sha256};
 use worker::Bucket;
 
 use aos_hub_core::db::{Database, SurfacePlacementRecord};
 use aos_hub_core::fetch::{
     OriginFetch, StreamedRead, SurfaceFetch, SurfaceListPage, SurfaceListedEvidence,
-    SurfaceProvider,
+    SurfaceObjectEvidence, SurfaceProvider,
 };
 use aos_hub_core::s3surface::{Method as S3Method, S3Surface};
 use aos_hub_core::secret_version::SecretVersionResolver;
@@ -732,6 +733,50 @@ impl SurfaceFetch for R2SurfaceFetch {
             evidence,
             next_cursor: page.cursor,
         })
+    }
+
+    async fn inventory_evidence_bounded(
+        &self,
+        path: &str,
+        maximum_bytes: u64,
+    ) -> Result<Option<SurfaceObjectEvidence>> {
+        use futures_util::TryStreamExt as _;
+
+        // R2 binds the body, size, and ETag to one GET object snapshot. Hashing
+        // that body is stronger and cheaper than issuing separate GETs before
+        // and after it, whose bodies would be discarded merely to read ETags.
+        let Some(read) = self.fetch_stream(path, None).await? else {
+            return Ok(None);
+        };
+        let expected_size = read.total;
+        anyhow::ensure!(
+            expected_size <= maximum_bytes,
+            "R2 object '{path}' declares {expected_size} bytes, exceeding the {maximum_bytes}-byte inventory limit"
+        );
+        let strong_etag = read.strong_etag;
+        let mut stream = read.body.into_data_stream();
+        let mut hasher = Sha256::new();
+        let mut observed_size = 0_u64;
+        while let Some(chunk) = stream.try_next().await? {
+            observed_size = observed_size
+                .checked_add(chunk.len() as u64)
+                .with_context(|| format!("R2 object '{path}' size overflowed"))?;
+            anyhow::ensure!(
+                observed_size <= expected_size && observed_size <= maximum_bytes,
+                "R2 object '{path}' exceeded its bounded inventory length while streaming"
+            );
+            hasher.update(&chunk);
+        }
+        anyhow::ensure!(
+            observed_size == expected_size,
+            "R2 object '{path}' snapshot declared {expected_size} bytes but streamed {observed_size}"
+        );
+
+        Ok(Some(SurfaceObjectEvidence {
+            sha256: hasher.finalize().into(),
+            size: i64::try_from(observed_size).context("R2 object size exceeds i64")?,
+            strong_etag,
+        }))
     }
 
     async fn inventory_strong_etag(&self, path: &str) -> Result<Option<String>> {
