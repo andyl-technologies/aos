@@ -71,14 +71,14 @@ use crate::supervision::{
 use crate::{
     CrucibleAcceleratorDevice, CrucibleShmem9pDevice, CrucibleShmemBlockDevice,
     CrucibleShmemNetworkDevice, IcountShiftSetting, LaunchProfileCandidate, LaunchProfileError,
-    LivePluginGuestArchitecture, QemuAsyncDriverPolicy, QemuCrashDetector,
+    LivePluginGuestArchitecture, ProductionFaultRuntime, QemuAsyncDriverPolicy, QemuCrashDetector,
     QemuGdbstubChannelConfig, QemuHostPluginSetupError, QemuLaunchAppRandomConfig,
     QemuLaunchArtifact, QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchPluginConfig,
     QemuLaunchPluginSwitch, QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError,
     QemuNode, QemuNodeChannelError, QemuNodeError, QemuNodeFactoryError, QemuNodeFactoryRuntime,
-    QemuNodeRestorePlan, QemuQmpChannelConfig, QemuQuantumShmemConfig, QemuRootImageFormat,
-    QemuShmemHotPathChannel, QemuShutdownPolicy, QemuVmLaunchConfig, QemuVmSnapshot,
-    QemuWhiteboxSetupError, QmpError, build_qemu_node_from_completed_setup,
+    QemuNodeRestorePlan, QemuNodeSet, QemuQmpChannelConfig, QemuQuantumShmemConfig,
+    QemuRootImageFormat, QemuShmemHotPathChannel, QemuShutdownPolicy, QemuVmLaunchConfig,
+    QemuVmSnapshot, QemuWhiteboxSetupError, QmpError, build_qemu_node_from_completed_setup,
     build_qemu_node_from_restored_checkpoint, build_qemu_node_from_restored_checkpoint_paused,
     complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
 };
@@ -659,6 +659,21 @@ pub struct QemuLiveExactSnapshotReport {
     pub pending_block_io_captured: bool,
 }
 
+/// Evidence from one signal-driven lifecycle effect applied by live patched QEMU.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuLiveNodeLifecycleFaultReport {
+    /// QEMU instruction coordinate at which the command was committed.
+    pub observed_icount: u64,
+    /// Authenticated action identity carried by command and occurrence evidence.
+    pub action: ContentHash,
+    /// Authenticated typed evidence identity returned by QEMU.
+    pub evidence: ContentHash,
+    /// Transition-specific QEMU process exit status.
+    pub exit_code: i32,
+    /// The signal runtime emitted exactly one lifecycle impulse.
+    pub signal_impulse_applied: bool,
+}
+
 /// Drives the first live [`QemuNode`] through a bounded busy-window step schedule.
 ///
 /// Boots the diskless-firmware guest with the Rust control plugin and QMP,
@@ -703,6 +718,214 @@ pub fn run_qemu_live_node_step_gate(
         host_load_applied,
         busy_window_logical_offset_zero,
     })
+}
+
+/// Applies one signal-driven crash impulse to a real patched-QEMU process.
+///
+/// This gate exercises the production path end to end: the typed event source,
+/// binding evaluator, production capability manifest, action encoder, shared
+/// command ring, QEMU safe-boundary dispatcher, typed occurrence event, and
+/// bounded process supervision. It does not synthesize command bytes or use a
+/// backend double.
+///
+/// # Errors
+///
+/// Returns [`QemuLiveNodeStepGateError`] when launch, signal admission,
+/// boundary evaluation, QEMU evidence validation, terminal authorization, or
+/// process supervision fails.
+pub fn run_qemu_live_node_lifecycle_fault_gate(
+    config: &QemuLiveNodeStepGateConfig,
+) -> Result<QemuLiveNodeLifecycleFaultReport, QemuLiveNodeStepGateError> {
+    let run_directory = config.run_directory.join("signal-node-lifecycle");
+    fs::create_dir_all(&run_directory).map_err(|source| {
+        QemuLiveNodeStepGateError::PrepareRunDirectory {
+            path: run_directory.clone(),
+            source,
+        }
+    })?;
+
+    let identity = node_id(GATE_NODE);
+    let mut node = build_live_node(
+        config,
+        &run_directory,
+        LiveNodeIdentity {
+            node: GATE_NODE,
+            router: GATE_ROUTER,
+            crash_detector: "signal-node-lifecycle",
+        },
+        None,
+        true,
+    )?;
+    let observed_icount = node
+        .current_icount()
+        .map_err(|source| QemuLiveNodeStepGateError::node_op("read lifecycle boundary", source))?
+        .retired;
+    let mut nodes = QemuNodeSet::new();
+    if nodes.insert(identity.clone(), node).is_some() {
+        return Err(fault_gate_invariant(
+            "live lifecycle node identity collided",
+        ));
+    }
+
+    let plan = lifecycle_crash_plan(GATE_NODE)?;
+    let store: Arc<dyn crucible::model::DagStore> =
+        Arc::new(crucible::model::MemoryDagStore::new());
+    let artifacts: Arc<dyn crucible::model::SignalArtifactProvider> =
+        Arc::new(crucible::model::OwnedDagSignalArtifactProvider::new(store));
+    let mut runtime = ProductionFaultRuntime::new(
+        plan,
+        Some(artifacts),
+        crucible::model::SignalBoundarySnapshot::default(),
+        ContentHash::from_canonical_material(
+            "crucible.live-node-lifecycle-fault-gate.v1",
+            GATE_NODE,
+        ),
+        &nodes,
+    )
+    .map_err(|error| fault_gate_invariant(format!("admit lifecycle plan: {error}")))?;
+    let evaluation = runtime
+        .evaluate_boundary(
+            crucible::model::FaultCoordinate {
+                virtual_nanos: 1,
+                retired_instructions: Some(observed_icount),
+            },
+            0,
+            &mut nodes,
+        )
+        .map_err(|error| fault_gate_invariant(format!("apply lifecycle boundary: {error}")))?;
+    let [decision] = runtime.node_lifecycle_decisions() else {
+        return Err(fault_gate_invariant(format!(
+            "lifecycle boundary returned {} terminal decisions",
+            runtime.node_lifecycle_decisions().len()
+        )));
+    };
+    if decision.requested_transition != crucible::model::NodeLifecycleTransition::Crash
+        || decision.effective_transition != crucible::model::NodeLifecycleTransition::Crash
+        || decision.observed_icount != observed_icount
+    {
+        return Err(fault_gate_invariant(
+            "lifecycle evidence did not retain the requested crash boundary",
+        ));
+    }
+    let expected_exit_code = decision
+        .expected_exit_code
+        .ok_or_else(|| fault_gate_invariant("crash evidence did not require a process exit"))?;
+    let action = decision.action;
+    let evidence = decision.event_evidence;
+    nodes
+        .complete_terminal_lifecycle_exit(&identity, action, evidence, config.process_generation)
+        .map_err(|error| fault_gate_invariant(format!("authorize lifecycle exit: {error}")))?;
+    let exit_code = nodes
+        .await_intended_lifecycle_exit(&identity, expected_exit_code, action)
+        .map_err(|error| fault_gate_invariant(format!("supervise lifecycle exit: {error}")))?;
+    runtime.acknowledge_node_lifecycle_decisions();
+
+    Ok(QemuLiveNodeLifecycleFaultReport {
+        observed_icount,
+        action,
+        evidence,
+        exit_code,
+        signal_impulse_applied: evaluation.actions.len() == 1,
+    })
+}
+
+fn lifecycle_crash_plan(
+    node_name: &str,
+) -> Result<crucible::model::FaultSignalPlan, QemuLiveNodeStepGateError> {
+    use crucible::model::{
+        BindingEventParent, BindingMapping, BindingObservabilityPolicy, BindingSampling,
+        BindingSearchPolicy, EFFECT_SEMANTIC_VERSION, EffectLifetime, EffectRequest,
+        EffectSpecification, FaultBinding, FaultObjectId, FaultPhase, FaultResourceLimits,
+        NodeBootPolicy, NodeEffectSpecification, NodeLifecycleTransition, NodeStatePolicy,
+        ResolvedFaultTarget, ResolvedTargetSet, SignalCoordinate, SignalDomain, SignalId,
+        SignalNode, SignalNodeKind, SignalPoint, SignalProgram, SignalResourceLimits, SignalShape,
+        SignalSourceSpecification, SignalUnit, SignalValue, SignalValueType, TargetSelector,
+    };
+
+    let parse_signal = |value: &str| {
+        SignalId::parse(value)
+            .map_err(|error| fault_gate_invariant(format!("signal ID `{value}`: {error}")))
+    };
+    let parse_object = |value: &str| {
+        FaultObjectId::parse(value)
+            .map_err(|error| fault_gate_invariant(format!("object ID `{value}`: {error}")))
+    };
+    let output = parse_signal("live-crash-event")?;
+    let schema = parse_signal("node-lifecycle-event")?;
+    let program = SignalProgram::new(
+        vec![SignalNode {
+            id: output.clone(),
+            domain: SignalDomain::Event,
+            output: SignalShape::new(
+                SignalValueType::Event(schema.clone()),
+                SignalUnit::Dimensionless,
+                0,
+            )
+            .map_err(|error| fault_gate_invariant(format!("event shape: {error}")))?,
+            inputs: Vec::new(),
+            kind: SignalNodeKind::Source(SignalSourceSpecification::EventSequence {
+                events: vec![SignalPoint {
+                    coordinate: SignalCoordinate::Event {
+                        parent: Box::new(SignalCoordinate::VirtualTime { nanos: 1 }),
+                        sequence: 0,
+                    },
+                    sequence: 0,
+                    value: SignalValue::Event {
+                        schema,
+                        payload: Vec::new(),
+                    },
+                }],
+            }),
+        }],
+        vec![output.clone()],
+        SignalResourceLimits::default(),
+    )
+    .map_err(|error| fault_gate_invariant(format!("event program: {error}")))?;
+    let targets = ResolvedTargetSet::new(
+        vec![ResolvedFaultTarget::Node {
+            node: parse_object(node_name)?,
+        }],
+        false,
+    )
+    .map_err(|error| fault_gate_invariant(format!("node target: {error}")))?;
+    let effect = EffectRequest::new(
+        EFFECT_SEMANTIC_VERSION,
+        EffectLifetime::Impulse,
+        EffectSpecification::Node(NodeEffectSpecification::Lifecycle {
+            transition: NodeLifecycleTransition::Crash,
+            downtime_nanos: 1,
+            boot_policy: NodeBootPolicy::Immediate,
+            volatile_state_policy: NodeStatePolicy::Preserve,
+            device_state_policy: NodeStatePolicy::Clear,
+        }),
+    )
+    .map_err(|error| fault_gate_invariant(format!("lifecycle effect: {error}")))?;
+    let binding = FaultBinding::new(
+        parse_object("live-node-lifecycle-binding")?,
+        vec![output],
+        BindingSampling::AtEvent(BindingEventParent::VirtualTime),
+        BindingMapping::ImpulseOnEvent,
+        TargetSelector::Exact(targets),
+        [FaultPhase::Boundary].into_iter().collect(),
+        effect,
+        None,
+        BindingSearchPolicy::Fixed,
+        BindingObservabilityPolicy::default(),
+        &program,
+    )
+    .map_err(|error| fault_gate_invariant(format!("lifecycle binding: {error}")))?;
+    crucible::model::FaultSignalPlan::new(
+        vec![program],
+        vec![binding],
+        FaultResourceLimits::default(),
+    )
+    .map_err(|error| fault_gate_invariant(format!("lifecycle plan: {error}")))
+}
+
+fn fault_gate_invariant(reason: impl Into<String>) -> QemuLiveNodeStepGateError {
+    QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+        reason: reason.into(),
+    }
 }
 
 /// Runs an exact live snapshot through save, crash, load, and continued execution.

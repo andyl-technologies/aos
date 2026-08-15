@@ -1,6 +1,6 @@
 # 14 — QEMU fault-mutation patch series
 
-The complete node adapter and its exact-checkpoint handoff require twenty-one new single-purpose patches after the
+The complete node adapter and its exact-checkpoint handoff require twenty-three new single-purpose patches after the
 currently carried `0046-crucible-translation-prefetch-helper.patch`. Each patch
 has its own specification in this directory and remains part of the one atomic
 RFC-0013 implementation PR.
@@ -37,6 +37,8 @@ and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-pa
 | [`0068-crucible-guest-clock-faults`](11-guest-clocks.md) | Offset, drift, jump, freeze, jitter, source failure and timer consistency | Determinism-critical |
 | [`0069-crucible-accelerator-fault-device`](12-accelerator-device.md) | Production QEMU co-sim accelerator device and fault hooks | Feature plus determinism-critical service hooks |
 | [`0070-crucible-fault-vmstate`](13-vmstate-and-final-gates.md) | VMState closure, terminal capability/evidence, and aggregate gates | Determinism-critical |
+| [`0071-crucible-lifecycle-precondition`](22-lifecycle-precondition.md) | Lifecycle prepare/commit precondition identity | Determinism-critical |
+| [`0072-crucible-typed-node-result-schema`](23-typed-node-result-schema.md) | Stable command results and separate occurrence evidence | Determinism-critical |
 
 The numbers are reserved by this RFC. If the existing series grows before
 implementation, the PR may renumber the files while preserving this exact order
@@ -48,8 +50,11 @@ ABI. Patches `0063` through `0066` then complete the native stop, terminal
 lifecycle, authentication, and immutable process-generation prerequisites.
 Patch `0067` serializes and hardens every already-implemented core fault domain.
 Patch `0068` follows with guest-clock faults; patch `0069` adds the accelerator
-device; and patch `0070` closes VMState and aggregate gates for the complete
-series. Patch `0063` adds the native stop
+device; patch `0070` closes VMState and aggregate gates for the complete
+registry; patch `0071` binds lifecycle preparation and application to the
+same live VM-state digest; and patch `0072` keeps the command-result schema
+stable while command-specific evidence remains on occurrence events. Patch
+`0063` adds the native stop
 handoff required to capture and restore all of that state at an exact boundary.
 It does not alter the fault command ABI or rewrite any historical patch commit.
 Patch `0064` uses that paused boundary for the separately authorized terminal

@@ -582,6 +582,15 @@ in
                 return plugin_scoreboard_new(element_size);
             }
 
+            uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry)
+            {
+                uint64_t total = 0;
+                for (size_t i = 0; i < entry.score->data->len; i++) {
+                    total += qemu_plugin_u64_get(entry, i);
+                }
+                return total;
+            }
+
             QEMU_FIXTURE
 
             cat > migration/savevm.h <<'QEMU_FIXTURE'

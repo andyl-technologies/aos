@@ -355,6 +355,13 @@
       kind = "interface";
       symbols = ["qemu_plugin_crucible_fault_system_manifest"];
     };
+    "0071-crucible-lifecycle-precondition.patch" = {
+      kind = "interface";
+      symbols = ["qemu_crucible_fault_lifecycle_precondition"];
+    };
+    "0072-crucible-typed-node-result-schema.patch" = {
+      kind = "recorded";
+    };
   };
 
   unclassified =

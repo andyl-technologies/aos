@@ -1,0 +1,14 @@
+diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
+index 56500963d..c63cae4c1 100644
+--- a/plugins/crucible-fault-node.c
++++ b/plugins/crucible-fault-node.c
+@@ -3708,8 +3708,7 @@ static void node_commit(
+             staging->event_reservation);
+         staging->event_reservation = NULL;
+         g_byte_array_set_size(result_payload, 0);
+-        g_byte_array_append(result_payload, staging->impulse_evidence->data,
+-                            staging->impulse_evidence->len);
++        node_encode_evidence(staging, result_payload);
+         node_sha256(result_payload->data, result_payload->len,
+                     result->evidence_hash);
+         memcpy(result->before_hash, staging->before_hash, 32);

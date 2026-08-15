@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "1975371c5e8d589cc16bda760126b4bf43cfe643662965182dac19f52e7b977f";
+  patchBranchBundleSha256 = "fb4086a328a55fde3d0d2e549cab3bbaa6e4c55f5eea27e45579d5c6eeb53a3a";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "e47dba89099196b56a709fd29e6021dfd65a001a";
+  patchBranchHeadCommit = "5940b8c30d5a4c7f8bf5955a6b7e8ee761b304a5";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -635,6 +635,26 @@ let
       class = "D";
       enforces = "QFP-STATE-1,QFP-STATE-2,QFP-STATE-3";
       capability = "live fail-closed build, patch-series, shared-memory ABI, and exact aggregate fault VMState identity";
+    }
+    {
+      file = "0071-crucible-lifecycle-precondition.patch";
+      branchSubject = "crucible: bind lifecycle preconditions to VM state";
+      branchCommit = "0fbd262754ad24ce2e0d7035b8c36099cf34aac7";
+      branchTree = "703f479a34dde4f73640c0689c74a785bb1e0693";
+      catalogName = "crucible-lifecycle-precondition";
+      class = "D";
+      enforces = "QFP-LIFE-1,QFP-LIFE-2,FAULT-ORDER";
+      capability = "atomic lifecycle prepare and commit over the same authenticated VM-state precondition";
+    }
+    {
+      file = "0072-crucible-typed-node-result-schema.patch";
+      branchSubject = "crucible: preserve typed node result schema";
+      branchCommit = "5940b8c30d5a4c7f8bf5955a6b7e8ee761b304a5";
+      branchTree = "6a1e6bffe461738f6437cdbf7b5ae157bf8bda51";
+      catalogName = "crucible-typed-node-result-schema";
+      class = "D";
+      enforces = "QFP-RESULT-1,QFP-EVENT-1,FAULT-ORDER";
+      capability = "fixed typed-command results with command-specific evidence retained on authenticated occurrence events";
     }
   ];
   catalogOnlyCapabilities = [
