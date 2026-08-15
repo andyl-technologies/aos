@@ -1,0 +1,138 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -40,6 +40,7 @@
+ #include "tcg-accel-ops-rr.h"
+ #include "tcg-accel-ops-icount.h"
+ #include "tcg-accel-ops-sim-shmem.h"
++#include "qemu/crucible-fault.h"
+ #include "internal-common.h"
+ #include "system/crucible-sim-ipi.h"
+ #include "system/crucible-sim-preemption.h"
+@@ -231,7 +232,9 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+ 
+         if (rr_crucible_sim_mode() &&
+             (crucible_sim_shmem_dispatch_registered() ||
+-             crucible_sim_observer_registered())) {
++             crucible_sim_observer_registered() ||
++             qemu_crucible_fault_next_icount(
++                 CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY) != UINT64_MAX)) {
+             uint64_t current_icount = qemu_plugin_icount_raw();
+             bool observer_due = false;
+             bool dispatch_due = false;
+@@ -250,7 +253,12 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+                 *cpu_budget = crucible_sim_observer_clamp_cpu_budget(
+                     current_icount, *cpu_budget);
+             }
++            *cpu_budget = qemu_crucible_fault_clamp_budget(
++                CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY, current_icount,
++                *cpu_budget);
+             if (*cpu_budget == 0) {
++                qemu_crucible_fault_dispatch_boundary(
++                    CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY, current_icount);
+                 if (observer_due) {
+                     crucible_sim_observer_notify_current_icount(current_icount);
+                 }
+@@ -286,6 +294,15 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+         qemu_plugin_maybe_fire_tcg_exec_cb(cpu);
+         bql_lock();
+ 
++        if (rr_crucible_sim_mode() &&
++            qemu_crucible_fault_next_icount(
++                CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY) <=
++                qemu_plugin_icount_raw()) {
++            qemu_crucible_fault_dispatch_boundary(
++                CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY,
++                qemu_plugin_icount_raw());
++        }
++
+         if (rr_crucible_sim_mode() &&
+             crucible_sim_observer_registered()) {
+             crucible_sim_observer_notify_current_icount(
+@@ -575,7 +592,9 @@ static void *rr_cpu_thread_fn(void *arg)
+ 
+             if (rr_crucible_sim_mode() &&
+                 (crucible_sim_shmem_dispatch_registered() ||
+-                 crucible_sim_observer_registered())) {
++                 crucible_sim_observer_registered() ||
++                 qemu_crucible_fault_next_icount(
++                     CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY) != UINT64_MAX)) {
+                 uint64_t current_icount = qemu_plugin_icount_raw();
+                 bool observer_due = false;
+                 bool dispatch_due = false;
+@@ -594,7 +613,13 @@ static void *rr_cpu_thread_fn(void *arg)
+                     cpu_budget = crucible_sim_observer_clamp_cpu_budget(
+                         current_icount, cpu_budget);
+                 }
++                cpu_budget = qemu_crucible_fault_clamp_budget(
++                    CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY, current_icount,
++                    cpu_budget);
+                 if (cpu_budget == 0) {
++                    qemu_crucible_fault_dispatch_boundary(
++                        CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY,
++                        current_icount);
+                     if (observer_due) {
+                         crucible_sim_observer_notify_current_icount(
+                             current_icount);
+diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
+--- a/include/qemu/crucible-fault.h
++++ b/include/qemu/crucible-fault.h
+@@ -39,6 +39,9 @@ void qemu_crucible_fault_registry_seal(void);
+ void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
+                                            uint64_t observed_icount);
+ bool qemu_crucible_fault_has_pending_at_or_before(uint64_t icount);
+-uint64_t qemu_crucible_fault_next_icount(void);
++uint64_t qemu_crucible_fault_next_icount(uint16_t phase);
++int64_t qemu_crucible_fault_clamp_budget(uint16_t phase,
++                                         uint64_t current_icount,
++                                         int64_t budget);
+ 
+ #endif
+diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
+--- a/plugins/crucible-fault.c
++++ b/plugins/crucible-fault.c
+@@ -405,19 +405,42 @@ bool qemu_crucible_fault_has_pending_at_or_before(uint64_t icount)
+     return found;
+ }
+ 
+-uint64_t qemu_crucible_fault_next_icount(void)
++uint64_t qemu_crucible_fault_next_icount(uint16_t phase)
+ {
+     CruciblePendingFault *pending;
+     uint64_t next = UINT64_MAX;
+ 
+     g_mutex_lock(&crucible_fault_lock);
+     QTAILQ_FOREACH(pending, &crucible_pending_faults, link) {
+-        next = MIN(next, pending->command.target_icount);
++        if (pending->command.phase == phase) {
++            next = MIN(next, pending->command.target_icount);
++        }
+     }
+     g_mutex_unlock(&crucible_fault_lock);
+     return next;
+ }
+ 
++int64_t qemu_crucible_fault_clamp_budget(uint16_t phase,
++                                         uint64_t current_icount,
++                                         int64_t budget)
++{
++    uint64_t next;
++    uint64_t remaining;
++
++    if (budget <= 0) {
++        return budget;
++    }
++    next = qemu_crucible_fault_next_icount(phase);
++    if (current_icount >= next) {
++        return 0;
++    }
++    remaining = next - current_icount;
++    if (remaining > INT64_MAX || (uint64_t)budget <= remaining) {
++        return budget;
++    }
++    return remaining;
++}
++
+ int qemu_plugin_crucible_fault_poll(
+     struct qemu_plugin_crucible_fault_result *result,
+     uint8_t *payload, size_t payload_capacity, size_t *payload_length)

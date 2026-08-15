@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "f197e4742c5831f9b6d2566d0b874a16ec8917b35517a3f4af0f582aac14d58e";
+  patchBranchBundleSha256 = "8e8bff008a84666384a43f6aeb171d5a70e2ea837e104a096e232e1fa464f22b";
   patchBranchBaseCommit = "36ac68e25469b93cc91f6350b998b486ac41669d";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "5cf2e39a80828febc0c1d4b5972914860fedcfe9";
+  patchBranchHeadCommit = "f40efafb692af64897a5012011529dca8015914c";
   deterministicAuthorName = "Crucible Patch Regenerator";
   deterministicAuthorEmail = "crucible@aos.invalid";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -429,6 +429,24 @@ let
       class = "F";
       enforces = "PERF-32";
       capability = "off-by-default sim translation generation on a dedicated registered TCG helper";
+    }
+    {
+      file = "0047-crucible-fault-command-abi.patch";
+      branchCommit = "59c023f75dd30830d08ab1072a2d707e3be1c0c3";
+      branchTree = "2739f2a9c9f68615752acd90d74208cd512593fa";
+      catalogName = "crucible-fault-command-abi";
+      class = "F";
+      enforces = "FAULT-ABI,FAULT-CAP,FAULT-ORDER";
+      capability = "versioned fault command registry, bounded result queue, and plugin ABI";
+    }
+    {
+      file = "0048-crucible-fault-safe-boundary.patch";
+      branchCommit = "f40efafb692af64897a5012011529dca8015914c";
+      branchTree = "145b48862704f90eaf7d6347f947881d3985ef55";
+      catalogName = "crucible-fault-safe-boundary";
+      class = "D";
+      enforces = "FAULT-BOUNDARY,FAULT-AUTH,DET-1";
+      capability = "exact node-icount fault boundary with authorization-ceiling enforcement";
     }
   ];
   catalogOnlyCapabilities = [
