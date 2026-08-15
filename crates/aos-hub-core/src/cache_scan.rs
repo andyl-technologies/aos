@@ -24,6 +24,12 @@ use crate::surface_write::{MultipartAbortOutcome, SurfaceWriteProvider};
 /// Maximum expired writes or tombstones cleaned by one scheduled pass.
 pub const MAX_CLEANUP_ITEMS_PER_PASS: i64 = 128;
 
+/// Initial keyset position for cache-write recovery across SQLite runtimes.
+///
+/// Cloudflare's JavaScript boundary preserves integers only through this
+/// magnitude. The value remains far below every valid Unix expiration time.
+pub(crate) const CACHE_WRITE_RECOVERY_CURSOR_START: i64 = -9_007_199_254_740_991;
+
 /// Maximum placements captured by one atomic cache inventory generation.
 pub const MAX_CACHE_INVENTORY_PLACEMENTS: usize = 128;
 
@@ -218,9 +224,14 @@ pub async fn recover_expired_cache_writes(
         .list_expired_cache_write_tickets_global(now, after_expires_at, &after_ticket_id, limit)
         .await?;
     if page.is_empty() {
-        if after_expires_at != i64::MIN || !after_ticket_id.is_empty() {
-            db.advance_cache_write_recovery_cursor(cursor_version, i64::MIN, "", now)
-                .await?;
+        if after_expires_at != CACHE_WRITE_RECOVERY_CURSOR_START || !after_ticket_id.is_empty() {
+            db.advance_cache_write_recovery_cursor(
+                cursor_version,
+                CACHE_WRITE_RECOVERY_CURSOR_START,
+                "",
+                now,
+            )
+            .await?;
         }
         return Ok(0);
     }

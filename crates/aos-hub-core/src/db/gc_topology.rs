@@ -10702,7 +10702,11 @@ mod tests {
         let db = Database::open_in_memory().await.unwrap();
         assert_eq!(
             db.cache_write_recovery_cursor().await.unwrap(),
-            (i64::MIN, String::new(), 1)
+            (
+                crate::cache_scan::CACHE_WRITE_RECOVERY_CURSOR_START,
+                String::new(),
+                1
+            )
         );
 
         db.advance_cache_write_recovery_cursor(1, 42, "ticket-42", 100)

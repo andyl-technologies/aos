@@ -380,6 +380,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("publication_multipart.sql"),
     include_str!("publication_multipart_progress.sql"),
     include_str!("placement_scan_claim.sql"),
+    include_str!("portable_recovery_cursor.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -24774,7 +24775,7 @@ source_nar_hash = ""
 
     #[test]
     fn publication_multipart_migration_upgrades_an_existing_database() {
-        let multipart_index = MIGRATIONS.len() - 2;
+        let multipart_index = MIGRATIONS.len() - 3;
         let multipart_migration = MIGRATIONS[multipart_index];
         let connection = Connection::open_in_memory().unwrap();
         for script in &MIGRATIONS[..multipart_index] {
@@ -24818,9 +24819,10 @@ source_nar_hash = ""
 
     #[test]
     fn placement_scan_claim_migration_upgrades_an_existing_database() {
-        let (claim_migration, earlier) = MIGRATIONS.split_last().unwrap();
+        let claim_index = MIGRATIONS.len() - 2;
+        let claim_migration = MIGRATIONS[claim_index];
         let connection = Connection::open_in_memory().unwrap();
-        for script in earlier {
+        for script in &MIGRATIONS[..claim_index] {
             connection.execute_batch(script).unwrap();
         }
         connection.execute_batch(claim_migration).unwrap();
@@ -24844,6 +24846,37 @@ source_nar_hash = ""
         assert!(columns
             .iter()
             .any(|column| column == "catalog_object_resource_version"));
+    }
+
+    #[test]
+    fn portable_recovery_cursor_migration_repairs_existing_database() {
+        let (cursor_migration, earlier) = MIGRATIONS.split_last().unwrap();
+        let connection = Connection::open_in_memory().unwrap();
+        for script in earlier {
+            connection.execute_batch(script).unwrap();
+        }
+        connection
+            .execute(
+                "UPDATE write_recovery_cursors SET after_expires_at = ?1
+                 WHERE recovery_kind = 'cache'",
+                [i64::MIN],
+            )
+            .unwrap();
+
+        connection.execute_batch(cursor_migration).unwrap();
+
+        let after_expires_at: i64 = connection
+            .query_row(
+                "SELECT after_expires_at FROM write_recovery_cursors
+                 WHERE recovery_kind = 'cache'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            after_expires_at,
+            crate::cache_scan::CACHE_WRITE_RECOVERY_CURSOR_START
+        );
     }
 
     #[test]
