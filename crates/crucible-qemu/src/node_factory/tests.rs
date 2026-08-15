@@ -183,8 +183,6 @@ fn factory_restores_vmstate_before_exposing_exact_snapshot_control() -> Result<(
         r#"{"return":[{"id":"crucible-load-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
         r#"{"return":{}}"#,
         r#"{"return":{}}"#,
-        r#"{"return":{"running":true,"status":"running"}}"#,
-        r#"{"return":{}}"#,
         r#"{"return":{"running":false,"status":"paused"}}"#,
         r#"{"return":{}}"#,
         r#"{"return":{"running":true,"status":"running"}}"#,
@@ -268,18 +266,13 @@ fn factory_restores_vmstate_before_exposing_exact_snapshot_control() -> Result<(
         execute_name(json_line(&lines, 7)),
         Some(QMP_QUERY_STATUS_COMMAND)
     );
-    assert_eq!(execute_name(json_line(&lines, 8)), Some(QMP_STOP_COMMAND));
+    assert_eq!(execute_name(json_line(&lines, 8)), Some(QMP_CONT_COMMAND));
     assert_eq!(
         execute_name(json_line(&lines, 9)),
         Some(QMP_QUERY_STATUS_COMMAND)
     );
-    assert_eq!(execute_name(json_line(&lines, 10)), Some(QMP_CONT_COMMAND));
     assert_eq!(
-        execute_name(json_line(&lines, 11)),
-        Some(QMP_QUERY_STATUS_COMMAND)
-    );
-    assert_eq!(
-        execute_name(json_line(&lines, 12)),
+        execute_name(json_line(&lines, 10)),
         Some(QMP_QUIT_COMMAND_NAME)
     );
 
@@ -448,8 +441,6 @@ fn factory_restores_baked_genesis_without_oracle_admission() -> Result<(), Box<d
         r#"{"return":[{"id":"crucible-load-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
         r#"{"return":{}}"#,
         r#"{"return":{}}"#,
-        r#"{"return":{"running":true,"status":"running"}}"#,
-        r#"{"return":{}}"#,
         r#"{"return":{"running":false,"status":"paused"}}"#,
         r#"{"return":{}}"#,
         r#"{"return":{"running":true,"status":"running"}}"#,
@@ -508,18 +499,13 @@ fn factory_restores_baked_genesis_without_oracle_admission() -> Result<(), Box<d
         execute_name(json_line(&lines, 7)),
         Some(QMP_QUERY_STATUS_COMMAND)
     );
-    assert_eq!(execute_name(json_line(&lines, 8)), Some(QMP_STOP_COMMAND));
+    assert_eq!(execute_name(json_line(&lines, 8)), Some(QMP_CONT_COMMAND));
     assert_eq!(
         execute_name(json_line(&lines, 9)),
         Some(QMP_QUERY_STATUS_COMMAND)
     );
-    assert_eq!(execute_name(json_line(&lines, 10)), Some(QMP_CONT_COMMAND));
     assert_eq!(
-        execute_name(json_line(&lines, 11)),
-        Some(QMP_QUERY_STATUS_COMMAND)
-    );
-    assert_eq!(
-        execute_name(json_line(&lines, 12)),
+        execute_name(json_line(&lines, 10)),
         Some(QMP_QUIT_COMMAND_NAME)
     );
 

@@ -2787,6 +2787,7 @@ in rec {
           liveBlock = phase2.qemuLiveBlockIo;
           liveNineP = phase2.qemuLive9pIo;
           liveNodeLifecycle = phase2.qemuLiveNodeLifecycleFault;
+          liveFaultHardware = phase2.qemuLiveFaultHardware;
           sharedCause = phase7.signalSharedCause;
           patchMicrotests = phase2.gates.patchMicrotests.rawGate;
           checkpointMaterialization = phase6.checkpointMaterialization.rawGate;
@@ -2807,6 +2808,7 @@ in rec {
           phase2.qemuLiveBlockIo
           phase2.qemuLive9pIo
           phase2.qemuLiveNodeLifecycleFault
+          phase2.qemuLiveFaultHardware
           phase7.signalSharedCause
           phase2.gates.patchMicrotests
           phase6.checkpointMaterialization

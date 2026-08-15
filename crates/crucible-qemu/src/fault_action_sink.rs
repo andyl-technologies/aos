@@ -389,7 +389,7 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
             .map(|action| PreparedActionResult {
                 action: action.id(),
                 precondition: None,
-                observation: applied_observation(
+                observation: transaction_observation(
                     action,
                     ContentHash::from_bytes(b"qemu-predicted-evidence"),
                 ),
@@ -712,7 +712,7 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                     .map(|prepared| PreparedActionResult {
                         action: prepared.action.id(),
                         precondition: Some(precondition),
-                        observation: applied_observation(&prepared.action, evidence),
+                        observation: transaction_observation(&prepared.action, evidence),
                     }),
             );
         }
@@ -766,7 +766,7 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
             results.push(PreparedActionResult {
                 action: prepared.action.id(),
                 precondition: Some(ContentHash::from_bytes(&preparation.before_sha256)),
-                observation: applied_observation(&prepared.action, evidence_hash),
+                observation: transaction_observation(&prepared.action, evidence_hash),
             });
         }
         let mut by_action = results
@@ -985,11 +985,14 @@ fn verify_qemu_evidence_hash(
     Ok(())
 }
 
-fn applied_observation(action: &ResolvedBindingAction, evidence: ContentHash) -> FaultObservation {
+fn transaction_observation(
+    action: &ResolvedBindingAction,
+    evidence: ContentHash,
+) -> FaultObservation {
     let kind = match action.kind {
         BindingActionKind::UpsertPersistent => FaultObservationKind::BindingActivation,
         BindingActionKind::RemovePersistent => FaultObservationKind::BindingDeactivation,
-        BindingActionKind::Apply => FaultObservationKind::EffectApplied,
+        BindingActionKind::Apply => FaultObservationKind::EffectCommitted,
     };
     FaultObservation {
         semantic_version: FAULT_RUNTIME_STATE_VERSION,
