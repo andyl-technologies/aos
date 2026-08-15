@@ -375,6 +375,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0076-crucible-9p-completion-wake-registration.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

@@ -524,6 +524,13 @@
       enforces = "QFP-STATE-2,QFP-ACCEL-3,QFP-EVENT-1,FAULT-ORDER";
       capability = "mandatory authenticated request/evidence envelopes for fresh-process restore and exact accelerator-opportunity binding";
     }
+    {
+      file = "0076-crucible-9p-completion-wake-registration.patch";
+      catalogName = "crucible-9p-completion-wake-registration";
+      class = "D";
+      enforces = "PATCH-20,DET-1,INV-10";
+      capability = "realize-time 9p completion notifier registration independent of plugin installation order";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

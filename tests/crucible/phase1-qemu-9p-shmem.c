@@ -263,25 +263,45 @@ static int run_upstream_fallback(void)
                        "submit callback fired while unregistered");
 }
 
-static int run_sim_off_realize_has_no_wake_notifier(void)
+static int run_sim_off_realize_has_inert_wake_notifier_lifetime(void)
 {
     reset_fixture();
     virtio_9p_device_realize((DeviceState *)&fixture_device, NULL);
 
+#ifdef EXPECT_UNCONDITIONAL_9P_WAKE_REGISTRATION
+    if (expect_bool(fixture_wake_notifier_add_count == 1,
+                    "realize did not register the inert 9p wake notifier") ||
+        expect_bool(fixture_device.crucible_9p_wake_registered,
+                    "realize did not retain wake-registration state")) {
+        return 1;
+    }
+#else
     if (expect_bool(fixture_wake_notifier_add_count == 0,
                     "sim-off realize registered a wake notifier") ||
         expect_bool(!fixture_device.crucible_9p_wake_registered,
                     "sim-off realize retained wake-registration state")) {
         return 1;
     }
+#endif
 
     virtio_9p_device_unrealize((DeviceState *)&fixture_device);
+#ifdef EXPECT_UNCONDITIONAL_9P_WAKE_REGISTRATION
+    return expect_bool(fixture_wake_notifier_remove_count == 1,
+                       "unrealize did not remove the inert 9p wake notifier") ||
+           expect_bool(fixture_registered_wake_notifier == NULL,
+                       "unrealize retained a stale 9p wake notifier") ||
+           expect_bool(fixture_error_count == 0,
+                       "inert notifier lifecycle reported a device error") ||
+           expect_bool(fixture_shutdown_request_count == 0,
+                       "inert notifier lifecycle requested shutdown");
+#else
     return expect_bool(fixture_wake_notifier_remove_count == 0,
                        "sim-off unrealize removed an unregistered notifier") ||
            expect_bool(fixture_error_count == 0,
                        "sim-off lifecycle reported a device error") ||
            expect_bool(fixture_shutdown_request_count == 0,
                        "sim-off lifecycle requested shutdown");
+#endif
 }
 
 static int run_forwarding_path(void)
@@ -781,7 +801,7 @@ int main(void)
     }
 
     if (run_upstream_fallback() ||
-        run_sim_off_realize_has_no_wake_notifier() ||
+        run_sim_off_realize_has_inert_wake_notifier_lifetime() ||
         run_forwarding_path() ||
         run_duplicate_output_while_pending_is_deferred() ||
         run_wake_failure_abandons_pending() ||
@@ -802,7 +822,11 @@ int main(void)
     printf("virtio_9p_forwarding_path_exercised=true\n");
     printf("plugin_9p_callback_registration_exercised=true\n");
     printf("upstream_9p_fallback_without_callbacks=true\n");
+#ifdef EXPECT_UNCONDITIONAL_9P_WAKE_REGISTRATION
+    printf("late_plugin_9p_wake_notifier_registered=true\n");
+#else
     printf("sim_off_9p_has_no_wake_notifier=true\n");
+#endif
     printf("partial_9p_registration_falls_back=true\n");
     printf("raw_9p_request_round_trip=true\n");
     printf("raw_9p_response_delivered=true\n");
