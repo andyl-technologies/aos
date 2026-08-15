@@ -260,8 +260,14 @@ impl PlacementScanController {
                     page_presences.push((object.resource_version, presence));
                     continue;
                 }
+                let expected_size = u64::try_from(
+                    object
+                        .size
+                        .context("placement catalog object has no expected size")?,
+                )
+                .context("placement catalog object has a negative size")?;
                 let evidence = fetch
-                    .inventory_evidence(&path)
+                    .inventory_evidence_bounded(&path, expected_size)
                     .await?
                     .with_context(|| format!("listed placement object '{path}' disappeared"))?;
                 let valid = object_matches_evidence(&object, &evidence.sha256, evidence.size);
