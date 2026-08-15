@@ -6,7 +6,7 @@
   implementation PR satisfies every merge gate in
   [`07-implementation-plan.md`](07-implementation-plan.md).
 - **Date:** 2026-08-04
-- **PR:** _(to be filled)_
+- **PR:** [#187](https://github.com/andyl-technologies/aos/pull/187)
 - **Audience:** anyone working on `crates/crucible-*`, the AOS QEMU patch and
   plugin boundary, deterministic device models, scenario authoring, trace
   ingestion, search, replay, or fault-injection documentation.

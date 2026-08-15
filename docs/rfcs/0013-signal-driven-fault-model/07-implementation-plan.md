@@ -312,6 +312,21 @@ produce live patched-QEMU architectural or device evidence.
   encode prepare-only results as unchanged frozen state, retain correlation
   through repeated composite-target preparation records, and prove the
   production host validates both channels independently.
+- [ ] **T-QEMU-0073** Implement
+  [`crucible-device-wait-vmstop`](14-qemu-fault-patches/24-device-wait-vmstop.md):
+  admit exact checkpoint stops from drained device callbacks without blocking
+  an I/O thread, reject unsafe callback and runstate contexts, and prove QMP
+  observes the native paused state before checkpoint capture.
+- [ ] **T-QEMU-0074** Implement
+  [`crucible-arm-accelerator-result-opportunities`](14-qemu-fault-patches/25-accelerator-result-opportunity.md):
+  retain bounded one-shot accelerator result mutations until one exact job
+  opportunity consumes them, checkpoint their authenticated request and event
+  reservations, and publish canonical deferred typed results exactly once.
+- [ ] **T-QEMU-0075** Implement
+  [`crucible-restore-authenticated-fault-event-requests`](14-qemu-fault-patches/26-authenticated-event-request-envelope.md):
+  make every occurrence event self-contained with its authenticated original
+  request, reconstruct fresh-process state without a plugin-private cache, and
+  bind accelerator events to the exact selected job sequence and opportunity.
 - [ ] **T-QEMU-0060** Implement
   [`crucible-block-typed-errors`](14-qemu-fault-patches/14-block-typed-errors.md):
   the closed block result ABI, exact Linux errno translation, malformed-result
@@ -328,6 +343,21 @@ produce live patched-QEMU architectural or device evidence.
   [`crucible-plugin-vmstop`](14-qemu-fault-patches/17-plugin-vmstop.md): an exact
   plugin-boundary handoff into QEMU's native paused runstate, fail-closed mode
   validation, capture/restore cleanup, and diskless plus dirty-cache live gates.
+- [ ] **T-QEMU-0064** Implement
+  [`crucible-terminal-lifecycle-completion`](14-qemu-fault-patches/18-terminal-lifecycle-completion.md):
+  publish a two-phase authenticated lifecycle occurrence at the exact stopped
+  boundary, require a separate QMP authorization before process exit, and make
+  retries idempotent without resuming guest execution.
+- [ ] **T-QEMU-0065** Implement
+  [`crucible-authenticated-terminal-lifecycle`](14-qemu-fault-patches/19-authenticated-terminal-lifecycle.md):
+  bind terminal authorization to the action, occurrence evidence, and process
+  generation with a dedicated QAPI command, rejecting stale, mismatched, or
+  replayed authorizations fail-closed.
+- [ ] **T-QEMU-0066** Implement
+  [`crucible-immutable-process-generation`](14-qemu-fault-patches/20-immutable-process-generation.md):
+  provision a nonzero immutable process generation before plugin command
+  admission, include it in terminal authorization and VMState identity, and
+  reject launch or restore generation mismatches.
 - [ ] **T-QEMU-LICENSE** Land every numbered patch as a separate DCO-signed
   commit, retain applicable upstream notices, update the series/catalog/license
   inventories, preserve the public shared-memory process boundary, and ship the
