@@ -3,7 +3,16 @@
 #include <glib.h>
 #include <qemu-plugin.h>
 
+#include "aos/crucible/crucible_shmem_abi.h"
+
 QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
+
+static const uint64_t snapshot_icount = 1024;
+static const uint64_t command_icount = 4096;
+static const uint64_t proof_icount = 5120;
+static bool save_mode;
+static bool stopped;
+static unsigned int result_count;
 
 static void fail(const char *message)
 {
@@ -34,6 +43,84 @@ static bool identity_is_sha256_hex(const char *identity)
     return true;
 }
 
+static void stop_at_checkpoint(const char *marker)
+{
+    if (qemu_plugin_request_vmstop() != 0) {
+        fail("exact VM stop request was rejected");
+    }
+    stopped = true;
+    g_printerr("%s\n", marker);
+}
+
+static void poll_restored_result(void)
+{
+    struct qemu_plugin_crucible_fault_result result = { 0 };
+    size_t payload_len = 0;
+    int status;
+
+    do {
+        status = qemu_plugin_crucible_fault_poll(
+            &result, NULL, 0, &payload_len);
+        if (status < 0) {
+            fail("restored command result polling failed");
+        }
+        if (status == 0) {
+            return;
+        }
+        result_count++;
+        if (payload_len != 0 ||
+            result.command_kind != CRUCIBLE_FAULT_COMMAND_BOUNDARY_PROBE ||
+            result.status != CRUCIBLE_FAULT_STATUS_APPLIED ||
+            result.command_sequence != 1 ||
+            result.observed_icount != command_icount ||
+            result.applied_icount != command_icount) {
+            fail("restored command produced a non-canonical result");
+        }
+    } while (status == 1);
+}
+
+static void execute(unsigned int cpu_index, uint64_t icount, void *opaque)
+{
+    (void)cpu_index;
+    (void)opaque;
+    if (stopped) {
+        return;
+    }
+    if (save_mode) {
+        if (icount >= snapshot_icount) {
+            stop_at_checkpoint("CRUCIBLE_FAULT_VMSTATE_ACTIVE_READY");
+        }
+        return;
+    }
+
+    poll_restored_result();
+    if (icount >= proof_icount) {
+        if (result_count != 1) {
+            fail("restored command did not continue exactly once");
+        }
+        stop_at_checkpoint(
+            "CRUCIBLE_FAULT_VMSTATE_RESTORE_PASS occurrences=1");
+    }
+}
+
+static void submit_checkpointed_command(void)
+{
+    struct qemu_plugin_crucible_fault_command command = { 0 };
+
+    command.abi_major = CRUCIBLE_FAULT_COMMAND_ABI_MAJOR;
+    command.abi_minor = CRUCIBLE_FAULT_COMMAND_ABI_MINOR;
+    command.command_kind = CRUCIBLE_FAULT_COMMAND_BOUNDARY_PROBE;
+    command.phase = CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY;
+    command.semantic_version = CRUCIBLE_FAULT_COMMAND_SEMANTIC_VERSION;
+    command.command_sequence = 1;
+    memset(command.target_node_hash, 0x31, sizeof(command.target_node_hash));
+    command.target_icount = command_icount;
+    command.authorization_ceiling_icount = command_icount;
+    if (qemu_plugin_crucible_fault_submit(&command, NULL, 0) != 0) {
+        fail("checkpoint command submission failed");
+    }
+}
+
 #include "phase2-qemu-fault-manifest-bindings.h"
 
 QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
@@ -51,10 +138,12 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
 
     (void)id;
     (void)info;
-    (void)argv;
-    if (argc != 0) {
-        fail("unexpected plugin arguments");
+    if (argc != 1 ||
+        (strcmp(argv[0], "mode=save") != 0 &&
+         strcmp(argv[0], "mode=restore") != 0)) {
+        fail("expected exactly mode=save or mode=restore");
     }
+    save_mode = strcmp(argv[0], "mode=save") == 0;
     if (qemu_plugin_crucible_lifecycle_set_process_generation(7) != 0) {
         fail("process generation did not enable aggregate VMState");
     }
@@ -110,5 +199,9 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     g_printerr("CRUCIBLE_FAULT_VMSTATE_FIXTURE_READY clocks=%zu architecture=%u sections=%u\n",
                count, architecture, system.vmstate_section_count);
     g_free(rows);
+    qemu_plugin_register_tcg_exec_cb(execute, NULL);
+    if (save_mode) {
+        submit_checkpointed_command();
+    }
     return 0;
 }

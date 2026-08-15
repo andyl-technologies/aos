@@ -80,6 +80,7 @@ in
       src = null;
       buildDeps = [
         pkgs.coreutils
+        pkgs.binutils
         pkgs.glib
         pkgs.grep
         pkgs.sed
@@ -102,6 +103,9 @@ in
               ${./phase2-qemu-fault-vmstate.c} \
               -o crucible-fault-vmstate.so \
               $(pkg-config --libs glib-2.0)
+            as --32 ${./phase2-qemu-fault-guest.S} -o vmstate-guest.o
+            ld -m elf_i386 -T ${./phase2-qemu-fault-guest.ld} \
+              vmstate-guest.o -o vmstate-guest.elf
           '';
         }
         {
@@ -190,6 +194,25 @@ in
               return 1
             }
 
+            wait_for_stopped() {
+              socket="$1"
+              label="$2"
+              attempts=0
+              while [ "$attempts" -lt 600 ]; do
+                qmp_expect_success "$socket" '{"execute":"query-status"}' \
+                  "$TMPDIR/status-$label.json" || return 1
+                if jq -e -s '
+                    ([.[] | select(has("return"))][-1].return.status // "")
+                    == "paused"
+                  ' "$TMPDIR/status-$label.json" >/dev/null; then
+                  return 0
+                fi
+                sleep 0.1
+                attempts=$((attempts + 1))
+              done
+              return 1
+            }
+
             cleanup() {
               if [ -n "''${qemu_pid:-}" ]; then
                 kill "$qemu_pid" 2>/dev/null || true
@@ -213,6 +236,7 @@ in
                 -machine pc -m 64M -accel sim \
                 -icount shift=0,rr_switch_quantum=256 \
                 -smp 1 -nodefaults -display none -serial none -monitor none -S \
+                -kernel "$PWD/vmstate-guest.elf" \
                 -blockdev "driver=file,filename=$image,node-name=vmfile" \
                 -blockdev driver=qcow2,file=vmfile,node-name=vmstate \
                 -qmp "unix:$socket,server=on,wait=off" \
@@ -249,13 +273,22 @@ in
               qemu_pid=""
             }
 
+            continue_qemu() {
+              socket="$1"
+              qmp_expect_success "$socket" '{"execute":"cont"}' "$TMPDIR/cont.json" \
+                || fail "QEMU refused to continue"
+            }
+
             patched_image="$TMPDIR/patched.qcow2"
             ${qemuPackage}/bin/qemu-img create -f qcow2 "$patched_image" 128M >/dev/null
             run_qemu ${qemuPackage}/bin/qemu-system-x86_64 patched-save \
-              "$patched_image" "$PWD/crucible-fault-vmstate.so" \
+              "$patched_image" "$PWD/crucible-fault-vmstate.so,mode=save" \
               || fail "patched save QEMU did not start"
-            wait_for_marker CRUCIBLE_FAULT_VMSTATE_FIXTURE_READY logs/patched-save.log \
+            continue_qemu "$TMPDIR/patched-save.sock"
+            wait_for_marker CRUCIBLE_FAULT_VMSTATE_ACTIVE_READY logs/patched-save.log \
               || { cat logs/patched-save.log >&2; fail "realized clock fixture did not initialize"; }
+            wait_for_stopped "$TMPDIR/patched-save.sock" save \
+              || fail "QEMU did not stop at the active-state checkpoint"
             save_snapshot "$TMPDIR/patched-save.sock" checkpoint
             quit_qemu "$TMPDIR/patched-save.sock"
             grep -a -Fq CRUCFVM1 "$patched_image" \
@@ -264,10 +297,16 @@ in
               || fail "patched snapshot omitted the clock VMState section"
 
             run_qemu ${qemuPackage}/bin/qemu-system-x86_64 patched-load \
-              "$patched_image" "$PWD/crucible-fault-vmstate.so" \
+              "$patched_image" "$PWD/crucible-fault-vmstate.so,mode=restore" \
               || fail "patched restore QEMU did not start"
             load_snapshot "$TMPDIR/patched-load.sock" checkpoint \
               || { cat logs/patched-load.log >&2; fail "authenticated aggregate VMState did not restore"; }
+            continue_qemu "$TMPDIR/patched-load.sock"
+            wait_for_marker 'CRUCIBLE_FAULT_VMSTATE_RESTORE_PASS occurrences=1' \
+              logs/patched-load.log \
+              || { cat logs/patched-load.log >&2; fail "restored active command did not continue exactly once"; }
+            wait_for_stopped "$TMPDIR/patched-load.sock" load \
+              || fail "restored QEMU did not stop after the continuation proof"
             quit_qemu "$TMPDIR/patched-load.sock"
 
             corrupt_image="$TMPDIR/corrupt.qcow2"
@@ -278,7 +317,7 @@ in
               fail "corruption fixture left an authenticated aggregate envelope"
             fi
             run_qemu ${qemuPackage}/bin/qemu-system-x86_64 patched-corrupt \
-              "$corrupt_image" "$PWD/crucible-fault-vmstate.so" \
+              "$corrupt_image" "$PWD/crucible-fault-vmstate.so,mode=restore" \
               || fail "corrupt restore QEMU did not start"
             if load_snapshot "$TMPDIR/patched-corrupt.sock" checkpoint; then
               fail "corrupt aggregate fault VMState was accepted"
@@ -319,7 +358,9 @@ in
               echo qemu_package=${qemuPackage}
               echo qemu_package_version=${qemuPackage.version}
               echo backend=actual-patched-qemu
-              echo vmstate=authenticated-aggregate-snapshot-roundtrip
+              echo vmstate=authenticated-active-command-fresh-process-roundtrip
+              echo active_command=boundary-probe-pending-at-save
+              echo restore_continuation=exactly-once-after-target
               echo corruption=aggregate-magic-rejected-before-commit
               echo clock_manifest=realized-bound-sealed-and-restored
               echo system_manifest=authenticated-build-patch-header-and-vmstate-identity
