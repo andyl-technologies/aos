@@ -4,6 +4,7 @@
 #include <qemu-plugin.h>
 
 #include "aos/crucible/crucible_shmem_abi.h"
+#include "phase2-qemu-fault-event-envelope.h"
 
 QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 
@@ -167,19 +168,26 @@ static void validate_window(const struct qemu_plugin_crucible_fault_event *event
 static void poll_events(void)
 {
     struct qemu_plugin_crucible_fault_event event;
-    uint8_t evidence[SERVICE_EVIDENCE_BYTES];
+    uint8_t envelope[CRUCIBLE_TEST_EVENT_ENVELOPE_BUFFER_BYTES];
+    const uint8_t *evidence;
+    size_t envelope_len;
     size_t evidence_len;
     int status;
 
     do {
         memset(&event, 0, sizeof(event));
-        evidence_len = 0;
+        envelope_len = 0;
         status = qemu_plugin_crucible_fault_event_poll(
-            &event, evidence, sizeof(evidence), &evidence_len);
+            &event, envelope, sizeof(envelope), &envelope_len);
         if (status < 0) {
             fail("event polling failed");
         }
         if (status == 1) {
+            evidence = crucible_test_event_evidence(
+                &event, envelope, envelope_len, &evidence_len);
+            if (!evidence) {
+                fail("event envelope authentication failed");
+            }
             validate_window(&event, evidence, evidence_len);
         }
     } while (status == 1);

@@ -77,6 +77,7 @@ in
             "$CC" -shared -fPIC \
               -I${qemuPackage}/include/qemu \
               -I${qemuPackage}/include \
+              -I${./.} \
               $(pkg-config --cflags glib-2.0) \
               ${./phase2-qemu-vcpu-service.c} \
               -o crucible-vcpu-service.so \
