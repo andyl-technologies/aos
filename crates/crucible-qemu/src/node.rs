@@ -681,13 +681,7 @@ pub trait QemuQmpMachineControlChannel: Send {
         action: crucible::ContentHash,
         evidence: crucible::ContentHash,
         process_generation: u64,
-    ) -> Result<(), QemuNodeChannelError> {
-        let _ = (action, evidence, process_generation);
-        Err(QemuNodeChannelError::new(
-            "complete terminal lifecycle exit",
-            "terminal lifecycle completion is unavailable",
-        ))
-    }
+    ) -> Result<(), QemuNodeChannelError>;
 
     /// Saves VMState under the supplied checkpoint identity.
     ///
@@ -722,12 +716,7 @@ pub trait QemuQmpMachineControlChannel: Send {
     ///
     /// Returns [`QemuNodeChannelError`] when the channel has no activation
     /// device or QMP rejects the bounded command.
-    fn activate_debug_guest(&mut self) -> Result<(), QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "activate_debug_guest",
-            "QMP debug guest activation is unavailable",
-        ))
-    }
+    fn activate_debug_guest(&mut self) -> Result<(), QemuNodeChannelError>;
 }
 
 /// The three logical channel roles owned by one QEMU node.

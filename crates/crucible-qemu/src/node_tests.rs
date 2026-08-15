@@ -119,8 +119,14 @@ enum ChannelCall {
     ShmemFingerprint,
     QmpStop,
     QmpContinue,
+    QmpTerminalLifecycle {
+        action: ContentHash,
+        evidence: ContentHash,
+        process_generation: u64,
+    },
     QmpExactSave(ContentHash),
     QmpExactDelete(ContentHash),
+    QmpActivateDebugGuest,
     PluginQuit,
     QmpQuit,
 }
@@ -316,6 +322,23 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         Ok(())
     }
 
+    fn complete_terminal_lifecycle_exit(
+        &mut self,
+        action: ContentHash,
+        evidence: ContentHash,
+        process_generation: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::QmpTerminalLifecycle {
+                action,
+                evidence,
+                process_generation,
+            });
+        Ok(())
+    }
+
     fn save_checkpoint_vmstate(
         &mut self,
         checkpoint: &Checkpoint,
@@ -353,6 +376,14 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
 
     fn quit(&mut self) -> Result<(), QemuNodeChannelError> {
         self.log.lock().unwrap().push(ChannelCall::QmpQuit);
+        Ok(())
+    }
+
+    fn activate_debug_guest(&mut self) -> Result<(), QemuNodeChannelError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::QmpActivateDebugGuest);
         Ok(())
     }
 }
