@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 #include "aos/crucible/crucible_shmem_abi.h"
+#include "phase2-qemu-fault-event-envelope.h"
 
 QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 
@@ -188,13 +189,20 @@ static uint8_t *build_payload(uint16_t operation, bool selected_vcpu,
 static void poll_event(uint8_t evidence[HANG_EVIDENCE_BUFFER_BYTES],
                        struct qemu_plugin_crucible_fault_event *event)
 {
+    uint8_t envelope[CRUCIBLE_TEST_EVENT_ENVELOPE_BUFFER_BYTES];
+    const uint8_t *decoded = NULL;
+    size_t envelope_len = 0;
     size_t evidence_len = 0;
     int status;
 
     memset(event, 0, sizeof(*event));
     status = qemu_plugin_crucible_fault_event_poll(
-        event, evidence, HANG_EVIDENCE_BUFFER_BYTES, &evidence_len);
-    if (status != 1 ||
+        event, envelope, sizeof(envelope), &envelope_len);
+    if (status == 1) {
+        decoded = crucible_test_event_evidence(
+            event, envelope, envelope_len, &evidence_len);
+    }
+    if (!decoded || evidence_len > HANG_EVIDENCE_BUFFER_BYTES ||
         event->command_kind != CRUCIBLE_FAULT_COMMAND_NODE_HANG ||
         event->outcome != CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED ||
         (evidence_len != HANG_EVIDENCE_BYTES &&
@@ -203,10 +211,11 @@ static void poll_event(uint8_t evidence[HANG_EVIDENCE_BUFFER_BYTES],
                 "hang event poll: status=%d kind=%u outcome=%u "
                 "evidence_len=%zu magic=%.8s observed=%" PRIu64 "\n",
                 status, event->command_kind, event->outcome, evidence_len,
-                status == 1 ? (const char *)evidence : "absent",
+                decoded ? (const char *)decoded : "absent",
                 event->observed_icount);
         fail("hang event was absent or malformed");
     }
+    memcpy(evidence, decoded, evidence_len);
 }
 
 static void validate_activation(uint32_t expected_scope,

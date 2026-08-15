@@ -5,6 +5,7 @@
 #include <qemu-plugin.h>
 
 #include "aos/crucible/crucible_shmem_abi.h"
+#include "phase2-qemu-fault-event-envelope.h"
 
 QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 
@@ -132,17 +133,23 @@ static uint8_t *build_payload(size_t *length)
 static void validate_event(void)
 {
     struct qemu_plugin_crucible_fault_event event;
-    uint8_t evidence[LIFECYCLE_EVIDENCE_BYTES] = { 0 };
+    uint8_t envelope[CRUCIBLE_TEST_EVENT_ENVELOPE_BUFFER_BYTES] = { 0 };
+    const uint8_t *evidence = NULL;
+    size_t envelope_len = 0;
     size_t evidence_len = 0;
     int status;
 
     memset(&event, 0, sizeof(event));
     status = qemu_plugin_crucible_fault_event_poll(
-        &event, evidence, sizeof(evidence), &evidence_len);
-    if (status != 1 ||
+        &event, envelope, sizeof(envelope), &envelope_len);
+    if (status == 1) {
+        evidence = crucible_test_event_evidence(
+            &event, envelope, envelope_len, &evidence_len);
+    }
+    if (!evidence ||
         event.command_kind != CRUCIBLE_FAULT_COMMAND_NODE_LIFECYCLE ||
         event.outcome != CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED ||
-        evidence_len != sizeof(evidence) ||
+        evidence_len != LIFECYCLE_EVIDENCE_BYTES ||
         memcmp(evidence, "CRUCLIF1", 8) != 0 ||
         get_u16(evidence + 8) != 4 ||
         get_u16(evidence + 10) != (terminal_crash ? 2 : 3) ||
@@ -156,6 +163,25 @@ static void validate_event(void)
         get_u64(evidence + 96) - get_u64(evidence + 32) != 32 ||
         get_u64(evidence + 48) == 0 || get_u64(evidence + 56) == 0 ||
         get_u64(evidence + 112) == 0 || get_u64(evidence + 120) == 0) {
+        g_printerr("lifecycle event: poll=%d kind=%u outcome=%u len=%zu"
+                   " magic=%.8s version=%u transition=%u volatile=%u"
+                   " device=%u flags=%u downtime=%" G_GUINT64_FORMAT
+                   " before=%" G_GUINT64_FORMAT
+                   " after=%" G_GUINT64_FORMAT
+                   " ram=%" G_GUINT64_FORMAT
+                   " device_bytes=%" G_GUINT64_FORMAT "\n",
+                   status, event.command_kind, event.outcome, evidence_len,
+                   evidence ? evidence : (const uint8_t *)"",
+                   evidence ? get_u16(evidence + 8) : 0,
+                   evidence ? get_u16(evidence + 10) : 0,
+                   evidence ? get_u32(evidence + 12) : 0,
+                   evidence ? get_u32(evidence + 16) : 0,
+                   evidence ? get_u32(evidence + 20) : 0,
+                   evidence ? get_u64(evidence + 40) : 0,
+                   evidence ? get_u64(evidence + 32) : 0,
+                   evidence ? get_u64(evidence + 96) : 0,
+                   evidence ? get_u64(evidence + 112) : 0,
+                   evidence ? get_u64(evidence + 120) : 0);
         fail("reset event or lifecycle evidence was absent or malformed");
     }
     if (get_u32(evidence + 192) != (require_ready ? 2U : 1U) ||
@@ -204,7 +230,7 @@ static void completion(void *opaque)
         result.command_sequence == 1) {
         command.command_flags = 0;
         command.command_sequence = 2;
-        command.target_icount = result.observed_icount + 16;
+        command.target_icount = result.observed_icount;
         command.authorization_ceiling_icount = command.target_icount;
         memcpy(command.expected_precondition_hash, result.before_hash, 32);
         if (qemu_plugin_crucible_fault_submit(
@@ -217,6 +243,13 @@ static void completion(void *opaque)
         result.command_sequence != 2 ||
         result.applied_icount < result.observed_icount ||
         (require_ready && !ready_observed)) {
+        g_printerr("lifecycle result: status=%u sequence=%" G_GUINT64_FORMAT
+                   " observed=%" G_GUINT64_FORMAT
+                   " applied=%" G_GUINT64_FORMAT
+                   " require_ready=%d ready_observed=%d payload_len=%zu\n",
+                   result.status, result.command_sequence,
+                   result.observed_icount, result.applied_icount,
+                   require_ready, ready_observed, result_len);
         fail("reset did not complete through the deferred command path");
     }
     validate_event();
