@@ -113,6 +113,13 @@ qemu_get_aio_context(void)
 }
 
 void
+aio_bh_schedule_oneshot(AioContext *ctx, void (*cb)(void *opaque), void *opaque)
+{
+  (void)ctx;
+  cb(opaque);
+}
+
+void
 aio_set_fd_handler(AioContext *ctx, int fd, IOHandler *fd_read,
                    IOHandler *fd_write, AioPollFn *io_poll,
                    IOHandler *io_poll_ready, void *opaque)

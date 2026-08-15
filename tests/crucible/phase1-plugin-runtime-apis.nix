@@ -526,6 +526,7 @@ in
             #define qatomic_read(ptr) (*(ptr))
             #define qatomic_set(ptr, value) (*(ptr) = (value))
             #define qatomic_load_acquire(ptr) (*(ptr))
+            #define qatomic_store_release(ptr, value) (*(ptr) = (value))
             #define g_assert(condition) do { if (!(condition)) __builtin_trap(); } while (0)
 
             #endif
@@ -543,7 +544,10 @@ in
 
             typedef struct AioContext AioContext;
             typedef bool AioPollFn(void *opaque);
+            typedef void QEMUBHFunc(void *opaque);
             AioContext *qemu_get_aio_context(void);
+            void aio_bh_schedule_oneshot(AioContext *ctx, QEMUBHFunc *cb,
+                                         void *opaque);
             void aio_set_fd_handler(AioContext *ctx, int fd,
                                     IOHandler *fd_read, IOHandler *fd_write,
                                     AioPollFn *io_poll,
@@ -780,6 +784,9 @@ in
             static void qemu_plugin_time_advance_barrier_bh(void *opaque);
             static void qemu_plugin_time_advance_complete_bh(void *opaque);
 
+            #define QEMU_PLUGIN_TIME_ADVANCE_RESERVED 1
+            #define QEMU_PLUGIN_TIME_ADVANCE_ARMED 2
+
             bool qemu_plugin_has_time_control(void)
             {
                 return has_control;
@@ -837,10 +844,21 @@ in
                                                 qemu_plugin_time_advance_target,
                                                 qemu_plugin_time_advance_userdata);
                 }
+                /*
+                 * Notify device waiters only after the logical-time commit.
+                 */
+                notifier_list_notify(&qemu_plugin_wake_notifiers,
+                                     (void *)(intptr_t)QEMU_PLUGIN_WAKE_EVENT_DRAINED);
+                if (first_cpu) {
+                    qemu_cpu_kick(first_cpu);
+                }
             }
 
             int qemu_plugin_advance_time_ns(int64_t new_time)
             {
+                if (new_time < 0) {
+                    return -EINVAL;
+                }
                 qemu_plugin_time_advance_pending = 1;
                 qemu_plugin_time_advance_status = 0;
                 qemu_plugin_time_advance_target = new_time;
@@ -995,24 +1013,18 @@ in
                 patch --batch --fuzz=0 -p1 < focused-vmstop-admission.patch
               elif [ "$patch" = 0073-crucible-device-wait-vmstop.patch ]; then
                 # Device callback wrappers are compile-tested with their owning
-                # device gates. This fixture compiles the public/internal API
-                # and complete VM-stop implementation from patch 0073.
+                # device gates. This fixture compiles every public/internal API
+                # hunk and the complete VM-stop/control-boundary implementation.
                 gawk '
                   /^diff --git / {
                     internal_header = ($3 == "a/include/qemu/plugin.h")
                     api_system = ($3 == "a/plugins/api-system.c")
                     selected_file = internal_header || api_system
-                    in_hunk = 0
                     if (selected_file) print
                     next
                   }
                   !selected_file { next }
-                  internal_header { print; next }
-                  /^@@/ {
-                    in_hunk = 1
-                    selected_hunk = ($0 !~ /qemu_plugin_time_advance_complete_bh/)
-                  }
-                  !in_hunk || selected_hunk { print }
+                  { print }
                 ' "${patchDir}/$patch" > focused-device-wait-vmstop.patch
                 patch --batch --fuzz=0 -p1 < focused-device-wait-vmstop.patch
               else
@@ -1061,7 +1073,7 @@ in
 
             cp "$microtestSourcePath" phase1-plugin-runtime-apis.c
             cc -std=c11 -O2 -Wall -Wextra -Werror -DCONFIG_PLUGIN \
-              ${lib.optionalString (patchName == "0073-crucible-device-wait-vmstop.patch") "-DCRUCIBLE_DEVICE_WAIT_VMSTOP"} \
+              -DCRUCIBLE_DEVICE_WAIT_VMSTOP \
               -I include \
               -I . \
               phase1-plugin-runtime-apis.c \
