@@ -27,6 +27,18 @@
         {label = "accelerator VMState section"; needle = "accelerator_vmstate_section";}
         {label = "realized accelerator manifest"; needle = "qemu_plugin_crucible_fault_accelerator_manifest";}
       ]
+      else if lib.hasPrefix "0071-" patchName
+      then [
+        {label = "lifecycle VM-state precondition"; needle = "qemu_crucible_fault_lifecycle_precondition";}
+        {label = "lifecycle command specialization"; needle = "CRUCIBLE_FAULT_COMMAND_NODE_LIFECYCLE";}
+        {label = "fail-closed snapshot error"; needle = "CRUCIBLE_FAULT_STATUS_INTERNAL_ERROR";}
+      ]
+      else if lib.hasPrefix "0072-" patchName
+      then [
+        {label = "canonical typed result encoding"; needle = "+        node_encode_evidence(staging, result_payload);";}
+        {label = "command-specific result replacement removed"; needle = "-        g_byte_array_append(result_payload, staging->impulse_evidence->data,";}
+        {label = "result evidence digest retained"; needle = "result->evidence_hash";}
+      ]
       else [
         {label = "final fault-system manifest"; needle = "qemu_plugin_crucible_fault_system_manifest";}
         {label = "complete fault-system capability"; needle = "qemu.fault-system.complete.v1";}

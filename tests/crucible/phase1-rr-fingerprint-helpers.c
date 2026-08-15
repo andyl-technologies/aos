@@ -82,7 +82,14 @@ typedef struct GChecksum {
 struct qemu_plugin_register;
 struct qemu_plugin_scoreboard {
   size_t element_size;
+  GArray *data;
 };
+
+typedef struct {
+  struct qemu_plugin_scoreboard *score;
+} qemu_plugin_u64;
+
+uint64_t qemu_plugin_u64_get(qemu_plugin_u64 entry, size_t index);
 
 typedef struct RAMBlock {
   const char *idstr;
@@ -488,6 +495,13 @@ plugin_scoreboard_new(size_t element_size)
 
   scoreboard.element_size = element_size;
   return &scoreboard;
+}
+
+uint64_t
+qemu_plugin_u64_get(qemu_plugin_u64 entry, size_t index)
+{
+  (void)entry;
+  return index;
 }
 
 static void

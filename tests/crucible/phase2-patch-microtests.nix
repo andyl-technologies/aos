@@ -451,6 +451,20 @@
         patchName = "0070-crucible-fault-vmstate.patch";
       };
     }
+    {
+      patch = "0071-crucible-lifecycle-precondition.patch";
+      check = import ./phase2-qemu-fault-vmstate.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0071-crucible-lifecycle-precondition.patch";
+      };
+    }
+    {
+      patch = "0072-crucible-typed-node-result-schema.patch";
+      check = import ./phase2-qemu-fault-vmstate.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0072-crucible-typed-node-result-schema.patch";
+      };
+    }
   ];
 
   microtestPatchNames =

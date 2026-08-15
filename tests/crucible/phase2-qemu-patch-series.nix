@@ -489,6 +489,20 @@
       enforces = "QFP-STATE-1,QFP-STATE-2,QFP-STATE-3";
       capability = "live fail-closed build, patch-series, shared-memory ABI, and exact aggregate fault VMState identity";
     }
+    {
+      file = "0071-crucible-lifecycle-precondition.patch";
+      catalogName = "crucible-lifecycle-precondition";
+      class = "D";
+      enforces = "QFP-LIFE-1,QFP-LIFE-2,FAULT-ORDER";
+      capability = "atomic lifecycle prepare and commit over the same authenticated VM-state precondition";
+    }
+    {
+      file = "0072-crucible-typed-node-result-schema.patch";
+      catalogName = "crucible-typed-node-result-schema";
+      class = "D";
+      enforces = "QFP-RESULT-1,QFP-EVENT-1,FAULT-ORDER";
+      capability = "fixed typed-command results with command-specific evidence retained on authenticated occurrence events";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

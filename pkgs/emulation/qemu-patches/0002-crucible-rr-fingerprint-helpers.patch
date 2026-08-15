@@ -999,6 +999,11 @@ index 604ce06..9276590 100644
  struct qemu_plugin_scoreboard *qemu_plugin_scoreboard_new(size_t element_size)
  {
      return plugin_scoreboard_new(element_size);
+@@ -514,4 +1022,3 @@ uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry)
+     }
+     return total;
+ }
+-
 diff --git a/qemu-options.hx b/qemu-options.hx
 index c860453..c0e288a 100644
 --- a/qemu-options.hx

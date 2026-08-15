@@ -300,6 +300,16 @@ produce live patched-QEMU architectural or device evidence.
   save/restore for all fault state, a cross-patch snapshot barrier, system
   evidence closure, rollback/revert-sensitive tests, inertness/performance gates,
   and final capability closure.
+- [ ] **T-QEMU-0071** Implement
+  [`crucible-lifecycle-precondition`](14-qemu-fault-patches/22-lifecycle-precondition.md):
+  bind lifecycle prepare and apply to one live VM-state digest, prove the
+  production signal-driven process-exit path, and reject a changed precondition
+  without requesting an exit.
+- [ ] **T-QEMU-0072** Implement
+  [`crucible-typed-node-result-schema`](14-qemu-fault-patches/23-typed-node-result-schema.md):
+  preserve the fixed typed-command result schema for every immediate node
+  impulse, carry command-specific bytes only in authenticated occurrence events,
+  and prove the production host validates both channels independently.
 - [ ] **T-QEMU-0060** Implement
   [`crucible-block-typed-errors`](14-qemu-fault-patches/14-block-typed-errors.md):
   the closed block result ABI, exact Linux errno translation, malformed-result

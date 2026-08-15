@@ -418,6 +418,7 @@ in rec {
     qemuLiveWhiteboxDoorbell = import ./phase2-qemu-live-whitebox-doorbell.nix {inherit pkgs lib;};
     qemuLiveBlockRealization = import ./phase2-qemu-live-block-realization.nix {inherit pkgs lib;};
     qemuLiveNodeStep = import ./phase2-qemu-live-node-step.nix {inherit pkgs lib;};
+    qemuLiveNodeLifecycleFault = import ./phase2-qemu-live-node-lifecycle-fault.nix {inherit pkgs lib;};
     qemuLiveBlockIo = import ./phase2-qemu-live-block-io.nix {inherit pkgs lib;};
     qemuLiveBlockReset = import ./phase2-qemu-live-block-reset.nix {inherit pkgs lib;};
     qemuLive9pIo = import ./phase2-qemu-live-9p-io.nix {inherit pkgs lib;};
