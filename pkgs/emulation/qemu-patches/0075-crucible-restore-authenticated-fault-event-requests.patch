@@ -167,7 +167,7 @@ index 8cf6f5177..e3bbc543c 100644
      *outcome = CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED;
      return 0;
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index fa11566ad..0bb6500ff 100644
+index eadb40432..caa2fa7da 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -34,6 +34,11 @@
@@ -198,7 +198,7 @@ index fa11566ad..0bb6500ff 100644
          g_checksum_update(checksum, (const guchar *)&rule->command_sequence,
                            sizeof(rule->command_sequence));
      }
-@@ -2004,7 +2011,7 @@ static const NodeSchemaField schema_accel_lifecycle[] = {
+@@ -2033,7 +2040,7 @@ static const NodeSchemaField schema_accel_lifecycle[] = {
      SF(P1, HASH), SF(P2, U32), SF(P3, U32), SF(P4, U32),
  };
  static const NodeSchemaField schema_accel_result[] = {
@@ -207,7 +207,7 @@ index fa11566ad..0bb6500ff 100644
  };
  static const NodeSchemaField schema_accel_memory[] = {
      SF(P1, U64), SF(P2, U64), SF(P3, BOOL), SF(P4, U32), SF(P5, BOOL),
-@@ -2825,6 +2832,7 @@ static int node_parse(const struct qemu_plugin_crucible_fault_command *command,
+@@ -2854,6 +2861,7 @@ static int node_parse(const struct qemu_plugin_crucible_fault_command *command,
      rule->command_phase = command->phase;
      rule->semantic_version = command->semantic_version;
      memcpy(rule->binding_hash, command->binding_hash, 32);
@@ -215,7 +215,7 @@ index fa11566ad..0bb6500ff 100644
      memcpy(rule->target_node_hash, command->target_node_hash, 32);
      memcpy(rule->action_hash,
             payload + CRUCIBLE_NODE_FAULT_PAYLOAD_ACTION_HASH_OFFSET, 32);
-@@ -2837,6 +2845,10 @@ static int node_parse(const struct qemu_plugin_crucible_fault_command *command,
+@@ -2866,6 +2874,10 @@ static int node_parse(const struct qemu_plugin_crucible_fault_command *command,
          rule->model_phase == 0 || rule->generation == 0 ||
          rule->field_count > CRUCIBLE_NODE_FAULT_MAX_FIELDS_V1 ||
          !node_hash_nonzero(rule->binding_hash) ||
@@ -226,7 +226,7 @@ index fa11566ad..0bb6500ff 100644
          !node_hash_nonzero(rule->action_hash) ||
          !node_hash_nonzero(rule->target_hash) ||
          !node_hash_nonzero(rule->schema_hash) ||
-@@ -3493,6 +3505,8 @@ static void node_event_enqueue(const QemuCrucibleFaultRule *rule,
+@@ -3522,6 +3534,8 @@ static void node_event_enqueue(const QemuCrucibleFaultRule *rule,
                                 const uint8_t *evidence, size_t evidence_len)
  {
      uint8_t terminal_evidence[128] = { 0 };
@@ -235,7 +235,7 @@ index fa11566ad..0bb6500ff 100644
      bool terminal = false;
      CrucibleNodeEvent *queued;
  
-@@ -3555,6 +3569,25 @@ static void node_event_enqueue(const QemuCrucibleFaultRule *rule,
+@@ -3584,6 +3598,25 @@ static void node_event_enqueue(const QemuCrucibleFaultRule *rule,
          crucible_node_terminal_resource_kind = 0;
          terminal = true;
      }
@@ -261,7 +261,7 @@ index fa11566ad..0bb6500ff 100644
      queued = QTAILQ_FIRST(&crucible_node_free_events);
      g_assert(queued);
      g_assert(crucible_node_event_sequence != UINT64_MAX);
-@@ -3564,6 +3597,7 @@ static void node_event_enqueue(const QemuCrucibleFaultRule *rule,
+@@ -3593,6 +3626,7 @@ static void node_event_enqueue(const QemuCrucibleFaultRule *rule,
      queued->event.outcome = outcome;
      queued->event.model_phase = rule->model_phase;
      queued->event.target_kind = rule->target_kind;
@@ -269,7 +269,7 @@ index fa11566ad..0bb6500ff 100644
      queued->event.event_sequence = ++crucible_node_event_sequence;
      queued->event.rule_command_sequence = rule->command_sequence;
      queued->event.observed_icount = observed_icount;
-@@ -3574,13 +3608,12 @@ static void node_event_enqueue(const QemuCrucibleFaultRule *rule,
+@@ -3603,13 +3637,12 @@ static void node_event_enqueue(const QemuCrucibleFaultRule *rule,
      memcpy(queued->event.target_hash, rule->target_hash, 32);
      memcpy(queued->event.before_hash, before_hash, 32);
      memcpy(queued->event.after_hash, after_hash, 32);
@@ -287,7 +287,7 @@ index fa11566ad..0bb6500ff 100644
      }
      QTAILQ_INSERT_TAIL(&crucible_node_events, queued, link);
      crucible_node_event_count++;
-@@ -3938,6 +3971,12 @@ const uint8_t *qemu_crucible_fault_rule_binding_hash(
+@@ -3967,6 +4000,12 @@ const uint8_t *qemu_crucible_fault_rule_binding_hash(
      return rule->binding_hash;
  }
  
@@ -300,7 +300,7 @@ index fa11566ad..0bb6500ff 100644
  const uint8_t *qemu_crucible_fault_rule_action_hash(
      const QemuCrucibleFaultRule *rule)
  {
-@@ -4115,6 +4154,11 @@ int qemu_plugin_crucible_fault_event_peek(
+@@ -4144,6 +4183,11 @@ int qemu_plugin_crucible_fault_event_peek(
      return 1;
  }
  
@@ -312,7 +312,7 @@ index fa11566ad..0bb6500ff 100644
  int qemu_plugin_crucible_fault_event_poll(
      struct qemu_plugin_crucible_fault_event *event, uint8_t *payload,
      size_t payload_capacity, size_t *payload_length)
-@@ -10528,7 +10572,7 @@ static void crucible_node_vmstate_put_event(
+@@ -10557,7 +10601,7 @@ static void crucible_node_vmstate_put_event(
      qemu_crucible_fault_vmstate_put_u16(payload, event->outcome);
      qemu_crucible_fault_vmstate_put_u16(payload, event->model_phase);
      qemu_crucible_fault_vmstate_put_u16(payload, event->target_kind);
@@ -321,7 +321,7 @@ index fa11566ad..0bb6500ff 100644
      qemu_crucible_fault_vmstate_put_u64(payload, event->event_sequence);
      qemu_crucible_fault_vmstate_put_u64(payload,
                                          event->rule_command_sequence);
-@@ -10548,6 +10592,69 @@ static void crucible_node_vmstate_put_event(
+@@ -10577,6 +10621,69 @@ static void crucible_node_vmstate_put_event(
          queued->payload_length);
  }
  
@@ -391,7 +391,7 @@ index fa11566ad..0bb6500ff 100644
  static bool crucible_node_vmstate_get_event(
      QemuCrucibleFaultVmstateReader *reader, CrucibleNodeEvent *queued)
  {
-@@ -10562,7 +10669,8 @@ static bool crucible_node_vmstate_get_event(
+@@ -10591,7 +10698,8 @@ static bool crucible_node_vmstate_get_event(
          !qemu_crucible_fault_vmstate_get_u16(reader, &event->outcome) ||
          !qemu_crucible_fault_vmstate_get_u16(reader, &event->model_phase) ||
          !qemu_crucible_fault_vmstate_get_u16(reader, &event->target_kind) ||
@@ -401,7 +401,7 @@ index fa11566ad..0bb6500ff 100644
          !qemu_crucible_fault_vmstate_get_u64(reader,
                                                &event->event_sequence) ||
          !qemu_crucible_fault_vmstate_get_u64(
-@@ -10583,10 +10691,14 @@ static bool crucible_node_vmstate_get_event(
+@@ -10612,10 +10720,14 @@ static bool crucible_node_vmstate_get_event(
          !qemu_crucible_fault_vmstate_get_bytes(reader,
                                                  event->after_hash, 32) ||
          !qemu_crucible_fault_vmstate_get_u32(reader, &evidence_len) ||
@@ -418,7 +418,7 @@ index fa11566ad..0bb6500ff 100644
          event->rule_command_sequence == 0 || event->generation == 0 ||
          event->outcome < CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED ||
          event->outcome > CRUCIBLE_FAULT_EVENT_OUTCOME_RECOVERED ||
-@@ -10622,6 +10734,8 @@ void qemu_crucible_fault_rule_vmstate_save(
+@@ -10651,6 +10763,8 @@ void qemu_crucible_fault_rule_vmstate_save(
      qemu_crucible_fault_vmstate_put_u64(payload, rule->opportunity_count);
      qemu_crucible_fault_vmstate_put_u64(payload, rule->applied_count);
      qemu_crucible_fault_vmstate_put_bytes(payload, rule->binding_hash, 32);
@@ -427,7 +427,7 @@ index fa11566ad..0bb6500ff 100644
      qemu_crucible_fault_vmstate_put_bytes(payload, rule->target_node_hash,
                                            32);
      qemu_crucible_fault_vmstate_put_u32(payload, rule->payload_len);
-@@ -10650,6 +10764,8 @@ QemuCrucibleFaultRule *qemu_crucible_fault_rule_vmstate_load(
+@@ -10679,6 +10793,8 @@ QemuCrucibleFaultRule *qemu_crucible_fault_rule_vmstate_load(
                                                &rule->applied_count) ||
          !qemu_crucible_fault_vmstate_get_bytes(reader,
                                                  command.binding_hash, 32) ||
@@ -436,7 +436,7 @@ index fa11566ad..0bb6500ff 100644
          !qemu_crucible_fault_vmstate_get_bytes(
              reader, command.target_node_hash, 32) ||
          !qemu_crucible_fault_vmstate_get_u32(reader, &rule_payload_len) ||
-@@ -10919,7 +11035,7 @@ bool qemu_crucible_fault_rule_foreach_staged(
+@@ -10948,7 +11064,7 @@ bool qemu_crucible_fault_rule_foreach_staged(
  static const QemuCrucibleFaultVmstateSection
  crucible_node_vmstate_section = {
      .name = "node-rules",

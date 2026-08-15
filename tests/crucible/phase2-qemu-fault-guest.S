@@ -13,6 +13,27 @@ _start:
     cli
     mov $page_directory, %eax
     mov %eax, %cr3
+.ifdef CRUCIBLE_ENABLE_MCA
+    /* Enable architectural machine-check delivery and bank zero. */
+    mov %cr4, %eax
+    or $0x40, %eax
+    mov %eax, %cr4
+    mov $0x17b, %ecx
+    mov $-1, %eax
+    mov $-1, %edx
+    wrmsr
+    mov $0x400, %ecx
+    wrmsr
+    lea machine_check_handler, %eax
+    movw %ax, machine_check_idt + 18 * 8
+    shr $16, %eax
+    movw %ax, machine_check_idt + 18 * 8 + 6
+    mov %cs, %ax
+    movw %ax, machine_check_idt + 18 * 8 + 2
+    movb $0, machine_check_idt + 18 * 8 + 4
+    movb $0x8e, machine_check_idt + 18 * 8 + 5
+    lidt machine_check_idtr
+.endif
     mov %cr0, %eax
     or $0x80010000, %eax
     mov %eax, %cr0
@@ -39,6 +60,11 @@ mutation_execution_result:
 .global persistent_register_result
 persistent_register_result:
     .long 0x00000000
+.ifdef CRUCIBLE_ENABLE_MCA
+machine_check_idtr:
+    .word 256 * 8 - 1
+    .long machine_check_idt
+.endif
 
 .section .cross, "aw"
 .global mutation_cross_page
@@ -51,6 +77,21 @@ mutation_code:
     mov $0x5a, %eax
     ret
 
+.ifdef CRUCIBLE_ENABLE_MCA
+machine_check_handler:
+    push %eax
+    push %ecx
+    push %edx
+    mov $0x17a, %ecx
+    xor %eax, %eax
+    xor %edx, %edx
+    wrmsr
+    pop %edx
+    pop %ecx
+    pop %eax
+    iret
+.endif
+
 .section .readonly_data, "a"
 .global mutation_readonly_byte
 mutation_readonly_byte:
@@ -61,6 +102,11 @@ mutation_readonly_byte:
 stack_bottom:
     .skip 16384
 stack_top:
+.ifdef CRUCIBLE_ENABLE_MCA
+.align 16
+machine_check_idt:
+    .skip 256 * 8
+.endif
 
 .section .page_tables, "aw"
 .align 4096

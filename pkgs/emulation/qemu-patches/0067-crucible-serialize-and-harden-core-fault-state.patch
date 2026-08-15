@@ -2536,7 +2536,7 @@ index 1ecf09976..73cffb61b 100644
  
  type_init(crucible_lifecycle_register)
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index ecaf0998a..e75bc75e8 100644
+index 5738b87ae..46504433f 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -43,6 +43,8 @@
@@ -2582,7 +2582,7 @@ index ecaf0998a..e75bc75e8 100644
  static QemuCrucibleFaultRule *
  node_rule_copy(const QemuCrucibleFaultRule *source)
  {
-@@ -3007,6 +3022,9 @@ static bool node_memory_translation_equal(
+@@ -3036,6 +3051,9 @@ static bool node_memory_translation_equal(
             left->user == right->user;
  }
  
@@ -2592,7 +2592,7 @@ index ecaf0998a..e75bc75e8 100644
  static bool node_memory_translate_rule(QemuCrucibleFaultRule *rule,
                                         CPUState *cpu, uint64_t address,
                                         CPUFaultTranslation *result)
-@@ -3186,18 +3204,9 @@ static int node_memory_resolve_target(QemuCrucibleFaultRule *rule,
+@@ -3215,18 +3233,9 @@ static int node_memory_resolve_target(QemuCrucibleFaultRule *rule,
      for (guint i = 0; i < rule->translations->len; i++) {
          CrucibleNodeTranslation *translation = &g_array_index(
              rule->translations, CrucibleNodeTranslation, i);
@@ -2614,7 +2614,7 @@ index ecaf0998a..e75bc75e8 100644
          g_checksum_update(checksum, encoded, sizeof(encoded));
      }
      gsize digest_length = sizeof(rule->translation_hash);
-@@ -3880,6 +3889,10 @@ qemu_crucible_fault_event_reservation_split(
+@@ -3909,6 +3918,10 @@ qemu_crucible_fault_event_reservation_split(
  void qemu_crucible_fault_event_reservation_release(
      QemuCrucibleFaultEventReservation *reservation)
  {
@@ -2625,7 +2625,7 @@ index ecaf0998a..e75bc75e8 100644
      if (!reservation ||
          crucible_node_event_reserved < reservation->remaining ||
          crucible_node_event_sequence_reserved < reservation->remaining) {
-@@ -3891,6 +3904,31 @@ void qemu_crucible_fault_event_reservation_release(
+@@ -3920,6 +3933,31 @@ void qemu_crucible_fault_event_reservation_release(
      g_free(reservation);
  }
  
@@ -2657,7 +2657,7 @@ index ecaf0998a..e75bc75e8 100644
  int qemu_plugin_crucible_fault_event_peek(
      struct qemu_plugin_crucible_fault_event *event, size_t *payload_length)
  {
-@@ -10152,6 +10190,1314 @@ QemuCrucibleMemoryAccessResult qemu_crucible_fault_memory_atomic(
+@@ -10181,6 +10219,1314 @@ QemuCrucibleMemoryAccessResult qemu_crucible_fault_memory_atomic(
      return result;
  }
  
@@ -3972,7 +3972,7 @@ index ecaf0998a..e75bc75e8 100644
  static void crucible_memory_access_faults_register(void)
  {
      const uint32_t boundary =
-@@ -10175,6 +11521,8 @@ static void crucible_memory_access_faults_register(void)
+@@ -10204,6 +11550,8 @@ static void crucible_memory_access_faults_register(void)
          node_memory_retention_boundary);
      qemu_crucible_fault_boundary_deadline_register(
          node_memory_retention_deadline);

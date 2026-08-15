@@ -2483,10 +2483,10 @@ index 000000000..9867870b1
 +    qemu_crucible_fault_vmstate_register(&accelerator_vmstate_section);
 +}
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index 1710ab361..6ceef8dd2 100644
+index 2e5ac74ec..f3eacac66 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
-@@ -2008,7 +2008,7 @@ static const NodeSchemaField schema_accel_result[] = {
+@@ -2037,7 +2037,7 @@ static const NodeSchemaField schema_accel_result[] = {
  };
  static const NodeSchemaField schema_accel_memory[] = {
      SF(P1, U64), SF(P2, U64), SF(P3, BOOL), SF(P4, U32), SF(P5, BOOL),
@@ -2495,7 +2495,7 @@ index 1710ab361..6ceef8dd2 100644
  };
  
  static bool node_schema_select(const NodeSchemaField **fields, size_t *count,
-@@ -3342,6 +3342,22 @@ static int node_prepare(
+@@ -3371,6 +3371,22 @@ static int node_prepare(
              return status;
          }
      }
@@ -2518,7 +2518,7 @@ index 1710ab361..6ceef8dd2 100644
      node_sha256(payload, payload_len, staging->request_hash);
      node_rules_digest_with(NULL, false, staging->before_hash);
      if (command->command_flags & CRUCIBLE_FAULT_COMMAND_FLAG_PREPARE_ONLY) {
-@@ -3405,6 +3421,16 @@ static int node_prepare(
+@@ -3434,6 +3450,16 @@ static int node_prepare(
              }
          }
      }
@@ -2535,7 +2535,7 @@ index 1710ab361..6ceef8dd2 100644
      if (staging->rule.operation ==
              CRUCIBLE_NODE_FAULT_OPERATION_UPSERT &&
          staging->rule.command_kind == CRUCIBLE_FAULT_COMMAND_NODE_HANG) {
-@@ -3531,6 +3557,7 @@ static void node_event_enqueue(const QemuCrucibleFaultRule *rule,
+@@ -3560,6 +3586,7 @@ static void node_event_enqueue(const QemuCrucibleFaultRule *rule,
          qemu_crucible_fault_hardware_error_event_terminal();
          qemu_crucible_fault_vcpu_service_event_terminal();
          qemu_crucible_fault_clock_event_terminal();
@@ -2543,7 +2543,7 @@ index 1710ab361..6ceef8dd2 100644
          qemu_crucible_fault_notify_events();
          qemu_system_vmstop_request_prepare();
          qemu_system_vmstop_request(RUN_STATE_INTERNAL_ERROR);
-@@ -3597,6 +3624,8 @@ static void node_commit(
+@@ -3626,6 +3653,8 @@ static void node_commit(
              &staging->rule, &staging->event_reservation);
          qemu_crucible_fault_clock_rules_changed(
              &staging->event_reservation);
@@ -2552,7 +2552,7 @@ index 1710ab361..6ceef8dd2 100644
          if (staging->event_reservation) {
              qemu_crucible_fault_event_reservation_release(
                  staging->event_reservation);
-@@ -3617,6 +3646,8 @@ static void node_commit(
+@@ -3646,6 +3675,8 @@ static void node_commit(
              &staging->rule, &staging->event_reservation);
          qemu_crucible_fault_clock_rules_changed(
              &staging->event_reservation);

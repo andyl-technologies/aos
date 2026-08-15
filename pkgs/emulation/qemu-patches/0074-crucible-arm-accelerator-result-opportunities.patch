@@ -521,10 +521,10 @@ index 9867870b1..4b4f5caff 100644
          CRUCIBLE_FAULT_COMMAND_ACCELERATOR_MEMORY_EVENT,
          CRUCIBLE_FAULT_CAPABILITY_SCOPE_ACCELERATOR, boundary | device,
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index 7b1dcd86a..fa11566ad 100644
+index 8cd248a98..eadb40432 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
-@@ -2277,6 +2277,7 @@ static bool node_operation_valid(uint16_t command_kind, uint16_t operation)
+@@ -2306,6 +2306,7 @@ static bool node_operation_valid(uint16_t command_kind, uint16_t operation)
          case CRUCIBLE_FAULT_COMMAND_INTERRUPT_DISPOSITION:
          case CRUCIBLE_FAULT_COMMAND_MEMORY_ECC_EVENT:
          case CRUCIBLE_FAULT_COMMAND_CLOCK_TRANSFORM:
@@ -532,7 +532,7 @@ index 7b1dcd86a..fa11566ad 100644
          case CRUCIBLE_FAULT_COMMAND_ACCELERATOR_MEMORY_EVENT:
              return true;
          default:
-@@ -2997,6 +2998,24 @@ static void node_encode_evidence(CrucibleNodeStaging *staging,
+@@ -3026,6 +3027,24 @@ static void node_encode_evidence(CrucibleNodeStaging *staging,
      g_byte_array_append(payload, evidence, sizeof(evidence));
  }
  
@@ -557,7 +557,7 @@ index 7b1dcd86a..fa11566ad 100644
  static bool node_memory_gpa_is_ram(uint64_t start, uint64_t length)
  {
      uint64_t current = start;
-@@ -3680,7 +3699,8 @@ static void node_commit(
+@@ -3709,7 +3728,8 @@ static void node_commit(
                  staging->impulse_evidence, &staging->impulse_outcome,
                  &staging->event_reservation);
              if (status != 0 &&
@@ -567,7 +567,7 @@ index 7b1dcd86a..fa11566ad 100644
                  error_report(
                      "Crucible prepared node impulse failed during commit");
                  abort();
-@@ -3694,6 +3714,18 @@ static void node_commit(
+@@ -3723,6 +3743,18 @@ static void node_commit(
                  result->applied_icount = 0;
                  return;
              }
