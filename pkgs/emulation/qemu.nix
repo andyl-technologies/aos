@@ -234,6 +234,8 @@
   # patch -p1 < ${./qemu-patches/0071-crucible-lifecycle-precondition.patch}
   # patch -p1 < ${./qemu-patches/0072-crucible-typed-node-result-schema.patch}
   # patch -p1 < ${./qemu-patches/0073-crucible-device-wait-vmstop.patch} # nonblocking exact-callback VM-stop handoff
+  # patch -p1 < ${./qemu-patches/0074-crucible-arm-accelerator-result-opportunities.patch}
+  # patch -p1 < ${./qemu-patches/0075-crucible-restore-authenticated-fault-event-requests.patch}
 in
   assert _testArtifactPolicy == null;
   mkDerivation {

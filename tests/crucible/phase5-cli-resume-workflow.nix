@@ -17,7 +17,10 @@
   simBackend = import ./_crucible-local-and-test-backends-source.nix;
   sessionValidation = builtins.readFile ../../crates/crucible-session/src/validation.rs;
   qemuRealization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
-  qemuBackendExecutor = builtins.readFile ../../crates/crucible-qemu/src/realization/backend_executor.rs;
+  qemuBackendExecutor = builtins.concatStringsSep "\n" (map builtins.readFile [
+    ../../crates/crucible-qemu/src/realization/backend_executor.rs
+    ../../crates/crucible-qemu/src/realization/backend_executor_test.rs
+  ]);
   qemuNodeExecutor = builtins.readFile ../../crates/crucible-qemu/src/realization/node_executor.rs;
   qemuNodeExecutorTests = builtins.readFile ../../crates/crucible-qemu/src/realization/node_executor/tests.rs;
   defaultChecks = builtins.readFile ./default.nix;

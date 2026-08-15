@@ -367,6 +367,14 @@
       kind = "interface";
       symbols = ["qemu_plugin_register_control_boundary_cb"];
     };
+    "0074-crucible-arm-accelerator-result-opportunities.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0075-crucible-restore-authenticated-fault-event-requests.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

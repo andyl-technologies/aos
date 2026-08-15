@@ -510,6 +510,20 @@
       enforces = "QFP-STATE-2,DET-1,INV-10";
       capability = "synchronous exact stop at drained control wakes with nonblocking admission from device-completion callbacks";
     }
+    {
+      file = "0074-crucible-arm-accelerator-result-opportunities.patch";
+      catalogName = "crucible-accelerator-result-opportunity";
+      class = "F";
+      enforces = "QFP-ACCEL-3,QFP-RESULT-1,QFP-EVENT-1,FAULT-ORDER";
+      capability = "atomic one-shot accelerator result arming with durable reservations and typed deferred completion results";
+    }
+    {
+      file = "0075-crucible-restore-authenticated-fault-event-requests.patch";
+      catalogName = "crucible-authenticated-event-request-envelope";
+      class = "F";
+      enforces = "QFP-STATE-2,QFP-ACCEL-3,QFP-EVENT-1,FAULT-ORDER";
+      capability = "mandatory authenticated request/evidence envelopes for fresh-process restore and exact accelerator-opportunity binding";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

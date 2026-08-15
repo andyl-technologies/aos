@@ -16,7 +16,10 @@
   liveReplayContract =
     builtins.readFile ../../crates/crucible-cli/src/cli/artifact/live_qemu.rs
     + builtins.readFile ../../crates/crucible-cli/src/cli/artifact/live_qemu/tests.rs;
-  artifactCapture = builtins.readFile ../../crates/crucible-cli/src/cli/artifact_capture.rs;
+  artifactCapture = builtins.concatStringsSep "\n" (map builtins.readFile [
+    ../../crates/crucible-cli/src/cli/artifact_capture.rs
+    ../../crates/crucible-cli/src/cli/artifact_capture_test.rs
+  ]);
   cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   cliE2e = builtins.readFile ../../crates/crucible-cli/tests/gate_e2e_determinism.rs;
   defaultChecks = builtins.readFile ./default.nix;
