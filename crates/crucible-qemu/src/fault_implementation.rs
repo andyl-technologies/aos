@@ -136,13 +136,13 @@ fn conformance_test(effect: EffectKind) -> &'static str {
             "tests/crucible/phase2-qemu-memory-access.nix via gate:patch-microtests"
         }
         EffectKind::ClockTransform | EffectKind::ClockSourceState => {
-            "checks.crucible.phase2.gates.patchMicrotests:0068-crucible-guest-clock-faults"
+            "tests/crucible/phase2-qemu-live-fault-hardware.nix plus gate:patch-microtests/0068"
         }
         EffectKind::AcceleratorLifecycle
         | EffectKind::AcceleratorResultTransform
         | EffectKind::AcceleratorMemoryEvent
         | EffectKind::AcceleratorService => {
-            "checks.crucible.phase2.gates.patchMicrotests:0069-crucible-accelerator-fault-device"
+            "tests/crucible/phase2-qemu-live-fault-hardware.nix plus gate:patch-microtests/0069,0074"
         }
         _ => "checks.crucible.phase2.gates.patchMicrotests",
     }

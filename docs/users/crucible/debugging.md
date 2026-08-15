@@ -205,7 +205,8 @@ configuration and event history:
 
 `reverse-continue` accepts `quiescent`, `at:<virtual-time-ticks>`, or
 `hex:<compact-predicate>`. The compact form is the canonical binary encoding of
-the RFC-0010 17a predicate and supports the complete condition vocabulary.
+the [scenario predicate](reference.md#properties-and-predicates) and supports
+that complete condition vocabulary.
 `goto` on a remote session accepts `vtime:<ticks>` (or a bare tick count) and
 `icount:<node>:<retired>` coordinates.
 
