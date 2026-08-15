@@ -82,9 +82,8 @@
           # and upperdir on /run/etc/upper-<gen>.
           #
           # Path shapes in the option line:
-          # - /var/etc keeps the literal /sysroot prefix from mount
-          #   time — /var was mounted on /sysroot/var in stage-1, and
-          #   overlayfs records the source path string verbatim.
+          # - /var/etc is constructed under /sysroot in stage-1, but
+          #   overlayfs reports it by its stage-2 path after switch_root.
           # - /run/etc/... does NOT carry /sysroot: the per-gen lower
           #   mounts live in the initrd's /run, which switch_root
           #   moves to /sysroot/run and then pivots, so the paths
@@ -97,7 +96,7 @@
           mount_line = vm.succeed("findmnt -no SOURCE,FSTYPE,OPTIONS /etc")
           assert "overlay" in mount_line, f"/etc is not overlayfs: {mount_line!r}"
           for needle in (
-              "lowerdir+=/sysroot/var/etc",
+              "lowerdir+=/var/etc",
               "lowerdir+=/run/etc/config-",
               "lowerdir+=/run/etc/system-",
               "datadir+=/run/etc/system-",
