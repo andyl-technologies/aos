@@ -883,17 +883,18 @@ fn live_device_submits_during_idle_completion_use_the_advance_target() {
     state
         .block_submit(0, 0, 0, 0, None, 1)
         .unwrap_or_else(|error| panic!("timer-boundary block submit should succeed: {error}"));
+    assert_eq!(FORCE_VCPU_EXIT_CALLS.load(Ordering::SeqCst), 1);
     state
         .ninep_burst_start()
         .unwrap_or_else(|error| panic!("timer-boundary 9p burst should start: {error}"));
     state
         .ninep_submit(0, b"request", 8)
         .unwrap_or_else(|error| panic!("timer-boundary 9p submit should succeed: {error}"));
+    assert_eq!(FORCE_VCPU_EXIT_CALLS.load(Ordering::SeqCst), 2);
 
     assert_eq!(storage.block_out_entries[0].delivery_icount, 10);
     assert_eq!(storage.ninep_out_entries[0].delivery_icount, 10);
     assert_eq!(slot.snapshot().device_io_active, 1);
-    assert_eq!(FORCE_VCPU_EXIT_CALLS.load(Ordering::SeqCst), 1);
 }
 
 extern "C" fn test_deadline() -> i64 {
