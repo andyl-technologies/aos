@@ -76,7 +76,7 @@ fn run() -> Result<(), String> {
     let kernel = required_arg(&mut args, &program)?;
     let firmware = required_arg(&mut args, &program)?;
     let initrd = required_arg(&mut args, &program)?;
-    let run_directory = required_arg(&mut args, &program)?;
+    let run_directory = std::path::PathBuf::from(required_arg(&mut args, &program)?);
     if args.next().is_some() {
         return Err(usage(&program));
     }
@@ -234,7 +234,12 @@ fn run() -> Result<(), String> {
         "fault-hardware-restore-crash-detector",
         &snapshot,
     )
-    .map_err(|error| format!("launch fresh QEMU process from armed snapshot: {error}"))?;
+    .map_err(|error| {
+        format!(
+            "launch fresh QEMU process from armed snapshot: {}",
+            error_chain(&error)
+        )
+    })?;
     if nodes.insert(node_id.clone(), restored).is_some() {
         return Err(String::from(
             "restored live hardware node identity collided",
@@ -334,7 +339,7 @@ fn run() -> Result<(), String> {
         "CRUCIBLE_FAULT_HARDWARE_GUEST=READY",
         "CRUCIBLE_CLOCK_BEFORE counter=",
         "CRUCIBLE_ACCELERATOR_GPU status=0 length=8 values=4,6",
-        "CRUCIBLE_ACCELERATOR_TPU status=0 length=4 value=42",
+        "CRUCIBLE_ACCELERATOR_TPU status=0 length=4 value=43",
         "CRUCIBLE_ACCELERATOR_FPGA status=0 length=3 values=255,254,0",
         "CRUCIBLE_CLOCK_AFTER counter=",
         "CRUCIBLE_FAULT_HARDWARE_GUEST=PASS",
@@ -362,6 +367,7 @@ fn run() -> Result<(), String> {
     println!("clock_effect_proof=authenticated-old-plus-offset-equals-new");
     println!("accelerator_transport=real-modern-virtio-pci");
     println!("accelerator_jobs=gpu-vector-add,tpu-matrix-multiply,fpga-lookup-table");
+    println!("accelerator_mutation=tpu-result-42-to-43");
     println!("host_adapter=qemu-live-accelerator-servicer");
     println!("clock_signal_actions={}", boundary.actions.len());
     println!("accelerator_signal_actions={}", opportunity.actions.len());
@@ -473,7 +479,7 @@ fn fault_hardware_plan() -> Result<FaultSignalPlan, String> {
                     offset: 0,
                     mask: HexBytes::parse("ff", 1)
                         .map_err(|error| format!("accelerator mask: {error}"))?,
-                    value: HexBytes::parse("2a", 1)
+                    value: HexBytes::parse("2b", 1)
                         .map_err(|error| format!("accelerator value: {error}"))?,
                 },
             }),

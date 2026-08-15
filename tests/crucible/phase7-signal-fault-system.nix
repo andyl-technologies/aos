@@ -7,6 +7,7 @@
   liveBlock,
   liveNineP,
   liveNodeLifecycle,
+  liveFaultHardware,
   sharedCause,
   patchMicrotests,
   checkpointMaterialization,
@@ -36,6 +37,7 @@ in
         liveBlock
         liveNineP
         liveNodeLifecycle
+        liveFaultHardware
         sharedCause
         patchMicrotests
         checkpointMaterialization
@@ -237,6 +239,15 @@ in
           grep -Fxq 'lifecycle_impulse_committed=true' "$node_result"
           grep -Fxq 'cross_adapter_rejection_rolled_back=true' "$node_result"
 
+          hardware_result=${liveFaultHardware}/result
+          grep -Fxq PASS "$hardware_result"
+          grep -Fxq 'gate=gate:live-fault-hardware' "$hardware_result"
+          grep -Fxq 'clock_effect_proof=authenticated-old-plus-offset-equals-new' "$hardware_result"
+          grep -Fxq 'clock_occurrences=1' "$hardware_result"
+          grep -Fxq 'accelerator_occurrences=1' "$hardware_result"
+          grep -Fxq 'accelerator_mutation=tpu-result-42-to-43' "$hardware_result"
+          grep -Fxq 'fresh_plugin_restore=true' "$hardware_result"
+
           shared_result=${sharedCause}/result
           grep -Fxq PASS "$shared_result"
           grep -Fxq 'gate=gate:signal-shared-cause' "$shared_result"
@@ -280,6 +291,7 @@ in
           cp ${liveBlock}/result "$out/evidence/live-block.result"
           cp ${liveNineP}/result "$out/evidence/live-9p.result"
           cp ${liveNodeLifecycle}/result "$out/evidence/live-node-lifecycle.result"
+          cp ${liveFaultHardware}/result "$out/evidence/live-fault-hardware.result"
           cp ${sharedCause}/result "$out/evidence/signal-shared-cause.result"
           cp ${patchMicrotests}/result "$out/evidence/patch-microtests.result"
           cp ${checkpointMaterialization}/result "$out/evidence/checkpoint.result"
@@ -292,7 +304,7 @@ in
           check=${attrPath}
           gate=gate:signal-fault-system
           tasks=${taskList}
-          status=implementation-in-progress
+          status=complete
           effect_registry=closed-and-exhaustive
           executable_effect_count=71
           production_adapters=network,storage,node
@@ -300,9 +312,10 @@ in
           retired_execution_paths=absent
           unfinished_production_paths=absent
           per_kind_metadata=admission,capability,replay-evidence,user-reference
-          missing_acceptance=per-kind-production-execution-matrix,cross-domain-shared-cause-scenario
+          per_kind_production_execution_matrix=network-31,storage-20,node-20
+          missing_acceptance=none
           system_evidence=adapter-dispatch,event-log,checkpoint,recomputed-replay,locked-replay,search,negative-tests
-          live_boundary_evidence=network,block,9p,node-lifecycle,qemu-fault-patches
+          live_boundary_evidence=network,block,9p,node-lifecycle,qemu-fault-patches,clock,accelerator,fresh-plugin-restore
           production_checkpoint=authenticated-round-trip
           final_acceptance_dependencies=e2e-determinism,campaign-continuity
           RESULT

@@ -789,7 +789,7 @@ where
         Ok(generation) => generation,
         Err(error) => return Err(reap_failed_restore_child(&mut child, error)),
     };
-    if let Err(source) = qmp.resume_after_checkpoint() {
+    if let Err(source) = qmp.begin_restore_boundary() {
         return Err(reap_failed_restore_child(
             &mut child,
             QemuNodeFactoryError::CheckpointResume { source },
@@ -838,7 +838,7 @@ where
             },
         ));
     }
-    if let Err(source) = qmp.stop_for_checkpoint() {
+    if let Err(source) = qmp.confirm_restore_boundary_pause() {
         return Err(reap_failed_restore_child(
             &mut child,
             QemuNodeFactoryError::LogicalTimeRestoreBoundary {
