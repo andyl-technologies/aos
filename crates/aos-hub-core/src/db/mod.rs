@@ -2102,6 +2102,16 @@ pub struct PlacementScanPresence {
     pub etag: Option<String>,
 }
 
+/// Maximum number of placement observations persisted in one atomic batch.
+///
+/// The bound matches the Worker surface-list page so one provider page maps to
+/// one database round trip without allowing an unbounded transaction.
+pub const MAX_PLACEMENT_SCAN_PRESENCE_BATCH: usize = 256;
+
+// Durable Object SQLite accepts at most 100 bound parameters per statement.
+// The placement occupies one slot in each bulk delete.
+const MAX_PLACEMENT_SCAN_DELETE_IDS: usize = 99;
+
 /// Earlier byte-verified evidence eligible for strong-version scan reuse.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReusablePlacementEvidence {
@@ -8214,58 +8224,97 @@ impl Database {
             .context("placement disappeared after its scan began")
     }
 
-    /// Records one logical object's evidence during a physical placement scan.
+    /// Records one bounded batch of logical-object evidence during a placement scan.
     ///
     /// # Errors
     ///
     /// Returns an error for malformed evidence, stale placement topology, an
-    /// object on another surface, a placement no longer being scanned, or a
-    /// database failure.
-    pub async fn record_surface_placement_scan_presence(
+    /// object on another surface, duplicate objects, an oversized batch, a
+    /// placement no longer being scanned, or a database failure.
+    pub async fn record_surface_placement_scan_presences(
         &self,
         placement_id: i64,
         expected_resource_version: i64,
         expected_observation_version: i64,
-        expected_object_resource_version: i64,
         operation_id: &str,
         operation_resource_version: i64,
         claim_token: &str,
-        presence: &PlacementScanPresence,
+        presences: &[(i64, PlacementScanPresence)],
         observed_at: i64,
     ) -> Result<()> {
         validate_key_bytes(operation_id, "placement scan operation id", 64)?;
         validate_key_bytes(claim_token, "placement scan claim token", 64)?;
-        if !matches!(presence.state.as_str(), "present" | "missing" | "corrupt") {
-            bail!("invalid placement scan presence state '{}'", presence.state);
+        if presences.len() > MAX_PLACEMENT_SCAN_PRESENCE_BATCH {
+            bail!(
+                "placement scan presence batch exceeds {} objects",
+                MAX_PLACEMENT_SCAN_PRESENCE_BATCH
+            );
         }
-        if observed_at < 0 || presence.observed_size.is_some_and(|size| size < 0) {
+        if observed_at < 0 {
             bail!("placement scan evidence has an invalid time or size");
         }
-        if presence.state == "missing"
-            && (presence.observed_hash.is_some()
-                || presence.observed_size.is_some()
-                || presence.etag.is_some())
-        {
-            bail!("missing placement scan evidence cannot describe physical bytes");
+        if presences.is_empty() {
+            return Ok(());
         }
-        if presence.state != "missing"
-            && (presence.observed_hash.is_none() || presence.observed_size.is_none())
-        {
-            bail!("present placement scan evidence requires a digest and size");
-        }
-        if let Some(hash) = presence.observed_hash.as_deref() {
-            validate_key_bytes(hash, "placement scan observed hash", 128)?;
+
+        let mut seen = std::collections::BTreeSet::new();
+        for (_, presence) in presences {
+            if !seen.insert(presence.surface_object_id) {
+                bail!(
+                    "placement scan presence batch repeats object {}",
+                    presence.surface_object_id
+                );
+            }
+            if !matches!(presence.state.as_str(), "present" | "missing" | "corrupt") {
+                bail!("invalid placement scan presence state '{}'", presence.state);
+            }
+            if presence.observed_size.is_some_and(|size| size < 0) {
+                bail!("placement scan evidence has an invalid time or size");
+            }
+            if presence.state == "missing"
+                && (presence.observed_hash.is_some()
+                    || presence.observed_size.is_some()
+                    || presence.etag.is_some())
+            {
+                bail!("missing placement scan evidence cannot describe physical bytes");
+            }
+            if presence.state != "missing"
+                && (presence.observed_hash.is_none() || presence.observed_size.is_none())
+            {
+                bail!("present placement scan evidence requires a digest and size");
+            }
+            if let Some(hash) = presence.observed_hash.as_deref() {
+                validate_key_bytes(hash, "placement scan observed hash", 128)?;
+            }
         }
         let claim_checked_at = unix_now();
 
-        self.backend
-            .checked_batch(&[
+        let delete_count = presences.len().div_ceil(MAX_PLACEMENT_SCAN_DELETE_IDS);
+        let mut statements = Vec::with_capacity(presences.len() + delete_count);
+        for presence_chunk in presences.chunks(MAX_PLACEMENT_SCAN_DELETE_IDS) {
+            let mut delete_params = Vec::with_capacity(presence_chunk.len() + 1);
+            delete_params.push(crate::value::ToValue::to_value(&placement_id));
+            delete_params.extend(presence_chunk.iter().map(|(_, presence)| {
+                crate::value::ToValue::to_value(&presence.surface_object_id)
+            }));
+            let object_placeholders = (0..presence_chunk.len())
+                .map(|index| format!("?{}", index + 2))
+                .collect::<Vec<_>>()
+                .join(", ");
+            statements.push(
                 Statement::new(
-                    "DELETE FROM object_placements
-                     WHERE surface_object_id = ?2 AND placement_id = ?1",
-                    vals![placement_id, presence.surface_object_id],
+                    format!(
+                        "DELETE FROM object_placements
+                         WHERE placement_id = ?1
+                           AND surface_object_id IN ({object_placeholders})"
+                    ),
+                    delete_params,
                 )
                 .unchecked(),
+            );
+        }
+        for (expected_object_resource_version, presence) in presences {
+            statements.push(
                 Statement::new(
                     "INSERT INTO object_placements
                        (surface_object_id, cache_id, registry_id, placement_id,
@@ -8300,7 +8349,7 @@ impl Database {
                         presence.surface_object_id,
                         expected_resource_version,
                         expected_observation_version,
-                        expected_object_resource_version,
+                        *expected_object_resource_version,
                         presence.state,
                         presence.observed_hash,
                         presence.observed_size,
@@ -8313,8 +8362,10 @@ impl Database {
                     ],
                 )
                 .expecting(1),
-            ])
-            .await
+            );
+        }
+
+        self.backend.checked_batch(&statements).await
     }
 
     /// Publishes the terminal state of a complete physical inventory pass.
