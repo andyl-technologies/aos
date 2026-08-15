@@ -236,8 +236,9 @@
           "/sysroot$metadata" "$sys/metadata"
 
         # /var is mounted on /sysroot/var in stage-1. Overlayfs keeps
-        # references to those mounts across switch_root, and reports the
-        # persistent lower layer by its stage-2 path (/var/etc).
+        # references to those mounts across switch_root. The initial mount
+        # can report /sysroot/var/etc; a stage-2 activation rebuild reports
+        # the same persistent lower layer as /var/etc.
         ${pkgs.util-linux}/bin/mount -t overlay overlay -o \
           nodev,nosuid,metacopy=on,redirect_dir=on,lowerdir+=/sysroot/var/etc,lowerdir+=$config_lower/etc,lowerdir+=$sys/metadata,datadir+=$sys/content,upperdir=$upper_root/dir,workdir=$upper_root/work \
           /sysroot/etc

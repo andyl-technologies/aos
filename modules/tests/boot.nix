@@ -11,6 +11,18 @@
     description = "Core system boot verification";
     checks = [
       {
+        name = "configuration-activation";
+        description = "the first host configuration generation is active";
+        script = ''
+          # multi-user.target deliberately does not block on the soft
+          # configuration wing. Wait for its oneshot before inspecting the
+          # generation-backed /etc overlay.
+          vm.wait_for_unit("aos-activate.service", timeout=180)
+          vm.succeed("test -d /run/etc/system-1/metadata")
+          vm.succeed("test -d /run/etc/config-1/etc")
+        '';
+      }
+      {
         name = "systemd-pid1";
         description = "systemd is running as PID 1";
         script = ''
@@ -82,8 +94,9 @@
           # and upperdir on /run/etc/upper-<gen>.
           #
           # Path shapes in the option line:
-          # - /var/etc is constructed under /sysroot in stage-1, but
-          #   overlayfs reports it by its stage-2 path after switch_root.
+          # - /var/etc is constructed under /sysroot in stage-1. The
+          #   generation-1 overlay rebuilt by activation reports its stage-2
+          #   path, /var/etc.
           # - /run/etc/... does NOT carry /sysroot: the per-gen lower
           #   mounts live in the initrd's /run, which switch_root
           #   moves to /sysroot/run and then pivots, so the paths
