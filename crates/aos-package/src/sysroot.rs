@@ -273,6 +273,25 @@ fn load_running_image_generation_from(
     toplevel_link: &Path,
     cmdline: &Path,
 ) -> Result<ImageGeneration> {
+    load_running_image_generation_with_device_identity(
+        image_profile,
+        os_release,
+        toplevel_link,
+        cmdline,
+        block_device_identity,
+    )
+}
+
+fn load_running_image_generation_with_device_identity<F>(
+    image_profile: &Path,
+    os_release: &Path,
+    toplevel_link: &Path,
+    cmdline: &Path,
+    device_identity: F,
+) -> Result<ImageGeneration>
+where
+    F: Fn(&Path) -> Result<u64>,
+{
     let state_path = image_profile.join(IMAGE_STATE_FILE);
     let state_bytes = std::fs::read(&state_path)
         .with_context(|| format!("reading image generation state {}", state_path.display()))?;
@@ -355,13 +374,7 @@ fn load_running_image_generation_from(
         .or_else(|| cmdline_fields.get("root"))
     {
         let layout = ImageSlotLayout::from_toplevel(toplevel_link)?;
-        let booted_slot = if Path::new(root) == layout.root_a {
-            ImageSlot::A
-        } else if Path::new(root) == layout.root_b {
-            ImageSlot::B
-        } else {
-            bail!("running kernel root device is not a declared image slot");
-        };
+        let booted_slot = image_slot_for_root(Path::new(root), &layout, device_identity)?;
         if booted_slot != running.slot {
             bail!(
                 "running root slot disagrees with image generation {}",
@@ -370,6 +383,42 @@ fn load_running_image_generation_from(
         }
     }
     Ok(running)
+}
+
+/// Returns the kernel identity of an opened block device.
+fn block_device_identity(path: &Path) -> Result<u64> {
+    let device = std::fs::File::open(path)
+        .with_context(|| format!("opening image-slot device {}", path.display()))?;
+    let metadata = device.metadata()?;
+    if !metadata.file_type().is_block_device() {
+        bail!("image-slot path is not a block device: {}", path.display());
+    }
+    Ok(metadata.rdev())
+}
+
+/// Resolves a running root device to one distinct declared image slot.
+fn image_slot_for_root<F>(
+    root: &Path,
+    layout: &ImageSlotLayout,
+    device_identity: F,
+) -> Result<ImageSlot>
+where
+    F: Fn(&Path) -> Result<u64>,
+{
+    let root_identity = device_identity(root)?;
+    let root_a_identity = device_identity(&layout.root_a)?;
+    let root_b_identity = device_identity(&layout.root_b)?;
+    if root_a_identity == root_b_identity {
+        bail!("declared image slots resolve to the same block device");
+    }
+
+    if root_identity == root_a_identity {
+        Ok(ImageSlot::A)
+    } else if root_identity == root_b_identity {
+        Ok(ImageSlot::B)
+    } else {
+        bail!("running kernel root device is not a declared image slot");
+    }
 }
 
 fn parse_kernel_cmdline(path: &Path) -> Result<std::collections::BTreeMap<String, String>> {
@@ -4573,10 +4622,56 @@ mod tests {
         (tmp, image_profile, toplevel_link, os_release, cmdline)
     }
 
+    fn fixture_device_identity(path: &Path) -> Result<u64> {
+        match path.file_name().and_then(|name| name.to_str()) {
+            Some("root-a" | "vda2") => Ok(1),
+            Some("root-b" | "vda3") => Ok(2),
+            _ => bail!("fixture has no device identity for {}", path.display()),
+        }
+    }
+
+    fn load_running_image_generation_fixture(
+        image_profile: &Path,
+        os_release: &Path,
+        toplevel_link: &Path,
+        cmdline: &Path,
+    ) -> Result<ImageGeneration> {
+        load_running_image_generation_with_device_identity(
+            image_profile,
+            os_release,
+            toplevel_link,
+            cmdline,
+            fixture_device_identity,
+        )
+    }
+
+    #[test]
+    fn running_root_matches_the_resolved_block_device_identity() {
+        let layout = ImageSlotLayout::default();
+        assert_eq!(
+            image_slot_for_root(Path::new("/dev/vda2"), &layout, fixture_device_identity).unwrap(),
+            ImageSlot::A
+        );
+        assert_eq!(
+            image_slot_for_root(Path::new("/dev/vda3"), &layout, fixture_device_identity).unwrap(),
+            ImageSlot::B
+        );
+    }
+
+    #[test]
+    fn running_root_rejects_aliased_image_slots() {
+        let layout = ImageSlotLayout::default();
+        let error = image_slot_for_root(Path::new("/dev/vda2"), &layout, |path| {
+            fixture_device_identity(path).map(|_| 1)
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("same block device"));
+    }
+
     #[test]
     fn running_image_rejects_tampered_var_index_metadata() {
         let (_tmp, image_profile, toplevel_link, os_release, cmdline) = running_identity_fixture();
-        let loaded = load_running_image_generation_from(
+        let loaded = load_running_image_generation_fixture(
             &image_profile,
             &os_release,
             &toplevel_link,
@@ -4590,7 +4685,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
         state.generations[0].uki_path = "EFI/Linux/attacker.efi".into();
         std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
-        let error = load_running_image_generation_from(
+        let error = load_running_image_generation_fixture(
             &image_profile,
             &os_release,
             &toplevel_link,
@@ -4610,7 +4705,7 @@ mod tests {
         state.generations[0].uki_source_path = Some("EFI/Linux/aos-server-1+3.efi".into());
         std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
 
-        let loaded = load_running_image_generation_from(
+        let loaded = load_running_image_generation_fixture(
             &image_profile,
             &os_release,
             &toplevel_link,
@@ -4621,7 +4716,7 @@ mod tests {
 
         state.generations[0].uki_source_path = Some("EFI/Linux/attacker+3.efi".into());
         std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
-        let error = load_running_image_generation_from(
+        let error = load_running_image_generation_fixture(
             &image_profile,
             &os_release,
             &toplevel_link,
@@ -4639,7 +4734,7 @@ mod tests {
             "root=/dev/disk/by-partlabel/root-b roothash=bad\n",
         )
         .unwrap();
-        let error = load_running_image_generation_from(
+        let error = load_running_image_generation_fixture(
             &image_profile,
             &os_release,
             &toplevel_link,
@@ -4653,7 +4748,7 @@ mod tests {
             "root=/dev/mapper/root systemd.verity_root_data=/dev/disk/by-partlabel/root-b roothash=deadbeef\n",
         )
         .unwrap();
-        let error = load_running_image_generation_from(
+        let error = load_running_image_generation_fixture(
             &image_profile,
             &os_release,
             &toplevel_link,
@@ -4671,15 +4766,20 @@ mod tests {
             "console=ttyS0,115200 console=tty0 root=/dev/disk/by-partlabel/root-a roothash=deadbeef\n",
         )
         .unwrap();
-        load_running_image_generation_from(&image_profile, &os_release, &toplevel_link, &cmdline)
-            .unwrap();
+        load_running_image_generation_fixture(
+            &image_profile,
+            &os_release,
+            &toplevel_link,
+            &cmdline,
+        )
+        .unwrap();
 
         std::fs::write(
             &cmdline,
             "root=/dev/disk/by-partlabel/root-a roothash=deadbeef roothash=bad\n",
         )
         .unwrap();
-        let error = load_running_image_generation_from(
+        let error = load_running_image_generation_fixture(
             &image_profile,
             &os_release,
             &toplevel_link,

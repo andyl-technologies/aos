@@ -235,10 +235,9 @@
         ${pkgs.util-linux}/bin/mount -t erofs -o ro,nodev,nosuid \
           "/sysroot$metadata" "$sys/metadata"
 
-        # /sysroot/var/etc keeps its /sysroot prefix because /var is
-        # mounted on /sysroot/var in stage-1; the overlay records
-        # vfsmount refs at mount time, so the literal source string
-        # in the option line never gets re-resolved post-pivot.
+        # /var is mounted on /sysroot/var in stage-1. Overlayfs keeps
+        # references to those mounts across switch_root, and reports the
+        # persistent lower layer by its stage-2 path (/var/etc).
         ${pkgs.util-linux}/bin/mount -t overlay overlay -o \
           nodev,nosuid,metacopy=on,redirect_dir=on,lowerdir+=/sysroot/var/etc,lowerdir+=$config_lower/etc,lowerdir+=$sys/metadata,datadir+=$sys/content,upperdir=$upper_root/dir,workdir=$upper_root/work \
           /sysroot/etc
