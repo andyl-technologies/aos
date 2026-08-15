@@ -218,11 +218,57 @@ fn node_capabilities_with_register(register: WorldNodeRegister) -> WorldNodeFaul
         page_bytes: 4096,
         dram_geometry: WorldNodeDramGeometry::qemu_v1(),
         interrupts: Vec::new(),
-        clock_sources: Vec::new(),
+        clock_sources: vec![
+            WorldNodeClockSource::qemu_x86_tsc_v1(id("x86-tsc-vcpu-0")),
+            WorldNodeClockSource::qemu_x86_rtc_v1(id("x86-mc146818-rtc")),
+            WorldNodeClockSource::qemu_x86_pit_v1(id("x86-i8254-pit")),
+            WorldNodeClockSource::qemu_x86_hpet_v1(id("x86-hpet-0")),
+            WorldNodeClockSource::qemu_x86_apic_timer_v1(id("x86-local-apic-timer-vcpu-0")),
+            WorldNodeClockSource::qemu_x86_acpi_pm_timer_v1(id("x86-acpi-pm-timer")),
+        ],
         accelerators: Vec::new(),
         ready_markers: Vec::new(),
         semantic_version: 1,
     }
+}
+
+fn sample_x86_register() -> WorldNodeRegister {
+    WorldNodeRegister {
+        id: id("implementation-status"),
+        name: "implementation-status".to_owned(),
+        numeric_id: 1,
+        group: WorldNodeRegisterGroup::System,
+        width_bits: 8,
+        per_vcpu: true,
+        model_phases: Vec::new(),
+        side_effects: Vec::new(),
+        impulse: false,
+        persistent: false,
+        vmstate: false,
+        writable_mask_hex: "00".to_owned(),
+        reserved_mask_hex: "00".to_owned(),
+        ignored_mask_hex: "00".to_owned(),
+        read_only_mask_hex: "ff".to_owned(),
+    }
+}
+
+#[test]
+fn qemu_clock_constructors_cover_the_realized_pc_and_virt_sources() {
+    let x86 = node_capabilities_with_register(sample_x86_register());
+    x86.validate()
+        .unwrap_or_else(|error| panic!("complete x86 clock manifest should validate: {error}"));
+    assert_eq!(x86.clock_sources.len(), 6);
+
+    let arm_counter =
+        WorldNodeClockSource::qemu_arm_counter_v1(id("arm-generic-counter-vcpu-0"), 62_500_000);
+    let arm_rtc = WorldNodeClockSource::qemu_arm_rtc_v1(id("arm-pl031-rtc-0"));
+    assert_eq!(
+        arm_counter.source_kind,
+        WorldNodeClockSourceKind::ArmCounter
+    );
+    assert_eq!(arm_rtc.source_kind, WorldNodeClockSourceKind::ArmRtc);
+    assert!(arm_counter.model_phases.contains(&FaultPhase::Fire));
+    assert!(arm_rtc.wraps);
 }
 
 #[test]

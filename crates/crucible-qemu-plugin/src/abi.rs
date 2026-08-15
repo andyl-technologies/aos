@@ -75,7 +75,7 @@ pub const QEMU_PLUGIN_INSTALL_OK: c_int = 0;
 /// QEMU install return value meaning plugin registration failed.
 pub const QEMU_PLUGIN_INSTALL_ERROR: c_int = -1;
 /// QEMU plugin API version exported by AOS QEMU 10.0.0.
-pub const QEMU_PLUGIN_API_VERSION: c_int = 4;
+pub const QEMU_PLUGIN_API_VERSION: c_int = 5;
 /// The exported symbol QEMU resolves when loading this `cdylib`.
 pub const QEMU_PLUGIN_INSTALL_SYMBOL: &str = "qemu_plugin_install";
 /// The exported symbol QEMU checks before calling the install hook.

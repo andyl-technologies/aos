@@ -11,7 +11,7 @@ RFC-0013 node capability unavailable.
 - Provides `qemu.fault-command-abi.v1`.
 - Depends on the existing sim accelerator, plugin registration, shared-memory
   dispatch, process attestation, and generated boundary ABI.
-- Precedes patches 0048–0059.
+- Precedes patches 0048–0070.
 
 ## Public protocol work
 
@@ -73,7 +73,7 @@ comparison.
 ## State and replay
 
 The registry descriptor set is immutable and therefore not VMState. Pending
-commands become VMState in patch 0059. Until 0059 lands, the aggregate gate must
+commands become VMState in patch 0067. Until 0070 lands, the aggregate gate must
 remain disabled and the PR draft; patch 0047's own microtest uses no save/load.
 
 ## Live microtests

@@ -3,8 +3,8 @@
 #![allow(dead_code)]
 
 use crucible::model::{
-    ContentHash, FaultPhase, SignalId, WorldNodeArchitecture, WorldNodeDramGeometry,
-    WorldNodeFaultCapabilities, WorldNodeRegister, WorldNodeRegisterGroup,
+    ContentHash, FaultPhase, SignalId, WorldNodeArchitecture, WorldNodeClockSource,
+    WorldNodeDramGeometry, WorldNodeFaultCapabilities, WorldNodeRegister, WorldNodeRegisterGroup,
 };
 use crucible_qemu::QemuFaultCapabilityRequirement;
 use crucible_shmem::{
@@ -65,7 +65,7 @@ pub fn x86_fault_node(node_name: &str, realized_cpu_type: &str) -> WorldNodeFaul
         page_bytes: 4096,
         dram_geometry: WorldNodeDramGeometry::qemu_v1(),
         interrupts: Vec::new(),
-        clock_sources: Vec::new(),
+        clock_sources: vec![WorldNodeClockSource::qemu_x86_tsc_v1(id("x86-tsc-vcpu-0"))],
         accelerators: Vec::new(),
         ready_markers: Vec::new(),
         semantic_version: 1,

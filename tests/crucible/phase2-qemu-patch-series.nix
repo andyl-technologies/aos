@@ -440,6 +440,41 @@
       enforces = "DET-1,INV-10,QEMU-43";
       capability = "exact plugin-boundary handoff into QEMU's native paused runstate";
     }
+    {
+      file = "0064-crucible-terminal-lifecycle-completion.patch";
+      catalogName = "crucible-terminal-lifecycle-completion";
+      class = "D";
+      enforces = "QFP-LIFE-1,QFP-LIFE-2,FAULT-ORDER";
+      capability = "two-phase typed terminal lifecycle evidence, QMP authorization, and exact process-exit staging";
+    }
+    {
+      file = "0065-crucible-authenticated-terminal-lifecycle.patch";
+      catalogName = "crucible-authenticated-terminal-lifecycle";
+      class = "D";
+      enforces = "QFP-LIFE-1,QFP-LIFE-2,FAULT-ORDER";
+      capability = "dedicated idempotent QAPI terminal authorization bound to action, evidence, and process generation without guest resume";
+    }
+    {
+      file = "0066-crucible-immutable-process-generation.patch";
+      catalogName = "crucible-immutable-process-generation";
+      class = "D";
+      enforces = "QFP-LIFE-1,QFP-LIFE-2,FAULT-ORDER";
+      capability = "launch-time immutable process generation provisioning before fault-command admission";
+    }
+    {
+      file = "0067-crucible-serialize-and-harden-core-fault-state.patch";
+      catalogName = "crucible-core-fault-vmstate";
+      class = "D";
+      enforces = "QFP-STATE-1,QFP-STATE-2,FAULT-ORDER";
+      capability = "transactional bounded VMState for core command, memory, CPU, interrupt, hardware-error, service, and lifecycle fault state";
+    }
+    {
+      file = "0068-crucible-guest-clock-faults.patch";
+      catalogName = "crucible-guest-clock-faults";
+      class = "D";
+      enforces = "QFP-CLOCK-1,QFP-CLOCK-2,FAULT-ORDER";
+      capability = "transactional guest-clock transforms, source-state transitions, timer rearming, and typed causal evidence";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

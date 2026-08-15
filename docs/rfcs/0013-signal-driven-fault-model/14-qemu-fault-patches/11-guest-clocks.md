@@ -1,4 +1,4 @@
-# Patch 0057 — `crucible-guest-clock-faults`
+# Patch 0068 — `crucible-guest-clock-faults`
 
 ## Purpose
 
@@ -43,6 +43,27 @@ All fields use checked integer/rational arithmetic and source width/wrap policy.
 Transform changes create a new anchor `(base,value)` at the exact boundary so
 rate changes are continuous unless an explicit jump occurs.
 
+Clock transforms have one closed command lifecycle. `Upsert` installs or
+replaces a retained transform and `Remove` releases that same binding. All six
+transform kinds may be retained. `Apply` is reserved for the three durable
+one-shot mutations: offset, drift, and jump. Their accumulated additive and
+rational-rate state remains active across later retained-rule recompilation and
+VMState restore. Freeze is never accepted as `Apply`, because a one-shot freeze
+would have no binding that could carry its mandatory release policy; use a
+retained freeze followed by `Remove`. Jitter and wander are likewise retained
+only because their future read opportunities and evolving process state belong
+to the binding. Every other operation/kind combination is rejected before
+commit; there is no compatibility or implicit-release path.
+
+The closed model-phase tags are `clock_read = 28`, `arm = 29`, `fire = 30`,
+`synchronize = 31`, and `source_switch = 32`. A retained affine, freeze, or
+wander rule becomes active at its declared phase boundary and thereafter
+changes the source projection used consistently by reads and timers until the
+binding is replaced or removed. Phase does not create a second, partially
+active clock. Jitter is the phase-scoped exception: `clock_read` draws affect
+reads, while `arm` and `fire` draws affect timer projection at those exact
+opportunities.
+
 Jitter uses a bounded nonempty signed lookup table selected by the stable keyed
 clock-read opportunity. Wander uses a positive update interval, bounded offset
 and rate, and a bounded nonempty signed rate-increment table; all evolving state
@@ -57,8 +78,13 @@ recomputes the scheduler deadline or marks it unreachable while frozen. Each
 transform carries exactly `fire_at_boundary`, `drop`, or `reschedule_periodic`
 for timers made overdue. No timer fires in a consumer's past.
 
-Jitter on a clock read does not implicitly jitter timer firing; timer jitter is
-a separate transform on the timer source/deadline opportunity.
+Jitter on a clock read does not implicitly jitter timer firing. Timer jitter is
+drawn from the same retained transform only when its declared phase is `arm` or
+`fire`. An `arm` draw is consumed while the deadline is programmed. A `fire`
+draw is prospectively derived from the immutable timer-transition sequence so
+QEMU can schedule the callback, but the fire opportunity and its evidence are
+consumed only when the callback actually runs. Replacement, removal, or any
+other rearm recomputes the prospective target from the then-active bindings.
 
 ## Source failure and synchronization
 
@@ -79,10 +105,30 @@ may have different policies.
 
 ## Evidence and VMState
 
-Evidence includes source/manifest generation, base/raw/final value, anchors,
+Evidence includes source/manifest generation, base/raw/final value, both
+normalized-nanosecond and architectural register/counter values, source width
+and wrap action, anchors,
 offset/rate/jump/freeze/jitter contributors, read opportunity, monotonicity/wrap
 action, timer old/new deadline and action, source transition, and fingerprints.
-Patch 0059 serializes transforms, anchors, wander, clamp last value, source state,
+Impulse result and event evidence decode to the same typed record. Recurring
+read, wander, source-transition, and timer evidence is accepted only for an
+active retained command, and all records are checked against the command kind,
+model phase, source and binding identities, full realized-manifest digest,
+before/after state digests, and observed instruction coordinate. The GPL-side
+bridge also matches every observation to the admitted command parameters:
+mutation kind and scalars, exact ratios, monotonicity and overdue policies,
+bounded jitter/wander values, source-transition state/fallback, and exact
+synchronization ratio/threshold. Architectural reads are independently checked
+against the admitted frequency, width, wrap capability, and normalized value.
+Unknown, mismatched, or merely well-typed evidence fails closed.
+
+Upsert and removal prepare validates the complete prospective source set,
+including bindings that move between sources, accumulated arithmetic,
+fallback cycles, catch-down slew rate, counter exhaustion, and representable
+wander steps. Every source-transition evidence slot is reserved before commit;
+commit does not discover a new allocation or arithmetic failure after the rule
+table changes.
+Patch 0070 validates VMState closure for transforms, anchors, wander, clamp last value, source state,
 timer transform generation, and pending synchronization.
 
 ## Live microtests

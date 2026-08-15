@@ -278,17 +278,22 @@ produce live patched-QEMU architectural or device evidence.
   [`crucible-node-lifecycle-faults`](14-qemu-fault-patches/10-node-lifecycle.md):
   crash, hang, boot failure, reset, power-cycle, restart/recovery, volatile-state
   policies, process lifecycle acknowledgement, and live reboot tests.
-- [ ] **T-QEMU-0057** Implement
+- [ ] **T-QEMU-0067** Implement
+  [`crucible-core-fault-vmstate`](14-qemu-fault-patches/21-core-fault-vmstate.md):
+  bounded canonical save/restore for command, memory, CPU, interrupt,
+  hardware-error, vCPU-service, and lifecycle state with transactional staging,
+  cross-section referential checks, and corruption/rejection tests.
+- [ ] **T-QEMU-0068** Implement
   [`crucible-guest-clock-faults`](14-qemu-fault-patches/11-guest-clocks.md): every
   guest-visible clock source, offset, rational drift, jump, freeze,
   jitter/wander, source failure/fallback, synchronization loss, timer rearming,
   VMState, and live clock tests.
-- [ ] **T-QEMU-0058** Implement
+- [ ] **T-QEMU-0069** Implement
   [`crucible-accelerator-fault-device`](14-qemu-fault-patches/12-accelerator-device.md):
   a real QEMU/virtio GPU, TPU, and FPGA co-simulation device and applicable
   virtio-gpu hooks with lifecycle, result, memory/ECC, service, guest driver,
   workload, VMState, and live tests; no in-memory substitute is accepted.
-- [ ] **T-QEMU-0059** Implement
+- [ ] **T-QEMU-0070** Implement
   [`crucible-fault-vmstate`](14-qemu-fault-patches/13-vmstate-and-final-gates.md):
   save/restore for all fault state, a cross-patch snapshot barrier, system
   evidence closure, rollback/revert-sensitive tests, inertness/performance gates,

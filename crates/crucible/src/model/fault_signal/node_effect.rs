@@ -993,7 +993,10 @@ impl NodeEffectSpecification {
                 NodeLifecycleTransition::Crash
                     | NodeLifecycleTransition::PowerOff
                     | NodeLifecycleTransition::PermanentFailure
-            ) => Err(invalid()),
+            ) =>
+            {
+                Err(invalid())
+            }
             Self::Hang {
                 watchdog_policy:
                     NodeWatchdogPolicy::TransitionAfter {

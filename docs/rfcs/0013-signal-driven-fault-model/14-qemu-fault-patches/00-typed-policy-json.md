@@ -2,7 +2,7 @@
 
 This document is the independent C implementation contract for every
 `CRUCJSN1` field in the typed node-rule payload. It is normative for patches
-0050 through 0059.
+0050 through 0070.
 
 ## Framing and canonical grammar
 
@@ -323,6 +323,6 @@ to select exactly one shape above. It must reject `null`, `{}`, the right shape
 in the wrong field, unknown/missing/duplicate members, wrong scalar types,
 unknown variants, noncanonical bytes, limit violations, inconsistent optional
 presence flags, and trailing data. Each policy variant has a positive vector and
-at least one negative vector in the live QEMU microtests. Patch 0059's final
+at least one negative vector in the live QEMU microtests. Patch 0070's final
 gate feeds every accepted host vector through the independently compiled C
 parser and compares its typed re-encoding/digest with the host golden.

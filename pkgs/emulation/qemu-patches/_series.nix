@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "ace510d62c23d4f2737354abd76f1ae85bc2fa51e7fcf93cf29fe14402884bf0";
+  patchBranchBundleSha256 = "9bc71535676b91ff1ecf8db737232965ec008b902fc419637b6ebf2e93d471db";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "2162a5ea46636206734be52f17e6e594cab69bc7";
+  patchBranchHeadCommit = "bdd5d4941c94122cf0c8ecddd12795f60434cf3f";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -595,6 +595,26 @@ let
       class = "D";
       enforces = "QFP-LIFE-1,QFP-LIFE-2,FAULT-ORDER";
       capability = "launch-time immutable process generation provisioning before fault-command admission";
+    }
+    {
+      file = "0067-crucible-serialize-and-harden-core-fault-state.patch";
+      branchSubject = "crucible: serialize and harden core fault state";
+      branchCommit = "6efef6d9baa9686d3821739233c7ea711fb7765d";
+      branchTree = "d6a29155795bb2f4c739ce9673d9df67b23ecd0a";
+      catalogName = "crucible-core-fault-vmstate";
+      class = "D";
+      enforces = "QFP-STATE-1,QFP-STATE-2,FAULT-ORDER";
+      capability = "transactional bounded VMState for core command, memory, CPU, interrupt, hardware-error, service, and lifecycle fault state";
+    }
+    {
+      file = "0068-crucible-guest-clock-faults.patch";
+      branchSubject = "crucible: guest clock faults";
+      branchCommit = "bdd5d4941c94122cf0c8ecddd12795f60434cf3f";
+      branchTree = "1f2ec28ec8429faab12148be061d72c91ac070e8";
+      catalogName = "crucible-guest-clock-faults";
+      class = "D";
+      enforces = "QFP-CLOCK-1,QFP-CLOCK-2,FAULT-ORDER";
+      capability = "transactional guest-clock transforms, source-state transitions, timer rearming, and typed causal evidence";
     }
   ];
   catalogOnlyCapabilities = [

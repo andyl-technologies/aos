@@ -165,7 +165,7 @@ composite system fingerprints,
 byte counts, authenticated device transaction transcripts, and exception
 delivery state. The migration-VMState stream is broad context and may contain
 registered CPU sections; it is not used as the proof that port I/O occurred.
-Patch 0059 serializes rules, occurrence counters, active
+Patch 0067 serializes rules, occurrence counters, active
 replay state, and pending hooks. Snapshot is prohibited mid-instruction and
 occurs only at the next safe boundary.
 

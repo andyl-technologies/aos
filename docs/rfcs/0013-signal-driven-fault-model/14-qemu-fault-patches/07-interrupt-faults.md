@@ -155,15 +155,15 @@ events tie by controller priority, source ID, event ID, then duplicate ordinal.
 Evidence records manifest/controller version, event ID, all original fields,
 matched rules/decisions, original/final phase state, queued release coordinate,
 controller pending/active digests, target vCPU/RR cursor, guest exception entry,
-and fingerprint. Patch 0059 serializes rules, delayed/storm queues, source
+and fingerprint. Patch 0067 serializes rules, delayed/storm queues, source
 sequences, controller-associated fault state, and partial acknowledgements.
 
 Patch 0053 already places controller-resident provenance in the corresponding
-APIC, PIC, GICv2, and GICv3 VMState descriptions. Patch 0059 owns the complete
+APIC, PIC, GICv2, and GICv3 VMState descriptions. Patch 0067 owns the complete
 cross-component migration transaction for the sparse LPI/deferred provenance
 table, source/routing counters, pending command/impulse commit, delayed timers,
 storm progress and target lists, and queued deterministic IPI provenance. Until
-0059 is present, save admission must reject a run with any of that global fault
+0067 is present, save admission must reject a run with any of that global fault
 state live.
 
 ## Live microtests

@@ -93,7 +93,19 @@ impl EffectRequest {
             });
         }
         specification.validate()?;
-        if !kind.descriptor().lifetimes.contains(&lifetime) {
+        let clock_impulse_supported = !matches!(
+            (&specification, lifetime),
+            (
+                EffectSpecification::Node(NodeEffectSpecification::ClockTransform {
+                    mutation: super::ClockMutation::Freeze { .. }
+                        | super::ClockMutation::Jitter { .. }
+                        | super::ClockMutation::Wander { .. },
+                    ..
+                }),
+                EffectLifetime::Impulse
+            )
+        );
+        if !kind.descriptor().lifetimes.contains(&lifetime) || !clock_impulse_supported {
             return Err(FaultContractError::UnsupportedLifetime {
                 effect: kind,
                 lifetime,
@@ -380,6 +392,7 @@ impl ResolvedEffectRecord {
 mod tests {
     use super::*;
     use crate::model::fault_signal::{
+        ClockFreezeReleasePolicy, ClockMonotonicityPolicy, ClockMutation, ClockOverdueTimerPolicy,
         FaultDirection, NetworkAvailabilityState, NetworkInFlightPolicy,
     };
 
@@ -460,6 +473,42 @@ mod tests {
             record.validate(),
             Err(FaultContractError::UnsupportedLifetime {
                 effect: EffectKind::NetworkAvailability,
+                lifetime: EffectLifetime::Impulse,
+            })
+        );
+    }
+
+    #[test]
+    fn clock_impulse_rejects_mutations_that_require_retained_state() {
+        let source = FaultObjectId::parse("x86-tsc-vcpu-0")
+            .unwrap_or_else(|error| panic!("test source must be valid: {error}"));
+        let specification = |mutation| {
+            EffectSpecification::Node(NodeEffectSpecification::ClockTransform {
+                source: source.clone(),
+                mutation,
+                monotonicity: ClockMonotonicityPolicy::ClampMonotonic,
+                overdue_timer_policy: ClockOverdueTimerPolicy::FireAtBoundary,
+            })
+        };
+        assert!(
+            EffectRequest::new(
+                EFFECT_SEMANTIC_VERSION,
+                EffectLifetime::Impulse,
+                specification(ClockMutation::Offset { offset_nanos: 1 }),
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            EffectRequest::new(
+                EFFECT_SEMANTIC_VERSION,
+                EffectLifetime::Impulse,
+                specification(ClockMutation::Freeze {
+                    value_nanos: 7,
+                    release: ClockFreezeReleasePolicy::ResumeFromFrozen,
+                }),
+            ),
+            Err(FaultContractError::UnsupportedLifetime {
+                effect: EffectKind::ClockTransform,
                 lifetime: EffectLifetime::Impulse,
             })
         );

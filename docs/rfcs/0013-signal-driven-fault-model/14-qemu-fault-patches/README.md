@@ -1,6 +1,6 @@
 # 14 — QEMU fault-mutation patch series
 
-The complete node adapter and its exact-checkpoint handoff require twenty new single-purpose patches after the
+The complete node adapter and its exact-checkpoint handoff require twenty-one new single-purpose patches after the
 currently carried `0046-crucible-translation-prefetch-helper.patch`. Each patch
 has its own specification in this directory and remains part of the one atomic
 RFC-0013 implementation PR.
@@ -26,9 +26,6 @@ and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-pa
 | [`0054-crucible-hardware-error-inject`](08-hardware-errors.md) | x86 machine check, AArch64 hardware error, ECC/platform reporting | Determinism-critical |
 | [`0055-crucible-vcpu-service-control`](09-vcpu-service.md) | Capacity throttling, stall, offline, deterministic service credits | Determinism-critical |
 | [`0056-crucible-node-lifecycle-faults`](10-node-lifecycle.md) | Crash, hang, boot failure, reset, power cycle and state-loss policy | Determinism-critical |
-| [`0057-crucible-guest-clock-faults`](11-guest-clocks.md) | Offset, drift, jump, freeze, jitter, source failure and timer consistency | Determinism-critical |
-| [`0058-crucible-accelerator-fault-device`](12-accelerator-device.md) | Production QEMU co-sim accelerator device and fault hooks | Feature plus determinism-critical service hooks |
-| [`0059-crucible-fault-vmstate`](13-vmstate-and-final-gates.md) | VMState for all fault state, terminal capability/evidence, aggregate gates | Determinism-critical |
 | [`0060-crucible-block-typed-errors`](14-block-typed-errors.md) | Closed block result transport and exact guest-visible errno translation | Feature |
 | [`0061-crucible-block-discard`](15-block-discard.md) | Payload-free deterministic block discard transport | Feature |
 | [`0062-crucible-block-transport-reset`](16-block-transport-reset.md) | Transactional epoch, recovery, retry, duplicate-history, and re-enumeration transport | Feature plus determinism-critical lifecycle |
@@ -36,15 +33,23 @@ and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-pa
 | [`0064-crucible-terminal-lifecycle-completion`](18-terminal-lifecycle-completion.md) | Two-phase authenticated lifecycle event and QMP-authorized process exit | Determinism-critical lifecycle |
 | [`0065-crucible-authenticated-terminal-lifecycle`](19-authenticated-terminal-lifecycle.md) | Dedicated idempotent terminal authorization bound to action, evidence, and process generation | Determinism-critical lifecycle |
 | [`0066-crucible-immutable-process-generation`](20-immutable-process-generation.md) | Launch-time immutable process identity used by terminal authorization and restore validation | Determinism-critical lifecycle |
+| [`0067-crucible-core-fault-vmstate`](21-core-fault-vmstate.md) | Transactional bounded save/restore for the implemented core fault domains | Determinism-critical |
+| [`0068-crucible-guest-clock-faults`](11-guest-clocks.md) | Offset, drift, jump, freeze, jitter, source failure and timer consistency | Determinism-critical |
+| [`0069-crucible-accelerator-fault-device`](12-accelerator-device.md) | Production QEMU co-sim accelerator device and fault hooks | Feature plus determinism-critical service hooks |
+| [`0070-crucible-fault-vmstate`](13-vmstate-and-final-gates.md) | VMState closure, terminal capability/evidence, and aggregate gates | Determinism-critical |
 
 The numbers are reserved by this RFC. If the existing series grows before
 implementation, the PR may renumber the files while preserving this exact order
 and names; all references and `_series.nix` update atomically.
 
-Patches `0060` through `0062` follow the reserved node-fault band because they evolve
+Patches `0060` through `0062` follow the node-lifecycle patch because they evolve
 the pre-existing block co-simulation ABI rather than the generic node command
-ABI. They may be implemented before `0050` through `0059`, but remain ordered
-after them in the final linear series. Patch `0063` then adds the native stop
+ABI. Patches `0063` through `0066` then complete the native stop, terminal
+lifecycle, authentication, and immutable process-generation prerequisites.
+Patch `0067` serializes and hardens every already-implemented core fault domain.
+Patch `0068` follows with guest-clock faults; patch `0069` adds the accelerator
+device; and patch `0070` closes VMState and aggregate gates for the complete
+series. Patch `0063` adds the native stop
 handoff required to capture and restore all of that state at an exact boundary.
 It does not alter the fault command ABI or rewrite any historical patch commit.
 Patch `0064` uses that paused boundary for the separately authorized terminal
@@ -194,6 +199,11 @@ never as a policy lookup key.
 | accelerator result transform | `P1 AcceleratorJobSelector:json`, `P2 AcceleratorResultMutation:json` |
 | accelerator memory event | `P1 start:u64`, `P2 length:u64`, `P3 has ECC:bool`, `P4 ECC kind:u32`, `P5 has syndrome:bool`, `P6 syndrome:u64`, `P7 has transform:bool`, `P8 transform bytes or zero` |
 | accelerator service | `P1 capacity:ratio`, `P2 has memory rate:bool`, `P3 memory rate:u64`, `P4 has job rate:bool`, `P5 job rate:u64`, `P6 AcceleratorThermalPower:json` |
+
+For `clock transform`, `Apply` accepts only offset, drift, and jump and makes
+their accumulated state durable. Freeze, jitter, and wander require a retained
+`Upsert` binding and later `Remove`; all six kinds support that retained
+lifecycle. No clock operation/kind combination is inferred or translated.
 
 | Target kind | Exact target fields |
 | --- | --- |

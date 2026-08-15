@@ -5,21 +5,24 @@
 //! launch identity and is reused unchanged for admission and replay.
 
 use crucible::model::{
-    FaultObjectId, FaultPhase, WorldNodeArchitecture, WorldNodeFaultCapabilities,
-    WorldNodeInterruptDeliveryDrop, WorldNodeInterruptFamily, WorldNodeInterruptPolarity,
-    WorldNodeInterruptTrigger, WorldNodeRegisterGroup, WorldNodeRegisterSideEffect,
+    FaultObjectId, FaultPhase, WorldNodeArchitecture, WorldNodeClockBaseDomain,
+    WorldNodeClockMonotonicity, WorldNodeClockSourceKind, WorldNodeClockTimerRelationship,
+    WorldNodeFaultCapabilities, WorldNodeInterruptDeliveryDrop, WorldNodeInterruptFamily,
+    WorldNodeInterruptPolarity, WorldNodeInterruptTrigger, WorldNodeRegisterGroup,
+    WorldNodeRegisterSideEffect,
 };
 use crucible_shmem::{
-    DEFAULT_FAULT_COMMAND_CAPACITY, FAULT_CAPABILITY_FEATURE_INTERRUPT,
-    FAULT_CAPABILITY_FEATURE_MEMORY_ACCESS, FAULT_CAPABILITY_FEATURE_MEMORY_MUTATION,
-    FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION, FAULT_COMMAND_SEMANTIC_VERSION,
-    FAULT_REGISTER_CAPABILITY_IMPULSE, FAULT_REGISTER_CAPABILITY_PERSISTENT,
-    FAULT_REGISTER_CAPABILITY_VMSTATE, FAULT_REGISTER_SIDE_EFFECT_CONTROL_FLOW,
-    FAULT_REGISTER_SIDE_EFFECT_CPU_FLAGS, FAULT_REGISTER_SIDE_EFFECT_INTERRUPT,
-    FAULT_REGISTER_SIDE_EFFECT_TB_FLUSH, FAULT_REGISTER_SIDE_EFFECT_TIMER,
-    FAULT_REGISTER_SIDE_EFFECT_TLB_FLUSH, FAULT_TARGET_MANIFEST_QUERY_V1_BYTES, FaultAbiError,
-    FaultBoundaryPhase, FaultCapabilityRowV1, FaultCapabilityScope, FaultCommandKind,
-    FaultInterruptCapabilityManifestV1, FaultInterruptCapabilityRowV1,
+    DEFAULT_FAULT_COMMAND_CAPACITY, FAULT_CAPABILITY_FEATURE_GUEST_CLOCK,
+    FAULT_CAPABILITY_FEATURE_INTERRUPT, FAULT_CAPABILITY_FEATURE_MEMORY_ACCESS,
+    FAULT_CAPABILITY_FEATURE_MEMORY_MUTATION, FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION,
+    FAULT_COMMAND_SEMANTIC_VERSION, FAULT_REGISTER_CAPABILITY_IMPULSE,
+    FAULT_REGISTER_CAPABILITY_PERSISTENT, FAULT_REGISTER_CAPABILITY_VMSTATE,
+    FAULT_REGISTER_SIDE_EFFECT_CONTROL_FLOW, FAULT_REGISTER_SIDE_EFFECT_CPU_FLAGS,
+    FAULT_REGISTER_SIDE_EFFECT_INTERRUPT, FAULT_REGISTER_SIDE_EFFECT_TB_FLUSH,
+    FAULT_REGISTER_SIDE_EFFECT_TIMER, FAULT_REGISTER_SIDE_EFFECT_TLB_FLUSH,
+    FAULT_TARGET_MANIFEST_QUERY_V1_BYTES, FaultAbiError, FaultBoundaryPhase, FaultCapabilityRowV1,
+    FaultCapabilityScope, FaultClockCapabilityManifestV1, FaultClockCapabilityRowV1,
+    FaultCommandKind, FaultInterruptCapabilityManifestV1, FaultInterruptCapabilityRowV1,
     FaultInterruptDeliveryDropV1, FaultInterruptFamilyV1, FaultInterruptPolarityV1,
     FaultInterruptTriggerV1, FaultRegisterCapabilityManifestV1, FaultRegisterCapabilityRowV1,
     FaultRegisterGroupV1, HARD_FAULT_PAYLOAD_BYTES, fault_capability_manifest_digest,
@@ -45,6 +48,7 @@ pub struct QemuTargetManifestRequirement {
     node_hash: [u8; 32],
     exact_register_manifest: Option<FaultRegisterCapabilityManifestV1>,
     exact_interrupt_manifest: Option<FaultInterruptCapabilityManifestV1>,
+    exact_clock_manifest: Option<FaultClockCapabilityManifestV1>,
 }
 
 impl QemuTargetManifestRequirement {
@@ -76,6 +80,12 @@ impl QemuTargetManifestRequirement {
     #[must_use]
     pub const fn exact_interrupt_manifest(&self) -> Option<&FaultInterruptCapabilityManifestV1> {
         self.exact_interrupt_manifest.as_ref()
+    }
+
+    /// Returns the exact canonical guest-clock manifest admitted by the World.
+    #[must_use]
+    pub const fn exact_clock_manifest(&self) -> Option<&FaultClockCapabilityManifestV1> {
+        self.exact_clock_manifest.as_ref()
     }
 
     /// Returns the canonical QOM typename expected for the realized CPU.
@@ -121,10 +131,10 @@ impl QemuFaultCapabilityRequirement {
             FaultCommandKind::QueryTargetManifest,
             scope,
             b"qemu.target-manifest.node.v1",
-            b"crucible.target-manifest-query.v1;kinds=register,interrupt",
+            b"crucible.target-manifest-query.v1;kinds=register,interrupt,hardware-error,clock",
             FAULT_TARGET_MANIFEST_QUERY_V1_BYTES as u32,
             1,
-            FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION,
+            FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION | FAULT_CAPABILITY_FEATURE_GUEST_CLOCK,
         ));
         rows.push(capability_row(
             FaultCommandKind::CpuRegisterTransform,
@@ -163,6 +173,26 @@ impl QemuFaultCapabilityRequirement {
                 HARD_FAULT_PAYLOAD_BYTES,
                 DEFAULT_FAULT_COMMAND_CAPACITY,
                 FAULT_CAPABILITY_FEATURE_INTERRUPT,
+            ),
+        ]);
+        rows.extend([
+            capability_row(
+                FaultCommandKind::ClockTransform,
+                FaultCapabilityScope::All,
+                b"qemu.clock.transform.v1",
+                b"crucible.node-fault-payload.v1",
+                HARD_FAULT_PAYLOAD_BYTES,
+                DEFAULT_FAULT_COMMAND_CAPACITY,
+                FAULT_CAPABILITY_FEATURE_GUEST_CLOCK,
+            ),
+            capability_row(
+                FaultCommandKind::ClockSourceState,
+                FaultCapabilityScope::All,
+                b"qemu.clock.source-state.v1",
+                b"crucible.node-fault-payload.v1",
+                HARD_FAULT_PAYLOAD_BYTES,
+                DEFAULT_FAULT_COMMAND_CAPACITY,
+                FAULT_CAPABILITY_FEATURE_GUEST_CLOCK,
             ),
         ]);
         rows.push(capability_row(
@@ -224,6 +254,7 @@ impl QemuFaultCapabilityRequirement {
                 node_hash,
                 exact_register_manifest: None,
                 exact_interrupt_manifest: None,
+                exact_clock_manifest: None,
             }),
             ready_markers: std::collections::BTreeSet::new(),
             world_bound: false,
@@ -432,6 +463,71 @@ impl QemuFaultCapabilityRequirement {
                 rows,
             })
         };
+        let mut clock_rows = node
+            .clock_sources
+            .iter()
+            .map(|source| {
+                let source_kind = match source.source_kind {
+                    WorldNodeClockSourceKind::X86Tsc => 1,
+                    WorldNodeClockSourceKind::X86Rtc => 2,
+                    WorldNodeClockSourceKind::X86Pit => 3,
+                    WorldNodeClockSourceKind::X86Hpet => 4,
+                    WorldNodeClockSourceKind::X86ApicTimer => 5,
+                    WorldNodeClockSourceKind::X86AcpiPmTimer => 6,
+                    WorldNodeClockSourceKind::ArmCounter => 7,
+                    WorldNodeClockSourceKind::ArmRtc => 8,
+                    WorldNodeClockSourceKind::Device => 9,
+                };
+                let base_domain = match source.base_domain {
+                    WorldNodeClockBaseDomain::SchedulerVirtual => 1,
+                    WorldNodeClockBaseDomain::RtcEpoch => 2,
+                };
+                let timer_relationship = match source.timer_relationship {
+                    WorldNodeClockTimerRelationship::None => 0,
+                    WorldNodeClockTimerRelationship::Programmable => 1,
+                };
+                let model_phase_mask = source.model_phases.iter().fold(0_u64, |mask, phase| {
+                    let tag = match phase {
+                        FaultPhase::ClockRead => 28,
+                        FaultPhase::Arm => 29,
+                        FaultPhase::Fire => 30,
+                        FaultPhase::Synchronize => 31,
+                        FaultPhase::SourceSwitch => 32,
+                        _ => 0,
+                    };
+                    if tag == 0 {
+                        mask
+                    } else {
+                        mask | (1_u64 << (tag - 1))
+                    }
+                });
+                let monotonicity = match source.monotonicity {
+                    WorldNodeClockMonotonicity::AllowBackward => 1,
+                    WorldNodeClockMonotonicity::ClampMonotonic => 2,
+                    WorldNodeClockMonotonicity::FaultOnBackward => 3,
+                };
+                FaultClockCapabilityRowV1 {
+                    id: source.id.as_str().to_owned(),
+                    implementation: source.implementation.clone(),
+                    source_kind,
+                    base_domain,
+                    timer_relationship,
+                    width_bits: source.width_bits,
+                    flags: u32::from(source.wraps) | (u32::from(source.read_error) << 1),
+                    frequency_numerator: source.frequency_numerator,
+                    frequency_denominator: source.frequency_denominator,
+                    model_phase_mask,
+                    vmstate: source.vmstate,
+                    monotonicity,
+                }
+            })
+            .collect::<Vec<_>>();
+        clock_rows.sort_by(|left, right| left.id.cmp(&right.id));
+        let clock_manifest = FaultClockCapabilityManifestV1 {
+            architecture: scope,
+            rows: clock_rows,
+        };
+        clock_manifest.encode()?;
         let mut requirement = Self::current_v1(
             architecture,
             node.cpu_model.clone(),
@@ -443,8 +539,12 @@ impl QemuFaultCapabilityRequirement {
             .ok_or(FaultAbiError::CapabilityInvariant)?;
         target.exact_register_manifest = Some(manifest.clone());
         target.exact_interrupt_manifest = interrupt_manifest.clone();
-        requirement.rows =
-            requirement.rows_for_manifests(Some(&manifest), interrupt_manifest.as_ref())?;
+        target.exact_clock_manifest = Some(clock_manifest.clone());
+        requirement.rows = requirement.rows_for_manifests(
+            Some(&manifest),
+            interrupt_manifest.as_ref(),
+            Some(&clock_manifest),
+        )?;
         requirement.digest = fault_capability_manifest_digest(&requirement.rows)?;
         requirement.ready_markers = node
             .ready_markers
@@ -561,6 +661,7 @@ impl QemuFaultCapabilityRequirement {
         &self,
         register_manifest: Option<&FaultRegisterCapabilityManifestV1>,
         interrupt_manifest: Option<&FaultInterruptCapabilityManifestV1>,
+        clock_manifest: Option<&FaultClockCapabilityManifestV1>,
     ) -> Result<Vec<FaultCapabilityRowV1>, FaultAbiError> {
         let Some(required_target) = &self.target_manifest else {
             return Ok(self.rows.clone());
@@ -573,6 +674,10 @@ impl QemuFaultCapabilityRequirement {
                 .as_ref()
                 .is_some_and(|required| required != manifest)
             || required_target.exact_interrupt_manifest.as_ref() != interrupt_manifest
+            || required_target
+                .exact_clock_manifest
+                .as_ref()
+                .is_some_and(|required| Some(required) != clock_manifest)
         {
             return Err(FaultAbiError::CapabilityInvariant);
         }
@@ -591,12 +696,18 @@ impl QemuFaultCapabilityRequirement {
             .ok_or(FaultAbiError::CapabilityInvariant)?;
         query.scope = manifest.architecture;
         query.required_feature_bits = FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION
-            | interrupt_manifest.map_or(0, |_manifest| FAULT_CAPABILITY_FEATURE_INTERRUPT);
+            | interrupt_manifest.map_or(0, |_manifest| FAULT_CAPABILITY_FEATURE_INTERRUPT)
+            | clock_manifest.map_or(0, |_manifest| FAULT_CAPABILITY_FEATURE_GUEST_CLOCK);
         let interrupt_digest = interrupt_manifest
             .map(FaultInterruptCapabilityManifestV1::encode)
             .transpose()?
             .map(|payload| *blake3::hash(&payload).as_bytes());
-        query.capability_hash = target_manifest_capability_hash(manifest_digest, interrupt_digest);
+        let clock_digest = clock_manifest
+            .map(FaultClockCapabilityManifestV1::encode)
+            .transpose()?
+            .map(|payload| *blake3::hash(&payload).as_bytes());
+        query.capability_hash =
+            target_manifest_capability_hash(manifest_digest, interrupt_digest, clock_digest);
         rows.sort_by_key(|row| {
             (
                 row.command_kind as u16,
@@ -635,13 +746,26 @@ const fn hex_nibble(value: u8) -> Option<u8> {
 fn target_manifest_capability_hash(
     register_manifest_digest: [u8; 32],
     interrupt_manifest_digest: Option<[u8; 32]>,
+    clock_manifest_digest: Option<[u8; 32]>,
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"crucible.qemu-fault-capability.v1\0");
     hasher.update(b"qemu.target-manifest.node.v1\0");
-    hasher.update(b"crucible.target-manifest-query.v1;kinds=register,interrupt\0");
+    hasher.update(
+        b"crucible.target-manifest-query.v1;kinds=register,interrupt,hardware-error,clock\0",
+    );
     hasher.update(&register_manifest_digest);
     match interrupt_manifest_digest {
+        Some(digest) => {
+            hasher.update(&[1]);
+            hasher.update(&digest);
+        }
+        None => {
+            hasher.update(&[0]);
+        }
+    }
+    hasher.update(&[0]);
+    match clock_manifest_digest {
         Some(digest) => {
             hasher.update(&[1]);
             hasher.update(&digest);
@@ -709,7 +833,9 @@ fn capability_row(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crucible::model::{ContentHash, SignalId, WorldNodeDramGeometry, WorldNodeRegister};
+    use crucible::model::{
+        ContentHash, SignalId, WorldNodeClockSource, WorldNodeDramGeometry, WorldNodeRegister,
+    };
 
     fn world_node_for_manifest(
         manifest: &FaultRegisterCapabilityManifestV1,
@@ -748,7 +874,7 @@ mod tests {
             page_bytes: 4096,
             dram_geometry: WorldNodeDramGeometry::qemu_v1(),
             interrupts: Vec::new(),
-            clock_sources: Vec::new(),
+            clock_sources: vec![WorldNodeClockSource::qemu_x86_tsc_v1(id("x86-tsc-vcpu-0"))],
             accelerators: Vec::new(),
             ready_markers: Vec::new(),
             semantic_version: 1,
@@ -775,7 +901,7 @@ mod tests {
             let register = &requirement.rows()[3];
             let mutation = &requirement.rows()[6];
 
-            assert_eq!(requirement.rows().len(), 10);
+            assert_eq!(requirement.rows().len(), 12);
             assert_eq!(
                 requirement.rows()[2].command_kind,
                 FaultCommandKind::QueryTargetManifest
@@ -790,6 +916,14 @@ mod tests {
                 FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION
             );
             assert_eq!(mutation.command_kind, FaultCommandKind::MemoryMutation);
+            assert_eq!(
+                requirement.rows()[10].command_kind,
+                FaultCommandKind::ClockTransform
+            );
+            assert_eq!(
+                requirement.rows()[11].command_kind,
+                FaultCommandKind::ClockSourceState
+            );
             assert_eq!(mutation.scope, scope);
             assert_eq!(
                 mutation.required_feature_bits,
@@ -811,7 +945,7 @@ mod tests {
                     .all(|row| { row.required_feature_bits == FAULT_CAPABILITY_FEATURE_INTERRUPT })
             );
             assert_eq!(
-                requirement.rows()[7..]
+                requirement.rows()[7..10]
                     .iter()
                     .map(|row| row.command_kind)
                     .collect::<Vec<_>>(),
@@ -821,7 +955,7 @@ mod tests {
                     FaultCommandKind::MemoryService,
                 ]
             );
-            assert!(requirement.rows()[7..].iter().all(|row| {
+            assert!(requirement.rows()[7..10].iter().all(|row| {
                 row.required_feature_bits == FAULT_CAPABILITY_FEATURE_MEMORY_ACCESS
             }));
             let digest = match fault_capability_manifest_digest(requirement.rows()) {
@@ -891,9 +1025,14 @@ mod tests {
                 .and_then(QemuTargetManifestRequirement::exact_register_manifest),
             Some(&manifest)
         );
+        let clock_manifest = requirement
+            .target_manifest()
+            .and_then(QemuTargetManifestRequirement::exact_clock_manifest)
+            .cloned()
+            .unwrap_or_else(|| panic!("World requirement should retain its clock manifest"));
         assert!(
             requirement
-                .rows_for_manifests(Some(&manifest), None)
+                .rows_for_manifests(Some(&manifest), None, Some(&clock_manifest))
                 .is_ok()
         );
         assert!(requirement.ready_markers().contains(
@@ -908,7 +1047,7 @@ mod tests {
         let mut changed = manifest.clone();
         changed.rows[0].name = "rbx".to_owned();
         assert_eq!(
-            requirement.rows_for_manifests(Some(&changed), None),
+            requirement.rows_for_manifests(Some(&changed), None, Some(&clock_manifest)),
             Err(FaultAbiError::CapabilityInvariant)
         );
     }

@@ -12,13 +12,15 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::ptr::NonNull;
 
 use crucible_shmem::{
-    DequeuedFaultCommand, FAULT_CAPABILITY_FEATURE_HARDWARE_ERROR,
-    FAULT_CAPABILITY_FEATURE_INSTRUCTION, FAULT_CAPABILITY_FEATURE_INTERRUPT,
-    FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION, FAULT_COMMAND_SEMANTIC_VERSION,
-    FAULT_REGISTER_CAPABILITY_IMPULSE, FAULT_TARGET_MANIFEST_QUERY_V1_BYTES, FaultAbiError,
-    FaultBoundaryPhase, FaultCapabilityRowV1, FaultCapabilityScope, FaultCommandHeaderV1,
-    FaultCommandKind, FaultCommandSlotV1, FaultEventHeaderV1, FaultEventOutcomeV1,
-    FaultEventSlotV1, FaultExceptionEvidenceV1, FaultHardwareErrorCapabilityManifestV1,
+    DequeuedFaultCommand, FAULT_CAPABILITY_FEATURE_GUEST_CLOCK,
+    FAULT_CAPABILITY_FEATURE_HARDWARE_ERROR, FAULT_CAPABILITY_FEATURE_INSTRUCTION,
+    FAULT_CAPABILITY_FEATURE_INTERRUPT, FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION,
+    FAULT_COMMAND_SEMANTIC_VERSION, FAULT_REGISTER_CAPABILITY_IMPULSE,
+    FAULT_TARGET_MANIFEST_QUERY_V1_BYTES, FaultAbiError, FaultBoundaryPhase, FaultCapabilityRowV1,
+    FaultCapabilityScope, FaultClockCapabilityManifestV1, FaultClockCapabilityRowV1,
+    FaultClockEvidenceV1, FaultClockObservationV1, FaultCommandHeaderV1, FaultCommandKind,
+    FaultCommandSlotV1, FaultEventHeaderV1, FaultEventOutcomeV1, FaultEventSlotV1,
+    FaultExceptionEvidenceV1, FaultHardwareErrorCapabilityManifestV1,
     FaultHardwareErrorCapabilityRowV1, FaultHardwareErrorClassV1, FaultHardwareErrorMechanismV1,
     FaultHardwareErrorRecordKindV1, FaultInstructionEvidenceOutcomeV1, FaultInstructionEvidenceV1,
     FaultInstructionMutationKindV1, FaultInstructionPortIoEvidenceV1,
@@ -89,6 +91,15 @@ pub const QEMU_PLUGIN_CRUCIBLE_FAULT_HARDWARE_ERROR_BIND_SYMBOL: &str =
 /// QEMU symbol that seals every hardware-error identity row.
 pub const QEMU_PLUGIN_CRUCIBLE_FAULT_HARDWARE_ERROR_BINDINGS_SEAL_SYMBOL: &str =
     "qemu_plugin_crucible_fault_hardware_error_bindings_seal";
+/// QEMU symbol that copies realized guest-clock source rows.
+pub const QEMU_PLUGIN_CRUCIBLE_FAULT_CLOCK_MANIFEST_SYMBOL: &str =
+    "qemu_plugin_crucible_fault_clock_manifest";
+/// QEMU symbol that binds one guest-clock source identity.
+pub const QEMU_PLUGIN_CRUCIBLE_FAULT_CLOCK_BIND_SYMBOL: &str =
+    "qemu_plugin_crucible_fault_clock_bind";
+/// QEMU symbol that seals every guest-clock source identity.
+pub const QEMU_PLUGIN_CRUCIBLE_FAULT_CLOCK_BINDINGS_SEAL_SYMBOL: &str =
+    "qemu_plugin_crucible_fault_clock_bindings_seal";
 
 const CAPABILITIES_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_capabilities\0";
 const SUBMIT_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_submit\0";
@@ -113,6 +124,9 @@ const HARDWARE_ERROR_MANIFEST_SYMBOL_C: &[u8] =
 const HARDWARE_ERROR_BIND_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_hardware_error_bind\0";
 const HARDWARE_ERROR_BINDINGS_SEAL_SYMBOL_C: &[u8] =
     b"qemu_plugin_crucible_fault_hardware_error_bindings_seal\0";
+const CLOCK_MANIFEST_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_clock_manifest\0";
+const CLOCK_BIND_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_clock_bind\0";
+const CLOCK_BINDINGS_SEAL_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_clock_bindings_seal\0";
 const CAPABILITY_HASH_DOMAIN: &[u8] = b"crucible.qemu-fault-capability.v1\0";
 
 #[repr(C)]
@@ -255,6 +269,25 @@ struct QemuFaultHardwareErrorCapability {
     state: *const c_char,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct QemuFaultClockCapability {
+    source_kind: u16,
+    architecture: u16,
+    base_domain: u16,
+    timer_relationship: u16,
+    width_bits: u32,
+    flags: u32,
+    frequency_numerator: u64,
+    frequency_denominator: u64,
+    model_phase_mask: u64,
+    vmstate: u8,
+    monotonicity: u8,
+    reserved: [u8; 6],
+    id: *const c_char,
+    implementation: *const c_char,
+}
+
 type QemuFaultCapabilitiesFn = extern "C" fn(*mut QemuFaultCapability, usize) -> usize;
 type QemuFaultSubmitFn = extern "C" fn(*const QemuFaultCommand, *const u8, usize) -> c_int;
 type QemuFaultCancelFn = extern "C" fn(u64) -> c_int;
@@ -277,6 +310,10 @@ type QemuFaultHardwareErrorManifestFn =
 type QemuFaultHardwareErrorBindFn =
     extern "C" fn(u32, *const u8, *const u8, *const u8, *const u8, *const u8, *const u8) -> c_int;
 type QemuFaultHardwareErrorBindingsSealFn = extern "C" fn(*const u8) -> c_int;
+type QemuFaultClockManifestFn =
+    extern "C" fn(*mut QemuFaultClockCapability, usize, *mut u16) -> usize;
+type QemuFaultClockBindFn = extern "C" fn(u32, *const u8) -> c_int;
+type QemuFaultClockBindingsSealFn = extern "C" fn(*const u8) -> c_int;
 
 /// Resolved, closed QEMU fault registry operations.
 #[derive(Clone, Copy)]
@@ -300,6 +337,9 @@ pub(crate) struct QemuFaultCommandApis {
     hardware_error_manifest: QemuFaultHardwareErrorManifestFn,
     hardware_error_bind: QemuFaultHardwareErrorBindFn,
     hardware_error_bindings_seal: QemuFaultHardwareErrorBindingsSealFn,
+    clock_manifest: QemuFaultClockManifestFn,
+    clock_bind: QemuFaultClockBindFn,
+    clock_bindings_seal: QemuFaultClockBindingsSealFn,
 }
 
 impl QemuFaultCommandApis {
@@ -366,6 +406,18 @@ impl QemuFaultCommandApis {
             hardware_error_bindings_seal: resolve_symbol(
                 HARDWARE_ERROR_BINDINGS_SEAL_SYMBOL_C,
                 QEMU_PLUGIN_CRUCIBLE_FAULT_HARDWARE_ERROR_BINDINGS_SEAL_SYMBOL,
+            )?,
+            clock_manifest: resolve_symbol(
+                CLOCK_MANIFEST_SYMBOL_C,
+                QEMU_PLUGIN_CRUCIBLE_FAULT_CLOCK_MANIFEST_SYMBOL,
+            )?,
+            clock_bind: resolve_symbol(
+                CLOCK_BIND_SYMBOL_C,
+                QEMU_PLUGIN_CRUCIBLE_FAULT_CLOCK_BIND_SYMBOL,
+            )?,
+            clock_bindings_seal: resolve_symbol(
+                CLOCK_BINDINGS_SEAL_SYMBOL_C,
+                QEMU_PLUGIN_CRUCIBLE_FAULT_CLOCK_BINDINGS_SEAL_SYMBOL,
             )?,
         })
     }
@@ -680,6 +732,81 @@ impl QemuFaultCommandApis {
         Ok(())
     }
 
+    fn clock_manifest(self) -> Result<FaultClockCapabilityManifestV1, FaultCommandBridgeError> {
+        let mut architecture = 0_u16;
+        let required = (self.clock_manifest)(std::ptr::null_mut(), 0, &mut architecture);
+        if required == 0 || required > crucible_shmem::HARD_FAULT_TARGET_MANIFEST_ROWS {
+            return Err(FaultCommandBridgeError::ClockManifestCount { required });
+        }
+        let empty = QemuFaultClockCapability {
+            source_kind: 0,
+            architecture: 0,
+            base_domain: 0,
+            timer_relationship: 0,
+            width_bits: 0,
+            flags: 0,
+            frequency_numerator: 0,
+            frequency_denominator: 0,
+            model_phase_mask: 0,
+            vmstate: 0,
+            monotonicity: 0,
+            reserved: [0; 6],
+            id: std::ptr::null(),
+            implementation: std::ptr::null(),
+        };
+        let mut raw = vec![empty; required];
+        let observed = (self.clock_manifest)(raw.as_mut_ptr(), raw.len(), &mut architecture);
+        if observed != required {
+            return Err(FaultCommandBridgeError::ClockManifestChanged {
+                expected: required,
+                observed,
+            });
+        }
+        let architecture = FaultCapabilityScope::from_u16(architecture)
+            .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?;
+        let manifest = FaultClockCapabilityManifestV1 {
+            architecture,
+            rows: raw
+                .into_iter()
+                .map(|row| clock_capability_row(row, architecture))
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        FaultClockCapabilityManifestV1::decode(
+            &manifest
+                .encode()
+                .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?,
+        )
+        .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })
+    }
+
+    fn bind_clock_manifest(
+        self,
+        manifest: &FaultClockCapabilityManifestV1,
+    ) -> Result<(), FaultCommandBridgeError> {
+        let payload = manifest
+            .encode()
+            .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?;
+        let manifest_sha256: [u8; 32] = sha2::Sha256::digest(&payload).into();
+
+        for (index, row) in manifest.rows.iter().enumerate() {
+            let row_index = u32::try_from(index)
+                .map_err(|_source| FaultCommandBridgeError::ClockManifestRow)?;
+            let id = crucible_shmem::fault_object_id_hash_v1(&row.id);
+            let status = (self.clock_bind)(row_index, id.as_ptr());
+            if status != 0 {
+                return Err(FaultCommandBridgeError::ClockManifestBind { row_index, status });
+            }
+        }
+        let status = (self.clock_bindings_seal)(manifest_sha256.as_ptr());
+        if status != 0 {
+            return Err(FaultCommandBridgeError::ClockManifestBind {
+                row_index: 0,
+                status,
+            });
+        }
+        Ok(())
+    }
+
     fn bind_register_manifest(
         self,
         manifest: &FaultRegisterCapabilityManifestV1,
@@ -738,6 +865,9 @@ impl QemuFaultCommandApis {
             hardware_error_manifest: test_hardware_error_manifest,
             hardware_error_bind: test_hardware_error_bind,
             hardware_error_bindings_seal: test_hardware_error_bindings_seal,
+            clock_manifest: test_clock_manifest,
+            clock_bind: test_clock_bind,
+            clock_bindings_seal: test_clock_bindings_seal,
         }
     }
 }
@@ -925,6 +1055,25 @@ extern "C" fn test_hardware_error_bindings_seal(_manifest_sha256: *const u8) -> 
 }
 
 #[cfg(test)]
+extern "C" fn test_clock_manifest(
+    _out: *mut QemuFaultClockCapability,
+    _capacity: usize,
+    _architecture: *mut u16,
+) -> usize {
+    0
+}
+
+#[cfg(test)]
+extern "C" fn test_clock_bind(_row_index: u32, _id: *const u8) -> c_int {
+    0
+}
+
+#[cfg(test)]
+extern "C" fn test_clock_bindings_seal(_manifest_sha256: *const u8) -> c_int {
+    0
+}
+
+#[cfg(test)]
 extern "C" fn test_register_bind(_identity: *const u8, _numeric_id: u32) -> c_int {
     0
 }
@@ -1082,6 +1231,29 @@ fn interrupt_capability_row(
         delivery_drop: FaultInterruptDeliveryDropV1::from_u16(raw.delivery_drop)
             .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?,
         vmstate: raw.vmstate == 1,
+    })
+}
+
+fn clock_capability_row(
+    raw: QemuFaultClockCapability,
+    architecture: FaultCapabilityScope,
+) -> Result<FaultClockCapabilityRowV1, FaultCommandBridgeError> {
+    if raw.architecture != architecture as u16 || raw.reserved != [0; 6] || raw.vmstate > 1 {
+        return Err(FaultCommandBridgeError::ClockManifestRow);
+    }
+    Ok(FaultClockCapabilityRowV1 {
+        id: capability_text(raw.id, "clock_id")?.to_owned(),
+        implementation: capability_text(raw.implementation, "clock_implementation")?.to_owned(),
+        source_kind: raw.source_kind,
+        base_domain: raw.base_domain,
+        timer_relationship: raw.timer_relationship,
+        width_bits: raw.width_bits,
+        flags: raw.flags,
+        frequency_numerator: raw.frequency_numerator,
+        frequency_denominator: raw.frequency_denominator,
+        model_phase_mask: raw.model_phase_mask,
+        vmstate: raw.vmstate == 1,
+        monotonicity: raw.monotonicity,
     })
 }
 
@@ -1259,6 +1431,34 @@ struct MemoryEccCommandExpectation {
     channel: [u8; 32],
     rank: [u8; 32],
     visibility: serde_json::Value,
+}
+
+#[derive(Clone)]
+struct ClockCommandExpectation {
+    operation: NodeFaultOperationV1,
+    command_kind: u16,
+    binding_hash: [u8; 32],
+    model_phase: u16,
+    source_ids: Vec<[u8; 32]>,
+    parameters: ClockCommandParameters,
+}
+
+#[derive(Clone)]
+enum ClockCommandParameters {
+    Remove,
+    Transform {
+        kind: u32,
+        signed_value: i64,
+        ratio: [u64; 2],
+        unsigned_value: u64,
+        process: Option<serde_json::Value>,
+        monotonicity: u32,
+        overdue_policy: u32,
+    },
+    SourceState {
+        transition: serde_json::Value,
+        synchronization: serde_json::Value,
+    },
 }
 
 #[derive(Clone)]
@@ -1455,6 +1655,7 @@ pub(crate) struct FaultCommandBridge {
     register_manifest_payload: Option<Vec<u8>>,
     interrupt_manifest_payload: Option<Vec<u8>>,
     hardware_error_manifest_payload: Option<Vec<u8>>,
+    clock_manifest_payload: Option<Vec<u8>>,
     register_evidence_identity: Option<RegisterEvidenceIdentity>,
     instruction_evidence_identity: Option<InstructionEvidenceIdentity>,
     register_commands: BTreeMap<u64, RegisterCommandExpectation>,
@@ -1463,6 +1664,8 @@ pub(crate) struct FaultCommandBridge {
     active_instruction_bindings: BTreeMap<[u8; 32], u64>,
     exception_commands: BTreeMap<u64, ExceptionCommandExpectation>,
     memory_ecc_commands: BTreeMap<u64, MemoryEccCommandExpectation>,
+    clock_commands: BTreeMap<u64, ClockCommandExpectation>,
+    active_clock_bindings: BTreeMap<[u8; 32], u64>,
     pending_command: Option<DequeuedFaultCommand>,
 }
 
@@ -1555,12 +1758,35 @@ impl FaultCommandBridge {
         } else {
             (None, None)
         };
+        let (clock_manifest_payload, clock_manifest_digest) = if rows
+            .iter()
+            .any(|row| row.required_feature_bits & FAULT_CAPABILITY_FEATURE_GUEST_CLOCK != 0)
+        {
+            let manifest = apis.clock_manifest()?;
+            apis.bind_clock_manifest(&manifest)?;
+            if register_evidence_identity
+                .as_ref()
+                .is_some_and(|register| register.architecture != manifest.architecture)
+            {
+                return Err(FaultCommandBridgeError::ClockManifestRow);
+            }
+            let payload = manifest
+                .encode()
+                .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?;
+            (
+                Some(payload.clone()),
+                Some(*blake3::hash(&payload).as_bytes()),
+            )
+        } else {
+            (None, None)
+        };
         if let Some(register) = register_evidence_identity.as_ref() {
             rows.push(target_manifest_capability_row(
                 register.architecture,
                 register.manifest_digest,
                 interrupt_manifest_digest,
                 hardware_error_manifest_digest,
+                clock_manifest_digest,
             ));
             rows.sort_by_key(|row| {
                 (
@@ -1618,6 +1844,7 @@ impl FaultCommandBridge {
             register_manifest_payload,
             interrupt_manifest_payload,
             hardware_error_manifest_payload,
+            clock_manifest_payload,
             register_evidence_identity,
             instruction_evidence_identity,
             register_commands: BTreeMap::new(),
@@ -1626,6 +1853,8 @@ impl FaultCommandBridge {
             active_instruction_bindings: BTreeMap::new(),
             exception_commands: BTreeMap::new(),
             memory_ecc_commands: BTreeMap::new(),
+            clock_commands: BTreeMap::new(),
+            active_clock_bindings: BTreeMap::new(),
             pending_command: None,
         })
     }
@@ -1682,6 +1911,9 @@ impl FaultCommandBridge {
                             .hardware_error_manifest_payload
                             .as_ref()
                             .map_or(0, Vec::len),
+                        Some(FaultTargetManifestKind::Clock) => {
+                            self.clock_manifest_payload.as_ref().map_or(0, Vec::len)
+                        }
                         None => 0,
                     }
                 }
@@ -1785,6 +2017,7 @@ impl FaultCommandBridge {
                 FaultTargetManifestKind::HardwareError => {
                     self.hardware_error_manifest_payload.clone()
                 }
+                FaultTargetManifestKind::Clock => self.clock_manifest_payload.clone(),
             };
             let Some(result_payload) = result_payload else {
                 return self.publish_local_rejection(
@@ -1840,6 +2073,18 @@ impl FaultCommandBridge {
             Some(memory_ecc_command_expectation(
                 payload,
                 header.binding_hash,
+            )?)
+        } else {
+            None
+        };
+        let clock_expectation = if matches!(
+            header.command_kind,
+            FaultCommandKind::ClockTransform | FaultCommandKind::ClockSourceState
+        ) {
+            Some(clock_command_expectation(
+                payload,
+                header.binding_hash,
+                header.command_kind,
             )?)
         } else {
             None
@@ -1908,6 +2153,10 @@ impl FaultCommandBridge {
         }
         if let Some(expectation) = memory_ecc_expectation {
             self.memory_ecc_commands
+                .insert(header.command_sequence, expectation);
+        }
+        if let Some(expectation) = clock_expectation {
+            self.clock_commands
                 .insert(header.command_sequence, expectation);
         }
         Ok(())
@@ -1984,6 +2233,7 @@ impl FaultCommandBridge {
             }
             let mut result_payload = &payload[..];
             let translated_register: Vec<u8>;
+            let translated_clock: Vec<u8>;
             let register_command = self
                 .register_commands
                 .get(&result.command_sequence)
@@ -2011,6 +2261,22 @@ impl FaultCommandBridge {
                         .ok_or(FaultCommandBridgeError::RegisterEvidence)?,
                 )?;
                 result_payload = &translated_register;
+                result.evidence_hash = *blake3::hash(result_payload).as_bytes();
+            } else if result.command_kind == FaultCommandKind::ClockTransform as u16
+                && payload.starts_with(b"CRUCCIM1")
+            {
+                translated_clock = translate_clock_impulse_evidence(
+                    &payload,
+                    self.clock_manifest_payload
+                        .as_deref()
+                        .ok_or(FaultCommandBridgeError::ClockEvidence)?,
+                    &result,
+                    logical_icount_offset,
+                    self.clock_commands
+                        .get(&result.command_sequence)
+                        .ok_or(FaultCommandBridgeError::ClockEvidence)?,
+                )?;
+                result_payload = &translated_clock;
                 result.evidence_hash = *blake3::hash(result_payload).as_bytes();
             }
             let observed_icount = result
@@ -2092,6 +2358,33 @@ impl FaultCommandBridge {
             {
                 self.memory_ecc_commands.remove(&result.command_sequence);
             }
+            if matches!(
+                result.command_kind,
+                value if value == FaultCommandKind::ClockTransform as u16
+                    || value == FaultCommandKind::ClockSourceState as u16
+            ) {
+                let command = self
+                    .clock_commands
+                    .get(&result.command_sequence)
+                    .cloned()
+                    .ok_or(FaultCommandBridgeError::ClockEvidence)?;
+                if result.status == FaultResultStatus::Applied as u16 {
+                    match command.operation {
+                        NodeFaultOperationV1::Upsert => {
+                            let _prior = self
+                                .active_clock_bindings
+                                .insert(command.binding_hash, result.command_sequence);
+                        }
+                        NodeFaultOperationV1::Remove => {
+                            let _prior = self.active_clock_bindings.remove(&command.binding_hash);
+                            self.clock_commands.remove(&result.command_sequence);
+                        }
+                        NodeFaultOperationV1::Apply => {}
+                    }
+                } else {
+                    self.clock_commands.remove(&result.command_sequence);
+                }
+            }
         }
     }
 
@@ -2103,6 +2396,10 @@ impl FaultCommandBridge {
             let mut peeked_payload_len = 0_usize;
             let status = (self.apis.event_peek)(&mut peeked, &mut peeked_payload_len);
             if status == 0 {
+                let active: BTreeSet<u64> = self.active_clock_bindings.values().copied().collect();
+                self.clock_commands.retain(|sequence, command| {
+                    command.operation != NodeFaultOperationV1::Upsert || active.contains(sequence)
+                });
                 return Ok(true);
             }
             if status != 1 {
@@ -2184,6 +2481,10 @@ impl FaultCommandBridge {
                 .memory_ecc_commands
                 .get(&event.rule_command_sequence)
                 .cloned();
+            let clock_command = self
+                .clock_commands
+                .get(&event.rule_command_sequence)
+                .cloned();
             let instruction_terminal = event.command_kind
                 == FaultCommandKind::CpuInstructionTransform as u16
                 && FaultTerminalEvidenceV1::has_magic(&payload);
@@ -2261,6 +2562,20 @@ impl FaultCommandBridge {
                             .as_ref()
                             .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?,
                     )?
+                } else if event.command_kind == FaultCommandKind::ClockTransform as u16
+                    || event.command_kind == FaultCommandKind::ClockSourceState as u16
+                {
+                    translate_clock_evidence(
+                        &payload,
+                        self.clock_manifest_payload
+                            .as_deref()
+                            .ok_or(FaultCommandBridgeError::ClockEvidence)?,
+                        &event,
+                        observed_icount,
+                        clock_command
+                            .as_ref()
+                            .ok_or(FaultCommandBridgeError::ClockEvidence)?,
+                    )?
                 } else {
                     payload
                 };
@@ -2311,6 +2626,12 @@ impl FaultCommandBridge {
             if event.command_kind == FaultCommandKind::MemoryEccEvent as u16 {
                 self.memory_ecc_commands
                     .remove(&event.rule_command_sequence);
+            }
+            if clock_command
+                .as_ref()
+                .is_some_and(|command| command.operation == NodeFaultOperationV1::Apply)
+            {
+                self.clock_commands.remove(&event.rule_command_sequence);
             }
         }
     }
@@ -2469,9 +2790,10 @@ fn target_manifest_capability_row(
     register_manifest_digest: [u8; 32],
     interrupt_manifest_digest: Option<[u8; 32]>,
     hardware_error_manifest_digest: Option<[u8; 32]>,
+    clock_manifest_digest: Option<[u8; 32]>,
 ) -> FaultCapabilityRowV1 {
     let name = b"qemu.target-manifest.node.v1";
-    let schema = b"crucible.target-manifest-query.v1;kinds=register,interrupt,hardware-error";
+    let schema = b"crucible.target-manifest-query.v1;kinds=register,interrupt,hardware-error,clock";
     let mut hasher = blake3::Hasher::new();
     hasher.update(CAPABILITY_HASH_DOMAIN);
     hasher.update(name);
@@ -2497,6 +2819,15 @@ fn target_manifest_capability_row(
             hasher.update(&[0]);
         }
     }
+    match clock_manifest_digest {
+        Some(digest) => {
+            hasher.update(&[1]);
+            hasher.update(&digest);
+        }
+        None => {
+            hasher.update(&[0]);
+        }
+    }
     FaultCapabilityRowV1 {
         command_kind: FaultCommandKind::QueryTargetManifest,
         semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
@@ -2507,7 +2838,8 @@ fn target_manifest_capability_row(
         required_feature_bits: FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION
             | interrupt_manifest_digest.map_or(0, |_digest| FAULT_CAPABILITY_FEATURE_INTERRUPT)
             | hardware_error_manifest_digest
-                .map_or(0, |_digest| FAULT_CAPABILITY_FEATURE_HARDWARE_ERROR),
+                .map_or(0, |_digest| FAULT_CAPABILITY_FEATURE_HARDWARE_ERROR)
+            | clock_manifest_digest.map_or(0, |_digest| FAULT_CAPABILITY_FEATURE_GUEST_CLOCK),
         capability_hash: *hasher.finalize().as_bytes(),
     }
 }
@@ -2881,6 +3213,126 @@ fn memory_ecc_command_expectation(
         channel: hash_field(node_fault_field::P5)?,
         rank: hash_field(node_fault_field::P6)?,
         visibility: policy_json(&field(node_fault_field::P7)?.value, true)?,
+    })
+}
+
+fn clock_command_expectation(
+    payload: &[u8],
+    binding_hash: [u8; 32],
+    command_kind: FaultCommandKind,
+) -> Result<ClockCommandExpectation, FaultCommandBridgeError> {
+    let decoded =
+        NodeFaultPayloadV1::decode(payload).map_err(|_| FaultCommandBridgeError::ClockEvidence)?;
+    if decoded.operation == NodeFaultOperationV1::Remove {
+        return Ok(ClockCommandExpectation {
+            operation: decoded.operation,
+            command_kind: command_kind as u16,
+            binding_hash,
+            model_phase: decoded.model_phase,
+            source_ids: Vec::new(),
+            parameters: ClockCommandParameters::Remove,
+        });
+    }
+    let field = |tag| {
+        decoded
+            .fields
+            .iter()
+            .find(|field| field.tag == tag)
+            .ok_or(FaultCommandBridgeError::ClockEvidence)
+    };
+    let u32_field = |tag| {
+        field(tag)?
+            .value
+            .as_slice()
+            .try_into()
+            .map(u32::from_le_bytes)
+            .map_err(|_source| FaultCommandBridgeError::ClockEvidence)
+    };
+    let u64_field = |tag| {
+        field(tag)?
+            .value
+            .as_slice()
+            .try_into()
+            .map(u64::from_le_bytes)
+            .map_err(|_source| FaultCommandBridgeError::ClockEvidence)
+    };
+    let i64_field = |tag| {
+        field(tag)?
+            .value
+            .as_slice()
+            .try_into()
+            .map(i64::from_le_bytes)
+            .map_err(|_source| FaultCommandBridgeError::ClockEvidence)
+    };
+    let clock_policy_json = |tag| {
+        let json = field(tag)?
+            .value
+            .strip_prefix(b"CRUCJSN1")
+            .ok_or(FaultCommandBridgeError::ClockEvidence)?;
+        serde_json::from_slice(json).map_err(|_source| FaultCommandBridgeError::ClockEvidence)
+    };
+    let tag = if command_kind == FaultCommandKind::ClockTransform {
+        node_fault_field::T1
+    } else {
+        node_fault_field::P1
+    };
+    let value = decoded
+        .fields
+        .iter()
+        .find(|field| field.tag == tag)
+        .ok_or(FaultCommandBridgeError::ClockEvidence)?
+        .value
+        .as_slice();
+    if value.is_empty() || value.len() % 32 != 0 {
+        return Err(FaultCommandBridgeError::ClockEvidence);
+    }
+    let parameters = if command_kind == FaultCommandKind::ClockTransform {
+        let ratio = field(node_fault_field::P4)?.value.as_slice();
+        let numerator = i64::from_le_bytes(
+            ratio[..8]
+                .try_into()
+                .map_err(|_source| FaultCommandBridgeError::ClockEvidence)?,
+        );
+        let numerator =
+            u64::try_from(numerator).map_err(|_source| FaultCommandBridgeError::ClockEvidence)?;
+        let kind = u32_field(node_fault_field::P2)?;
+        ClockCommandParameters::Transform {
+            kind,
+            signed_value: i64_field(node_fault_field::P3)?,
+            ratio: [
+                numerator,
+                u64::from_le_bytes(
+                    ratio[8..16]
+                        .try_into()
+                        .map_err(|_source| FaultCommandBridgeError::ClockEvidence)?,
+                ),
+            ],
+            unsigned_value: u64_field(node_fault_field::P5)?,
+            process: if matches!(kind, 4..=6) {
+                Some(clock_policy_json(node_fault_field::P6)?)
+            } else {
+                None
+            },
+            monotonicity: u32_field(node_fault_field::P7)?,
+            overdue_policy: u32_field(node_fault_field::P8)?,
+        }
+    } else {
+        ClockCommandParameters::SourceState {
+            transition: clock_policy_json(node_fault_field::P2)?,
+            synchronization: clock_policy_json(node_fault_field::P3)?,
+        }
+    };
+    Ok(ClockCommandExpectation {
+        operation: decoded.operation,
+        command_kind: command_kind as u16,
+        binding_hash,
+        model_phase: decoded.model_phase,
+        source_ids: value
+            .chunks_exact(32)
+            .map(|chunk| chunk.try_into())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| FaultCommandBridgeError::ClockEvidence)?,
+        parameters,
     })
 }
 
@@ -4018,6 +4470,678 @@ fn instruction_system_digest(
     digest.finalize().into()
 }
 
+fn clock_json_u64(value: &serde_json::Value, name: &str) -> Option<u64> {
+    value.as_object()?.get(name)?.as_u64()
+}
+
+fn clock_json_i64_table(value: &serde_json::Value) -> Option<Vec<i64>> {
+    value
+        .as_array()?
+        .iter()
+        .map(serde_json::Value::as_i64)
+        .collect()
+}
+
+fn validate_clock_observation_parameters(
+    observation: &FaultClockObservationV1,
+    expectation: &ClockCommandExpectation,
+) -> bool {
+    match (&expectation.parameters, observation) {
+        (ClockCommandParameters::Remove, _) => false,
+        (
+            ClockCommandParameters::Transform {
+                kind,
+                signed_value,
+                ratio,
+                unsigned_value,
+                process: _,
+                monotonicity,
+                overdue_policy,
+            },
+            FaultClockObservationV1::Impulse {
+                transform_kind,
+                signed_value: observed_signed,
+                ratio: observed_ratio,
+                unsigned_value: observed_unsigned,
+                new_monotonicity,
+                new_overdue_policy,
+                ..
+            },
+        ) => {
+            transform_kind == kind
+                && observed_signed == signed_value
+                && observed_ratio == ratio
+                && observed_unsigned == unsigned_value
+                && new_monotonicity == monotonicity
+                && new_overdue_policy == overdue_policy
+        }
+        (
+            ClockCommandParameters::Transform {
+                kind,
+                unsigned_value,
+                process,
+                monotonicity,
+                overdue_policy,
+                ..
+            },
+            FaultClockObservationV1::Read {
+                transform_kind,
+                contribution,
+                monotonicity: observed_monotonicity,
+                overdue_policy: observed_overdue,
+                freeze_release,
+                ..
+            },
+        ) => {
+            let contribution_valid = match *kind {
+                1..=4 => *contribution == 0,
+                5 => process
+                    .as_ref()
+                    .and_then(clock_json_i64_table)
+                    .is_some_and(|values| {
+                        values.contains(contribution)
+                            && contribution.unsigned_abs() <= *unsigned_value
+                    }),
+                6 => process.as_ref().is_some_and(|value| {
+                    clock_json_u64(value, "maximum_offset_nanos")
+                        .is_some_and(|maximum| contribution.unsigned_abs() <= maximum)
+                }),
+                _ => false,
+            };
+            let freeze_valid = if *kind == 4 {
+                process.as_ref().is_some_and(|value| {
+                    matches!(
+                        (value.as_str(), *freeze_release),
+                        (Some("resume_from_frozen"), 1) | (Some("catch_up_jump"), 2)
+                    )
+                })
+            } else {
+                true
+            };
+            transform_kind == kind
+                && observed_monotonicity == monotonicity
+                && observed_overdue == overdue_policy
+                && contribution_valid
+                && freeze_valid
+        }
+        (
+            ClockCommandParameters::Transform {
+                kind: 6, process, ..
+            },
+            FaultClockObservationV1::Wander {
+                offsets,
+                rates_ppb,
+                next_nanos,
+                sequences,
+                ..
+            },
+        ) => process.as_ref().is_some_and(|value| {
+            let Some(step) = clock_json_u64(value, "step_nanos") else {
+                return false;
+            };
+            let Some(maximum_offset) = clock_json_u64(value, "maximum_offset_nanos") else {
+                return false;
+            };
+            let Some(maximum_rate) = clock_json_u64(value, "maximum_rate_ppb") else {
+                return false;
+            };
+            let Some(increments) = value
+                .as_object()
+                .and_then(|object| object.get("increments_ppb"))
+                .and_then(clock_json_i64_table)
+            else {
+                return false;
+            };
+            offsets
+                .iter()
+                .all(|offset| offset.unsigned_abs() <= maximum_offset)
+                && rates_ppb
+                    .iter()
+                    .all(|rate| rate.unsigned_abs() <= maximum_rate)
+                && rates_ppb[1]
+                    .checked_sub(rates_ppb[0])
+                    .is_some_and(|delta| increments.contains(&delta))
+                && next_nanos[1].checked_sub(next_nanos[0]) == Some(step)
+                && sequences[1].checked_sub(sequences[0]) == Some(1)
+        }),
+        (
+            ClockCommandParameters::Transform { .. },
+            FaultClockObservationV1::TimerTransition { .. },
+        ) => true,
+        (
+            ClockCommandParameters::SourceState {
+                transition,
+                synchronization,
+            },
+            FaultClockObservationV1::SourceTransition {
+                states,
+                new_fallback,
+                synchronization_ratio,
+                synchronization_threshold_nanos,
+                ..
+            },
+        ) => {
+            let Some(kind) = transition.get("kind").and_then(serde_json::Value::as_str) else {
+                return false;
+            };
+            let expected_state = match kind {
+                "healthy" => 1,
+                "degraded" => 2,
+                "failed" => match transition
+                    .pointer("/parameters/behavior")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    Some("stop") => 3,
+                    Some("read_error") => 4,
+                    _ => return false,
+                },
+                "fallback" => 5,
+                _ => return false,
+            };
+            let fallback_valid = if kind == "fallback" {
+                transition
+                    .pointer("/parameters/source")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|source| {
+                        crucible_shmem::fault_object_id_hash_v1(source) == *new_fallback
+                    })
+            } else {
+                *new_fallback == [0; 32]
+            };
+            let synchronization_valid = match synchronization
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+            {
+                Some("step") => {
+                    *synchronization_ratio == [0, 0] && *synchronization_threshold_nanos == 0
+                }
+                Some("slew") => {
+                    let numerator = synchronization
+                        .pointer("/parameters/rate/numerator")
+                        .and_then(serde_json::Value::as_u64);
+                    let denominator = synchronization
+                        .pointer("/parameters/rate/denominator")
+                        .and_then(serde_json::Value::as_u64);
+                    let threshold = synchronization
+                        .pointer("/parameters/threshold_nanos")
+                        .and_then(serde_json::Value::as_u64);
+                    numerator == Some(synchronization_ratio[0])
+                        && denominator == Some(synchronization_ratio[1])
+                        && threshold == Some(*synchronization_threshold_nanos)
+                }
+                _ => false,
+            };
+            states[1] == expected_state && fallback_valid && synchronization_valid
+        }
+        (
+            ClockCommandParameters::SourceState { transition, .. },
+            FaultClockObservationV1::Read {
+                transform_kind,
+                source_state,
+                contribution,
+                ..
+            },
+        ) => {
+            let expected_state = match transition.get("kind").and_then(serde_json::Value::as_str) {
+                Some("healthy") => 1,
+                Some("degraded") => 2,
+                Some("failed")
+                    if transition
+                        .pointer("/parameters/behavior")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("stop") =>
+                {
+                    3
+                }
+                Some("failed") => 4,
+                Some("fallback") => 5,
+                _ => return false,
+            };
+            *transform_kind == 0 && *contribution == 0 && *source_state == expected_state
+        }
+        (
+            ClockCommandParameters::SourceState { .. },
+            FaultClockObservationV1::TimerTransition { .. },
+        ) => true,
+        _ => false,
+    }
+}
+
+fn validate_clock_read_architecture(
+    observation: &FaultClockObservationV1,
+    row: &FaultClockCapabilityRowV1,
+) -> bool {
+    let FaultClockObservationV1::Read {
+        raw_value,
+        transformed_value,
+        raw_architectural_value,
+        transformed_architectural_value,
+        source_width_bits,
+        wrap_action,
+        read_error,
+        ..
+    } = observation
+    else {
+        return true;
+    };
+    if u32::from(*source_width_bits) != row.width_bits || *wrap_action > 1 {
+        return false;
+    }
+    let normalized_raw = u128::from(*raw_architectural_value)
+        .checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_mul(u128::from(row.frequency_denominator)))
+        .map(|value| value / u128::from(row.frequency_numerator));
+    if normalized_raw != Some(u128::from(*raw_value)) {
+        return false;
+    }
+    if *read_error {
+        return *transformed_architectural_value == *raw_architectural_value && *wrap_action == 0;
+    }
+    let Some(ticks) = u128::from(*transformed_value)
+        .checked_mul(u128::from(row.frequency_numerator))
+        .map(|value| value / (1_000_000_000_u128 * u128::from(row.frequency_denominator)))
+    else {
+        return false;
+    };
+    let mask = if row.width_bits == 64 {
+        u128::from(u64::MAX)
+    } else {
+        (1_u128 << row.width_bits) - 1
+    };
+    let wrapped = ticks & !mask != 0;
+    ticks & mask == u128::from(*transformed_architectural_value)
+        && *wrap_action == u16::from(wrapped)
+        && (!wrapped || row.flags & 1 != 0)
+}
+
+fn translate_clock_evidence(
+    raw: &[u8],
+    manifest_payload: &[u8],
+    event: &QemuFaultEvent,
+    observed_icount: u64,
+    expectation: &ClockCommandExpectation,
+) -> Result<Vec<u8>, FaultCommandBridgeError> {
+    fn invalid<T>(_: T) -> FaultCommandBridgeError {
+        FaultCommandBridgeError::ClockEvidence
+    }
+    if raw.starts_with(b"CRUCCIM1") {
+        return translate_clock_impulse_event_evidence(
+            raw,
+            manifest_payload,
+            event,
+            observed_icount,
+            expectation,
+        );
+    }
+    let read_record = raw.starts_with(b"CRUCCRE1");
+    if expectation.operation != NodeFaultOperationV1::Upsert
+        || raw.len() != if read_record { 416 } else { 384 }
+        || raw_u16(raw, 8).map_err(invalid)? != 1
+    {
+        return Err(FaultCommandBridgeError::ClockEvidence);
+    }
+    let source_kind = raw_u16(raw, 10).map_err(invalid)?;
+    let (
+        source_offset,
+        binding_offset,
+        before_offset,
+        after_offset,
+        generation,
+        opportunity,
+        observation,
+    ) = match &raw[..8] {
+        b"CRUCCRE1" => {
+            if raw_u64(raw, 16).map_err(invalid)? != event.observed_icount
+                || raw[404..].iter().any(|byte| *byte != 0)
+            {
+                return Err(FaultCommandBridgeError::ClockEvidence);
+            }
+            (
+                128,
+                160,
+                192,
+                224,
+                raw_u64(raw, 96).map_err(invalid)?,
+                raw_u64(raw, 24).map_err(invalid)?,
+                FaultClockObservationV1::Read {
+                    raw_value: raw_u64(raw, 32).map_err(invalid)?,
+                    transformed_value: raw_u64(raw, 40).map_err(invalid)?,
+                    raw_architectural_value: raw_u64(raw, 384).map_err(invalid)?,
+                    transformed_architectural_value: raw_u64(raw, 392).map_err(invalid)?,
+                    source_width_bits: raw_u16(raw, 400).map_err(invalid)?,
+                    wrap_action: raw_u16(raw, 402).map_err(invalid)?,
+                    anchor_raw: raw_u64(raw, 48).map_err(invalid)?,
+                    anchor_value: raw_u64(raw, 56).map_err(invalid)?,
+                    drift_ratio: [
+                        raw_u64(raw, 64).map_err(invalid)?,
+                        raw_u64(raw, 72).map_err(invalid)?,
+                    ],
+                    additive_nanos: raw_u64(raw, 80).map_err(invalid)? as i64,
+                    frozen_value: raw_u64(raw, 88).map_err(invalid)?,
+                    read_error: match raw_u32(raw, 12).map_err(invalid)? {
+                        0 => false,
+                        1 => true,
+                        _ => return Err(FaultCommandBridgeError::ClockEvidence),
+                    },
+                    read_opportunity: raw_u64(raw, 264).map_err(invalid)?,
+                    transform_kind: raw_u32(raw, 256).map_err(invalid)?,
+                    contribution: raw_u64(raw, 272).map_err(invalid)? as i64,
+                    monotonicity: raw_u32(raw, 104).map_err(invalid)?,
+                    overdue_policy: raw_u32(raw, 108).map_err(invalid)?,
+                    source_state: raw_u32(raw, 112).map_err(invalid)?,
+                    freeze_release: raw_u32(raw, 116).map_err(invalid)?,
+                    synchronization_remaining_nanos: raw_u64(raw, 120).map_err(invalid)? as i64,
+                },
+            )
+        }
+        b"CRUCCWE1"
+            if raw[12..16].iter().all(|byte| *byte == 0)
+                && raw[240..].iter().all(|byte| *byte == 0) =>
+        {
+            (
+                104,
+                136,
+                168,
+                200,
+                raw_u64(raw, 96).map_err(invalid)?,
+                raw_u64(raw, 232).map_err(invalid)?,
+                FaultClockObservationV1::Wander {
+                    scheduler_nanos: raw_u64(raw, 16).map_err(invalid)?,
+                    raw_nanos: raw_u64(raw, 24).map_err(invalid)?,
+                    offsets: [
+                        raw_u64(raw, 32).map_err(invalid)? as i64,
+                        raw_u64(raw, 40).map_err(invalid)? as i64,
+                    ],
+                    rates_ppb: [
+                        raw_u64(raw, 48).map_err(invalid)? as i64,
+                        raw_u64(raw, 56).map_err(invalid)? as i64,
+                    ],
+                    next_nanos: [
+                        raw_u64(raw, 64).map_err(invalid)?,
+                        raw_u64(raw, 72).map_err(invalid)?,
+                    ],
+                    sequences: [
+                        raw_u64(raw, 80).map_err(invalid)?,
+                        raw_u64(raw, 88).map_err(invalid)?,
+                    ],
+                },
+            )
+        }
+        b"CRUCCSE1"
+            if raw[20..24].iter().all(|byte| *byte == 0)
+                && raw[312..].iter().all(|byte| *byte == 0) =>
+        {
+            (
+                64,
+                160,
+                192,
+                224,
+                raw_u64(raw, 304).map_err(invalid)?,
+                raw_u64(raw, 296).map_err(invalid)?,
+                FaultClockObservationV1::SourceTransition {
+                    scheduler_nanos: raw_u64(raw, 24).map_err(invalid)?,
+                    raw_nanos: raw_u64(raw, 32).map_err(invalid)?,
+                    states: [
+                        raw_u32(raw, 12).map_err(invalid)?,
+                        raw_u32(raw, 16).map_err(invalid)?,
+                    ],
+                    old_value: raw_u64(raw, 40).map_err(invalid)?,
+                    new_anchor_value: raw_u64(raw, 48).map_err(invalid)?,
+                    transition_generation: raw_u64(raw, 56).map_err(invalid)?,
+                    old_fallback: raw[96..128].try_into().map_err(invalid)?,
+                    new_fallback: raw[128..160].try_into().map_err(invalid)?,
+                    synchronization_remaining_nanos: [
+                        raw_u64(raw, 256).map_err(invalid)? as i64,
+                        raw_u64(raw, 264).map_err(invalid)? as i64,
+                    ],
+                    synchronization_ratio: [
+                        raw_u64(raw, 272).map_err(invalid)?,
+                        raw_u64(raw, 280).map_err(invalid)?,
+                    ],
+                    synchronization_threshold_nanos: raw_u64(raw, 288).map_err(invalid)?,
+                },
+            )
+        }
+        b"CRUCCTE1"
+            if raw[14..16].iter().all(|byte| *byte == 0)
+                && raw[224..].iter().all(|byte| *byte == 0) =>
+        {
+            (
+                88,
+                120,
+                152,
+                184,
+                raw_u64(raw, 80).map_err(invalid)?,
+                raw_u64(raw, 216).map_err(invalid)?,
+                FaultClockObservationV1::TimerTransition {
+                    role: raw_u16(raw, 12).map_err(invalid)?,
+                    index: raw_u32(raw, 16).map_err(invalid)?,
+                    action: raw_u32(raw, 20).map_err(invalid)?,
+                    sequence: raw_u64(raw, 24).map_err(invalid)?,
+                    old_deadlines: [
+                        raw_u64(raw, 32).map_err(invalid)?,
+                        raw_u64(raw, 40).map_err(invalid)?,
+                    ],
+                    new_deadlines: [
+                        raw_u64(raw, 56).map_err(invalid)?,
+                        raw_u64(raw, 64).map_err(invalid)?,
+                    ],
+                    generations: [
+                        raw_u64(raw, 48).map_err(invalid)?,
+                        raw_u64(raw, 72).map_err(invalid)?,
+                    ],
+                },
+            )
+        }
+        _ => return Err(FaultCommandBridgeError::ClockEvidence),
+    };
+    let source_id: [u8; 32] = raw[source_offset..source_offset + 32]
+        .try_into()
+        .map_err(invalid)?;
+    let binding_hash: [u8; 32] = raw[binding_offset..binding_offset + 32]
+        .try_into()
+        .map_err(invalid)?;
+    let before_hash: [u8; 32] = raw[before_offset..before_offset + 32]
+        .try_into()
+        .map_err(invalid)?;
+    let after_hash: [u8; 32] = raw[after_offset..after_offset + 32]
+        .try_into()
+        .map_err(invalid)?;
+    let manifest = FaultClockCapabilityManifestV1::decode(manifest_payload).map_err(invalid)?;
+    let Some(row) = manifest.rows.iter().find(|row| {
+        row.source_kind == source_kind
+            && crucible_shmem::fault_object_id_hash_v1(&row.id) == source_id
+    }) else {
+        return Err(FaultCommandBridgeError::ClockEvidence);
+    };
+    if binding_hash != event.binding_hash
+        || event.command_kind != expectation.command_kind
+        || binding_hash != expectation.binding_hash
+        || event.model_phase != expectation.model_phase
+        || !expectation.source_ids.contains(&source_id)
+        || before_hash != event.before_hash
+        || after_hash != event.after_hash
+        || !validate_clock_observation_parameters(&observation, expectation)
+        || !validate_clock_read_architecture(&observation, row)
+    {
+        return Err(FaultCommandBridgeError::ClockEvidence);
+    }
+    FaultClockEvidenceV1 {
+        source_kind,
+        model_phase: event.model_phase,
+        observed_icount,
+        source_id,
+        binding_hash,
+        before_hash,
+        after_hash,
+        manifest_sha256: sha2::Sha256::digest(manifest_payload).into(),
+        transform_generation: generation,
+        opportunity,
+        observation,
+    }
+    .encode()
+    .map_err(invalid)
+}
+
+fn translate_clock_impulse_event_evidence(
+    raw: &[u8],
+    manifest_payload: &[u8],
+    event: &QemuFaultEvent,
+    observed_icount: u64,
+    expectation: &ClockCommandExpectation,
+) -> Result<Vec<u8>, FaultCommandBridgeError> {
+    fn invalid<T>(_: T) -> FaultCommandBridgeError {
+        FaultCommandBridgeError::ClockEvidence
+    }
+    validate_raw_clock_impulse(raw)?;
+    let source_kind = raw_u16(raw, 210).map_err(invalid)?;
+    let source_id: [u8; 32] = raw[80..112].try_into().map_err(invalid)?;
+    let binding_hash: [u8; 32] = raw[112..144].try_into().map_err(invalid)?;
+    let before_hash: [u8; 32] = raw[144..176].try_into().map_err(invalid)?;
+    let after_hash: [u8; 32] = raw[176..208].try_into().map_err(invalid)?;
+    let model_phase = raw_u16(raw, 208).map_err(invalid)?;
+    let manifest = FaultClockCapabilityManifestV1::decode(manifest_payload).map_err(invalid)?;
+    let observation = decode_clock_impulse_observation(raw)?;
+    if expectation.operation != NodeFaultOperationV1::Apply
+        || expectation.command_kind != FaultCommandKind::ClockTransform as u16
+        || event.command_kind != expectation.command_kind
+        || raw_u64(raw, 16).map_err(invalid)? != event.observed_icount
+        || event.model_phase != model_phase
+        || event.model_phase != expectation.model_phase
+        || event.binding_hash != binding_hash
+        || expectation.binding_hash != binding_hash
+        || event.before_hash != before_hash
+        || event.after_hash != after_hash
+        || !expectation.source_ids.contains(&source_id)
+        || !manifest.rows.iter().any(|row| {
+            row.source_kind == source_kind
+                && crucible_shmem::fault_object_id_hash_v1(&row.id) == source_id
+        })
+        || !validate_clock_observation_parameters(&observation, expectation)
+    {
+        return Err(FaultCommandBridgeError::ClockEvidence);
+    }
+    FaultClockEvidenceV1 {
+        source_kind,
+        model_phase,
+        observed_icount,
+        source_id,
+        binding_hash,
+        before_hash,
+        after_hash,
+        manifest_sha256: sha2::Sha256::digest(manifest_payload).into(),
+        transform_generation: raw_u64(raw, 72).map_err(invalid)?,
+        opportunity: 0,
+        observation,
+    }
+    .encode()
+    .map_err(invalid)
+}
+
+fn validate_raw_clock_impulse(raw: &[u8]) -> Result<(), FaultCommandBridgeError> {
+    fn invalid<T>(_: T) -> FaultCommandBridgeError {
+        FaultCommandBridgeError::ClockEvidence
+    }
+    if raw.len() != 384
+        || &raw[..8] != b"CRUCCIM1"
+        || raw_u16(raw, 8).map_err(invalid)? != 1
+        || raw[12..16].iter().any(|byte| *byte != 0)
+        || raw[276..].iter().any(|byte| *byte != 0)
+    {
+        return Err(FaultCommandBridgeError::ClockEvidence);
+    }
+    Ok(())
+}
+
+fn decode_clock_impulse_observation(
+    raw: &[u8],
+) -> Result<FaultClockObservationV1, FaultCommandBridgeError> {
+    fn invalid<T>(_: T) -> FaultCommandBridgeError {
+        FaultCommandBridgeError::ClockEvidence
+    }
+    Ok(FaultClockObservationV1::Impulse {
+        transform_kind: raw_u16(raw, 10).map_err(invalid)? as u32,
+        raw_nanos: raw_u64(raw, 24).map_err(invalid)?,
+        old_value: raw_u64(raw, 32).map_err(invalid)?,
+        signed_value: raw_u64(raw, 40).map_err(invalid)? as i64,
+        ratio: [
+            raw_u64(raw, 48).map_err(invalid)?,
+            raw_u64(raw, 56).map_err(invalid)?,
+        ],
+        unsigned_value: raw_u64(raw, 64).map_err(invalid)?,
+        new_anchor: [
+            raw_u64(raw, 212).map_err(invalid)?,
+            raw_u64(raw, 220).map_err(invalid)?,
+        ],
+        new_drift_ratio: [
+            raw_u64(raw, 228).map_err(invalid)?,
+            raw_u64(raw, 236).map_err(invalid)?,
+        ],
+        new_additive_nanos: raw_u64(raw, 244).map_err(invalid)? as i64,
+        new_frozen_value: raw_u64(raw, 252).map_err(invalid)?,
+        new_freeze_release: raw_u32(raw, 260).map_err(invalid)?,
+        new_monotonicity: raw_u32(raw, 264).map_err(invalid)?,
+        new_overdue_policy: raw_u32(raw, 268).map_err(invalid)?,
+        new_source_state: raw_u32(raw, 272).map_err(invalid)?,
+    })
+}
+
+fn translate_clock_impulse_evidence(
+    raw: &[u8],
+    manifest_payload: &[u8],
+    result: &QemuFaultResult,
+    logical_icount_offset: u64,
+    expectation: &ClockCommandExpectation,
+) -> Result<Vec<u8>, FaultCommandBridgeError> {
+    fn invalid<T>(_: T) -> FaultCommandBridgeError {
+        FaultCommandBridgeError::ClockEvidence
+    }
+    validate_raw_clock_impulse(raw)?;
+    let source_kind = raw_u16(raw, 210).map_err(invalid)?;
+    let source_id: [u8; 32] = raw[80..112].try_into().map_err(invalid)?;
+    let binding_hash: [u8; 32] = raw[112..144].try_into().map_err(invalid)?;
+    let before_hash: [u8; 32] = raw[144..176].try_into().map_err(invalid)?;
+    let after_hash: [u8; 32] = raw[176..208].try_into().map_err(invalid)?;
+    let manifest = FaultClockCapabilityManifestV1::decode(manifest_payload).map_err(invalid)?;
+    let observation = decode_clock_impulse_observation(raw)?;
+    if expectation.operation != NodeFaultOperationV1::Apply
+        || before_hash != result.before_hash
+        || after_hash != result.after_hash
+        || result.command_kind != expectation.command_kind
+        || binding_hash != expectation.binding_hash
+        || raw_u64(raw, 16).map_err(invalid)? != result.observed_icount
+        || result.applied_icount != result.observed_icount
+        || raw_u16(raw, 208).map_err(invalid)? != expectation.model_phase
+        || !expectation.source_ids.contains(&source_id)
+        || !manifest.rows.iter().any(|row| {
+            row.source_kind == source_kind
+                && crucible_shmem::fault_object_id_hash_v1(&row.id) == source_id
+        })
+        || !validate_clock_observation_parameters(&observation, expectation)
+    {
+        return Err(FaultCommandBridgeError::ClockEvidence);
+    }
+    let observed_icount = raw_u64(raw, 16)
+        .map_err(invalid)?
+        .checked_add(logical_icount_offset)
+        .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
+    FaultClockEvidenceV1 {
+        source_kind,
+        model_phase: raw_u16(raw, 208).map_err(invalid)?,
+        observed_icount,
+        source_id,
+        binding_hash,
+        before_hash,
+        after_hash,
+        manifest_sha256: sha2::Sha256::digest(manifest_payload).into(),
+        transform_generation: raw_u64(raw, 72).map_err(invalid)?,
+        opportunity: 0,
+        observation,
+    }
+    .encode()
+    .map_err(invalid)
+}
+
 fn raw_u16(bytes: &[u8], offset: usize) -> Result<u16, FaultCommandBridgeError> {
     bytes
         .get(offset..offset + 2)
@@ -4187,9 +5311,37 @@ pub enum FaultCommandBridgeError {
     /// QEMU returned malformed or manifest-inconsistent hardware-error evidence.
     #[error("QEMU hardware-error evidence is invalid")]
     HardwareErrorEvidence,
+    /// QEMU returned malformed or manifest-inconsistent guest-clock evidence.
+    #[error("QEMU guest-clock evidence is invalid")]
+    ClockEvidence,
     /// QEMU rejected one public hardware-error identity binding.
     #[error("QEMU rejected hardware-error binding for row {row_index}: status {status}")]
     HardwareErrorManifestBind {
+        /// Zero-based manifest row index.
+        row_index: u32,
+        /// Negative errno-style status.
+        status: c_int,
+    },
+    /// The guest-clock registry reported an invalid row count.
+    #[error("QEMU clock manifest reported invalid row count {required}")]
+    ClockManifestCount {
+        /// Reported row count.
+        required: usize,
+    },
+    /// The immutable guest-clock registry changed between size and copy calls.
+    #[error("QEMU clock manifest changed from {expected} to {observed} rows")]
+    ClockManifestChanged {
+        /// First size query.
+        expected: usize,
+        /// Copy-call result.
+        observed: usize,
+    },
+    /// A raw guest-clock row contained invalid framing or identity state.
+    #[error("QEMU clock manifest row has invalid raw framing")]
+    ClockManifestRow,
+    /// QEMU rejected one public guest-clock identity binding.
+    #[error("QEMU rejected clock binding for row {row_index}: status {status}")]
+    ClockManifestBind {
         /// Zero-based manifest row index.
         row_index: u32,
         /// Negative errno-style status.
@@ -4552,6 +5704,7 @@ mod tests {
             register_manifest_payload: None,
             interrupt_manifest_payload: None,
             hardware_error_manifest_payload: None,
+            clock_manifest_payload: None,
             register_evidence_identity: None,
             instruction_evidence_identity: None,
             register_commands: BTreeMap::new(),
@@ -4560,6 +5713,8 @@ mod tests {
             active_instruction_bindings: BTreeMap::new(),
             exception_commands: BTreeMap::new(),
             memory_ecc_commands: BTreeMap::new(),
+            clock_commands: BTreeMap::new(),
+            active_clock_bindings: BTreeMap::new(),
             pending_command: None,
         };
         let command = |kind, sequence, node_hash| FaultCommandHeaderV1 {
@@ -5323,8 +6478,8 @@ mod tests {
             vmstate: true,
         };
         let manifest = complete_x86_hardware_manifest(row.clone())
-        .encode()
-        .expect("valid x86 hardware manifest");
+            .encode()
+            .expect("valid x86 hardware manifest");
         let expectation = ExceptionCommandExpectation {
             binding_hash: [12; 32],
             generation: 4,
@@ -5449,8 +6604,8 @@ mod tests {
             vmstate: true,
         };
         let manifest = complete_aarch64_hardware_manifest(row.clone())
-        .encode()
-        .expect("valid GHES manifest");
+            .encode()
+            .expect("valid GHES manifest");
         let mut raw = vec![0_u8; 1376];
         raw[..8].copy_from_slice(b"CRUCHWE1");
         raw[8..10].copy_from_slice(&1_u16.to_le_bytes());
@@ -5535,6 +6690,215 @@ mod tests {
         assert!(matches!(
             translate_hardware_ecc_evidence(&corrupt, &manifest, &correlated, &expectation),
             Err(FaultCommandBridgeError::HardwareErrorEvidence)
+        ));
+    }
+
+    #[test]
+    fn clock_timer_evidence_is_manifest_bound_and_typed() {
+        let row = FaultClockCapabilityRowV1 {
+            id: "arm-generic-counter-vcpu-0".to_owned(),
+            implementation: "target/arm/generic-timer".to_owned(),
+            source_kind: 7,
+            base_domain: 1,
+            timer_relationship: 1,
+            width_bits: 64,
+            flags: 0,
+            frequency_numerator: 62_500_000,
+            frequency_denominator: 1,
+            model_phase_mask: (1_u64 << 27) | (1_u64 << 28) | (1_u64 << 29),
+            vmstate: true,
+            monotonicity: 2,
+        };
+        let manifest = FaultClockCapabilityManifestV1 {
+            architecture: FaultCapabilityScope::Aarch64,
+            rows: vec![row.clone()],
+        }
+        .encode()
+        .unwrap_or_else(|error| panic!("clock manifest should encode: {error}"));
+        let mut raw = vec![0_u8; 384];
+        raw[..8].copy_from_slice(b"CRUCCTE1");
+        raw[8..10].copy_from_slice(&1_u16.to_le_bytes());
+        raw[10..12].copy_from_slice(&7_u16.to_le_bytes());
+        raw[12..14].copy_from_slice(&1_u16.to_le_bytes());
+        raw[16..20].copy_from_slice(&3_u32.to_le_bytes());
+        raw[20..24].copy_from_slice(&1_u32.to_le_bytes());
+        raw[24..32].copy_from_slice(&8_u64.to_le_bytes());
+        raw[32..40].copy_from_slice(&100_u64.to_le_bytes());
+        raw[40..48].copy_from_slice(&200_u64.to_le_bytes());
+        raw[48..56].copy_from_slice(&4_u64.to_le_bytes());
+        raw[56..64].copy_from_slice(&110_u64.to_le_bytes());
+        raw[64..72].copy_from_slice(&210_u64.to_le_bytes());
+        raw[72..80].copy_from_slice(&5_u64.to_le_bytes());
+        raw[80..88].copy_from_slice(&5_u64.to_le_bytes());
+        raw[88..120].copy_from_slice(&crucible_shmem::fault_object_id_hash_v1(&row.id));
+        raw[120..152].copy_from_slice(&[6; 32]);
+        raw[152..184].copy_from_slice(&[7; 32]);
+        raw[184..216].copy_from_slice(&[8; 32]);
+        raw[216..224].copy_from_slice(&9_u64.to_le_bytes());
+        let event = QemuFaultEvent {
+            command_kind: FaultCommandKind::ClockTransform as u16,
+            outcome: FaultEventOutcomeV1::Applied as u16,
+            model_phase: 30,
+            target_kind: NodeFaultTargetKindV1::Clock as u16,
+            event_sequence: 1,
+            rule_command_sequence: 2,
+            observed_icount: 17,
+            generation: 4,
+            binding_hash: [6; 32],
+            before_hash: [7; 32],
+            after_hash: [8; 32],
+            ..QemuFaultEvent::default()
+        };
+        let expectation = ClockCommandExpectation {
+            operation: NodeFaultOperationV1::Upsert,
+            command_kind: FaultCommandKind::ClockTransform as u16,
+            binding_hash: [6; 32],
+            model_phase: 30,
+            source_ids: vec![crucible_shmem::fault_object_id_hash_v1(&row.id)],
+            parameters: ClockCommandParameters::Transform {
+                kind: 1,
+                signed_value: 1,
+                ratio: [1, 1],
+                unsigned_value: 0,
+                process: None,
+                monotonicity: 2,
+                overdue_policy: 1,
+            },
+        };
+        let encoded = translate_clock_evidence(&raw, &manifest, &event, 22, &expectation)
+            .unwrap_or_else(|error| panic!("clock evidence should translate: {error}"));
+        let decoded = FaultClockEvidenceV1::decode(&encoded)
+            .unwrap_or_else(|error| panic!("clock evidence should decode: {error}"));
+        assert_eq!(decoded.observed_icount, 22);
+        assert!(matches!(
+            decoded.observation,
+            FaultClockObservationV1::TimerTransition { sequence: 8, .. }
+        ));
+        raw[224] = 1;
+        assert!(matches!(
+            translate_clock_evidence(&raw, &manifest, &event, 22, &expectation),
+            Err(FaultCommandBridgeError::ClockEvidence)
+        ));
+    }
+
+    #[test]
+    fn clock_impulse_result_and_event_use_the_same_typed_evidence() {
+        let row = FaultClockCapabilityRowV1 {
+            id: "x86-tsc-vcpu-0".to_owned(),
+            implementation: "target/i386/tcg".to_owned(),
+            source_kind: 1,
+            base_domain: 1,
+            timer_relationship: 0,
+            width_bits: 64,
+            flags: 1,
+            frequency_numerator: 1_000_000_000,
+            frequency_denominator: 1,
+            model_phase_mask: (1_u64 << 27) | (1_u64 << 30) | (1_u64 << 31),
+            vmstate: true,
+            monotonicity: 2,
+        };
+        let manifest = FaultClockCapabilityManifestV1 {
+            architecture: FaultCapabilityScope::X86_64,
+            rows: vec![row.clone()],
+        }
+        .encode()
+        .unwrap_or_else(|error| panic!("clock manifest should encode: {error}"));
+        let source_id = crucible_shmem::fault_object_id_hash_v1(&row.id);
+        let mut raw = vec![0_u8; 384];
+        raw[..8].copy_from_slice(b"CRUCCIM1");
+        raw[8..10].copy_from_slice(&1_u16.to_le_bytes());
+        raw[10..12].copy_from_slice(&1_u16.to_le_bytes());
+        raw[16..24].copy_from_slice(&17_u64.to_le_bytes());
+        raw[24..32].copy_from_slice(&100_u64.to_le_bytes());
+        raw[32..40].copy_from_slice(&101_u64.to_le_bytes());
+        raw[40..48].copy_from_slice(&5_u64.to_le_bytes());
+        raw[48..56].copy_from_slice(&1_u64.to_le_bytes());
+        raw[56..64].copy_from_slice(&1_u64.to_le_bytes());
+        raw[72..80].copy_from_slice(&5_u64.to_le_bytes());
+        raw[80..112].copy_from_slice(&source_id);
+        raw[112..144].copy_from_slice(&[6; 32]);
+        raw[144..176].copy_from_slice(&[7; 32]);
+        raw[176..208].copy_from_slice(&[8; 32]);
+        raw[208..210].copy_from_slice(&29_u16.to_le_bytes());
+        raw[210..212].copy_from_slice(&1_u16.to_le_bytes());
+        raw[212..220].copy_from_slice(&100_u64.to_le_bytes());
+        raw[220..228].copy_from_slice(&101_u64.to_le_bytes());
+        raw[228..236].copy_from_slice(&1_u64.to_le_bytes());
+        raw[236..244].copy_from_slice(&1_u64.to_le_bytes());
+        raw[244..252].copy_from_slice(&5_u64.to_le_bytes());
+        raw[264..268].copy_from_slice(&2_u32.to_le_bytes());
+        raw[268..272].copy_from_slice(&1_u32.to_le_bytes());
+        raw[272..276].copy_from_slice(&1_u32.to_le_bytes());
+        let event = QemuFaultEvent {
+            command_kind: FaultCommandKind::ClockTransform as u16,
+            outcome: FaultEventOutcomeV1::Applied as u16,
+            model_phase: 29,
+            target_kind: NodeFaultTargetKindV1::Clock as u16,
+            event_sequence: 1,
+            rule_command_sequence: 2,
+            observed_icount: 17,
+            generation: 4,
+            binding_hash: [6; 32],
+            before_hash: [7; 32],
+            after_hash: [8; 32],
+            ..QemuFaultEvent::default()
+        };
+        let result = QemuFaultResult {
+            command_kind: FaultCommandKind::ClockTransform as u16,
+            status: FaultResultStatus::Applied as u16,
+            phase: FaultBoundaryPhase::NodeBoundary as u16,
+            command_sequence: 2,
+            observed_icount: 17,
+            applied_icount: 17,
+            before_hash: [7; 32],
+            after_hash: [8; 32],
+            ..QemuFaultResult::default()
+        };
+        let expectation = ClockCommandExpectation {
+            operation: NodeFaultOperationV1::Apply,
+            command_kind: FaultCommandKind::ClockTransform as u16,
+            binding_hash: [6; 32],
+            model_phase: 29,
+            source_ids: vec![source_id],
+            parameters: ClockCommandParameters::Transform {
+                kind: 1,
+                signed_value: 5,
+                ratio: [1, 1],
+                unsigned_value: 0,
+                process: None,
+                monotonicity: 2,
+                overdue_policy: 1,
+            },
+        };
+        let from_event = translate_clock_evidence(&raw, &manifest, &event, 22, &expectation)
+            .unwrap_or_else(|error| panic!("clock impulse event should translate: {error}"));
+        let from_result =
+            translate_clock_impulse_evidence(&raw, &manifest, &result, 5, &expectation)
+                .unwrap_or_else(|error| panic!("clock impulse result should translate: {error}"));
+        assert_eq!(from_event, from_result);
+        let decoded = FaultClockEvidenceV1::decode(&from_event)
+            .unwrap_or_else(|error| panic!("clock impulse should decode: {error}"));
+        assert!(matches!(
+            decoded.observation,
+            FaultClockObservationV1::Impulse {
+                transform_kind: 1,
+                new_additive_nanos: 5,
+                ..
+            }
+        ));
+        let mut mismatched = expectation.clone();
+        mismatched.parameters = ClockCommandParameters::Transform {
+            kind: 1,
+            signed_value: 6,
+            ratio: [1, 1],
+            unsigned_value: 0,
+            process: None,
+            monotonicity: 2,
+            overdue_policy: 1,
+        };
+        assert!(matches!(
+            translate_clock_evidence(&raw, &manifest, &event, 22, &mismatched),
+            Err(FaultCommandBridgeError::ClockEvidence)
         ));
     }
 }

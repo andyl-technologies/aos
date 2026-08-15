@@ -1,4 +1,4 @@
-# Patch 0059 — `crucible-fault-vmstate`
+# Patch 0070 — `crucible-fault-vmstate`
 
 ## Purpose
 
@@ -10,7 +10,7 @@ may ship without this patch.
 
 - Provides `qemu.fault-vmstate.v1` and the final
   `qemu.fault-system.complete.v1` marker.
-- Depends on 0047–0058 and the existing QMP snapshot/restore, raw-state export,
+- Depends on 0047–0069 and the existing QMP snapshot/restore, raw-state export,
   process attestation, and fingerprint facilities.
 
 ## VMState sections
@@ -123,7 +123,7 @@ The DCO-signed commit updates `_series.nix`, patch catalog/count, `LICENSES.md`,
 ABI vectors, source closure, and release gates.
 
 - **[QFP-STATE-1]** `qemu.fault-system.complete.v1` MUST NOT be emitted unless
-  every 0047–0059 capability and VMState subsection passes its live gate.
+  every 0047–0070 capability and VMState subsection passes its live gate.
 - **[QFP-STATE-2]** Restore MUST never omit, default, or translate fault state
   from another semantic version.
 - **[QFP-STATE-3]** The implementation PR cannot leave draft until the aggregate

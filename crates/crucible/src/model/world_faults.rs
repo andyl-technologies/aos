@@ -2605,20 +2605,270 @@ impl WorldNodeInterrupt {
     }
 }
 
+/// Closed guest-visible clock source family.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorldNodeClockSourceKind {
+    /// x86 timestamp counter.
+    X86Tsc,
+    /// x86 MC146818-compatible real-time clock.
+    X86Rtc,
+    /// x86 i8254 programmable interval timer.
+    X86Pit,
+    /// x86 high precision event timer.
+    X86Hpet,
+    /// x86 local APIC timer.
+    X86ApicTimer,
+    /// x86 ACPI power-management timer.
+    X86AcpiPmTimer,
+    /// AArch64 architectural generic counter.
+    ArmCounter,
+    /// AArch64 PL031-compatible real-time clock.
+    ArmRtc,
+    /// A registered device-specific clock.
+    Device,
+}
+
+/// Deterministic coordinate underlying a guest-visible clock source.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorldNodeClockBaseDomain {
+    /// Deterministic scheduler virtual time.
+    SchedulerVirtual,
+    /// A deterministic RTC epoch derived from scheduler virtual time.
+    RtcEpoch,
+}
+
+/// Relationship between a clock source and guest-programmable timers.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorldNodeClockTimerRelationship {
+    /// The source has no programmable timer deadline.
+    None,
+    /// Guest timer deadlines are programmed in this source's domain.
+    Programmable,
+}
+
+/// Required default policy for a clock value that moves backward.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorldNodeClockMonotonicity {
+    /// The source contract permits backward values or architectural wrap.
+    AllowBackward,
+    /// QEMU clamps backward values to the last observed value.
+    ClampMonotonic,
+    /// QEMU terminally faults the source on a backward value.
+    FaultOnBackward,
+}
+
 /// One guest-visible clock source exposed by the live fault ABI.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorldNodeClockSource {
     /// Stable clock-source ID.
     pub id: SignalId,
+    /// QEMU subsystem that implements reads and related timer deadlines.
+    pub implementation: String,
+    /// Closed architecture or device clock family.
+    pub source_kind: WorldNodeClockSourceKind,
+    /// Deterministic coordinate underlying the source.
+    pub base_domain: WorldNodeClockBaseDomain,
+    /// Relationship to a guest-programmable timer.
+    pub timer_relationship: WorldNodeClockTimerRelationship,
+    /// Architecturally visible source width.
+    pub width_bits: u32,
+    /// Whether the architectural source wraps at its declared width.
+    pub wraps: bool,
+    /// Whether the architecture can report a source read error.
+    pub read_error: bool,
+    /// Exact tick-frequency numerator in ticks per second.
+    pub frequency_numerator: u64,
+    /// Exact tick-frequency denominator in ticks per second.
+    pub frequency_denominator: u64,
+    /// Exact clock opportunities implemented by the QEMU source.
+    pub model_phases: Vec<FaultPhase>,
+    /// Required handling for backward transformed values.
+    pub monotonicity: WorldNodeClockMonotonicity,
+    /// Whether all source, transform, timer, and synchronization state migrates.
+    pub vmstate: bool,
     /// Exact clock transform semantic version.
     pub semantic_version: u16,
-    /// Whether the guest contract requires monotonic reads.
-    pub monotonic: bool,
 }
 impl WorldNodeClockSource {
     const fn id(&self) -> &SignalId {
         &self.id
+    }
+
+    /// Builds the exact QEMU TCG x86 timestamp-counter contract.
+    #[must_use]
+    pub fn qemu_x86_tsc_v1(id: SignalId) -> Self {
+        Self {
+            id,
+            implementation: "target/i386/tcg".to_owned(),
+            source_kind: WorldNodeClockSourceKind::X86Tsc,
+            base_domain: WorldNodeClockBaseDomain::SchedulerVirtual,
+            timer_relationship: WorldNodeClockTimerRelationship::None,
+            width_bits: 64,
+            wraps: true,
+            read_error: false,
+            frequency_numerator: 1_000_000_000,
+            frequency_denominator: 1,
+            model_phases: vec![
+                FaultPhase::ClockRead,
+                FaultPhase::Synchronize,
+                FaultPhase::SourceSwitch,
+            ],
+            monotonicity: WorldNodeClockMonotonicity::ClampMonotonic,
+            vmstate: true,
+            semantic_version: 1,
+        }
+    }
+
+    /// Builds the exact QEMU MC146818 RTC contract.
+    #[must_use]
+    pub fn qemu_x86_rtc_v1(id: SignalId) -> Self {
+        Self::qemu_programmable_v1(
+            id,
+            "hw/rtc/mc146818rtc",
+            WorldNodeClockSourceKind::X86Rtc,
+            WorldNodeClockBaseDomain::RtcEpoch,
+            64,
+            false,
+            1_000_000_000,
+            WorldNodeClockMonotonicity::AllowBackward,
+        )
+    }
+
+    /// Builds the exact QEMU i8254 PIT contract.
+    #[must_use]
+    pub fn qemu_x86_pit_v1(id: SignalId) -> Self {
+        Self::qemu_programmable_v1(
+            id,
+            "hw/timer/i8254",
+            WorldNodeClockSourceKind::X86Pit,
+            WorldNodeClockBaseDomain::SchedulerVirtual,
+            64,
+            false,
+            1_000_000_000,
+            WorldNodeClockMonotonicity::AllowBackward,
+        )
+    }
+
+    /// Builds the exact QEMU HPET contract.
+    #[must_use]
+    pub fn qemu_x86_hpet_v1(id: SignalId) -> Self {
+        Self::qemu_programmable_v1(
+            id,
+            "hw/timer/hpet",
+            WorldNodeClockSourceKind::X86Hpet,
+            WorldNodeClockBaseDomain::SchedulerVirtual,
+            64,
+            true,
+            10_000_000,
+            WorldNodeClockMonotonicity::AllowBackward,
+        )
+    }
+
+    /// Builds the exact QEMU userspace local-APIC timer contract.
+    #[must_use]
+    pub fn qemu_x86_apic_timer_v1(id: SignalId) -> Self {
+        Self::qemu_programmable_v1(
+            id,
+            "hw/intc/apic",
+            WorldNodeClockSourceKind::X86ApicTimer,
+            WorldNodeClockBaseDomain::SchedulerVirtual,
+            64,
+            false,
+            1_000_000_000,
+            WorldNodeClockMonotonicity::AllowBackward,
+        )
+    }
+
+    /// Builds the exact QEMU ACPI power-management timer contract.
+    #[must_use]
+    pub fn qemu_x86_acpi_pm_timer_v1(id: SignalId) -> Self {
+        Self::qemu_programmable_v1(
+            id,
+            "hw/acpi/core",
+            WorldNodeClockSourceKind::X86AcpiPmTimer,
+            WorldNodeClockBaseDomain::SchedulerVirtual,
+            24,
+            true,
+            3_579_545,
+            WorldNodeClockMonotonicity::AllowBackward,
+        )
+    }
+
+    /// Builds the exact QEMU AArch64 architectural-counter contract.
+    #[must_use]
+    pub fn qemu_arm_counter_v1(id: SignalId, frequency_hz: u64) -> Self {
+        Self::qemu_programmable_v1(
+            id,
+            "target/arm/generic-timer",
+            WorldNodeClockSourceKind::ArmCounter,
+            WorldNodeClockBaseDomain::SchedulerVirtual,
+            64,
+            false,
+            frequency_hz,
+            WorldNodeClockMonotonicity::ClampMonotonic,
+        )
+    }
+
+    /// Builds the exact QEMU PL031 RTC contract.
+    #[must_use]
+    pub fn qemu_arm_rtc_v1(id: SignalId) -> Self {
+        Self::qemu_programmable_v1(
+            id,
+            "hw/rtc/pl031",
+            WorldNodeClockSourceKind::ArmRtc,
+            WorldNodeClockBaseDomain::RtcEpoch,
+            32,
+            true,
+            1,
+            WorldNodeClockMonotonicity::AllowBackward,
+        )
+    }
+
+    fn qemu_programmable_v1(
+        id: SignalId,
+        implementation: &str,
+        source_kind: WorldNodeClockSourceKind,
+        base_domain: WorldNodeClockBaseDomain,
+        width_bits: u32,
+        wraps: bool,
+        frequency_numerator: u64,
+        monotonicity: WorldNodeClockMonotonicity,
+    ) -> Self {
+        Self {
+            id,
+            implementation: implementation.to_owned(),
+            source_kind,
+            base_domain,
+            timer_relationship: WorldNodeClockTimerRelationship::Programmable,
+            width_bits,
+            wraps,
+            read_error: false,
+            frequency_numerator,
+            frequency_denominator: 1,
+            model_phases: vec![
+                FaultPhase::ClockRead,
+                FaultPhase::Arm,
+                FaultPhase::Fire,
+                FaultPhase::Synchronize,
+                FaultPhase::SourceSwitch,
+            ],
+            monotonicity,
+            vmstate: true,
+            semantic_version: 1,
+        }
     }
 }
 
@@ -2913,12 +3163,74 @@ impl WorldNodeFaultCapabilities {
                 "node interrupt delivery-drop state",
             )?;
         }
-        require(
-            self.clock_sources
-                .iter()
-                .all(|source| source.semantic_version == 1),
-            "node clock semantic version",
-        )?;
+        require(!self.clock_sources.is_empty(), "node clock manifest")?;
+        for source in &self.clock_sources {
+            let architecture_matches = match self.architecture {
+                WorldNodeArchitecture::X86_64 => matches!(
+                    source.source_kind,
+                    WorldNodeClockSourceKind::X86Tsc
+                        | WorldNodeClockSourceKind::X86Rtc
+                        | WorldNodeClockSourceKind::X86Pit
+                        | WorldNodeClockSourceKind::X86Hpet
+                        | WorldNodeClockSourceKind::X86ApicTimer
+                        | WorldNodeClockSourceKind::X86AcpiPmTimer
+                        | WorldNodeClockSourceKind::Device
+                ),
+                WorldNodeArchitecture::Aarch64 => matches!(
+                    source.source_kind,
+                    WorldNodeClockSourceKind::ArmCounter
+                        | WorldNodeClockSourceKind::ArmRtc
+                        | WorldNodeClockSourceKind::Device
+                ),
+            };
+            require(architecture_matches, "node clock architecture")?;
+            require(
+                !source.implementation.is_empty()
+                    && source.implementation.len() <= 96
+                    && source
+                        .implementation
+                        .bytes()
+                        .all(|byte| byte.is_ascii_graphic() && !byte.is_ascii_whitespace()),
+                "node clock implementation",
+            )?;
+            require(
+                source.width_bits > 0
+                    && source.width_bits <= 64
+                    && source.frequency_numerator > 0
+                    && source.frequency_denominator > 0
+                    && source.semantic_version == 1
+                    && source.vmstate,
+                "node clock numeric contract",
+            )?;
+            require(
+                !source.model_phases.is_empty()
+                    && source.model_phases.contains(&FaultPhase::ClockRead)
+                    && source.model_phases.iter().all(|phase| {
+                        matches!(
+                            phase,
+                            FaultPhase::ClockRead
+                                | FaultPhase::Arm
+                                | FaultPhase::Fire
+                                | FaultPhase::Synchronize
+                                | FaultPhase::SourceSwitch
+                        )
+                    })
+                    && !source
+                        .model_phases
+                        .windows(2)
+                        .any(|pair| pair[0] >= pair[1]),
+                "node clock model phases",
+            )?;
+            let programmable =
+                source.timer_relationship == WorldNodeClockTimerRelationship::Programmable;
+            require(
+                programmable
+                    == (source.model_phases.contains(&FaultPhase::Arm)
+                        && source.model_phases.contains(&FaultPhase::Fire)),
+                "node clock timer relationship",
+            )?;
+        }
+        hard_count(&self.clock_sources, "node clock sources", 4_096)?;
         require(
             self.accelerators
                 .iter()
