@@ -31,7 +31,10 @@
     builtins.concatStringsSep "\n"
     (map (patch: let
       patchHash = builtins.hashFile "sha256" (patchDir + "/${patch.file}");
-    in "${patch.file}|${patch.branchCommit}|${patch.branchTree}|${patchHash}")
+      patchSubject =
+        patch.branchSubject
+        or (builtins.replaceStrings [".patch"] [""] patch.file);
+    in "${patch.file}|${patch.branchCommit}|${patch.branchTree}|${patchHash}|${patchSubject}")
     series.patches);
 in
   pkgs.mkDerivation {
@@ -93,7 +96,7 @@ in
           for patch_name in ${builtins.concatStringsSep " " patchFiles}; do
             prefix_index=$((prefix_index + 1))
             metadata=$(grep -F -m1 "$patch_name|" "$prefixMetadataPath")
-            IFS='|' read -r metadata_patch branch_commit branch_tree expected_patch_hash <<EOF
+            IFS='|' read -r metadata_patch branch_commit branch_tree expected_patch_hash patch_subject <<EOF
           $metadata
           EOF
             test "$metadata_patch" = "$patch_name"
@@ -110,7 +113,7 @@ in
             GIT_COMMITTER_NAME="${series.deterministicAuthorName}" \
             GIT_COMMITTER_EMAIL="${series.deterministicAuthorEmail}" \
             GIT_COMMITTER_DATE="${series.deterministicPatchDate}" \
-              git -c commit.gpgsign=false commit -q -s -m "''${patch_name%.patch}"
+              git -c commit.gpgsign=false commit -q -s -m "$patch_subject"
             actual_branch_commit=$(git rev-parse HEAD)
             actual_branch_tree=$(git rev-parse HEAD^{tree})
             test "$actual_branch_commit" = "$branch_commit"

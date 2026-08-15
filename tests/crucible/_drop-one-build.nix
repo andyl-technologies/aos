@@ -27,6 +27,15 @@
   patchCount = builtins.length patchFiles;
   droppedPatch = builtins.elemAt patchFiles (index - 1);
   configureFlags = lib.escapeShellArgs qemuPackage.passthru.qemuConfigureFlags;
+  patchReplayMetadata =
+    (builtins.concatStringsSep "\n"
+      (map (patch: let
+        subject =
+          patch.branchSubject
+          or (builtins.replaceStrings [".patch"] [""] patch.file);
+      in "${patch.file}|${subject}")
+      series.patches))
+    + "\n";
 in
   pkgs.mkDerivation {
     pname = "crucible-drop-one-build-${toString index}";
@@ -65,6 +74,8 @@ in
     DROPPED_PATCH = droppedPatch;
     DROP_INDEX = toString index;
     PATCH_COUNT = toString patchCount;
+    inherit patchReplayMetadata;
+    passAsFile = ["patchReplayMetadata"];
 
     phases = [
       {
@@ -120,7 +131,7 @@ in
 
           : > "$TMPDIR/commits"
           git rev-parse HEAD >> "$TMPDIR/commits"
-          for patch_name in ${builtins.concatStringsSep " " patchFiles}; do
+          while IFS='|' read -r patch_name patch_subject; do
             patch --batch --forward --fuzz=0 -p1 -i "${patchDir}/$patch_name" > /dev/null
             git add -A
             GIT_AUTHOR_NAME="${series.deterministicAuthorName}" \
@@ -129,9 +140,9 @@ in
             GIT_COMMITTER_NAME="${series.deterministicAuthorName}" \
             GIT_COMMITTER_EMAIL="${series.deterministicAuthorEmail}" \
             GIT_COMMITTER_DATE="${series.deterministicPatchDate}" \
-              git -c commit.gpgsign=false commit -q -s -m "''${patch_name%.patch}"
+              git -c commit.gpgsign=false commit -q -s -m "$patch_subject"
             git rev-parse HEAD >> "$TMPDIR/commits"
-          done
+          done < "$patchReplayMetadataPath"
           head_commit=$(git rev-parse HEAD)
           test "$head_commit" = "${series.patchBranchHeadCommit}"
 
