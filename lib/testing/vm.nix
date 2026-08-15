@@ -38,7 +38,7 @@
   # ---------------------------------------------------------------------------
   # Build a GPT disk image for VM testing
   # ---------------------------------------------------------------------------
-  # Produces a single $out/disk.img with four partitions matching the
+  # Produces a single $out/disk.img with the partitions needed to match the
   # production layout closely enough for the production initrd and early-boot
   # provisioning services to run unchanged against it:
   #
@@ -62,6 +62,9 @@
   #              test units) and package state used by fleet tests.
   #              Label `var` via GPT partlabel so mount-var.service
   #              finds it.
+  #   6  root-b — an empty slot with the same capacity as root-a. Baked
+  #              disks expose the complete A/B device contract even though
+  #              direct-kernel tests initially boot only slot A.
   #
   # Spec v12 §5.4 names /var/etc as the tight host-persistent
   # allowlist (machine-id, ssh host keys). For test infrastructure we
@@ -436,7 +439,8 @@
                 VAR_SECTORS=$(( VAR_SIZE_MIB * 1024 * 1024 / 512 ))
                 SENTINEL_START=$(( SWAP_START + SWAP_SECTORS ))
                 VAR_START=$(( SENTINEL_START + SENTINEL_SECTORS ))
-                DISK_SECTORS=$(( VAR_START + VAR_SECTORS + 2048 ))
+                ROOT_B_START=$(( VAR_START + VAR_SECTORS ))
+                DISK_SECTORS=$(( ROOT_B_START + ROOT_SECTORS + 2048 ))
               ''
               else ''
                 DISK_SECTORS=$(( SWAP_START + SWAP_SECTORS + 2048 ))
@@ -461,6 +465,7 @@
               echo "size=$SWAP_SECTORS, type=0657FD6D-A4AB-43C4-84E5-0933C84B4F4F, name=swap"
               ${lib.optionalString bakeVar ''echo "size=$SENTINEL_SECTORS, type=163BEA60-58C7-46E7-B69A-6846A5A688AF, name=aos-provenance-fallback-v1"''}
               ${lib.optionalString bakeVar ''echo "size=$VAR_SECTORS,  type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=var"''}
+              ${lib.optionalString bakeVar ''echo "size=$ROOT_SECTORS, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name=root-b"''}
             } > ptable.sfdisk
             sfdisk disk.img < ptable.sfdisk
 
