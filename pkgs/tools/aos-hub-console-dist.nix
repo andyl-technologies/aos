@@ -43,7 +43,7 @@ in
       inherit src;
       name = "aos-vendor-${version}";
       sourceRoot = "source/crates";
-      hash = "sha256-byK2knHIciv8rLm+TLiOfTXNU9m/u7idWbSsvG6mIys=";
+      hash = "sha256-u3sHtecmdm6fwDpMglTLamokYmKc/v15BsRIgZT1iiw=";
     };
 
     phases = [
