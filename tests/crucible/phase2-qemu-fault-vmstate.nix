@@ -55,6 +55,15 @@
         {label = "canonical deferred result payload"; needle = "qemu_crucible_fault_node_result_payload";}
         {label = "accelerator VMState version increment"; needle = "+    .version = 4,";}
       ]
+      else if lib.hasPrefix "0075-" patchName
+      then [
+        {label = "mandatory event envelope version"; needle = "qemu_plugin_crucible_fault_event_envelope_version";}
+        {label = "authenticated request digest"; needle = "node_sha256(rule->payload, rule->payload_len, envelope_header + 24)";}
+        {label = "checkpointed original request"; needle = "g_byte_array_append(envelope, rule->payload, rule->payload_len)";}
+        {label = "exact accelerator sequence"; needle = "sequence != expected_sequence";}
+        {label = "original opportunity identity"; needle = "qemu_crucible_fault_rule_opportunity_hash";}
+        {label = "clock arithmetic evidence"; needle = "stq_le_p(record + 276, old_additive)";}
+      ]
       else [
         {label = "final fault-system manifest"; needle = "qemu_plugin_crucible_fault_system_manifest";}
         {label = "complete fault-system capability"; needle = "qemu.fault-system.complete.v1";}

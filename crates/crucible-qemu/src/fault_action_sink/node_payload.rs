@@ -1,12 +1,12 @@
 //! Translation from resolved signal actions to the public QEMU node payload.
 
 use crucible::model::{
-    AcceleratorTransition, BindingActionKind, ClockMonotonicityPolicy, ClockMutation,
-    ClockOverdueTimerPolicy, ContentHash, CpuServiceDiscipline, EffectSpecification, FaultObjectId,
-    FaultPhase, InstructionMutation, InterruptMutation, MemoryAccessMutation, MemoryAddressSpace,
-    MemoryEccKind, MemoryRegionKind, NodeEffectSpecification, NodeHangScope,
-    NodeLifecycleTransition, NodeStatePolicy, RegisterMutation, ResolvedBindingAction,
-    ResolvedFaultTarget, VcpuState,
+    AcceleratorTransition, BindingActionCause, BindingActionKind, ClockMonotonicityPolicy,
+    ClockMutation, ClockOverdueTimerPolicy, ContentHash, CpuServiceDiscipline, EffectSpecification,
+    FaultObjectId, FaultPhase, InstructionMutation, InterruptMutation, MemoryAccessMutation,
+    MemoryAddressSpace, MemoryEccKind, MemoryRegionKind, NodeEffectSpecification, NodeHangScope,
+    NodeLifecycleTransition, NodeStatePolicy, OpportunityPayload, RegisterMutation,
+    ResolvedBindingAction, ResolvedFaultTarget, VcpuState,
 };
 use crucible_shmem::{
     FaultCommandKind, NODE_FAULT_POLICY_JSON_MAGIC_V1, NodeFaultFieldV1, NodeFaultOperationV1,
@@ -37,7 +37,12 @@ pub(super) fn encode_node_action(
         BindingActionKind::RemovePersistent => NodeFaultOperationV1::Remove,
         BindingActionKind::Apply => NodeFaultOperationV1::Apply,
     };
-    let fields = payload_fields(operation, action.effect.specification(), &mut target_fields)?;
+    let fields = payload_fields(
+        operation,
+        action.effect.specification(),
+        &action.cause,
+        &mut target_fields,
+    )?;
     let payload = NodeFaultPayloadV1 {
         command_kind,
         operation,

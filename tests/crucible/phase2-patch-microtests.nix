@@ -479,6 +479,13 @@
         patchName = "0074-crucible-arm-accelerator-result-opportunities.patch";
       };
     }
+    {
+      patch = "0075-crucible-restore-authenticated-fault-event-requests.patch";
+      check = import ./phase2-qemu-fault-vmstate.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0075-crucible-restore-authenticated-fault-event-requests.patch";
+      };
+    }
   ];
 
   microtestPatchNames =

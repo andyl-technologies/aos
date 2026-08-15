@@ -134,7 +134,12 @@ impl NodeFaultPayloadV1 {
             FaultCommandKind::AcceleratorLifecycle => {
                 &[(P1, Ty::Hash), (P2, Ty::U32), (P3, Ty::U32), (P4, Ty::U32)][..]
             }
-            FaultCommandKind::AcceleratorResultTransform => &[(P1, Ty::Bytes), (P2, Ty::Bytes)][..],
+            FaultCommandKind::AcceleratorResultTransform => &[
+                (P1, Ty::Bytes),
+                (P2, Ty::Bytes),
+                (P3, Ty::U64),
+                (P4, Ty::Hash),
+            ][..],
             FaultCommandKind::AcceleratorMemoryEvent => &[
                 (P1, Ty::U64),
                 (P2, Ty::U64),

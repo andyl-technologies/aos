@@ -352,7 +352,11 @@ impl FaultActionSink for HostFaultActionSink {
             .map(|action| PreparedActionResult {
                 action: action.id(),
                 precondition: Some(self.state.digest),
-                observation: observation(action, FaultObservationKind::EffectApplied, next.digest),
+                observation: observation(
+                    action,
+                    FaultObservationKind::EffectCommitted,
+                    next.digest,
+                ),
             })
             .collect::<Vec<_>>();
         self.prepared = Some(PreparedHostFaultBatch {

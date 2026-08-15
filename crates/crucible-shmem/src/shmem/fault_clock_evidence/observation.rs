@@ -131,6 +131,8 @@ pub enum FaultClockObservationV1 {
         new_drift_ratio: [u64; 2],
         /// Active offset and accumulated jumps after the impulse.
         new_additive_nanos: i64,
+        /// Active offset and accumulated jumps before the impulse.
+        old_additive_nanos: i64,
         /// Held value after the impulse when already frozen, otherwise zero.
         new_frozen_value: u64,
         /// Closed freeze-release tag after the impulse.

@@ -38,6 +38,57 @@ pub enum AcceleratorClass {
     Fpga = 3,
 }
 
+/// Encodes the immutable fields of an accelerator job for content hashing.
+///
+/// The material deliberately excludes transport identity (`sequence` and
+/// `generation`) and the target device identity. Those values are bound by the
+/// surrounding fault opportunity and target. Including only the job schema,
+/// queue, service demand, output contract, and input bytes lets a scenario
+/// compute the same digest before the request crosses the process boundary.
+///
+/// # Errors
+///
+/// Returns [`AcceleratorEntryError`] when a job kind or service demand is zero,
+/// an output capacity exceeds the transport limit, or the input is oversized.
+#[allow(clippy::too_many_arguments)]
+pub fn canonical_accelerator_job_material(
+    class: AcceleratorClass,
+    job_kind: u16,
+    queue_id: u16,
+    service_units: u64,
+    output_capacity: u32,
+    data: &[u8],
+) -> Result<Vec<u8>, AcceleratorEntryError> {
+    if job_kind == 0
+        || service_units == 0
+        || output_capacity as usize > ACCELERATOR_ENTRY_DATA_BYTES
+    {
+        return Err(AcceleratorEntryError::InvalidJob);
+    }
+    let data_len =
+        u32::try_from(data.len()).map_err(|_error| AcceleratorEntryError::DataTooLarge {
+            len: data.len(),
+            capacity: ACCELERATOR_ENTRY_DATA_BYTES,
+        })?;
+    if data.len() > ACCELERATOR_ENTRY_DATA_BYTES {
+        return Err(AcceleratorEntryError::DataTooLarge {
+            len: data.len(),
+            capacity: ACCELERATOR_ENTRY_DATA_BYTES,
+        });
+    }
+
+    let mut bytes = Vec::with_capacity(58 + data.len());
+    bytes.extend_from_slice(b"crucible.accelerator-job.v1\0");
+    bytes.extend_from_slice(&(class as u16).to_le_bytes());
+    bytes.extend_from_slice(&job_kind.to_le_bytes());
+    bytes.extend_from_slice(&queue_id.to_le_bytes());
+    bytes.extend_from_slice(&service_units.to_le_bytes());
+    bytes.extend_from_slice(&output_capacity.to_le_bytes());
+    bytes.extend_from_slice(&data_len.to_le_bytes());
+    bytes.extend_from_slice(data);
+    Ok(bytes)
+}
+
 /// Direction of an accelerator SPSC ring.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AcceleratorRingDirection {
@@ -593,5 +644,60 @@ mod tests {
         assert!(!cancellation.is_completion());
         assert_eq!(cancellation.data(), Ok(&[][..]));
         assert_eq!(cancellation.output_capacity(), 64);
+    }
+
+    #[test]
+    fn immutable_job_material_excludes_transport_identity() {
+        let material = canonical_accelerator_job_material(
+            AcceleratorClass::Tpu,
+            1,
+            0,
+            1_000,
+            4,
+            &[1, 0, 2, 0, 1, 0, 2, 3, 4, 5],
+        )
+        .unwrap_or_else(|error| panic!("job material should encode: {error}"));
+        let first = AcceleratorEntry::new(
+            2,
+            7,
+            [1; 32],
+            AcceleratorClass::Tpu,
+            1,
+            0,
+            0,
+            false,
+            1_000,
+            4,
+            &[1, 0, 2, 0, 1, 0, 2, 3, 4, 5],
+        )
+        .unwrap_or_else(|error| panic!("first request should build: {error}"));
+        let second = AcceleratorEntry::new(
+            99,
+            88,
+            [2; 32],
+            AcceleratorClass::Tpu,
+            1,
+            0,
+            0,
+            false,
+            1_000,
+            4,
+            &[1, 0, 2, 0, 1, 0, 2, 3, 4, 5],
+        )
+        .unwrap_or_else(|error| panic!("second request should build: {error}"));
+
+        assert_ne!(first.canonical_bytes(), second.canonical_bytes());
+        assert_eq!(
+            material,
+            canonical_accelerator_job_material(
+                AcceleratorClass::Tpu,
+                1,
+                0,
+                1_000,
+                4,
+                &[1, 0, 2, 0, 1, 0, 2, 3, 4, 5],
+            )
+            .unwrap_or_else(|error| panic!("same job should encode: {error}"))
+        );
     }
 }

@@ -5,12 +5,13 @@ use super::*;
 pub(super) fn payload_fields(
     operation: NodeFaultOperationV1,
     specification: &EffectSpecification,
+    cause: &BindingActionCause,
     target_fields: &mut Vec<NodeFaultFieldV1>,
 ) -> Result<Vec<NodeFaultFieldV1>, NodeFaultPayloadError> {
     if operation == NodeFaultOperationV1::Remove {
         return Ok(Vec::new());
     }
-    let mut fields = effect_fields(specification)?;
+    let mut fields = effect_fields(specification, cause)?;
     fields.append(target_fields);
     Ok(fields)
 }

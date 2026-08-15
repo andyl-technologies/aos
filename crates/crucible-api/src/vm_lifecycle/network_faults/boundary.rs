@@ -1876,7 +1876,7 @@ mod tests {
     use super::*;
     use crucible::model::{
         BindingActionCause, EffectLifetime, EffectRequest, NetworkEffectSpecification,
-        ResolvedMappingOutput,
+        OpportunityPayload, ResolvedMappingOutput,
     };
 
     fn id(value: &str) -> FaultObjectId {
@@ -2273,7 +2273,16 @@ mod tests {
                 virtual_nanos: 10,
                 retired_instructions: None,
             },
-            cause: BindingActionCause::Opportunity(ContentHash::from_bytes(b"control-opportunity")),
+            cause: BindingActionCause::Opportunity {
+                identity: ContentHash::from_bytes(b"control-opportunity"),
+                payload: OpportunityPayload::NetworkControl {
+                    technology: id("ethernet"),
+                    event_sequence: 1,
+                    request_digest: ContentHash::from_bytes(b"request"),
+                    result_schema: id("route-result"),
+                    result_digest: ContentHash::from_bytes(b"result"),
+                },
+            },
             expected_precondition: None,
         }
     }

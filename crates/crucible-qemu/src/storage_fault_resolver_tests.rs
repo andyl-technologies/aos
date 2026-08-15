@@ -380,7 +380,10 @@ fn bind_to_opportunity(
     opportunity: &FaultOpportunity,
 ) -> ResolvedBindingAction {
     action.opportunity = Some(opportunity.id());
-    action.cause = BindingActionCause::Opportunity(opportunity.id());
+    action.cause = BindingActionCause::Opportunity {
+        identity: opportunity.id(),
+        payload: opportunity.payload().clone(),
+    };
     action
 }
 

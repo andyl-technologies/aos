@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "9d0cb9428778f8df8dc5901382bd2d72baecc2dceecd10520ad6f251544ae262";
+  patchBranchBundleSha256 = "7cd84438ba12f0939fd3f2a8d6672626c9bfb3a4626fefecbf8dcab2ae48c78f";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "27ba14c1667da56b9ec7b385ee033226142bd0ce";
+  patchBranchHeadCommit = "9e59d692567bfa96c67c779b9870baf592e7053c";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -675,6 +675,16 @@ let
       class = "F";
       enforces = "QFP-ACCEL-3,QFP-RESULT-1,QFP-EVENT-1,FAULT-ORDER";
       capability = "atomic one-shot accelerator result arming with durable reservations and typed deferred completion results";
+    }
+    {
+      file = "0075-crucible-restore-authenticated-fault-event-requests.patch";
+      branchSubject = "crucible: restore authenticated fault event requests";
+      branchCommit = "9e59d692567bfa96c67c779b9870baf592e7053c";
+      branchTree = "524522633c502d086256ea8d149c581d6415bf4a";
+      catalogName = "crucible-authenticated-event-request-envelope";
+      class = "F";
+      enforces = "QFP-STATE-2,QFP-ACCEL-3,QFP-EVENT-1,FAULT-ORDER";
+      capability = "mandatory authenticated request/evidence envelopes for fresh-process restore and exact accelerator-opportunity binding";
     }
   ];
   catalogOnlyCapabilities = [

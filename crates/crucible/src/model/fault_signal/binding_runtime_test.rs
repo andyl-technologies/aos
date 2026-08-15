@@ -41,7 +41,7 @@ fn prepared_actions(actions: &[ResolvedBindingAction]) -> PreparedActionBatch {
                         BindingActionKind::RemovePersistent => {
                             FaultObservationKind::BindingDeactivation
                         }
-                        BindingActionKind::Apply => FaultObservationKind::EffectApplied,
+                        BindingActionKind::Apply => FaultObservationKind::EffectCommitted,
                     },
                     coordinate: action.coordinate,
                     binding: Some(action.binding.clone()),

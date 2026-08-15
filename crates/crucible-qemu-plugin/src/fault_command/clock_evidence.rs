@@ -697,7 +697,7 @@ pub(super) fn validate_raw_clock_impulse(raw: &[u8]) -> Result<(), FaultCommandB
         || &raw[..8] != b"CRUCCIM1"
         || raw_u16(raw, 8).map_err(invalid)? != 1
         || raw[12..16].iter().any(|byte| *byte != 0)
-        || raw[276..].iter().any(|byte| *byte != 0)
+        || raw[284..].iter().any(|byte| *byte != 0)
     {
         return Err(FaultCommandBridgeError::ClockEvidence);
     }
@@ -734,6 +734,7 @@ pub(super) fn decode_clock_impulse_observation(
         new_monotonicity: raw_u32(raw, 264).map_err(invalid)?,
         new_overdue_policy: raw_u32(raw, 268).map_err(invalid)?,
         new_source_state: raw_u32(raw, 272).map_err(invalid)?,
+        old_additive_nanos: raw_u64(raw, 276).map_err(invalid)? as i64,
     })
 }
 

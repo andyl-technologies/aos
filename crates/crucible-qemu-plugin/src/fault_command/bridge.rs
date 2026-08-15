@@ -44,6 +44,12 @@ impl FaultCommandBridge {
         if target_node_hash == [0; 32] {
             return Err(FaultCommandBridgeError::ZeroTargetNodeHash);
         }
+        let event_envelope_version = (apis.event_envelope_version)();
+        if event_envelope_version != NODE_EVENT_ENVELOPE_VERSION {
+            return Err(FaultCommandBridgeError::EventEnvelopeVersion {
+                observed: event_envelope_version,
+            });
+        }
         let commands = StableFaultCommandTransport::new(
             region
                 .fault_command_transport_mut(vm_slot)
@@ -897,8 +903,7 @@ impl FaultCommandBridge {
     }
 
     fn poll_events(&mut self, logical_icount_offset: u64) -> Result<bool, FaultCommandBridgeError> {
-        let payload_capacity = usize::try_from(HARD_FAULT_PAYLOAD_BYTES)
-            .map_err(|_source| FaultCommandBridgeError::PayloadCapacity)?;
+        let payload_capacity = node_event_envelope_maximum_bytes()?;
         loop {
             let mut peeked = QemuFaultEvent::default();
             let mut peeked_payload_len = 0_usize;
@@ -915,16 +920,23 @@ impl FaultCommandBridge {
                     capacity: payload_capacity,
                 });
             }
+            let evidence_length = usize::try_from(peeked.evidence_length)
+                .map_err(|_source| FaultCommandBridgeError::EventEnvelope)?;
+            let hard_evidence_limit = usize::try_from(HARD_FAULT_PAYLOAD_BYTES)
+                .map_err(|_source| FaultCommandBridgeError::PayloadCapacity)?;
+            if evidence_length == 0 || evidence_length > hard_evidence_limit {
+                return Err(FaultCommandBridgeError::EventEnvelope);
+            }
             let published_payload_len = if matches!(
                 peeked.command_kind,
                 value if value == FaultCommandKind::CpuRegisterTransform as u16
                     || value == FaultCommandKind::CpuInstructionTransform as u16
             ) {
-                peeked_payload_len
+                evidence_length
                     .checked_add(128)
                     .ok_or(FaultCommandBridgeError::PayloadCapacity)?
             } else {
-                peeked_payload_len
+                evidence_length
             };
             if !self.events.can_enqueue(published_payload_len)? {
                 return Ok(false);
@@ -953,49 +965,97 @@ impl FaultCommandBridge {
                     observed: payload_len,
                 });
             }
-            if event.reserved != 0 {
-                return Err(FaultCommandBridgeError::QemuEventReserved);
-            }
             if event.event_sequence == 0 {
                 return Err(FaultCommandBridgeError::QemuEventSequenceZero);
             }
+            let envelope = decode_node_event_envelope(&payload, &event, self.target_node_hash)?;
+            let request_payload = envelope.request;
+            let payload = envelope.evidence;
             let observed_icount = event
                 .observed_icount
                 .checked_add(logical_icount_offset)
                 .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
-            let register_command = self
-                .register_commands
-                .get(&event.rule_command_sequence)
-                .cloned();
+            let event_command_kind = command_kind(event.command_kind)?;
+            let register_command = if event_command_kind == FaultCommandKind::CpuRegisterTransform {
+                Some(register_command_expectation(
+                    request_payload,
+                    event.binding_hash,
+                    self.register_evidence_identity
+                        .as_ref()
+                        .ok_or(FaultCommandBridgeError::RegisterEvidence)?,
+                )?)
+            } else {
+                None
+            };
             if register_command
                 .as_ref()
                 .is_some_and(|command| command.binding_hash != event.binding_hash)
             {
                 return Err(FaultCommandBridgeError::RegisterEvidence);
             }
-            let instruction_command = self
-                .instruction_commands
-                .get(&event.rule_command_sequence)
-                .cloned();
-            let exception_command = self
-                .exception_commands
-                .get(&event.rule_command_sequence)
-                .cloned();
-            let memory_ecc_command = self
-                .memory_ecc_commands
-                .get(&event.rule_command_sequence)
-                .cloned();
-            let clock_command = self
-                .clock_commands
-                .get(&event.rule_command_sequence)
-                .cloned();
-            let accelerator_command = self
-                .accelerator_commands
-                .get(&event.rule_command_sequence)
-                .cloned();
+            let instruction_command =
+                if event_command_kind == FaultCommandKind::CpuInstructionTransform {
+                    Some(instruction_command_expectation(
+                        request_payload,
+                        event.binding_hash,
+                        self.register_evidence_identity
+                            .as_ref()
+                            .ok_or(FaultCommandBridgeError::InstructionEvidence)?,
+                    )?)
+                } else {
+                    None
+                };
+            let exception_command = if event_command_kind == FaultCommandKind::CpuException {
+                Some(exception_command_expectation(
+                    request_payload,
+                    event.binding_hash,
+                )?)
+            } else {
+                None
+            };
+            let memory_ecc_command = if event_command_kind == FaultCommandKind::MemoryEccEvent {
+                Some(memory_ecc_command_expectation(
+                    request_payload,
+                    event.binding_hash,
+                )?)
+            } else {
+                None
+            };
+            let clock_command = if matches!(
+                event_command_kind,
+                FaultCommandKind::ClockTransform | FaultCommandKind::ClockSourceState
+            ) {
+                Some(clock_command_expectation(
+                    request_payload,
+                    event.binding_hash,
+                    event_command_kind,
+                )?)
+            } else {
+                None
+            };
+            let accelerator_command = if matches!(
+                event_command_kind,
+                FaultCommandKind::AcceleratorLifecycle
+                    | FaultCommandKind::AcceleratorResultTransform
+                    | FaultCommandKind::AcceleratorMemoryEvent
+                    | FaultCommandKind::AcceleratorService
+            ) {
+                Some(accelerator_command_expectation(
+                    request_payload,
+                    event.binding_hash,
+                    event_command_kind,
+                )?)
+            } else {
+                None
+            };
+            if let Some(command) = &instruction_command {
+                self.instruction_commands
+                    .entry(event.rule_command_sequence)
+                    .or_insert_with(|| command.clone());
+            }
             let instruction_terminal = event.command_kind
                 == FaultCommandKind::CpuInstructionTransform as u16
-                && FaultTerminalEvidenceV1::has_magic(&payload);
+                && FaultTerminalEvidenceV1::has_magic(payload);
             let published_payload =
                 if event.command_kind == FaultCommandKind::CpuRegisterTransform as u16 {
                     let identity = self
@@ -1102,7 +1162,7 @@ impl FaultCommandBridge {
                             .ok_or(FaultCommandBridgeError::AcceleratorEvidence)?,
                     )?
                 } else {
-                    payload
+                    payload.to_vec()
                 };
             if event.command_kind == FaultCommandKind::CpuInstructionTransform as u16 {
                 if instruction_terminal {
@@ -1120,7 +1180,7 @@ impl FaultCommandBridge {
                 }
             }
             let header = FaultEventHeaderV1 {
-                command_kind: command_kind(event.command_kind)?,
+                command_kind: event_command_kind,
                 outcome: event_outcome(event.outcome)?,
                 event_sequence: event.event_sequence,
                 rule_command_sequence: event.rule_command_sequence,

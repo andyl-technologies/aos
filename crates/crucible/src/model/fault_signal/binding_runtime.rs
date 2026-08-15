@@ -41,8 +41,13 @@ pub enum BindingActionKind {
 pub enum BindingActionCause {
     /// A scheduled signal mapping transition.
     Signal,
-    /// One exact adapter opportunity.
-    Opportunity(ContentHash),
+    /// One exact adapter opportunity and its immutable typed identity fields.
+    Opportunity {
+        /// Canonical opportunity identity.
+        identity: ContentHash,
+        /// Adapter-visible opportunity payload used for exact hardware matching.
+        payload: OpportunityPayload,
+    },
     /// One exact dynamic-path membership transition.
     DynamicMembership {
         /// Authored path identity.
@@ -95,7 +100,7 @@ impl ResolvedBindingAction {
         };
         let cause = match &self.cause {
             BindingActionCause::Signal => String::from("signal"),
-            BindingActionCause::Opportunity(identity) => {
+            BindingActionCause::Opportunity { identity, .. } => {
                 format!("opportunity:{}", identity.to_hex())
             }
             BindingActionCause::DynamicMembership {

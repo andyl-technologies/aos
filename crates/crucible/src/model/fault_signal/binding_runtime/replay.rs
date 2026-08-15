@@ -175,7 +175,10 @@ fn outcome_action(
         phase: opportunity.phase(),
         opportunity: Some(opportunity.id()),
         coordinate: opportunity.coordinate(),
-        cause: BindingActionCause::Opportunity(opportunity.id()),
+        cause: BindingActionCause::Opportunity {
+            identity: opportunity.id(),
+            payload: opportunity.payload().clone(),
+        },
         ..record.locked_action()
     }
 }

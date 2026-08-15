@@ -4,6 +4,7 @@ use super::*;
 
 pub(super) fn effect_fields(
     specification: &EffectSpecification,
+    cause: &BindingActionCause,
 ) -> Result<Vec<NodeFaultFieldV1>, NodeFaultPayloadError> {
     use node_fault_field::*;
     let EffectSpecification::Node(effect) = specification else {
@@ -227,7 +228,27 @@ pub(super) fn effect_fields(
         NodeEffectSpecification::AcceleratorResultTransform {
             job_selector,
             transform,
-        } => vec![json_field(P1, job_selector)?, json_field(P2, transform)?],
+        } => {
+            let BindingActionCause::Opportunity {
+                payload:
+                    OpportunityPayload::AcceleratorJob {
+                        job_sequence,
+                        job_digest,
+                    },
+                ..
+            } = cause
+            else {
+                return Err(NodeFaultPayloadError::Operation(
+                    NodeFaultOperationV1::Apply as u16,
+                ));
+            };
+            vec![
+                json_field(P1, job_selector)?,
+                json_field(P2, transform)?,
+                NodeFaultFieldV1::u64(P3, *job_sequence),
+                NodeFaultFieldV1::hash(P4, job_digest.bytes),
+            ]
+        }
         NodeEffectSpecification::AcceleratorMemoryEvent {
             range,
             ecc,
