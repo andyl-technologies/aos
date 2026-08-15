@@ -33,6 +33,8 @@ and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-pa
 | [`0061-crucible-block-discard`](15-block-discard.md) | Payload-free deterministic block discard transport | Feature |
 | [`0062-crucible-block-transport-reset`](16-block-transport-reset.md) | Transactional epoch, recovery, retry, duplicate-history, and re-enumeration transport | Feature plus determinism-critical lifecycle |
 | [`0063-crucible-plugin-vmstop`](17-plugin-vmstop.md) | Exact plugin-boundary handoff into QEMU's native paused runstate | Determinism-critical lifecycle |
+| [`0064-crucible-terminal-lifecycle-completion`](18-terminal-lifecycle-completion.md) | Two-phase authenticated lifecycle event and QMP-authorized process exit | Determinism-critical lifecycle |
+| [`0065-crucible-authenticated-terminal-lifecycle`](19-authenticated-terminal-lifecycle.md) | Dedicated idempotent terminal authorization bound to action, evidence, and process generation | Determinism-critical lifecycle |
 
 The numbers are reserved by this RFC. If the existing series grows before
 implementation, the PR may renumber the files while preserving this exact order
@@ -44,7 +46,10 @@ ABI. They may be implemented before `0050` through `0059`, but remain ordered
 after them in the final linear series. Patch `0063` then adds the native stop
 handoff required to capture and restore all of that state at an exact boundary.
 It does not alter the fault command ABI or rewrite any historical patch commit.
-Patch `0063` is the terminal patch in the ordered series.
+Patch `0064` uses that paused boundary for the separately authorized terminal
+lifecycle completion. Patch `0065` replaces the provisional `cont` overload
+with a dedicated QAPI command that can never resume guest execution.
+Patch `0064` is the terminal patch in the ordered series.
 
 ## 14.2 Process and license boundary
 

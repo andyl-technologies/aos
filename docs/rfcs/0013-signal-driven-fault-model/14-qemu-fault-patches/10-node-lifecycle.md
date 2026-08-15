@@ -108,7 +108,7 @@ and a missed deadline performs another native machine reset. The final missed
 deadline executes `exhausted`. Failure to restore preserved reset state is a
 fail-closed permanent failure and never resumes the partially reset machine.
 
-`CRUCLIF1` version 3 is 288 bytes. Its first 192 bytes carry the lifecycle,
+`CRUCLIF1` version 4 is 304 bytes. Its first 192 bytes carry the lifecycle,
 state-policy, timing, affected-byte-count, and before/after fingerprint fields.
 The extension is exhaustive:
 
@@ -121,20 +121,37 @@ The extension is exhaustive:
 | 208 | 8 | exact virtual retry delay in nanoseconds |
 | 216 | 8 | exact virtual ready deadline, or `UINT64_MAX` when none was armed |
 | 224 | 32 | SHA-256 of the exact UTF-8 ready-marker bytes, or all zeroes |
-| 256 | 32 | independently measured pre-exit QEMU state SHA-256 for `crash`, `power_off`, and `permanent_failure`; all zeroes for nonterminal transitions |
+| 256 | 32 | QEMU-measured pre-exit state SHA-256 when terminal flag bit 0 is set; all zeroes otherwise |
+| 288 | 4 | effective transition after ready exhaustion or fail-closed resolution |
+| 292 | 4 | terminal cause: `0 = none`, `1 = direct`, `2 = ready_exhausted`, `3 = fail_closed` |
+| 296 | 4 | flags: bit 0 = pre-exit fingerprint valid; bit 1 = process exit required; no other bits are valid |
+| 300 | 4 | reserved zero |
 
 Every terminal path uses the same canonical after-state digest:
 `SHA-256("CRUCTRM1" || transition_le32 || pre_exit_qemu_state_sha256)`, with
 zero padding between the transition and fingerprint exactly as encoded by the
 48-byte `CRUCTRM1` material. Direct terminal commands and exhausted ready-policy
-retries both record the final RAM/device byte counts and the independently
-measured pre-exit QEMU state fingerprint before deriving that terminal digest;
+retries both record the final RAM/device byte counts and the QEMU-measured
+pre-exit state fingerprint before deriving that terminal digest;
 neither hashes a partially filled evidence buffer as a substitute for state.
-The host reconstructs the digest from the published fingerprint, then reaps
-the exact owned child and requires exit status `70`, `71`, or `72` for
+The host authenticates the event and reconstructs the digest from the published
+QEMU measurement. After the enclosing boundary transaction commits, the host
+issues the typed QMP terminal-completion operation, then independently reaps the
+exact owned child and requires exit status `70`, `71`, or `72` for
 `crash`, `power_off`, or `permanent_failure`, respectively. The QEMU event and
 the independently observed process status form one supervision record; a
 missing, signaled, late, or mismatched exit fails closed before relaunch.
+
+Ready-policy exhaustion retains the originally requested transition at offset
+10 and records the configured exhaustion result as the effective transition at
+offset 288. A reset/restore failure uses cause `fail_closed`, effective
+`permanent_failure`, and outcome `error`. It publishes a final fingerprint and
+canonical terminal digest when QEMU can still measure state. If measurement is
+itself unavailable, bit 0 is clear, the pre-exit field and final affected-byte
+counts are zero, and the event's after-state equals its before-state. Bit 1
+remains set, so this explicitly evidenced measurement failure still requires
+the supervised permanent-failure exit instead of leaving a partially reset VM
+runnable.
 
 ## Hang scopes
 

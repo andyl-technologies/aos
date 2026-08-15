@@ -1,0 +1,289 @@
+diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
+index 565a84c..5e3be23 100644
+--- a/include/qemu/crucible-fault.h
++++ b/include/qemu/crucible-fault.h
+@@ -160,6 +160,10 @@ qemu_crucible_fault_event_reservation_split(
+     QemuCrucibleFaultEventReservation *reservation, size_t count);
+ void qemu_crucible_fault_event_reservation_release(
+     QemuCrucibleFaultEventReservation *reservation);
++int qemu_plugin_crucible_lifecycle_complete_terminal_exit(
++    const char *action_sha256, const char *evidence_sha256,
++    uint64_t process_generation, bool *already_authorized,
++    int *exit_code);
+ 
+ int qemu_crucible_fault_register_validate(const QemuCrucibleFaultRule *rule);
+ bool qemu_crucible_fault_register_ensure_registered(void);
+diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
+index 94bae04..b9d0c5a 100644
+--- a/include/qemu/plugin.h
++++ b/include/qemu/plugin.h
+@@ -197,7 +197,10 @@ bool qemu_plugin_crucible_vmstop_admission_pending(void);
+ void qemu_plugin_crucible_vmstop_request_stopped(int flush_status);
+ int qemu_plugin_crucible_vmstop_flush_status(void);
+ void qemu_plugin_crucible_vmstop_request_complete(void);
+-int qemu_plugin_crucible_lifecycle_complete_terminal_exit(void);
++int qemu_plugin_crucible_lifecycle_complete_terminal_exit(
++    const char *action_sha256, const char *evidence_sha256,
++    uint64_t process_generation, bool *already_authorized,
++    int *exit_code);
+ 
+ extern qemu_plugin_crucible_ipi_delivery_cb_t
+     qemu_plugin_crucible_ipi_delivery_cb;
+@@ -379,9 +382,17 @@ static inline int qemu_plugin_crucible_vmstop_flush_status(void)
+ static inline void qemu_plugin_crucible_vmstop_request_complete(void)
+ { }
+ 
+-static inline int qemu_plugin_crucible_lifecycle_complete_terminal_exit(void)
++static inline int qemu_plugin_crucible_lifecycle_complete_terminal_exit(
++    const char *action_sha256, const char *evidence_sha256,
++    uint64_t process_generation, bool *already_authorized,
++    int *exit_code)
+ {
+-    return 0;
++    (void)action_sha256;
++    (void)evidence_sha256;
++    (void)process_generation;
++    (void)already_authorized;
++    (void)exit_code;
++    return -ENOTSUP;
+ }
+ 
+ static inline void qemu_plugin_crucible_maybe_fire_ipi_delivery_cb(
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 2502cee..17b283b 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -79,7 +79,6 @@ void qmp_cont(Error **errp)
+     BlockJob *job;
+     Error *local_err = NULL;
+     int flush_status;
+-    int lifecycle_exit;
+ 
+     if (qemu_plugin_crucible_vmstop_admission_pending()) {
+         error_setg(errp, "VM stop admission has not reached paused state");
+@@ -91,11 +90,6 @@ void qmp_cont(Error **errp)
+                          "VM stop failed to flush devices");
+         return;
+     }
+-    lifecycle_exit = qemu_plugin_crucible_lifecycle_complete_terminal_exit();
+-    if (lifecycle_exit > 0) {
+-        return;
+-    }
+-
+     /* if there is a dump in background, we should wait until the dump
+      * finished */
+     if (qemu_system_dump_in_progress()) {
+@@ -140,6 +134,24 @@ void qmp_cont(Error **errp)
+     }
+ }
+ 
++void qmp_crucible_complete_terminal_lifecycle(const char *action_sha256,
++                                              const char *evidence_sha256,
++                                              uint64_t process_generation,
++                                              Error **errp)
++{
++    bool already_authorized = false;
++    int exit_code = 0;
++    int status;
++
++    status = qemu_plugin_crucible_lifecycle_complete_terminal_exit(
++        action_sha256, evidence_sha256, process_generation,
++        &already_authorized, &exit_code);
++    if (status < 0) {
++        error_setg_errno(errp, -status,
++                         "Crucible terminal lifecycle completion rejected");
++    }
++}
++
+ void qmp_add_client(const char *protocol, const char *fdname,
+                     bool has_skipauth, bool skipauth, bool has_tls, bool tls,
+                     Error **errp)
+diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
+index 58cd2d2..5dba33f 100644
+--- a/plugins/crucible-fault-lifecycle.c
++++ b/plugins/crucible-fault-lifecycle.c
+@@ -115,6 +115,12 @@ static GPtrArray *crucible_lifecycle_hangs;
+ static uint64_t crucible_lifecycle_next_watchdog_ns = UINT64_MAX;
+ static uint32_t crucible_lifecycle_terminal_transition;
+ static bool crucible_lifecycle_terminal_exit_requested;
++static uint8_t crucible_lifecycle_terminal_action_sha256[32];
++static uint8_t crucible_lifecycle_terminal_evidence_sha256[32];
++static uint64_t crucible_lifecycle_terminal_process_generation;
++
++static void crucible_lifecycle_sha256(const uint8_t *data, size_t length,
++                                      uint8_t digest[32]);
+ 
+ static bool crucible_lifecycle_mode(void)
+ {
+@@ -136,23 +142,96 @@ static int crucible_lifecycle_terminal_exit_code(uint32_t transition)
+     }
+ }
+ 
+-int qemu_plugin_crucible_lifecycle_complete_terminal_exit(void)
++static int crucible_lifecycle_hex_nibble(char value)
++{
++    if (value >= '0' && value <= '9') {
++        return value - '0';
++    }
++    if (value >= 'a' && value <= 'f') {
++        return value - 'a' + 10;
++    }
++    return -1;
++}
++
++static bool crucible_lifecycle_parse_sha256(const char *text,
++                                            uint8_t digest[32])
++{
++    if (!text || strlen(text) != 64) {
++        return false;
++    }
++    for (size_t index = 0; index < 32; index++) {
++        int high = crucible_lifecycle_hex_nibble(text[index * 2]);
++        int low = crucible_lifecycle_hex_nibble(text[index * 2 + 1]);
++
++        if (high < 0 || low < 0) {
++            return false;
++        }
++        digest[index] = (high << 4) | low;
++    }
++    return true;
++}
++
++static void crucible_lifecycle_stage_terminal(
++    const QemuCrucibleFaultRule *rule, uint32_t transition,
++    const uint8_t *evidence, size_t evidence_len)
+ {
+-    int exit_code;
++    g_assert(rule && evidence && evidence_len != 0);
++    g_assert(crucible_lifecycle_terminal_exit_code(transition) != 0);
++    g_assert(crucible_lifecycle_terminal_transition == 0);
+ 
++    crucible_lifecycle_terminal_transition = transition;
++    crucible_lifecycle_terminal_exit_requested = false;
++    crucible_lifecycle_terminal_process_generation = 0;
++    memcpy(crucible_lifecycle_terminal_action_sha256,
++           qemu_crucible_fault_rule_action_hash(rule), 32);
++    crucible_lifecycle_sha256(
++        evidence, evidence_len,
++        crucible_lifecycle_terminal_evidence_sha256);
++}
++
++int qemu_plugin_crucible_lifecycle_complete_terminal_exit(
++    const char *action_sha256, const char *evidence_sha256,
++    uint64_t process_generation, bool *already_authorized,
++    int *exit_code)
++{
++    uint8_t action[32];
++    uint8_t evidence[32];
++    int code;
++
++    if (!already_authorized || !exit_code || process_generation == 0 ||
++        !crucible_lifecycle_parse_sha256(action_sha256, action) ||
++        !crucible_lifecycle_parse_sha256(evidence_sha256, evidence)) {
++        return -EINVAL;
++    }
++    *already_authorized = false;
++    *exit_code = 0;
+     if (!crucible_lifecycle_mode() ||
+         crucible_lifecycle_terminal_transition == 0) {
+-        return 0;
++        return -ENOENT;
+     }
+-    exit_code = crucible_lifecycle_terminal_exit_code(
++    code = crucible_lifecycle_terminal_exit_code(
+         crucible_lifecycle_terminal_transition);
+-    if (exit_code == 0 || crucible_lifecycle_terminal_exit_requested) {
++    if (code == 0 ||
++        memcmp(action, crucible_lifecycle_terminal_action_sha256, 32) != 0 ||
++        memcmp(evidence,
++               crucible_lifecycle_terminal_evidence_sha256, 32) != 0) {
++        return -EACCES;
++    }
++    if (crucible_lifecycle_terminal_exit_requested) {
++        if (process_generation !=
++            crucible_lifecycle_terminal_process_generation) {
++            return -EACCES;
++        }
++        *already_authorized = true;
++        *exit_code = code;
+         return 0;
+     }
++    crucible_lifecycle_terminal_process_generation = process_generation;
+     crucible_lifecycle_terminal_exit_requested = true;
+     qemu_system_shutdown_request_with_code(
+-        SHUTDOWN_CAUSE_HOST_ERROR, exit_code);
+-    return exit_code;
++        SHUTDOWN_CAUSE_HOST_ERROR, code);
++    *exit_code = code;
++    return 0;
+ }
+ 
+ static bool crucible_lifecycle_field(
+@@ -652,8 +731,8 @@ static int crucible_lifecycle_execute(
+     if (crucible_lifecycle_terminal_exit_code(transition) == 0) {
+         return -EINVAL;
+     }
+-    crucible_lifecycle_terminal_transition = transition;
+-    crucible_lifecycle_terminal_exit_requested = false;
++    crucible_lifecycle_stage_terminal(
++        rule, transition, bytes, sizeof(bytes));
+     return 0;
+ }
+ 
+@@ -700,9 +779,9 @@ static void crucible_lifecycle_pending_fail_closed(
+             pending->rule, pending->observed_icount,
+             pending->before_hash);
+     }
+-    crucible_lifecycle_terminal_transition =
+-        CRUCIBLE_LIFECYCLE_PERMANENT_FAILURE;
+-    crucible_lifecycle_terminal_exit_requested = false;
++    crucible_lifecycle_stage_terminal(
++        pending->rule, CRUCIBLE_LIFECYCLE_PERMANENT_FAILURE,
++        pending->evidence, sizeof(pending->evidence));
+     crucible_lifecycle_pending_clear(pending);
+ }
+ 
+@@ -1451,8 +1530,9 @@ static void crucible_lifecycle_watchdog_boundary(
+                     crucible_lifecycle_terminal_transition != 0) {
+                     abort();
+                 }
+-                crucible_lifecycle_terminal_transition = transition;
+-                crucible_lifecycle_terminal_exit_requested = false;
++                crucible_lifecycle_stage_terminal(
++                    pending->rule, transition,
++                    pending->evidence, sizeof(pending->evidence));
+                 crucible_lifecycle_pending_clear(pending);
+             }
+         }
+diff --git a/qapi/misc.json b/qapi/misc.json
+index 559b66f..3c51a07 100644
+--- a/qapi/misc.json
++++ b/qapi/misc.json
+@@ -175,6 +175,27 @@
+ ##
+ { 'command': 'cont' }
+ 
++##
++# @crucible-complete-terminal-lifecycle:
++#
++# Authorize the pending Crucible terminal lifecycle decision without resuming
++# guest execution.  The two SHA-256 values bind the command to the exact
++# authenticated fault action and evidence emitted by this process generation.
++# Repeating the identical command is idempotent; changing any argument is an
++# error.  The command is unavailable when no terminal decision is pending.
++#
++# @action-sha256: Lowercase hexadecimal SHA-256 of the resolved fault action.
++#
++# @evidence-sha256: Lowercase hexadecimal SHA-256 of the CRUCLIF evidence.
++#
++# @process-generation: Nonzero host-supervised process generation.
++#
++# Since: 10.0
++##
++{ 'command': 'crucible-complete-terminal-lifecycle',
++  'data': { 'action-sha256': 'str', 'evidence-sha256': 'str',
++            'process-generation': 'uint64' } }
++
+ ##
+ # @x-exit-preconfig:
+ #
