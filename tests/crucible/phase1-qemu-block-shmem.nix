@@ -529,6 +529,30 @@ in
             #endif
             TIMER_FIXTURE
 
+            cat > fixture/include/qemu/plugin.h <<'PLUGIN_FIXTURE'
+            #ifndef QEMU_PLUGIN_INTERNAL_H
+            #define QEMU_PLUGIN_INTERNAL_H
+
+            static inline void qemu_plugin_crucible_exact_boundary_enter(void)
+            {
+            }
+
+            static inline void qemu_plugin_crucible_exact_boundary_leave(void)
+            {
+            }
+
+            #endif
+            PLUGIN_FIXTURE
+
+            cat > fixture/include/migration/qemu-file.h <<'QEMU_FILE_FIXTURE'
+            #ifndef MIGRATION_QEMU_FILE_H
+            #define MIGRATION_QEMU_FILE_H
+
+            #include "migration/vmstate.h"
+
+            #endif
+            QEMU_FILE_FIXTURE
+
             cat > fixture/include/migration/vmstate.h <<'VMSTATE_FIXTURE'
             #ifndef MIGRATION_VMSTATE_H
             #define MIGRATION_VMSTATE_H
