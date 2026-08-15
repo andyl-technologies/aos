@@ -50,21 +50,21 @@
   #              system /etc content lives in the composefs EROFS image
   #              shipped at ${toplevel}/etc-metadata.erofs, mounted by
   #              etc-overlay-setup.service in stage-1.
-  #   3  swap  — 8 MiB stub with the Linux-swap GPT GUID, no body.
+  #   3  root-b — an empty slot with the same capacity as root-a. Tests
+  #              initially boot only slot A, but stage-2 identity validation
+  #              requires the complete A/B device contract.
+  #   4  swap  — 8 MiB stub with the Linux-swap GPT GUID, no body.
   #              cryptswap.service's `Requires=` on the auto-instantiated
   #              `dev-disk-by-partlabel-swap.device` would otherwise sit
   #              queued for 90 s on every boot waiting for udev to
   #              announce a partition that doesn't exist.
-  #   4  provenance — 1 MiB reserved AOS marker on baked-var disks. It
+  #   5  provenance — 1 MiB reserved AOS marker on baked-var disks. It
   #              identifies this out-of-band layout as already committed.
-  #   5  var   — 256 MiB ext4. Carries the /var/etc allowlist plus
+  #   6  var   — 256 MiB ext4. Carries the /var/etc allowlist plus
   #              test-specific overrides (host SSH key, SELinux off,
   #              test units) and package state used by fleet tests.
   #              Label `var` via GPT partlabel so mount-var.service
   #              finds it.
-  #   6  root-b — an empty slot with the same capacity as root-a. Baked
-  #              disks expose the complete A/B device contract even though
-  #              direct-kernel tests initially boot only slot A.
   #
   # Spec v12 §5.4 names /var/etc as the tight host-persistent
   # allowlist (machine-id, ssh host keys). For test infrastructure we
@@ -87,7 +87,7 @@
     # lib/build/rootfs.nix's `extraClosures` and tests/fleet/
     # apm-system-upgrade.nix.
     extraClosures ? [],
-    # Size of the /var partition (partition 5 on baked disks) in MiB. Raise for tests
+    # Size of the /var partition (partition 6 on baked disks) in MiB. Raise for tests
     # whose guests stage large payloads under /var (e.g. a fleet registry
     # peer writing a static binary cache of a full system closure).
     # Only consulted when `varProvisioning == "baked"`; under "repart"
@@ -97,9 +97,9 @@
     # /var/etc lower to keep SELinux disabled. SELinux-specific tests
     # opt out so the system-generated /etc/selinux/config is visible.
     seedSELinuxDisabledConfig ? true,
-    # How /var is provisioned. "baked" (default): /var is partition 4 of
+    # How /var is provisioned. "baked" (default): /var is partition 6 of
     # this image, formatted and seeded at build time. "repart": the
-    # image is boot+root-a+swap only — systemd-repart creates and formats /var
+    # image is boot+root-a+root-b+swap only — systemd-repart creates and formats /var
     # on first boot, so machines differing
     # only in /var size share one base image. The build-time `varSeed` is
     # skipped under "repart"; the guest agent arrives via the
@@ -421,7 +421,7 @@
             # but reserving it keeps root at /dev/vda2 matching production.
             #
             # Under varProvisioning="repart" the image stops at
-            # boot+root-a+swap: systemd-repart creates /var (partition 4) on
+            # boot+root-a+root-b+swap: systemd-repart creates /var in the
             # first boot, so machines differing only in /var size share
             # this one base image. The driver grows the per-run copy to
             # make room before boot (see lib/testing/fleet.nix).
@@ -432,15 +432,15 @@
 
             BOOT_START=2048
             ROOT_START=$(( BOOT_START + BOOT_SECTORS ))
-            SWAP_START=$(( ROOT_START + ROOT_SECTORS ))
+            ROOT_B_START=$(( ROOT_START + ROOT_SECTORS ))
+            SWAP_START=$(( ROOT_B_START + ROOT_SECTORS ))
             ${
               if bakeVar
               then ''
                 VAR_SECTORS=$(( VAR_SIZE_MIB * 1024 * 1024 / 512 ))
                 SENTINEL_START=$(( SWAP_START + SWAP_SECTORS ))
                 VAR_START=$(( SENTINEL_START + SENTINEL_SECTORS ))
-                ROOT_B_START=$(( VAR_START + VAR_SECTORS ))
-                DISK_SECTORS=$(( ROOT_B_START + ROOT_SECTORS + 2048 ))
+                DISK_SECTORS=$(( VAR_START + VAR_SECTORS + 2048 ))
               ''
               else ''
                 DISK_SECTORS=$(( SWAP_START + SWAP_SECTORS + 2048 ))
@@ -462,10 +462,10 @@
               echo "label: gpt"
               echo "size=$BOOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=boot"
               echo "size=$ROOT_SECTORS, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name=root-a"
+              echo "size=$ROOT_SECTORS, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name=root-b"
               echo "size=$SWAP_SECTORS, type=0657FD6D-A4AB-43C4-84E5-0933C84B4F4F, name=swap"
               ${lib.optionalString bakeVar ''echo "size=$SENTINEL_SECTORS, type=163BEA60-58C7-46E7-B69A-6846A5A688AF, name=aos-provenance-fallback-v1"''}
               ${lib.optionalString bakeVar ''echo "size=$VAR_SECTORS,  type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=var"''}
-              ${lib.optionalString bakeVar ''echo "size=$ROOT_SECTORS, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name=root-b"''}
             } > ptable.sfdisk
             sfdisk disk.img < ptable.sfdisk
 
