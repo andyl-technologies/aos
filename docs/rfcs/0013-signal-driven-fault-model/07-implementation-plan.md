@@ -309,7 +309,9 @@ produce live patched-QEMU architectural or device evidence.
   [`crucible-typed-node-result-schema`](14-qemu-fault-patches/23-typed-node-result-schema.md):
   preserve the fixed typed-command result schema for every immediate node
   impulse, carry command-specific bytes only in authenticated occurrence events,
-  and prove the production host validates both channels independently.
+  encode prepare-only results as unchanged frozen state, retain correlation
+  through repeated composite-target preparation records, and prove the
+  production host validates both channels independently.
 - [ ] **T-QEMU-0060** Implement
   [`crucible-block-typed-errors`](14-qemu-fault-patches/14-block-typed-errors.md):
   the closed block result ABI, exact Linux errno translation, malformed-result

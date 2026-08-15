@@ -1269,7 +1269,7 @@ fn accelerator_capability_rows() -> [FaultCapabilityRowV1; 4] {
         ),
     ];
     rows[0].phase_mask = boundary | device;
-    rows[1].phase_mask = device;
+    rows[1].phase_mask = boundary | device;
     rows[2].phase_mask = boundary | device;
     rows[3].phase_mask = boundary | device;
     rows

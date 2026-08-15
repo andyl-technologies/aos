@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "a9ffa553a95934c907bf86faffa2045ebefa7122caa0fd33a77e81f1abd8e8be";
+  patchBranchBundleSha256 = "9d0cb9428778f8df8dc5901382bd2d72baecc2dceecd10520ad6f251544ae262";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "b80cf81e01da0ba93272b849a89353c967b46954";
+  patchBranchHeadCommit = "27ba14c1667da56b9ec7b385ee033226142bd0ce";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -619,8 +619,8 @@ let
     {
       file = "0069-crucible-accelerator-fault-device.patch";
       branchSubject = "crucible: add deterministic accelerator device";
-      branchCommit = "4105ded357c457b329886244ec218c7eef688f65";
-      branchTree = "eeea0e3f292444d8103742a0a5c00aedf8db5408";
+      branchCommit = "98d982ae06eacd02aed4e4f129915836320b3796";
+      branchTree = "973accb1e079d13b6a61a8b4493815691436b74a";
       catalogName = "crucible-accelerator-fault-device";
       class = "D";
       enforces = "QFP-ACCEL-1,QFP-ACCEL-2,FAULT-ORDER";
@@ -629,8 +629,8 @@ let
     {
       file = "0070-crucible-fault-vmstate.patch";
       branchSubject = "crucible: finalize fault VMState identity";
-      branchCommit = "7bd4e101e8390ef8becfa88b054aebe1fdb48b51";
-      branchTree = "31eeaa357b57aaf8a85224735ab7e40746ec8db3";
+      branchCommit = "496565b866ef9fcddda6cf1bcc712fee0e9dbb74";
+      branchTree = "1a06d2ded9805e2acc435aed59c672ccbe17c433";
       catalogName = "crucible-fault-vmstate";
       class = "D";
       enforces = "QFP-STATE-1,QFP-STATE-2,QFP-STATE-3";
@@ -639,8 +639,8 @@ let
     {
       file = "0071-crucible-lifecycle-precondition.patch";
       branchSubject = "crucible: bind lifecycle preconditions to VM state";
-      branchCommit = "96847dff173530556b8a033e16cc3e6d6efd90ad";
-      branchTree = "967fe4838af7265f05576c47e117152c1565345a";
+      branchCommit = "8733958170a191a9d00661c693a9573804a2bcb5";
+      branchTree = "3d0e9d404d983d26fb15c3489863fa4207d32754";
       catalogName = "crucible-lifecycle-precondition";
       class = "D";
       enforces = "QFP-LIFE-1,QFP-LIFE-2,FAULT-ORDER";
@@ -649,8 +649,8 @@ let
     {
       file = "0072-crucible-typed-node-result-schema.patch";
       branchSubject = "crucible: preserve typed node result schema";
-      branchCommit = "1428d87365b3d97c1a121b408f2f12da5f0dbbc0";
-      branchTree = "42303311e5d973fefa4b5d61b5aa23d48aa76ae3";
+      branchCommit = "9d92a81c52257e14f6d9fa621ff0af248dec0adb";
+      branchTree = "a0df3f30ed480bd4d6cfc3523f9b64ea33f2784b";
       catalogName = "crucible-typed-node-result-schema";
       class = "D";
       enforces = "QFP-RESULT-1,QFP-EVENT-1,FAULT-ORDER";
@@ -659,12 +659,22 @@ let
     {
       file = "0073-crucible-device-wait-vmstop.patch";
       branchSubject = "crucible: admit checkpoint stop from exact callbacks";
-      branchCommit = "b80cf81e01da0ba93272b849a89353c967b46954";
-      branchTree = "c863d3111dd97fe3328e0072162a613828982e03";
+      branchCommit = "e0580798f2669227edf5f68540496a3bc228087d";
+      branchTree = "f2f41a2fed99fbcb512f6cb984f1bc6f58ec2c8d";
       catalogName = "crucible-device-wait-vmstop";
       class = "F";
       enforces = "QFP-STATE-2,DET-1,INV-10";
       capability = "synchronous exact stop at drained control wakes with nonblocking admission from device-completion callbacks";
+    }
+    {
+      file = "0074-crucible-arm-accelerator-result-opportunities.patch";
+      branchSubject = "crucible: arm accelerator result opportunities";
+      branchCommit = "27ba14c1667da56b9ec7b385ee033226142bd0ce";
+      branchTree = "a74340222ced61c5b015cb3ffe00a7ec85659aa9";
+      catalogName = "crucible-accelerator-result-opportunity";
+      class = "F";
+      enforces = "QFP-ACCEL-3,QFP-RESULT-1,QFP-EVENT-1,FAULT-ORDER";
+      capability = "atomic one-shot accelerator result arming with durable reservations and typed deferred completion results";
     }
   ];
   catalogOnlyCapabilities = [

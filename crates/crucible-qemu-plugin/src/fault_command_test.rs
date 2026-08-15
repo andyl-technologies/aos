@@ -187,6 +187,8 @@ fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {
         active_clock_bindings: BTreeMap::new(),
         accelerator_commands: BTreeMap::new(),
         active_accelerator_bindings: BTreeMap::new(),
+        prepared_commands: BTreeSet::new(),
+        prepare_only_commands: BTreeSet::new(),
         pending_command: None,
         initialized: true,
     };
@@ -344,6 +346,34 @@ fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {
         }
     }
     assert!(saw_pending_result);
+
+    let prepared_sequence = 100;
+    bridge.clock_commands.insert(
+        prepared_sequence,
+        ClockCommandExpectation {
+            operation: NodeFaultOperationV1::Upsert,
+            command_kind: FaultCommandKind::ClockTransform as u16,
+            binding_hash: [1; 32],
+            model_phase: 28,
+            source_ids: vec![[2; 32]],
+            parameters: ClockCommandParameters::Remove,
+        },
+    );
+    let prepared = QemuFaultResult {
+        status: FaultResultStatus::Prepared as u16,
+        command_sequence: prepared_sequence,
+        ..QemuFaultResult::default()
+    };
+    bridge.prepare_only_commands.insert(prepared_sequence);
+    assert!(bridge.retain_prepared_correlation(&prepared));
+    assert!(bridge.retain_prepared_correlation(&prepared));
+    assert!(bridge.clock_commands.contains_key(&prepared_sequence));
+    bridge.release_prepare_only_correlations(prepared_sequence);
+    assert!(bridge.clock_commands.contains_key(&prepared_sequence));
+    bridge.release_prepare_only_correlations(prepared_sequence + 1);
+    assert!(!bridge.clock_commands.contains_key(&prepared_sequence));
+    assert!(bridge.prepared_commands.is_empty());
+    assert!(bridge.prepare_only_commands.is_empty());
 }
 
 #[test]

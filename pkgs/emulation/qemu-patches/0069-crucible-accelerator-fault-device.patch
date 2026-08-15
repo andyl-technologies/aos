@@ -913,7 +913,7 @@ index 3584c8d89..c3a4ee710 100644
  int qemu_plugin_crucible_fault_clock_bind(
 diff --git a/plugins/crucible-fault-accelerator.c b/plugins/crucible-fault-accelerator.c
 new file mode 100644
-index 000000000..993256e6b
+index 000000000..9867870b1
 --- /dev/null
 +++ b/plugins/crucible-fault-accelerator.c
 @@ -0,0 +1,1565 @@
@@ -2470,7 +2470,7 @@ index 000000000..993256e6b
 +        "qemu.accelerator.lifecycle.v1", NULL);
 +    qemu_crucible_fault_node_register(
 +        CRUCIBLE_FAULT_COMMAND_ACCELERATOR_RESULT_TRANSFORM,
-+        CRUCIBLE_FAULT_CAPABILITY_SCOPE_ACCELERATOR, device,
++        CRUCIBLE_FAULT_CAPABILITY_SCOPE_ACCELERATOR, boundary | device,
 +        "qemu.accelerator.result-transform.v1", NULL);
 +    qemu_crucible_fault_node_register(
 +        CRUCIBLE_FAULT_COMMAND_ACCELERATOR_MEMORY_EVENT,

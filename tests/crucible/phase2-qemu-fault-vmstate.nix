@@ -31,6 +31,7 @@
         {label = "accelerator VMState section"; needle = "accelerator_vmstate_section";}
         {label = "realized accelerator manifest"; needle = "qemu_plugin_crucible_fault_accelerator_manifest";}
         {label = "fault-free access never releases a null event reservation"; needle = "if (reservation) {\n+        qemu_crucible_fault_event_reservation_release(reservation);\n+    }";}
+        {label = "accelerator result installation and execution phases"; needle = "CRUCIBLE_FAULT_CAPABILITY_SCOPE_ACCELERATOR, boundary | device,";}
       ]
       else if lib.hasPrefix "0071-" patchName
       then [
@@ -40,9 +41,19 @@
       ]
       else if lib.hasPrefix "0072-" patchName
       then [
+        {label = "prepare-only result preserves frozen state"; needle = "+        memcpy(staging->after_hash, staging->before_hash, 32);";}
         {label = "canonical typed result encoding"; needle = "+        node_encode_evidence(staging, result_payload);";}
         {label = "command-specific result replacement removed"; needle = "-        g_byte_array_append(result_payload, staging->impulse_evidence->data,";}
         {label = "result evidence digest retained"; needle = "result->evidence_hash";}
+      ]
+      else if lib.hasPrefix "0074-" patchName
+      then [
+        {label = "armed one-shot status"; needle = "QEMU_CRUCIBLE_FAULT_IMPULSE_ARMED";}
+        {label = "result opportunity APPLY operation"; needle = "+        case CRUCIBLE_FAULT_COMMAND_ACCELERATOR_RESULT_TRANSFORM:";}
+        {label = "durable accelerator opportunity queue"; needle = "result_impulses";}
+        {label = "restored event reservation"; needle = "qemu_crucible_fault_event_reservation_restore";}
+        {label = "canonical deferred result payload"; needle = "qemu_crucible_fault_node_result_payload";}
+        {label = "accelerator VMState version increment"; needle = "+    .version = 4,";}
       ]
       else [
         {label = "final fault-system manifest"; needle = "qemu_plugin_crucible_fault_system_manifest";}
