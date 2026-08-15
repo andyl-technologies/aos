@@ -2336,7 +2336,7 @@ index 8c56d0d15..c8bfb5a83 100644
  {
      return crucible_instruction_index &&
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index 9fbb68197..7b1f75620 100644
+index 9fbb68197..f4de87a4b 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -1416,17 +1416,19 @@ static bool node_json_exception(const QObject *object)
@@ -2362,36 +2362,85 @@ index 9fbb68197..7b1f75620 100644
              return false;
          }
          has_far = !node_json_null(qdict_get(parameters, "far"));
-@@ -1474,6 +1476,49 @@ bool qemu_crucible_fault_exception_decode(const QObject *object,
+@@ -1449,6 +1451,8 @@ bool qemu_crucible_fault_exception_decode(const QObject *object,
+     QDict *record;
+     const char *architecture;
+     const char *record_kind;
++    uint32_t vector;
++    uint64_t syndrome, fault_address;
+ 
+     if (!node_json_exception(object)) {
+         return false;
+@@ -1457,15 +1461,22 @@ bool qemu_crucible_fault_exception_decode(const QObject *object,
+     architecture = qdict_get_str(dict, "architecture");
+     exception->architecture = strcmp(architecture, "x86_64") == 0 ?
+         CPU_FAULT_EXCEPTION_X86_64 : CPU_FAULT_EXCEPTION_AARCH64;
+-    exception->vector = qdict_get_int(dict, "vector");
+-    exception->syndrome = qdict_get_int(dict, "syndrome");
++    if (!node_json_u32(qdict_get(dict, "vector"), &vector) ||
++        !node_json_u64(qdict_get(dict, "syndrome"), &syndrome)) {
++        return false;
++    }
++    exception->vector = vector;
++    exception->syndrome = syndrome;
+     exception->before_instruction = qdict_get_bool(
+         dict, "before_instruction");
+     exception->maskable = qdict_get_bool(dict, "maskable");
+     exception->has_fault_address =
+         !node_json_null(qdict_get(dict, "fault_address"));
+     if (exception->has_fault_address) {
+-        exception->fault_address = qdict_get_int(dict, "fault_address");
++        if (!node_json_u64(qdict_get(dict, "fault_address"), &fault_address)) {
++            return false;
++        }
++        exception->fault_address = fault_address;
+     }
+     record = qdict_get_qdict(dict, "record");
+     record_kind = qdict_get_str(record, "kind");
+@@ -1474,6 +1485,69 @@ bool qemu_crucible_fault_exception_decode(const QObject *object,
          (strcmp(record_kind, "x86_machine_check") == 0 ?
           CPU_FAULT_EXCEPTION_X86_MACHINE_CHECK :
           CPU_FAULT_EXCEPTION_AARCH64_RAS);
 +    if (exception->record == CPU_FAULT_EXCEPTION_X86_MACHINE_CHECK) {
 +        QDict *parameters = qdict_get_qdict(record, "parameters");
++        uint32_t bank;
++        uint64_t status, global_status, address, misc;
 +
-+        exception->x86_machine_check.bank = qdict_get_int(parameters, "bank");
-+        exception->x86_machine_check.status =
-+            qdict_get_int(parameters, "status");
-+        exception->x86_machine_check.global_status =
-+            qdict_get_int(parameters, "global_status");
++        if (!node_json_u32(qdict_get(parameters, "bank"), &bank) ||
++            !node_json_u64(qdict_get(parameters, "status"), &status) ||
++            !node_json_u64(qdict_get(parameters, "global_status"),
++                           &global_status)) {
++            return false;
++        }
++        exception->x86_machine_check.bank = bank;
++        exception->x86_machine_check.status = status;
++        exception->x86_machine_check.global_status = global_status;
 +        exception->x86_machine_check.corrected =
 +            qdict_get_bool(parameters, "corrected");
 +        exception->x86_machine_check.has_address =
 +            !node_json_null(qdict_get(parameters, "address"));
 +        if (exception->x86_machine_check.has_address) {
-+            exception->x86_machine_check.address =
-+                qdict_get_int(parameters, "address");
++            if (!node_json_u64(qdict_get(parameters, "address"), &address)) {
++                return false;
++            }
++            exception->x86_machine_check.address = address;
 +        }
 +        exception->x86_machine_check.has_misc =
 +            !node_json_null(qdict_get(parameters, "misc"));
 +        if (exception->x86_machine_check.has_misc) {
-+            exception->x86_machine_check.misc =
-+                qdict_get_int(parameters, "misc");
++            if (!node_json_u64(qdict_get(parameters, "misc"), &misc)) {
++                return false;
++            }
++            exception->x86_machine_check.misc = misc;
 +        }
 +    } else if (exception->record == CPU_FAULT_EXCEPTION_AARCH64_RAS) {
 +        QDict *parameters = qdict_get_qdict(record, "parameters");
++        uint64_t esr, far, disr;
 +
-+        exception->aarch64_ras.esr = qdict_get_int(parameters, "esr");
++        if (!node_json_u64(qdict_get(parameters, "esr"), &esr)) {
++            return false;
++        }
++        exception->aarch64_ras.esr = esr;
 +        exception->aarch64_ras.asynchronous =
 +            qdict_get_bool(parameters, "asynchronous");
 +        exception->aarch64_ras.corrected =
@@ -2401,18 +2450,33 @@ index 9fbb68197..7b1f75620 100644
 +        exception->aarch64_ras.has_far =
 +            !node_json_null(qdict_get(parameters, "far"));
 +        if (exception->aarch64_ras.has_far) {
-+            exception->aarch64_ras.far = qdict_get_int(parameters, "far");
++            if (!node_json_u64(qdict_get(parameters, "far"), &far)) {
++                return false;
++            }
++            exception->aarch64_ras.far = far;
 +        }
 +        exception->aarch64_ras.has_disr =
 +            !node_json_null(qdict_get(parameters, "disr"));
 +        if (exception->aarch64_ras.has_disr) {
-+            exception->aarch64_ras.disr = qdict_get_int(parameters, "disr");
++            if (!node_json_u64(qdict_get(parameters, "disr"), &disr)) {
++                return false;
++            }
++            exception->aarch64_ras.disr = disr;
 +        }
 +    }
      return true;
  }
  
-@@ -3209,6 +3254,16 @@ static int node_prepare(
+@@ -1908,7 +1982,7 @@ static const NodeSchemaField schema_memory_access[] = {
+ };
+ static const NodeSchemaField schema_memory_ecc[] = {
+     SF(P1, U32), SF(P2, U64), SF(P3, U64), SF(P4, HASH), SF(P5, HASH),
+-    SF(P6, HASH), SF(P7, BYTES),
++    SF(P6, HASH), SF(P7, BYTES), SF(P8, U32),
+ };
+ static const NodeSchemaField schema_memory_region[] = {
+     SF(P1, U64), SF(P2, U64), SF(P3, U32), SF(P4, BYTES),
+@@ -3209,6 +3283,16 @@ static int node_prepare(
              return status;
          }
      }
@@ -2429,7 +2493,7 @@ index 9fbb68197..7b1f75620 100644
      if (staging->rule.command_kind ==
              CRUCIBLE_FAULT_COMMAND_INTERRUPT_DISPOSITION ||
          staging->rule.command_kind == CRUCIBLE_FAULT_COMMAND_INTERRUPT_STORM) {
-@@ -3363,6 +3418,7 @@ static void node_event_enqueue(const QemuCrucibleFaultRule *rule,
+@@ -3363,6 +3447,7 @@ static void node_event_enqueue(const QemuCrucibleFaultRule *rule,
      if (terminal) {
          qemu_crucible_fault_instruction_event_terminal();
          qemu_crucible_fault_interrupt_event_terminal();
@@ -2437,7 +2501,7 @@ index 9fbb68197..7b1f75620 100644
          qemu_crucible_fault_notify_events();
          qemu_system_vmstop_request_prepare();
          qemu_system_vmstop_request(RUN_STATE_INTERNAL_ERROR);
-@@ -3485,10 +3541,18 @@ void qemu_crucible_fault_node_register(uint16_t command_kind, uint16_t scope,
+@@ -3485,10 +3570,18 @@ void qemu_crucible_fault_node_register(uint16_t command_kind, uint16_t scope,
              CRUCIBLE_FAULT_CAPABILITY_FEATURE_INTERRUPT;
          break;
      case CRUCIBLE_FAULT_COMMAND_CPU_INSTRUCTION_TRANSFORM:
@@ -2457,7 +2521,7 @@ index 9fbb68197..7b1f75620 100644
      case CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM:
      case CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE:
      case CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE:
-@@ -3523,7 +3587,12 @@ void qemu_crucible_fault_node_register(uint16_t command_kind, uint16_t scope,
+@@ -3523,7 +3616,12 @@ void qemu_crucible_fault_node_register(uint16_t command_kind, uint16_t scope,
      case CRUCIBLE_FAULT_COMMAND_CPU_EXCEPTION:
          handler->capability.payload_schema =
              "crucible.node-fault-payload.v1;"
@@ -2769,7 +2833,7 @@ index 978249fb7..3409223fb 100644
          &vmstate_wfxt_timer,
          NULL
 diff --git a/target/arm/ptw.c b/target/arm/ptw.c
-index 5e32dfb46..978fa3982 100644
+index 5e32dfb46..005213874 100644
 --- a/target/arm/ptw.c
 +++ b/target/arm/ptw.c
 @@ -3730,13 +3730,49 @@ bool arm_cpu_get_fault_translation(CPUState *cs, vaddr addr,
@@ -2823,7 +2887,7 @@ index 5e32dfb46..978fa3982 100644
      switch (exception->vector) {
      case CPU_FAULT_AARCH64_UNDEFINED:
          syndrome_valid = syndrome == syn_uncategorized();
-@@ -3771,12 +3807,123 @@ bool arm_cpu_validate_fault_exception(
+@@ -3771,12 +3807,124 @@ bool arm_cpu_validate_fault_exception(
             (abort || !exception->has_fault_address);
  }
  
@@ -2910,6 +2974,7 @@ index 5e32dfb46..978fa3982 100644
 +    CPUState *cs, const CPUFaultException *exception)
 +{
 +    CPUARMState *env = cpu_env(cs);
++    BQL_LOCK_GUARD();
 +
 +    if (!arm_cpu_validate_fault_exception(cs, exception) ||
 +        exception->aarch64_ras.corrected ||
@@ -2993,10 +3058,18 @@ index 840519b99..336d55fd0 100644
      CPUState *cpu, const CPUFaultException *exception, uintptr_t retaddr);
  G_NORETURN void x86_cpu_inject_fault_access_error(
 diff --git a/target/i386/tcg/system/excp_helper.c b/target/i386/tcg/system/excp_helper.c
-index 5763a1518..3b8a0b6bc 100644
+index 5763a1518..f1b4fcbff 100644
 --- a/target/i386/tcg/system/excp_helper.c
 +++ b/target/i386/tcg/system/excp_helper.c
-@@ -729,11 +729,74 @@ bool x86_cpu_get_fault_translation(CPUState *cs, vaddr addr,
+@@ -18,6 +18,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/main-loop.h"
+ #include "cpu.h"
+ #include "exec/cpu_ldst.h"
+ #include "exec/cputlb.h"
+@@ -729,11 +730,74 @@ bool x86_cpu_get_fault_translation(CPUState *cs, vaddr addr,
  bool x86_cpu_validate_fault_exception(
      CPUState *cs, const CPUFaultException *exception)
  {
@@ -3072,7 +3145,7 @@ index 5763a1518..3b8a0b6bc 100644
      has_error_code = exception->vector == EXCP0A_TSS ||
                       exception->vector == EXCP0B_NOSEG ||
                       exception->vector == EXCP0C_STACK ||
-@@ -772,11 +835,142 @@ bool x86_cpu_validate_fault_exception(
+@@ -772,11 +836,143 @@ bool x86_cpu_validate_fault_exception(
             supported && syndrome_valid && !exception->maskable;
  }
  
@@ -3190,6 +3263,7 @@ index 5763a1518..3b8a0b6bc 100644
 +    CPUState *cs, const CPUFaultException *exception)
 +{
 +    CPUX86State *env = cpu_env(cs);
++    BQL_LOCK_GUARD();
 +
 +    if (!x86_cpu_validate_fault_exception(cs, exception) ||
 +        exception->x86_machine_check.corrected) {

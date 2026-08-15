@@ -141,10 +141,10 @@ index 8c62f9823..fe2bc7c3c 100644
   * icount_configure: configure the icount options, including "shift"
   * @opts: Options to parse
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index 7b1f75620..ec77da29b 100644
+index f4de87a4b..24bdbb225 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
-@@ -3275,6 +3275,16 @@ static int node_prepare(
+@@ -3304,6 +3304,16 @@ static int node_prepare(
              return status;
          }
      }
@@ -161,7 +161,7 @@ index 7b1f75620..ec77da29b 100644
      node_sha256(payload, payload_len, staging->request_hash);
      node_rules_digest_with(NULL, false, staging->before_hash);
      if (command->command_flags & CRUCIBLE_FAULT_COMMAND_FLAG_PREPARE_ONLY) {
-@@ -3308,6 +3318,18 @@ static int node_prepare(
+@@ -3337,6 +3347,18 @@ static int node_prepare(
          }
          memcpy(staging->after_hash, staging->before_hash, 32);
      }
@@ -180,7 +180,7 @@ index 7b1f75620..ec77da29b 100644
      memcpy(result->before_hash, staging->before_hash, 32);
      memcpy(result->after_hash, staging->after_hash, 32);
      node_encode_evidence(staging, result_payload);
-@@ -3419,6 +3441,7 @@ static void node_event_enqueue(const QemuCrucibleFaultRule *rule,
+@@ -3448,6 +3470,7 @@ static void node_event_enqueue(const QemuCrucibleFaultRule *rule,
          qemu_crucible_fault_instruction_event_terminal();
          qemu_crucible_fault_interrupt_event_terminal();
          qemu_crucible_fault_hardware_error_event_terminal();
@@ -188,7 +188,7 @@ index 7b1f75620..ec77da29b 100644
          qemu_crucible_fault_notify_events();
          qemu_system_vmstop_request_prepare();
          qemu_system_vmstop_request(RUN_STATE_INTERNAL_ERROR);
-@@ -3450,6 +3473,13 @@ static void node_commit(
+@@ -3479,6 +3502,13 @@ static void node_commit(
          node_memory_index_rebuild();
          qemu_crucible_fault_instruction_rules_changed();
          qemu_crucible_fault_interrupt_rules_changed();
@@ -202,7 +202,7 @@ index 7b1f75620..ec77da29b 100644
          node_memory_retention_deadline_recompute();
      } else if (staging->rule.operation ==
                 CRUCIBLE_NODE_FAULT_OPERATION_REMOVE) {
-@@ -3459,6 +3489,13 @@ static void node_commit(
+@@ -3488,6 +3518,13 @@ static void node_commit(
          node_memory_index_rebuild();
          qemu_crucible_fault_instruction_rules_changed();
          qemu_crucible_fault_interrupt_rules_changed();
@@ -216,7 +216,7 @@ index 7b1f75620..ec77da29b 100644
          node_memory_retention_deadline_recompute();
      } else {
          uint8_t opportunity_hash[32];
-@@ -3553,6 +3590,11 @@ void qemu_crucible_fault_node_register(uint16_t command_kind, uint16_t scope,
+@@ -3582,6 +3619,11 @@ void qemu_crucible_fault_node_register(uint16_t command_kind, uint16_t scope,
          handler->capability.required_feature_bits =
              CRUCIBLE_FAULT_CAPABILITY_FEATURE_HARDWARE_ERROR;
          break;

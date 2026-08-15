@@ -109,10 +109,10 @@ index 7f4c1adf4..1ea15d518 100644
                                              uint8_t **state,
                                              size_t *state_len)
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index 6ceef8dd2..56500963d 100644
+index f3eacac66..d2c7d9d04 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
-@@ -3360,6 +3360,16 @@ static int node_prepare(
+@@ -3389,6 +3389,16 @@ static int node_prepare(
      }
      node_sha256(payload, payload_len, staging->request_hash);
      node_rules_digest_with(NULL, false, staging->before_hash);
