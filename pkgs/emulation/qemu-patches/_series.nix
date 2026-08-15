@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "f7dd3d12b389f9b8c2171cd2bbe738b17015f49b8a727a8130094a3d82ee290c";
+  patchBranchBundleSha256 = "e276c5f54a3a4c3757647bf1c1877edb7c5e982bd8e5112b326e5f0bef474678";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "4215711efde764c32f62213f85338ee3ccac256b";
+  patchBranchHeadCommit = "e2ddff3965b6623784f0d4c887f173bbe653cbc8";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -565,6 +565,26 @@ let
       class = "D";
       enforces = "DET-1,INV-10,QEMU-43";
       capability = "RR-global exact plugin checkpoint handoff with native pause and QMP flush-error propagation";
+    }
+    {
+      file = "0064-crucible-terminal-lifecycle-completion.patch";
+      branchSubject = "crucible: stage terminal lifecycle completion";
+      branchCommit = "0709103565946ae1f1d6997f9bd5c8aea133cf28";
+      branchTree = "624e78baeb180f392366f98760326b9ebfef679f";
+      catalogName = "crucible-terminal-lifecycle-completion";
+      class = "D";
+      enforces = "QFP-LIFE-1,QFP-LIFE-2,FAULT-ORDER";
+      capability = "two-phase typed terminal lifecycle evidence, QMP authorization, and exact process-exit staging";
+    }
+    {
+      file = "0065-crucible-authenticated-terminal-lifecycle.patch";
+      branchSubject = "crucible: authenticate terminal lifecycle completion";
+      branchCommit = "e2ddff3965b6623784f0d4c887f173bbe653cbc8";
+      branchTree = "07644d4bc11ea8201f6b2e620712a6ef4d9629eb";
+      catalogName = "crucible-authenticated-terminal-lifecycle";
+      class = "D";
+      enforces = "QFP-LIFE-1,QFP-LIFE-2,FAULT-ORDER";
+      capability = "dedicated idempotent QAPI terminal authorization bound to action, evidence, and process generation without guest resume";
     }
   ];
   catalogOnlyCapabilities = [

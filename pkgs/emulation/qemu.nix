@@ -212,10 +212,15 @@
   # patch -p1 < ${./qemu-patches/0051-crucible-add-architecture-register-fault-mutations.patch}
   # patch -p1 < ${./qemu-patches/0052-crucible-instruction-and-exception-faults.patch}
   # patch -p1 < ${./qemu-patches/0053-crucible-interrupt-faults.patch}
+  # patch -p1 < ${./qemu-patches/0054-crucible-inject-architecture-hardware-errors.patch}
+  # patch -p1 < ${./qemu-patches/0055-crucible-vcpu-service-control.patch}
+  # patch -p1 < ${./qemu-patches/0056-crucible-node-lifecycle-faults.patch}
   # patch -p1 < ${./qemu-patches/0060-crucible-block-typed-errors.patch}
   # patch -p1 < ${./qemu-patches/0061-crucible-block-discard.patch}
   # patch -p1 < ${./qemu-patches/0062-crucible-block-transport-reset.patch}
   # patch -p1 < ${./qemu-patches/0063-crucible-plugin-vmstop.patch}
+  # patch -p1 < ${./qemu-patches/0064-crucible-terminal-lifecycle-completion.patch}
+  # patch -p1 < ${./qemu-patches/0065-crucible-authenticated-terminal-lifecycle.patch}
 in
   mkDerivation {
     inherit pname;
