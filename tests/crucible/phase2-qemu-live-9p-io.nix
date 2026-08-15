@@ -16,7 +16,12 @@
   # userspace and runs its mount workload before it touches 9p, so the op lands
   # far later than a virtio-blk realize-time probe.
   busyCeiling ? "4000000000",
-  ninepTimeoutSecs ? "60",
+  # This is a per-leg wall-clock safety bound, not modeled time. The first 9p
+  # request arrives around 3.33 billion retired instructions and certification
+  # then requires the guest to consume the response and close the 4-billion
+  # instruction ceiling. Keep enough headroom for loaded or slower builders;
+  # determinism is still enforced exclusively in the icount domain.
+  ninepTimeoutSecs ? "180",
   secondRunLoad ? "1",
 }: let
   liveIoRunner = import ./_live-io-runner.nix {inherit pkgs lib;};
