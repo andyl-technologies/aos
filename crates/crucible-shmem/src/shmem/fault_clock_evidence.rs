@@ -290,6 +290,7 @@ impl FaultClockEvidenceV1 {
                 new_anchor,
                 new_drift_ratio,
                 new_additive_nanos,
+                old_additive_nanos,
                 new_frozen_value,
                 new_freeze_release,
                 new_monotonicity,
@@ -305,6 +306,14 @@ impl FaultClockEvidenceV1 {
                         && (*signed_value != 0 || ratio[0] == ratio[1] || *unsigned_value != 0))
                     || new_drift_ratio[0] == 0
                     || new_drift_ratio[1] == 0
+                    || match *transform_kind {
+                        1 | 3 => {
+                            old_additive_nanos.checked_add(*signed_value)
+                                != Some(*new_additive_nanos)
+                        }
+                        2 => old_additive_nanos != new_additive_nanos,
+                        _ => true,
+                    }
                     || *new_freeze_release > 2
                     || !(1..=3).contains(new_monotonicity)
                     || !(1..=3).contains(new_overdue_policy)
@@ -334,6 +343,7 @@ impl FaultClockEvidenceV1 {
                 body[108..112].copy_from_slice(&new_monotonicity.to_le_bytes());
                 body[112..116].copy_from_slice(&new_overdue_policy.to_le_bytes());
                 body[116..120].copy_from_slice(&new_source_state.to_le_bytes());
+                body[120..128].copy_from_slice(&(*old_additive_nanos as u64).to_le_bytes());
             }
         }
         Ok(out)
@@ -433,6 +443,7 @@ impl FaultClockEvidenceV1 {
                 new_monotonicity: u32_at(body, 108)?,
                 new_overdue_policy: u32_at(body, 112)?,
                 new_source_state: u32_at(body, 116)?,
+                old_additive_nanos: u64_at(body, 120)? as i64,
             },
             _ => return Err(FaultAbiError::CapabilityInvariant),
         };

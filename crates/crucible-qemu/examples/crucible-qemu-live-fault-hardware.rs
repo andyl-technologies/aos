@@ -14,6 +14,8 @@ use std::env;
 #[cfg(target_os = "linux")]
 use std::error::Error;
 #[cfg(target_os = "linux")]
+use std::fs;
+#[cfg(target_os = "linux")]
 use std::process::ExitCode;
 #[cfg(target_os = "linux")]
 use std::sync::Arc;
@@ -32,10 +34,14 @@ use crucible::model::{
     SignalSourceSpecification, SignalUnit, SignalValue, SignalValueType, TargetSelector,
 };
 #[cfg(target_os = "linux")]
-use crucible::{NodeId, ObservableEventPayload, SimulationBackend, VirtualTime};
+use crucible::{
+    Checkpoint, CheckpointKind, Icount, NodeId, ObservableEventPayload, SimulationBackend,
+    VirtualTime,
+};
 #[cfg(target_os = "linux")]
 use crucible_qemu::{
-    ProductionFaultRuntime, QemuLiveNodeStepGateConfig, QemuNodeSet, launch_qemu_live_node,
+    DEFAULT_VMSTATE_FILE_NAME, ProductionFaultRuntime, QemuLiveNodeStepGateConfig, QemuNodeSet,
+    launch_qemu_live_node, launch_qemu_live_node_exact_snapshot,
 };
 
 #[cfg(target_os = "linux")]
@@ -75,16 +81,23 @@ fn run() -> Result<(), String> {
         return Err(usage(&program));
     }
 
-    let config = QemuLiveNodeStepGateConfig::new(qemu, plugin, kernel, firmware, &run_directory)
-        .with_initrd(initrd)
-        .with_kernel_cmdline("console=ttyS0 reboot=k panic=1 quiet")
-        .with_vm_shape(128, 1, 0)
-        .with_accelerator()
-        .with_console_capture()
-        .with_second_run_host_load(false);
+    let capture_directory = run_directory.join("capture");
+    let restore_directory = run_directory.join("restore");
+    fs::create_dir_all(&capture_directory)
+        .map_err(|error| format!("create capture directory: {error}"))?;
+    fs::create_dir_all(&restore_directory)
+        .map_err(|error| format!("create restore directory: {error}"))?;
+    let config =
+        QemuLiveNodeStepGateConfig::new(qemu, plugin, kernel, firmware, &capture_directory)
+            .with_initrd(initrd)
+            .with_kernel_cmdline("console=ttyS0 reboot=k panic=1 quiet")
+            .with_vm_shape(128, 1, 0)
+            .with_accelerator()
+            .with_console_capture()
+            .with_second_run_host_load(false);
     let mut node = launch_qemu_live_node(
         &config,
-        &run_directory,
+        &capture_directory,
         "fault-hardware-node",
         "fault-hardware-router",
         "fault-hardware-crash-detector",
@@ -109,8 +122,8 @@ fn run() -> Result<(), String> {
     let artifacts: Arc<dyn crucible::model::SignalArtifactProvider> =
         Arc::new(crucible::model::OwnedDagSignalArtifactProvider::new(store));
     let mut runtime = ProductionFaultRuntime::new(
-        plan,
-        Some(artifacts),
+        plan.clone(),
+        Some(Arc::clone(&artifacts)),
         SignalBoundarySnapshot::default(),
         ContentHash::from_bytes(b"crucible.live-fault-hardware.v1"),
         HostFaultAdapterManifests::node_only()
@@ -140,7 +153,17 @@ fn run() -> Result<(), String> {
         None,
         OpportunityPayload::AcceleratorJob {
             job_sequence: 2,
-            job_digest: ContentHash::from_bytes(b"tpu-matrix-multiply-job"),
+            job_digest: ContentHash::from_bytes(
+                &crucible_shmem::canonical_accelerator_job_material(
+                    crucible_shmem::AcceleratorClass::Tpu,
+                    1,
+                    0,
+                    1_000,
+                    4,
+                    &[1, 0, 2, 0, 1, 0, 2, 3, 4, 5],
+                )
+                .map_err(|error| format!("encode TPU job identity: {error}"))?,
+            ),
         },
     )
     .map_err(|error| format!("build accelerator opportunity: {error}"))?;
@@ -153,6 +176,80 @@ fn run() -> Result<(), String> {
             opportunity.actions.len()
         ));
     }
+
+    // Capture after the one-shot accelerator rule is armed but before any
+    // guest job can complete. The old QEMU process and its plugin are then
+    // destroyed, so the occurrence can only succeed if a fresh plugin rebuilds
+    // its validation state from authenticated VMState and the event envelope.
+    let runtime_checkpoint = runtime
+        .checkpoint(&mut nodes)
+        .map_err(|error| format!("checkpoint armed fault runtime: {error}"))?;
+    let checkpoint_identity = ContentHash::from_canonical_material(
+        "crucible.live-fault-hardware.restore.v1",
+        &format!(
+            "node={}\nicount={initial_icount}\nruntime={}",
+            node_id.name,
+            runtime_checkpoint.id().to_hex()
+        ),
+    );
+    let mut checkpoint = Checkpoint::new(
+        checkpoint_identity,
+        checkpoint_identity,
+        CheckpointKind::Fat,
+    );
+    checkpoint.virtual_time = VirtualTime {
+        ticks: initial_icount,
+    };
+    checkpoint.node_icounts.insert(
+        node_id.clone(),
+        Icount {
+            retired: initial_icount,
+        },
+    );
+    let snapshot = nodes
+        .capture_exact_snapshot(&node_id, checkpoint)
+        .map_err(|error| format!("capture armed QEMU snapshot: {error}"))?;
+    let mut captured = nodes
+        .take(&node_id)
+        .ok_or_else(|| String::from("captured live hardware node disappeared"))?;
+    let terminated = captured
+        .shutdown_child()
+        .map_err(|error| format!("terminate captured QEMU process: {error}"))?;
+    if !terminated.reaped || terminated.leaked {
+        return Err(String::from("captured QEMU process was not reaped"));
+    }
+    drop(captured);
+    fs::copy(
+        capture_directory.join(DEFAULT_VMSTATE_FILE_NAME),
+        restore_directory.join(DEFAULT_VMSTATE_FILE_NAME),
+    )
+    .map_err(|error| format!("copy captured VMState into fresh run directory: {error}"))?;
+
+    let restore_config = config.clone().with_run_directory(&restore_directory);
+    let restored = launch_qemu_live_node_exact_snapshot(
+        &restore_config,
+        &restore_directory,
+        "fault-hardware-node",
+        "fault-hardware-router",
+        "fault-hardware-restore-crash-detector",
+        &snapshot,
+    )
+    .map_err(|error| format!("launch fresh QEMU process from armed snapshot: {error}"))?;
+    if nodes.insert(node_id.clone(), restored).is_some() {
+        return Err(String::from(
+            "restored live hardware node identity collided",
+        ));
+    }
+    runtime = ProductionFaultRuntime::restore(
+        plan,
+        Some(artifacts),
+        ContentHash::from_bytes(b"crucible.live-fault-hardware.v1"),
+        runtime_checkpoint,
+        HostFaultAdapterManifests::node_only()
+            .map_err(|error| format!("build restored node-only fault manifests: {error}"))?,
+        &mut nodes,
+    )
+    .map_err(|error| format!("restore armed fault runtime: {error}"))?;
 
     let mut console = Vec::new();
     collect_console(&mut nodes, &mut console)?;
@@ -221,7 +318,11 @@ fn run() -> Result<(), String> {
                     .is_some_and(|binding| binding.as_str() == "tpu-result-transform-binding")
         })
         .count();
-    if clock_occurrences == 0 || accelerator_occurrences != 1 {
+    // `EffectCommitted` records only transaction acceptance. `EffectApplied`
+    // reaches this list solely after the GPL bridge validates the QEMU clock
+    // impulse's authenticated old-offset + requested-offset = new-offset
+    // evidence and the accelerator's exact opportunity and job sequence.
+    if clock_occurrences != 1 || accelerator_occurrences != 1 {
         return Err(format!(
             "authenticated occurrence counts were clock={clock_occurrences}, accelerator={accelerator_occurrences}"
         ));
@@ -258,6 +359,7 @@ fn run() -> Result<(), String> {
     println!("PASS");
     println!("gate=gate:live-fault-hardware");
     println!("guest_clock_reads=architecture-counter,posix-monotonic,posix-realtime");
+    println!("clock_effect_proof=authenticated-old-plus-offset-equals-new");
     println!("accelerator_transport=real-modern-virtio-pci");
     println!("accelerator_jobs=gpu-vector-add,tpu-matrix-multiply,fpga-lookup-table");
     println!("host_adapter=qemu-live-accelerator-servicer");
@@ -265,6 +367,7 @@ fn run() -> Result<(), String> {
     println!("accelerator_signal_actions={}", opportunity.actions.len());
     println!("clock_occurrences={clock_occurrences}");
     println!("accelerator_occurrences={accelerator_occurrences}");
+    println!("fresh_plugin_restore=true");
     println!("orderly_child_exit=true");
     Ok(())
 }

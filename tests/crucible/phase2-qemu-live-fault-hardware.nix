@@ -94,12 +94,13 @@ in
           grep -Fxq 'accelerator_signal_actions=1' "$report"
           grep -Eq '^clock_occurrences=[1-9][0-9]*$' "$report"
           grep -Fxq 'accelerator_occurrences=1' "$report"
+          grep -Fxq 'fresh_plugin_restore=true' "$report"
           grep -Fxq 'orderly_child_exit=true' "$report"
 
           mkdir -p "$out"
           cp "$report" "$out/result"
           printf 'attr_path=%s\n' "$ATTR_PATH" >> "$out/result"
-          printf 'proven=signal-driven-clock-mutation,signal-driven-accelerator-result-mutation,authenticated-fault-occurrences,real-linux-clock-observation,real-virtio-pci-discovery,guest-dma,split-virtqueue,gpu-job,tpu-job,fpga-job,fault-free-event-reservation\n' >> "$out/result"
+          printf 'proven=signal-driven-clock-mutation,signal-driven-accelerator-result-mutation,authenticated-fault-occurrences,fresh-plugin-vmstate-reconstruction,real-linux-clock-observation,real-virtio-pci-discovery,guest-dma,split-virtqueue,gpu-job,tpu-job,fpga-job,fault-free-event-reservation\n' >> "$out/result"
         '';
       }
     ];

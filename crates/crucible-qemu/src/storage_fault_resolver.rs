@@ -2187,14 +2187,18 @@ fn validate_action_identity(
         EffectLifetime::Persistent
             if action.kind == BindingActionKind::UpsertPersistent
                 && action.opportunity.is_none()
-                && !matches!(action.cause, BindingActionCause::Opportunity(_)) =>
+                && !matches!(action.cause, BindingActionCause::Opportunity { .. }) =>
         {
             Ok(())
         }
         EffectLifetime::Opportunity
             if action.kind == BindingActionKind::Apply
                 && action.opportunity == Some(opportunity.id())
-                && action.cause == BindingActionCause::Opportunity(opportunity.id()) =>
+                && action.cause
+                    == (BindingActionCause::Opportunity {
+                        identity: opportunity.id(),
+                        payload: opportunity.payload().clone(),
+                    }) =>
         {
             Ok(())
         }

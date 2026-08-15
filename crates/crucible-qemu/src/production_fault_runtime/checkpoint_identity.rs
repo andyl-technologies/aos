@@ -214,7 +214,9 @@ pub(super) fn observation_identity_material(
         || observation.evidence == ContentHash::default()
         || !matches!(
             observation.kind,
-            FaultObservationKind::FaultOpportunity | FaultObservationKind::EffectApplied
+            FaultObservationKind::FaultOpportunity
+                | FaultObservationKind::EffectCommitted
+                | FaultObservationKind::EffectApplied
         )
         || observation.binding.is_none()
         || observation.target.is_none()

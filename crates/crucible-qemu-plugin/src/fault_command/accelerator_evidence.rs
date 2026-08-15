@@ -108,7 +108,11 @@ pub(super) fn translate_accelerator_evidence(
                 _ => return Err(FaultCommandBridgeError::AcceleratorEvidence),
             };
             let queue_id = u64::from(raw_u16(raw, 12)?);
-            if raw_u64(raw, 24)? != offset
+            if raw_u64(raw, 16)? != accelerator_u64(expectation, P3)?
+                || accelerator_field(expectation, P4)?
+                    .iter()
+                    .all(|byte| *byte == 0)
+                || raw_u64(raw, 24)? != offset
                 || raw_u64(raw, 32)? != mask.len() as u64
                 || selector.get("job_kind").and_then(serde_json::Value::as_str)
                     != Some(expected_job)

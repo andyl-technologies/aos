@@ -326,7 +326,12 @@ fn every_typed_node_command_has_an_exact_closed_schema() {
         (
             FaultCommandKind::AcceleratorResultTransform,
             NodeFaultTargetKindV1::Accelerator,
-            &[(P1, Ty::Bytes), (P2, Ty::Bytes)],
+            &[
+                (P1, Ty::Bytes),
+                (P2, Ty::Bytes),
+                (P3, Ty::U64),
+                (P4, Ty::Hash),
+            ],
             hash_target,
         ),
         (

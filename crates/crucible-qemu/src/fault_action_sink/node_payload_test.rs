@@ -48,7 +48,12 @@ fn clock_phase_tags_match_the_closed_model_phase_registry() {
 fn remove_payload_discards_all_target_fields() {
     let mut target = vec![NodeFaultFieldV1::u32(node_fault_field::T1, 7)];
     assert_eq!(
-        payload_fields(NodeFaultOperationV1::Remove, &lifecycle(), &mut target),
+        payload_fields(
+            NodeFaultOperationV1::Remove,
+            &lifecycle(),
+            &BindingActionCause::Signal,
+            &mut target,
+        ),
         Ok(Vec::new())
     );
 }
@@ -171,7 +176,7 @@ fn every_typed_node_effect_translates_to_its_closed_wire_schema() {
         let kind = specification.kind();
         let descriptor = kind.descriptor();
         let lifetime = descriptor.lifetimes[0];
-        let action = ResolvedBindingAction {
+        let mut action = ResolvedBindingAction {
             kind: if lifetime == EffectLifetime::Persistent {
                 BindingActionKind::UpsertPersistent
             } else {
@@ -195,6 +200,17 @@ fn every_typed_node_effect_translates_to_its_closed_wire_schema() {
             cause: BindingActionCause::Signal,
             expected_precondition: None,
         };
+        if kind == crucible::model::EffectKind::AcceleratorResultTransform {
+            let identity = ContentHash::from_bytes(b"accelerator-job");
+            action.opportunity = Some(identity);
+            action.cause = BindingActionCause::Opportunity {
+                identity,
+                payload: OpportunityPayload::AcceleratorJob {
+                    job_sequence: 2,
+                    job_digest: ContentHash::from_bytes(b"accelerator-job-fields"),
+                },
+            };
+        }
         if kind == crucible::model::EffectKind::MemoryMutation {
             let prepared = super::super::prepare_memory_action_payload(&action)
                 .unwrap_or_else(|error| panic!("{kind:?} must prepare atomically: {error}"));

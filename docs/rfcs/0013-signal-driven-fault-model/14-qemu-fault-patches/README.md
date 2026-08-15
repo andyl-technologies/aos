@@ -1,6 +1,6 @@
 # 14 — QEMU fault-mutation patch series
 
-The complete node adapter and its exact-checkpoint handoff require twenty-five new single-purpose patches after the
+The complete node adapter and its exact-checkpoint handoff require twenty-six new single-purpose patches after the
 currently carried `0046-crucible-translation-prefetch-helper.patch`. Each patch
 has its own specification in this directory and remains part of the one atomic
 RFC-0013 implementation PR.
@@ -41,6 +41,7 @@ and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-pa
 | [`0072-crucible-typed-node-result-schema`](23-typed-node-result-schema.md) | Stable command results and separate occurrence evidence | Determinism-critical |
 | [`0073-crucible-device-wait-vmstop`](24-device-wait-vmstop.md) | Exact nonblocking checkpoint-stop admission from device callbacks | Determinism-critical lifecycle |
 | [`0074-crucible-arm-accelerator-result-opportunities`](25-accelerator-result-opportunity.md) | Durable one-shot accelerator result arming and canonical deferred results | Feature plus determinism-critical state |
+| [`0075-crucible-restore-authenticated-fault-event-requests`](26-authenticated-event-request-envelope.md) | Mandatory request/evidence event envelopes, fresh-process reconstruction, and exact accelerator-job binding | Determinism-critical state and authentication |
 
 The numbers are reserved by this RFC. If the existing series grows before
 implementation, the PR may renumber the files while preserving this exact order
@@ -58,7 +59,9 @@ same live VM-state digest; patch `0072` keeps the command-result schema
 stable while command-specific evidence remains on occurrence events; patch
 `0073` admits exact stop requests from drained device callbacks; and patch
 `0074` makes result opportunities durable one-shots while closing deferred
-typed-result evidence. Patch
+typed-result evidence; and patch `0075` makes each occurrence self-contained
+across plugin-process replacement and binds accelerator one-shots to the exact
+selected job sequence and opportunity identity. Patch
 `0063` adds the native stop
 handoff required to capture and restore all of that state at an exact boundary.
 It does not alter the fault command ABI or rewrite any historical patch commit.

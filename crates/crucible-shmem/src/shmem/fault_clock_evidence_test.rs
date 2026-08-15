@@ -87,6 +87,7 @@ fn every_clock_evidence_kind_round_trips_canonically() {
             new_anchor: [43, 44],
             new_drift_ratio: [1001, 1000],
             new_additive_nanos: -9,
+            old_additive_nanos: -9,
             new_frozen_value: 0,
             new_freeze_release: 0,
             new_monotonicity: 2,

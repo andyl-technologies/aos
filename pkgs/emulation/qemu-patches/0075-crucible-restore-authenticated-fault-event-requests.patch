@@ -1,0 +1,1030 @@
+diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
+index bb261cab9..d605fed76 100644
+--- a/include/qemu/crucible-fault.h
++++ b/include/qemu/crucible-fault.h
+@@ -212,6 +212,8 @@ uint16_t qemu_crucible_fault_rule_target_kind(
+     const QemuCrucibleFaultRule *rule);
+ const uint8_t *qemu_crucible_fault_rule_binding_hash(
+     const QemuCrucibleFaultRule *rule);
++const uint8_t *qemu_crucible_fault_rule_opportunity_hash(
++    const QemuCrucibleFaultRule *rule);
+ const uint8_t *qemu_crucible_fault_rule_action_hash(
+     const QemuCrucibleFaultRule *rule);
+ const uint8_t *qemu_crucible_fault_rule_target_hash(
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index de7452f56..0243afe77 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -2264,15 +2264,16 @@ int qemu_plugin_crucible_lifecycle_set_process_generation(
+ /**
+  * struct qemu_plugin_crucible_fault_event - one real rule occurrence
+  *
+- * The separately copied payload contains effect-specific canonical evidence.
+- * Event sequence is owned and checkpointed by QEMU, not by the plugin.
++ * The separately copied payload contains the mandatory versioned request and
++ * evidence envelope. Event sequence is owned and checkpointed by QEMU, not by
++ * the plugin.
+  */
+ struct qemu_plugin_crucible_fault_event {
+     uint16_t command_kind;
+     uint16_t outcome;
+     uint16_t model_phase;
+     uint16_t target_kind;
+-    uint32_t reserved;
++    uint32_t evidence_length;
+     uint64_t event_sequence;
+     uint64_t rule_command_sequence;
+     uint64_t observed_icount;
+@@ -2399,6 +2400,16 @@ QEMU_PLUGIN_API
+ int qemu_plugin_crucible_fault_event_peek(
+     struct qemu_plugin_crucible_fault_event *event, size_t *payload_length);
+ 
++/**
++ * qemu_plugin_crucible_fault_event_envelope_version() - event payload schema
++ *
++ * Returns the mandatory private event-envelope version. Version one carries
++ * the canonical originating node request and raw occurrence evidence so a
++ * fresh plugin process can validate events from restored VM state.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fault_event_envelope_version(void);
++
+ /**
+  * qemu_plugin_crucible_fault_event_poll() - copy one occurrence
+  * @event: fixed event destination
+diff --git a/plugins/crucible-fault-accelerator.c b/plugins/crucible-fault-accelerator.c
+index 4b4f5caff..dc1fe1c75 100644
+--- a/plugins/crucible-fault-accelerator.c
++++ b/plugins/crucible-fault-accelerator.c
+@@ -84,6 +84,7 @@ typedef struct CrucibleAcceleratorResultMutation {
+     QemuCrucibleFaultRule *rule;
+     CrucibleAcceleratorResultImpulse *impulse;
+     uint64_t offset;
++    uint64_t expected_sequence;
+     GByteArray *mask;
+     GByteArray *value;
+ } CrucibleAcceleratorResultMutation;
+@@ -339,8 +340,14 @@ static bool accelerator_event_emit_reserved(
+     stq_le_p(evidence + 232, opportunity);
+     memcpy(evidence + 200,
+            qemu_crucible_fault_rule_binding_hash(rule), 32);
+-    accelerator_sha256(evidence, CRUCIBLE_ACCELERATOR_EVIDENCE_BYTES,
+-                       opportunity_hash);
++    if (qemu_crucible_fault_rule_command_kind(rule) ==
++            CRUCIBLE_FAULT_COMMAND_ACCELERATOR_RESULT_TRANSFORM) {
++        memcpy(opportunity_hash,
++               qemu_crucible_fault_rule_opportunity_hash(rule), 32);
++    } else {
++        accelerator_sha256(evidence, CRUCIBLE_ACCELERATOR_EVIDENCE_BYTES,
++                           opportunity_hash);
++    }
+     qemu_crucible_fault_event_reservation_consume(reservation);
+     qemu_crucible_fault_rule_event(
+         rule, CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED,
+@@ -1307,6 +1314,7 @@ static int accelerator_result_select(
+     QemuCrucibleFaultRule *rule,
+     CrucibleAcceleratorResultImpulse *impulse,
+     uint16_t class_id, uint16_t job_kind, uint16_t queue_id,
++    uint64_t sequence,
+     size_t output_len, GPtrArray *mutations)
+ {
+     QDict *selector = qobject_to(QDict, qemu_crucible_fault_rule_json(
+@@ -1314,6 +1322,7 @@ static int accelerator_result_select(
+     QDict *mutation = qobject_to(QDict, qemu_crucible_fault_rule_json(
+         rule, CRUCIBLE_NODE_FAULT_FIELD_P2));
+     uint64_t offset;
++    uint64_t expected_sequence;
+     QNum *queue;
+     GByteArray *mask = NULL;
+     GByteArray *value = NULL;
+@@ -1326,6 +1335,8 @@ static int accelerator_result_select(
+                                class_id == 3 ? "lookup-table" : NULL;
+ 
+     if (!selector || !mutation || !expected_job ||
++        !accelerator_u64(rule, CRUCIBLE_NODE_FAULT_FIELD_P3,
++                         &expected_sequence) ||
+         !accelerator_json_u64(qdict_get(mutation, "offset"), &offset)) {
+         return -EINVAL;
+     }
+@@ -1336,7 +1347,8 @@ static int accelerator_result_select(
+         return -EINVAL;
+     }
+     queue = qobject_to(QNum, qdict_get(selector, "queue"));
+-    if ((queue && qnum_get_uint(queue) != queue_id) || job_kind != 1 ||
++    if (sequence != expected_sequence ||
++        (queue && qnum_get_uint(queue) != queue_id) || job_kind != 1 ||
+         strcmp(qstring_get_str(job_name), expected_job) != 0) {
+         return 0;
+     }
+@@ -1439,7 +1451,8 @@ bool qemu_crucible_fault_accelerator_complete(
+         QemuCrucibleFaultRule *rule = g_ptr_array_index(
+             crucible_accelerator.result_rules, i);
+         int selected = accelerator_result_select(
+-            rule, NULL, class_id, job_kind, queue_id, output_len, mutations);
++            rule, NULL, class_id, job_kind, queue_id, sequence, output_len,
++            mutations);
+ 
+         if (selected < 0) {
+             crucible_accelerator.terminal = true;
+@@ -1454,7 +1467,7 @@ bool qemu_crucible_fault_accelerator_complete(
+ 
+         if (accelerator_result_select(
+                 impulse->rule, impulse, class_id, job_kind, queue_id,
+-                output_len, mutations) < 0) {
++                sequence, output_len, mutations) < 0) {
+             crucible_accelerator.terminal = true;
+             qemu_crucible_fault_internal_terminal(impulse->rule, 6);
+             return false;
+diff --git a/plugins/crucible-fault-clock.c b/plugins/crucible-fault-clock.c
+index 8cf6f5177..e3bbc543c 100644
+--- a/plugins/crucible-fault-clock.c
++++ b/plugins/crucible-fault-clock.c
+@@ -3467,7 +3467,7 @@ int qemu_crucible_fault_clock_impulse(
+     uint64_t current, base_value, scaled, rate_value;
+     uint64_t next_drift_numerator, next_drift_denominator;
+     uint64_t next_impulse_numerator, next_impulse_denominator;
+-    int64_t next_additive, next_impulse_additive;
++    int64_t old_additive, next_additive, next_impulse_additive;
+     bool read_error;
+     uint8_t record[CRUCIBLE_CLOCK_EVIDENCE_BYTES] = { 0 };
+ 
+@@ -3506,7 +3506,8 @@ int qemu_crucible_fault_clock_impulse(
+         return -ERANGE;
+     }
+     rate_value = source->anchor_value_ns + scaled;
+-    next_additive = source->additive_nanos;
++    old_additive = source->additive_nanos;
++    next_additive = old_additive;
+     next_impulse_additive = source->impulse_additive_nanos;
+     next_drift_numerator = source->drift_numerator;
+     next_drift_denominator = source->drift_denominator;
+@@ -3571,6 +3572,7 @@ int qemu_crucible_fault_clock_impulse(
+     stl_le_p(record + 264, source->monotonicity);
+     stl_le_p(record + 268, source->overdue_policy);
+     stl_le_p(record + 272, source->source_state);
++    stq_le_p(record + 276, old_additive);
+     g_byte_array_append(evidence, record, sizeof(record));
+     *outcome = CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED;
+     return 0;
+diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
+index fa11566ad..0bb6500ff 100644
+--- a/plugins/crucible-fault-node.c
++++ b/plugins/crucible-fault-node.c
+@@ -34,6 +34,11 @@
+ 
+ #define CRUCIBLE_NODE_EVENT_CAPACITY 4096
+ #define CRUCIBLE_NODE_INLINE_EVIDENCE_BYTES 400
++#define CRUCIBLE_NODE_EVENT_ENVELOPE_HEADER_BYTES 192
++#define CRUCIBLE_NODE_EVENT_ENVELOPE_MAX_BYTES \
++    (2ULL * CRUCIBLE_FAULT_HARD_PAYLOAD_BYTES + \
++     CRUCIBLE_NODE_EVENT_ENVELOPE_HEADER_BYTES)
++#define CRUCIBLE_NODE_EVENT_ENVELOPE_MAGIC "CRUCEVQ1"
+ #define CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT 4194304
+ #define CRUCIBLE_NODE_MEMORY_MATCH_LIMIT 65536
+ #define CRUCIBLE_NODE_MEMORY_RETRY_LIMIT 4096
+@@ -111,6 +116,7 @@ struct QemuCrucibleFaultRule {
+     uint64_t generation;
+     uint64_t command_sequence;
+     uint8_t binding_hash[32];
++    uint8_t opportunity_hash[32];
+     uint8_t target_node_hash[32];
+     uint8_t action_hash[32];
+     uint8_t target_hash[32];
+@@ -909,6 +915,7 @@ static void node_rules_digest_with(const QemuCrucibleFaultRule *replacement,
+         QemuCrucibleFaultRule *rule = g_ptr_array_index(ordered, i);
+         g_checksum_update(checksum, rule->payload, rule->payload_len);
+         g_checksum_update(checksum, rule->binding_hash, 32);
++        g_checksum_update(checksum, rule->opportunity_hash, 32);
+         g_checksum_update(checksum, (const guchar *)&rule->command_sequence,
+                           sizeof(rule->command_sequence));
+     }
+@@ -2004,7 +2011,7 @@ static const NodeSchemaField schema_accel_lifecycle[] = {
+     SF(P1, HASH), SF(P2, U32), SF(P3, U32), SF(P4, U32),
+ };
+ static const NodeSchemaField schema_accel_result[] = {
+-    SF(P1, BYTES), SF(P2, BYTES),
++    SF(P1, BYTES), SF(P2, BYTES), SF(P3, U64), SF(P4, HASH),
+ };
+ static const NodeSchemaField schema_accel_memory[] = {
+     SF(P1, U64), SF(P2, U64), SF(P3, BOOL), SF(P4, U32), SF(P5, BOOL),
+@@ -2825,6 +2832,7 @@ static int node_parse(const struct qemu_plugin_crucible_fault_command *command,
+     rule->command_phase = command->phase;
+     rule->semantic_version = command->semantic_version;
+     memcpy(rule->binding_hash, command->binding_hash, 32);
++    memcpy(rule->opportunity_hash, command->opportunity_hash, 32);
+     memcpy(rule->target_node_hash, command->target_node_hash, 32);
+     memcpy(rule->action_hash,
+            payload + CRUCIBLE_NODE_FAULT_PAYLOAD_ACTION_HASH_OFFSET, 32);
+@@ -2837,6 +2845,10 @@ static int node_parse(const struct qemu_plugin_crucible_fault_command *command,
+         rule->model_phase == 0 || rule->generation == 0 ||
+         rule->field_count > CRUCIBLE_NODE_FAULT_MAX_FIELDS_V1 ||
+         !node_hash_nonzero(rule->binding_hash) ||
++        (rule->command_kind ==
++             CRUCIBLE_FAULT_COMMAND_ACCELERATOR_RESULT_TRANSFORM &&
++         rule->operation != CRUCIBLE_NODE_FAULT_OPERATION_REMOVE &&
++         !node_hash_nonzero(rule->opportunity_hash)) ||
+         !node_hash_nonzero(rule->action_hash) ||
+         !node_hash_nonzero(rule->target_hash) ||
+         !node_hash_nonzero(rule->schema_hash) ||
+@@ -3493,6 +3505,8 @@ static void node_event_enqueue(const QemuCrucibleFaultRule *rule,
+                                const uint8_t *evidence, size_t evidence_len)
+ {
+     uint8_t terminal_evidence[128] = { 0 };
++    uint8_t envelope_header[CRUCIBLE_NODE_EVENT_ENVELOPE_HEADER_BYTES] = { 0 };
++    g_autoptr(GByteArray) envelope = NULL;
+     bool terminal = false;
+     CrucibleNodeEvent *queued;
+ 
+@@ -3555,6 +3569,25 @@ static void node_event_enqueue(const QemuCrucibleFaultRule *rule,
+         crucible_node_terminal_resource_kind = 0;
+         terminal = true;
+     }
++    memcpy(envelope_header, CRUCIBLE_NODE_EVENT_ENVELOPE_MAGIC, 8);
++    stw_le_p(envelope_header + 8, 1);
++    stl_le_p(envelope_header + 12, rule->payload_len);
++    stl_le_p(envelope_header + 16, evidence_len);
++    node_sha256(rule->payload, rule->payload_len, envelope_header + 24);
++    node_sha256(evidence, evidence_len, envelope_header + 56);
++    memcpy(envelope_header + 88, rule->binding_hash, 32);
++    stq_le_p(envelope_header + 120, rule->command_sequence);
++    memcpy(envelope_header + 128, rule->target_node_hash, 32);
++    memcpy(envelope_header + 160, rule->opportunity_hash, 32);
++    envelope = g_byte_array_sized_new(
++        CRUCIBLE_NODE_EVENT_ENVELOPE_HEADER_BYTES +
++        rule->payload_len + evidence_len);
++    g_byte_array_append(envelope, envelope_header,
++                        sizeof(envelope_header));
++    g_byte_array_append(envelope, rule->payload, rule->payload_len);
++    g_byte_array_append(envelope, evidence, evidence_len);
++    g_assert(envelope->len <= CRUCIBLE_NODE_EVENT_ENVELOPE_MAX_BYTES);
++
+     queued = QTAILQ_FIRST(&crucible_node_free_events);
+     g_assert(queued);
+     g_assert(crucible_node_event_sequence != UINT64_MAX);
+@@ -3564,6 +3597,7 @@ static void node_event_enqueue(const QemuCrucibleFaultRule *rule,
+     queued->event.outcome = outcome;
+     queued->event.model_phase = rule->model_phase;
+     queued->event.target_kind = rule->target_kind;
++    queued->event.evidence_length = evidence_len;
+     queued->event.event_sequence = ++crucible_node_event_sequence;
+     queued->event.rule_command_sequence = rule->command_sequence;
+     queued->event.observed_icount = observed_icount;
+@@ -3574,13 +3608,12 @@ static void node_event_enqueue(const QemuCrucibleFaultRule *rule,
+     memcpy(queued->event.target_hash, rule->target_hash, 32);
+     memcpy(queued->event.before_hash, before_hash, 32);
+     memcpy(queued->event.after_hash, after_hash, 32);
+-    queued->payload_length = evidence_len;
+-    if (evidence_len <= sizeof(queued->inline_payload)) {
++    queued->payload_length = envelope->len;
++    if (envelope->len <= sizeof(queued->inline_payload)) {
+         queued->payload = NULL;
+-        memcpy(queued->inline_payload, evidence, evidence_len);
++        memcpy(queued->inline_payload, envelope->data, envelope->len);
+     } else {
+-        queued->payload = g_byte_array_sized_new(evidence_len);
+-        g_byte_array_append(queued->payload, evidence, evidence_len);
++        queued->payload = g_steal_pointer(&envelope);
+     }
+     QTAILQ_INSERT_TAIL(&crucible_node_events, queued, link);
+     crucible_node_event_count++;
+@@ -3938,6 +3971,12 @@ const uint8_t *qemu_crucible_fault_rule_binding_hash(
+     return rule->binding_hash;
+ }
+ 
++const uint8_t *qemu_crucible_fault_rule_opportunity_hash(
++    const QemuCrucibleFaultRule *rule)
++{
++    return rule->opportunity_hash;
++}
++
+ const uint8_t *qemu_crucible_fault_rule_action_hash(
+     const QemuCrucibleFaultRule *rule)
+ {
+@@ -4115,6 +4154,11 @@ int qemu_plugin_crucible_fault_event_peek(
+     return 1;
+ }
+ 
++int qemu_plugin_crucible_fault_event_envelope_version(void)
++{
++    return 1;
++}
++
+ int qemu_plugin_crucible_fault_event_poll(
+     struct qemu_plugin_crucible_fault_event *event, uint8_t *payload,
+     size_t payload_capacity, size_t *payload_length)
+@@ -10528,7 +10572,7 @@ static void crucible_node_vmstate_put_event(
+     qemu_crucible_fault_vmstate_put_u16(payload, event->outcome);
+     qemu_crucible_fault_vmstate_put_u16(payload, event->model_phase);
+     qemu_crucible_fault_vmstate_put_u16(payload, event->target_kind);
+-    qemu_crucible_fault_vmstate_put_u32(payload, event->reserved);
++    qemu_crucible_fault_vmstate_put_u32(payload, event->evidence_length);
+     qemu_crucible_fault_vmstate_put_u64(payload, event->event_sequence);
+     qemu_crucible_fault_vmstate_put_u64(payload,
+                                         event->rule_command_sequence);
+@@ -10548,6 +10592,69 @@ static void crucible_node_vmstate_put_event(
+         queued->payload_length);
+ }
+ 
++static bool crucible_node_event_envelope_valid(
++    const struct qemu_plugin_crucible_fault_event *event,
++    const uint8_t *payload, size_t payload_len)
++{
++    uint32_t request_len;
++    uint32_t evidence_len;
++    uint8_t digest[32];
++    const uint8_t *request;
++    const uint8_t *evidence;
++
++    if (payload_len < CRUCIBLE_NODE_EVENT_ENVELOPE_HEADER_BYTES ||
++        payload_len > CRUCIBLE_NODE_EVENT_ENVELOPE_MAX_BYTES ||
++        memcmp(payload, CRUCIBLE_NODE_EVENT_ENVELOPE_MAGIC, 8) != 0 ||
++        node_get_u16(payload + 8) != 1 ||
++        node_get_u16(payload + 10) != 0 ||
++        node_get_u32(payload + 20) != 0) {
++        return false;
++    }
++    request_len = node_get_u32(payload + 12);
++    evidence_len = node_get_u32(payload + 16);
++    if (request_len < CRUCIBLE_NODE_FAULT_PAYLOAD_HEADER_V1_BYTES ||
++        request_len > CRUCIBLE_FAULT_HARD_PAYLOAD_BYTES ||
++        evidence_len == 0 ||
++        evidence_len > CRUCIBLE_FAULT_HARD_PAYLOAD_BYTES ||
++        request_len > payload_len - CRUCIBLE_NODE_EVENT_ENVELOPE_HEADER_BYTES ||
++        evidence_len != payload_len -
++            CRUCIBLE_NODE_EVENT_ENVELOPE_HEADER_BYTES - request_len) {
++        return false;
++    }
++    request = payload + CRUCIBLE_NODE_EVENT_ENVELOPE_HEADER_BYTES;
++    evidence = request + request_len;
++    node_sha256(request, request_len, digest);
++    if (memcmp(digest, payload + 24, 32) != 0) {
++        return false;
++    }
++    node_sha256(evidence, evidence_len, digest);
++    if (memcmp(digest, payload + 56, 32) != 0) {
++        return false;
++    }
++    return memcmp(request, CRUCIBLE_NODE_MAGIC, 8) == 0 &&
++           node_get_u16(
++               request + CRUCIBLE_NODE_FAULT_PAYLOAD_COMMAND_KIND_OFFSET) ==
++               event->command_kind &&
++           node_get_u16(
++               request + CRUCIBLE_NODE_FAULT_PAYLOAD_TARGET_KIND_OFFSET) ==
++               event->target_kind &&
++           node_get_u16(
++               request + CRUCIBLE_NODE_FAULT_PAYLOAD_MODEL_PHASE_OFFSET) ==
++               event->model_phase &&
++           node_get_u64(
++               request + CRUCIBLE_NODE_FAULT_PAYLOAD_GENERATION_OFFSET) ==
++               event->generation &&
++           memcmp(payload + 88, event->binding_hash, 32) == 0 &&
++           node_get_u64(payload + 120) == event->rule_command_sequence &&
++           (event->command_kind !=
++                CRUCIBLE_FAULT_COMMAND_ACCELERATOR_RESULT_TRANSFORM ||
++            memcmp(payload + 160, event->opportunity_hash, 32) == 0) &&
++           memcmp(request + CRUCIBLE_NODE_FAULT_PAYLOAD_ACTION_HASH_OFFSET,
++                  event->action_hash, 32) == 0 &&
++           memcmp(request + CRUCIBLE_NODE_FAULT_PAYLOAD_TARGET_HASH_OFFSET,
++                  event->target_hash, 32) == 0;
++}
++
+ static bool crucible_node_vmstate_get_event(
+     QemuCrucibleFaultVmstateReader *reader, CrucibleNodeEvent *queued)
+ {
+@@ -10562,7 +10669,8 @@ static bool crucible_node_vmstate_get_event(
+         !qemu_crucible_fault_vmstate_get_u16(reader, &event->outcome) ||
+         !qemu_crucible_fault_vmstate_get_u16(reader, &event->model_phase) ||
+         !qemu_crucible_fault_vmstate_get_u16(reader, &event->target_kind) ||
+-        !qemu_crucible_fault_vmstate_get_u32(reader, &event->reserved) ||
++        !qemu_crucible_fault_vmstate_get_u32(reader,
++                                              &event->evidence_length) ||
+         !qemu_crucible_fault_vmstate_get_u64(reader,
+                                               &event->event_sequence) ||
+         !qemu_crucible_fault_vmstate_get_u64(
+@@ -10583,10 +10691,14 @@ static bool crucible_node_vmstate_get_event(
+         !qemu_crucible_fault_vmstate_get_bytes(reader,
+                                                 event->after_hash, 32) ||
+         !qemu_crucible_fault_vmstate_get_u32(reader, &evidence_len) ||
+-        evidence_len > CRUCIBLE_FAULT_HARD_PAYLOAD_BYTES ||
++        evidence_len > CRUCIBLE_NODE_EVENT_ENVELOPE_MAX_BYTES ||
+         !qemu_crucible_fault_vmstate_get_view(reader, &evidence,
+                                                evidence_len) ||
+-        event->reserved != 0 || event->event_sequence == 0 ||
++        !crucible_node_event_envelope_valid(event, evidence, evidence_len) ||
++        event->evidence_length == 0 ||
++        event->evidence_length > CRUCIBLE_FAULT_HARD_PAYLOAD_BYTES ||
++        event->evidence_length != node_get_u32(evidence + 16) ||
++        event->event_sequence == 0 ||
+         event->rule_command_sequence == 0 || event->generation == 0 ||
+         event->outcome < CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED ||
+         event->outcome > CRUCIBLE_FAULT_EVENT_OUTCOME_RECOVERED ||
+@@ -10622,6 +10734,8 @@ void qemu_crucible_fault_rule_vmstate_save(
+     qemu_crucible_fault_vmstate_put_u64(payload, rule->opportunity_count);
+     qemu_crucible_fault_vmstate_put_u64(payload, rule->applied_count);
+     qemu_crucible_fault_vmstate_put_bytes(payload, rule->binding_hash, 32);
++    qemu_crucible_fault_vmstate_put_bytes(payload, rule->opportunity_hash,
++                                          32);
+     qemu_crucible_fault_vmstate_put_bytes(payload, rule->target_node_hash,
+                                           32);
+     qemu_crucible_fault_vmstate_put_u32(payload, rule->payload_len);
+@@ -10650,6 +10764,8 @@ QemuCrucibleFaultRule *qemu_crucible_fault_rule_vmstate_load(
+                                               &rule->applied_count) ||
+         !qemu_crucible_fault_vmstate_get_bytes(reader,
+                                                 command.binding_hash, 32) ||
++        !qemu_crucible_fault_vmstate_get_bytes(
++            reader, command.opportunity_hash, 32) ||
+         !qemu_crucible_fault_vmstate_get_bytes(
+             reader, command.target_node_hash, 32) ||
+         !qemu_crucible_fault_vmstate_get_u32(reader, &rule_payload_len) ||
+@@ -10919,7 +11035,7 @@ bool qemu_crucible_fault_rule_foreach_staged(
+ static const QemuCrucibleFaultVmstateSection
+ crucible_node_vmstate_section = {
+     .name = "node-rules",
+-    .version = 1,
++    .version = 2,
+     .save = crucible_node_vmstate_save,
+     .prepare = crucible_node_vmstate_prepare,
+     .commit = crucible_node_vmstate_commit,
+diff --git a/tests/tcg/plugins/crucible-instruction.c b/tests/tcg/plugins/crucible-instruction.c
+index eb88c4987..010fc1e00 100644
+--- a/tests/tcg/plugins/crucible-instruction.c
++++ b/tests/tcg/plugins/crucible-instruction.c
+@@ -14,6 +14,7 @@
+ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
+ 
+ #define TEST_INSTRUCTION_EVIDENCE_HEADER_BYTES 608
++#define TEST_EVENT_ENVELOPE_HEADER_BYTES 192
+ #define TEST_MODEL_PHASE_BEFORE_INSTRUCTION 11
+ #define TEST_MODEL_PHASE_AFTER_INSTRUCTION 12
+ 
+@@ -178,6 +179,30 @@ static uint32_t test_get_u32(const uint8_t *bytes)
+            (uint32_t)bytes[2] << 16 | (uint32_t)bytes[3] << 24;
+ }
+ 
++static const uint8_t *test_event_evidence(
++    const struct qemu_plugin_crucible_fault_event *event,
++    const uint8_t *envelope, size_t envelope_len, size_t *evidence_len)
++{
++    uint32_t request_len;
++    uint32_t encoded_evidence_len;
++
++    if (envelope_len < TEST_EVENT_ENVELOPE_HEADER_BYTES ||
++        memcmp(envelope, "CRUCEVQ1", 8) != 0 ||
++        test_get_u16(envelope + 8) != 1) {
++        test_fail("fault event envelope header is invalid");
++    }
++    request_len = test_get_u32(envelope + 12);
++    encoded_evidence_len = test_get_u32(envelope + 16);
++    if (request_len > envelope_len - TEST_EVENT_ENVELOPE_HEADER_BYTES ||
++        encoded_evidence_len !=
++            envelope_len - TEST_EVENT_ENVELOPE_HEADER_BYTES - request_len ||
++        encoded_evidence_len != event->evidence_length) {
++        test_fail("fault event envelope lengths are invalid");
++    }
++    *evidence_len = encoded_evidence_len;
++    return envelope + TEST_EVENT_ENVELOPE_HEADER_BYTES + request_len;
++}
++
+ static uint64_t test_get_u64(const uint8_t *bytes)
+ {
+     return test_get_u32(bytes) | (uint64_t)test_get_u32(bytes + 4) << 32;
+@@ -889,7 +914,9 @@ static void test_validate_instruction_event(
+ static void test_poll_events(void)
+ {
+     struct qemu_plugin_crucible_fault_event event;
+-    uint8_t evidence[16384];
++    uint8_t envelope[16384];
++    const uint8_t *evidence;
++    size_t envelope_len;
+     size_t evidence_len;
+     int status;
+ 
+@@ -897,13 +924,15 @@ static void test_poll_events(void)
+         evidence_len = 0;
+         memset(&event, 0, sizeof(event));
+         status = qemu_plugin_crucible_fault_event_poll(
+-            &event, evidence, sizeof(evidence), &evidence_len);
++            &event, envelope, sizeof(envelope), &envelope_len);
+         if (status < 0) {
+             test_fail("fault event polling failed");
+         }
+         if (status != 1) {
+             continue;
+         }
++        evidence = test_event_evidence(
++            &event, envelope, envelope_len, &evidence_len);
+         if (test_saturation_mode()) {
+             if (evidence_len == 128 &&
+                 memcmp(evidence, "CRUCQFL1", 8) == 0) {
+diff --git a/tests/tcg/plugins/crucible-memory-access.c b/tests/tcg/plugins/crucible-memory-access.c
+index 25d0b04cb..1f8f380f3 100644
+--- a/tests/tcg/plugins/crucible-memory-access.c
++++ b/tests/tcg/plugins/crucible-memory-access.c
+@@ -16,6 +16,7 @@
+ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
+ 
+ #define TEST_EVIDENCE_BYTES 65536
++#define TEST_EVENT_ENVELOPE_HEADER_BYTES 192
+ #define TEST_MEMORY_PAGE_TABLE_WALK_CLASS 0x20
+ #define TEST_MEMORY_BOUNDARY_CLASS 0x40
+ 
+@@ -43,6 +44,7 @@ static uint64_t test_last_icount;
+ static bool test_prepared;
+ static bool test_installed;
+ static bool test_submitted;
++
+ static bool test_event_seen;
+ static bool test_retention_boundary_seen;
+ static uint64_t test_install_icount;
+@@ -103,6 +105,30 @@ static uint16_t test_get_u16(const uint8_t *bytes)
+     return bytes[0] | (uint16_t)bytes[1] << 8;
+ }
+ 
++static const uint8_t *test_event_evidence(
++    const struct qemu_plugin_crucible_fault_event *event,
++    const uint8_t *envelope, size_t envelope_len, size_t *evidence_len)
++{
++    uint32_t request_len;
++    uint32_t encoded_evidence_len;
++
++    if (envelope_len < TEST_EVENT_ENVELOPE_HEADER_BYTES ||
++        memcmp(envelope, "CRUCEVQ1", 8) != 0 ||
++        test_get_u16(envelope + 8) != 1) {
++        test_fail("fault event envelope header is invalid");
++    }
++    request_len = test_get_u32(envelope + 12);
++    encoded_evidence_len = test_get_u32(envelope + 16);
++    if (request_len > envelope_len - TEST_EVENT_ENVELOPE_HEADER_BYTES ||
++        encoded_evidence_len !=
++            envelope_len - TEST_EVENT_ENVELOPE_HEADER_BYTES - request_len ||
++        encoded_evidence_len != event->evidence_length) {
++        test_fail("fault event envelope lengths are invalid");
++    }
++    *evidence_len = encoded_evidence_len;
++    return envelope + TEST_EVENT_ENVELOPE_HEADER_BYTES + request_len;
++}
++
+ static uint64_t test_get_u64(const uint8_t *bytes)
+ {
+     return test_get_u32(bytes) | (uint64_t)test_get_u32(bytes + 4) << 32;
+@@ -474,30 +500,35 @@ static void test_build_scenario(const char *scenario)
+ static void test_poll_events(void)
+ {
+     struct qemu_plugin_crucible_fault_event event;
++    const uint8_t *evidence;
++    size_t envelope_length;
+     size_t length;
+     int status;
+ 
+     while ((status = qemu_plugin_crucible_fault_event_poll(
+-                &event, test_evidence, sizeof(test_evidence), &length)) == 1) {
+-        uint64_t access_address = test_get_u64(test_evidence + 24);
+-        uint64_t access_length = test_get_u64(test_evidence + 32);
++                &event, test_evidence, sizeof(test_evidence),
++                &envelope_length)) == 1) {
++        evidence = test_event_evidence(
++            &event, test_evidence, envelope_length, &length);
++        uint64_t access_address = test_get_u64(evidence + 24);
++        uint64_t access_length = test_get_u64(evidence + 32);
+         uint64_t rule_length = strcmp(test_scenario, "rowhammer") == 0 ?
+                                0x3000 : test_length;
+ 
+         if (event.command_kind != test_command_kind ||
+             event.generation != 1 || access_length == 0 ||
+             access_length > 4096 ||
+-            memcmp(test_evidence, "CRUCMEM1", 8) != 0 ||
+-            ((test_get_u32(test_evidence + 8) & test_classes) == 0 &&
++            memcmp(evidence, "CRUCMEM1", 8) != 0 ||
++            ((test_get_u32(evidence + 8) & test_classes) == 0 &&
+              !(strcmp(test_scenario, "retention") == 0 &&
+-               test_get_u32(test_evidence + 8) ==
++               test_get_u32(evidence + 8) ==
+                    TEST_MEMORY_BOUNDARY_CLASS)) ||
+-            test_get_u64(test_evidence + 48) == 0) {
++            test_get_u64(evidence + 48) == 0) {
+             g_printerr("event kind=%u generation=%" PRIu64
+                        " class=%u access=%" PRIx64 "+%" PRIu64
+                        " payload=%zu\n",
+                        event.command_kind, event.generation,
+-                       test_get_u32(test_evidence + 8), access_address,
++                       test_get_u32(evidence + 8), access_address,
+                        access_length, length);
+             test_fail("occurrence evidence is incomplete");
+         }
+@@ -506,18 +537,18 @@ static void test_poll_events(void)
+                 test_event_seen) {
+                 test_fail("fetch service was committed more than once");
+             }
+-            if (length != 576 || memcmp(test_evidence + 368, "CRUCSVC1", 8) ||
+-                test_get_u32(test_evidence + 376) != 1 ||
+-                test_get_u64(test_evidence + 400) <
+-                    test_get_u64(test_evidence + 392) ||
+-                test_get_u64(test_evidence + 408) != 1000 ||
+-                test_get_u64(test_evidence + 416) == 0 ||
+-                test_get_u64(test_evidence + 432) == 0 ||
+-                test_get_u64(test_evidence + 440) != 1000 ||
+-                test_get_u64(test_evidence + 448) != 1000000000 ||
+-                test_get_u64(test_evidence + 456) != 1000000 ||
+-                test_get_u32(test_evidence + 464) != 3 ||
+-                test_get_u32(test_evidence + 468) !=
++            if (length != 576 || memcmp(evidence + 368, "CRUCSVC1", 8) ||
++                test_get_u32(evidence + 376) != 1 ||
++                test_get_u64(evidence + 400) <
++                    test_get_u64(evidence + 392) ||
++                test_get_u64(evidence + 408) != 1000 ||
++                test_get_u64(evidence + 416) == 0 ||
++                test_get_u64(evidence + 432) == 0 ||
++                test_get_u64(evidence + 440) != 1000 ||
++                test_get_u64(evidence + 448) != 1000000000 ||
++                test_get_u64(evidence + 456) != 1000000 ||
++                test_get_u32(evidence + 464) != 3 ||
++                test_get_u32(evidence + 468) !=
+                     CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED) {
+                 g_printerr(
+                     "service length=%zu version=%u ready=%" PRIu64
+@@ -525,74 +556,74 @@ static void test_poll_events(void)
+                     " queue=%" PRIu64 " completion=%" PRIu64
+                     " configured=%" PRIu64 "/%" PRIu64 "/%" PRIu64
+                     " flags=%u outcome=%u\n",
+-                    length, test_get_u32(test_evidence + 376),
+-                    test_get_u64(test_evidence + 392),
+-                    test_get_u64(test_evidence + 400),
+-                    test_get_u64(test_evidence + 408),
+-                    test_get_u64(test_evidence + 416),
+-                    test_get_u64(test_evidence + 424),
+-                    test_get_u64(test_evidence + 432),
+-                    test_get_u64(test_evidence + 440),
+-                    test_get_u64(test_evidence + 448),
+-                    test_get_u64(test_evidence + 456),
+-                    test_get_u32(test_evidence + 464),
+-                    test_get_u32(test_evidence + 468));
++                    length, test_get_u32(evidence + 376),
++                    test_get_u64(evidence + 392),
++                    test_get_u64(evidence + 400),
++                    test_get_u64(evidence + 408),
++                    test_get_u64(evidence + 416),
++                    test_get_u64(evidence + 424),
++                    test_get_u64(evidence + 432),
++                    test_get_u64(evidence + 440),
++                    test_get_u64(evidence + 448),
++                    test_get_u64(evidence + 456),
++                    test_get_u32(evidence + 464),
++                    test_get_u32(evidence + 468));
+                 test_fail("service evidence is incomplete");
+             }
+             if (test_is_page_table_walk_scenario() &&
+-                (test_get_u64(test_evidence + 16) !=
+-                     test_get_u64(test_evidence + 224) ||
+-                 test_get_u32(test_evidence + 232) !=
++                (test_get_u64(evidence + 16) !=
++                     test_get_u64(evidence + 224) ||
++                 test_get_u32(evidence + 232) !=
+                      (test_address == 0x10d000 ? 1 : 3) ||
+-                 test_get_u32(test_evidence + 236) != 1 ||
+-                 test_get_u32(test_evidence + 240) != 2)) {
++                 test_get_u32(evidence + 236) != 1 ||
++                 test_get_u32(evidence + 240) != 2)) {
+                 test_fail("service evidence lacks page-table identity");
+             }
+         } else {
+-            uint64_t transaction_address = test_get_u64(test_evidence + 264);
+-            uint64_t transaction_length = test_get_u64(test_evidence + 272);
+-            uint32_t event_offset = test_get_u32(test_evidence + 60);
+-            uint32_t event_length = test_get_u32(test_evidence + 108);
+-            uint32_t state_flags = test_get_u32(test_evidence + 104);
+-            uint16_t outcome = test_get_u16(test_evidence + 306);
++            uint64_t transaction_address = test_get_u64(evidence + 264);
++            uint64_t transaction_length = test_get_u64(evidence + 272);
++            uint32_t event_offset = test_get_u32(evidence + 60);
++            uint32_t event_length = test_get_u32(evidence + 108);
++            uint32_t state_flags = test_get_u32(evidence + 104);
++            uint16_t outcome = test_get_u16(evidence + 306);
+             uint64_t selected_address;
+             bool retention_boundary =
+                 strcmp(test_scenario, "retention") == 0 &&
+-                test_get_u32(test_evidence + 8) ==
++                test_get_u32(evidence + 8) ==
+                     TEST_MEMORY_BOUNDARY_CLASS;
+             bool page_table_walk = test_is_page_table_walk_scenario();
+ 
+             if (test_retry_scenario) {
+                 uint32_t retry_ordinal =
+-                    test_get_u32(test_evidence + 260);
++                    test_get_u32(evidence + 260);
+                 uint32_t has_instruction =
+-                    test_get_u32(test_evidence + 300);
++                    test_get_u32(evidence + 300);
+ 
+                 test_retry_event_count++;
+                 if (has_instruction != 1 ||
+-                    test_get_u64(test_evidence + 288) == 0) {
++                    test_get_u64(evidence + 288) == 0) {
+                     test_fail("retry evidence lacks instruction identity");
+                 }
+                 if (page_table_walk &&
+-                    (test_get_u32(test_evidence + 8) !=
++                    (test_get_u32(evidence + 8) !=
+                          TEST_MEMORY_PAGE_TABLE_WALK_CLASS ||
+-                     test_get_u64(test_evidence + 16) !=
+-                         test_get_u64(test_evidence + 224) ||
+-                     test_get_u32(test_evidence + 236) != 1 ||
+-                     test_get_u32(test_evidence + 240) != 2)) {
++                     test_get_u64(evidence + 16) !=
++                         test_get_u64(evidence + 224) ||
++                     test_get_u32(evidence + 236) != 1 ||
++                     test_get_u32(evidence + 240) != 2)) {
+                     test_fail("page-table retry evidence lacks walk identity");
+                 }
+                 if (outcome == CRUCIBLE_FAULT_EVENT_OUTCOME_ERROR &&
+-                    test_get_u32(test_evidence + 308) == 5 &&
++                    test_get_u32(evidence + 308) == 5 &&
+                     retry_ordinal == 0 && !test_retry_poison_seen) {
+                     test_retry_poison_seen = true;
+                     test_retry_poison_icount =
+-                        test_get_u64(test_evidence + 280);
++                        test_get_u64(evidence + 280);
+                 } else if (outcome ==
+                                CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED &&
+-                           test_get_u32(test_evidence + 308) == 1 &&
++                           test_get_u32(evidence + 308) == 1 &&
+                            retry_ordinal == 1 &&
+-                           test_get_u64(test_evidence + 280) >
++                           test_get_u64(evidence + 280) >
+                                test_retry_poison_icount &&
+                            test_retry_poison_seen &&
+                            !test_retry_applied_seen) {
+@@ -628,47 +659,47 @@ static void test_poll_events(void)
+             }
+ 
+             if (page_table_walk &&
+-                (test_get_u32(test_evidence + 8) !=
++                (test_get_u32(evidence + 8) !=
+                      TEST_MEMORY_PAGE_TABLE_WALK_CLASS ||
+-                 test_get_u64(test_evidence + 16) !=
+-                     test_get_u64(test_evidence + 224) ||
+-                 test_get_u32(test_evidence + 236) !=
++                 test_get_u64(evidence + 16) !=
++                     test_get_u64(evidence + 224) ||
++                 test_get_u32(evidence + 236) !=
+                      (strcmp(test_scenario,
+                              "page-table-walk-nested-stage2") == 0 ? 2 : 1) ||
+-                 test_get_u32(test_evidence + 240) != 2 ||
++                 test_get_u32(evidence + 240) != 2 ||
+                  (test_is_nested_page_table_walk_scenario() &&
+-                  (test_get_u64(test_evidence + 224) != 0x400000 ||
+-                   test_get_u32(test_evidence + 232) != 1)) ||
++                  (test_get_u64(evidence + 224) != 0x400000 ||
++                   test_get_u32(evidence + 232) != 1)) ||
+                  ((!test_is_nested_page_table_walk_scenario() &&
+                    test_address == 0x10d000) &&
+-                   (test_get_u64(test_evidence + 224) != 0x400000 ||
+-                    test_get_u32(test_evidence + 232) != 1)) ||
++                   (test_get_u64(evidence + 224) != 0x400000 ||
++                    test_get_u32(evidence + 232) != 1)) ||
+                  ((!test_is_nested_page_table_walk_scenario() &&
+                    test_address != 0x10d000) &&
+-                   (test_get_u64(test_evidence + 224) != 0x40600000 ||
+-                    test_get_u32(test_evidence + 232) != 3)))) {
++                   (test_get_u64(evidence + 224) != 0x40600000 ||
++                    test_get_u32(evidence + 232) != 3)))) {
+                 test_fail("page-table walk evidence is incomplete");
+             }
+ 
+             if (strcmp(test_scenario, "rowhammer") == 0 &&
+-                (test_get_u64(test_evidence + 176) == 0 ||
+-                 test_get_u64(test_evidence + 184) == 0 ||
+-                 test_get_u64(test_evidence + 344) == 0)) {
++                (test_get_u64(evidence + 176) == 0 ||
++                 test_get_u64(evidence + 184) == 0 ||
++                 test_get_u64(evidence + 344) == 0)) {
+                 g_printerr(
+                     "rowhammer evidence mutations=%" PRIu64
+                     " bytes=%" PRIu64 " victims=%" PRIu64
+                     " access=%" PRIx64 "+%" PRIu64 "\n",
+-                    test_get_u64(test_evidence + 176),
+-                    test_get_u64(test_evidence + 184),
+-                    test_get_u64(test_evidence + 344),
++                    test_get_u64(evidence + 176),
++                    test_get_u64(evidence + 184),
++                    test_get_u64(evidence + 344),
+                     access_address, access_length);
+                 test_fail("rowhammer did not mutate a victim row");
+             }
+ 
+-            if (length < 480 || test_get_u32(test_evidence + 56) == 0 ||
++            if (length < 480 || test_get_u32(evidence + 56) == 0 ||
+                 (!retention_boundary && transaction_length == 0) ||
+-                test_get_u16(test_evidence + 304) != test_command_kind ||
+-                test_get_u32(test_evidence + 308) != test_kind ||
++                test_get_u16(evidence + 304) != test_command_kind ||
++                test_get_u32(evidence + 308) != test_kind ||
+                 event_length == 0 || event_length > access_length ||
+                 event_offset > access_length - event_length ||
+                 access_address > UINT64_MAX - event_offset ||
+@@ -686,9 +717,9 @@ static void test_poll_events(void)
+                     " command=%u/%u kind=%u/%u event=%u+%u "
+                     "access=%" PRIx64 "+%" PRIu64 " outcome=%u\n",
+                     test_scenario, length,
+-                    test_get_u32(test_evidence + 56), transaction_address,
+-                    transaction_length, test_get_u16(test_evidence + 304),
+-                    test_command_kind, test_get_u32(test_evidence + 308),
++                    test_get_u32(evidence + 56), transaction_address,
++                    transaction_length, test_get_u16(evidence + 304),
++                    test_command_kind, test_get_u32(evidence + 308),
+                     test_kind, event_offset, event_length, access_address,
+                     access_length, outcome);
+                 test_fail("memory evidence is incomplete");
+diff --git a/tests/tcg/plugins/crucible-memory-dma.c b/tests/tcg/plugins/crucible-memory-dma.c
+index e1e096d68..cf8a9e759 100644
+--- a/tests/tcg/plugins/crucible-memory-dma.c
++++ b/tests/tcg/plugins/crucible-memory-dma.c
+@@ -14,6 +14,7 @@
+ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
+ 
+ #define TEST_EVIDENCE_BYTES (1024 * 1024)
++#define TEST_EVENT_ENVELOPE_HEADER_BYTES 192
+ #define TEST_DMA_ID_DOMAIN "qemu.virtio.dma-id.v1"
+ #ifndef CRUCIBLE_NODE_FAULT_FIELD_P10
+ #define CRUCIBLE_NODE_FAULT_FIELD_P10 10u
+@@ -70,6 +71,30 @@ static uint32_t test_get_u32(const uint8_t *bytes)
+            (uint32_t)bytes[2] << 16 | (uint32_t)bytes[3] << 24;
+ }
+ 
++static const uint8_t *test_event_evidence(
++    const struct qemu_plugin_crucible_fault_event *event,
++    const uint8_t *envelope, size_t envelope_len, size_t *evidence_len)
++{
++    uint32_t request_len;
++    uint32_t encoded_evidence_len;
++
++    if (envelope_len < TEST_EVENT_ENVELOPE_HEADER_BYTES ||
++        memcmp(envelope, "CRUCEVQ1", 8) != 0 ||
++        envelope[8] != 1 || envelope[9] != 0) {
++        test_fail("fault event envelope header is invalid");
++    }
++    request_len = test_get_u32(envelope + 12);
++    encoded_evidence_len = test_get_u32(envelope + 16);
++    if (request_len > envelope_len - TEST_EVENT_ENVELOPE_HEADER_BYTES ||
++        encoded_evidence_len !=
++            envelope_len - TEST_EVENT_ENVELOPE_HEADER_BYTES - request_len ||
++        encoded_evidence_len != event->evidence_length) {
++        test_fail("fault event envelope lengths are invalid");
++    }
++    *evidence_len = encoded_evidence_len;
++    return envelope + TEST_EVENT_ENVELOPE_HEADER_BYTES + request_len;
++}
++
+ static uint64_t test_get_u64(const uint8_t *bytes)
+ {
+     return test_get_u32(bytes) | (uint64_t)test_get_u32(bytes + 4) << 32;
+@@ -186,12 +211,14 @@ static void test_build_rule(void)
+ static void test_poll_events(void)
+ {
+     struct qemu_plugin_crucible_fault_event event;
++    const uint8_t *evidence;
++    size_t envelope_length;
+     size_t evidence_length;
+     int status;
+ 
+     while ((status = qemu_plugin_crucible_fault_event_poll(
+                 &event, test_evidence, sizeof(test_evidence),
+-                &evidence_length)) == 1) {
++                &envelope_length)) == 1) {
+         uint64_t address;
+         uint64_t length;
+         uint64_t transaction_address;
+@@ -199,22 +226,24 @@ static void test_poll_events(void)
+         const uint8_t *after;
+         const uint8_t *effect;
+ 
++        evidence = test_event_evidence(
++            &event, test_evidence, envelope_length, &evidence_length);
+         if (event.command_kind !=
+                 CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM ||
+             event.generation != 1 || evidence_length < 483 ||
+-            memcmp(test_evidence, "CRUCMEM1", 8) != 0 ||
+-            test_get_u32(test_evidence + 8) != test_class ||
+-            memcmp(test_evidence + 224, test_device_identity, 32) != 0) {
++            memcmp(evidence, "CRUCMEM1", 8) != 0 ||
++            test_get_u32(evidence + 8) != test_class ||
++            memcmp(evidence + 224, test_device_identity, 32) != 0) {
+             test_fail("device-scoped DMA evidence identity is incomplete");
+         }
+-        address = test_get_u64(test_evidence + 24);
+-        length = test_get_u64(test_evidence + 32);
+-        transaction_address = test_get_u64(test_evidence + 264);
++        address = test_get_u64(evidence + 24);
++        length = test_get_u64(evidence + 32);
++        transaction_address = test_get_u64(evidence + 264);
+         if (length == 0 || length > 4096 ||
+             address < test_start || address - test_start >= test_length ||
+             length > test_length - (address - test_start) ||
+             evidence_length != 480 + 3 * length ||
+-            test_get_u32(test_evidence + 436) != length) {
++            test_get_u32(evidence + 436) != length) {
+             test_fail("DMA opportunity span is not exact");
+         }
+         if (test_require_translation &&
+@@ -228,7 +257,7 @@ static void test_poll_events(void)
+                        " gpa=%" PRIx64 "\n",
+                        transaction_address, address);
+         }
+-        before = test_evidence + 480;
++        before = evidence + 480;
+         after = before + length;
+         effect = after + length;
+         for (size_t i = 0; i < length; i++) {
+diff --git a/tests/tcg/plugins/crucible-register.c b/tests/tcg/plugins/crucible-register.c
+index 301d2eded..97d3ea2a6 100644
+--- a/tests/tcg/plugins/crucible-register.c
++++ b/tests/tcg/plugins/crucible-register.c
+@@ -14,6 +14,7 @@
+ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
+ 
+ #define TEST_REGISTER_EVIDENCE_HEADER_BYTES 160
++#define TEST_EVENT_ENVELOPE_HEADER_BYTES 192
+ #define TEST_MODEL_PHASE_BEFORE_INSTRUCTION 11
+ #define TEST_MODEL_PHASE_AFTER_INSTRUCTION 12
+ 
+@@ -156,6 +157,30 @@ static void test_fail(const char *message)
+     abort();
+ }
+ 
++static const uint8_t *test_event_evidence(
++    const struct qemu_plugin_crucible_fault_event *event,
++    const uint8_t *envelope, size_t envelope_len, size_t *evidence_len)
++{
++    uint32_t request_len;
++    uint32_t encoded_evidence_len;
++
++    if (envelope_len < TEST_EVENT_ENVELOPE_HEADER_BYTES ||
++        memcmp(envelope, "CRUCEVQ1", 8) != 0 ||
++        test_get_u16(envelope + 8) != 1) {
++        test_fail("fault event envelope header is invalid");
++    }
++    request_len = test_get_u32(envelope + 12);
++    encoded_evidence_len = test_get_u32(envelope + 16);
++    if (request_len > envelope_len - TEST_EVENT_ENVELOPE_HEADER_BYTES ||
++        encoded_evidence_len !=
++            envelope_len - TEST_EVENT_ENVELOPE_HEADER_BYTES - request_len ||
++        encoded_evidence_len != event->evidence_length) {
++        test_fail("fault event envelope lengths are invalid");
++    }
++    *evidence_len = encoded_evidence_len;
++    return envelope + TEST_EVENT_ENVELOPE_HEADER_BYTES + request_len;
++}
++
+ static bool test_mask_bit(const uint8_t *mask, uint32_t bit)
+ {
+     return (mask[bit / 8] & (1U << (bit % 8))) != 0;
+@@ -547,15 +572,17 @@ static void test_submit_commit(
+ static void test_poll_events(void)
+ {
+     struct qemu_plugin_crucible_fault_event event;
+-    uint8_t evidence[8192];
++    uint8_t envelope[8192];
++    const uint8_t *evidence;
++    size_t envelope_len = 0;
+     size_t evidence_len = 0;
+     int status;
+ 
+     do {
+         memset(&event, 0, sizeof(event));
+-        evidence_len = 0;
++        envelope_len = 0;
+         status = qemu_plugin_crucible_fault_event_poll(
+-            &event, evidence, sizeof(evidence), &evidence_len);
++            &event, envelope, sizeof(envelope), &envelope_len);
+         if (status < 0) {
+             test_fail("register event polling failed");
+         }
+@@ -564,23 +591,26 @@ static void test_poll_events(void)
+         }
+         if (status == 1 && event.command_kind ==
+                 CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM) {
++            evidence = test_event_evidence(
++                &event, envelope, envelope_len, &evidence_len);
+             if (event.model_phase != test_model_phase ||
+                 event.outcome != CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED ||
+                 event.target_kind != CRUCIBLE_NODE_FAULT_TARGET_REGISTER ||
+-                event.reserved != 0 || event.event_sequence == 0 ||
++                event.evidence_length != evidence_len ||
++                event.event_sequence == 0 ||
+                 event.rule_command_sequence != 2 ||
+                 event.observed_icount == 0 || event.generation != 1 ||
+                 memcmp(event.binding_hash, test_command.binding_hash, 32) != 0 ||
+                 memcmp(event.action_hash, test_action_hash, 32) != 0 ||
+                 memcmp(event.target_hash, test_target_hash, 32) != 0) {
+                 g_printerr("register event debug phase=%u expected_phase=%u "
+-                           "outcome=%u target=%u reserved=%u sequence=%" G_GUINT64_FORMAT
++                           "outcome=%u target=%u evidence=%u sequence=%" G_GUINT64_FORMAT
+                            " rule_sequence=%" G_GUINT64_FORMAT
+                            " icount=%" G_GUINT64_FORMAT
+                            " generation=%" G_GUINT64_FORMAT
+                            " expected_generation=%" G_GUINT64_FORMAT "\n",
+                            event.model_phase, test_model_phase, event.outcome,
+-                           event.target_kind, event.reserved,
++                           event.target_kind, event.evidence_length,
+                            event.event_sequence, event.rule_command_sequence,
+                            event.observed_icount, event.generation,
+                            UINT64_C(1));

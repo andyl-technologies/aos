@@ -1102,6 +1102,8 @@ pub enum FaultObservationKind {
     EffectChoice,
     /// Simultaneous contributions were combined.
     EffectCombined,
+    /// A production adapter committed an impulse or opportunity action.
+    EffectCommitted,
     /// A production adapter applied an effect.
     EffectApplied,
     /// Application failed closed.
@@ -1127,6 +1129,7 @@ impl FaultObservationKind {
             Self::FaultOpportunity => "fault_opportunity",
             Self::EffectChoice => "effect_choice",
             Self::EffectCombined => "effect_combined",
+            Self::EffectCommitted => "effect_committed",
             Self::EffectApplied => "effect_applied",
             Self::EffectRejected => "effect_rejected",
             Self::NetworkProfile => "network_profile",

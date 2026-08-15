@@ -1214,6 +1214,7 @@ pub(super) const fn fault_observation_level(kind: FaultObservationKind) -> Event
         | FaultObservationKind::SignalStateTransition
         | FaultObservationKind::BindingActivation
         | FaultObservationKind::BindingDeactivation
+        | FaultObservationKind::EffectCommitted
         | FaultObservationKind::EffectApplied
         | FaultObservationKind::NetworkProfile
         | FaultObservationKind::AssociationTransition

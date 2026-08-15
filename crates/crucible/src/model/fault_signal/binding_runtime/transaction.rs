@@ -14,7 +14,7 @@ fn validate_prepared_batch(
         let expected_kind = match action.kind {
             BindingActionKind::UpsertPersistent => FaultObservationKind::BindingActivation,
             BindingActionKind::RemovePersistent => FaultObservationKind::BindingDeactivation,
-            BindingActionKind::Apply => FaultObservationKind::EffectApplied,
+            BindingActionKind::Apply => FaultObservationKind::EffectCommitted,
         };
         let observation = result.observation;
         if result.action != action.id()

@@ -1082,7 +1082,7 @@ fn typed_control_transform_action(
                 EFFECT_SEMANTIC_VERSION,
                 EffectLifetime::Opportunity,
                 EffectSpecification::Network(NetworkEffectSpecification::ControlResultTransform {
-                    technology,
+                    technology: technology.clone(),
                     operations: crucible::model::OperationSet::new(vec![operation])
                         .unwrap_or_else(|error| panic!("transform operations: {error}")),
                     kind,
@@ -1099,7 +1099,16 @@ fn typed_control_transform_action(
             virtual_nanos: 1,
             retired_instructions: None,
         },
-        cause: BindingActionCause::Opportunity(ContentHash::from_bytes(b"control-opportunity")),
+        cause: BindingActionCause::Opportunity {
+            identity: ContentHash::from_bytes(b"control-opportunity"),
+            payload: OpportunityPayload::NetworkControl {
+                technology: technology.clone(),
+                event_sequence: 1,
+                request_digest: ContentHash::from_bytes(b"request"),
+                result_schema: kind,
+                result_digest: ContentHash::from_bytes(b"result"),
+            },
+        },
         expected_precondition: None,
     }
 }

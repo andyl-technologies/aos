@@ -344,7 +344,10 @@ impl<'a> FaultBindingRuntime<'a> {
                     opportunity: opportunity.map(FaultOpportunity::id),
                     coordinate,
                     cause: opportunity.map_or(BindingActionCause::Signal, |value| {
-                        BindingActionCause::Opportunity(value.id())
+                        BindingActionCause::Opportunity {
+                            identity: value.id(),
+                            payload: value.payload().clone(),
+                        }
                     }),
                     expected_precondition: None,
                 };

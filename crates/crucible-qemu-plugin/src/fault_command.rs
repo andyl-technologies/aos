@@ -56,6 +56,9 @@ pub const QEMU_PLUGIN_CRUCIBLE_FAULT_POLL_SYMBOL: &str = "qemu_plugin_crucible_f
 /// QEMU symbol that non-destructively describes the oldest rule event.
 pub const QEMU_PLUGIN_CRUCIBLE_FAULT_EVENT_PEEK_SYMBOL: &str =
     "qemu_plugin_crucible_fault_event_peek";
+/// QEMU symbol that reports the mandatory restored-event envelope schema.
+pub const QEMU_PLUGIN_CRUCIBLE_FAULT_EVENT_ENVELOPE_VERSION_SYMBOL: &str =
+    "qemu_plugin_crucible_fault_event_envelope_version";
 /// QEMU symbol that copies and consumes one rule event.
 pub const QEMU_PLUGIN_CRUCIBLE_FAULT_EVENT_POLL_SYMBOL: &str =
     "qemu_plugin_crucible_fault_event_poll";
@@ -114,6 +117,8 @@ const CANCEL_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_cancel\0";
 const PEEK_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_peek\0";
 const POLL_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_poll\0";
 const EVENT_PEEK_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_event_peek\0";
+const EVENT_ENVELOPE_VERSION_SYMBOL_C: &[u8] =
+    b"qemu_plugin_crucible_fault_event_envelope_version\0";
 const EVENT_POLL_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_event_poll\0";
 const REGISTER_MANIFEST_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_register_manifest\0";
 const REGISTER_BIND_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_register_bind\0";
@@ -185,7 +190,7 @@ struct QemuFaultEvent {
     outcome: u16,
     model_phase: u16,
     target_kind: u16,
-    reserved: u32,
+    evidence_length: u32,
     event_sequence: u64,
     rule_command_sequence: u64,
     observed_icount: u64,
@@ -341,6 +346,7 @@ type QemuFaultCancelFn = extern "C" fn(u64) -> c_int;
 type QemuFaultPeekFn = extern "C" fn(*mut QemuFaultResult, *mut usize) -> c_int;
 type QemuFaultPollFn = extern "C" fn(*mut QemuFaultResult, *mut u8, usize, *mut usize) -> c_int;
 type QemuFaultEventPeekFn = extern "C" fn(*mut QemuFaultEvent, *mut usize) -> c_int;
+type QemuFaultEventEnvelopeVersionFn = extern "C" fn() -> c_int;
 type QemuFaultEventPollFn = extern "C" fn(*mut QemuFaultEvent, *mut u8, usize, *mut usize) -> c_int;
 type QemuFaultRegisterManifestFn =
     extern "C" fn(*mut QemuFaultRegisterCapability, usize, *mut u16, *mut *const c_char) -> usize;
@@ -375,6 +381,7 @@ pub(crate) struct QemuFaultCommandApis {
     peek: QemuFaultPeekFn,
     poll: QemuFaultPollFn,
     event_peek: QemuFaultEventPeekFn,
+    event_envelope_version: QemuFaultEventEnvelopeVersionFn,
     event_poll: QemuFaultEventPollFn,
     register_manifest: QemuFaultRegisterManifestFn,
     register_bind: QemuFaultRegisterBindFn,
@@ -410,6 +417,10 @@ impl QemuFaultCommandApis {
             event_peek: resolve_symbol(
                 EVENT_PEEK_SYMBOL_C,
                 QEMU_PLUGIN_CRUCIBLE_FAULT_EVENT_PEEK_SYMBOL,
+            )?,
+            event_envelope_version: resolve_symbol(
+                EVENT_ENVELOPE_VERSION_SYMBOL_C,
+                QEMU_PLUGIN_CRUCIBLE_FAULT_EVENT_ENVELOPE_VERSION_SYMBOL,
             )?,
             event_poll: resolve_symbol(
                 EVENT_POLL_SYMBOL_C,
@@ -1064,6 +1075,7 @@ impl QemuFaultCommandApis {
             peek: test_peek,
             poll: test_poll,
             event_peek: test_event_peek,
+            event_envelope_version: test_event_envelope_version,
             event_poll: test_event_poll,
             register_manifest: test_register_manifest,
             register_bind: test_register_bind,
@@ -1248,6 +1260,11 @@ extern "C" fn test_event_peek(event: *mut QemuFaultEvent, payload_length: *mut u
         return -libc::EINVAL;
     }
     0
+}
+
+#[cfg(test)]
+extern "C" fn test_event_envelope_version() -> c_int {
+    1
 }
 
 #[cfg(test)]
@@ -2001,9 +2018,11 @@ pub(crate) struct FaultCommandBridge {
 mod accelerator_evidence;
 mod bridge;
 mod clock_evidence;
+mod event_envelope;
 mod instruction_evidence;
 use accelerator_evidence::*;
 use clock_evidence::*;
+use event_envelope::*;
 use instruction_evidence::*;
 /// Failure of the lossless fault command bridge.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -2025,6 +2044,15 @@ pub enum FaultCommandBridgeError {
         /// Missing symbol.
         symbol: &'static str,
     },
+    /// QEMU reported an unsupported private event-envelope schema.
+    #[error("QEMU fault event envelope version {observed} is unsupported")]
+    EventEnvelopeVersion {
+        /// Version returned by the required QEMU runtime API.
+        observed: c_int,
+    },
+    /// QEMU returned a malformed or identity-inconsistent event envelope.
+    #[error("QEMU fault event envelope is invalid")]
+    EventEnvelope,
     /// The registry reported an invalid row count.
     #[error("QEMU fault registry reported invalid capability count {required}")]
     CapabilityCount {
@@ -2402,9 +2430,6 @@ pub enum FaultCommandBridgeError {
         /// Maximum available bytes.
         capacity: usize,
     },
-    /// QEMU populated reserved event bytes.
-    #[error("QEMU fault event returned nonzero reserved state")]
-    QemuEventReserved,
     /// QEMU returned the reserved zero event sequence.
     #[error("QEMU fault event returned sequence zero")]
     QemuEventSequenceZero,
