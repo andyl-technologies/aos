@@ -76,6 +76,10 @@ const KV_BINDING: &str = "SESSIONS";
 const COMPAT_DATE: &str = "2024-09-23";
 /// The Cron cadence that drives the indexer's `scheduled` handler.
 const INDEXER_CRON: &str = "*/15 * * * *";
+/// CPU budget for maintenance and Queue invocations that verify full surfaces.
+const WORKER_CPU_LIMIT_MS: u32 = 300_000;
+/// Subrequest budget for bounded walks of large published registry surfaces.
+const WORKER_SUBREQUEST_LIMIT: u32 = 100_000;
 
 /// The bundled deployment assets resolved from the wrapper environment.
 ///
@@ -359,6 +363,10 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
          compatibility_flags = [\"nodejs_compat\"]\n\
          {logpush}\
          \n{vars}\n\
+         [limits]\n\
+         cpu_ms = {cpu_limit_ms}\n\
+         subrequests = {subrequest_limit}\n\
+         \n\
          {assets}\
          {routes}\
          {send_email}\
@@ -421,6 +429,8 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
          {observability}",
         name = toml_string(&cfg.name),
         compat = COMPAT_DATE,
+        cpu_limit_ms = WORKER_CPU_LIMIT_MS,
+        subrequest_limit = WORKER_SUBREQUEST_LIMIT,
         logpush = logpush,
         assets = assets,
         routes = routes,
@@ -1502,6 +1512,14 @@ mod tests {
         // edge near each client, rather than being pinned to HubDb's region.
         // Emitting it every deploy reverts any dashboard toggle to smart.
         assert_eq!(parsed["placement"]["mode"].as_str(), Some("off"));
+        assert_eq!(
+            parsed["limits"]["cpu_ms"].as_integer(),
+            Some(i64::from(WORKER_CPU_LIMIT_MS))
+        );
+        assert_eq!(
+            parsed["limits"]["subrequests"].as_integer(),
+            Some(i64::from(WORKER_SUBREQUEST_LIMIT))
+        );
         assert_eq!(parsed["kv_namespaces"][0]["id"].as_str(), Some("kv-id"));
         assert_eq!(
             parsed["queues"]["producers"][0]["binding"].as_str(),

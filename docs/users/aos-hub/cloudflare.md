@@ -70,6 +70,13 @@ printed seal key through `HUB_SEAL_KEY`, and supply the root password again with
 | Scheduled trigger | Fifteen-minute maintenance and indexing backstop |
 | Worker assets | Web interface static files |
 
+The generated Worker configuration grants maintenance and Queue invocations
+up to five minutes of CPU time and 100,000 subrequests. Full registry indexing
+verifies the signed object graph and can exceed Cloudflare's conservative
+30-second default for a production-sized package surface. These are hard
+per-invocation ceilings, not reservations; monitor invocation CPU and
+subrequest use as the published surface grows.
+
 The default R2 bucket is `<name>-surfaces`, the default KV title is
 `<name>-sessions`, and the default Queue is `<name>-jobs`. Override them with
 `--bucket`, `--kv-title`, and `--queue` when names must fit an existing account
