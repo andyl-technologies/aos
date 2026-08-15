@@ -11,7 +11,11 @@
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  bindingRuntime = builtins.readFile ../../crates/crucible/src/model/fault_signal/binding_runtime.rs;
+  bindingRuntime = builtins.concatStringsSep "\n" (map builtins.readFile [
+    ../../crates/crucible/src/model/fault_signal/binding_runtime.rs
+    ../../crates/crucible/src/model/fault_signal/binding_runtime/runtime_api.rs
+    ../../crates/crucible/src/model/fault_signal/binding_runtime/search_helpers.rs
+  ]);
   bindingRuntimeTest = builtins.readFile ../../crates/crucible/src/model/fault_signal/binding_runtime_test.rs;
   modelCanonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
   stateSpaceGateTest = builtins.readFile ../../crates/crucible/tests/gate_state_space_search.rs;

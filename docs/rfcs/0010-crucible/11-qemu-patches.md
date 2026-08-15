@@ -260,6 +260,8 @@ SIGNAL-DRIVEN FAULT EXECUTION                          class  enforces
   crucible-lifecycle-precondition atomic lifecycle VM-state precondition D QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
   crucible-typed-node-result-schema fixed typed result and occurrence evidence D QFP-RESULT-1, QFP-EVENT-1, FAULT-ORDER
   crucible-device-wait-vmstop nonblocking exact control/device-completion pause D QFP-STATE-2, DET-1, INV-10
+  crucible-accelerator-result-opportunity exact one-shot accelerator result arming F QFP-ACCEL-3, QFP-RESULT-1, QFP-EVENT-1, FAULT-ORDER
+  crucible-authenticated-event-request-envelope restored authenticated occurrence requests F QFP-STATE-2, QFP-ACCEL-3, QFP-EVENT-1, FAULT-ORDER
 
 GUEST↔HOST CHANNEL (coordinate with 16)                class  enforces
   (no new patch required — see §11.7)                   —     GHC reuse

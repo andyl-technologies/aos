@@ -33,7 +33,10 @@
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs)
   ];
   shmemSpscTest = builtins.readFile ../../crates/crucible-shmem/tests/gate_layer1_injection.rs;
-  mappedSetupRegion = builtins.readFile ../../crates/crucible-shmem/src/mapped_setup_region.rs;
+  mappedSetupRegion = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-shmem/src/mapped_setup_region.rs;
+  };
   qemuMappedQuantum = builtins.readFile ../../crates/crucible-qemu/src/mapped_quantum.rs;
   qemuNode =
     builtins.readFile ../../crates/crucible-qemu/src/node.rs
@@ -209,7 +212,7 @@
     ++ failuresFor "crates/crucible-shmem split modules" shmemLib [
       {
         label = "coverage transport ABI version";
-        needle = "pub const ABI_VERSION: u32 = 13;";
+        needle = "pub const ABI_VERSION: u32 = 14;";
       }
       {
         label = "coverage queue bounded by map cardinality";
