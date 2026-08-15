@@ -417,6 +417,7 @@ in rec {
     qemuLivePluginInstall = import ./phase2-qemu-live-plugin-install.nix {inherit pkgs lib;};
     qemuLiveWhiteboxDoorbell = import ./phase2-qemu-live-whitebox-doorbell.nix {inherit pkgs lib;};
     qemuLiveBlockRealization = import ./phase2-qemu-live-block-realization.nix {inherit pkgs lib;};
+    qemuLiveFaultHardware = import ./phase2-qemu-live-fault-hardware.nix {inherit pkgs lib;};
     qemuLiveNodeStep = import ./phase2-qemu-live-node-step.nix {inherit pkgs lib;};
     qemuLiveNodeLifecycleFault = import ./phase2-qemu-live-node-lifecycle-fault.nix {inherit pkgs lib;};
     qemuLiveBlockIo = import ./phase2-qemu-live-block-io.nix {inherit pkgs lib;};

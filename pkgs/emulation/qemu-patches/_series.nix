@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "399554d8754bbb2cee7a7bab2714eea2d5c56403a05178015d22868859ddbc86";
+  patchBranchBundleSha256 = "a9ffa553a95934c907bf86faffa2045ebefa7122caa0fd33a77e81f1abd8e8be";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "4947e1b729c36db2b84440c3a2883861c62691a2";
+  patchBranchHeadCommit = "b80cf81e01da0ba93272b849a89353c967b46954";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -619,8 +619,8 @@ let
     {
       file = "0069-crucible-accelerator-fault-device.patch";
       branchSubject = "crucible: add deterministic accelerator device";
-      branchCommit = "5bb481208d3a936f2349e09e06624a0606381ad6";
-      branchTree = "85f822e508eb119d9c601f585699c065f1da0209";
+      branchCommit = "4105ded357c457b329886244ec218c7eef688f65";
+      branchTree = "eeea0e3f292444d8103742a0a5c00aedf8db5408";
       catalogName = "crucible-accelerator-fault-device";
       class = "D";
       enforces = "QFP-ACCEL-1,QFP-ACCEL-2,FAULT-ORDER";
@@ -629,8 +629,8 @@ let
     {
       file = "0070-crucible-fault-vmstate.patch";
       branchSubject = "crucible: finalize fault VMState identity";
-      branchCommit = "1aac0054d9cec57b3934a2334caba6f7787f5b89";
-      branchTree = "a35738fdadb7c784566fc0a8ed3afaa62aba9961";
+      branchCommit = "7bd4e101e8390ef8becfa88b054aebe1fdb48b51";
+      branchTree = "31eeaa357b57aaf8a85224735ab7e40746ec8db3";
       catalogName = "crucible-fault-vmstate";
       class = "D";
       enforces = "QFP-STATE-1,QFP-STATE-2,QFP-STATE-3";
@@ -639,8 +639,8 @@ let
     {
       file = "0071-crucible-lifecycle-precondition.patch";
       branchSubject = "crucible: bind lifecycle preconditions to VM state";
-      branchCommit = "4127d512478768f4aacecb129548e676c512a0b2";
-      branchTree = "06b823b4fa1f2a19a988a561bf665cd14b453abe";
+      branchCommit = "96847dff173530556b8a033e16cc3e6d6efd90ad";
+      branchTree = "967fe4838af7265f05576c47e117152c1565345a";
       catalogName = "crucible-lifecycle-precondition";
       class = "D";
       enforces = "QFP-LIFE-1,QFP-LIFE-2,FAULT-ORDER";
@@ -649,8 +649,8 @@ let
     {
       file = "0072-crucible-typed-node-result-schema.patch";
       branchSubject = "crucible: preserve typed node result schema";
-      branchCommit = "a693b263eed33f3016918bd665f1d591ddc4badf";
-      branchTree = "80479a20447792d6127ee144fda8f4d65b84cfee";
+      branchCommit = "1428d87365b3d97c1a121b408f2f12da5f0dbbc0";
+      branchTree = "42303311e5d973fefa4b5d61b5aa23d48aa76ae3";
       catalogName = "crucible-typed-node-result-schema";
       class = "D";
       enforces = "QFP-RESULT-1,QFP-EVENT-1,FAULT-ORDER";
@@ -659,8 +659,8 @@ let
     {
       file = "0073-crucible-device-wait-vmstop.patch";
       branchSubject = "crucible: admit checkpoint stop from exact callbacks";
-      branchCommit = "4947e1b729c36db2b84440c3a2883861c62691a2";
-      branchTree = "c7d155733c8d8586026d07bafd6f0707e4d5f24a";
+      branchCommit = "b80cf81e01da0ba93272b849a89353c967b46954";
+      branchTree = "c863d3111dd97fe3328e0072162a613828982e03";
       catalogName = "crucible-device-wait-vmstop";
       class = "F";
       enforces = "QFP-STATE-2,DET-1,INV-10";

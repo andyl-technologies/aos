@@ -30,6 +30,7 @@
         {label = "mandatory virtio feature negotiation"; needle = "vdc->get_features = accelerator_get_features;";}
         {label = "accelerator VMState section"; needle = "accelerator_vmstate_section";}
         {label = "realized accelerator manifest"; needle = "qemu_plugin_crucible_fault_accelerator_manifest";}
+        {label = "fault-free access never releases a null event reservation"; needle = "if (reservation) {\n+        qemu_crucible_fault_event_reservation_release(reservation);\n+    }";}
       ]
       else if lib.hasPrefix "0071-" patchName
       then [
