@@ -496,7 +496,11 @@ impl core_fetch::SurfaceFetch for crate::fetch::LocalFsFetch {
         }
         let paths = paths.into_iter().collect::<Vec<_>>();
         let next_cursor = has_more.then(|| paths.last().cloned()).flatten();
-        Ok(core_fetch::SurfaceListPage { paths, next_cursor })
+        Ok(core_fetch::SurfaceListPage {
+            paths,
+            evidence: Default::default(),
+            next_cursor,
+        })
     }
 
     fn describe(&self) -> String {
@@ -1922,7 +1926,11 @@ impl core_fetch::SurfaceFetch for S3Fetch {
         } else {
             None
         };
-        Ok(core_fetch::SurfaceListPage { paths, next_cursor })
+        Ok(core_fetch::SurfaceListPage {
+            paths,
+            evidence: Default::default(),
+            next_cursor,
+        })
     }
 
     async fn inventory_strong_etag(&self, path: &str) -> Result<Option<String>> {

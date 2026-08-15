@@ -24,7 +24,8 @@ use worker::Bucket;
 
 use aos_hub_core::db::{Database, SurfacePlacementRecord};
 use aos_hub_core::fetch::{
-    OriginFetch, StreamedRead, SurfaceFetch, SurfaceListPage, SurfaceProvider,
+    OriginFetch, StreamedRead, SurfaceFetch, SurfaceListPage, SurfaceListedEvidence,
+    SurfaceProvider,
 };
 use aos_hub_core::s3surface::{Method as S3Method, S3Surface};
 use aos_hub_core::secret_version::SecretVersionResolver;
@@ -37,7 +38,7 @@ use aos_hub_core::surface_write::{
 
 use crate::consoleports::WorkerEgressClient;
 use crate::keymap;
-use crate::r2_adapter::{R2BucketAdapter, R2Contract, R2ListPage};
+use crate::r2_adapter::{R2BucketAdapter, R2Contract, R2ListObject, R2ListPage};
 
 #[derive(Clone)]
 struct WorkerR2BucketAdapter {
@@ -125,14 +126,29 @@ impl R2BucketAdapter for WorkerR2BucketAdapter {
             .map_err(|e| anyhow::anyhow!("R2 list: objects: {e:?}"))?
             .dyn_into()
             .map_err(|e| anyhow::anyhow!("R2 list: objects not an array: {e:?}"))?;
-        let mut keys = Vec::with_capacity(objects.length() as usize);
+        let mut listed = Vec::with_capacity(objects.length() as usize);
         for object in objects.iter() {
-            keys.push(
-                Reflect::get(&object, &JsValue::from_str("key"))
-                    .map_err(|e| anyhow::anyhow!("R2 list: key: {e:?}"))?
-                    .as_string()
-                    .context("R2 list object has no string key")?,
-            );
+            let key = Reflect::get(&object, &JsValue::from_str("key"))
+                .map_err(|e| anyhow::anyhow!("R2 list: key: {e:?}"))?
+                .as_string()
+                .context("R2 list object has no string key")?;
+            let size = Reflect::get(&object, &JsValue::from_str("size"))
+                .map_err(|e| anyhow::anyhow!("R2 list {key}: size: {e:?}"))?
+                .as_f64()
+                .filter(|value| {
+                    value.is_finite()
+                        && *value >= 0.0
+                        && value.fract() == 0.0
+                        && *value <= ((1_u64 << 53) - 1) as f64
+                })
+                .context("R2 list object has an invalid size")? as u64;
+            let etag = Reflect::get(&object, &JsValue::from_str("etag"))
+                .map_err(|e| anyhow::anyhow!("R2 list {key}: etag: {e:?}"))?
+                .as_string()
+                .context("R2 list object has no string etag")?;
+            let etag = aos_hub_core::surface_write::strong_if_match_etag(&etag)
+                .with_context(|| format!("R2 list {key} returned an invalid strong ETag"))?;
+            listed.push(R2ListObject { key, size, etag });
         }
         let truncated = Reflect::get(&result, &JsValue::from_str("truncated"))
             .ok()
@@ -148,7 +164,10 @@ impl R2BucketAdapter for WorkerR2BucketAdapter {
         } else {
             None
         };
-        Ok(R2ListPage { keys, cursor })
+        Ok(R2ListPage {
+            objects: listed,
+            cursor,
+        })
     }
 
     async fn head(&self, key: &str) -> Result<Option<u64>> {
@@ -686,18 +705,31 @@ impl SurfaceFetch for R2SurfaceFetch {
         );
         let listing_prefix = keymap::r2_key(&self.prefix, "");
         let page = self.contract.list(&listing_prefix, cursor, limit).await?;
-        let mut paths = Vec::with_capacity(page.keys.len());
-        for key in page.keys {
-            if let Some(rel) = keymap::relative_key(&self.prefix, &key) {
+        let mut entries = Vec::with_capacity(page.objects.len());
+        for object in page.objects {
+            if let Some(rel) = keymap::relative_key(&self.prefix, &object.key) {
                 if !rel.is_empty() {
-                    paths.push(rel);
+                    entries.push((
+                        rel,
+                        SurfaceListedEvidence {
+                            size: i64::try_from(object.size)
+                                .context("R2 listed object size exceeds i64")?,
+                            strong_etag: object.etag,
+                        },
+                    ));
                 }
             }
         }
-        paths.sort();
-        paths.dedup();
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        anyhow::ensure!(
+            !entries.windows(2).any(|pair| pair[0].0 == pair[1].0),
+            "R2 listing returned a duplicate relative key"
+        );
+        let paths = entries.iter().map(|(path, _)| path.clone()).collect();
+        let evidence = entries.into_iter().collect();
         Ok(SurfaceListPage {
             paths,
+            evidence,
             next_cursor: page.cursor,
         })
     }
@@ -974,7 +1006,11 @@ impl SurfaceFetch for S3SurfaceFetch {
         } else {
             None
         };
-        Ok(SurfaceListPage { paths, next_cursor })
+        Ok(SurfaceListPage {
+            paths,
+            evidence: Default::default(),
+            next_cursor,
+        })
     }
 
     async fn inventory_strong_etag(&self, path: &str) -> Result<Option<String>> {
@@ -1429,8 +1465,8 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
     use std::rc::Rc;
 
     use js_sys::{Array, Object, Promise, Reflect, Uint8Array};
-    use wasm_bindgen::JsValue;
     use wasm_bindgen::closure::Closure;
+    use wasm_bindgen::JsValue;
 
     fn set_method(target: &Object, name: &str, value: &JsValue) -> Result<()> {
         Reflect::set(target, &JsValue::from_str(name), value)
@@ -1489,6 +1525,12 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
             &listed,
             &JsValue::from_str("key"),
             &JsValue::from_str("fixture/object"),
+        );
+        let _ = Reflect::set(&listed, &JsValue::from_str("size"), &JsValue::from_f64(3.0));
+        let _ = Reflect::set(
+            &listed,
+            &JsValue::from_str("etag"),
+            &JsValue::from_str("fixture-etag"),
         );
         let objects = Array::new();
         objects.push(&listed);
@@ -1644,15 +1686,25 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
     contract.delete("fixture/deleted").await?;
     let first_page = contract.list("fixture/", None, 2).await?;
     anyhow::ensure!(
-        first_page.keys == vec!["fixture/object".to_string()]
+        first_page.objects
+            == vec![R2ListObject {
+                key: "fixture/object".into(),
+                size: 3,
+                etag: "\"fixture-etag\"".into(),
+            }]
             && first_page.cursor.as_deref() == Some("cursor-2"),
-        "R2 first list response shape did not round-trip: keys={:?}, cursor={:?}",
-        first_page.keys,
+        "R2 first list response shape did not round-trip: objects={:?}, cursor={:?}",
+        first_page.objects,
         first_page.cursor
     );
     let page = contract.list("fixture/", Some("cursor-1"), 2).await?;
     anyhow::ensure!(
-        page.keys == vec!["fixture/object".to_string()]
+        page.objects
+            == vec![R2ListObject {
+                key: "fixture/object".into(),
+                size: 3,
+                etag: "\"fixture-etag\"".into(),
+            }]
             && page.cursor.as_deref() == Some("cursor-2"),
         "R2 list response shape did not round-trip"
     );

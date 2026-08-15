@@ -379,6 +379,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("operation_scope_inventory.sql"),
     include_str!("publication_multipart.sql"),
     include_str!("publication_multipart_progress.sql"),
+    include_str!("placement_scan_claim.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -2098,6 +2099,21 @@ pub struct PlacementScanPresence {
     /// Size derived from the physical bytes, when present.
     pub observed_size: Option<i64>,
     /// Backend-issued strong entity tag, when available.
+    pub etag: Option<String>,
+}
+
+/// Earlier byte-verified evidence eligible for strong-version scan reuse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReusablePlacementEvidence {
+    /// Logical surface object described by the evidence.
+    pub surface_object_id: i64,
+    /// Presence state recorded by the prior publication or complete scan.
+    pub state: String,
+    /// SHA-256 digest verified for that provider version.
+    pub observed_hash: Option<String>,
+    /// Verified representation size.
+    pub observed_size: Option<i64>,
+    /// Provider-issued strong version identifier.
     pub etag: Option<String>,
 }
 
@@ -6858,9 +6874,11 @@ impl Database {
                     "INSERT INTO object_placements
                      (surface_object_id, cache_id, registry_id, placement_id,
                       state, observed_hash, observed_size, etag,
-                      observed_inventory_generation, observed_at)
+                      observed_inventory_generation, observed_at,
+                      catalog_object_resource_version)
                      SELECT object.id, NULL, pub.registry_id, placement.id,
-                            'present', ?4, ?5, ?6, pub.ordinal, ?7
+                            'present', ?4, ?5, ?6, pub.ordinal, ?7,
+                            object.resource_version
                      FROM registry_publications pub
                      JOIN registry_publication_objects declared
                        ON declared.publication_id = pub.publication_id
@@ -8094,11 +8112,43 @@ impl Database {
             .context("observed placement disappeared")
     }
 
-    /// Starts a physical inventory scan and clears the placement's prior evidence.
+    /// Lists prior evidence before a physical scan replaces its inventory.
     ///
-    /// The observation changes to syncing/unknown in the same transaction that
-    /// removes old presence rows. Readers therefore cannot select evidence from
-    /// two different scans while the new inventory is being assembled.
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed persisted data.
+    pub async fn reusable_placement_scan_evidence(
+        &self,
+        placement_id: i64,
+    ) -> Result<Vec<ReusablePlacementEvidence>> {
+        self.backend
+            .query(
+                "SELECT surface_object_id, state, observed_hash, observed_size, etag
+                   FROM object_placements
+                  WHERE placement_id = ?1
+                  ORDER BY surface_object_id",
+                &vals![placement_id],
+            )
+            .await?
+            .iter()
+            .map(|row| {
+                Ok(ReusablePlacementEvidence {
+                    surface_object_id: row.get(0)?,
+                    state: row.get(1)?,
+                    observed_hash: row.get(2)?,
+                    observed_size: row.get(3)?,
+                    etag: row.get(4)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Starts a physical inventory scan while retaining reusable active evidence.
+    ///
+    /// The observation changes to syncing/unknown before any prior evidence can
+    /// be selected by readers. Active rows remain available to the controller
+    /// as strong-version checkpoints; inactive rows are removed immediately.
+    /// A complete scan replaces every active row before restoring eligibility.
     ///
     /// # Errors
     ///
@@ -8109,7 +8159,12 @@ impl Database {
         placement_id: i64,
         expected_resource_version: i64,
         expected_observation_version: i64,
+        operation_id: &str,
+        operation_resource_version: i64,
+        claim_token: &str,
     ) -> Result<SurfacePlacementRecord> {
+        validate_key_bytes(operation_id, "placement scan operation id", 64)?;
+        validate_key_bytes(claim_token, "placement scan claim token", 64)?;
         let now = unix_now();
         self.backend
             .checked_batch(&[
@@ -8119,18 +8174,33 @@ impl Database {
                          observation_version = observation_version + 1
                      WHERE placement_id = ?1 AND observation_version = ?3
                        AND EXISTS (SELECT 1 FROM surface_placements placement
-                         WHERE placement.id = ?1 AND placement.resource_version = ?2)",
+                         WHERE placement.id = ?1 AND placement.resource_version = ?2)
+                       AND EXISTS (SELECT 1 FROM placement_scan_claims claim
+                         JOIN topology_operations operation
+                           ON operation.operation_id = claim.operation_id
+                         WHERE claim.operation_id = ?5 AND claim.claim_token = ?6
+                           AND claim.operation_resource_version = ?7
+                           AND claim.lease_expires_at > ?4
+                           AND operation.resource_version = ?7
+                           AND operation.state = 'running')",
                     vals![
                         placement_id,
                         expected_resource_version,
                         expected_observation_version,
-                        now
+                        now,
+                        operation_id,
+                        claim_token,
+                        operation_resource_version
                     ],
                 )
                 .expecting(1),
                 Statement::new(
                     "DELETE FROM object_placements
                      WHERE placement_id = ?1
+                       AND NOT EXISTS (
+                         SELECT 1 FROM surface_objects object
+                          WHERE object.id = object_placements.surface_object_id
+                            AND object.lifecycle_state = 'active')
                        AND EXISTS (SELECT 1 FROM surface_placement_observations observation
                          WHERE observation.placement_id = ?1
                            AND observation.observation_version = ?2)",
@@ -8156,9 +8226,15 @@ impl Database {
         placement_id: i64,
         expected_resource_version: i64,
         expected_observation_version: i64,
+        expected_object_resource_version: i64,
+        operation_id: &str,
+        operation_resource_version: i64,
+        claim_token: &str,
         presence: &PlacementScanPresence,
         observed_at: i64,
     ) -> Result<()> {
+        validate_key_bytes(operation_id, "placement scan operation id", 64)?;
+        validate_key_bytes(claim_token, "placement scan claim token", 64)?;
         if !matches!(presence.state.as_str(), "present" | "missing" | "corrupt") {
             bail!("invalid placement scan presence state '{}'", presence.state);
         }
@@ -8180,6 +8256,7 @@ impl Database {
         if let Some(hash) = presence.observed_hash.as_deref() {
             validate_key_bytes(hash, "placement scan observed hash", 128)?;
         }
+        let claim_checked_at = unix_now();
 
         self.backend
             .checked_batch(&[
@@ -8193,9 +8270,10 @@ impl Database {
                     "INSERT INTO object_placements
                        (surface_object_id, cache_id, registry_id, placement_id,
                         state, observed_hash, observed_size, etag,
-                        observed_inventory_generation, observed_at)
+                        observed_inventory_generation, observed_at,
+                        catalog_object_resource_version)
                      SELECT object.id, object.cache_id, object.registry_id, placement.id,
-                            ?5, ?6, ?7, ?8, ?3, ?9
+                            ?6, ?7, ?8, ?9, ?3, ?13, object.resource_version
                      FROM surface_objects object
                      JOIN surface_placements placement
                        ON object.registry_id = placement.registry_id
@@ -8205,18 +8283,33 @@ impl Database {
                      WHERE placement.id = ?1 AND object.id = ?2
                        AND placement.resource_version = ?3
                        AND observation.observation_version = ?4
+                       AND object.resource_version = ?5
+                       AND object.lifecycle_state = 'active'
                        AND observation.state = 'syncing'
-                       AND observation.completeness = 'unknown'",
+                       AND observation.completeness = 'unknown'
+                       AND EXISTS (SELECT 1 FROM placement_scan_claims claim
+                         JOIN topology_operations operation
+                           ON operation.operation_id = claim.operation_id
+                         WHERE claim.operation_id = ?10 AND claim.claim_token = ?11
+                           AND claim.operation_resource_version = ?12
+                           AND claim.lease_expires_at > ?14
+                           AND operation.resource_version = ?12
+                           AND operation.state = 'running')",
                     vals![
                         placement_id,
                         presence.surface_object_id,
                         expected_resource_version,
                         expected_observation_version,
+                        expected_object_resource_version,
                         presence.state,
                         presence.observed_hash,
                         presence.observed_size,
                         presence.etag,
-                        observed_at
+                        operation_id,
+                        claim_token,
+                        operation_resource_version,
+                        observed_at,
+                        claim_checked_at
                     ],
                 )
                 .expecting(1),
@@ -8235,29 +8328,68 @@ impl Database {
         placement_id: i64,
         expected_resource_version: i64,
         expected_observation_version: i64,
+        operation_id: &str,
+        operation_resource_version: i64,
+        claim_token: &str,
         state: &str,
         completeness: &str,
     ) -> Result<SurfacePlacementRecord> {
-        if !matches!(state, "ready" | "degraded") {
-            bail!("invalid completed placement scan state '{state}'");
-        }
-        if !matches!(completeness, "complete" | "partial") {
-            bail!("invalid completed placement scan completeness '{completeness}'");
+        validate_key_bytes(operation_id, "placement scan operation id", 64)?;
+        validate_key_bytes(claim_token, "placement scan claim token", 64)?;
+        if !matches!(
+            (state, completeness),
+            ("ready", "complete") | ("degraded", "partial")
+        ) {
+            bail!("placement scan state and completeness are inconsistent");
         }
         let affected = self
             .backend
             .execute(
                 "UPDATE surface_placement_observations
-                 SET state = ?4, completeness = ?5, observed_at = ?6,
+                 SET state = ?7, completeness = ?8, observed_at = ?9,
                      observation_version = observation_version + 1
                  WHERE placement_id = ?1 AND observation_version = ?3
                    AND state = 'syncing' AND completeness = 'unknown'
                    AND EXISTS (SELECT 1 FROM surface_placements placement
-                     WHERE placement.id = ?1 AND placement.resource_version = ?2)",
+                     WHERE placement.id = ?1 AND placement.resource_version = ?2)
+                   AND EXISTS (SELECT 1 FROM placement_scan_claims claim
+                     JOIN topology_operations operation
+                       ON operation.operation_id = claim.operation_id
+                     WHERE claim.operation_id = ?4 AND claim.claim_token = ?5
+                       AND claim.operation_resource_version = ?6
+                       AND claim.lease_expires_at > ?9
+                       AND operation.resource_version = ?6
+                       AND operation.state = 'running')
+                   AND NOT EXISTS (
+                     SELECT 1 FROM surface_objects object
+                     JOIN surface_placements placement ON placement.id = ?1
+                     WHERE object.lifecycle_state = 'active'
+                       AND (object.registry_id = placement.registry_id
+                         OR object.cache_id = placement.cache_id)
+                       AND NOT EXISTS (SELECT 1 FROM object_placements presence
+                         WHERE presence.surface_object_id = object.id
+                           AND presence.placement_id = ?1
+                           AND presence.catalog_object_resource_version = object.resource_version))
+                   AND (?7 <> 'ready' OR NOT EXISTS (
+                     SELECT 1 FROM surface_objects object
+                     JOIN surface_placements placement ON placement.id = ?1
+                     WHERE object.lifecycle_state = 'active'
+                       AND (object.registry_id = placement.registry_id
+                         OR object.cache_id = placement.cache_id)
+                       AND NOT EXISTS (SELECT 1 FROM object_placements presence
+                         WHERE presence.surface_object_id = object.id
+                           AND presence.placement_id = ?1
+                           AND presence.catalog_object_resource_version = object.resource_version
+                           AND presence.state = 'present'
+                           AND presence.observed_hash = object.content_hash
+                           AND presence.observed_size = object.size)))",
                 &vals![
                     placement_id,
                     expected_resource_version,
                     expected_observation_version,
+                    operation_id,
+                    claim_token,
+                    operation_resource_version,
                     state,
                     completeness,
                     unix_now()
@@ -10845,7 +10977,7 @@ impl Database {
     /// Returns an error on database failure.
     pub async fn due_surface_placement_scan_operations(
         &self,
-        stale_before: i64,
+        now: i64,
         limit: usize,
     ) -> Result<Vec<TopologyOperationRecord>> {
         if limit == 0 {
@@ -10857,10 +10989,15 @@ impl Database {
                     "SELECT {OPERATION_COLUMNS} FROM topology_operations operation
                      WHERE operation.operation_kind = 'scan_placement'
                        AND (operation.state = 'pending'
-                         OR (operation.state = 'running' AND operation.started_at <= ?1))
+                         OR (operation.state = 'running' AND (
+                           NOT EXISTS (SELECT 1 FROM placement_scan_claims claim
+                             WHERE claim.operation_id = operation.operation_id)
+                           OR EXISTS (SELECT 1 FROM placement_scan_claims claim
+                             WHERE claim.operation_id = operation.operation_id
+                               AND claim.lease_expires_at <= ?1))))
                      ORDER BY operation.created_at, operation.operation_id LIMIT ?2"
                 ),
-                &vals![stale_before, i64::try_from(limit)?],
+                &vals![now, i64::try_from(limit)?],
             )
             .await?
             .iter()
@@ -11476,27 +11613,216 @@ impl Database {
         &self,
         operation_id: &str,
         expected_version: i64,
+        claim_token: &str,
         lease_seconds: i64,
     ) -> Result<Option<TopologyOperationRecord>> {
+        validate_key_bytes(claim_token, "placement scan claim token", 64)?;
         if lease_seconds <= 0 {
             bail!("placement scan claim lease must be positive");
         }
         let now = unix_now();
-        let changed = self
+        let lease_expires_at = now
+            .checked_add(lease_seconds)
+            .context("placement scan claim deadline overflowed")?;
+        let claimed_version = expected_version
+            .checked_add(1)
+            .context("placement scan claim version overflowed")?;
+        let result = self
             .backend
-            .execute(
-                "UPDATE topology_operations SET state = 'running', started_at = ?3,
-                   finished_at = NULL, error = NULL, resource_version = resource_version + 1
-                 WHERE operation_id = ?1 AND operation_kind = 'scan_placement'
-                   AND resource_version = ?2
-                   AND (state = 'pending' OR (state = 'running' AND started_at <= ?4))",
-                &vals![operation_id, expected_version, now, now - lease_seconds],
-            )
-            .await?;
-        if changed == 0 {
-            return Ok(None);
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE topology_operations
+                     SET state = 'running',
+                         started_at = CASE WHEN state = 'pending' THEN ?3 ELSE started_at END,
+                         finished_at = NULL, error = NULL,
+                         resource_version = resource_version + 1
+                     WHERE operation_id = ?1 AND operation_kind = 'scan_placement'
+                       AND resource_version = ?2
+                       AND (state = 'pending' OR (state = 'running' AND (
+                         NOT EXISTS (SELECT 1 FROM placement_scan_claims claim
+                           WHERE claim.operation_id = topology_operations.operation_id)
+                         OR EXISTS (SELECT 1 FROM placement_scan_claims claim
+                           WHERE claim.operation_id = topology_operations.operation_id
+                             AND claim.lease_expires_at <= ?3))))",
+                    vals![operation_id, expected_version, now],
+                )
+                .expecting(1),
+                Statement::new(
+                    "DELETE FROM placement_scan_claims
+                     WHERE operation_id = ?1
+                       AND EXISTS (SELECT 1 FROM topology_operations operation
+                         WHERE operation.operation_id = ?1
+                           AND operation.resource_version = ?2)",
+                    vals![operation_id, claimed_version],
+                )
+                .unchecked(),
+                Statement::new(
+                    "INSERT INTO placement_scan_claims
+                       (operation_id, claim_token, operation_resource_version,
+                        heartbeat_at, lease_expires_at)
+                     SELECT operation_id, ?3, resource_version, ?4, ?5
+                     FROM topology_operations
+                     WHERE operation_id = ?1 AND resource_version = ?2
+                       AND state = 'running'",
+                    vals![
+                        operation_id,
+                        claimed_version,
+                        claim_token,
+                        now,
+                        lease_expires_at
+                    ],
+                )
+                .expecting(1),
+            ])
+            .await;
+        if let Err(error) = result {
+            let claim = self
+                .backend
+                .query_opt(
+                    "SELECT claim_token FROM placement_scan_claims
+                     WHERE operation_id = ?1 AND operation_resource_version = ?2",
+                    &vals![operation_id, claimed_version],
+                )
+                .await?;
+            if claim
+                .as_ref()
+                .and_then(|row| row.get::<String>(0).ok())
+                .as_deref()
+                == Some(claim_token)
+            {
+                return self.topology_operation(operation_id).await;
+            }
+            if claim.is_some()
+                || self
+                    .topology_operation(operation_id)
+                    .await?
+                    .is_some_and(|operation| operation.resource_version != claimed_version)
+            {
+                return Ok(None);
+            }
+            return Err(error).context("persisting placement scan claim");
         }
         self.topology_operation(operation_id).await
+    }
+
+    /// Renews one live physical-placement scan claim under its opaque fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the claim expired or was replaced, the deadline is
+    /// invalid, or persistence fails.
+    pub async fn heartbeat_surface_placement_scan_operation(
+        &self,
+        operation_id: &str,
+        expected_version: i64,
+        claim_token: &str,
+        heartbeat_at: i64,
+        lease_seconds: i64,
+    ) -> Result<()> {
+        validate_key_bytes(claim_token, "placement scan claim token", 64)?;
+        if lease_seconds <= 0 {
+            bail!("placement scan claim lease must be positive");
+        }
+        if heartbeat_at < 0 {
+            bail!("placement scan heartbeat time is invalid");
+        }
+        let lease_expires_at = heartbeat_at
+            .checked_add(lease_seconds)
+            .context("placement scan heartbeat deadline overflowed")?;
+        self.backend
+            .checked_batch(&[Statement::new(
+                "UPDATE placement_scan_claims
+                 SET heartbeat_at = ?4, lease_expires_at = ?5
+                 WHERE operation_id = ?1 AND operation_resource_version = ?2
+                   AND claim_token = ?3 AND lease_expires_at > ?4
+                   AND EXISTS (SELECT 1 FROM topology_operations operation
+                     WHERE operation.operation_id = ?1
+                       AND operation.resource_version = ?2
+                       AND operation.state = 'running')",
+                vals![
+                    operation_id,
+                    expected_version,
+                    claim_token,
+                    heartbeat_at,
+                    lease_expires_at
+                ],
+            )
+            .expecting(1)])
+            .await
+    }
+
+    /// Terminalizes one live physical-placement scan under its exact claim.
+    ///
+    /// Returns `false` without mutation when the claim expired or was replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid terminal state or progress, malformed
+    /// detail, or persistence failure.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn finish_claimed_surface_placement_scan_operation(
+        &self,
+        operation_id: &str,
+        expected_version: i64,
+        claim_token: &str,
+        state: &str,
+        progress_current: i64,
+        progress_total: Option<i64>,
+        detail_json: &str,
+        error: Option<&str>,
+        finished_at: i64,
+    ) -> Result<bool> {
+        validate_key_bytes(operation_id, "placement scan operation id", 64)?;
+        validate_key_bytes(claim_token, "placement scan claim token", 64)?;
+        if !matches!((state, error), ("succeeded", None) | ("failed", Some(_))) {
+            bail!("placement scan terminal state and error are inconsistent");
+        }
+        if progress_current < 0
+            || progress_total.is_some_and(|total| total < progress_current)
+            || finished_at < 0
+        {
+            bail!("placement scan terminal progress or time is invalid");
+        }
+        validate_json_value(detail_json, "placement scan operation detail")?;
+
+        let affected = self
+            .backend
+            .execute(
+                "UPDATE topology_operations
+                 SET state = ?4, progress_current = ?5, progress_total = ?6,
+                     detail_json = ?7, error = ?8, finished_at = ?9,
+                     resource_version = resource_version + 1
+                 WHERE operation_id = ?1 AND resource_version = ?2
+                   AND operation_kind = 'scan_placement' AND state = 'running'
+                   AND EXISTS (SELECT 1 FROM placement_scan_claims claim
+                     WHERE claim.operation_id = topology_operations.operation_id
+                       AND claim.operation_resource_version = ?2
+                       AND claim.claim_token = ?3
+                       AND claim.lease_expires_at > ?9)",
+                &vals![
+                    operation_id,
+                    expected_version,
+                    claim_token,
+                    state,
+                    progress_current,
+                    progress_total,
+                    detail_json,
+                    error,
+                    finished_at
+                ],
+            )
+            .await?;
+        if affected == 0 {
+            return Ok(false);
+        }
+        self.backend
+            .execute(
+                "DELETE FROM placement_scan_claims
+                 WHERE operation_id = ?1 AND claim_token = ?2",
+                &vals![operation_id, claim_token],
+            )
+            .await?;
+        Ok(true)
     }
 
     /// Claims a pending or stale-running delivery-route probe under CAS.
@@ -12417,9 +12743,11 @@ impl Database {
                     "INSERT INTO object_placements
                  (surface_object_id, cache_id, registry_id, placement_id,
                   state, observed_hash, observed_size, etag,
-                  observed_inventory_generation, observed_at)
+                  observed_inventory_generation, observed_at,
+                  catalog_object_resource_version)
                  SELECT root.surface_object_id, NULL, root.registry_id, placement.id,
-                        'present', ?4, ?5, ?6, ?7, ?7
+                        'present', ?4, ?5, ?6, ?7, ?7,
+                        object.resource_version
                  FROM registry_image_roots root
                  JOIN surface_objects object
                    ON object.id = root.surface_object_id
@@ -24395,9 +24723,10 @@ source_nar_hash = ""
 
     #[test]
     fn publication_multipart_migration_upgrades_an_existing_database() {
-        let (multipart_migration, earlier) = MIGRATIONS.split_last().unwrap();
+        let multipart_index = MIGRATIONS.len() - 2;
+        let multipart_migration = MIGRATIONS[multipart_index];
         let connection = Connection::open_in_memory().unwrap();
-        for script in earlier {
+        for script in &MIGRATIONS[..multipart_index] {
             connection.execute_batch(script).unwrap();
         }
         connection.execute_batch(multipart_migration).unwrap();
@@ -24434,6 +24763,36 @@ source_nar_hash = ""
         assert!(backend_columns
             .iter()
             .any(|column| column == "completion_etag"));
+    }
+
+    #[test]
+    fn placement_scan_claim_migration_upgrades_an_existing_database() {
+        let (claim_migration, earlier) = MIGRATIONS.split_last().unwrap();
+        let connection = Connection::open_in_memory().unwrap();
+        for script in earlier {
+            connection.execute_batch(script).unwrap();
+        }
+        connection.execute_batch(claim_migration).unwrap();
+
+        let claim_table: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'placement_scan_claims'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(claim_table, 1);
+        let columns: Vec<String> = connection
+            .prepare("PRAGMA table_info(object_placements)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(columns
+            .iter()
+            .any(|column| column == "catalog_object_resource_version"));
     }
 
     #[test]
