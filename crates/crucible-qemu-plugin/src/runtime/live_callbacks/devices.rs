@@ -1127,7 +1127,13 @@ impl LiveVcpuTimeCallbackState {
                 payload,
                 response_capacity,
             )
-            .map_err(LiveVcpuTimeCallbackError::live_device)
+            .map_err(LiveVcpuTimeCallbackError::live_device)?;
+        // Match block and accelerator submission: once the request and active
+        // hold are release-published, revoke the current TCG reservation so
+        // max-advance can freeze at this request coordinate until the host
+        // publishes its deterministic completion deadline.
+        (self.force_vcpu_exit)();
+        Ok(())
     }
 
     fn ninep_poll(
