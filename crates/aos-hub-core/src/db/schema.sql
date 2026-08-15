@@ -2822,7 +2822,7 @@ CREATE TABLE write_recovery_cursors(
 );
 INSERT INTO write_recovery_cursors
   (recovery_kind, after_expires_at, after_ticket_id, updated_at)
-VALUES ('cache', -9223372036854775807 - 1, '', 0);
+VALUES ('cache', -9007199254740991, '', 0);
 CREATE TABLE cache_inventory_generations(
   cache_id INTEGER NOT NULL REFERENCES binary_caches(id) ON DELETE CASCADE,
   generation INTEGER NOT NULL,
