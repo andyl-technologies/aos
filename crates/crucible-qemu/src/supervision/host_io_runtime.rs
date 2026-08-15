@@ -71,8 +71,8 @@ pub struct QemuLiveHostIoRuntime {
     vm_slot: u32,
     poll_interval: Duration,
     advance_wait_deadline: AdvanceWaitDeadline,
-    /// Control acknowledgement that must change before an advance can complete.
-    advance_control_boundary_ack: Option<u32>,
+    /// Plugin publication generation observed immediately before the advance wake.
+    advance_wake_publish_generation: Option<u32>,
     block: Option<BlockIoServicing>,
     ninep: Option<NinepIoServicing>,
     accelerator: Option<QemuLiveAcceleratorServicer>,
@@ -207,7 +207,7 @@ impl QemuLiveHostIoRuntime {
             vm_slot,
             poll_interval,
             advance_wait_deadline: AdvanceWaitDeadline::default(),
-            advance_control_boundary_ack: None,
+            advance_wake_publish_generation: None,
             block: None,
             ninep: None,
             accelerator: None,
@@ -361,6 +361,13 @@ impl QemuLiveHostIoRuntime {
     ///
     /// Signals the plugin wake eventfd once before polling so a vCPU parked in its
     /// between-quanta idle wait observes the ceiling the node just published.
+    ///
+    /// A normal advance deliberately does not request a control boundary. An idle
+    /// callback treats such a request as an instruction to return to QEMU's main
+    /// loop without authorizing the queued idle-time jump. If QEMU then remains
+    /// parked, the very request intended to prove wake consumption can strand the
+    /// advance. Instead, the runtime records the plugin-owned publication
+    /// generation and requires a later publication before accepting a boundary.
     fn poll_advance_completion(
         &mut self,
         timeout: Duration,
@@ -371,18 +378,23 @@ impl QemuLiveHostIoRuntime {
                 "timeout deadline overflow",
             ));
         }
-        self.advance_control_boundary_ack = Some(self.signal_wake()?);
+        let snapshot = self
+            .region
+            .node_slot(self.vm_slot)
+            .map_err(map_slot_error)?
+            .snapshot();
+        self.advance_wake_publish_generation = Some(snapshot.publish_gen);
+        self.write_wake_doorbell()?;
         self.repoll_advance_completion(timeout)
     }
 
     /// Polls for a quantum boundary after the initial plugin wake was sent.
     ///
-    /// The request token published by [`Self::poll_advance_completion`] proves
-    /// that QEMU crossed the initial control boundary. Later device completions
-    /// ring only the eventfd: allocating a fresh token for every retry would
-    /// continuously move the acknowledgement target and prevent a stable
-    /// boundary from ever being classified. The completed-quantum clamp performs
-    /// a separate post-device token handshake before this runtime returns.
+    /// A change from the publication generation captured by
+    /// [`Self::poll_advance_completion`] proves that the plugin observed the
+    /// wake. Later device completions ring only the eventfd and do not replace
+    /// this one-shot fence. The completed-quantum clamp performs a separate
+    /// post-device control-token handshake before this runtime returns.
     fn repoll_advance_completion(
         &mut self,
         _timeout: Duration,
@@ -405,10 +417,10 @@ impl QemuLiveHostIoRuntime {
                 .map_err(map_slot_error)?
                 .snapshot();
             if self
-                .advance_control_boundary_ack
-                .is_some_and(|request| control_boundary_request_is_acknowledged(request, &snapshot))
+                .advance_wake_publish_generation
+                .is_some_and(|generation| snapshot.publish_gen != generation)
             {
-                self.advance_control_boundary_ack = None;
+                self.advance_wake_publish_generation = None;
             }
             // Service block I/O before classifying the boundary: a guest blocked
             // on a probe read cannot reach the ceiling until its response is
@@ -419,8 +431,10 @@ impl QemuLiveHostIoRuntime {
             self.service_accelerator_io(&snapshot)?;
             self.publish_device_completion_deadline()?;
             let idle = idle_state_from_snapshot(snapshot);
-            let wake_unacknowledged =
-                advance_wake_is_unacknowledged(self.advance_control_boundary_ack, &snapshot);
+            let wake_unacknowledged = advance_wake_publication_is_unobserved(
+                self.advance_wake_publish_generation,
+                &snapshot,
+            );
             match classify_after_host_wake(&idle, snapshot.max_advance_icount, wake_unacknowledged)
             {
                 QuantumBoundary::Reached { .. } | QuantumBoundary::Paused { .. } => {
@@ -430,10 +444,10 @@ impl QemuLiveHostIoRuntime {
                 }
                 QuantumBoundary::Pending => {
                     if snapshot.status == STATUS_DONE {
-                        self.advance_control_boundary_ack = None;
+                        self.advance_wake_publish_generation = None;
                         return Ok(QemuAsyncWaitOutcome::Completed);
                     }
-                    if self.advance_control_boundary_ack.is_none() && attempt % 16 == 15 {
+                    if self.advance_wake_publish_generation.is_none() && attempt % 16 == 15 {
                         self.write_wake_doorbell()?;
                     }
                 }
@@ -1289,13 +1303,12 @@ fn classify_after_host_wake(
     }
 }
 
-/// Returns whether a host control request still lacks its exact acknowledgement.
-fn advance_wake_is_unacknowledged(
-    pending_request: Option<u32>,
+/// Returns whether the plugin has not yet published after the host wake.
+fn advance_wake_publication_is_unobserved(
+    initial_generation: Option<u32>,
     snapshot: &crucible_shmem::NodeSlotSnapshot,
 ) -> bool {
-    pending_request
-        .is_some_and(|request| !control_boundary_request_is_acknowledged(request, snapshot))
+    initial_generation.is_some_and(|generation| snapshot.publish_gen == generation)
 }
 
 /// Returns whether the plugin release-acknowledged an even host request.
@@ -1418,23 +1431,35 @@ mod tests {
     }
 
     #[test]
+    fn advance_requires_a_plugin_publication_after_its_wake() {
+        let slot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM);
+        let initial = slot.snapshot();
+        assert!(advance_wake_publication_is_unobserved(
+            Some(initial.publish_gen),
+            &initial,
+        ));
+
+        slot.publish_control_boundary(0, 0, 0)
+            .unwrap_or_else(|error| panic!("control boundary should publish: {error}"));
+        let published = slot.snapshot();
+        assert!(!advance_wake_publication_is_unobserved(
+            Some(initial.publish_gen),
+            &published,
+        ));
+
+        assert!(!advance_wake_publication_is_unobserved(None, &initial));
+    }
+
+    #[test]
     fn advance_accepts_its_control_acknowledgement_and_later_serials() {
         let slot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM);
         let request = slot
             .request_control_boundary()
             .unwrap_or_else(|error| panic!("control request should publish: {error}"));
-
-        let requested = slot.snapshot();
-        assert!(advance_wake_is_unacknowledged(Some(request), &requested,));
-
         slot.publish_control_boundary(0, 0, 0)
             .unwrap_or_else(|error| panic!("control boundary should publish: {error}"));
         slot.acknowledge_control_boundary();
         let acknowledged_with_publication = slot.snapshot();
-        assert!(!advance_wake_is_unacknowledged(
-            Some(request),
-            &acknowledged_with_publication,
-        ));
 
         let mut later_acknowledgement = acknowledged_with_publication;
         later_acknowledgement.control_boundary_ack = request.wrapping_add(3);
