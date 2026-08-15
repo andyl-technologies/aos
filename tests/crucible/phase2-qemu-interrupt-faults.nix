@@ -2,6 +2,7 @@
   pkgs,
   lib,
   qemuPackage ? pkgs.qemu-crucible,
+  referenceQemu ? pkgs.qemu-crucible-reference,
   patchName ? "0053-crucible-interrupt-faults.patch",
   attrPath ? "checks.crucible.phase2.qemuInterruptFaults",
   taskIds ? ["T-QEMU-0053"],
@@ -66,9 +67,10 @@ in
           name = "build-live-probe";
           script = ''
             set -eu
-            "$CC" -shared -fPIC \
+            "$CC" -shared -fPIC -Wall -Wextra -Werror \
               -I${qemuPackage}/include/qemu \
               -I${qemuPackage}/include \
+              -I${./.} \
               $(pkg-config --cflags glib-2.0) \
               ${./phase2-qemu-interrupt-manifest.c} \
               -o crucible-interrupt-manifest.so \
@@ -87,16 +89,17 @@ in
           '';
         }
         {
-          name = "run-realized-controller-manifests";
+          name = "run-live-controller-mutations";
           script = ''
             set -eu
             mkdir -p logs
-            run_manifest() {
+            run_mutation() {
               architecture="$1"
               architecture_id="$2"
               qemu_binary="$3"
               machine_args="$4"
               guest="$5"
+              mutation="$6"
               set +e
               timeout 30 "$qemu_binary" \
                 $machine_args \
@@ -108,34 +111,76 @@ in
                 -serial none \
                 -monitor none \
                 -kernel "$guest" \
-                -plugin "$PWD/crucible-interrupt-manifest.so,architecture=$architecture_id" \
-                > "logs/$architecture.log" 2>&1
+                -plugin "$PWD/crucible-interrupt-manifest.so,architecture=$architecture_id,mutation=$mutation" \
+                > "logs/$architecture-$mutation.log" 2>&1
               status=$?
               set -e
-              cat "logs/$architecture.log"
+              cat "logs/$architecture-$mutation.log"
               test "$status" -eq 0
+              case "$mutation" in
+                1) mutation_name=drop ;;
+                2) mutation_name=delay ;;
+                3) mutation_name=duplicate ;;
+                4) mutation_name=replace ;;
+              esac
+              if test "$architecture_id" -eq 3; then
+                mutation_name=storm
+              fi
               grep -Fq \
-                "CRUCIBLE_INTERRUPT_MANIFEST_LIVE_PASS architecture=$architecture_id" \
-                "logs/$architecture.log"
-              ! grep -Fq CRUCIBLE_INTERRUPT_MANIFEST_LIVE_FAIL \
-                "logs/$architecture.log"
+                "CRUCIBLE_INTERRUPT_MUTATION_LIVE_PASS architecture=$architecture_id mutation=$mutation_name" \
+                "logs/$architecture-$mutation.log"
+              ! grep -Fq CRUCIBLE_INTERRUPT_MUTATION_LIVE_FAIL \
+                "logs/$architecture-$mutation.log"
             }
-            run_manifest x86_64 2 \
-              ${qemuPackage}/bin/qemu-system-x86_64 \
-              '-machine pc -m 64M' \
-              interrupt-guest-x86.elf
-            run_manifest aarch64 3 \
+            for mutation in 1 2 3 4; do
+              run_mutation x86_64 2 \
+                ${qemuPackage}/bin/qemu-system-x86_64 \
+                '-machine pc -m 64M' \
+                interrupt-guest-x86.elf "$mutation"
+            done
+            run_mutation aarch64 3 \
               ${qemuPackage}/bin/qemu-system-aarch64 \
-              '-machine virt,gic-version=3 -cpu max -m 64M' \
-              interrupt-guest-aarch64.elf
+              '-machine virt,gic-version=2 -cpu max -m 64M' \
+              interrupt-guest-aarch64.elf 1
+
+            set +e
+            timeout 5 ${referenceQemu}/bin/qemu-system-x86_64 \
+              -machine pc -m 64M \
+              -accel tcg \
+              -icount shift=0 \
+              -smp 1 \
+              -nographic \
+              -no-reboot \
+              -serial none \
+              -monitor none \
+              -kernel interrupt-guest-x86.elf \
+              -plugin "$PWD/crucible-interrupt-manifest.so,architecture=2,mutation=1" \
+              > logs/stock.log 2>&1
+            stock_status=$?
+            set -e
+            cat logs/stock.log
+            test "$stock_status" -ne 0
+            test "$stock_status" -ne 124
+            ! grep -q CRUCIBLE_INTERRUPT_MUTATION_LIVE_PASS logs/stock.log
+            ! nm -D --defined-only \
+              ${referenceQemu}/bin/qemu-system-x86_64 \
+              | grep -q qemu_plugin_crucible_fault_interrupt_manifest
+
             mkdir -p "$out"
+            cp -R logs "$out/"
             {
               printf 'PASS\n'
-              printf 'check=%s\n' '${attrPath}'
-              printf 'tasks=%s\n' '${taskList}'
-              printf 'live_architectures=x86_64,aarch64\n'
-              printf 'backend=patched-qemu-realized-controllers\n'
-              printf 'test_double=false\n'
+              printf 'gate=gate:patch-microtests\n'
+              printf 'patch=%s\n' '${patchName}'
+              printf 'patched_fixture_exercised=true\n'
+              printf 'stock_negative_control=true\n'
+              printf 'qemu_package=%s\n' '${qemuPackage}'
+              printf 'qemu_package_version=%s\n' '${qemuPackage.version}'
+              printf 'attr_path=%s\n' '${attrPath}'
+              printf 'task_ids=%s\n' '${taskList}'
+              printf 'backend=actual-patched-and-stock-qemu\n'
+              printf 'architectures=x86_64,aarch64\n'
+              printf 'live_mutations=drop,delay,duplicate,replace,storm\n'
             } > "$out/result"
           '';
         }
