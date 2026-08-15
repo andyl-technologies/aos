@@ -2,6 +2,38 @@
 
 use super::*;
 impl FaultCommandBridge {
+    /// Retains correlation until QEMU publishes a terminal command result.
+    pub(super) fn retain_prepared_correlation(&mut self, result: &QemuFaultResult) -> bool {
+        if result.status != FaultResultStatus::Prepared as u16 {
+            self.prepared_commands.remove(&result.command_sequence);
+            self.prepare_only_commands.remove(&result.command_sequence);
+            return false;
+        }
+
+        self.prepared_commands.insert(result.command_sequence);
+        true
+    }
+
+    /// Releases terminal prepare-only correlations before the next command.
+    pub(super) fn release_prepare_only_correlations(&mut self, next_sequence: u64) {
+        let completed = self
+            .prepare_only_commands
+            .range(..next_sequence)
+            .copied()
+            .filter(|sequence| self.prepared_commands.contains(sequence))
+            .collect::<Vec<_>>();
+        for sequence in completed {
+            self.register_commands.remove(&sequence);
+            self.instruction_commands.remove(&sequence);
+            self.exception_commands.remove(&sequence);
+            self.memory_ecc_commands.remove(&sequence);
+            self.clock_commands.remove(&sequence);
+            self.accelerator_commands.remove(&sequence);
+            self.prepared_commands.remove(&sequence);
+            self.prepare_only_commands.remove(&sequence);
+        }
+    }
+
     /// Builds the bridge and snapshots the immutable QEMU capability registry.
     pub(crate) fn new(
         apis: QemuFaultCommandApis,
@@ -54,6 +86,8 @@ impl FaultCommandBridge {
             active_clock_bindings: BTreeMap::new(),
             accelerator_commands: BTreeMap::new(),
             active_accelerator_bindings: BTreeMap::new(),
+            prepared_commands: BTreeSet::new(),
+            prepare_only_commands: BTreeSet::new(),
             pending_command: None,
             initialized: false,
         })
@@ -377,6 +411,7 @@ impl FaultCommandBridge {
             );
         }
         self.last_sequence = header.command_sequence;
+        self.release_prepare_only_correlations(header.command_sequence);
         if header.target_node_hash != self.target_node_hash {
             return self.publish_local_rejection(
                 header.command_kind as u16,
@@ -552,11 +587,6 @@ impl FaultCommandBridge {
         } else {
             payload.as_ptr()
         };
-        let status = (self.apis.submit)(&command, payload_pointer, payload.len());
-        if status != 0 {
-            self.capability_queries.remove(&header.command_sequence);
-            return Err(FaultCommandBridgeError::QemuSubmit { status });
-        }
         if let Some(expectation) = register_expectation {
             self.register_commands
                 .insert(header.command_sequence, expectation);
@@ -580,6 +610,21 @@ impl FaultCommandBridge {
         if let Some(expectation) = accelerator_expectation {
             self.accelerator_commands
                 .insert(header.command_sequence, expectation);
+        }
+        if header.command_flags & FAULT_COMMAND_FLAG_PREPARE_ONLY != 0 {
+            self.prepare_only_commands.insert(header.command_sequence);
+        }
+        let status = (self.apis.submit)(&command, payload_pointer, payload.len());
+        if status != 0 {
+            self.capability_queries.remove(&header.command_sequence);
+            self.register_commands.remove(&header.command_sequence);
+            self.instruction_commands.remove(&header.command_sequence);
+            self.exception_commands.remove(&header.command_sequence);
+            self.memory_ecc_commands.remove(&header.command_sequence);
+            self.clock_commands.remove(&header.command_sequence);
+            self.accelerator_commands.remove(&header.command_sequence);
+            self.prepare_only_commands.remove(&header.command_sequence);
+            return Err(FaultCommandBridgeError::QemuSubmit { status });
         }
         Ok(())
     }
@@ -732,6 +777,9 @@ impl FaultCommandBridge {
                 result_length: 0,
             };
             self.results.enqueue(header, result_payload)?;
+            if self.retain_prepared_correlation(&result) {
+                continue;
+            }
             if result.command_kind == FaultCommandKind::CpuRegisterTransform as u16 {
                 let Some(command) = register_command else {
                     return Err(FaultCommandBridgeError::RegisterEvidence);
@@ -856,10 +904,6 @@ impl FaultCommandBridge {
             let mut peeked_payload_len = 0_usize;
             let status = (self.apis.event_peek)(&mut peeked, &mut peeked_payload_len);
             if status == 0 {
-                let active: BTreeSet<u64> = self.active_clock_bindings.values().copied().collect();
-                self.clock_commands.retain(|sequence, command| {
-                    command.operation != NodeFaultOperationV1::Upsert || active.contains(sequence)
-                });
                 return Ok(true);
             }
             if status != 1 {

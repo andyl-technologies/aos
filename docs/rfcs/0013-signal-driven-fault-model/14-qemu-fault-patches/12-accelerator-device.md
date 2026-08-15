@@ -32,6 +32,14 @@ Each class requires a live fixture driver/workload, strict job schema, and resul
 semantics. Arbitrary vendor command streams, passthrough/VFIO hardware, host GPU
 libraries, and host device timing are forbidden.
 
+Deferred accelerator rules advertise both node-boundary and device phases. The
+node-boundary phase authorizes the host's atomic prepare/commit transaction that
+installs or removes a rule while the VM is stopped. The device phase identifies
+the later job, memory, or service callback where QEMU evaluates the selector and
+performs the mutation. In particular, a result transform must not advertise only
+the device phase: doing so makes the production host reject the rule before it
+can be installed.
+
 The device uses the virtio specification's vendor-specific device ID `65535`.
 QEMU's ordinary `virtio_init()` path deliberately accepts only IDs present in
 its standard device-name table, so patch 0069 adds `virtio_init_named()` for an
@@ -77,7 +85,10 @@ job_kind, queue_id, service_units, output_capacity)` plus the entry payload.
 - Result corruption selects job kind, optional queue, and occurrence, then
   applies equal-width nonzero mask/value bytes at an exact output-buffer/result
   schema offset after execution and before guest completion; before/after
-  digests record it.
+  digests record it. An APPLY transaction atomically arms a one-shot and
+  acknowledges that durable state without emitting an occurrence. The first
+  matching real device completion consumes it. Retained UPSERT rules and armed
+  one-shots compose in canonical binding/action/sequence order.
 - Device-memory events use manifest address spaces and the memory/ECC contracts,
   including corrected telemetry and uncorrectable job/device outcomes.
 - Service throttle uses a capacity ratio in `(0,1]`, optional positive memory
@@ -107,7 +118,11 @@ Service records carry job identity, effective capacity/rates, exact accumulator
 remainders, thermal/power metadata, sizes, and state digests. Patch 0069
 serializes device lifecycle, counters, service remainders, memory/ECC overlays,
 terminal state, and queue continuation; the host rejects checkpoints while
-requests, completions, or host jobs remain live.
+requests, completions, or host jobs remain live. Patch 0074 extends accelerator
+VMState to include armed result opportunities and their reserved event slots;
+see the dedicated
+[`accelerator result opportunity`](25-accelerator-result-opportunity.md)
+contract.
 
 ## Live microtests
 
@@ -125,6 +140,8 @@ requests, completions, or host jobs remain live.
 7. Fuzz descriptor/job schemas and limits; no malformed input escapes validation.
 8. Revert patch and fail live device gates; prove machines without the co-sim
    device do not advertise accelerator fault capability.
+9. Arm a one-shot before a matching job, checkpoint before completion, restore,
+   and prove the real guest result and occurrence evidence are identical.
 
 ## Licensing checklist
 
@@ -138,3 +155,6 @@ corresponding source update together.
   workload exercises every registered fault family.
 - **[QFP-ACCEL-2]** Host passthrough hardware or vendor runtime behavior cannot be
   canonical accelerator state.
+- **[QFP-ACCEL-3]** An APPLY result-transform acknowledgement means the one-shot
+  is durably armed; only a matching real device completion may emit and consume
+  its occurrence.

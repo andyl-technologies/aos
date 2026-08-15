@@ -6,11 +6,18 @@ pub(crate) fn qemu_event_matches_commit(
     action: &ResolvedBindingAction,
     commit: &CommittedQemuActionEvidence,
 ) -> bool {
+    // An accelerator result opportunity commits by installing an armed
+    // one-shot. Its later event hashes the device result mutation, not that
+    // installation. The remaining fields still bind the event to the exact
+    // authenticated APPLY result and issued action.
+    let occurrence_hashes_match = event.header.command_kind
+        == crucible_shmem::FaultCommandKind::AcceleratorResultTransform
+        || (event.header.before_hash == commit.before_hash
+            && event.header.after_hash == commit.after_hash);
+
     event.header.rule_command_sequence == commit.command_sequence
         && event.header.command_kind as u16 == commit.command_kind
-        && (action.kind != BindingActionKind::Apply
-            || (event.header.before_hash == commit.before_hash
-                && event.header.after_hash == commit.after_hash))
+        && (action.kind != BindingActionKind::Apply || occurrence_hashes_match)
 }
 
 pub(crate) fn validate_node_event_evidence(

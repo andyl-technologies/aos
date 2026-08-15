@@ -472,6 +472,13 @@
         patchName = "0073-crucible-device-wait-vmstop.patch";
       };
     }
+    {
+      patch = "0074-crucible-arm-accelerator-result-opportunities.patch";
+      check = import ./phase2-qemu-fault-vmstate.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0074-crucible-arm-accelerator-result-opportunities.patch";
+      };
+    }
   ];
 
   microtestPatchNames =

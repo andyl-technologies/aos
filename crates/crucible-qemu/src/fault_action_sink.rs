@@ -743,11 +743,6 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                 })?;
             let evidence =
                 validate_typed_node_result(&prepared.payload, result, FaultResultStatus::Applied)?;
-            if evidence.before_sha256 != preparation.before_sha256 {
-                return Err(FaultActionCommitError::Fatal(
-                    FaultRuntimeError::IncompleteAdapterState,
-                ));
-            }
             let evidence_hash = ContentHash::from_bytes(&evidence.encode().map_err(|_source| {
                 FaultActionCommitError::Fatal(FaultRuntimeError::IncompleteAdapterState)
             })?);

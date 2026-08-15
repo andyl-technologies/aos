@@ -90,12 +90,16 @@ in
           grep -Fxq 'accelerator_transport=real-modern-virtio-pci' "$report"
           grep -Fxq 'accelerator_jobs=gpu-vector-add,tpu-matrix-multiply,fpga-lookup-table' "$report"
           grep -Fxq 'host_adapter=qemu-live-accelerator-servicer' "$report"
+          grep -Fxq 'clock_signal_actions=1' "$report"
+          grep -Fxq 'accelerator_signal_actions=1' "$report"
+          grep -Eq '^clock_occurrences=[1-9][0-9]*$' "$report"
+          grep -Fxq 'accelerator_occurrences=1' "$report"
           grep -Fxq 'orderly_child_exit=true' "$report"
 
           mkdir -p "$out"
           cp "$report" "$out/result"
           printf 'attr_path=%s\n' "$ATTR_PATH" >> "$out/result"
-          printf 'proven=real-linux-clock-observation,real-virtio-pci-discovery,guest-dma,split-virtqueue,gpu-job,tpu-job,fpga-job,fault-free-event-reservation\n' >> "$out/result"
+          printf 'proven=signal-driven-clock-mutation,signal-driven-accelerator-result-mutation,authenticated-fault-occurrences,real-linux-clock-observation,real-virtio-pci-discovery,guest-dma,split-virtqueue,gpu-job,tpu-job,fpga-job,fault-free-event-reservation\n' >> "$out/result"
         '';
       }
     ];

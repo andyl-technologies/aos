@@ -224,6 +224,24 @@ fn immediate_qemu_event_must_match_the_exact_apply_result() {
 }
 
 #[test]
+fn armed_accelerator_event_matches_the_installing_apply_result() {
+    let action = lifecycle_action(NodeLifecycleTransition::Reset, NodeBootPolicy::Immediate);
+    let mut event = lifecycle_event(&action);
+    event.header.command_kind = crucible_shmem::FaultCommandKind::AcceleratorResultTransform;
+    let commit = CommittedQemuActionEvidence {
+        command_sequence: event.header.rule_command_sequence,
+        command_kind: event.header.command_kind as u16,
+        before_hash: [41; 32],
+        after_hash: [42; 32],
+    };
+
+    assert!(qemu_event_matches_commit(&event, &action, &commit));
+
+    event.header.rule_command_sequence += 1;
+    assert!(!qemu_event_matches_commit(&event, &action, &commit));
+}
+
+#[test]
 fn checkpoint_rejects_unacknowledged_node_boot_edge() {
     let plan = FaultSignalPlan::new(Vec::new(), Vec::new(), FaultResourceLimits::default())
         .unwrap_or_else(|error| panic!("empty test plan should be valid: {error}"));
