@@ -838,6 +838,97 @@ Finding artifacts embed the authenticated transitive signal-object closure and
 the exact ordered mutation recipe, so replay does not require the search
 store that produced the candidate.
 
+### Fault opportunity operation values
+
+`opportunity_filter.operations` is a required, nonempty list when a binding
+declares an opportunity filter. Every value in one list must belong to the
+filter's `adapter`; mixed-adapter lists are rejected. `phases` is also required
+and nonempty, while `target_kinds` may be empty to avoid further restriction.
+For example:
+
+```toml
+[plan.fault_binding.opportunity_filter]
+adapter = "network"
+operations = ["network_transmit", "network_receive"]
+phases = ["admit"]
+target_kinds = ["network_interface"]
+```
+
+The following table is the complete closed operation vocabulary. The
+[operation enum and adapter mapping](../../../crates/crucible/src/model/fault_signal/opportunity.rs)
+and the [filter schema and validation](../../../crates/crucible/src/model/fault_signal/binding.rs)
+are the corresponding code contracts.
+
+| Operation value | Adapter | Opportunity represented | Configuration |
+| --- | --- | --- | --- |
+| `network_transmit` | `network` | A frame leaves a producer or forwarding interface. | Add `"network_transmit"` to `operations`. |
+| `network_receive` | `network` | A frame arrives at a selected recipient interface. | Add `"network_receive"` to `operations`. |
+| `network_contend` | `network` | Participants contend for a shared-medium resource. | Add `"network_contend"` to `operations`. |
+| `network_allocate` | `network` | A shared medium allocates service, a slot, or another bounded resource. | Add `"network_allocate"` to `operations`. |
+| `network_enqueue` | `network` | A frame is admitted to a bounded network queue. | Add `"network_enqueue"` to `operations`. |
+| `network_serve` | `network` | A queued frame consumes modeled link or forwarder service. | Add `"network_serve"` to `operations`. |
+| `network_dequeue` | `network` | A frame leaves a queue for delivery, forwarding, or disposal. | Add `"network_dequeue"` to `operations`. |
+| `network_learn` | `network` | A forwarder updates learned forwarding state. | Add `"network_learn"` to `operations`. |
+| `network_lookup` | `network` | A forwarder consults routing, switching, firewall, or related state. | Add `"network_lookup"` to `operations`. |
+| `network_route` | `network` | A route is selected or transitions between versioned paths. | Add `"network_route"` to `operations`. |
+| `network_translate` | `network` | An address, port, protocol, or control result is translated. | Add `"network_translate"` to `operations`. |
+| `network_encapsulate` | `network` | A frame or bundle is encapsulated or decapsulated. | Add `"network_encapsulate"` to `operations`. |
+| `network_select` | `network` | A path, backend, beam, gateway, channel, or candidate is selected. | Add `"network_select"` to `operations`. |
+| `network_traverse` | `network` | Traffic traverses one segment, medium, path, or scheduled contact. | Add `"network_traverse"` to `operations`. |
+| `network_change` | `network` | A versioned topology, path, profile, or attachment changes. | Add `"network_change"` to `operations`. |
+| `network_discover` | `network` | A network, peer, access point, cell, service, or contact is discovered. | Add `"network_discover"` to `operations`. |
+| `network_authenticate` | `network` | Network access or peer identity is authenticated. | Add `"network_authenticate"` to `operations`. |
+| `network_associate` | `network` | An interface establishes an attachment or association. | Add `"network_associate"` to `operations`. |
+| `network_handoff` | `network` | An attachment moves between access resources or paths. | Add `"network_handoff"` to `operations`. |
+| `network_acquire` | `network` | A scheduled contact, channel, beam, or link is acquired. | Add `"network_acquire"` to `operations`. |
+| `network_custody` | `network` | Delay-tolerant traffic changes custody or durable queue ownership. | Add `"network_custody"` to `operations`. |
+| `network_teardown` | `network` | A contact, association, tunnel, or attachment is torn down. | Add `"network_teardown"` to `operations`. |
+| `storage_read` | `storage` | A block or 9p read request is resolved. | Add `"storage_read"` to `operations`. |
+| `storage_write` | `storage` | A block or 9p write request is resolved. | Add `"storage_write"` to `operations`. |
+| `storage_flush` | `storage` | A guest requests a durability or ordering barrier. | Add `"storage_flush"` to `operations`. |
+| `storage_discard` | `storage` | A block range is discarded or deallocated. | Add `"storage_discard"` to `operations`. |
+| `storage_get_length` | `storage` | Guest-visible device capacity is queried. | Add `"storage_get_length"` to `operations`. |
+| `storage_reset` | `storage` | A storage device, controller, namespace, or path is reset. | Add `"storage_reset"` to `operations`. |
+| `storage_erase` | `storage` | A flash erase block is erased. | Add `"storage_erase"` to `operations`. |
+| `storage_refresh` | `storage` | Media is refreshed to restore or retain readable state. | Add `"storage_refresh"` to `operations`. |
+| `storage_admit` | `storage` | A controller decides whether to admit an operation. | Add `"storage_admit"` to `operations`. |
+| `storage_submit` | `storage` | An admitted operation is submitted to controller service. | Add `"storage_submit"` to `operations`. |
+| `storage_complete` | `storage` | A block, controller, array, or 9p operation completes. | Add `"storage_complete"` to `operations`. |
+| `storage_enumerate` | `storage` | A controller, namespace, path, or 9p device is enumerated. | Add `"storage_enumerate"` to `operations`. |
+| `storage_rebuild` | `storage` | An array performs bounded rebuild work. | Add `"storage_rebuild"` to `operations`. |
+| `node_boot` | `node` | A node enters its boot transition. | Add `"node_boot"` to `operations`. |
+| `node_run` | `node` | A node or vCPU performs scheduled execution. | Add `"node_run"` to `operations`. |
+| `node_pause` | `node` | A node enters a paused state. | Add `"node_pause"` to `operations`. |
+| `node_reset` | `node` | A node performs an architectural reset. | Add `"node_reset"` to `operations`. |
+| `node_stop` | `node` | A node stops or powers off. | Add `"node_stop"` to `operations`. |
+| `node_resume` | `node` | A stopped or paused node resumes execution. | Add `"node_resume"` to `operations`. |
+| `cpu_instruction` | `node` | A vCPU reaches an instruction execution opportunity. | Add `"cpu_instruction"` to `operations`. |
+| `cpu_exception` | `node` | A vCPU reaches an architecture exception transition. | Add `"cpu_exception"` to `operations`. |
+| `cpu_halt` | `node` | A vCPU enters or leaves a halted service state. | Add `"cpu_halt"` to `operations`. |
+| `register_access` | `node` | An architecture-resolved register is read or written. | Add `"register_access"` to `operations`. |
+| `memory_fetch` | `node` | A vCPU fetches instruction bytes. | Add `"memory_fetch"` to `operations`. |
+| `memory_load` | `node` | A vCPU loads data from memory. | Add `"memory_load"` to `operations`. |
+| `memory_store` | `node` | A vCPU stores data to memory. | Add `"memory_store"` to `operations`. |
+| `memory_dma_read` | `node` | A device reads guest memory through DMA. | Add `"memory_dma_read"` to `operations`. |
+| `memory_dma_write` | `node` | A device writes guest memory through DMA. | Add `"memory_dma_write"` to `operations`. |
+| `memory_page_table_walk` | `node` | A vCPU MMU reads a page-table descriptor. | Add `"memory_page_table_walk"` to `operations`. |
+| `memory_refresh` | `node` | Modeled main memory performs a refresh operation. | Add `"memory_refresh"` to `operations`. |
+| `interrupt_raise` | `node` | An interrupt source raises an interrupt. | Add `"interrupt_raise"` to `operations`. |
+| `interrupt_route` | `node` | An interrupt controller resolves a route and target. | Add `"interrupt_route"` to `operations`. |
+| `interrupt_acknowledge` | `node` | A target acknowledges an interrupt. | Add `"interrupt_acknowledge"` to `operations`. |
+| `interrupt_deliver` | `node` | An interrupt is delivered to a target vCPU. | Add `"interrupt_deliver"` to `operations`. |
+| `interrupt_return` | `node` | A vCPU completes an interrupt-return transition. | Add `"interrupt_return"` to `operations`. |
+| `clock_read` | `node` | Guest software reads a registered clock source. | Add `"clock_read"` to `operations`. |
+| `clock_arm` | `node` | A guest-visible timer is armed. | Add `"clock_arm"` to `operations`. |
+| `clock_fire` | `node` | A guest-visible timer reaches its fire boundary. | Add `"clock_fire"` to `operations`. |
+| `clock_synchronize` | `node` | A clock synchronization update is applied. | Add `"clock_synchronize"` to `operations`. |
+| `clock_source_switch` | `node` | Guest-visible timekeeping switches clock sources. | Add `"clock_source_switch"` to `operations`. |
+| `accelerator_submit` | `node` | A job is submitted to an accelerator queue. | Add `"accelerator_submit"` to `operations`. |
+| `accelerator_execute` | `node` | An accelerator performs modeled job work. | Add `"accelerator_execute"` to `operations`. |
+| `accelerator_complete` | `node` | An accelerator job produces a completion. | Add `"accelerator_complete"` to `operations`. |
+| `accelerator_memory_access` | `node` | An accelerator accesses device or guest memory. | Add `"accelerator_memory_access"` to `operations`. |
+| `accelerator_reset` | `node` | An accelerator performs a reset transition. | Add `"accelerator_reset"` to `operations`. |
+
 ### Target selector values
 
 | Target kind | Adapter | What it selects |

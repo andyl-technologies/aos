@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 
 use crucible::model::{
-    EffectKind, FaultTargetKind, PureSignalOperator, SignalSourceKind, StatefulSignalOperator,
+    EffectKind, FaultOperation, FaultTargetKind, PureSignalOperator, SignalSourceKind,
+    StatefulSignalOperator,
 };
 
 const REFERENCE: &str = include_str!("../../../docs/users/crucible/reference.md");
@@ -44,6 +45,16 @@ fn every_signal_and_target_registry_value_has_exactly_one_reference_row() {
             .iter()
             .map(|kind| kind.as_str()),
         "stateful operator",
+    );
+    assert_exact_reference_rows(
+        section(
+            "### Fault opportunity operation values",
+            "### Target selector values",
+        ),
+        FaultOperation::all()
+            .iter()
+            .map(|operation| operation.as_str()),
+        "fault operation",
     );
     assert_exact_reference_rows(
         section("### Target selector values", "Sensor targets are"),
