@@ -2,10 +2,9 @@
 //!
 //! A placement is selectable only after the controller has enumerated its
 //! backend and reconciled every active logical object with byte evidence from
-//! that exact placement. Registry scans compare the physical keyset with the
-//! publication catalog. Binary-cache scans reuse the generation-based cache
-//! inventory transaction, which discovers and normalizes NAR metadata before
-//! publishing its evidence.
+//! that exact placement. Registry and binary-cache scans compare the physical
+//! keyset with the existing logical catalog. Cache discovery and normalization
+//! remain owned by the independently fenced cache-inventory controller.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -15,15 +14,17 @@ use base64::Engine as _;
 
 use crate::clock;
 use crate::db::{
-    Database, PlacementScanPresence, SurfaceObjectRecord, SurfacePlacementRecord, SurfaceTarget,
-    TopologyOperationRecord,
+    Database, PlacementScanPresence, ReusablePlacementEvidence, SurfaceObjectRecord,
+    SurfacePlacementRecord, SurfaceTarget, TopologyOperationRecord,
 };
 use crate::fetch::{
-    SurfaceListingBudget, SurfaceProvider, MAX_SURFACE_LIST_PAGES, MAX_SURFACE_LIST_PAGE_OBJECTS,
-    WORKER_MAX_SURFACE_LIST_PAGES, WORKER_MAX_SURFACE_LIST_PAGE_OBJECTS,
+    SurfaceListedEvidence, SurfaceListingBudget, SurfaceProvider, MAX_SURFACE_LIST_PAGES,
+    MAX_SURFACE_LIST_PAGE_OBJECTS, WORKER_MAX_SURFACE_LIST_PAGES,
+    WORKER_MAX_SURFACE_LIST_PAGE_OBJECTS,
 };
 
 const CLAIM_LEASE_SECONDS: i64 = 600;
+const CLAIM_HEARTBEAT_SECONDS: u64 = 60;
 
 /// Executes reviewed physical-placement scan operations.
 pub struct PlacementScanController {
@@ -47,33 +48,67 @@ impl PlacementScanController {
     pub async fn run_due(&self, limit: usize) -> Result<usize> {
         let due = self
             .db
-            .due_surface_placement_scan_operations(
-                clock::now_unix_secs() - CLAIM_LEASE_SECONDS,
-                limit,
-            )
+            .due_surface_placement_scan_operations(clock::now_unix_secs(), limit)
             .await?;
         let mut completed = 0;
         for operation in due {
+            let claim_token = uuid::Uuid::new_v4().simple().to_string();
             let Some(claimed) = self
                 .db
                 .claim_surface_placement_scan_operation(
                     &operation.operation_id,
                     operation.resource_version,
+                    &claim_token,
                     CLAIM_LEASE_SECONDS,
                 )
                 .await?
             else {
                 continue;
             };
-            if let Err(error) = self.run_claimed(&claimed).await {
-                self.record_failure(&claimed, &error).await?;
+            if let Err(error) = self
+                .run_claimed_with_heartbeat(&claimed, &claim_token)
+                .await
+            {
+                self.record_failure(&claimed, &claim_token, &error).await?;
             }
             completed += 1;
         }
         Ok(completed)
     }
 
-    async fn run_claimed(&self, operation: &TopologyOperationRecord) -> Result<()> {
+    async fn run_claimed_with_heartbeat(
+        &self,
+        operation: &TopologyOperationRecord,
+        claim_token: &str,
+    ) -> Result<()> {
+        let mut scan = Box::pin(self.run_claimed(operation, claim_token));
+        loop {
+            let heartbeat = Box::pin(clock::sleep(std::time::Duration::from_secs(
+                CLAIM_HEARTBEAT_SECONDS,
+            )));
+            match futures_util::future::select(scan, heartbeat).await {
+                futures_util::future::Either::Left((result, _)) => return result,
+                futures_util::future::Either::Right(((), pending_scan)) => {
+                    self.db
+                        .heartbeat_surface_placement_scan_operation(
+                            &operation.operation_id,
+                            operation.resource_version,
+                            claim_token,
+                            clock::now_unix_secs(),
+                            CLAIM_LEASE_SECONDS,
+                        )
+                        .await?;
+                    scan = pending_scan;
+                }
+            }
+        }
+    }
+
+    async fn run_claimed(
+        &self,
+        operation: &TopologyOperationRecord,
+        claim_token: &str,
+    ) -> Result<()> {
         let placement = self
             .db
             .surface_placement_by_operation_target(&operation.primary_target_stable_id)
@@ -84,10 +119,21 @@ impl PlacementScanController {
         }
 
         let detail = if let Some(registry_id) = placement.registry_id {
-            self.scan_registry_placement(&placement, registry_id)
-                .await?
+            self.scan_catalog_placement(
+                &placement,
+                SurfaceTarget::Registry(registry_id),
+                operation,
+                claim_token,
+            )
+            .await?
         } else if let Some(cache_id) = placement.cache_id {
-            self.scan_cache_placement(&placement, cache_id).await?
+            self.scan_catalog_placement(
+                &placement,
+                SurfaceTarget::BinaryCache(cache_id),
+                operation,
+                claim_token,
+            )
+            .await?
         } else {
             bail!("placement scan target has no surface");
         };
@@ -96,26 +142,32 @@ impl PlacementScanController {
             .get("catalogObjects")
             .and_then(serde_json::Value::as_i64)
             .unwrap_or(0);
-        self.db
-            .update_topology_operation(
+        let terminalized = self
+            .db
+            .finish_claimed_surface_placement_scan_operation(
                 &operation.operation_id,
                 operation.resource_version,
+                claim_token,
                 "succeeded",
                 total,
                 Some(total),
                 &detail.to_string(),
                 None,
-                operation.started_at.or(Some(now)),
-                Some(now),
+                now,
             )
             .await?;
+        if !terminalized {
+            bail!("placement scan claim expired or was replaced before completion");
+        }
         Ok(())
     }
 
-    async fn scan_registry_placement(
+    async fn scan_catalog_placement(
         &self,
         placement: &SurfacePlacementRecord,
-        registry_id: i64,
+        surface: SurfaceTarget,
+        operation: &TopologyOperationRecord,
+        claim_token: &str,
     ) -> Result<serde_json::Value> {
         let initial_observation = placement
             .observation_version
@@ -126,15 +178,22 @@ impl PlacementScanController {
                 placement.id,
                 placement.resource_version,
                 initial_observation,
+                &operation.operation_id,
+                operation.resource_version,
+                claim_token,
             )
             .await?;
         let scanning_observation = scanning
             .observation_version
             .context("scanning placement lost its observation resource")?;
-        let objects = self
+        let reusable = self
             .db
-            .list_active_surface_objects(SurfaceTarget::Registry(registry_id))
-            .await?;
+            .reusable_placement_scan_evidence(placement.id)
+            .await?
+            .into_iter()
+            .map(|evidence| (evidence.surface_object_id, evidence))
+            .collect::<BTreeMap<_, _>>();
+        let objects = self.db.list_active_surface_objects(surface).await?;
         let catalog_objects = i64::try_from(objects.len()).context("catalog size overflowed")?;
         let mut catalog = objects
             .into_iter()
@@ -163,6 +222,7 @@ impl PlacementScanController {
         let mut pages = 0_usize;
         let mut unknown = 0_i64;
         let mut corrupt = 0_i64;
+        let mut reused = 0_i64;
         let observed_at = clock::now_unix_secs();
 
         loop {
@@ -177,6 +237,7 @@ impl PlacementScanController {
                 .await
                 .with_context(|| format!("listing placement '{}'", placement.name))?;
             page.validate(page_limit, cursor.as_deref())?;
+            let listed_evidence = page.evidence;
             for path in page.paths {
                 if prior_path.as_ref().is_some_and(|prior| prior >= &path) {
                     bail!("placement returned keys out of global order");
@@ -189,6 +250,27 @@ impl PlacementScanController {
                     unknown += 1;
                     continue;
                 };
+                if let Some(presence) = reusable_listing_presence(
+                    &object,
+                    listed_evidence.get(&path),
+                    reusable.get(&object.id),
+                ) {
+                    reused += 1;
+                    self.db
+                        .record_surface_placement_scan_presence(
+                            placement.id,
+                            placement.resource_version,
+                            scanning_observation,
+                            object.resource_version,
+                            &operation.operation_id,
+                            operation.resource_version,
+                            claim_token,
+                            &presence,
+                            observed_at,
+                        )
+                        .await?;
+                    continue;
+                }
                 let evidence = fetch
                     .inventory_evidence(&path)
                     .await?
@@ -202,6 +284,10 @@ impl PlacementScanController {
                         placement.id,
                         placement.resource_version,
                         scanning_observation,
+                        object.resource_version,
+                        &operation.operation_id,
+                        operation.resource_version,
+                        claim_token,
                         &PlacementScanPresence {
                             surface_object_id: object.id,
                             state: if valid { "present" } else { "corrupt" }.to_string(),
@@ -233,6 +319,10 @@ impl PlacementScanController {
                     placement.id,
                     placement.resource_version,
                     scanning_observation,
+                    object.resource_version,
+                    &operation.operation_id,
+                    operation.resource_version,
+                    claim_token,
                     &PlacementScanPresence {
                         surface_object_id: object.id,
                         state: "missing".to_string(),
@@ -251,6 +341,9 @@ impl PlacementScanController {
                 placement.id,
                 placement.resource_version,
                 scanning_observation,
+                &operation.operation_id,
+                operation.resource_version,
+                claim_token,
                 if complete { "ready" } else { "degraded" },
                 if complete { "complete" } else { "partial" },
             )
@@ -263,56 +356,14 @@ impl PlacementScanController {
             "unknownObjects": unknown,
             "missingObjects": missing,
             "corruptObjects": corrupt,
-        }))
-    }
-
-    async fn scan_cache_placement(
-        &self,
-        placement: &SurfacePlacementRecord,
-        cache_id: i64,
-    ) -> Result<serde_json::Value> {
-        let initial_observation = placement
-            .observation_version
-            .context("placement has no observation resource")?;
-        let scanning = self
-            .db
-            .begin_surface_placement_scan(
-                placement.id,
-                placement.resource_version,
-                initial_observation,
-            )
-            .await?;
-        let scanning_observation = scanning
-            .observation_version
-            .context("scanning placement lost its observation resource")?;
-        let cache = self
-            .db
-            .binary_cache_by_id(cache_id)
-            .await?
-            .context("placement cache no longer exists")?;
-        let stats =
-            crate::cache_scan::rescan_cache(&self.db, self.surfaces.as_ref(), &cache).await?;
-        self.db
-            .finish_surface_placement_scan(
-                placement.id,
-                placement.resource_version,
-                scanning_observation,
-                "ready",
-                "complete",
-            )
-            .await?;
-        Ok(serde_json::json!({
-            "phase": "complete",
-            "catalogObjects": i64::try_from(stats.added + stats.unchanged).unwrap_or(i64::MAX),
-            "addedObjects": stats.added,
-            "removedObjects": stats.removed,
-            "unchangedObjects": stats.unchanged,
+            "strongVersionObjects": reused,
         }))
     }
 
     async fn record_failure(
         &self,
         claimed: &TopologyOperationRecord,
+        claim_token: &str,
         error: &anyhow::Error,
     ) -> Result<()> {
         let current = self
@@ -320,7 +371,7 @@ impl PlacementScanController {
             .topology_operation(&claimed.operation_id)
             .await?
             .context("claimed placement scan operation disappeared")?;
-        if current.state != "running" {
+        if current.state != "running" || current.resource_version != claimed.resource_version {
             return Ok(());
         }
         let now = clock::now_unix_secs();
@@ -329,16 +380,16 @@ impl PlacementScanController {
             .take(4 * 1024)
             .collect::<String>();
         self.db
-            .update_topology_operation(
+            .finish_claimed_surface_placement_scan_operation(
                 &current.operation_id,
                 current.resource_version,
+                claim_token,
                 "failed",
                 current.progress_current,
                 current.progress_total,
                 &current.detail_json,
                 Some(&message),
-                current.started_at.or(Some(now)),
-                Some(now),
+                now,
             )
             .await?;
         Ok(())
@@ -357,6 +408,37 @@ fn object_matches_evidence(
             .is_some_and(|expected| sha256_hash_matches(expected, digest))
 }
 
+fn reusable_listing_presence(
+    object: &SurfaceObjectRecord,
+    listed: Option<&SurfaceListedEvidence>,
+    prior: Option<&ReusablePlacementEvidence>,
+) -> Option<PlacementScanPresence> {
+    let listed = listed?;
+    let prior = prior?;
+    if prior.state != "present"
+        || object.content_hash.is_none()
+        || prior.observed_hash != object.content_hash
+        || prior.observed_size != object.size
+        || object.size != Some(listed.size)
+    {
+        return None;
+    }
+
+    let listed_etag = crate::surface_write::strong_if_match_etag(&listed.strong_etag).ok()?;
+    let prior_etag = crate::surface_write::strong_if_match_etag(prior.etag.as_deref()?).ok()?;
+    if listed_etag != prior_etag {
+        return None;
+    }
+
+    Some(PlacementScanPresence {
+        surface_object_id: object.id,
+        state: "present".into(),
+        observed_hash: object.content_hash.clone(),
+        observed_size: object.size,
+        etag: Some(listed_etag),
+    })
+}
+
 fn sha256_hash_matches(expected: &str, digest: &[u8; 32]) -> bool {
     let hex_digest = hex::encode(digest);
     if expected.len() == 64 && expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -372,10 +454,12 @@ fn sha256_hash_matches(expected: &str, digest: &[u8; 32]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
     use crate::db::{
         NewSurfacePlacementSpec, NewTopologyOperation, NewTopologyOperationTarget,
-        NewTopologyOperationTargetRef,
+        NewTopologyOperationTargetRef, SetSurfaceObject,
     };
     use crate::domain::Permission;
     use crate::fetch::{SurfaceFetch, SurfaceListPage};
@@ -384,6 +468,14 @@ mod tests {
     struct EmptySurfaceProvider;
 
     struct EmptySurface;
+
+    struct ListedSurfaceProvider {
+        body_reads: Arc<AtomicUsize>,
+    }
+
+    struct ListedSurface {
+        body_reads: Arc<AtomicUsize>,
+    }
 
     #[async_trait::async_trait]
     impl SurfaceProvider for EmptySurfaceProvider {
@@ -404,6 +496,7 @@ mod tests {
         async fn list_page(&self, _cursor: Option<&str>, _limit: usize) -> Result<SurfaceListPage> {
             Ok(SurfaceListPage {
                 paths: Vec::new(),
+                evidence: Default::default(),
                 next_cursor: None,
             })
         }
@@ -411,6 +504,198 @@ mod tests {
         fn describe(&self) -> String {
             "empty test surface".into()
         }
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceProvider for ListedSurfaceProvider {
+        async fn placement_fetcher(
+            &self,
+            _placement: &SurfacePlacementRecord,
+        ) -> Result<Box<dyn SurfaceFetch>> {
+            Ok(Box::new(ListedSurface {
+                body_reads: Arc::clone(&self.body_reads),
+            }))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for ListedSurface {
+        async fn fetch(&self, _path: &str) -> Result<Option<Vec<u8>>> {
+            self.body_reads.fetch_add(1, Ordering::SeqCst);
+            anyhow::bail!("listed strong-version evidence should avoid a body read")
+        }
+
+        async fn list_page(&self, _cursor: Option<&str>, _limit: usize) -> Result<SurfaceListPage> {
+            Ok(SurfaceListPage {
+                paths: vec!["objects/aa/bb".into()],
+                evidence: [(
+                    "objects/aa/bb".into(),
+                    SurfaceListedEvidence {
+                        size: 7,
+                        strong_etag: "provider-version".into(),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                next_cursor: None,
+            })
+        }
+
+        async fn inventory_evidence(
+            &self,
+            _path: &str,
+        ) -> Result<Option<crate::fetch::SurfaceObjectEvidence>> {
+            self.body_reads.fetch_add(1, Ordering::SeqCst);
+            anyhow::bail!("listed strong-version evidence should avoid inventory streaming")
+        }
+
+        fn describe(&self) -> String {
+            "listed test surface".into()
+        }
+    }
+
+    async fn scan_fixture(
+        slug: &str,
+        operation_id: &str,
+    ) -> (
+        Arc<Database>,
+        SurfacePlacementRecord,
+        TopologyOperationRecord,
+    ) {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let org_id = db.create_org(slug, "Placement scan").await.unwrap();
+        let org = db.org_by_id(org_id).await.unwrap().unwrap();
+        let registry_id = db
+            .create_managed_registry(org_id, "", "system", "public", &[], false)
+            .await
+            .unwrap();
+        let binding_id = db
+            .create_topology_storage_binding(
+                Some(org_id),
+                &uuid::Uuid::new_v4().simple().to_string(),
+                &org.stable_id,
+                "primary",
+                "r2",
+                None,
+                Some("test-bucket"),
+                Some(&format!("registries/{slug}/system")),
+                Some("https"),
+                Some("dns"),
+                Some(b"storage.example.invalid"),
+                Some(443),
+                Some("auto"),
+                Some("private"),
+            )
+            .await
+            .unwrap();
+        let placement = db
+            .create_surface_placement(&NewSurfacePlacementSpec {
+                surface: SurfaceTarget::Registry(registry_id),
+                name: "primary".into(),
+                storage_binding_id: binding_id,
+                prefix: format!("registries/{slug}/system"),
+                kind: "complete".into(),
+                desired_state: "active".into(),
+                hash_range: None,
+                desired_read_enabled: true,
+                read_order: 0,
+                requires_conditional_writes: false,
+            })
+            .await
+            .unwrap();
+        let operation = db
+            .create_topology_operation(&NewTopologyOperation {
+                operation_id: operation_id.into(),
+                operation_kind: "scan_placement".into(),
+                control_permission: Permission::StorageManage,
+                targets: vec![NewTopologyOperationTarget {
+                    role: "primary".into(),
+                    target: NewTopologyOperationTargetRef::Placement(placement.id),
+                    generation_key: placement.resource_version,
+                    configuration_digest: String::new(),
+                }],
+                detail_json: serde_json::json!({"phase":"pending"}).to_string(),
+                progress_total: None,
+            })
+            .await
+            .unwrap();
+        (db, placement, operation)
+    }
+
+    async fn cache_scan_fixture() -> (
+        Arc<Database>,
+        SurfacePlacementRecord,
+        TopologyOperationRecord,
+    ) {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let org_id = db
+            .create_org("placement-cache-scan", "Placement cache scan")
+            .await
+            .unwrap();
+        let org = db.org_by_id(org_id).await.unwrap().unwrap();
+        let cache_id = db
+            .create_binary_cache(
+                Some(org_id),
+                "placement-cache",
+                "Placement cache",
+                "public",
+                40,
+                "zstd",
+                true,
+            )
+            .await
+            .unwrap();
+        let binding_id = db
+            .create_topology_storage_binding(
+                Some(org_id),
+                &uuid::Uuid::new_v4().simple().to_string(),
+                &org.stable_id,
+                "cache-primary",
+                "r2",
+                None,
+                Some("test-bucket"),
+                Some("caches/placement-cache"),
+                Some("https"),
+                Some("dns"),
+                Some(b"storage.example.invalid"),
+                Some(443),
+                Some("auto"),
+                Some("private"),
+            )
+            .await
+            .unwrap();
+        let placement = db
+            .create_surface_placement(&NewSurfacePlacementSpec {
+                surface: SurfaceTarget::BinaryCache(cache_id),
+                name: "primary".into(),
+                storage_binding_id: binding_id,
+                prefix: "caches/placement-cache".into(),
+                kind: "complete".into(),
+                desired_state: "active".into(),
+                hash_range: None,
+                desired_read_enabled: true,
+                read_order: 0,
+                requires_conditional_writes: false,
+            })
+            .await
+            .unwrap();
+        let operation = db
+            .create_topology_operation(&NewTopologyOperation {
+                operation_id: "scan-cache-placement".into(),
+                operation_kind: "scan_placement".into(),
+                control_permission: Permission::StorageManage,
+                targets: vec![NewTopologyOperationTarget {
+                    role: "primary".into(),
+                    target: NewTopologyOperationTargetRef::Placement(placement.id),
+                    generation_key: placement.resource_version,
+                    configuration_digest: String::new(),
+                }],
+                detail_json: serde_json::json!({"phase":"pending"}).to_string(),
+                progress_total: None,
+            })
+            .await
+            .unwrap();
+        (db, placement, operation)
     }
 
     #[test]
@@ -443,68 +728,47 @@ mod tests {
         }
     }
 
+    #[test]
+    fn listing_reuse_requires_the_exact_prior_provider_version() {
+        let object = SurfaceObjectRecord {
+            id: 7,
+            registry_id: Some(1),
+            cache_id: None,
+            object_key: "objects/aa/bb".into(),
+            content_hash: Some("ab".repeat(32)),
+            size: Some(9),
+            object_kind: "immutable".into(),
+            mutable_publication_id: None,
+            lifecycle_state: "active".into(),
+            tombstoned_at: None,
+            created_at: 0,
+            updated_at: 0,
+            resource_version: 1,
+        };
+        let listed = SurfaceListedEvidence {
+            size: 9,
+            strong_etag: "provider-version".into(),
+        };
+        let mut prior = ReusablePlacementEvidence {
+            surface_object_id: object.id,
+            state: "present".into(),
+            observed_hash: object.content_hash.clone(),
+            observed_size: object.size,
+            etag: Some("\"provider-version\"".into()),
+        };
+
+        let reused = reusable_listing_presence(&object, Some(&listed), Some(&prior)).unwrap();
+        assert_eq!(reused.observed_hash, object.content_hash);
+        assert_eq!(reused.etag.as_deref(), Some("\"provider-version\""));
+
+        prior.etag = Some("different-version".into());
+        assert!(reusable_listing_presence(&object, Some(&listed), Some(&prior)).is_none());
+    }
+
     #[tokio::test]
     async fn empty_registry_scan_makes_a_new_placement_ready() {
-        let db = Arc::new(Database::open_in_memory().await.unwrap());
-        let org_id = db
-            .create_org("placement-scan", "Placement scan")
-            .await
-            .unwrap();
-        let org = db.org_by_id(org_id).await.unwrap().unwrap();
-        let registry_id = db
-            .create_managed_registry(org_id, "", "system", "public", &[], false)
-            .await
-            .unwrap();
-        let binding_id = db
-            .create_topology_storage_binding(
-                Some(org_id),
-                &uuid::Uuid::new_v4().simple().to_string(),
-                &org.stable_id,
-                "primary",
-                "r2",
-                None,
-                Some("test-bucket"),
-                Some("registries/placement-scan/system"),
-                Some("https"),
-                Some("dns"),
-                Some(b"storage.example.invalid"),
-                Some(443),
-                Some("auto"),
-                Some("private"),
-            )
-            .await
-            .unwrap();
-        let placement = db
-            .create_surface_placement(&NewSurfacePlacementSpec {
-                surface: SurfaceTarget::Registry(registry_id),
-                name: "primary".into(),
-                storage_binding_id: binding_id,
-                prefix: "registries/placement-scan/system".into(),
-                kind: "complete".into(),
-                desired_state: "active".into(),
-                hash_range: None,
-                desired_read_enabled: true,
-                read_order: 0,
-                requires_conditional_writes: false,
-            })
-            .await
-            .unwrap();
-        let operation = db
-            .create_topology_operation(&NewTopologyOperation {
-                operation_id: "scan-empty-registry".into(),
-                operation_kind: "scan_placement".into(),
-                control_permission: Permission::StorageManage,
-                targets: vec![NewTopologyOperationTarget {
-                    role: "primary".into(),
-                    target: NewTopologyOperationTargetRef::Placement(placement.id),
-                    generation_key: placement.resource_version,
-                    configuration_digest: String::new(),
-                }],
-                detail_json: serde_json::json!({"phase":"pending"}).to_string(),
-                progress_total: None,
-            })
-            .await
-            .unwrap();
+        let (db, placement, operation) =
+            scan_fixture("placement-scan", "scan-empty-registry").await;
 
         let controller =
             PlacementScanController::new(Arc::clone(&db), Arc::new(EmptySurfaceProvider));
@@ -523,5 +787,468 @@ mod tests {
         let placement = db.surface_placement(placement.id).await.unwrap().unwrap();
         assert_eq!(placement.state, "ready");
         assert_eq!(placement.completeness, "complete");
+    }
+
+    #[tokio::test]
+    async fn cache_scan_marks_a_missing_catalog_object_degraded() {
+        let (db, placement, operation) = cache_scan_fixture().await;
+        db.create_surface_object(&SetSurfaceObject {
+            surface: SurfaceTarget::BinaryCache(placement.cache_id.unwrap()),
+            object_key: "nar/missing.nar.zst".into(),
+            content_hash: Some("44".repeat(32)),
+            size: Some(1),
+            object_kind: "immutable".into(),
+            mutable_publication_id: None,
+        })
+        .await
+        .unwrap();
+
+        let controller =
+            PlacementScanController::new(Arc::clone(&db), Arc::new(EmptySurfaceProvider));
+        assert_eq!(controller.run_due(1).await.unwrap(), 1);
+
+        let operation = db
+            .topology_operation(&operation.operation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(operation.state, "succeeded", "{:?}", operation.error);
+        let placement = db.surface_placement(placement.id).await.unwrap().unwrap();
+        assert_eq!(placement.state, "degraded");
+        assert_eq!(placement.completeness, "partial");
+    }
+
+    #[tokio::test]
+    async fn superseded_scan_cannot_fail_the_new_claim() {
+        let (db, _placement, operation) = scan_fixture("placement-scan-fence", "scan-fence").await;
+        let first_token = "first-scan-claim";
+        let claimed = db
+            .claim_surface_placement_scan_operation(
+                &operation.operation_id,
+                operation.resource_version,
+                first_token,
+                600,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let failed = db
+            .update_topology_operation(
+                &claimed.operation_id,
+                claimed.resource_version,
+                "failed",
+                0,
+                None,
+                &claimed.detail_json,
+                Some("first claimant failed"),
+                claimed.started_at,
+                Some(clock::now_unix_secs()),
+            )
+            .await
+            .unwrap();
+        let pending = db
+            .mutate_topology_operation(
+                &failed.operation_id,
+                failed.resource_version,
+                "retry",
+                "scan-fence-retry",
+            )
+            .await
+            .unwrap();
+        let replacement = db
+            .claim_surface_placement_scan_operation(
+                &pending.operation_id,
+                pending.resource_version,
+                "replacement-scan-claim",
+                600,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        let controller =
+            PlacementScanController::new(Arc::clone(&db), Arc::new(EmptySurfaceProvider));
+        controller
+            .record_failure(
+                &claimed,
+                first_token,
+                &anyhow::anyhow!("superseded failure"),
+            )
+            .await
+            .unwrap();
+
+        let current = db
+            .topology_operation(&claimed.operation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.state, "running");
+        assert_eq!(current.resource_version, replacement.resource_version);
+        assert!(current.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn heartbeat_keeps_a_long_scan_exclusive_until_its_renewed_deadline() {
+        let (db, _placement, operation) =
+            scan_fixture("placement-scan-heartbeat", "scan-heartbeat").await;
+        let token = "heartbeat-scan-claim";
+        let claimed = db
+            .claim_surface_placement_scan_operation(
+                &operation.operation_id,
+                operation.resource_version,
+                token,
+                600,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let heartbeat_at = clock::now_unix_secs() + 100;
+        db.heartbeat_surface_placement_scan_operation(
+            &claimed.operation_id,
+            claimed.resource_version,
+            token,
+            heartbeat_at,
+            600,
+        )
+        .await
+        .unwrap();
+
+        assert!(db
+            .due_surface_placement_scan_operations(heartbeat_at + 599, 1)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            db.due_surface_placement_scan_operations(heartbeat_at + 600, 1)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(db
+            .heartbeat_surface_placement_scan_operation(
+                &claimed.operation_id,
+                claimed.resource_version,
+                "wrong-scan-claim",
+                heartbeat_at,
+                600,
+            )
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn scan_completion_rejects_a_concurrent_catalog_object() {
+        let (db, placement, operation) =
+            scan_fixture("placement-scan-catalog", "scan-catalog").await;
+        let registry_id = placement.registry_id.unwrap();
+        let first = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry_id),
+                object_key: "objects/first".into(),
+                content_hash: Some("11".repeat(32)),
+                size: Some(1),
+                object_kind: "immutable".into(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        let token = "catalog-scan-claim";
+        let claimed = db
+            .claim_surface_placement_scan_operation(
+                &operation.operation_id,
+                operation.resource_version,
+                token,
+                600,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let scanning = db
+            .begin_surface_placement_scan(
+                placement.id,
+                placement.resource_version,
+                placement.observation_version.unwrap(),
+                &claimed.operation_id,
+                claimed.resource_version,
+                token,
+            )
+            .await
+            .unwrap();
+        db.record_surface_placement_scan_presence(
+            placement.id,
+            placement.resource_version,
+            scanning.observation_version.unwrap(),
+            first.resource_version,
+            &claimed.operation_id,
+            claimed.resource_version,
+            token,
+            &PlacementScanPresence {
+                surface_object_id: first.id,
+                state: "present".into(),
+                observed_hash: first.content_hash,
+                observed_size: first.size,
+                etag: Some("first-version".into()),
+            },
+            clock::now_unix_secs(),
+        )
+        .await
+        .unwrap();
+        let concurrent = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry_id),
+                object_key: "objects/concurrent".into(),
+                content_hash: Some("22".repeat(32)),
+                size: Some(1),
+                object_kind: "immutable".into(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(db
+            .finish_surface_placement_scan(
+                placement.id,
+                placement.resource_version,
+                scanning.observation_version.unwrap(),
+                &claimed.operation_id,
+                claimed.resource_version,
+                token,
+                "ready",
+                "complete",
+            )
+            .await
+            .is_err());
+        let placement = db.surface_placement(placement.id).await.unwrap().unwrap();
+        assert_eq!(placement.state, "syncing");
+        assert_eq!(placement.completeness, "unknown");
+
+        db.record_surface_placement_scan_presence(
+            placement.id,
+            placement.resource_version,
+            scanning.observation_version.unwrap(),
+            concurrent.resource_version,
+            &claimed.operation_id,
+            claimed.resource_version,
+            token,
+            &PlacementScanPresence {
+                surface_object_id: concurrent.id,
+                state: "corrupt".into(),
+                observed_hash: Some("55".repeat(32)),
+                observed_size: concurrent.size,
+                etag: Some("concurrent-version".into()),
+            },
+            clock::now_unix_secs(),
+        )
+        .await
+        .unwrap();
+        assert!(db
+            .finish_surface_placement_scan(
+                placement.id,
+                placement.resource_version,
+                scanning.observation_version.unwrap(),
+                &claimed.operation_id,
+                claimed.resource_version,
+                token,
+                "ready",
+                "complete",
+            )
+            .await
+            .is_err());
+        let placement = db.surface_placement(placement.id).await.unwrap().unwrap();
+        assert_eq!(placement.state, "syncing");
+        db.finish_surface_placement_scan(
+            placement.id,
+            placement.resource_version,
+            scanning.observation_version.unwrap(),
+            &claimed.operation_id,
+            claimed.resource_version,
+            token,
+            "degraded",
+            "partial",
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn scan_presence_rejects_a_superseded_object_revision() {
+        let (db, placement, operation) =
+            scan_fixture("placement-scan-object-fence", "scan-object-fence").await;
+        let object = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(placement.registry_id.unwrap()),
+                object_key: "objects/superseded".into(),
+                content_hash: Some("33".repeat(32)),
+                size: Some(1),
+                object_kind: "immutable".into(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        let token = "object-fence-scan-claim";
+        let claimed = db
+            .claim_surface_placement_scan_operation(
+                &operation.operation_id,
+                operation.resource_version,
+                token,
+                600,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let scanning = db
+            .begin_surface_placement_scan(
+                placement.id,
+                placement.resource_version,
+                placement.observation_version.unwrap(),
+                &claimed.operation_id,
+                claimed.resource_version,
+                token,
+            )
+            .await
+            .unwrap();
+        assert!(db
+            .tombstone_surface_object(object.id, object.resource_version, clock::now_unix_secs())
+            .await
+            .unwrap());
+
+        assert!(db
+            .record_surface_placement_scan_presence(
+                placement.id,
+                placement.resource_version,
+                scanning.observation_version.unwrap(),
+                object.resource_version,
+                &claimed.operation_id,
+                claimed.resource_version,
+                token,
+                &PlacementScanPresence {
+                    surface_object_id: object.id,
+                    state: "present".into(),
+                    observed_hash: object.content_hash,
+                    observed_size: object.size,
+                    etag: Some("superseded-version".into()),
+                },
+                clock::now_unix_secs(),
+            )
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn scan_reuses_matching_strong_provider_evidence_without_streaming() {
+        let (db, placement, operation) = scan_fixture("placement-scan-reuse", "scan-reuse").await;
+        let registry_id = placement.registry_id.unwrap();
+        let digest = hex::encode(Sha256::digest(b"payload"));
+        let object = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry_id),
+                object_key: "objects/aa/bb".into(),
+                content_hash: Some(digest.clone()),
+                size: Some(7),
+                object_kind: "immutable".into(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        let seed_token = "seed-scan-claim";
+        let claimed = db
+            .claim_surface_placement_scan_operation(
+                &operation.operation_id,
+                operation.resource_version,
+                seed_token,
+                600,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let scanning = db
+            .begin_surface_placement_scan(
+                placement.id,
+                placement.resource_version,
+                placement.observation_version.unwrap(),
+                &claimed.operation_id,
+                claimed.resource_version,
+                seed_token,
+            )
+            .await
+            .unwrap();
+        db.record_surface_placement_scan_presence(
+            placement.id,
+            placement.resource_version,
+            scanning.observation_version.unwrap(),
+            object.resource_version,
+            &claimed.operation_id,
+            claimed.resource_version,
+            seed_token,
+            &PlacementScanPresence {
+                surface_object_id: object.id,
+                state: "present".into(),
+                observed_hash: Some(digest),
+                observed_size: Some(7),
+                etag: Some("\"provider-version\"".into()),
+            },
+            clock::now_unix_secs(),
+        )
+        .await
+        .unwrap();
+        db.finish_surface_placement_scan(
+            placement.id,
+            placement.resource_version,
+            scanning.observation_version.unwrap(),
+            &claimed.operation_id,
+            claimed.resource_version,
+            seed_token,
+            "ready",
+            "complete",
+        )
+        .await
+        .unwrap();
+        let failed = db
+            .finish_claimed_surface_placement_scan_operation(
+                &claimed.operation_id,
+                claimed.resource_version,
+                seed_token,
+                "failed",
+                0,
+                None,
+                &claimed.detail_json,
+                Some("seeded prior evidence"),
+                clock::now_unix_secs(),
+            )
+            .await
+            .unwrap();
+        assert!(failed);
+        let failed = db
+            .topology_operation(&claimed.operation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        db.mutate_topology_operation(
+            &failed.operation_id,
+            failed.resource_version,
+            "retry",
+            "scan-reuse-retry",
+        )
+        .await
+        .unwrap();
+
+        let body_reads = Arc::new(AtomicUsize::new(0));
+        let controller = PlacementScanController::new(
+            Arc::clone(&db),
+            Arc::new(ListedSurfaceProvider {
+                body_reads: Arc::clone(&body_reads),
+            }),
+        );
+        assert_eq!(controller.run_due(1).await.unwrap(), 1);
+        assert_eq!(body_reads.load(Ordering::SeqCst), 0);
+
+        let operation = db
+            .topology_operation(&operation.operation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(operation.state, "succeeded", "{:?}", operation.error);
+        assert!(operation.detail_json.contains("\"strongVersionObjects\":1"));
     }
 }

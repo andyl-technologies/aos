@@ -20,6 +20,8 @@
 //! ([`BackendBounds`]): `Send + Sync` natively, unbounded on the single-threaded
 //! wasm32 Worker (whose R2 futures are `?Send`).
 
+use std::collections::BTreeMap;
+
 use anyhow::{bail, Context as _, Result};
 use futures_util::TryStreamExt as _;
 use sha2::{Digest as _, Sha256};
@@ -70,8 +72,22 @@ pub const WORKER_MAX_SURFACE_LIST_CURSOR_BYTES: usize = 1024;
 pub struct SurfaceListPage {
     /// Strictly increasing surface-relative object keys.
     pub paths: Vec<String>,
+    /// Provider-observed metadata keyed by a listed path.
+    ///
+    /// Backends may omit this map. Entries are reusable only when their strong
+    /// version identifiers match earlier byte-verified placement evidence.
+    pub evidence: BTreeMap<String, SurfaceListedEvidence>,
     /// Opaque continuation cursor, or `None` when enumeration is complete.
     pub next_cursor: Option<String>,
+}
+
+/// Provider metadata returned atomically with one listing entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceListedEvidence {
+    /// Length of the listed representation in bytes.
+    pub size: i64,
+    /// Provider-issued strong entity tag for the listed representation.
+    pub strong_etag: String,
 }
 
 impl SurfaceListPage {
@@ -89,6 +105,13 @@ impl SurfaceListPage {
         };
         if requested_limit == 0 || self.paths.len() > requested_limit {
             bail!("surface listing returned more keys than requested");
+        }
+        if self.evidence.iter().any(|(path, evidence)| {
+            self.paths.binary_search(path).is_err()
+                || evidence.size < 0
+                || crate::surface_write::strong_if_match_etag(&evidence.strong_etag).is_err()
+        }) {
+            bail!("surface listing returned invalid provider evidence");
         }
         if self
             .next_cursor
@@ -561,20 +584,33 @@ mod tests {
     fn listing_page_rejects_oversized_repeated_and_unordered_state() {
         let valid = SurfaceListPage {
             paths: vec!["a".into(), "b".into()],
+            evidence: Default::default(),
             next_cursor: Some("cursor-2".into()),
         };
         assert!(valid.validate(2, Some("cursor-1")).is_ok());
         assert!(valid.validate(1, Some("cursor-1")).is_err());
         assert!(valid.validate(2, Some("cursor-2")).is_err());
 
+        let mut invalid_evidence = valid.clone();
+        invalid_evidence.evidence.insert(
+            "outside-page".into(),
+            SurfaceListedEvidence {
+                size: 1,
+                strong_etag: "version-1".into(),
+            },
+        );
+        assert!(invalid_evidence.validate(2, Some("cursor-1")).is_err());
+
         let unordered = SurfaceListPage {
             paths: vec!["b".into(), "a".into()],
+            evidence: Default::default(),
             next_cursor: None,
         };
         assert!(unordered.validate(2, None).is_err());
 
         let empty_non_terminal = SurfaceListPage {
             paths: Vec::new(),
+            evidence: Default::default(),
             next_cursor: Some("cursor".into()),
         };
         assert!(empty_non_terminal.validate(2, None).is_err());

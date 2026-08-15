@@ -967,6 +967,7 @@ mod tests {
         ) -> Result<crate::fetch::SurfaceListPage> {
             Ok(crate::fetch::SurfaceListPage {
                 paths: Vec::new(),
+                evidence: Default::default(),
                 next_cursor: None,
             })
         }

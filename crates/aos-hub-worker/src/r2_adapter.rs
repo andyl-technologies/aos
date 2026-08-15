@@ -16,10 +16,21 @@ pub const MAX_R2_MULTIPART_PARTS: usize = 10_000;
 /// One raw R2 listing response.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct R2ListPage {
-    /// Full bucket keys.
-    pub keys: Vec<String>,
+    /// Objects observed by the listing request.
+    pub objects: Vec<R2ListObject>,
     /// Opaque next cursor.
     pub cursor: Option<String>,
+}
+
+/// One object and its provider identity from an R2 listing response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct R2ListObject {
+    /// Full bucket key.
+    pub key: String,
+    /// Provider-observed object size.
+    pub size: u64,
+    /// Provider-issued strong entity tag.
+    pub etag: String,
 }
 
 /// Narrow raw operations implemented by the real `worker::Bucket` adapter.
@@ -98,7 +109,11 @@ where
             bail!("invalid R2 listing request");
         }
         let page = self.adapter.list(prefix, cursor, limit).await?;
-        if page.keys.len() > limit
+        if page.objects.len() > limit
+            || page.objects.iter().any(|object| {
+                object.key.is_empty()
+                    || aos_hub_core::surface_write::strong_if_match_etag(&object.etag).is_err()
+            })
             || page.cursor.as_ref().is_some_and(|value| {
                 value.is_empty() || value.len() > WORKER_MAX_SURFACE_LIST_CURSOR_BYTES
             })
@@ -230,7 +245,11 @@ mod tests {
                 .borrow_mut()
                 .push(format!("list:{prefix}:{cursor:?}"));
             Ok(R2ListPage {
-                keys: vec![format!("{prefix}a")],
+                objects: vec![R2ListObject {
+                    key: format!("{prefix}a"),
+                    size: self.size.unwrap_or(0),
+                    etag: "fixture-etag".into(),
+                }],
                 cursor: Some("next".into()),
             })
         }

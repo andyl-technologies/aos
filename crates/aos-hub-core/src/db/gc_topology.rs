@@ -5683,12 +5683,13 @@ impl Database {
                 "INSERT INTO object_placements
                  (surface_object_id, cache_id, registry_id, placement_id,
                   state, observed_hash, observed_size, etag,
-                  observed_inventory_generation, observed_at)
+                  observed_inventory_generation, observed_at,
+                  catalog_object_resource_version)
                  SELECT object.id, observation.cache_id,
                         NULL, observation.placement_id, observation.state,
                         observation.observed_hash, observation.observed_size,
                         observation.etag, observation.generation,
-                        observation.observed_at
+                        observation.observed_at, object.resource_version
                  FROM cache_inventory_object_observations observation
                  JOIN surface_objects object
                    ON object.cache_id = observation.cache_id
