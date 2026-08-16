@@ -137,7 +137,7 @@ impl BindingSearchPolicy {
                             .contains(&candidate.trace_node)
                             .then(|| {
                                 program.nodes().iter().find_map(|node| {
-                                    (&node.id == &candidate.trace_node
+                                    (node.id == candidate.trace_node
                                         && matches!(
                                             node.kind,
                                             SignalNodeKind::Source(

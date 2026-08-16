@@ -368,8 +368,10 @@ fn candidate_product_respects_the_scenario_search_bound() {
         &program,
     )
     .unwrap_or_else(|error| panic!("invalid mutation binding: {error}"));
-    let mut limits = FaultResourceLimits::default();
-    limits.search_choices_per_state = 1;
+    let limits = FaultResourceLimits {
+        search_choices_per_state: 1,
+        ..FaultResourceLimits::default()
+    };
     let plan = FaultSignalPlan::new(vec![program], vec![binding], limits)
         .unwrap_or_else(|error| panic!("bounded mutation plan should admit: {error}"));
 
