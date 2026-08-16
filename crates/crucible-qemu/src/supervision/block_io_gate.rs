@@ -460,7 +460,11 @@ fn run_one_scenario(
     }
     let mut console = config
         .transport_reset_probe
-        .then(|| UnixStream::connect(run_directory.join(crate::QEMU_CONSOLE_SOCKET_FILE_NAME)))
+        .then(|| {
+            crate::unix_socket_path::connect(
+                &run_directory.join(crate::QEMU_CONSOLE_SOCKET_FILE_NAME),
+            )
+        })
         .transpose()
         .map_err(|source| QemuLiveBlockIoGateError::Console { source })?;
     if let Some(console) = console.as_mut() {

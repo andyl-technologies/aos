@@ -26,6 +26,8 @@
 //! scheduler-facing one-child/three-channel QEMU wrapper; `node_factory` owns
 //! the Linux post-setup node composition boundary; `quantum` owns the
 //! per-quantum shared-memory hot path; `qmp` owns the minimal typed QMP client;
+//! `unix_socket_path` keeps QEMU run-directory socket operations within the
+//! kernel pathname limit;
 //! `realization` owns the start/resume/fork instantiate branch coordinator; and
 //! `exact_snapshot_policy` owns exact paired QEMU `savevm`/`loadvm` restore admission.
 //!
@@ -83,6 +85,7 @@ mod storage_array;
 mod storage_fault_resolver;
 #[cfg(target_os = "linux")]
 mod supervision;
+mod unix_socket_path;
 
 pub use async_driver::{
     QemuAsyncCrashEscalationTarget, QemuAsyncDriverError, QemuAsyncDriverOperation,
