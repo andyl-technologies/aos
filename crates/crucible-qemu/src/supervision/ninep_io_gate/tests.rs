@@ -172,3 +172,15 @@ fn ceiling_closure_accepts_only_drained_idle_wakes_beyond_the_boundary() {
         None
     );
 }
+
+#[test]
+fn tcg_control_requires_an_exact_guest_mount_success_record() {
+    let directory = tempfile::tempdir().expect("create console fixture directory");
+    let console = directory.path().join("guest-console.log");
+
+    fs::write(&console, "booting\r\nCRUCIBLE_9P_MOUNT_OK\r\n").expect("write success fixture");
+    assert!(control_console_shows_mount_success(&console));
+
+    fs::write(&console, "CRUCIBLE_9P_MOUNT_OKAY\n").expect("write near-match fixture");
+    assert!(!control_console_shows_mount_success(&console));
+}
