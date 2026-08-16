@@ -463,6 +463,61 @@ pub fn r2_create_args(bucket: &str) -> Vec<String> {
     vec!["r2".into(), "bucket".into(), "create".into(), bucket.into()]
 }
 
+/// `wrangler r2 bucket lifecycle list <bucket>`.
+#[must_use]
+pub fn r2_multipart_lifecycle_list_args(bucket: &str) -> Vec<String> {
+    vec![
+        "r2".into(),
+        "bucket".into(),
+        "lifecycle".into(),
+        "list".into(),
+        bucket.into(),
+    ]
+}
+
+/// `wrangler r2 bucket lifecycle add` for bounded abandoned multipart cleanup.
+#[must_use]
+pub fn r2_multipart_lifecycle_add_args(bucket: &str, rule: &str) -> Vec<String> {
+    vec![
+        "r2".into(),
+        "bucket".into(),
+        "lifecycle".into(),
+        "add".into(),
+        bucket.into(),
+        rule.into(),
+        String::new(),
+        "--abort-multipart-days".into(),
+        "7".into(),
+        "--force".into(),
+    ]
+}
+
+/// Reports whether Wrangler listed an enabled all-prefix multipart abort bound.
+#[must_use]
+pub fn r2_lifecycle_has_bounded_multipart_abort(output: &str, maximum_days: u64) -> bool {
+    output.split("\n\n").any(|rule| {
+        let field = |name: &str| {
+            rule.lines().find_map(|line| {
+                let (key, value) = line.split_once(':')?;
+                (key.trim() == name).then(|| value.trim())
+            })
+        };
+        let Some(action) = field("action") else {
+            return false;
+        };
+        let Some(age) = action.strip_prefix("Abort incomplete multipart uploads after ") else {
+            return false;
+        };
+        let days = age
+            .strip_suffix(" days")
+            .or_else(|| age.strip_suffix(" day"))
+            .and_then(|days| days.parse::<u64>().ok());
+        field("enabled") == Some("Yes")
+            && field("prefix") == Some("(all prefixes)")
+            && days.is_some_and(|days| days <= maximum_days)
+    })
+}
+
 /// `wrangler kv namespace create <title>` — provision a KV namespace.
 #[must_use]
 pub fn kv_create_args(title: &str) -> Vec<String> {
@@ -953,6 +1008,35 @@ pub async fn provision(
     // (declared by the `wrangler.toml`
     // `new_sqlite_classes` migration, created on first deploy).
     run_wrangler_tolerant(assets, &r2_create_args(bucket), "r2 bucket create").await;
+    // Provider upload ids are opaque. Verify a bucket-level cleanup bound
+    // before deploying code that can create multipart uploads. An adequate
+    // existing rule is preserved; otherwise a new AOS-owned rule is installed
+    // without first removing any protection.
+    let lifecycle = run_wrangler(
+        assets,
+        &r2_multipart_lifecycle_list_args(bucket),
+        None,
+        None,
+    )
+    .await
+    .context("listing R2 multipart lifecycle rules")?;
+    if !r2_lifecycle_has_bounded_multipart_abort(&lifecycle, 7) {
+        // A prior AOS rule may itself be the drifted entry. A fresh identity
+        // repairs that state without colliding with or first removing any
+        // existing rule, preserving cleanup protection at every crash point.
+        let lifecycle_rule = format!(
+            "aos-abandoned-multipart-{}",
+            uuid::Uuid::new_v4().simple()
+        );
+        run_wrangler(
+            assets,
+            &r2_multipart_lifecycle_add_args(bucket, &lifecycle_rule),
+            None,
+            None,
+        )
+        .await
+        .context("enforcing R2 abandoned multipart lifecycle")?;
+    }
     run_wrangler_tolerant(assets, &kv_create_args(kv_title), "kv namespace create").await;
     run_wrangler_tolerant(assets, &queue_create_args(queue), "queue create").await;
 
@@ -1444,6 +1528,25 @@ mod tests {
     fn argv_builders_match_wrangler_grammar() {
         assert_eq!(r2_create_args("bkt"), ["r2", "bucket", "create", "bkt"]);
         assert_eq!(
+            r2_multipart_lifecycle_list_args("bkt"),
+            ["r2", "bucket", "lifecycle", "list", "bkt"]
+        );
+        assert_eq!(
+            r2_multipart_lifecycle_add_args("bkt", "aos-rule"),
+            [
+                "r2",
+                "bucket",
+                "lifecycle",
+                "add",
+                "bkt",
+                "aos-rule",
+                "",
+                "--abort-multipart-days",
+                "7",
+                "--force",
+            ]
+        );
+        assert_eq!(
             kv_create_args("SESSIONS"),
             ["kv", "namespace", "create", "SESSIONS"]
         );
@@ -1465,6 +1568,24 @@ mod tests {
             deploy_args(Path::new("/tmp/w.toml")),
             ["deploy", "--config", "/tmp/w.toml"]
         );
+    }
+
+    #[test]
+    fn lifecycle_listing_requires_enabled_all_prefix_abort_bound() {
+        let default = "name: Default Multipart Abort Rule\n\
+                       enabled: Yes\n\
+                       prefix: (all prefixes)\n\
+                       action: Abort incomplete multipart uploads after 7 days";
+        assert!(r2_lifecycle_has_bounded_multipart_abort(default, 7));
+        assert!(!r2_lifecycle_has_bounded_multipart_abort(default, 6));
+        assert!(!r2_lifecycle_has_bounded_multipart_abort(
+            &default.replace("enabled: Yes", "enabled: No"),
+            7,
+        ));
+        assert!(!r2_lifecycle_has_bounded_multipart_abort(
+            &default.replace("(all prefixes)", "objects/"),
+            7,
+        ));
     }
 
     #[test]

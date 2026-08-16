@@ -61,6 +61,9 @@ const MAX_PAGE_SIZE: u32 = 1000;
 
 /// Default lifetime of an internal cache-upload authorization (1 hour).
 pub const INTERNAL_UPLOAD_AUTH_TTL_SECS: i64 = 3600;
+/// Exclusive provider-creation lease for one cache multipart upload.
+const CACHE_MULTIPART_CREATE_LEASE_SECS: i64 = 60;
+const CACHE_MULTIPART_CREATE_TIMEOUT_SECS: u64 = 45;
 
 /// Lifetime of an immutable topology impact plan (15 minutes).
 const TOPOLOGY_PLAN_TTL_SECS: i64 = 15 * 60;
@@ -22510,8 +22513,52 @@ impl RpcService {
             self.placement_write_snapshot(&placement).await?;
         let declared_size = i64::try_from(size)
             .map_err(|_| RpcError::invalid("declared upload size is too large"))?;
+        if let Some(ticket) = self
+            .db
+            .reusable_cache_write_ticket(
+                cache.id,
+                path,
+                declared_size,
+                "single",
+                "observing",
+                None,
+                placement.id,
+                placement.resource_version,
+                binding_revision,
+                credential_generation,
+                now,
+            )
+            .await
+            .map_err(RpcError::internal)?
+        {
+            return Ok(ticket.ticket_id);
+        }
+        if let Some(ticket) = self
+            .db
+            .reusable_cache_write_ticket(
+                cache.id,
+                path,
+                declared_size,
+                "single",
+                "active",
+                None,
+                placement.id,
+                placement.resource_version,
+                binding_revision,
+                credential_generation,
+                now,
+            )
+            .await
+            .map_err(RpcError::internal)?
+        {
+            // Admission does not know the body digest. The upload endpoint
+            // compares the retried bytes with the digest pinned when this
+            // ticket became active before allowing another provider write.
+            return Ok(ticket.ticket_id);
+        }
         let ticket_id = uuid::Uuid::new_v4().simple().to_string();
-        self.db
+        let created = self
+            .db
             .begin_cache_write_ticket(
                 &ticket_id,
                 cache.id,
@@ -22530,9 +22577,42 @@ impl RpcService {
                 None,
                 None,
             )
-            .await
-            .map_err(RpcError::internal)?;
-        Ok(ticket_id)
+            .await;
+        match created {
+            Ok(ticket) => Ok(ticket.ticket_id),
+            Err(error) => {
+                // A concurrent identical admission may win the exclusive
+                // object slot between the read and insert. Return only an
+                // exact observing or active winner under the same topology.
+                // An active ticket remains body-bound at the upload endpoint.
+                let mut winner = None;
+                for state in ["observing", "active"] {
+                    winner = self
+                        .db
+                        .reusable_cache_write_ticket(
+                            cache.id,
+                            path,
+                            declared_size,
+                            "single",
+                            state,
+                            None,
+                            placement.id,
+                            placement.resource_version,
+                            binding_revision,
+                            credential_generation,
+                            now,
+                        )
+                        .await
+                        .map_err(RpcError::internal)?;
+                    if winner.is_some() {
+                        break;
+                    }
+                }
+                winner
+                    .map(|ticket| ticket.ticket_id)
+                    .ok_or_else(|| RpcError::internal(error))
+            }
+        }
     }
 
     fn cache_proxy_upload_url(
@@ -22779,7 +22859,7 @@ impl RpcService {
         let now = clock::now_unix_secs();
         let ticket = self
             .db
-            .validate_cache_write_ticket(&req.upload_ticket_id, cache.id, &req.path, now)
+            .validate_cache_write_ticket(&req.upload_ticket_id, cache.id, &req.path, now, false)
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         if ticket.upload_kind != "presigned" {
@@ -26507,6 +26587,28 @@ impl RpcService {
         if body.len() > self.effective_max_upload_bytes().await {
             return SurfaceWriteOutcome::TooLarge;
         }
+        let intended_object_hash = hex::encode(Sha256::digest(body));
+        if let Some(ticket) = admission
+            .as_ref()
+            .filter(|ticket| ticket.state == "completed")
+        {
+            if ticket.cache_id != cache.id
+                || ticket.object_key != path
+                || ticket.upload_kind != "single"
+                || ticket.declared_size != i64::try_from(body.len()).unwrap_or(i64::MAX)
+                || ticket.observed_final_size != Some(ticket.declared_size)
+                || ticket.intended_object_hash.as_deref() != Some(intended_object_hash.as_str())
+            {
+                return SurfaceWriteOutcome::BadPath(
+                    "completed cache upload retry does not match its durable request",
+                );
+            }
+            return if ticket.prior_object.is_some() {
+                SurfaceWriteOutcome::Overwritten
+            } else {
+                SurfaceWriteOutcome::Created
+            };
+        }
         // Private key material is never held by the Hub. Narinfo signatures
         // arrive with the immutable upload and are verified through the exact
         // signing-key generation pinned by the cache's `narinfo` usage.
@@ -26538,26 +26640,53 @@ impl RpcService {
             }
         }
         let now = clock::now_unix_secs();
-        let (placement, observing) = if let Some(ticket) = admission {
+        let (placement, admitted) = if let Some(ticket) = admission {
             if ticket.cache_id != cache.id
                 || ticket.object_key != path
                 || ticket.upload_kind != "single"
-                || ticket.state != "observing"
                 || ticket.expires_at <= now
                 || ticket.declared_size != i64::try_from(body.len()).unwrap_or(i64::MAX)
             {
-                settle_cache_write_failure(
-                    &self.db,
-                    &ticket.ticket_id,
-                    ticket.resource_version,
-                    false,
-                    now,
-                )
-                .await;
+                if ticket.state == "observing" {
+                    settle_cache_write_failure(
+                        &self.db,
+                        &ticket.ticket_id,
+                        ticket.resource_version,
+                        false,
+                        now,
+                    )
+                    .await;
+                }
                 return SurfaceWriteOutcome::BadPath(
                     "cache upload does not match its admitted path and size",
                 );
             }
+            let ticket = match ticket.state.as_str() {
+                "observing" => ticket,
+                "active"
+                    if ticket.intended_object_hash.as_deref()
+                        == Some(intended_object_hash.as_str()) =>
+                {
+                    match self
+                        .db
+                        .validate_cache_write_ticket(&ticket.ticket_id, cache.id, path, now, false)
+                        .await
+                    {
+                        Ok(ticket) => ticket,
+                        Err(error) => return internal_write(error),
+                    }
+                }
+                "active" => {
+                    return SurfaceWriteOutcome::BadPath(
+                        "cache upload retry does not match the admitted body",
+                    );
+                }
+                _ => {
+                    return SurfaceWriteOutcome::NotWritable(
+                        "cache upload admission is not writable",
+                    );
+                }
+            };
             let placement = match self.db.surface_placement(ticket.placement_id).await {
                 Ok(Some(placement)) if placement.cache_id == Some(cache.id) => placement,
                 Ok(_) => {
@@ -26587,7 +26716,7 @@ impl RpcService {
                 Err(error) => return internal_write(anyhow::anyhow!(error.message().to_string())),
             };
             let ticket_id = uuid::Uuid::new_v4().simple().to_string();
-            let observing = match self
+            let admitted = match self
                 .db
                 .begin_cache_write_ticket(
                     &ticket_id,
@@ -26614,7 +26743,7 @@ impl RpcService {
                     return internal_write(err.context("creating cache write observation fence"));
                 }
             };
-            (placement, observing)
+            (placement, admitted)
         };
         let writer = match self.surface_write.placement_writer(&placement).await {
             Ok(writer) => writer,
@@ -26627,52 +26756,59 @@ impl RpcService {
             Ok(fetch) => fetch,
             Err(error) => return internal_write(error),
         };
-        // Overwrite delta for the org quota: read the old size cheaply first.
-        let prior_object = match inventory.inventory_evidence(path).await {
-            Ok(evidence) => evidence.map(write_object_identity),
-            Err(err) => {
-                settle_cache_write_failure(
-                    &self.db,
-                    &observing.ticket_id,
-                    observing.resource_version,
-                    false,
+        let (ticket, existed) = if admitted.state == "active" {
+            let existed = admitted.prior_object.is_some();
+            (admitted, existed)
+        } else {
+            // Overwrite delta for the org quota: read the old size before the
+            // ticket becomes active. An exact-body retry reuses the persisted
+            // baseline and reservation instead of observing mutable state again.
+            let prior_object = match inventory.inventory_evidence(path).await {
+                Ok(evidence) => evidence.map(write_object_identity),
+                Err(err) => {
+                    settle_cache_write_failure(
+                        &self.db,
+                        &admitted.ticket_id,
+                        admitted.resource_version,
+                        false,
+                        now,
+                    )
+                    .await;
+                    return internal_write(err);
+                }
+            };
+            let old_len = prior_object.as_ref().map(|identity| identity.size);
+            let existed = prior_object.is_some();
+            let delta_bytes = body.len() as i64 - old_len.unwrap_or(0);
+            let delta_objects = i64::from(!existed);
+            let ticket = match self
+                .db
+                .activate_cache_write_ticket(
+                    &admitted.ticket_id,
+                    admitted.resource_version,
+                    cache.org_id,
+                    delta_bytes,
+                    delta_objects,
+                    prior_object.as_ref(),
+                    Some(&intended_object_hash),
                     now,
                 )
-                .await;
-                return internal_write(err);
-            }
-        };
-        let old_len = prior_object.as_ref().map(|identity| identity.size);
-        let existed = prior_object.is_some();
-        let delta_bytes = body.len() as i64 - old_len.unwrap_or(0);
-        let delta_objects = i64::from(!existed);
-        let intended_object_hash = hex::encode(Sha256::digest(body));
-        let ticket = match self
-            .db
-            .activate_cache_write_ticket(
-                &observing.ticket_id,
-                observing.resource_version,
-                cache.org_id,
-                delta_bytes,
-                delta_objects,
-                prior_object.as_ref(),
-                Some(&intended_object_hash),
-                now,
-            )
-            .await
-        {
-            Ok(ticket) => ticket,
-            Err(err) => {
-                settle_cache_write_failure(
-                    &self.db,
-                    &observing.ticket_id,
-                    observing.resource_version,
-                    false,
-                    now,
-                )
-                .await;
-                return internal_write(err.context("activating cache write ticket"));
-            }
+                .await
+            {
+                Ok(ticket) => ticket,
+                Err(err) => {
+                    settle_cache_write_failure(
+                        &self.db,
+                        &admitted.ticket_id,
+                        admitted.resource_version,
+                        false,
+                        now,
+                    )
+                    .await;
+                    return internal_write(err.context("activating cache write ticket"));
+                }
+            };
+            (ticket, existed)
         };
         if let Err(err) = writer.write(path, body).await {
             settle_cache_write_failure(
@@ -26753,6 +26889,16 @@ impl RpcService {
             )
             .await
         {
+            if matches!(
+                self.db.cache_write_ticket(&ticket.ticket_id).await,
+                Ok(Some(current)) if current.state == "completed"
+            ) {
+                return if existed {
+                    SurfaceWriteOutcome::Overwritten
+                } else {
+                    SurfaceWriteOutcome::Created
+                };
+            }
             settle_cache_write_failure(
                 &self.db,
                 &ticket.ticket_id,
@@ -26776,6 +26922,7 @@ impl RpcService {
         slug: &str,
         path: &str,
         ticket_id: &str,
+        allow_completing: bool,
     ) -> Result<
         Option<(
             crate::db::BinaryCache,
@@ -26826,7 +26973,7 @@ impl RpcService {
         let now = clock::now_unix_secs();
         let ticket = self
             .db
-            .validate_cache_write_ticket(ticket_id, cache.id, path, now)
+            .validate_cache_write_ticket(ticket_id, cache.id, path, now, allow_completing)
             .await
             .map_err(internal_write)?;
         let placement = self
@@ -26844,6 +26991,131 @@ impl RpcService {
             .await
             .map_err(|_| SurfaceWriteOutcome::NotWritable("cache surface is not writable"))?;
         Ok(Some((cache, ticket, writer)))
+    }
+
+    /// Creates and durably attaches one provider multipart identity.
+    ///
+    /// A competing retry may attach its provider upload first. In that case
+    /// this request aborts only the provider identity it created and returns
+    /// the durable winner without disturbing the shared cache-write fence.
+    async fn create_and_attach_cache_multipart(
+        &self,
+        writer: &dyn crate::surface_write::SurfaceWrite,
+        path: &str,
+        ticket: &crate::db::CacheWriteTicketRecord,
+    ) -> Result<String, SurfaceWriteOutcome> {
+        if writer.abandoned_multipart_lifetime_secs().is_none() {
+            return Err(SurfaceWriteOutcome::NotWritable(
+                "cache multipart backend has no bounded abandoned-upload lifecycle",
+            ));
+        }
+        let create_token = uuid::Uuid::new_v4().simple().to_string();
+        let claim_now = clock::now_unix_secs();
+        let claimed = self
+            .db
+            .claim_cache_write_backend_creation(
+                &ticket.ticket_id,
+                ticket.resource_version,
+                &create_token,
+                claim_now.saturating_add(CACHE_MULTIPART_CREATE_LEASE_SECS),
+                claim_now,
+            )
+            .await
+            .map_err(internal_write)?;
+        let create = writer.create_multipart(path);
+        let timeout = clock::sleep(std::time::Duration::from_secs(
+            CACHE_MULTIPART_CREATE_TIMEOUT_SECS,
+        ));
+        futures_util::pin_mut!(create, timeout);
+        let backend_upload_id = match futures_util::future::select(create, timeout).await {
+            futures_util::future::Either::Left((Ok(upload_id), _)) => upload_id,
+            futures_util::future::Either::Left((Err(error), _)) => {
+                let failure_now = clock::now_unix_secs();
+                settle_cache_write_failure(
+                    &self.db,
+                    &ticket.ticket_id,
+                    claimed.resource_version,
+                    true,
+                    failure_now,
+                )
+                .await;
+                return Err(internal_write(error));
+            }
+            futures_util::future::Either::Right(((), _)) => {
+                // Cancellation cannot prove whether the provider accepted the
+                // request. Keep the claim until its lease expires so retries
+                // cannot create unbounded overlapping provider uploads.
+                return Err(SurfaceWriteOutcome::NotWritable(
+                    "cache multipart provider creation timed out; retry after the claim lease",
+                ));
+            }
+        };
+        let attach_now = clock::now_unix_secs();
+        match self
+            .db
+            .attach_cache_write_backend_upload(
+                &ticket.ticket_id,
+                claimed.resource_version,
+                &create_token,
+                &backend_upload_id,
+                attach_now,
+            )
+            .await
+        {
+            Ok(attached) => return Ok(attached.ticket_id),
+            Err(attach_error) => {
+                let current = self
+                    .db
+                    .cache_write_ticket(&ticket.ticket_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| ticket.clone());
+                let abort = writer.abort_multipart(path, &backend_upload_id).await;
+                if current.state == "active"
+                    && current.expires_at > attach_now
+                    && current.backend_upload_id.is_some()
+                {
+                    if matches!(
+                        abort,
+                        Ok(crate::surface_write::MultipartAbortOutcome::Aborted)
+                            | Ok(crate::surface_write::MultipartAbortOutcome::Absent)
+                    ) {
+                        return Ok(current.ticket_id);
+                    }
+                    return Err(SurfaceWriteOutcome::NotWritable(
+                        "competing multipart creation could not be cleaned up",
+                    ));
+                }
+                match abort {
+                    Ok(
+                        crate::surface_write::MultipartAbortOutcome::Aborted
+                        | crate::surface_write::MultipartAbortOutcome::Absent,
+                    ) => {
+                        let _ = self
+                            .db
+                            .abort_cache_write_ticket(
+                                &current.ticket_id,
+                                current.resource_version,
+                                "failed",
+                                attach_now,
+                            )
+                            .await;
+                    }
+                    Ok(crate::surface_write::MultipartAbortOutcome::PossiblyCompleted) | Err(_) => {
+                        let _ = self
+                            .db
+                            .mark_cache_write_ticket_uncertain(
+                                &current.ticket_id,
+                                current.resource_version,
+                                attach_now,
+                            )
+                            .await;
+                    }
+                }
+                Err(internal_write(attach_error))
+            }
+        }
     }
 
     /// Begin a multipart upload of `path` under `slug`, returning the backend's
@@ -26931,29 +27203,107 @@ impl RpcService {
             let declared_size =
                 i64::try_from(declared_size).map_err(|_| SurfaceWriteOutcome::TooLarge)?;
             let now = clock::now_unix_secs();
-            let ticket_id = uuid::Uuid::new_v4().simple().to_string();
-            let observing = self
+            for state in ["completing", "active"] {
+                if let Some(ticket) = self
+                    .db
+                    .reusable_cache_write_ticket(
+                        cache.id,
+                        path,
+                        declared_size,
+                        "multipart",
+                        state,
+                        expected_sha256,
+                        placement.id,
+                        placement.resource_version,
+                        binding_revision,
+                        credential_generation,
+                        now,
+                    )
+                    .await
+                    .map_err(internal_write)?
+                {
+                    if state == "completing" || ticket.backend_upload_id.is_some() {
+                        return Ok(ticket.ticket_id);
+                    }
+                    // An active ticket without a provider id was interrupted
+                    // around provider creation. Continue below and attach a
+                    // fresh resumable upload; an untracked provider attempt is
+                    // never allowed to block this object's durable slot.
+                    return self
+                        .create_and_attach_cache_multipart(writer.as_ref(), path, &ticket)
+                        .await;
+                }
+            }
+
+            let observing = if let Some(ticket) = self
                 .db
-                .begin_cache_write_ticket(
-                    &ticket_id,
+                .reusable_cache_write_ticket(
                     cache.id,
+                    path,
+                    declared_size,
+                    "multipart",
+                    "observing",
+                    None,
                     placement.id,
                     placement.resource_version,
                     binding_revision,
                     credential_generation,
-                    path,
-                    declared_size,
-                    "multipart",
-                    cache.org_id,
-                    0,
-                    0,
-                    now.saturating_add(86_400),
                     now,
-                    None,
-                    None,
                 )
                 .await
-                .map_err(internal_write)?;
+                .map_err(internal_write)?
+            {
+                ticket
+            } else {
+                let ticket_id = uuid::Uuid::new_v4().simple().to_string();
+                match self
+                    .db
+                    .begin_cache_write_ticket(
+                        &ticket_id,
+                        cache.id,
+                        placement.id,
+                        placement.resource_version,
+                        binding_revision,
+                        credential_generation,
+                        path,
+                        declared_size,
+                        "multipart",
+                        cache.org_id,
+                        0,
+                        0,
+                        now.saturating_add(86_400),
+                        now,
+                        None,
+                        None,
+                    )
+                    .await
+                {
+                    Ok(ticket) => ticket,
+                    Err(error) => {
+                        let winner = self
+                            .db
+                            .reusable_cache_write_ticket(
+                                cache.id,
+                                path,
+                                declared_size,
+                                "multipart",
+                                "observing",
+                                None,
+                                placement.id,
+                                placement.resource_version,
+                                binding_revision,
+                                credential_generation,
+                                now,
+                            )
+                            .await
+                            .map_err(internal_write)?;
+                        match winner {
+                            Some(ticket) => ticket,
+                            None => return Err(internal_write(error)),
+                        }
+                    }
+                }
+            };
             let prior_object = match inventory.inventory_evidence(path).await {
                 Ok(evidence) => evidence.map(write_object_identity),
                 Err(error) => {
@@ -26998,66 +27348,9 @@ impl RpcService {
                     return Err(internal_write(error));
                 }
             };
-            let backend_upload_id = match writer.create_multipart(path).await {
-                Ok(upload_id) => upload_id,
-                Err(error) => {
-                    settle_cache_write_failure(
-                        &self.db,
-                        &ticket.ticket_id,
-                        ticket.resource_version,
-                        true,
-                        now,
-                    )
-                    .await;
-                    return Err(internal_write(error));
-                }
-            };
-            if let Err(error) = self
-                .db
-                .attach_cache_write_backend_upload(
-                    &ticket.ticket_id,
-                    ticket.resource_version,
-                    &backend_upload_id,
-                    now,
-                )
-                .await
-            {
-                let current = self
-                    .db
-                    .cache_write_ticket(&ticket.ticket_id)
-                    .await
-                    .ok()
-                    .flatten()
-                    .unwrap_or_else(|| ticket.clone());
-                match writer.abort_multipart(path, &backend_upload_id).await {
-                    Ok(
-                        crate::surface_write::MultipartAbortOutcome::Aborted
-                        | crate::surface_write::MultipartAbortOutcome::Absent,
-                    ) => {
-                        let _ = self
-                            .db
-                            .abort_cache_write_ticket(
-                                &current.ticket_id,
-                                current.resource_version,
-                                "failed",
-                                now,
-                            )
-                            .await;
-                    }
-                    Ok(crate::surface_write::MultipartAbortOutcome::PossiblyCompleted) | Err(_) => {
-                        let _ = self
-                            .db
-                            .mark_cache_write_ticket_uncertain(
-                                &current.ticket_id,
-                                current.resource_version,
-                                now,
-                            )
-                            .await;
-                    }
-                }
-                return Err(internal_write(error));
-            }
-            return Ok(ticket.ticket_id);
+            return self
+                .create_and_attach_cache_multipart(writer.as_ref(), path, &ticket)
+                .await;
         }
         Err(SurfaceWriteOutcome::NotFound)
     }
@@ -27086,7 +27379,7 @@ impl RpcService {
             return Err(SurfaceWriteOutcome::TooLarge);
         }
         if let Some((_cache, ticket, writer)) = self
-            .resolve_cache_upload_ticket(auth, slug, path, upload_id)
+            .resolve_cache_upload_ticket(auth, slug, path, upload_id, true)
             .await?
         {
             let backend_upload_id =
@@ -27098,6 +27391,30 @@ impl RpcService {
                     ))?;
             let part_size = i64::try_from(body.len()).map_err(|_| SurfaceWriteOutcome::TooLarge)?;
             let body_digest = hex::encode(Sha256::digest(body));
+            if ticket.state == "completing" {
+                let durable = self
+                    .db
+                    .cache_write_ticket_part(&ticket.ticket_id, part_number)
+                    .await
+                    .map_err(internal_write)?
+                    .ok_or(SurfaceWriteOutcome::NotWritable(
+                        "multipart completion is missing a durable part",
+                    ))?;
+                if durable.state != "confirmed"
+                    || durable.admitted_size != part_size
+                    || durable.body_digest != body_digest
+                {
+                    return Err(SurfaceWriteOutcome::NotWritable(
+                        "multipart completion part does not match the retry body",
+                    ));
+                }
+                let etag = durable.etag.filter(|etag| !etag.is_empty()).ok_or(
+                    SurfaceWriteOutcome::NotWritable(
+                        "multipart completion part has no durable provider identity",
+                    ),
+                )?;
+                return Ok(crate::surface_write::PartTag { part_number, etag });
+            }
             let admitted = self
                 .db
                 .admit_cache_write_part(
@@ -27170,12 +27487,47 @@ impl RpcService {
         upload_id: &str,
         parts: &[crate::surface_write::PartTag],
     ) -> SurfaceWriteOutcome {
+        if let Ok(Some(ticket)) = self.db.cache_write_ticket(upload_id).await {
+            if ticket.state == "completed" {
+                let cache = match self.db.binary_cache_by_stable_id(slug).await {
+                    Ok(Some(cache)) => Some(cache),
+                    Ok(None) => match self.db.binary_cache_by_slug(slug).await {
+                        Ok(cache) => cache,
+                        Err(error) => return internal_write(error),
+                    },
+                    Err(error) => return internal_write(error),
+                };
+                let Some(cache) =
+                    cache.filter(|cache| cache.id == ticket.cache_id && cache.deleted_at.is_none())
+                else {
+                    return SurfaceWriteOutcome::NotFound;
+                };
+                if let Err(deny) = self.require_cache_admin(auth, &cache).await {
+                    return auth_denial_to_write_outcome(deny);
+                }
+                let durable_parts = match self.db.cache_write_ticket_parts(upload_id).await {
+                    Ok(parts) => parts,
+                    Err(error) => return internal_write(error),
+                };
+                return if ticket.upload_kind == "multipart"
+                    && ticket.object_key == path
+                    && ticket.observed_final_size == Some(ticket.declared_size)
+                    && multipart_completion_matches(&durable_parts, parts, ticket.declared_size)
+                {
+                    SurfaceWriteOutcome::Created
+                } else {
+                    SurfaceWriteOutcome::NotWritable(
+                        "completed multipart retry does not match its durable request",
+                    )
+                };
+            }
+        }
         match self
-            .resolve_cache_upload_ticket(auth, slug, path, upload_id)
+            .resolve_cache_upload_ticket(auth, slug, path, upload_id, true)
             .await
         {
             Ok(Some((_cache, ticket, writer))) => {
-                let Some(backend_upload_id) = ticket.backend_upload_id.as_deref() else {
+                let Some(backend_upload_id) = ticket.backend_upload_id.clone() else {
                     return SurfaceWriteOutcome::NotWritable("multipart ticket is not initialized");
                 };
                 if ticket.uploaded_size != ticket.declared_size {
@@ -27193,24 +27545,34 @@ impl RpcService {
                         "multipart completion does not match the confirmed part set",
                     );
                 }
-                let ticket = match self
-                    .db
-                    .begin_cache_multipart_completion(
-                        &ticket.ticket_id,
-                        ticket.resource_version,
-                        clock::now_unix_secs(),
-                    )
-                    .await
-                {
-                    Ok(ticket) => ticket,
+                let expected_etag = match writer.expected_multipart_etag(parts) {
+                    Ok(Some(etag)) => match crate::surface_write::strong_if_match_etag(&etag) {
+                        Ok(etag) => etag,
+                        Err(error) => return internal_write(error),
+                    },
+                    Ok(None) => {
+                        return SurfaceWriteOutcome::NotWritable(
+                            "cache multipart backend has no deterministic completion identity",
+                        );
+                    }
                     Err(error) => return internal_write(error),
                 };
-                if let Err(error) = writer
-                    .complete_multipart(path, backend_upload_id, parts)
-                    .await
-                {
-                    return internal_write(error);
-                }
+                let ticket = if ticket.state == "completing" {
+                    ticket
+                } else {
+                    match self
+                        .db
+                        .begin_cache_multipart_completion(
+                            &ticket.ticket_id,
+                            ticket.resource_version,
+                            clock::now_unix_secs(),
+                        )
+                        .await
+                    {
+                        Ok(ticket) => ticket,
+                        Err(error) => return internal_write(error),
+                    }
+                };
                 let placement = match self.db.surface_placement(ticket.placement_id).await {
                     Ok(Some(placement)) => placement,
                     Ok(None) => {
@@ -27220,29 +27582,65 @@ impl RpcService {
                     }
                     Err(error) => return internal_write(error),
                 };
-                let observed = match self.surface.placement_fetcher(&placement).await {
-                    Ok(fetch) => match fetch.inventory_evidence(path).await {
-                        Ok(Some(evidence)) => evidence,
-                        Ok(None) => {
-                            return SurfaceWriteOutcome::NotWritable(
-                                "completed cache upload is absent",
-                            );
-                        }
-                        Err(error) => return internal_write(error),
-                    },
+                let inventory = match self.surface.placement_fetcher(&placement).await {
+                    Ok(fetch) => fetch,
                     Err(error) => return internal_write(error),
                 };
-                let observed_size = observed.size;
-                if observed_size != ticket.declared_size
-                    || ticket
-                        .intended_object_hash
-                        .as_deref()
-                        .is_some_and(|expected| hex::encode(observed.sha256) != expected)
-                {
+                let already_complete = match inventory.inventory_evidence(path).await {
+                    Ok(Some(evidence)) => {
+                        cache_multipart_evidence_matches(&evidence, &ticket, &expected_etag)
+                    }
+                    Ok(None) => false,
+                    Err(error) => return internal_write(error),
+                };
+                if !already_complete {
+                    let provider_result = writer
+                        .complete_multipart(path, &backend_upload_id, parts)
+                        .await;
+                    match provider_result {
+                        Ok(etag) => {
+                            let completed_etag =
+                                match crate::surface_write::strong_if_match_etag(&etag) {
+                                    Ok(etag) => etag,
+                                    Err(error) => return internal_write(error),
+                                };
+                            if completed_etag != expected_etag {
+                                return SurfaceWriteOutcome::NotWritable(
+                                    "cache multipart provider returned an unexpected identity",
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            let recovered = match inventory.inventory_evidence(path).await {
+                                Ok(Some(evidence)) => cache_multipart_evidence_matches(
+                                    &evidence,
+                                    &ticket,
+                                    &expected_etag,
+                                ),
+                                Ok(None) => false,
+                                Err(observe_error) => return internal_write(observe_error),
+                            };
+                            if !recovered {
+                                return internal_write(error);
+                            }
+                        }
+                    }
+                }
+                let observed = match inventory.inventory_evidence(path).await {
+                    Ok(Some(evidence)) => evidence,
+                    Ok(None) => {
+                        return SurfaceWriteOutcome::NotWritable(
+                            "completed cache upload is absent",
+                        );
+                    }
+                    Err(error) => return internal_write(error),
+                };
+                if !cache_multipart_evidence_matches(&observed, &ticket, &expected_etag) {
                     return SurfaceWriteOutcome::NotWritable(
                         "completed cache upload does not match its admitted identity",
                     );
                 }
+                let observed_size = observed.size;
                 let ticket = match self
                     .db
                     .reconcile_cache_write_ticket_size(
@@ -27254,7 +27652,18 @@ impl RpcService {
                     .await
                 {
                     Ok(ticket) => ticket,
-                    Err(error) => return internal_write(error),
+                    Err(error) => match self.db.cache_write_ticket(&ticket.ticket_id).await {
+                        Ok(Some(current)) if current.state == "completed" => {
+                            return SurfaceWriteOutcome::Created;
+                        }
+                        Ok(Some(current))
+                            if current.state == "completing"
+                                && current.observed_final_size == Some(observed_size) =>
+                        {
+                            current
+                        }
+                        _ => return internal_write(error),
+                    },
                 };
                 return match self
                     .db
@@ -27266,16 +27675,22 @@ impl RpcService {
                     .await
                 {
                     Ok(()) => {
-                        if let Err(error) = writer.settle_multipart(path, backend_upload_id).await {
+                        if let Err(error) = writer.settle_multipart(path, &backend_upload_id).await
+                        {
                             tracing::warn!(
-                                upload_id = backend_upload_id,
+                                upload_id = %backend_upload_id,
                                 error = %format!("{error:#}"),
                                 "settled multipart marker cleanup failed"
                             );
                         }
                         SurfaceWriteOutcome::Created
                     }
-                    Err(error) => internal_write(error),
+                    Err(error) => match self.db.cache_write_ticket(&ticket.ticket_id).await {
+                        Ok(Some(current)) if current.state == "completed" => {
+                            SurfaceWriteOutcome::Created
+                        }
+                        _ => internal_write(error),
+                    },
                 };
             }
             Ok(None) => {}
@@ -27299,7 +27714,7 @@ impl RpcService {
         upload_id: &str,
     ) -> SurfaceWriteOutcome {
         match self
-            .resolve_cache_upload_ticket(auth, slug, path, upload_id)
+            .resolve_cache_upload_ticket(auth, slug, path, upload_id, false)
             .await
         {
             Ok(Some((_cache, ticket, writer))) => {
@@ -34389,6 +34804,24 @@ fn multipart_completion_matches(
             .all(|part| requested.get(&part.part_number).copied() == part.etag.as_deref())
 }
 
+/// Verifies that placement evidence is the exact deterministic multipart result.
+fn cache_multipart_evidence_matches(
+    evidence: &crate::fetch::SurfaceObjectEvidence,
+    ticket: &crate::db::CacheWriteTicketRecord,
+    expected_etag: &str,
+) -> bool {
+    let observed_etag = evidence
+        .strong_etag
+        .as_deref()
+        .and_then(|etag| crate::surface_write::strong_if_match_etag(etag).ok());
+    evidence.size == ticket.declared_size
+        && observed_etag.as_deref() == Some(expected_etag)
+        && ticket
+            .intended_object_hash
+            .as_deref()
+            .is_none_or(|expected| hex::encode(evidence.sha256) == expected)
+}
+
 fn write_object_identity(
     evidence: crate::fetch::SurfaceObjectEvidence,
 ) -> crate::db::WriteObjectIdentity {
@@ -35051,13 +35484,15 @@ mod cache_upload_tests {
     #[tokio::test]
     async fn registry_trust_update_refreshes_the_signed_index() {
         let reindex_calls = Arc::new(AtomicUsize::new(0));
-        let (service, db, _lease, auth) = injected_service_with_reindexer(Arc::new(
-            InjectedReindexer {
+        let (service, db, _lease, auth) =
+            injected_service_with_reindexer(Arc::new(InjectedReindexer {
                 calls: Some(Arc::clone(&reindex_calls)),
-            },
-        ))
-        .await;
-        let org_id = db.create_org("trust-refresh", "Trust refresh").await.unwrap();
+            }))
+            .await;
+        let org_id = db
+            .create_org("trust-refresh", "Trust refresh")
+            .await
+            .unwrap();
         db.create_managed_registry(org_id, "", "packages", "public", &[], true)
             .await
             .unwrap();
@@ -35107,12 +35542,11 @@ mod cache_upload_tests {
     #[tokio::test]
     async fn publication_index_refresh_is_safe_to_retry() {
         let reindex_calls = Arc::new(AtomicUsize::new(0));
-        let (service, db, _lease, _auth) = injected_service_with_reindexer(Arc::new(
-            InjectedReindexer {
+        let (service, db, _lease, _auth) =
+            injected_service_with_reindexer(Arc::new(InjectedReindexer {
                 calls: Some(Arc::clone(&reindex_calls)),
-            },
-        ))
-        .await;
+            }))
+            .await;
         let org_id = db
             .create_org("publication-retry", "Publication retry")
             .await

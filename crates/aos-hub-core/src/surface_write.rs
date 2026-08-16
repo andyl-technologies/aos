@@ -187,6 +187,16 @@ pub trait SurfaceWrite: BackendBounds {
         None
     }
 
+    /// Reports the maximum lifetime of an incomplete provider multipart upload.
+    ///
+    /// Durable cache admission uses this guarantee to bound provider state
+    /// whose opaque creation response is lost before its id reaches the
+    /// database. Backends without an enforced lifecycle return `None` and are
+    /// not eligible for that upload path.
+    fn abandoned_multipart_lifetime_secs(&self) -> Option<u64> {
+        None
+    }
+
     /// Predicts the provider's final strong multipart identity when its
     /// contract defines that identity entirely from the accepted part tags.
     ///

@@ -1441,6 +1441,13 @@ impl SurfaceWrite for R2Write {
         Some(1)
     }
 
+    fn abandoned_multipart_lifetime_secs(&self) -> Option<u64> {
+        // The deployment reconciles an all-prefix lifecycle rule before this
+        // Worker is installed, bounding an upload whose opaque creation
+        // response never reached the caller.
+        Some(7 * 24 * 60 * 60)
+    }
+
     fn expected_multipart_etag(&self, parts: &[PartTag]) -> Result<Option<String>> {
         aos_hub_core::surface_write::md5_multipart_etag(parts)
     }
