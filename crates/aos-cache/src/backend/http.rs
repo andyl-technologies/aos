@@ -34,6 +34,16 @@ use super::{
     add_static_metadata_headers,
 };
 
+/// Marks a request as Connect-JSON before it reaches the Hub control plane.
+fn add_connect_json_headers(req: &mut TransferRequest) {
+    req.headers
+        .push(("Content-Type".to_string(), "application/json".to_string()));
+    req.headers.push((
+        "Connect-Protocol-Version".to_string(),
+        "1".to_string(),
+    ));
+}
+
 /// HTTP(S) cache backend.
 ///
 /// For push to AOS server: uses AOS server API (auth, query-missing, upload).
@@ -406,8 +416,7 @@ impl CacheBackend for HttpBackend {
         })
         .to_string();
         let mut req = TransferRequest::post(&url, body.into_bytes());
-        req.headers
-            .push(("Content-Type".to_string(), "application/json".to_string()));
+        add_connect_json_headers(&mut req);
         let req = self.add_headers(req);
         let result = self.engine.execute(req).await?;
         anyhow::ensure!(
@@ -492,8 +501,7 @@ impl CacheBackend for HttpBackend {
         })
         .to_string();
         let mut req = TransferRequest::post(&url, body.into_bytes());
-        req.headers
-            .push(("Content-Type".to_string(), "application/json".to_string()));
+        add_connect_json_headers(&mut req);
         let req = self.add_headers(req);
         let result = self.engine.execute(req).await?;
         anyhow::ensure!(
@@ -962,5 +970,18 @@ mod tests {
             backend.nar_url("nar/x.nar.zst"),
             "http://127.0.0.1:15000/default/nar/x.nar.zst"
         );
+    }
+
+    #[test]
+    fn connect_json_requests_carry_protocol_version() {
+        let mut request = TransferRequest::post("https://hub.example/rpc", Vec::new());
+        add_connect_json_headers(&mut request);
+
+        assert!(request.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("content-type") && value == "application/json"
+        }));
+        assert!(request.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("connect-protocol-version") && value == "1"
+        }));
     }
 }
