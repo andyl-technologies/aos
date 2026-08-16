@@ -61,6 +61,8 @@ const GATE_SLOT: u32 = 0;
 const GATE_QUEUE_CAPACITY: u32 = 4;
 /// Stable QMP endpoint used to synchronize the post-boot-barrier main loop.
 const GATE_QMP_SOCKET_FILE_NAME: &str = "crucible-live-9p-io-qmp.sock";
+/// Guest-console record emitted only after PID 1 successfully mounts 9p.
+const TCG_CONTROL_MOUNT_MARKER: &str = "CRUCIBLE_9P_MOUNT_OK";
 /// Guest memory size for the 9p-I/O run.
 ///
 /// Larger than the block gate's 64 MiB: this guest boots a full kernel and runs
@@ -217,9 +219,9 @@ pub struct QemuLive9pIoReport {
     pub host_load_applied: bool,
     /// The second run delayed a due response without changing observations.
     pub delayed_response_applied: bool,
-    /// The TCG control leg saw the guest issue a real 9p op (QEMU's `msize`
-    /// warning) absent the sim accelerator, independently validating the guest
-    /// workload.
+    /// The TCG control leg saw the guest complete a real 9p mount and emit its
+    /// post-mount console marker absent the sim accelerator, independently
+    /// validating the guest workload.
     pub tcg_control_issued_9p: bool,
 }
 
@@ -236,9 +238,9 @@ pub struct QemuLive9pIoReport {
 ///   horizon. The request/response counts and modeled completion latency must
 ///   remain identical.
 /// - **TCG control leg.** Boots the same guest + 9p device under TCG with no
-///   plugin, and confirms the guest actually issues a 9p op (QEMU emits its
-///   `msize` degraded-performance warning only when its 9p device receives a
-///   PDU). This independently proves the guest workload issues 9p traffic.
+///   plugin, and requires PID 1's guest-console marker emitted only after the
+///   9p mount succeeds. This independently proves the workload completes a real
+///   virtio-9p request/response exchange.
 ///
 /// # Errors
 ///
@@ -458,15 +460,16 @@ fn run_one_scenario(
 ///
 /// This is a plain QEMU spawn -- no plugin, no shared memory, no icount time
 /// control -- so the guest runs at wall speed under TCG and its `mount -t 9p`
-/// reaches QEMU's stock virtio-9p device, which emits a `msize`
-/// degraded-performance warning to stderr the first time it receives a 9p PDU.
-/// Observing that warning within the bounded budget proves the guest issues a 9p
-/// op absent the sim accelerator; its absence means the guest never mounted.
+/// reaches QEMU's stock virtio-9p device. PID 1 writes a stable console marker
+/// only after `mount(2)` succeeds. Observing that guest-emitted marker within the
+/// bounded budget proves a real request/response exchange completed absent the
+/// sim accelerator; its absence means the mount never completed successfully.
 ///
 /// # Errors
 ///
 /// Returns [`QemuLive9pIoGateError`] when the control run directory or its
-/// captured stderr file cannot be created, or the QEMU child cannot be spawned.
+/// captured console or stderr file cannot be created, or the QEMU child cannot
+/// be spawned.
 fn run_tcg_control_leg(config: &QemuLive9pIoGateConfig) -> Result<bool, QemuLive9pIoGateError> {
     let run_directory = config.run_directory.join("run-tcg-control");
     fs::create_dir_all(&run_directory).map_err(|source| {
@@ -481,6 +484,13 @@ fn run_tcg_control_leg(config: &QemuLive9pIoGateConfig) -> Result<bool, QemuLive
             path: stderr_path.clone(),
             source,
         })?;
+    let console_path = run_directory.join("guest-console.log");
+    let console_file = fs::File::create(&console_path).map_err(|source| {
+        QemuLive9pIoGateError::ControlConsole {
+            path: console_path.clone(),
+            source,
+        }
+    })?;
 
     let memory = format!("{GATE_MEMORY_MIB}M");
     let mut command = Command::new(&config.qemu_executable);
@@ -490,8 +500,6 @@ fn run_tcg_control_leg(config: &QemuLive9pIoGateConfig) -> Result<bool, QemuLive
         "-display",
         "none",
         "-monitor",
-        "none",
-        "-serial",
         "none",
         "-parallel",
         "none",
@@ -515,12 +523,13 @@ fn run_tcg_control_leg(config: &QemuLive9pIoGateConfig) -> Result<bool, QemuLive
     if let Some(initrd) = &config.initrd {
         command.args(["-initrd", &path_text(initrd)]);
     }
+    command.args(["-serial", "stdio"]);
     let mut device_args = Vec::new();
     CrucibleShmem9pDevice::new().append_qemu_args(&mut device_args);
     command.args(&device_args);
     command
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(console_file)
         .stderr(stderr_file);
 
     let mut child = command
@@ -530,7 +539,7 @@ fn run_tcg_control_leg(config: &QemuLive9pIoGateConfig) -> Result<bool, QemuLive
     let max_polls = bounded_drive_polls(config.completion_timeout);
     let mut issued = false;
     for _ in 0..max_polls {
-        if control_stderr_shows_ninep_op(&stderr_path) {
+        if control_console_shows_mount_success(&console_path) {
             issued = true;
             break;
         }
@@ -541,7 +550,7 @@ fn run_tcg_control_leg(config: &QemuLive9pIoGateConfig) -> Result<bool, QemuLive
     }
     // Final read, in case the op landed just before QEMU exited or the budget lapsed.
     if !issued {
-        issued = control_stderr_shows_ninep_op(&stderr_path);
+        issued = control_console_shows_mount_success(&console_path);
     }
 
     let _ = child.kill();
@@ -549,13 +558,16 @@ fn run_tcg_control_leg(config: &QemuLive9pIoGateConfig) -> Result<bool, QemuLive
     Ok(issued)
 }
 
-/// Returns whether the captured control-QEMU stderr shows a 9p op was received.
+/// Returns whether the captured guest console proves the 9p mount succeeded.
 ///
-/// QEMU's stock virtio-9p device logs a `msize` degraded-performance warning the
-/// first time it handles a 9p PDU, so its presence is a faithful marker that the
-/// guest issued at least one 9p request.
-fn control_stderr_shows_ninep_op(stderr_path: &Path) -> bool {
-    fs::read_to_string(stderr_path).is_ok_and(|text| text.contains("msize"))
+/// PID 1 emits [`TCG_CONTROL_MOUNT_MARKER`] only after `mount(2)` returns
+/// success, so kernel boot chatter or a QEMU diagnostic cannot satisfy this
+/// predicate.
+fn control_console_shows_mount_success(console_path: &Path) -> bool {
+    fs::read_to_string(console_path).is_ok_and(|text| {
+        text.lines()
+            .any(|line| line.trim_end_matches('\r') == TCG_CONTROL_MOUNT_MARKER)
+    })
 }
 
 /// Releases the plugin boot barrier without signaling the idle-wake eventfd.

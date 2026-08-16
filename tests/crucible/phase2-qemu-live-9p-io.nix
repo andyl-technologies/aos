@@ -9,7 +9,8 @@
   #   - host-load sim leg: repeats with host CPU contention and a due response
   #     deliberately delayed in wall time; modeled device latency must match;
   #   - TCG control leg: boots the same guest + 9p device under TCG with no
-  #     plugin and independently confirms the guest issues a real 9p op.
+  #     plugin and requires PID 1's post-mount console marker, proving a real
+  #     virtio-9p request/response exchange completed successfully.
   taskIds ? ["T-PLUG-13"],
   openTaskIds ? [],
   # A busy ceiling above the diskless idle onset (~15.8M): the guest boots to
@@ -118,7 +119,7 @@ in
             printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'open_task_ids=%s\n' "$OPEN_TASK_IDS"
             printf 'scope=certifying-live-9p-forward-and-completion\n'
-            printf 'proven=live-SLOT_9P_IO-request-servicing,device-horizon-advance,delayed-response-wall-time-inertness,guest-progress,run-twice-observation-determinism,tcg-workload-control\n'
+            printf 'proven=live-SLOT_9P_IO-request-servicing,device-horizon-advance,delayed-response-wall-time-inertness,guest-progress,run-twice-observation-determinism,tcg-successful-mount-control\n'
           } >> "$out/result"
         '';
       }
