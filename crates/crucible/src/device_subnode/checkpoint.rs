@@ -23,7 +23,7 @@ pub struct DeviceSchedulingSubNodeCheckpoint {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum DeviceCheckpoint {
     Block(Box<crucible_device::BlockSnapshot>),
-    Ninep(crucible_device::NinepSnapshot),
+    Ninep(Box<crucible_device::NinepSnapshot>),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -75,7 +75,9 @@ impl DeviceSchedulingSubNode {
                 ScheduledDevice::Block(device) => {
                     DeviceCheckpoint::Block(Box::new(device.snapshot()))
                 }
-                ScheduledDevice::Ninep(device) => DeviceCheckpoint::Ninep(device.snapshot()),
+                ScheduledDevice::Ninep(device) => {
+                    DeviceCheckpoint::Ninep(Box::new(device.snapshot()))
+                }
             },
             modeled: self.modeled.clone(),
             resolved: self.resolved.clone(),
@@ -209,10 +211,10 @@ impl DeviceSchedulingSubNodeCheckpoint {
                 crucible_device::BlockSnapshot::from_canonical_bytes(&wire.device)
                     .map_err(|_| DeviceSchedulingSubNodeCheckpointError::Nested)?,
             )),
-            2 => DeviceCheckpoint::Ninep(
+            2 => DeviceCheckpoint::Ninep(Box::new(
                 crucible_device::NinepSnapshot::from_canonical_bytes(&wire.device)
                     .map_err(|_| DeviceSchedulingSubNodeCheckpointError::Nested)?,
-            ),
+            )),
             _ => return Err(DeviceSchedulingSubNodeCheckpointError::Kind),
         };
         let modeled = wire
