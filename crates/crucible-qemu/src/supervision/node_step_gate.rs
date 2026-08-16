@@ -47,7 +47,6 @@
 //! guards against.
 
 use std::fs;
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1980,8 +1979,8 @@ pub(super) fn build_live_node(
     })?;
     let debug_guest_activation_listener = (config.whitebox == QemuLaunchPluginSwitch::On)
         .then(|| {
-            UnixListener::bind(
-                run_directory.join(crate::QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME),
+            crate::unix_socket_path::bind(
+                &run_directory.join(crate::QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME),
             )
         })
         .transpose()
@@ -2121,7 +2120,9 @@ pub(super) fn build_live_node(
         .then(|| {
             // QEMU realizes chardevs before the plugin publishes its setup ACK,
             // so a missing socket here is a launch failure rather than a race.
-            UnixStream::connect(run_directory.join(crate::QEMU_CONSOLE_SOCKET_FILE_NAME))
+            crate::unix_socket_path::connect(
+                &run_directory.join(crate::QEMU_CONSOLE_SOCKET_FILE_NAME),
+            )
         })
         .transpose()
         .map_err(|source| {
