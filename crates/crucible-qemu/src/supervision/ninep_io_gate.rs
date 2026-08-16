@@ -63,12 +63,17 @@ const GATE_QUEUE_CAPACITY: u32 = 4;
 const GATE_QMP_SOCKET_FILE_NAME: &str = "crucible-live-9p-io-qmp.sock";
 /// Guest-console record emitted only after PID 1 successfully mounts 9p.
 const TCG_CONTROL_MOUNT_MARKER: &str = "CRUCIBLE_9P_MOUNT_OK";
+/// Guest memory used by the independent stock-TCG workload control.
+///
+/// The full fixture kernel needs substantially more decompression and early-boot
+/// headroom under upstream TCG than under the deterministic sim accelerator.
+const TCG_CONTROL_MEMORY_MIB: u32 = 1024;
 /// Guest memory size for the 9p-I/O run.
 ///
 /// Larger than the block gate's 64 MiB: this guest boots a full kernel and runs
 /// a `mount -t 9p` workload, and 64 MiB left too little contiguous room for the
-/// early-boot decompression under the sim accelerator. 128 MiB boots reliably
-/// under both the sim accelerator (the reference leg) and TCG (the control leg).
+/// early-boot decompression under the sim accelerator. The independent TCG leg
+/// uses [`TCG_CONTROL_MEMORY_MIB`] instead.
 const GATE_MEMORY_MIB: u32 = 128;
 /// Number of background threads used to stress host scheduling on the load run.
 const HOST_LOAD_WORKERS: usize = 4;
@@ -458,12 +463,14 @@ fn run_one_scenario(
 /// Boots the same guest + 9p device under TCG with no plugin and reports whether
 /// the guest issued a real 9p op.
 ///
-/// This is a plain QEMU spawn -- no plugin, no shared memory, no icount time
-/// control -- so the guest runs at wall speed under TCG and its `mount -t 9p`
-/// reaches QEMU's stock virtio-9p device. PID 1 writes a stable console marker
-/// only after `mount(2)` succeeds. Observing that guest-emitted marker within the
-/// bounded budget proves a real request/response exchange completed absent the
-/// sim accelerator; its absence means the mount never completed successfully.
+/// This is a plain QEMU spawn with no plugin, shared memory, or sim accelerator.
+/// It uses QEMU's upstream TCG icount mode with sleeping and alignment disabled,
+/// matching the repository's inertness corpus and avoiding host-timer waits
+/// during early boot. The guest's `mount -t 9p` reaches QEMU's stock virtio-9p
+/// device. PID 1 writes a stable console marker only after `mount(2)` succeeds.
+/// Observing that marker within the bounded budget proves a real request/response
+/// exchange completed absent the sim accelerator; its absence means the mount
+/// never completed successfully.
 ///
 /// # Errors
 ///
@@ -485,14 +492,13 @@ fn run_tcg_control_leg(config: &QemuLive9pIoGateConfig) -> Result<bool, QemuLive
             source,
         })?;
     let console_path = run_directory.join("guest-console.log");
-    let console_file = fs::File::create(&console_path).map_err(|source| {
-        QemuLive9pIoGateError::ControlConsole {
-            path: console_path.clone(),
-            source,
-        }
+    fs::File::create(&console_path).map_err(|source| QemuLive9pIoGateError::ControlConsole {
+        path: console_path.clone(),
+        source,
     })?;
 
-    let memory = format!("{GATE_MEMORY_MIB}M");
+    let memory = format!("{TCG_CONTROL_MEMORY_MIB}M");
+    let console_chardev = format!("file,id=controlserial0,path={}", path_text(&console_path));
     let mut command = Command::new(&config.qemu_executable);
     command.args([
         "-nodefaults",
@@ -504,32 +510,38 @@ fn run_tcg_control_leg(config: &QemuLive9pIoGateConfig) -> Result<bool, QemuLive
         "-parallel",
         "none",
         "-machine",
-        "pc-q35-9.2",
+        "q35",
         "-m",
         &memory,
         "-accel",
         "tcg,thread=single",
+        "-icount",
+        "shift=0,sleep=off,align=off",
         "-cpu",
         "qemu64,-rdrand,-rdseed",
         "-smp",
         "1",
         "-kernel",
         &path_text(&config.kernel),
-        "-bios",
-        &path_text(&config.firmware),
         "-append",
-        "console=ttyS0 reboot=k panic=1",
+        "console=ttyS0 reboot=k panic=1 rdinit=/init quiet net.ifnames=0 printk.time=0",
     ]);
     if let Some(initrd) = &config.initrd {
         command.args(["-initrd", &path_text(initrd)]);
     }
-    command.args(["-serial", "stdio"]);
+    command.args([
+        "-chardev",
+        &console_chardev,
+        "-serial",
+        "chardev:controlserial0",
+        "-no-reboot",
+    ]);
     let mut device_args = Vec::new();
     CrucibleShmem9pDevice::new().append_qemu_args(&mut device_args);
     command.args(&device_args);
     command
         .stdin(Stdio::null())
-        .stdout(console_file)
+        .stdout(Stdio::null())
         .stderr(stderr_file);
 
     let mut child = command
