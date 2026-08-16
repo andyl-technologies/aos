@@ -38,10 +38,13 @@ use super::{
 fn add_connect_json_headers(req: &mut TransferRequest) {
     req.headers
         .push(("Content-Type".to_string(), "application/json".to_string()));
-    req.headers.push((
-        "Connect-Protocol-Version".to_string(),
-        "1".to_string(),
-    ));
+    req.headers
+        .push(("Connect-Protocol-Version".to_string(), "1".to_string()));
+}
+
+/// Encodes a 64-bit integer using the protobuf JSON wire representation.
+fn connect_json_u64(value: u64) -> String {
+    value.to_string()
 }
 
 /// HTTP(S) cache backend.
@@ -412,7 +415,7 @@ impl CacheBackend for HttpBackend {
         let body = serde_json::json!({
             "deliveryUrl": self.base_url,
             "path": path,
-            "size": size
+            "size": connect_json_u64(size)
         })
         .to_string();
         let mut req = TransferRequest::post(&url, body.into_bytes());
@@ -493,7 +496,10 @@ impl CacheBackend for HttpBackend {
             self.origin
         );
         let paths: Vec<&str> = uploads.iter().map(|(path, _)| path.as_str()).collect();
-        let sizes: Vec<u64> = uploads.iter().map(|(_, size)| *size).collect();
+        let sizes: Vec<String> = uploads
+            .iter()
+            .map(|(_, size)| connect_json_u64(*size))
+            .collect();
         let body = serde_json::json!({
             "deliveryUrl": self.base_url,
             "paths": paths,
@@ -568,7 +574,7 @@ impl CacheBackend for HttpBackend {
         let body = serde_json::json!({
             "deliveryUrl": self.base_url,
             "path": nar_path,
-            "byteSize": size,
+            "byteSize": connect_json_u64(size),
             "sha256": sha256.unwrap_or_default(),
         });
         let mut req = TransferRequest::post(&url, serde_json::to_vec(&body)?);
@@ -983,5 +989,15 @@ mod tests {
         assert!(request.headers.iter().any(|(name, value)| {
             name.eq_ignore_ascii_case("connect-protocol-version") && value == "1"
         }));
+    }
+
+    #[test]
+    fn connect_json_encodes_u64_values_as_decimal_strings() {
+        let size = u64::MAX;
+        let single = serde_json::json!({ "size": connect_json_u64(size) });
+        let batch = serde_json::json!({ "sizes": [connect_json_u64(size)] });
+
+        assert_eq!(single["size"], size.to_string());
+        assert_eq!(batch["sizes"][0], size.to_string());
     }
 }
