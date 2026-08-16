@@ -382,6 +382,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("placement_scan_claim.sql"),
     include_str!("portable_recovery_cursor.sql"),
     include_str!("org_usage_backfill.sql"),
+    include_str!("cache_multipart_creation.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
