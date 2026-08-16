@@ -281,6 +281,11 @@ fn build_narinfo(
     narinfo::format(&ni)
 }
 
+/// Returns whether an admission refusal should switch to typed multipart.
+fn use_multipart_after_admission(admitted_url: Option<&str>, supported: bool) -> bool {
+    admitted_url.is_none() && supported
+}
+
 /// Compresses and uploads one missing path's NAR + narinfo.
 ///
 /// Compression runs on a blocking thread (it is CPU-bound) so it never stalls
@@ -304,9 +309,6 @@ async fn upload_one(
     compression_level: i32,
     limiter: &bandwidth::BandwidthLimiter,
 ) -> Result<u64> {
-    /// Compressed NARs larger than this upload through typed multipart.
-    const MULTIPART_THRESHOLD: usize = 16 * 1024 * 1024;
-
     let hash = narinfo::store_hash(&info.path).to_string();
     let path = info.path.clone();
     let comp = compression.to_string();
@@ -328,19 +330,21 @@ async fn upload_one(
     let narinfo_text = build_narinfo(info, &file_hash, file_size, &nar_filename, compression);
     let nar_url = format!("nar/{nar_filename}");
 
-    match backend.create_object_upload(&nar_url, file_size).await? {
+    let admitted_url = backend.create_object_upload(&nar_url, file_size).await?;
+    let use_multipart =
+        use_multipart_after_admission(admitted_url.as_deref(), backend.supports_multipart());
+    match admitted_url {
         Some(upload_url) => {
             backend
                 .upload_to_admitted_url(&upload_url, &compressed)
                 .await?
         }
-        None => {
-            if compressed.len() > MULTIPART_THRESHOLD && backend.supports_multipart() {
-                upload_nar_multipart(backend, &nar_filename, &compressed).await?;
-            } else {
-                backend.put_nar(&nar_filename, &compressed).await?;
-            }
+        None if use_multipart => {
+            // Admission is authoritative for Hub proxy limits. A Worker may
+            // require multipart below the client's normal in-memory threshold.
+            upload_nar_multipart(backend, &nar_filename, &compressed).await?;
         }
+        None => backend.put_nar(&nar_filename, &compressed).await?,
     }
     backend.put_narinfo(&hash, &narinfo_text).await?;
     Ok(file_size)
@@ -604,7 +608,7 @@ mod tests {
     use super::{
         MAX_MULTIPART_PART_SIZE, MAX_MULTIPART_PARTS, MIN_MULTIPART_PART_SIZE,
         initiate_validated_multipart, order_path_infos_for_import, settle_multipart_outcome,
-        validate_multipart_geometry,
+        use_multipart_after_admission, validate_multipart_geometry,
     };
 
     struct MaliciousNegotiationBackend {
@@ -742,6 +746,13 @@ mod tests {
 
         let paths: Vec<&str> = infos.iter().map(|info| info.path.as_str()).collect();
         assert_eq!(paths, vec![dep, app]);
+    }
+
+    #[test]
+    fn multipart_follows_admission_instead_of_a_local_size_threshold() {
+        assert!(use_multipart_after_admission(None, true));
+        assert!(!use_multipart_after_admission(Some("https://upload"), true));
+        assert!(!use_multipart_after_admission(None, false));
     }
 
     #[test]
