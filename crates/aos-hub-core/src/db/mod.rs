@@ -13685,8 +13685,8 @@ impl Database {
                 .expecting(1),
                 Statement::new(
                     "INSERT INTO org_usage (org_id, used_bytes, object_count, updated_at)
-                     VALUES (?1, 0, 0, ?2)",
-                    vals![org_id, now],
+                     VALUES (?1, 0, 0, 0)",
+                    vals![org_id],
                 )
                 .expecting(1),
                 Statement::new(
@@ -13775,8 +13775,8 @@ impl Database {
                 .expecting(1),
                 Statement::new(
                     "INSERT INTO org_usage (org_id, used_bytes, object_count, updated_at)
-                     VALUES (?1, 0, 0, ?2)",
-                    vals![org_id, now],
+                     VALUES (?1, 0, 0, 0)",
+                    vals![org_id],
                 )
                 .expecting(1),
                 Statement::new(
@@ -24907,7 +24907,7 @@ source_nar_hash = ""
     fn org_usage_backfill_repairs_existing_organizations() {
         let backfill_index = MIGRATIONS
             .iter()
-            .position(|migration| migration.contains("SELECT id, 0, 0, updated_at"))
+            .position(|migration| migration.contains("SELECT id, 0, 0, 0"))
             .unwrap();
         let connection = Connection::open_in_memory().unwrap();
         for script in &MIGRATIONS[..backfill_index] {
@@ -24935,7 +24935,7 @@ source_nar_hash = ""
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!(usage, (0, 0, 7));
+        assert_eq!(usage, (0, 0, 0));
     }
 
     #[test]
