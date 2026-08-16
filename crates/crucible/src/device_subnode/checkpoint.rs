@@ -22,7 +22,7 @@ pub struct DeviceSchedulingSubNodeCheckpoint {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum DeviceCheckpoint {
-    Block(crucible_device::BlockSnapshot),
+    Block(Box<crucible_device::BlockSnapshot>),
     Ninep(crucible_device::NinepSnapshot),
 }
 
@@ -72,7 +72,9 @@ impl DeviceSchedulingSubNode {
             target: self.target.name.clone(),
             device_id: self.device_id.name.clone(),
             device: match &self.device {
-                ScheduledDevice::Block(device) => DeviceCheckpoint::Block(device.snapshot()),
+                ScheduledDevice::Block(device) => {
+                    DeviceCheckpoint::Block(Box::new(device.snapshot()))
+                }
                 ScheduledDevice::Ninep(device) => DeviceCheckpoint::Ninep(device.snapshot()),
             },
             modeled: self.modeled.clone(),
@@ -203,10 +205,10 @@ impl DeviceSchedulingSubNodeCheckpoint {
         let wire: CheckpointWire = ciborium::de::from_reader(payload)
             .map_err(|_| DeviceSchedulingSubNodeCheckpointError::Malformed)?;
         let device = match wire.device_kind {
-            1 => DeviceCheckpoint::Block(
+            1 => DeviceCheckpoint::Block(Box::new(
                 crucible_device::BlockSnapshot::from_canonical_bytes(&wire.device)
                     .map_err(|_| DeviceSchedulingSubNodeCheckpointError::Nested)?,
-            ),
+            )),
             2 => DeviceCheckpoint::Ninep(
                 crucible_device::NinepSnapshot::from_canonical_bytes(&wire.device)
                     .map_err(|_| DeviceSchedulingSubNodeCheckpointError::Nested)?,

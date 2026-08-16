@@ -241,37 +241,6 @@ impl HostFaultActionSink {
     }
 }
 
-#[cfg(test)]
-mod checkpoint_codec_tests {
-    use super::*;
-
-    #[test]
-    fn empty_host_state_codec_round_trips_canonically() {
-        let state = HostFaultActionState::default();
-        let bytes = state
-            .canonical_bytes()
-            .unwrap_or_else(|error| panic!("host state should encode: {error}"));
-        let restored = HostFaultActionState::from_canonical_bytes(&bytes)
-            .unwrap_or_else(|error| panic!("host state should decode: {error}"));
-        assert_eq!(restored, state);
-        assert_eq!(
-            restored
-                .canonical_bytes()
-                .unwrap_or_else(|error| panic!("restored state should encode: {error}")),
-            bytes
-        );
-    }
-
-    #[test]
-    fn host_state_codec_rejects_trailing_bytes() {
-        let mut bytes = HostFaultActionState::default()
-            .canonical_bytes()
-            .unwrap_or_else(|error| panic!("host state should encode: {error}"));
-        bytes.push(0);
-        assert!(HostFaultActionState::from_canonical_bytes(&bytes).is_err());
-    }
-}
-
 impl FaultActionSink for HostFaultActionSink {
     fn prepare_batch(
         &mut self,
@@ -446,4 +415,35 @@ fn hex_bytes(bytes: &[u8]) -> String {
         encoded.push(HEX[(byte & 0x0f) as usize] as char);
     }
     encoded
+}
+
+#[cfg(test)]
+mod checkpoint_codec_tests {
+    use super::*;
+
+    #[test]
+    fn empty_host_state_codec_round_trips_canonically() {
+        let state = HostFaultActionState::default();
+        let bytes = state
+            .canonical_bytes()
+            .unwrap_or_else(|error| panic!("host state should encode: {error}"));
+        let restored = HostFaultActionState::from_canonical_bytes(&bytes)
+            .unwrap_or_else(|error| panic!("host state should decode: {error}"));
+        assert_eq!(restored, state);
+        assert_eq!(
+            restored
+                .canonical_bytes()
+                .unwrap_or_else(|error| panic!("restored state should encode: {error}")),
+            bytes
+        );
+    }
+
+    #[test]
+    fn host_state_codec_rejects_trailing_bytes() {
+        let mut bytes = HostFaultActionState::default()
+            .canonical_bytes()
+            .unwrap_or_else(|error| panic!("host state should encode: {error}"));
+        bytes.push(0);
+        assert!(HostFaultActionState::from_canonical_bytes(&bytes).is_err());
+    }
 }

@@ -8,7 +8,7 @@ pub(super) fn correlated_failure_binding(
     program: &SignalProgram,
 ) -> Result<FaultBinding, EngineError> {
     let node = FaultObjectId::parse(node).map_err(workload_fault_model_error)?;
-    let binding = FaultObjectId::parse(&format!("correlated-outage-{node}"))
+    let binding = FaultObjectId::parse(format!("correlated-outage-{node}"))
         .map_err(workload_fault_model_error)?;
     let target = ResolvedTargetSet::new(vec![ResolvedFaultTarget::Node { node }], false)
         .map_err(workload_fault_model_error)?;

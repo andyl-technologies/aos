@@ -454,12 +454,13 @@ fn validate_wire(wire: &SingleSchedulerWire) -> Result<(), SingleSchedulerCheckp
     {
         return Err(SingleSchedulerCheckpointError::State);
     }
-    if wire.event_log.events < wire.event_log.condition_base_events
-        || usize::try_from(wire.event_log.events - wire.event_log.condition_base_events)
-            .map_or(true, |count| {
-                count != wire.event_log.condition_entries.len()
-            })
-    {
+    if wire.event_log.events < wire.event_log.condition_base_events {
+        return Err(SingleSchedulerCheckpointError::EventLog);
+    }
+    let condition_entry_count =
+        usize::try_from(wire.event_log.events - wire.event_log.condition_base_events)
+            .map_err(|_| SingleSchedulerCheckpointError::EventLog)?;
+    if condition_entry_count != wire.event_log.condition_entries.len() {
         return Err(SingleSchedulerCheckpointError::EventLog);
     }
     for frontier in &wire.search_frontiers {
