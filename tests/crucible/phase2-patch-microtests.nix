@@ -508,10 +508,6 @@
     builtins.filter (patch: !(builtins.elem patch microtestPatchNames)) patchFiles;
   staleMicrotests =
     builtins.filter (patch: !(builtins.elem patch patchFiles)) microtestPatchNames;
-  unwiredPatches =
-    builtins.filter
-    (patch: !(hasInfix "patch -p1 < \${./qemu-patches/${patch}}" qemuNix))
-    patchFiles;
   qemuInertRedGateWired =
     hasInfix "qemuInert = redGate {" defaultNix
     && hasInfix ''gateName = "gate:qemu-inert";'' defaultNix
@@ -530,8 +526,6 @@
     missingMicrotests
     ++ map (patch: "tests/crucible/phase2-patch-microtests.nix: stale micro-test for absent patch ${patch}")
     staleMicrotests
-    ++ map (patch: "pkgs/emulation/qemu.nix: carried patch is not applied by the QEMU package: ${patch}")
-    unwiredPatches
     ++ lib.optionals (!qemuNixAppliesManifestSeries) [
       "pkgs/emulation/qemu.nix: QEMU patch phase must be generated from qemu-patches/_series.nix"
     ]

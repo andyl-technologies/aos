@@ -561,10 +561,6 @@
     builtins.filter (patch: !(builtins.elem patch patchFiles)) carriedPatchFiles;
   unmanifestedPatches =
     builtins.filter (patch: !(builtins.elem patch carriedPatchFiles)) patchFiles;
-  unwiredPatches =
-    builtins.filter
-    (patch: !(hasInfix "patch -p1 < \${./qemu-patches/${patch}}" qemuNix))
-    carriedPatchFiles;
   uncatalogedPatches =
     builtins.filter
     (patch: !(hasInfix patch.catalogName qemuPatchSpec))
@@ -575,8 +571,6 @@
     missingCarriedPatches
     ++ map (patch: "pkgs/emulation/qemu-patches/${patch}: carried patch is absent from the T-PATCH-1 manifest")
     unmanifestedPatches
-    ++ map (patch: "pkgs/emulation/qemu.nix: carried patch is not applied by the QEMU package: ${patch}")
-    unwiredPatches
     ++ lib.optionals (!qemuNixAppliesManifestSeries) [
       "pkgs/emulation/qemu.nix: QEMU patch phase must be generated from qemu-patches/_series.nix"
     ]
