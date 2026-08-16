@@ -1,5 +1,7 @@
 //! Busy-window driving, launch, priming, and host-load support.
 
+use std::os::unix::net::UnixStream;
+
 use super::*;
 
 const X86_64_MACHINE_TYPE: &str = "pc-q35-9.2";
