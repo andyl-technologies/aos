@@ -381,6 +381,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("publication_multipart_progress.sql"),
     include_str!("placement_scan_claim.sql"),
     include_str!("portable_recovery_cursor.sql"),
+    include_str!("org_usage_backfill.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -13683,6 +13684,12 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
+                    "INSERT INTO org_usage (org_id, used_bytes, object_count, updated_at)
+                     VALUES (?1, 0, 0, ?2)",
+                    vals![org_id, now],
+                )
+                .expecting(1),
+                Statement::new(
                     "INSERT INTO authorization_scopes
                      (scope_key, kind, org_id, parent_scope_key, resource_stable_id, created_at)
                      VALUES (?1, 'organization', ?2, 'instance', ?1, ?3)",
@@ -13764,6 +13771,12 @@ impl Database {
                      (id, stable_id, slug, name, created_at, updated_at, creation_plan_id)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6)",
                     vals![org_id, consumer_scope_key, slug, name, now, plan_id],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO org_usage (org_id, used_bytes, object_count, updated_at)
+                     VALUES (?1, 0, 0, ?2)",
+                    vals![org_id, now],
                 )
                 .expecting(1),
                 Statement::new(
@@ -24775,7 +24788,10 @@ source_nar_hash = ""
 
     #[test]
     fn publication_multipart_migration_upgrades_an_existing_database() {
-        let multipart_index = MIGRATIONS.len() - 3;
+        let multipart_index = MIGRATIONS
+            .iter()
+            .position(|migration| migration.contains("ADD COLUMN hashed_size"))
+            .unwrap();
         let multipart_migration = MIGRATIONS[multipart_index];
         let connection = Connection::open_in_memory().unwrap();
         for script in &MIGRATIONS[..multipart_index] {
@@ -24819,7 +24835,10 @@ source_nar_hash = ""
 
     #[test]
     fn placement_scan_claim_migration_upgrades_an_existing_database() {
-        let claim_index = MIGRATIONS.len() - 2;
+        let claim_index = MIGRATIONS
+            .iter()
+            .position(|migration| migration.contains("CREATE TABLE placement_scan_claims"))
+            .unwrap();
         let claim_migration = MIGRATIONS[claim_index];
         let connection = Connection::open_in_memory().unwrap();
         for script in &MIGRATIONS[..claim_index] {
@@ -24850,7 +24869,12 @@ source_nar_hash = ""
 
     #[test]
     fn portable_recovery_cursor_migration_repairs_existing_database() {
-        let (cursor_migration, earlier) = MIGRATIONS.split_last().unwrap();
+        let cursor_index = MIGRATIONS
+            .iter()
+            .position(|migration| migration.contains("SET after_expires_at = -9007199254740991"))
+            .unwrap();
+        let cursor_migration = MIGRATIONS[cursor_index];
+        let earlier = &MIGRATIONS[..cursor_index];
         let connection = Connection::open_in_memory().unwrap();
         for script in earlier {
             connection.execute_batch(script).unwrap();
@@ -24877,6 +24901,41 @@ source_nar_hash = ""
             after_expires_at,
             crate::cache_scan::CACHE_WRITE_RECOVERY_CURSOR_START
         );
+    }
+
+    #[test]
+    fn org_usage_backfill_repairs_existing_organizations() {
+        let backfill_index = MIGRATIONS
+            .iter()
+            .position(|migration| migration.contains("SELECT id, 0, 0, updated_at"))
+            .unwrap();
+        let connection = Connection::open_in_memory().unwrap();
+        for script in &MIGRATIONS[..backfill_index] {
+            connection.execute_batch(script).unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO orgs
+                 (id, stable_id, slug, name, created_at, updated_at)
+                 VALUES (1, 'org:00000000000000000000000000000001',
+                   'existing', 'Existing', 7, 7)",
+                [],
+            )
+            .unwrap();
+
+        connection
+            .execute_batch(MIGRATIONS[backfill_index])
+            .unwrap();
+
+        let usage: (i64, i64, i64) = connection
+            .query_row(
+                "SELECT used_bytes, object_count, updated_at
+                 FROM org_usage WHERE org_id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(usage, (0, 0, 7));
     }
 
     #[test]
@@ -28443,6 +28502,20 @@ source_nar_hash = ""
         // A normal single-segment slug still succeeds.
         assert!(db.create_org("acme", "Acme").await.is_ok());
         assert_eq!(db.org_by_slug("acme").await.unwrap().unwrap().slug, "acme");
+    }
+
+    #[tokio::test]
+    async fn create_org_initializes_quota_usage() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org_id = db.create_org("usage", "Usage").await.unwrap();
+
+        let usage = db.org_usage(org_id).await.unwrap();
+        assert_eq!(usage.used_bytes, 0);
+        assert_eq!(usage.object_count, 0);
+        assert!(
+            db.reserve_org_usage(org_id, 1, 1).await.unwrap(),
+            "the initialized row accepts an atomic reservation"
+        );
     }
 
     #[tokio::test]
