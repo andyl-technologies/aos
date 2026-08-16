@@ -455,7 +455,7 @@ async fn initiate_validated_multipart(
 ///
 /// Returns an error if initiate, any part, completion, or the mandatory
 /// best-effort cleanup after a failed multipart operation fails.
-async fn upload_nar_multipart(
+pub(crate) async fn upload_nar_multipart(
     backend: &dyn CacheBackend,
     nar_filename: &str,
     compressed: &[u8],

@@ -357,11 +357,13 @@ impl CacheBackend for HttpBackend {
     async fn put_nar(&self, filename: &str, data: &[u8]) -> Result<()> {
         if self.is_hub.load(Ordering::Relaxed) {
             let path = format!("nar/{filename}");
-            let upload_url = self
-                .create_object_upload(&path, data.len() as u64)
-                .await?
-                .context("Hub requires multipart for this NAR upload")?;
-            return self.upload_to_admitted_url(&upload_url, data).await;
+            return match self.create_object_upload(&path, data.len() as u64).await? {
+                Some(upload_url) => self.upload_to_admitted_url(&upload_url, data).await,
+                None if self.supports_multipart() => {
+                    crate::push::upload_nar_multipart(self, filename, data).await
+                }
+                None => anyhow::bail!("Hub requires unsupported multipart for this NAR upload"),
+            };
         }
         // TODO(aos-cache push >1MB): when is_aos == true, this path is
         // broken on two axes:
