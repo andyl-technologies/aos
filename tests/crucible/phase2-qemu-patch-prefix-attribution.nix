@@ -399,6 +399,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0082-crucible-deterministic-instruction-input-state.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

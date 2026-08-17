@@ -333,31 +333,36 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
     );
     assert_contains(
         &qemu_rr_quantum_icount,
-        "accelerator = \"sim,thread=single\";",
+        "simS11 = import ./phase0-s11.nix {inherit pkgs lib;};",
     );
-    assert_contains(&qemu_rr_quantum_icount, "cadence = 1048576;");
-    assert_contains(&qemu_rr_quantum_icount, "requireGuestPass = false;");
-    assert_contains(&qemu_rr_quantum_icount, "stopAt = 4194304;");
-    assert_contains(&qemu_rr_quantum_icount, "vcpus=2");
+    assert_contains(
+        &qemu_rr_quantum_icount,
+        "require_line \"$s11_result\" \"cadence=100000000\"",
+    );
+    assert_contains(
+        &qemu_rr_quantum_icount,
+        "require_line \"$s11_result\" \"require_guest_pass=1\"",
+    );
+    assert_contains(&qemu_rr_quantum_icount, "vcpus=4");
     assert_contains(
         &qemu_rr_quantum_icount,
         "require_line \"$s11_result\" \"accelerator=sim,thread=single\"",
     );
     assert_contains(
         &qemu_rr_quantum_icount,
-        "require_line \"$s11_result\" \"run_horizon=plugin-stop_at-4194304\"",
+        "require_line \"$s11_result\" \"run_horizon=plugin-stop_at-4000000000\"",
     );
     assert_contains(
         &qemu_rr_quantum_icount,
-        "require_line \"$s11_result\" \"periodic_samples_expected=4\"",
+        "require_line \"$s11_result\" \"periodic_samples_expected=40\"",
     );
     assert_contains(
         &qemu_rr_quantum_icount,
-        "require_line \"$s11_result\" \"periodic_samples_observed=4\"",
+        "require_line \"$s11_result\" \"periodic_samples_observed=40\"",
     );
     assert_contains(
         &qemu_rr_quantum_icount,
-        "require_line \"$s11_result\" \"samples=5\"",
+        "require_line \"$s11_result\" \"samples=41\"",
     );
     assert_contains(
         &qemu_rr_quantum_icount,
