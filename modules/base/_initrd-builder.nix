@@ -523,7 +523,7 @@ in
           HOSTS
 
           cat > root/etc/shadow <<'SHADOW'
-          root:::0:99999:7:::
+          root:!*::0:99999:7:::
           SHADOW
           # The traditional 0000 shadow permission works because root (uid 0)
           # bypasses the check; but we cannot read back the file during cpio

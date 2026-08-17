@@ -5,6 +5,21 @@ explicitly safer than the current one. File names are current-tree anchors;
 implementation may factor helpers as needed while preserving the RFC's
 invariants.
 
+## Implementation status
+
+Phase 1 is implemented. Every base initrd now carries an impossible root
+password hash and masks the upstream interactive emergency and rescue
+services. The debug profile retains separate, explicitly enabled direct
+gettys; its stage-2 empty root password remains part of that development-only
+posture. Security checks distinguish those two configurations instead of
+weakening the production assertion.
+
+The fleet negative test boots a production-profile image directly into the
+initrd emergency target, proves that the target was reached and switch-root
+did not occur, and rejects any sulogin, login, or debug-shell prompt in the
+serial transcript. The rendered initrd unit topology supplies the complementary
+proof that both interactive upstream services resolve to `/dev/null`.
+
 ## Phase 1: Lock the normal initrd
 
 ### 1.1 Base shadow entry
