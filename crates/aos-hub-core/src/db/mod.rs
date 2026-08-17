@@ -9740,6 +9740,73 @@ impl Database {
             .context("created surface object disappeared")
     }
 
+    /// Converts one legacy immutable registry object into a replaceable
+    /// pointer while preserving its currently published identity.
+    ///
+    /// This migration is reserved for Git loose-object paths whose URL binds
+    /// the decompressed object rather than its zlib wire bytes. When a current
+    /// publication exists, the converted row remains owned by it until the new
+    /// publication completes, so reads stay available throughout migration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the object and preparing publication belong to
+    /// the same registry, the object is active and immutable (or was already
+    /// converted by an equivalent concurrent admission), or the database
+    /// operation fails.
+    pub async fn convert_registry_loose_object_to_mutable(
+        &self,
+        registry_id: i64,
+        surface_object_id: i64,
+        object_key: &str,
+        preparing_publication_id: &str,
+    ) -> Result<SurfaceObjectRecord> {
+        validate_key_bytes(object_key, "surface object key", 512)?;
+        validate_key_bytes(preparing_publication_id, "publication id", 64)?;
+        if !aos_registry_surface::keymap::is_loose_git_object_path(object_key) {
+            bail!("surface object is not a SHA-256 Git loose-object path");
+        }
+        let now = unix_now();
+        self.backend
+            .execute(
+                "UPDATE surface_objects
+                 SET object_kind = 'mutable_pointer', partition_key = NULL,
+                     mutable_publication_id = COALESCE(
+                       (SELECT state.current_publication_id
+                        FROM registry_publication_state state
+                        WHERE state.registry_id = ?1),
+                       ?4),
+                     updated_at = ?5, resource_version = resource_version + 1
+                 WHERE id = ?2 AND registry_id = ?1 AND cache_id IS NULL
+                   AND object_key = ?3 AND lifecycle_state = 'active'
+                   AND object_kind = 'immutable' AND mutable_publication_id IS NULL
+                   AND EXISTS (SELECT 1 FROM registry_publications publication
+                     WHERE publication.publication_id = ?4
+                       AND publication.registry_id = ?1
+                       AND publication.state = 'preparing')",
+                &vals![
+                    registry_id,
+                    surface_object_id,
+                    object_key,
+                    preparing_publication_id,
+                    now
+                ],
+            )
+            .await?;
+        let object = self
+            .surface_object(surface_object_id)
+            .await?
+            .context("converted loose object disappeared")?;
+        if object.registry_id != Some(registry_id)
+            || object.object_key != object_key
+            || object.lifecycle_state != "active"
+            || object.object_kind != "mutable_pointer"
+        {
+            bail!("loose object conversion is stale or cross-registry");
+        }
+        Ok(object)
+    }
+
     /// Returns a logical object by id.
     ///
     /// # Errors
@@ -29453,6 +29520,87 @@ source_nar_hash = ""
             .registry_publication_class_is_complete(publication_id, "immutable")
             .await
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn legacy_loose_object_conversion_preserves_identity_and_is_idempotent() {
+        let db = Database::open_in_memory().await.unwrap();
+        let registry_id = db
+            .register_registry("loose-migration", &[], false)
+            .await
+            .unwrap();
+        let current_publication_id = "loosemigrationpublication000000000000";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: current_publication_id.into(),
+            registry_id,
+            generation: "generation-0".into(),
+            manifest_digest: "0".repeat(64),
+            refs_digest: "1".repeat(64),
+            default_commit: Some("2".repeat(64)),
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        db.backend
+            .execute(
+                "UPDATE registry_publications SET state = 'ready', completed_at = ?2
+                 WHERE publication_id = ?1",
+                &vals![current_publication_id, unix_now()],
+            )
+            .await
+            .unwrap();
+        db.backend
+            .execute(
+                "UPDATE registry_publication_state SET current_publication_id = ?1
+                 WHERE registry_id = ?2",
+                &vals![current_publication_id, registry_id],
+            )
+            .await
+            .unwrap();
+        let object_key =
+            "objects/ab/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        let object = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry_id),
+                object_key: object_key.into(),
+                content_hash: Some("d".repeat(64)),
+                size: Some(91),
+                object_kind: "immutable".into(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        let publication_id = "loosemigrationpublication000000000001";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: publication_id.into(),
+            registry_id,
+            generation: "generation-1".into(),
+            manifest_digest: "a".repeat(64),
+            refs_digest: "b".repeat(64),
+            default_commit: Some("c".repeat(64)),
+            parent_publication_id: Some(current_publication_id.into()),
+        })
+        .await
+        .unwrap();
+
+        for _ in 0..2 {
+            let converted = db
+                .convert_registry_loose_object_to_mutable(
+                    registry_id,
+                    object.id,
+                    object_key,
+                    publication_id,
+                )
+                .await
+                .unwrap();
+            assert_eq!(converted.object_kind, "mutable_pointer");
+            assert_eq!(converted.content_hash, Some("d".repeat(64)));
+            assert_eq!(converted.size, Some(91));
+            assert_eq!(
+                converted.mutable_publication_id.as_deref(),
+                Some(current_publication_id)
+            );
+        }
     }
 
     #[tokio::test]

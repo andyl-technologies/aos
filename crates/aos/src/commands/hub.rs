@@ -9221,6 +9221,14 @@ fn publication_input(
     let metadata = file
         .metadata()
         .with_context(|| format!("reading pinned publication object {relative}"))?;
+    if aos_package::registry::surface_keymap::is_loose_git_object_path(relative) {
+        anyhow::ensure!(
+            metadata.len()
+                <= aos_package::registry::MAX_PUBLISHED_LOOSE_OBJECT_BYTES,
+            "loose Git object {relative} exceeds the {}-byte publication limit",
+            aos_package::registry::MAX_PUBLISHED_LOOSE_OBJECT_BYTES
+        );
+    }
     file.seek(SeekFrom::Start(0))?;
     let digest = copy_and_hash_exact(&mut file, &mut std::io::sink(), metadata.len(), relative)?;
     let after = file
