@@ -4,8 +4,8 @@
 ##! and its initial trust anchor into the image:
 ##!
 ##!   - `/etc/apm/registries.d/<name>.toml` — registry URL, priority,
-##!     and `[registry.signing]` with the first trust key as the
-##!     bootstrap anchor.
+##!     bootstrap cache endpoints, and `[registry.signing]` with the first
+##!     trust key as the bootstrap anchor.
 ##!   - `/etc/apm/trusted-keys.d/<name>.pub` — every trust key, one per
 ##!     line (`apm` reads this directory in both profile scopes).
 ##!   - `/etc/apm/trusted-sb-certs.d/<name>.pem` — the Secure Boot db
@@ -70,7 +70,8 @@ in {
       ];
     };
     description = ''
-      Package registries baked into the image with their trust anchors.
+      Package registries and bootstrap cache endpoints baked into the image
+      with their trust anchors.
       Each entry writes `/etc/apm/registries.d/<name>.toml` and
       `/etc/apm/trusted-keys.d/<name>.pub`, so `apm` verifies the
       registry out of the box without any manual `apr trust pin`.
@@ -79,57 +80,58 @@ in {
   };
 
   config = {
-    assertions = lib.flatten (lib.mapAttrsToList (
-        name: registry:
-          [
-            {
-              assertion = builtins.match registryNamePattern name != null;
+    assertions =
+      lib.flatten (lib.mapAttrsToList (
+          name: registry:
+            [
+              {
+                assertion = builtins.match registryNamePattern name != null;
+                message = ''
+                  aos.apm.registries.${name}: registry names must match
+                  ${registryNamePattern} (ASCII letters, digits, '-' and '_').
+                '';
+              }
+            ]
+            ++ builtins.map (key: {
+              assertion = builtins.match (trustKeyPattern name) key != null;
               message = ''
-                aos.apm.registries.${name}: registry names must match
-                ${registryNamePattern} (ASCII letters, digits, '-' and '_').
+                aos.apm.registries.${name}: trust key '${key}' must be
+                '${name}:Ed25519:<base64>' (the registry prefix has to match
+                the attribute name).
               '';
-            }
-          ]
-          ++ builtins.map (key: {
-            assertion = builtins.match (trustKeyPattern name) key != null;
-            message = ''
-              aos.apm.registries.${name}: trust key '${key}' must be
-              '${name}:Ed25519:<base64>' (the registry prefix has to match
-              the attribute name).
-            '';
-          })
-          registry.trustKeys
-      )
-      cfg)
-    ++ lib.flatten (lib.mapAttrsToList (
-        op: keys:
-          [
-            {
-              assertion = builtins.match registryNamePattern op != null;
+            })
+            registry.trustKeys
+        )
+        cfg)
+      ++ lib.flatten (lib.mapAttrsToList (
+          op: keys:
+            [
+              {
+                assertion = builtins.match registryNamePattern op != null;
+                message = ''
+                  aos.apm.configKeys.${op}: operator ids must match
+                  ${registryNamePattern} (ASCII letters, digits, '-' and '_').
+                '';
+              }
+              {
+                assertion = keys != [];
+                message = ''
+                  aos.apm.configKeys.${op}: at least one '${op}:Ed25519:<base64>'
+                  key is required (an empty operator anchor trusts nothing).
+                '';
+              }
+            ]
+            ++ builtins.map (key: {
+              assertion = builtins.match (configKeyPattern op) key != null;
               message = ''
-                aos.apm.configKeys.${op}: operator ids must match
-                ${registryNamePattern} (ASCII letters, digits, '-' and '_').
+                aos.apm.configKeys.${op}: config key '${key}' must be
+                '${op}:Ed25519:<base64>' (the operator prefix has to match the
+                attribute name).
               '';
-            }
-            {
-              assertion = keys != [];
-              message = ''
-                aos.apm.configKeys.${op}: at least one '${op}:Ed25519:<base64>'
-                key is required (an empty operator anchor trusts nothing).
-              '';
-            }
-          ]
-          ++ builtins.map (key: {
-            assertion = builtins.match (configKeyPattern op) key != null;
-            message = ''
-              aos.apm.configKeys.${op}: config key '${key}' must be
-              '${op}:Ed25519:<base64>' (the operator prefix has to match the
-              attribute name).
-            '';
-          })
-          keys
-      )
-      configKeys);
+            })
+            keys
+        )
+        configKeys);
 
     environment.etc = lib.mkMerge (
       (lib.mapAttrsToList (name: registry:
@@ -142,10 +144,10 @@ in {
         })
       cfg)
       ++ (lib.mapAttrsToList (op: keys: {
-        "apm/trusted-config-keys.d/${op}.pub".text =
-          lib.concatMapStrings (key: key + "\n") keys;
-      })
-      configKeys)
+          "apm/trusted-config-keys.d/${op}.pub".text =
+            lib.concatMapStrings (key: key + "\n") keys;
+        })
+        configKeys)
     );
   };
 }
