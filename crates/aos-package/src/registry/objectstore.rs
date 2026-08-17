@@ -1,17 +1,18 @@
 //! Git-native registry object-store helpers.
 //!
 //! These helpers own the static dumb-HTTP object layout used by the target
-//! registry: a bare sha256 repository, root loose-object store, per-release
-//! pack directories, and relative `objects/info/alternates`.
+//! registry: a bare sha256 repository, a complete root object store,
+//! per-release pack directories, and relative `objects/info/alternates`.
 //!
 //! The published origin is a plain byte tree any static file host can
 //! serve. Stock `git clone` works against it through the dumb-HTTP
-//! protocol, which requires every reachable object to exist loose in the
-//! root `objects/` store ([`ensure_loose_completeness`]) and up-to-date
-//! `info/refs` metadata ([`refresh_server_info`]). Per-release pack
-//! directories under `releases/<X>/<Y>/<Z>/objects/` carry the optimized
-//! transfer artifacts and are stitched into the root store via relative
-//! alternates ([`write_alternates`]).
+//! protocol. Publication first materializes every reachable object in the
+//! root `objects/` store ([`ensure_loose_completeness`]), then packs that
+//! complete graph so every immutable URL identifies exact wire bytes, and
+//! refreshes the server metadata ([`refresh_server_info`]). Per-release pack
+//! directories under `releases/<X>/<Y>/<Z>/objects/` carry optimized transfer
+//! artifacts and are stitched into the root store via relative alternates
+//! ([`write_alternates`]).
 
 use std::collections::HashSet;
 use std::fs;
@@ -142,6 +143,83 @@ pub fn ensure_loose_completeness(repo: &Path) -> Result<()> {
             .with_context(|| format!("reading reachable object {oid}"))?;
         write_loose_object_file(&loose, object.kind(), object.data())
             .with_context(|| format!("materializing loose git object {oid}"))?;
+    }
+
+    Ok(())
+}
+
+/// Packs the complete root object graph and removes redundant loose encodings.
+///
+/// The caller first uses [`ensure_loose_completeness`] to materialize objects
+/// reachable through release alternates. This function writes one complete
+/// root pack, verifies its files were installed, removes loose copies, and
+/// retires superseded root packs. A pack filename identifies the exact pack
+/// bytes, unlike a loose-object filename, which identifies only its
+/// decompressed Git object.
+///
+/// # Errors
+///
+/// Returns an error if the repository cannot be read, the complete pack cannot
+/// be written, its installed files are absent, or redundant object files
+/// cannot be removed.
+pub fn pack_root_completeness(repo: &Path) -> Result<()> {
+    assert_sha256(repo)?;
+    let git_dir = repo_git_dir(repo)?;
+    let repository = open_git_dir(&git_dir)?;
+    let objects = reachable_objects(&repository)?;
+    if objects.is_empty() {
+        return Ok(());
+    }
+
+    let pack_dir = git_dir.join("objects/pack");
+    fs::create_dir_all(&pack_dir)
+        .with_context(|| format!("creating {}", pack_dir.display()))?;
+    let mut builder = repository
+        .packbuilder()
+        .context("creating complete root pack")?;
+    for oid in &objects {
+        builder
+            .insert_object(*oid, None)
+            .with_context(|| format!("adding object {oid} to complete root pack"))?;
+    }
+    builder
+        .write(&pack_dir, 0o444)
+        .context("writing complete root pack")?;
+    let pack_name = builder
+        .name()
+        .context("reading complete root pack name")?
+        .context("complete root pack has no content identity")?;
+    let active_pack = format!("pack-{pack_name}.pack");
+    let active_index = format!("pack-{pack_name}.idx");
+    for active in [&active_pack, &active_index] {
+        if !pack_dir.join(active).is_file() {
+            bail!("complete root pack is missing {}", pack_dir.join(active).display());
+        }
+    }
+
+    for oid in &objects {
+        let loose = git_dir.join("objects").join(loose_object_path(&oid.to_string())?);
+        match fs::remove_file(&loose) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("removing {}", loose.display()));
+            }
+        }
+    }
+    for entry in fs::read_dir(&pack_dir)
+        .with_context(|| format!("reading {}", pack_dir.display()))?
+    {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let superseded = name.starts_with("pack-")
+            && name != active_pack
+            && name != active_index;
+        if superseded {
+            fs::remove_file(entry.path())
+                .with_context(|| format!("removing {}", entry.path().display()))?;
+        }
     }
 
     Ok(())

@@ -1377,6 +1377,12 @@ fn refresh_registry_object_store(dir: &Path) -> Result<()> {
     }
     objectstore::write_alternates(dir, &releases)?;
     objectstore::ensure_loose_completeness(dir)?;
+    // Loose Git paths identify the decompressed object, not its zlib wire
+    // encoding. Publishing them as immutable files would make an equivalent
+    // object produced by another zlib version collide at the same URL. Pack
+    // names, by contrast, identify the exact pack bytes. Fold the complete
+    // root object graph into packs before exposing the dumb-HTTP surface.
+    objectstore::pack_root_completeness(dir)?;
     objectstore::refresh_server_info(dir)?;
     persist_image_publication_receipt(dir)?;
     Ok(())
@@ -16287,6 +16293,59 @@ mod tests {
                 semver::Version::parse("1.1.9").unwrap(),
                 semver::Version::parse("1.2.0").unwrap(),
             ],
+        );
+    }
+
+    #[test]
+    fn static_object_refresh_publishes_packs_instead_of_loose_encodings() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("registry");
+        git(
+            tmp.path(),
+            &[
+                "init",
+                "--object-format=sha256",
+                "--initial-branch=stable",
+                repo.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["config", "user.name", "AOS Registry"]).unwrap();
+        git(&repo, &["config", "user.email", "registry@example.com"]).unwrap();
+        git(&repo, &["config", "commit.gpgsign", "false"]).unwrap();
+        fs::write(
+            repo.join("registry.toml"),
+            "[registry]\nname = \"andyl/main\"\n",
+        )
+        .unwrap();
+        git(&repo, &["add", "registry.toml"]).unwrap();
+        git(&repo, &["commit", "-m", "init"]).unwrap();
+
+        let commit = git(&repo, &["rev-parse", "HEAD"]).unwrap();
+        refresh_registry_object_store(&repo).unwrap();
+
+        assert!(
+            !repo
+                .join(".git/objects")
+                .join(objectstore::loose_object_path(&commit).unwrap())
+                .exists()
+        );
+        assert!(git2::Repository::open(&repo)
+            .unwrap()
+            .revparse_single(&commit)
+            .is_ok());
+        let packs = fs::read_to_string(repo.join(".git/objects/info/packs")).unwrap();
+        assert!(
+            packs
+                .lines()
+                .all(|line| { line.starts_with("P pack-") && line.ends_with(".pack") })
+        );
+        assert!(!packs.is_empty());
+
+        refresh_registry_object_store(&repo).unwrap();
+        assert_eq!(
+            fs::read_to_string(repo.join(".git/objects/info/packs")).unwrap(),
+            packs,
         );
     }
 
