@@ -26,6 +26,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use sha2::Digest as _;
+use tokio::sync::Semaphore;
 
 use aos_net::{TransferEngine, TransferRequest};
 
@@ -33,6 +34,15 @@ use super::{
     AuthOptions, CacheBackend, IMMUTABLE_CACHE_CONTROL, MUTABLE_CACHE_CONTROL,
     add_static_metadata_headers,
 };
+
+/// Multipart request bodies admitted concurrently to one Hub origin.
+///
+/// Workers buffer each request before the service can authenticate and hash
+/// it, and the R2 binding then owns a second JavaScript-side view while the
+/// part is written. Keeping this budget on the shared backend prevents
+/// per-NAR and path-level concurrency from multiplying those allocations past
+/// the Worker's isolate memory limit.
+const HUB_MULTIPART_PART_CONCURRENCY: usize = 2;
 
 /// Marks a request as Connect-JSON before it reaches the Hub control plane.
 fn add_connect_json_headers(req: &mut TransferRequest) {
@@ -67,6 +77,8 @@ pub struct HttpBackend {
     is_hub: AtomicBool,
     /// Whether authentication or typed upload admission enabled multipart upload v1.
     multipart_v1: AtomicBool,
+    /// Aggregate in-flight multipart body budget for this Hub origin.
+    multipart_part_permits: Semaphore,
 }
 
 /// OAuth2 token-endpoint response, including explicitly negotiated features.
@@ -127,6 +139,7 @@ impl HttpBackend {
             is_aos,
             is_hub: AtomicBool::new(false),
             multipart_v1: AtomicBool::new(false),
+            multipart_part_permits: Semaphore::new(HUB_MULTIPART_PART_CONCURRENCY),
         };
 
         // If we have an AOS token, authenticate to get a JWT.
@@ -609,6 +622,11 @@ impl CacheBackend for HttpBackend {
         part_number: u32,
         data: &[u8],
     ) -> Result<(u32, String)> {
+        let _permit = self
+            .multipart_part_permits
+            .acquire()
+            .await
+            .context("acquiring Hub multipart request budget")?;
         let _ = nar_path;
         let url = format!(
             "{}/aos.hub.v1.BinaryCacheService/UploadPart/{upload_id}/{part_number}",
@@ -996,14 +1014,13 @@ mod tests {
 
     #[test]
     fn multipart_admission_decodes_proto_json_u64_strings() {
-        let response: aos_proto_types::BeginCacheMultipartUploadResponse = serde_json::from_value(
-            serde_json::json!({
+        let response: aos_proto_types::BeginCacheMultipartUploadResponse =
+            serde_json::from_value(serde_json::json!({
                 "uploadId": "upload-one",
                 "partSize": "8388608",
                 "partUploadUrl": "https://hub.example/upload/one",
-            }),
-        )
-        .unwrap();
+            }))
+            .unwrap();
 
         assert_eq!(response.part_size, 8 * 1024 * 1024);
     }
