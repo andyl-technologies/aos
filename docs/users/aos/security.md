@@ -13,6 +13,13 @@ particular compliance profile. The module presets configure mechanisms; the
 operator still owns identity policy, key custody, logging, monitoring, and
 verification on the deployed hardware.
 
+Normal initrds fail closed without an interactive root login: the initrd root
+password is locked and the upstream emergency and rescue login services are
+masked. Do not introduce a shared installer or image password as a recovery
+mechanism; a credential present in every public image provides no
+authentication. Production recovery must use a separately signed recovery
+environment and per-machine authorization material.
+
 ## Start with a production baseline
 
 `systems/server.nix` and `systems/edge.nix` define immutable roots and

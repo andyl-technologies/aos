@@ -7,6 +7,19 @@ generation, or mutable application state under `/var`.
 Keep console access, the deployed image digest, the accepted `host.nix`,
 registry trust anchors, and application backups outside the host.
 
+## Understand the initrd access boundary
+
+Normal AOS initrds have a locked root account and do not run the upstream
+interactive emergency or rescue login services. A failure before switch-root
+therefore stops noninteractively; there is no fleet-wide or image-default
+password that grants an initrd shell.
+
+The development debug profile can add direct autologin gettys, but enabling it
+is an explicit security waiver and it must not be used for production images.
+Until a release provides the dedicated signed recovery UKI described by the
+recovery design, use authenticated external rescue media or reimage the host
+when recovery requires access before switch-root.
+
 ## Collect state before changing it
 
 From a working console or rescue environment, capture what is available:

@@ -157,12 +157,17 @@ in {
 
     maskedUnits = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [];
+      default = [
+        "emergency.service"
+        "rescue.service"
+      ];
       description = ''
         Unit names to mask (symlink to /dev/null) in the initrd.
         Needed because the initrd's /usr→. symlink collapses systemd's
         unit search priority, making kernel-cmdline systemd.mask=
-        ineffective.
+        ineffective. The interactive emergency and rescue services are
+        masked by default so normal initrds fail closed without exposing a
+        password prompt. Explicit debug gettys are separate opt-in units.
       '';
     };
   };
