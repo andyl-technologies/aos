@@ -27,6 +27,34 @@ Until a release provides the dedicated signed recovery UKI described by the
 recovery design, use authenticated external rescue media or reimage the host
 when recovery requires access before switch-root.
 
+## Migrate an existing `/var` TPM policy
+
+Hosts enrolled before PCR 12 was pinned keep their PCR-7-only TPM token until
+an operator authorizes replacement with the off-machine recovery key. Perform
+the migration only from a known-clean signed boot whose current PCR signature
+matches the deployed policy key. Put the recovery key in a root-only file on
+tmpfs, then run:
+
+```sh
+chmod 0600 /run/aos-var-recovery.key
+aos-var-policy-migrate \
+  /dev/disk/by-partlabel/var \
+  /run/aos-var-recovery.key \
+  /etc/aos/pcr-sign.pem \
+  /run/systemd/tpm2-pcr-signature.json \
+  /var/lib/aos/security/var-policy-migration.json
+```
+
+The signature argument must use systemd's canonical runtime path shown above.
+The command binds the supplied recovery key to its exact recovery token and
+keyslot, adds a PCR-7+12 token carrying the supplied PCR-11 public key, and
+tests that exact TPM token. It durably records the verified transaction before
+removing any older TPM keyslot, and can resume from that boundary after an
+interruption. The retained recovery keyslot and new TPM keyslot are explicitly
+excluded from cleanup. Preserve the completed evidence JSON with the host's
+incident and key-custody records, reboot once, and confirm `/var` unlocks
+unattended before deleting the tmpfs key file.
+
 ## Collect state before changing it
 
 From a working console or rescue environment, capture what is available:

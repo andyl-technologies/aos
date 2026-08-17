@@ -9,9 +9,10 @@
 #      so the system reaches multi-user. Assert the vTPM is present.
 #   2. Enroll db → KEK → PK via efivarfs, then reboot into enforcing SB.
 #   3. On the first enforcing boot aos-var-crypt LUKS2-formats /var and
-#      seals its key to the signed PCR policy (PCR 11) + pinned PCR 7, plus
-#      a recovery key. Assert SecureBoot=1, /var is a LUKS2 device with a
-#      systemd-tpm2 token, mounted via /dev/mapper/var.
+#      seals its key to the legacy signed-PCR-11 + pinned-PCR-7 policy, plus a
+#      recovery key. Use that key to migrate in place to pinned PCRs 7+12,
+#      verify the new token before deleting the old token, and retain durable
+#      migration evidence.
 #   4. Prove the running root is the dm-verity mapper selected by the UKI,
 #      its live root hash and backing devices match the measured `.cmdline`,
 #      and the achieved PCR 11 is one predicted from those exact UKI sections.
@@ -20,7 +21,7 @@
 #      `veritysetup verify` to reject it.
 #   5. Reboot again and assert /var unlocks UNATTENDED via the TPM2 token
 #      (no passphrase) — the new boot re-measured PCR 11 but the signed
-#      policy still unseals, and PCR 7 is unchanged.
+#      policy still unseals, and pinned PCRs 7 and 12 are unchanged.
 #
 # Single image-boot machine with a vTPM (server-verity: server + dm-verity +
 # SB-signed + PCR-policy-signed image + the bundled test-agent payload).
@@ -32,16 +33,19 @@
   measuredSystem = systems.server-verity.extendModules {
     modules = [
       {
+        # Exercise the deployed-host transition rather than only fresh
+        # enrollment under the new default.
+        aos.boot.secureBoot.measuredBoot.pinnedPcrs = lib.mkForce "7";
         aos.packages.test-http-server.bundle = true;
         environment.systemPackages = [pkgs.binutils pkgs.diffutils pkgs.jq];
       }
     ];
   };
+  measuredImage = measuredSystem.config.system.build.image.raw;
 in {
   name = "measured-boot";
-  # Image boot + enroll + three reboots (enforcing seal, then unattended
-  # unlock). Budget like secure-boot plus an extra reboot.
-  timeout = 3600;
+  # Image boot + enrollment/migration + the A/B counted-candidate lifecycle.
+  timeout = 5400;
   # The emulated TPM (swtpm) adds tens of seconds of slow command
   # round-trips to every boot (firmware measurement, kernel TCG init,
   # systemd PCR phases, the cryptenroll/cryptsetup TPM2 ops), so each
@@ -103,8 +107,19 @@ in {
       MEASURE = "${pkgs.systemd}/lib/systemd/systemd-measure"
       APM = "${pkgs.aos}/bin/apm"
       TPM2_CHECKQUOTE = "${pkgs.tpm2-tools}/bin/tpm2_checkquote"
+      TPM2_PCREXTEND = "${pkgs.tpm2-tools}/bin/tpm2_pcrextend"
       TPM2_PCRREAD = "${pkgs.tpm2-tools}/bin/tpm2_pcrread"
+      VAR_POLICY_MIGRATE = "${pkgs.aos-var-policy-migrate}/bin/aos-var-policy-migrate"
+      UKI_B = "${measuredImage}/uki-b.efi"
       VARDEV = "/dev/disk/by-partlabel/var"
+
+      def read_pcr12():
+          output = target.succeed(f"{TPM2_PCRREAD} sha256:12")
+          match = re.search(r"^\s*12\s*:\s*0x([0-9A-Fa-f]+)\s*$", output, re.M)
+          assert match is not None, output
+          value = match.group(1).lower()
+          assert len(value) == 64, output
+          return value
 
       def canonical_json(value):
           """Encode canonical attestation JSON independently of the AOS CLI."""
@@ -517,12 +532,12 @@ in {
               {TPM2_PCRREAD} -o /tmp/runtime-config-current-pcrs sha256:7,11,12,15
               {CMP} {quote_dir}/quote.pcrs /tmp/runtime-config-current-pcrs
           """)
-          pcrs = target.succeed(f"{TPM2_PCRREAD} sha256:7,11")
+          pcrs = target.succeed(f"{TPM2_PCRREAD} sha256:7,11,12")
           parsed = {
               int(index): value.lower()
-              for index, value in re.findall(r"^\s*(7|11)\s*:\s*0x([0-9A-Fa-f]+)\s*$", pcrs, re.M)
+              for index, value in re.findall(r"^\s*(7|11|12)\s*:\s*0x([0-9A-Fa-f]+)\s*$", pcrs, re.M)
           }
-          assert set(parsed) == {7, 11}, pcrs
+          assert set(parsed) == {7, 11, 12}, pcrs
           assert parsed[11] == expected_pcr11, (parsed, expected_pcr11)
           assert parsed[7] != "0" * 64, parsed
 
@@ -682,9 +697,10 @@ in {
                   "authorization": authorization,
               })
           policy = {
-              "schema": "aos.gen-attestation-policy/v1",
+              "schema": "aos.gen-attestation-policy/v2",
               "expected_pcr7": parsed[7],
               "expected_pcr11": "sha256:" + expected_pcr11,
+              "expected_pcr12": parsed[12],
               "expected_root_roothash": root_hash,
               "expected_facts_hash": inputs["instance_facts"]["facts_hash"],
               "trusted_config_keys": [],
@@ -866,6 +882,102 @@ in {
       dump = target.succeed(f"{CS} luksDump {VARDEV}")
       assert "systemd-tpm2" in dump, f"/var has no TPM2 token:\n{dump}"
       assert "systemd-recovery" in dump, f"/var has no recovery token:\n{dump}"
+      legacy_metadata = json.loads(target.succeed(
+          f"{CS} luksDump --dump-json-metadata {VARDEV}"
+      ))
+      legacy_tpm_tokens = [
+          token for token in legacy_metadata["tokens"].values()
+          if token["type"] == "systemd-tpm2"
+      ]
+      assert len(legacy_tpm_tokens) == 1, legacy_tpm_tokens
+      assert sorted(legacy_tpm_tokens[0]["tpm2-pcrs"]) == [7], legacy_tpm_tokens
+      recovery_key_encoded = base64.b64encode(
+          target.succeed("cat /run/aos-var-recovery.key").encode()
+      ).decode()
+
+      clean_pcr12 = read_pcr12()
+      assert clean_pcr12 == "0" * 64, (
+          f"clean embedded-command-line boot unexpectedly extended PCR 12: {clean_pcr12}"
+      )
+      migration_evidence = "/var/lib/aos/security/var-policy-migration.json"
+      target.fail(f"""
+          AOS_VAR_POLICY_MIGRATE_STOP_AFTER_VERIFY=1 {VAR_POLICY_MIGRATE} \
+            {VARDEV} \
+            /run/aos-var-recovery.key \
+            /etc/aos/pcr-sign.pem \
+            /run/systemd/tpm2-pcr-signature.json \
+            {migration_evidence}
+      """, timeout=180)
+      interrupted_evidence = json.loads(target.succeed(f"cat {migration_evidence}"))
+      assert interrupted_evidence["state"] == "verified", interrupted_evidence
+      interrupted_metadata = json.loads(target.succeed(
+          f"{CS} luksDump --dump-json-metadata {VARDEV}"
+      ))
+      assert len([
+          token for token in interrupted_metadata["tokens"].values()
+          if token["type"] == "systemd-tpm2"
+      ]) == 2, interrupted_metadata
+      target.succeed(
+          f"{CS} open --test-passphrase "
+          f"--key-slot {interrupted_evidence['recovery_keyslot']} "
+          f"--key-file /run/aos-var-recovery.key {VARDEV}"
+      )
+      target.succeed(f"""
+          {VAR_POLICY_MIGRATE} \
+            {VARDEV} \
+            /run/aos-var-recovery.key \
+            /etc/aos/pcr-sign.pem \
+            /run/systemd/tpm2-pcr-signature.json \
+            {migration_evidence}
+      """, timeout=180)
+      migrated_metadata = json.loads(target.succeed(
+          f"{CS} luksDump --dump-json-metadata {VARDEV}"
+      ))
+      migrated_tpm_tokens = [
+          token for token in migrated_metadata["tokens"].values()
+          if token["type"] == "systemd-tpm2"
+      ]
+      assert len(migrated_tpm_tokens) == 1, migrated_tpm_tokens
+      migrated_token = migrated_tpm_tokens[0]
+      assert sorted(migrated_token["tpm2-pcrs"]) == [7, 12], migrated_token
+      assert sorted(migrated_token["tpm2_pubkey_pcrs"]) == [11], migrated_token
+      assert migrated_token["tpm2-pcr-bank"] == "sha256", migrated_token
+      expected_pubkey = base64.b64encode(
+          target.succeed("cat /etc/aos/pcr-sign.pem").encode()
+      ).decode()
+      assert migrated_token["tpm2_pubkey"] == expected_pubkey, migrated_token
+      evidence = json.loads(target.succeed(f"cat {migration_evidence}"))
+      assert evidence["schema"] == "aos.var-tpm-policy-migration/v1", evidence
+      assert evidence["state"] == "complete", evidence
+      assert evidence["pinned_pcrs"] == [7, 12], evidence
+      assert evidence["recovery_authorized"] is True, evidence
+      assert read_pcr12() == clean_pcr12, "migration changed the live PCR-12 state"
+
+      evidence_digest = target.succeed(
+          f"sha256sum {migration_evidence} | cut -d' ' -f1"
+      ).strip()
+      metadata_digest = hashlib.sha256(json.dumps(
+          migrated_metadata, sort_keys=True, separators=(",", ":")
+      ).encode()).hexdigest()
+      target.succeed(f"""
+          {VAR_POLICY_MIGRATE} \
+            {VARDEV} \
+            /run/aos-var-recovery.key \
+            /etc/aos/pcr-sign.pem \
+            /run/systemd/tpm2-pcr-signature.json \
+            {migration_evidence}
+      """, timeout=180)
+      assert target.succeed(
+          f"sha256sum {migration_evidence} | cut -d' ' -f1"
+      ).strip() == evidence_digest, "completed migration evidence was rewritten"
+      rerun_metadata = json.loads(target.succeed(
+          f"{CS} luksDump --dump-json-metadata {VARDEV}"
+      ))
+      assert hashlib.sha256(json.dumps(
+          rerun_metadata, sort_keys=True, separators=(",", ":")
+      ).encode()).hexdigest() == metadata_digest, "idempotent rerun changed LUKS metadata"
+
+      dump = target.succeed(f"{CS} luksDump {VARDEV}")
       sealed_luks_digest = hashlib.sha256(dump.encode()).hexdigest()
       src = var_source()
       assert src == "/dev/mapper/var", f"/var not on the LUKS mapper: {src!r}"
@@ -879,10 +991,36 @@ in {
       root_hash, root_data, root_hash_device, expected_pcr11 = assert_verified_root()
       assert_generation_attestation(root_hash, expected_pcr11)
 
+      # A guard-valid boot can still acquire a different PCR-12 state. The
+      # TPM policy itself must deny the exact TPM token while the retained,
+      # exact recovery keyslot remains usable.
+      target.succeed(f"{TPM2_PCREXTEND} 12:sha256={'a5' * 32}")
+      assert read_pcr12() != clean_pcr12
+      current_generation = target.succeed(
+          f"{JQ} -er '.current' /var/lib/profiles/system/state.json"
+      ).strip()
+      target.fail(f"""
+          {APM} attest __verify-boot-commit \
+            --generation-attestation /var/lib/profiles/system/gen-{current_generation}/gen-attestation.json \
+            --quote-dir /var/lib/profiles/system/gen-{current_generation}/gen-attestation-quote \
+            --expected-pcr11 sha256:{expected_pcr11}
+      """)
+      target.fail(
+          f"{CS} open --test-passphrase --token-only "
+          f"--token-id {evidence['verified_tpm_token_id']} "
+          f"--external-tokens-path ${pkgs.systemd}/lib/cryptsetup {VARDEV}"
+      )
+      target.succeed(
+          f"{CS} open --test-passphrase "
+          f"--key-slot {evidence['recovery_keyslot']} "
+          f"--key-file /run/aos-var-recovery.key {VARDEV}"
+      )
+
       # ════ 4. Reboot — /var must unlock UNATTENDED via the TPM2 token ══
       target.reboot(timeout=600)
       wait_multi_user("boot3 (unattended unlock)")
       assert efivar_byte("SecureBoot") == 1
+      assert read_pcr12() == clean_pcr12, "clean reboot changed pinned PCR 12"
       src = var_source()
       assert src == "/dev/mapper/var", (
           f"/var did not unlock via TPM2 on reboot (source {src!r})"
@@ -906,7 +1044,78 @@ in {
       assert_tamper_rejected(root_hash, root_data, root_hash_device)
       print("=== /var unsealed UNATTENDED via TPM2 across reboot ===")
 
-      # ════ 5. Fault injection — failed ready phase must not bless ═══
+      # ════ 5. A/B and counted-candidate PCR-12 qualification ════════
+      # Populate the initially empty B data/hash partitions from the verified
+      # A bytes, then boot the independently measured slot-B UKI under a
+      # counted filename. This isolates the boot-entry lifecycle from payload
+      # differences: every supported clean transition must leave PCR 12 at its
+      # reset value while PCR 11 selects the slot-specific signed policy.
+      candidate_name = "aos-phase3-slot-b+3.efi"
+      stable_name = "aos-phase3-slot-b.efi"
+      target.succeed(f"""
+          dd if=/dev/disk/by-partlabel/root-a of=/dev/disk/by-partlabel/root-b bs=4M conv=fsync status=none
+          dd if=/dev/disk/by-partlabel/root-a-hash of=/dev/disk/by-partlabel/root-b-hash bs=4M conv=fsync status=none
+          mount -o remount,rw /boot
+          cp {UKI_B} /boot/EFI/Linux/{candidate_name}
+          bootctl set-oneshot {candidate_name}
+          mount -o remount,ro /boot
+      """, timeout=300)
+      target.reboot(timeout=600)
+      wait_multi_user("boot4 (counted slot-B candidate)")
+      assert read_pcr12() == clean_pcr12, "counted slot-B boot changed PCR 12"
+      assert "/dev/disk/by-partlabel/root-b" in target.succeed("cat /proc/cmdline")
+      assert var_source() == "/dev/mapper/var"
+
+      target.succeed(f"""
+          mount -o remount,rw /boot
+          ${pkgs.systemd}/lib/systemd/systemd-bless-boot --path=/boot good
+          bootctl set-default {stable_name}
+          test -e /boot/EFI/Linux/{stable_name}
+          mount -o remount,ro /boot
+      """)
+      assert read_pcr12() == clean_pcr12, "committing candidate changed PCR 12"
+
+      target.reboot(timeout=600)
+      wait_multi_user("boot5 (committed slot-B candidate)")
+      assert read_pcr12() == clean_pcr12, "committed slot-B boot changed PCR 12"
+      assert "/dev/disk/by-partlabel/root-b" in target.succeed("cat /proc/cmdline")
+      assert var_source() == "/dev/mapper/var"
+
+      target.reboot(timeout=600)
+      wait_multi_user("boot6 (normal reboot after commit)")
+      assert read_pcr12() == clean_pcr12, "post-commit reboot changed PCR 12"
+      assert "/dev/disk/by-partlabel/root-b" in target.succeed("cat /proc/cmdline")
+      assert var_source() == "/dev/mapper/var"
+
+      # ════ 6. Firmware-appended boot input fails before storage ══════
+      appended_inputs = [
+          "SYSTEMD_SULOGIN_FORCE=1",
+          f"roothash={root_hash}",
+          "rd.systemd.unit=emergency.target",
+      ]
+      for appended in appended_inputs:
+          transcript = target.relaunch_with_smbios_oem_strings(
+              [f"io.systemd.stub.kernel-cmdline-extra={appended}"],
+              expect_agent=False,
+              settle=45,
+          )
+          assert "aos-boot-identity: rejected normal boot" in transcript, transcript
+          assert "AOS boot identity failure: verity root absent; /var unmounted" in transcript, transcript
+          assert "unlocking /var via TPM2" not in transcript, transcript
+
+          target.relaunch_with_smbios_oem_strings([], timeout=600)
+          wait_multi_user(f"clean recovery after appended input {appended}")
+          assert read_pcr12() == clean_pcr12
+          assert var_source() == "/dev/mapper/var"
+          target.succeed(f"""
+              printf '%s' {recovery_key_encoded} | base64 -d > /run/aos-var-recovery.key
+              chmod 0600 /run/aos-var-recovery.key
+              {CS} open --test-passphrase \
+                --key-slot {evidence['recovery_keyslot']} \
+                --key-file /run/aos-var-recovery.key {VARDEV}
+          """)
+
+      # ════ 7. Fault injection — failed ready phase must not bless ═══
       target.succeed(f"""
           set -eu
           mkdir -p /var/etc/systemd/system/systemd-pcrphase.service.d

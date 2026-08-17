@@ -191,14 +191,17 @@ apm attest verify --system \
   --rederived-manifest verifier/rederived-manifest.json
 ```
 
-The policy is strict JSON. PCR and root values come from the verifier's image
-catalog, not from the host being checked:
+The policy is strict JSON. Version 2 requires an operator-authorized PCR-12
+boot-input value; version 1 is rejected because it cannot express that check.
+PCR and root values come from verifier-controlled policy and catalog data, not
+from the host being checked:
 
 ```json
 {
-  "schema": "aos.gen-attestation-policy/v1",
+  "schema": "aos.gen-attestation-policy/v2",
   "expected_pcr7": "<64 lowercase hex>",
   "expected_pcr11": "sha256:<64 lowercase hex>",
+  "expected_pcr12": "<64 lowercase hex>",
   "expected_root_roothash": "<64 lowercase hex>",
   "expected_facts_hash": "sha256:<64 lowercase hex>",
   "trusted_config_keys": ["<8-hex fingerprint>"],
@@ -207,7 +210,7 @@ catalog, not from the host being checked:
 ```
 
 The command verifies the quote against an enrolled AK/EK identity, binds the
-record to its unique activation event and PCR-15 prefix, checks PCR 7, PCR 11,
+record to its unique activation event and PCR-15 prefix, checks PCR 7, PCR 11, PCR 12,
 dm-verity, facts, and host-input authorization, and reconstructs config-module
 membership and realization from the signed release commit. It rejects missing,
 revoked, or mismatched release receipts. `--rederived-manifest` supplies an
