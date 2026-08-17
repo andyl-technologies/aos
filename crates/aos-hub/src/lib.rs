@@ -33,9 +33,9 @@
 //! - [`config`] — the SQL-backed configuration change-set engine: drafts,
 //!   semantic diffs, atomic apply, and snapshot-targeted forward revert
 //!   over the append-only audit/changeset/revision tables.
-//! - [`console`] — the authenticated producer console: session login, the
-//!   account profile, device approval, org/registry management pages, and
-//!   the CSRF-checked POST flows.
+//! - [`console`] — shared browser-session, login, account-security, invitation,
+//!   and device-approval ceremonies. Resource management is the hermetic
+//!   Leptos client over the canonical Connect API.
 //! - [`domain`] — tenancy/IAM domain model: orgs, projects, principals,
 //!   and the pure role/permission/scope authorization kernel.
 //! - [`export`] — org backup/export: a portable JSON bundle of the SQL system

@@ -47,6 +47,7 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         dev: false,
         delivery_attestation_verifier: None,
         domain_probe_terminator: None,
+        identity_domain_verifier: None,
         route_reservation_keyring: None,
     })
 }

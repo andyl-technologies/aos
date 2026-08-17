@@ -70,6 +70,7 @@
   nodejs,
   protobuf,
   stdenv,
+  aos-hub-console-dist,
   # Extra cargo feature flags for purpose-built test artifacts. Space-separated;
   # empty for the default production build.
   cargoFeatures ? "",
@@ -152,6 +153,9 @@ in
           # aos.hub.v1 message structs (the worker depends on it via
           # aos-hub-core), so point prost-build at the hermetic protoc.
           export PROTOC="${protobuf}/bin/protoc"
+          export AOS_HUB_CONSOLE_JS="${aos-hub-console-dist}/hub-console.js"
+          export AOS_HUB_CONSOLE_WASM="${aos-hub-console-dist}/hub-console_bg.wasm"
+          export AOS_HUB_CONSOLE_CSS="${aos-hub-console-dist}/hub-console.css"
           # Step 1 — compile the worker cdylib to wasm32. rust-lld (shipped in
           # pkgs.rust's rustlib bin) is the wasm linker; no env override needed.
           #
@@ -323,9 +327,8 @@ in
           # Lay them out under `_assets/` so the on-edge path matches the URL the
           # browse pages + stylesheet reference (e.g. /_assets/style.css), and
           # rename the fonts to the lowercase-hyphenated URL names. The `_headers`
-          # file sets a browser cache lifetime; Cloudflare edge-caches them
-          # regardless. (Names are stable, not content-hashed, so the lifetime is
-          # bounded rather than `immutable` — hashing is the follow-on if needed.)
+          # file gives stable browse assets a bounded lifetime and the generated,
+          # content-addressed console bundle an immutable lifetime.
           mkdir -p "$out/assets/_assets"
           cp aos-hub-core/src/web/static_assets/style.css "$out/assets/_assets/style.css"
           cp aos-hub-core/src/web/static_assets/app.js    "$out/assets/_assets/app.js"
@@ -334,7 +337,32 @@ in
           cp aos-hub-core/src/web/static_assets/JetBrainsMono-Bold.woff2 \
             "$out/assets/_assets/jetbrains-mono-bold.woff2"
           cp aos-hub-core/src/web/static_assets/OFL.txt   "$out/assets/_assets/OFL.txt"
-          printf '/_assets/*\n  Cache-Control: public, max-age=86400\n' \
+          cat aos-hub-core/src/web/static_assets/style.css \
+            aos-hub-core/src/web/static_assets/app.js \
+            ${aos-hub-console-dist}/hub-console.js \
+            ${aos-hub-console-dist}/hub-console_bg.wasm \
+            ${aos-hub-console-dist}/hub-console.css \
+            > "$TMPDIR/hub-console-version-input"
+          # The generated bootstrap is immutable under the same content key.
+          # Include its API contract revision so template-only changes cannot
+          # leave browsers pinned to an older initializer.
+          printf 'bootstrap-api=object-v1\n' \
+            >> "$TMPDIR/hub-console-version-input"
+          sha256sum "$TMPDIR/hub-console-version-input" \
+            > "$TMPDIR/hub-console-version-hash"
+          cut -c1-8 "$TMPDIR/hub-console-version-hash" \
+            > "$TMPDIR/hub-console-version"
+          read -r console_version < "$TMPDIR/hub-console-version"
+          cp ${aos-hub-console-dist}/hub-console.js \
+            "$out/assets/_assets/hub-console-$console_version.js"
+          cp ${aos-hub-console-dist}/hub-console_bg.wasm \
+            "$out/assets/_assets/hub-console-''${console_version}_bg.wasm"
+          cp ${aos-hub-console-dist}/hub-console.css \
+            "$out/assets/_assets/hub-console-$console_version.css"
+          printf "import init, { mount } from './hub-console-%s.js';\n\nawait init({ module_or_path: new URL('./hub-console-%s_bg.wasm', import.meta.url) });\nmount();\n" \
+            "$console_version" "$console_version" \
+            > "$out/assets/_assets/hub-console-bootstrap-$console_version.js"
+          printf '/_assets/*\n  Cache-Control: public, max-age=86400\n\n/_assets/hub-console*\n  Cache-Control: public, max-age=31536000, immutable\n' \
             > "$out/assets/_headers"
         '';
       }

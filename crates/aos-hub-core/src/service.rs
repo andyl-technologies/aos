@@ -64,8 +64,10 @@ pub const INTERNAL_UPLOAD_AUTH_TTL_SECS: i64 = 3600;
 
 /// Lifetime of an immutable topology impact plan (15 minutes).
 const TOPOLOGY_PLAN_TTL_SECS: i64 = 15 * 60;
-const REGISTRY_TOKEN_DEFAULT_TTL_SECS: i64 = 30 * 24 * 60 * 60;
-const REGISTRY_TOKEN_MAX_TTL_SECS: i64 = 365 * 24 * 60 * 60;
+const ACCESS_TOKEN_DEFAULT_TTL_SECS: i64 = 30 * 24 * 60 * 60;
+const ACCESS_TOKEN_MAX_TTL_SECS: i64 = 90 * 24 * 60 * 60;
+const INVITATION_DEFAULT_TTL_SECS: i64 = 7 * 24 * 60 * 60;
+const INVITATION_MAX_TTL_SECS: i64 = 30 * 24 * 60 * 60;
 /// Organization offboarding grace before separately scheduled hard purge.
 const ORGANIZATION_DELETE_GRACE_SECS: i64 = 30 * 24 * 60 * 60;
 
@@ -473,11 +475,30 @@ struct InstanceSettingsPlanInput {
 
 /// Immutable preconditions for creating an organization-owned automation principal.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct AutomationPrincipalPlanInput {
+struct ServiceAccountCreatePlanInput {
     org_id: i64,
     org_slug: String,
     name: String,
     baseline_principal_id: Option<i64>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct ServiceAccountUpdatePlanInput {
+    org_id: i64,
+    org_slug: String,
+    service_account_id: i64,
+    current_name: String,
+    new_name: String,
+    baseline_resource_version: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct ServiceAccountDeletePlanInput {
+    org_id: i64,
+    org_slug: String,
+    service_account_id: i64,
+    name: String,
+    baseline_resource_version: String,
 }
 
 /// Immutable preconditions for replacing one direct membership grant.
@@ -491,20 +512,86 @@ struct MembershipPlanInput {
     baseline_role: Option<String>,
 }
 
-/// Immutable preconditions for issuing one registry-scoped token generation.
+/// Immutable preconditions for creating one invitation.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct RegistryTokenIssuePlanInput {
+struct InvitationCreatePlanInput {
+    org_id: i64,
+    org_slug: String,
+    email: String,
+    scope: String,
+    role: String,
+    ttl_secs: i64,
+}
+
+/// Immutable preconditions for cancelling one pending invitation.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct InvitationCancelPlanInput {
+    org_id: i64,
+    org_slug: String,
+    invitation_id: i64,
+    baseline_resource_version: String,
+    baseline_created_at: i64,
+}
+
+/// Sealed desired state and exact baseline for one organization IdP mutation.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct IdentityProviderSetPlanInput {
+    org_id: i64,
+    org_slug: String,
+    issuer: String,
+    authorization_endpoint: String,
+    token_endpoint: String,
+    jwks_uri: String,
+    client_id: String,
+    client_secret_enc: Option<String>,
+    client_secret_action: String,
+    scopes: String,
+    groups_claim: Option<String>,
+    role_map_json: String,
+    allow_jit: bool,
+    enforce_sso: bool,
+    default_role: String,
+    baseline_resource_version: Option<i64>,
+    baseline_incarnation_id: Option<String>,
+    incarnation_id: String,
+}
+
+/// Exact baseline for removing one organization IdP configuration.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct IdentityProviderRemovePlanInput {
+    org_id: i64,
+    org_slug: String,
+    baseline_resource_version: i64,
+    baseline_incarnation_id: Option<String>,
+}
+
+/// Exact ownership and revision sealed by an organization-domain plan.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct OrganizationDomainPlanInput {
+    org_id: i64,
+    org_slug: String,
+    domain: String,
+    txt_challenge: String,
+    baseline_resource_version: Option<i64>,
+    baseline_incarnation_id: Option<String>,
+    incarnation_id: String,
+}
+
+/// Immutable preconditions for issuing one scoped access-token generation.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct AccessTokenIssuePlanInput {
     owner_kind: String,
     owner_ref: String,
     owner_id: i64,
     scope: String,
     permissions: Vec<String>,
     ttl_secs: i64,
+    comment: Option<String>,
 }
 
-/// Immutable preconditions for retiring one registry token generation.
+/// Immutable preconditions for retiring one access-token generation.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct RegistryTokenRetirementPlanInput {
+struct AccessTokenRetirementPlanInput {
     token_id: String,
 }
 
@@ -1377,6 +1464,7 @@ fn organization_message(org: &crate::db::OrgRecord) -> pb::Organization {
         resource_version: org.resource_version.to_string(),
         created_at: org.created_at,
         updated_at: org.updated_at,
+        authorization_scope_key: org.stable_id.clone(),
     }
 }
 
@@ -1622,26 +1710,162 @@ fn instance_settings_digest(s: &crate::db::InstanceSettings) -> Result<String, R
     Ok(hex::encode(Sha256::digest(canonical)))
 }
 
-fn registry_token_permission(value: &str) -> Option<Permission> {
-    match value {
-        "registry.read" => Some(Permission::Read),
-        "registry.publish" => Some(Permission::Publish),
-        "registry.manage" => Some(Permission::RegistryConfigure),
-        "registry.admin" => Some(Permission::MembersManage),
-        "registry.owner" => Some(Permission::IamAdmin),
-        _ => None,
+fn service_account_resource_version(
+    record: &crate::db::ServiceAccountRecord,
+) -> Result<String, RpcError> {
+    let canonical =
+        serde_json::to_vec(&(record.id, record.org_id, &record.name, record.created_at))
+            .map_err(RpcError::internal)?;
+    Ok(hex::encode(Sha256::digest(canonical)))
+}
+
+fn service_account_message(
+    org_slug: &str,
+    record: crate::db::ServiceAccountRecord,
+) -> Result<pb::ServiceAccount, RpcError> {
+    let resource_version = service_account_resource_version(&record)?;
+    Ok(pb::ServiceAccount {
+        id: record.id,
+        org_slug: org_slug.to_string(),
+        name: record.name,
+        created_at: record.created_at,
+        resource_version,
+    })
+}
+
+fn invitation_resource_version(record: &crate::db::InvitationRecord) -> Result<String, RpcError> {
+    let canonical = serde_json::to_vec(&(
+        record.id,
+        record.org_id,
+        &record.email,
+        &record.scope,
+        &record.role,
+        record.created_at,
+        record.accepted_at,
+        record.cancelled_at,
+        record.expires_at,
+    ))
+    .map_err(RpcError::internal)?;
+    Ok(hex::encode(Sha256::digest(canonical)))
+}
+
+fn invitation_message(
+    org_slug: &str,
+    record: crate::db::InvitationRecord,
+) -> Result<pb::Invitation, RpcError> {
+    let resource_version = invitation_resource_version(&record)?;
+    let state = if record.accepted_at.is_some() {
+        "accepted"
+    } else if record.cancelled_at.is_some() {
+        "cancelled"
+    } else if record.expires_at <= clock::now_unix_secs() {
+        "expired"
+    } else {
+        "pending"
+    };
+    Ok(pb::Invitation {
+        invitation_id: record.id,
+        org_slug: org_slug.to_string(),
+        email: record.email,
+        scope: record.scope,
+        role: record.role,
+        state: state.to_string(),
+        created_at: record.created_at,
+        accepted_at: record.accepted_at.unwrap_or_default(),
+        cancelled_at: record.cancelled_at.unwrap_or_default(),
+        expires_at: record.expires_at,
+        resource_version,
+    })
+}
+
+fn identity_provider_message(
+    org_slug: &str,
+    record: crate::db::IdpConfigRecord,
+) -> pb::IdentityProvider {
+    pb::IdentityProvider {
+        org_slug: org_slug.to_string(),
+        issuer: record.issuer,
+        authorization_endpoint: record.authorization_endpoint,
+        token_endpoint: record.token_endpoint,
+        jwks_uri: record.jwks_uri,
+        client_id: record.client_id,
+        client_secret_configured: record.client_secret_enc.is_some(),
+        scopes: record.scopes,
+        groups_claim: record.groups_claim.unwrap_or_default(),
+        role_map_json: record.role_map_json,
+        allow_jit: record.allow_jit,
+        enforce_sso: record.enforce_sso,
+        default_role: record.default_role,
+        resource_version: identity_resource_version(
+            record.resource_version,
+            record.incarnation_id.as_deref(),
+        ),
     }
 }
 
-fn registry_token_permission_name(permission: Permission) -> Option<&'static str> {
-    match permission {
-        Permission::Read => Some("registry.read"),
-        Permission::Publish => Some("registry.publish"),
-        Permission::RegistryConfigure => Some("registry.manage"),
-        Permission::MembersManage => Some("registry.admin"),
-        Permission::IamAdmin => Some("registry.owner"),
-        _ => None,
+fn organization_domain_message(
+    org_slug: &str,
+    record: crate::db::OrgDomainRecord,
+) -> pb::OrganizationDomain {
+    pb::OrganizationDomain {
+        org_slug: org_slug.to_string(),
+        domain: record.domain,
+        state: if record.verified_at.is_some() {
+            "verified".to_string()
+        } else {
+            "pending".to_string()
+        },
+        txt_challenge: record.txt_challenge,
+        verified_at: record.verified_at.unwrap_or_default(),
+        resource_version: identity_resource_version(
+            record.resource_version,
+            record.incarnation_id.as_deref(),
+        ),
     }
+}
+
+fn normalize_invitation_email(value: &str) -> Result<String, RpcError> {
+    let email = value.trim().to_ascii_lowercase();
+    if email.len() > 254 {
+        return Err(RpcError::invalid("email address is too long"));
+    }
+    let mut parts = email.split('@');
+    let local = parts.next().unwrap_or_default();
+    let domain = parts.next().unwrap_or_default();
+    let valid_local = !local.is_empty()
+        && local.len() <= 64
+        && !local.starts_with('.')
+        && !local.ends_with('.')
+        && !local.contains("..")
+        && local.bytes().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || b"!#$%&'*+-/=?^_`{|}~.".contains(&byte)
+        });
+    let valid_domain = matches!(url::Host::parse(domain), Ok(url::Host::Domain(parsed)) if parsed == domain)
+        && domain.contains('.')
+        && !domain.ends_with('.');
+    if parts.next().is_some() || !valid_local || !valid_domain {
+        return Err(RpcError::invalid(
+            "email must use canonical lowercase dot-atom syntax and an ASCII DNS domain",
+        ));
+    }
+    Ok(email)
+}
+
+fn normalize_service_account_name(value: &str) -> Result<String, RpcError> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(RpcError::invalid(
+            "service-account name must contain 1..=64 letters, digits, '-', '_', or '.'",
+        ));
+    }
+    Ok(value.to_string())
 }
 
 /// Build the wire [`pb::Webhook`] for a webhook subscription under `org_slug`.
@@ -2154,6 +2378,8 @@ pub struct RpcService {
     /// ownership responder. Absent material makes the route fail closed.
     pub domain_probe_terminator:
         Option<Arc<dyn crate::topology_probe::DomainProbeTerminatorProvider>>,
+    /// Runtime DNS verifier for organization email-domain ownership challenges.
+    pub identity_domain_verifier: Option<Arc<dyn crate::topology_probe::IdentityDomainVerifier>>,
     /// Runtime-owned active and retained route-reservation HMAC keys.
     pub route_reservation_keyring: Option<Arc<dyn RouteReservationKeyring>>,
 }
@@ -2945,7 +3171,7 @@ impl RpcService {
                 expected,
             )
             .await
-            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+            .map_err(RpcError::internal)?;
         Ok(pb::NetworkBoundaryRevisionResponse {
             revision: Some(Self::network_boundary_revision_message(record)?),
             coordination_operation: None,
@@ -3069,7 +3295,8 @@ impl RpcService {
                 "create_network_boundary",
                 Some(&req.confirmation_hash),
             )
-            .await?;
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         self.require_delivery_scope(
             auth,
             &input.request.owner_scope_key,
@@ -9683,8 +9910,19 @@ impl RpcService {
             origin_fetch: None,
             kv: None,
             domain_probe_terminator: None,
+            identity_domain_verifier: None,
             route_reservation_keyring: None,
         }
+    }
+
+    /// Attaches the runtime DNS verifier for organization-domain challenges.
+    #[must_use]
+    pub fn with_identity_domain_verifier(
+        mut self,
+        verifier: Arc<dyn crate::topology_probe::IdentityDomainVerifier>,
+    ) -> Self {
+        self.identity_domain_verifier = Some(verifier);
+        self
     }
 
     /// Attaches the runtime provider for immutable secret-version references.
@@ -10203,10 +10441,19 @@ impl RpcService {
         }
     }
 
-    /// Resolve a registry by slug or map a miss to `NotFound`.
-    async fn registry_or_not_found(&self, slug: &str) -> Result<RegistryRecord, RpcError> {
+    /// Resolves a registry by immutable stable identity or canonical slug.
+    async fn registry_or_not_found(&self, identifier: &str) -> Result<RegistryRecord, RpcError> {
+        if let Some(registry) = self
+            .db
+            .registry_by_stable_id(identifier)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            return Ok(registry);
+        }
+
         self.db
-            .registry_by_slug(slug)
+            .registry_by_slug(identifier)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("registry"))
@@ -10311,6 +10558,8 @@ impl RpcService {
             visibility: record.visibility.clone(),
             resource_version: record.resource_version.to_string(),
             updated_at: record.updated_at,
+            authorization_scope_key: record.scope_key.clone(),
+            owner_scope_key: record.owner_scope_key.clone(),
         })
     }
 
@@ -10993,6 +11242,15 @@ impl RpcService {
         Ok(url.to_string())
     }
 
+    fn control_image_download_base(&self, registry_id: i64) -> Result<String, RpcError> {
+        let mut url = url::Url::parse(&self.external_url).map_err(RpcError::internal)?;
+        url.path_segments_mut()
+            .map_err(|_| RpcError::internal(anyhow::anyhow!("Hub URL cannot carry paths")))?
+            .pop_if_empty()
+            .extend(["-", "images", &registry_id.to_string(), ""]);
+        Ok(url.to_string())
+    }
+
     fn system_image_message(
         &self,
         download_base: &str,
@@ -11071,16 +11329,16 @@ impl RpcService {
     ) -> Result<pb::ListImagesResponse, RpcError> {
         let registry = self.registry_or_not_found(&req.slug).await?;
         self.require_read(auth, &registry).await?;
-        let download_base = self
-            .db
-            .ready_registry_canonical_url(registry.id)
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| {
-                RpcError::FailedPrecondition(
-                    "registry canonical image delivery route is not ready".to_string(),
-                )
-            })?;
+        let control_base = self.control_image_download_base(registry.id)?;
+        let download_base = if registry.visibility == "public" {
+            self.db
+                .ready_registry_canonical_url(registry.id)
+                .await
+                .map_err(RpcError::internal)?
+                .unwrap_or(control_base)
+        } else {
+            control_base
+        };
         if !req.release.is_empty() && !req.channel.is_empty() {
             return Err(RpcError::invalid(
                 "release and channel are mutually exclusive",
@@ -12073,24 +12331,6 @@ impl RpcService {
         let record = self
             .resolve_storage_binding_reference(auth, req.storage_binding)
             .await?;
-        Ok(pb::GetStorageBindingResponse {
-            storage_binding: Some(self.storage_binding_message(record).await?),
-        })
-    }
-
-    /// Returns the instance-default storage binding.
-    pub async fn get_instance_default_storage_binding(
-        &self,
-        auth: Option<&str>,
-        _req: pb::GetInstanceTopologyDefaultsRequest,
-    ) -> Result<pb::GetStorageBindingResponse, RpcError> {
-        self.readable_storage_owner(auth, "instance").await?;
-        let record = self
-            .db
-            .instance_default_binding()
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("instance default storage binding"))?;
         Ok(pb::GetStorageBindingResponse {
             storage_binding: Some(self.storage_binding_message(record).await?),
         })
@@ -13370,6 +13610,19 @@ impl RpcService {
         }
     }
 
+    /// Projects stored defaults or the editable empty state for an unset scope.
+    fn topology_defaults_or_empty(
+        scope_key: &str,
+        record: Option<crate::db::StableTopologyDefaultsRecord>,
+    ) -> pb::TopologyDefaults {
+        record
+            .map(Self::stable_topology_defaults_message)
+            .unwrap_or_else(|| pb::TopologyDefaults {
+                scope_key: scope_key.to_string(),
+                ..Default::default()
+            })
+    }
+
     /// Returns instance topology defaults.
     pub async fn get_instance_topology_defaults(
         &self,
@@ -13381,10 +13634,9 @@ impl RpcService {
             .db
             .stable_topology_defaults("instance")
             .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("instance topology defaults"))?;
+            .map_err(RpcError::internal)?;
         Ok(pb::TopologyDefaultsResponse {
-            defaults: Some(Self::stable_topology_defaults_message(defaults)),
+            defaults: Some(Self::topology_defaults_or_empty("instance", defaults)),
         })
     }
 
@@ -13400,10 +13652,9 @@ impl RpcService {
             .db
             .stable_topology_defaults(&scope_key)
             .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("organization topology defaults"))?;
+            .map_err(RpcError::internal)?;
         Ok(pb::TopologyDefaultsResponse {
-            defaults: Some(Self::stable_topology_defaults_message(defaults)),
+            defaults: Some(Self::topology_defaults_or_empty(&scope_key, defaults)),
         })
     }
 
@@ -18086,13 +18337,175 @@ impl RpcService {
         Ok(response)
     }
 
-    /// Persists an immutable plan for creating an automation principal.
-    pub async fn plan_create_automation_principal(
+    /// Describes the authenticated principal and current access-token authority.
+    ///
+    /// The principal must still exist. Memberships are loaded from live state,
+    /// while `access_scope`, `access_permissions`, and `access_expires_at`
+    /// describe the bearer presented for this request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Unauthenticated`] for a missing or invalid bearer,
+    /// [`RpcError::PermissionDenied`] for a deleted principal, or
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn who_am_i(
         &self,
         auth: Option<&str>,
-        req: pb::PlanCreateAutomationPrincipalRequest,
+        _req: pb::WhoAmIRequest,
+    ) -> Result<pb::WhoAmIResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let principal = claims_principal(&claims)
+            .ok_or_else(|| RpcError::PermissionDenied("active principal required".into()))?;
+        if !self
+            .db
+            .principal_is_live(principal.kind.as_str(), principal.id)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            return Err(RpcError::PermissionDenied(
+                "active principal required".into(),
+            ));
+        }
+
+        let (principal_ref, email) = match principal.kind {
+            PrincipalKind::User => {
+                let email = self
+                    .db
+                    .user_email(principal.id)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| {
+                        RpcError::PermissionDenied("active principal required".into())
+                    })?;
+                (email.clone(), email)
+            }
+            PrincipalKind::ServiceAccount => {
+                let reference = self
+                    .db
+                    .service_account_reference(principal.id)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| {
+                        RpcError::PermissionDenied("active principal required".into())
+                    })?;
+                (reference, String::new())
+            }
+        };
+        let grants = self
+            .db
+            .effective_scopes(principal)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(|(scope, role)| pb::IdentityGrant {
+                scope: scope.as_str().to_string(),
+                role: role.as_str().to_string(),
+            })
+            .collect();
+
+        Ok(pb::WhoAmIResponse {
+            principal_kind: principal.kind.as_str().to_string(),
+            principal_ref,
+            email,
+            grants,
+            access_scope: claims.scope,
+            access_permissions: claims.perms,
+            access_expires_at: claims.exp,
+        })
+    }
+
+    /// Lists the service accounts owned by one organization.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error when the caller cannot
+    /// manage organization members, [`RpcError::NotFound`] when the organization
+    /// does not exist, and [`RpcError::Internal`] on database failure.
+    pub async fn list_service_accounts(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListServiceAccountsRequest,
+    ) -> Result<pb::ListServiceAccountsResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        self.require_permission(
+            &claims,
+            Permission::MembersManage,
+            &Scope::parse(&org.stable_id),
+        )
+        .await?;
+        let accounts = self
+            .db
+            .list_service_accounts(org.id)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(|record| service_account_message(&org.slug, record))
+            .collect::<Result<Vec<_>, _>>()?;
+        let (service_accounts, next_page_token) =
+            paginate(accounts, req.page_size, &req.page_token)?;
+        Ok(pb::ListServiceAccountsResponse {
+            service_accounts,
+            next_page_token,
+        })
+    }
+
+    /// Reads one organization-owned service account.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error when the caller cannot
+    /// manage organization members, [`RpcError::NotFound`] when either resource
+    /// does not exist, and [`RpcError::Internal`] on database failure.
+    pub async fn get_service_account(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetServiceAccountRequest,
+    ) -> Result<pb::ServiceAccountResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        self.require_permission(
+            &claims,
+            Permission::MembersManage,
+            &Scope::parse(&org.stable_id),
+        )
+        .await?;
+        let record = self
+            .db
+            .service_account_record(org.id, &req.name)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("service account"))?;
+        Ok(pb::ServiceAccountResponse {
+            service_account: Some(service_account_message(&org.slug, record)?),
+        })
+    }
+
+    /// Persists an immutable plan for creating a service account.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::InvalidArgument`] for an invalid name or organization,
+    /// an authentication or authorization error when the caller cannot manage
+    /// organization IAM, [`RpcError::AlreadyExists`] for a conflicting account,
+    /// and [`RpcError::Internal`] on persistence failure.
+    pub async fn plan_create_service_account(
+        &self,
+        auth: Option<&str>,
+        mut req: pb::PlanCreateServiceAccountRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
+        req.name = normalize_service_account_name(&req.name)?;
         let org = self
             .db
             .org_by_slug(&req.org_slug)
@@ -18108,10 +18521,10 @@ impl RpcService {
             .map_err(RpcError::internal)?;
         if baseline_principal_id.is_some() || !req.expected_resource_version.is_empty() {
             return Err(RpcError::AlreadyExists(
-                "automation principal already exists or creation version is not empty".into(),
+                "service account already exists or creation version is not empty".into(),
             ));
         }
-        let input = AutomationPrincipalPlanInput {
+        let input = ServiceAccountCreatePlanInput {
             org_id: org.id,
             org_slug: req.org_slug,
             name: req.name,
@@ -18122,12 +18535,12 @@ impl RpcService {
         ));
         self.create_control_plan(
             &claims,
-            "create_automation_principal",
+            "create_service_account",
             &org.stable_id,
             &input,
             &req.idempotency_key,
             vec![format!(
-                "create automation principal {}/{}",
+                "create service account {}/{}",
                 input.org_slug, input.name
             )],
             Vec::new(),
@@ -18136,13 +18549,19 @@ impl RpcService {
         .await
     }
 
-    /// Applies one reviewed automation-principal plan exactly once.
-    pub async fn apply_create_automation_principal(
+    /// Applies one reviewed service-account creation plan exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error for an invalid caller,
+    /// [`RpcError::FailedPrecondition`] when the reviewed baseline changed, and
+    /// an internal or plan-lifecycle error when the operation cannot be applied.
+    pub async fn apply_create_service_account(
         &self,
         auth: Option<&str>,
         req: pb::ApplyTopologyPlanRequest,
-    ) -> Result<pb::AutomationPrincipalResponse, RpcError> {
-        const PLAN_KIND: &str = "create_automation_principal";
+    ) -> Result<pb::ServiceAccountResponse, RpcError> {
+        const PLAN_KIND: &str = "create_service_account";
         let claims = self
             .require_control_plan_permission(auth, &req.plan_id, Permission::IamAdmin)
             .await?;
@@ -18166,7 +18585,7 @@ impl RpcService {
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, AutomationPrincipalPlanInput) = self
+        let (plan, input): (_, ServiceAccountCreatePlanInput) = self
             .load_control_plan(auth, &req.plan_id, PLAN_KIND, Some(&req.confirmation_hash))
             .await?;
         let org = self
@@ -18190,7 +18609,7 @@ impl RpcService {
             != input.baseline_principal_id
         {
             return Err(RpcError::FailedPrecondition(
-                "automation principal changed after planning".into(),
+                "service account changed after planning".into(),
             ));
         }
         let id = self
@@ -18198,13 +18617,311 @@ impl RpcService {
             .create_service_account(org.id, &input.name)
             .await
             .map_err(RpcError::internal)?;
-        let response = pb::AutomationPrincipalResponse {
-            service_account: Some(pb::ServiceAccount {
-                id,
-                org_slug: input.org_slug,
-                name: input.name,
-            }),
+        let record = self
+            .db
+            .service_account_record(org.id, &input.name)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| {
+                RpcError::internal(anyhow::anyhow!("created service account disappeared"))
+            })?;
+        debug_assert_eq!(record.id, id);
+        let response = pb::ServiceAccountResponse {
+            service_account: Some(service_account_message(&input.org_slug, record)?),
         };
+        self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
+            .await?;
+        Ok(response)
+    }
+
+    /// Persists an immutable plan for renaming one service account.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error when the caller cannot
+    /// manage organization IAM, [`RpcError::NotFound`] for a missing resource,
+    /// [`RpcError::FailedPrecondition`] for a stale resource version,
+    /// [`RpcError::AlreadyExists`] for a name conflict, and
+    /// [`RpcError::Internal`] on persistence failure.
+    pub async fn plan_update_service_account(
+        &self,
+        auth: Option<&str>,
+        req: pb::PlanUpdateServiceAccountRequest,
+    ) -> Result<pb::TopologyPlanResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let new_name = normalize_service_account_name(&req.new_name)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        self.require_permission(&claims, Permission::IamAdmin, &Scope::parse(&org.stable_id))
+            .await?;
+        let record = self
+            .db
+            .service_account_record(org.id, &req.name)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("service account"))?;
+        let current_version = service_account_resource_version(&record)?;
+        if req.expected_resource_version != current_version {
+            return Err(RpcError::FailedPrecondition(
+                "service-account resource version is stale".into(),
+            ));
+        }
+        if new_name != record.name
+            && self
+                .db
+                .service_account_by_name(org.id, &new_name)
+                .await
+                .map_err(RpcError::internal)?
+                .is_some()
+        {
+            return Err(RpcError::AlreadyExists(
+                "service account already exists".into(),
+            ));
+        }
+        let input = ServiceAccountUpdatePlanInput {
+            org_id: org.id,
+            org_slug: org.slug,
+            service_account_id: record.id,
+            current_name: record.name,
+            new_name,
+            baseline_resource_version: current_version,
+        };
+        self.create_control_plan(
+            &claims,
+            "update_service_account",
+            &org.stable_id,
+            &input,
+            &req.idempotency_key,
+            vec![format!(
+                "rename service account {}/{} to {}",
+                input.org_slug, input.current_name, input.new_name
+            )],
+            Vec::new(),
+            Some(control_confirmation_hash(&input)?),
+        )
+        .await
+    }
+
+    /// Applies one reviewed service-account update plan exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error for an invalid caller,
+    /// [`RpcError::FailedPrecondition`] when the reviewed baseline changed, and
+    /// an internal or plan-lifecycle error when the operation cannot be applied.
+    pub async fn apply_update_service_account(
+        &self,
+        auth: Option<&str>,
+        req: pb::ApplyTopologyPlanRequest,
+    ) -> Result<pb::ServiceAccountResponse, RpcError> {
+        const PLAN_KIND: &str = "update_service_account";
+        let claims = self
+            .require_control_plan_permission(auth, &req.plan_id, Permission::IamAdmin)
+            .await?;
+        if let Some(response) = self
+            .replayed_control_result(
+                auth,
+                &req.plan_id,
+                PLAN_KIND,
+                Some(&req.confirmation_hash),
+                &req.idempotency_key,
+            )
+            .await?
+        {
+            return Ok(response);
+        }
+        self.begin_control_plan_apply(
+            auth,
+            &req.plan_id,
+            PLAN_KIND,
+            &req.idempotency_key,
+            Some(&req.confirmation_hash),
+        )
+        .await?;
+        let (plan, input): (_, ServiceAccountUpdatePlanInput) = self
+            .load_control_plan(auth, &req.plan_id, PLAN_KIND, Some(&req.confirmation_hash))
+            .await?;
+        let org = self
+            .db
+            .org_by_slug(&input.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|org| org.id == input.org_id)
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("organization changed after planning".into())
+            })?;
+        self.require_permission(&claims, Permission::IamAdmin, &Scope::parse(&org.stable_id))
+            .await?;
+        let current = self
+            .db
+            .service_account_record(org.id, &input.current_name)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|record| record.id == input.service_account_id)
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("service account changed after planning".into())
+            })?;
+        if service_account_resource_version(&current)? != input.baseline_resource_version {
+            return Err(RpcError::FailedPrecondition(
+                "service account changed after planning".into(),
+            ));
+        }
+        if !self
+            .db
+            .rename_service_account(current.id, &input.current_name, &input.new_name)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            return Err(RpcError::FailedPrecondition(
+                "service account changed during apply".into(),
+            ));
+        }
+        let updated = self
+            .db
+            .service_account_record(org.id, &input.new_name)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| {
+                RpcError::internal(anyhow::anyhow!("updated service account disappeared"))
+            })?;
+        let response = pb::ServiceAccountResponse {
+            service_account: Some(service_account_message(&org.slug, updated)?),
+        };
+        self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
+            .await?;
+        Ok(response)
+    }
+
+    /// Persists an immutable plan for deleting one service account.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error when the caller cannot
+    /// manage organization IAM, [`RpcError::NotFound`] for a missing resource,
+    /// [`RpcError::FailedPrecondition`] for a stale resource version, and
+    /// [`RpcError::Internal`] on persistence failure.
+    pub async fn plan_delete_service_account(
+        &self,
+        auth: Option<&str>,
+        req: pb::PlanDeleteServiceAccountRequest,
+    ) -> Result<pb::TopologyPlanResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        self.require_permission(&claims, Permission::IamAdmin, &Scope::parse(&org.stable_id))
+            .await?;
+        let record = self
+            .db
+            .service_account_record(org.id, &req.name)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("service account"))?;
+        let current_version = service_account_resource_version(&record)?;
+        if req.expected_resource_version != current_version {
+            return Err(RpcError::FailedPrecondition(
+                "service-account resource version is stale".into(),
+            ));
+        }
+        let input = ServiceAccountDeletePlanInput {
+            org_id: org.id,
+            org_slug: org.slug,
+            service_account_id: record.id,
+            name: record.name,
+            baseline_resource_version: current_version,
+        };
+        self.create_control_plan(
+            &claims,
+            "delete_service_account",
+            &org.stable_id,
+            &input,
+            &req.idempotency_key,
+            vec![format!(
+                "delete service account {}/{} and its memberships",
+                input.org_slug, input.name
+            )],
+            Vec::new(),
+            Some(control_confirmation_hash(&input)?),
+        )
+        .await
+    }
+
+    /// Applies one reviewed service-account deletion plan exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error for an invalid caller,
+    /// [`RpcError::FailedPrecondition`] when the reviewed baseline changed, and
+    /// an internal or plan-lifecycle error when the operation cannot be applied.
+    pub async fn apply_delete_service_account(
+        &self,
+        auth: Option<&str>,
+        req: pb::ApplyTopologyPlanRequest,
+    ) -> Result<pb::DeleteTopologyResourceResponse, RpcError> {
+        const PLAN_KIND: &str = "delete_service_account";
+        let claims = self
+            .require_control_plan_permission(auth, &req.plan_id, Permission::IamAdmin)
+            .await?;
+        if let Some(response) = self
+            .replayed_control_result(
+                auth,
+                &req.plan_id,
+                PLAN_KIND,
+                Some(&req.confirmation_hash),
+                &req.idempotency_key,
+            )
+            .await?
+        {
+            return Ok(response);
+        }
+        self.begin_control_plan_apply(
+            auth,
+            &req.plan_id,
+            PLAN_KIND,
+            &req.idempotency_key,
+            Some(&req.confirmation_hash),
+        )
+        .await?;
+        let (plan, input): (_, ServiceAccountDeletePlanInput) = self
+            .load_control_plan(auth, &req.plan_id, PLAN_KIND, Some(&req.confirmation_hash))
+            .await?;
+        let org = self
+            .db
+            .org_by_slug(&input.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|org| org.id == input.org_id)
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("organization changed after planning".into())
+            })?;
+        self.require_permission(&claims, Permission::IamAdmin, &Scope::parse(&org.stable_id))
+            .await?;
+        let current = self
+            .db
+            .service_account_record(org.id, &input.name)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|record| record.id == input.service_account_id)
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("service account changed after planning".into())
+            })?;
+        if service_account_resource_version(&current)? != input.baseline_resource_version {
+            return Err(RpcError::FailedPrecondition(
+                "service account changed after planning".into(),
+            ));
+        }
+        self.db
+            .delete_service_account(current.id, &input.name)
+            .await
+            .map_err(RpcError::internal)?;
+        let response = pb::DeleteTopologyResourceResponse { deleted: true };
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
             .await?;
         Ok(response)
@@ -18538,128 +19255,207 @@ impl RpcService {
         Ok(response)
     }
 
-    /// Persists an immutable plan for issuing a registry token generation.
-    pub async fn plan_issue_registry_token(
+    /// Lists invitation history for one organization.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error when the caller cannot
+    /// manage members, [`RpcError::NotFound`] for an unknown organization, and
+    /// [`RpcError::Internal`] on persistence failure.
+    pub async fn list_invitations(
         &self,
         auth: Option<&str>,
-        req: pb::PlanIssueRegistryTokenRequest,
+        req: pb::ListInvitationsRequest,
+    ) -> Result<pb::ListInvitationsResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        self.require_permission(
+            &claims,
+            Permission::MembersManage,
+            &Scope::parse(&org.stable_id),
+        )
+        .await?;
+        let invitations = self
+            .db
+            .list_invitations(org.id)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(|record| invitation_message(&org.slug, record))
+            .collect::<Result<Vec<_>, _>>()?;
+        let (invitations, next_page_token) = paginate(invitations, req.page_size, &req.page_token)?;
+        Ok(pb::ListInvitationsResponse {
+            invitations,
+            next_page_token,
+        })
+    }
+
+    /// Reads one invitation without exposing its acceptance secret.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error when the caller cannot
+    /// manage members, [`RpcError::NotFound`] for an unknown resource, and
+    /// [`RpcError::Internal`] on persistence failure.
+    pub async fn get_invitation(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetInvitationRequest,
+    ) -> Result<pb::InvitationResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        self.require_permission(
+            &claims,
+            Permission::MembersManage,
+            &Scope::parse(&org.stable_id),
+        )
+        .await?;
+        let record = self
+            .db
+            .invitation_record(org.id, req.invitation_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("invitation"))?;
+        Ok(pb::InvitationResponse {
+            invitation: Some(invitation_message(&org.slug, record)?),
+            secret: String::new(),
+        })
+    }
+
+    /// Persists an immutable plan for creating one invitation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::InvalidArgument`] for invalid invitation contents,
+    /// an authentication or authorization error when the caller cannot manage
+    /// members at the target scope, [`RpcError::AlreadyExists`] for a duplicate
+    /// pending invitation, and [`RpcError::Internal`] on persistence failure.
+    pub async fn plan_create_invitation(
+        &self,
+        auth: Option<&str>,
+        req: pb::PlanCreateInvitationRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
-        let registry = self.registry_or_not_found(&req.scope).await?;
-        let scope = self.registry_scope(&registry).await?;
-        self.require_permission(&claims, Permission::IamAdmin, &scope)
-            .await?;
-        if req.ttl_secs < 0 || req.ttl_secs > REGISTRY_TOKEN_MAX_TTL_SECS {
+        require_absent_resource_version(&req.expected_resource_version)?;
+        let email = normalize_invitation_email(&req.email)?;
+        let role = Role::parse(&req.role)
+            .ok_or_else(|| RpcError::invalid(format!("unknown role '{}'", req.role)))?;
+        let ttl_secs = if req.ttl_secs == 0 {
+            INVITATION_DEFAULT_TTL_SECS
+        } else {
+            req.ttl_secs
+        };
+        if !(1..=INVITATION_MAX_TTL_SECS).contains(&ttl_secs) {
             return Err(RpcError::invalid(format!(
-                "ttl_secs must be 0 or between 1 and {REGISTRY_TOKEN_MAX_TTL_SECS}"
+                "ttl_secs must be 0 or between 1 and {INVITATION_MAX_TTL_SECS}"
             )));
         }
-        let (kind, principal_ref) = req.owner.split_once(':').ok_or_else(|| {
-            RpcError::invalid("owner must be 'user:<email>' or 'service_account:<org>/<name>'")
-        })?;
-        let owner_id = self
-            .resolve_existing_principal_id(kind, principal_ref)
-            .await?;
-        let owner = match kind {
-            "user" => crate::domain::Principal::user(owner_id),
-            "service_account" => crate::domain::Principal::service_account(owner_id),
-            other => return Err(RpcError::invalid(format!("unknown owner kind '{other}'"))),
-        };
-        let mut perms = Vec::new();
-        for verb in &req.permissions {
-            let perm = registry_token_permission(verb).ok_or_else(|| {
-                RpcError::invalid(format!("unknown registry permission '{verb}'"))
-            })?;
-            perms.push(perm);
-        }
-        // A token can never exceed its owner's authority.
-        let grants = self
+        let org = self
             .db
-            .effective_scopes(owner)
+            .org_by_slug(&req.org_slug)
             .await
-            .map_err(RpcError::internal)?;
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        let scope = parse_authorization_scope(&req.scope)?;
         let context = self
             .db
             .authorization_context(scope.as_str())
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("authorization scope"))?;
-        if perms.is_empty()
-            || perms
-                .iter()
-                .any(|permission| !iam::allow(&grants, *permission, &context))
+        if !context.is_covered_by(&Scope::parse(&org.stable_id))
+            || (role == Role::Owner && scope.as_str() != org.stable_id)
         {
-            return Err(RpcError::PermissionDenied(
-                "token permissions exceed the owner's current grants".to_string(),
+            return Err(RpcError::invalid(
+                "invitation scope and role must belong to the organization",
             ));
         }
-        let mut permissions = perms
-            .iter()
-            .map(|permission| {
-                registry_token_permission_name(*permission)
-                    .map(str::to_string)
-                    .ok_or_else(|| RpcError::invalid("permission is not registry-scoped"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        permissions.sort();
-        permissions.dedup();
-        let canonical_grants = grants
-            .iter()
-            .map(|(scope, role)| (scope.as_str(), role.as_str()))
-            .collect::<Vec<_>>();
-        let grants_digest = hex::encode(Sha256::digest(
-            serde_json::to_vec(&canonical_grants).map_err(RpcError::internal)?,
-        ));
-        if !req.expected_resource_version.is_empty()
-            && req.expected_resource_version != grants_digest
+        self.require_permission(&claims, Permission::MembersManage, &scope)
+            .await?;
+        self.require_membership_grant_ceiling(&claims, &scope, None, Some(role))
+            .await?;
+        if self
+            .db
+            .pending_invitation_for(org.id, &email, scope.as_str())
+            .await
+            .map_err(RpcError::internal)?
+            .is_some()
         {
-            return Err(RpcError::FailedPrecondition(
-                "token-owner grant revision is stale".into(),
+            return Err(RpcError::AlreadyExists(
+                "a pending invitation already exists for this email and scope".into(),
             ));
         }
-        let input = RegistryTokenIssuePlanInput {
-            owner_kind: kind.to_string(),
-            owner_ref: principal_ref.to_string(),
-            owner_id,
+        if let Some(user_id) = self
+            .db
+            .user_by_email(&email)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            let already_member = self
+                .db
+                .list_memberships_for("user", user_id)
+                .await
+                .map_err(RpcError::internal)?
+                .into_iter()
+                .any(|(candidate, _)| candidate == scope.as_str());
+            if already_member {
+                return Err(RpcError::AlreadyExists(
+                    "the invited user already has a direct membership at this scope".into(),
+                ));
+            }
+        }
+        let input = InvitationCreatePlanInput {
+            org_id: org.id,
+            org_slug: org.slug,
+            email,
             scope: scope.as_str().to_string(),
-            permissions,
-            ttl_secs: if req.ttl_secs == 0 {
-                REGISTRY_TOKEN_DEFAULT_TTL_SECS
-            } else {
-                req.ttl_secs
-            },
+            role: role.as_str().to_string(),
+            ttl_secs,
         };
-        let confirmation_hash = hex::encode(Sha256::digest(
-            serde_json::to_vec(&input).map_err(RpcError::internal)?,
-        ));
         self.create_control_plan(
             &claims,
-            "issue_registry_token",
+            "create_invitation",
             &input.scope,
             &input,
             &req.idempotency_key,
             vec![format!(
-                "issue registry token for {}:{}",
-                input.owner_kind, input.owner_ref
+                "invite {} as {} at {}",
+                input.email, input.role, input.scope
             )],
             Vec::new(),
-            Some(confirmation_hash),
+            Some(control_confirmation_hash(&input)?),
         )
         .await
     }
 
-    /// Applies one reviewed registry-token issuance plan exactly once.
-    pub async fn apply_issue_registry_token(
+    /// Applies one reviewed invitation-creation plan exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error for an invalid caller,
+    /// [`RpcError::FailedPrecondition`] when the reviewed baseline changed, and
+    /// an internal or plan-lifecycle error when creation cannot be committed.
+    pub async fn apply_create_invitation(
         &self,
         auth: Option<&str>,
         req: pb::ApplyTopologyPlanRequest,
-    ) -> Result<pb::RegistryTokenResponse, RpcError> {
-        const PLAN_KIND: &str = "issue_registry_token";
+    ) -> Result<pb::InvitationResponse, RpcError> {
+        const PLAN_KIND: &str = "create_invitation";
         let claims = self
-            .require_control_plan_permission(auth, &req.plan_id, Permission::IamAdmin)
+            .require_control_plan_permission(auth, &req.plan_id, Permission::MembersManage)
             .await?;
-        if let Some(response) = self
-            .replayed_control_result::<pb::RegistryTokenResponse>(
+        if let Some(mut response) = self
+            .replayed_control_result::<pb::InvitationResponse>(
                 auth,
                 &req.plan_id,
                 PLAN_KIND,
@@ -18668,12 +19464,31 @@ impl RpcService {
             )
             .await?
         {
-            if response.secret.is_empty() {
-                return Err(RpcError::FailedPrecondition(
-                    "registry token secret was delivered once and cannot be replayed; retire the token if delivery was interrupted"
-                        .to_string(),
-                ));
-            }
+            let invitation_id = response
+                .invitation
+                .as_ref()
+                .map(|invitation| invitation.invitation_id)
+                .ok_or_else(|| {
+                    RpcError::internal(anyhow::anyhow!(
+                        "applied invitation plan omitted its resource"
+                    ))
+                })?;
+            let sealed = self
+                .db
+                .recoverable_invitation_sealed_secret(invitation_id)
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| {
+                    RpcError::FailedPrecondition(
+                        "the invitation is terminal and its recovery secret was erased".into(),
+                    )
+                })?;
+            let sealer = self.sealer.as_ref().ok_or_else(|| {
+                RpcError::FailedPrecondition(
+                    "invitation creation requires durable secret sealing".into(),
+                )
+            })?;
+            response.secret = sealer.unseal(&sealed).map_err(RpcError::internal)?;
             return Ok(response);
         }
         self.begin_control_plan_apply(
@@ -18684,108 +19499,184 @@ impl RpcService {
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, RegistryTokenIssuePlanInput) = self
+        let (plan, input): (_, InvitationCreatePlanInput) = self
             .load_control_plan(auth, &req.plan_id, PLAN_KIND, Some(&req.confirmation_hash))
             .await?;
+        let org = self
+            .db
+            .org_by_slug(&input.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|org| org.id == input.org_id)
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("organization changed after planning".into())
+            })?;
         let scope = parse_authorization_scope(&input.scope)?;
-        self.require_permission(&claims, Permission::IamAdmin, &scope)
+        self.require_permission(&claims, Permission::MembersManage, &scope)
             .await?;
-        let owner_id = self
-            .resolve_existing_principal_id(&input.owner_kind, &input.owner_ref)
+        let role = Role::parse(&input.role).ok_or_else(|| {
+            RpcError::FailedPrecondition("reviewed invitation role is invalid".into())
+        })?;
+        self.require_membership_grant_ceiling(&claims, &scope, None, Some(role))
             .await?;
-        if owner_id != input.owner_id {
+        let (secret, token_hash) = crate::auth::token::generate_invitation_token();
+        let sealer = self.sealer.as_ref().ok_or_else(|| {
+            RpcError::FailedPrecondition(
+                "invitation creation requires durable secret sealing".into(),
+            )
+        })?;
+        let sealed_secret = sealer.seal(&secret).map_err(RpcError::internal)?;
+        if self
+            .db
+            .pending_invitation_for(org.id, &input.email, &input.scope)
+            .await
+            .map_err(RpcError::internal)?
+            .is_some()
+        {
             return Err(RpcError::FailedPrecondition(
-                "token owner changed after planning".into(),
+                "a pending invitation appeared after planning".into(),
             ));
         }
-        let owner = match input.owner_kind.as_str() {
-            "user" => crate::domain::Principal::user(owner_id),
-            "service_account" => crate::domain::Principal::service_account(owner_id),
-            other => return Err(RpcError::invalid(format!("unknown owner kind '{other}'"))),
-        };
-        let permissions = input
-            .permissions
-            .iter()
-            .map(|verb| {
-                registry_token_permission(verb)
-                    .ok_or_else(|| RpcError::invalid(format!("unknown permission '{verb}'")))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let expires_at =
-            (input.ttl_secs > 0).then_some(clock::now_unix_secs().saturating_add(input.ttl_secs));
-        let (token_id, secret) = self
+        if let Some(user_id) = self
             .db
-            .create_token(
-                owner,
-                &input.scope,
-                &permissions,
-                Some("issued through reviewed retained-control plan"),
-                expires_at,
-            )
+            .user_by_email(&input.email)
             .await
-            .map_err(RpcError::internal)?;
-        let response = pb::RegistryTokenResponse { token_id, secret };
-        let persisted = pb::RegistryTokenResponse {
-            token_id: response.token_id.clone(),
+            .map_err(RpcError::internal)?
+        {
+            let already_member = self
+                .db
+                .list_memberships_for("user", user_id)
+                .await
+                .map_err(RpcError::internal)?
+                .into_iter()
+                .any(|(candidate, _)| candidate == input.scope);
+            if already_member {
+                return Err(RpcError::FailedPrecondition(
+                    "the invitee gained a direct membership after planning".into(),
+                ));
+            }
+        }
+        let plan_uuid = uuid::Uuid::parse_str(&plan.plan_id).map_err(RpcError::internal)?;
+        let created_at = clock::now_unix_secs();
+        let record = crate::db::InvitationRecord {
+            id: crate::db::portable_relational_id(plan_uuid),
+            org_id: org.id,
+            email: input.email,
+            scope: input.scope,
+            role: input.role,
+            created_at,
+            accepted_at: None,
+            cancelled_at: None,
+            expires_at: created_at.saturating_add(input.ttl_secs),
+        };
+        let event_id = hex::encode(Sha256::digest(
+            format!("invitation:create:{}", plan.plan_id).as_bytes(),
+        ));
+        let response = pb::InvitationResponse {
+            invitation: Some(invitation_message(&org.slug, record.clone())?),
+            secret,
+        };
+        let persisted = pb::InvitationResponse {
+            invitation: response.invitation.clone(),
             secret: String::new(),
         };
-        self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &persisted)
-            .await?;
+        let result_json = serde_json::to_string(&persisted).map_err(RpcError::internal)?;
+        self.db
+            .apply_invitation_creation_plan(
+                &record,
+                &token_hash,
+                &sealed_secret,
+                &plan.plan_id,
+                &req.idempotency_key,
+                &result_json,
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                &claims.sub,
+                &event_id,
+            )
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         Ok(response)
     }
 
-    /// Persists an immutable plan for retiring one registry token generation.
-    pub async fn plan_retire_registry_token(
+    /// Persists an immutable plan for cancelling one pending invitation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error when the caller cannot
+    /// manage members, [`RpcError::NotFound`] for an unknown resource,
+    /// [`RpcError::FailedPrecondition`] for a terminal or stale invitation, and
+    /// [`RpcError::Internal`] on persistence failure.
+    pub async fn plan_cancel_invitation(
         &self,
         auth: Option<&str>,
-        req: pb::PlanRetireRegistryTokenRequest,
+        req: pb::PlanCancelInvitationRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
-        let (token_scope, current) = self
+        let org = self
             .db
-            .token_scope_and_lifecycle(&req.token_id)
+            .org_by_slug(&req.org_slug)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("registry token"))?;
-        self.require_permission(&claims, Permission::IamAdmin, &Scope::parse(&token_scope))
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        let record = self
+            .db
+            .invitation_record(org.id, req.invitation_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("invitation"))?;
+        let scope = parse_authorization_scope(&record.scope)?;
+        self.require_permission(&claims, Permission::MembersManage, &scope)
             .await?;
-        if req.expected_resource_version != current {
+        let version = invitation_resource_version(&record)?;
+        if req.expected_resource_version != version {
             return Err(RpcError::FailedPrecondition(
-                "registry token resource version is stale".into(),
+                "invitation resource version is stale".into(),
             ));
         }
-        if current != "active" {
+        if record.accepted_at.is_some()
+            || record.cancelled_at.is_some()
+            || record.expires_at <= clock::now_unix_secs()
+        {
             return Err(RpcError::FailedPrecondition(
-                "registry token is not active".into(),
+                "only a pending invitation may be cancelled".into(),
             ));
         }
-        let input = RegistryTokenRetirementPlanInput {
-            token_id: req.token_id,
+        let input = InvitationCancelPlanInput {
+            org_id: org.id,
+            org_slug: org.slug,
+            invitation_id: record.id,
+            baseline_resource_version: version,
+            baseline_created_at: record.created_at,
         };
-        let confirmation_hash = hex::encode(Sha256::digest(
-            serde_json::to_vec(&input).map_err(RpcError::internal)?,
-        ));
         self.create_control_plan(
             &claims,
-            "retire_registry_token",
-            &token_scope,
+            "cancel_invitation",
+            &record.scope,
             &input,
             &req.idempotency_key,
-            vec![format!("retire registry token {}", input.token_id)],
+            vec![format!("cancel invitation {}", record.id)],
             Vec::new(),
-            Some(confirmation_hash),
+            Some(control_confirmation_hash(&input)?),
         )
         .await
     }
 
-    /// Applies one reviewed registry-token retirement plan exactly once.
-    pub async fn apply_retire_registry_token(
+    /// Applies one reviewed invitation-cancellation plan exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication or authorization error for an invalid caller,
+    /// [`RpcError::FailedPrecondition`] when the reviewed invitation changed,
+    /// and an internal or plan-lifecycle error when cancellation cannot commit.
+    pub async fn apply_cancel_invitation(
         &self,
         auth: Option<&str>,
         req: pb::ApplyTopologyPlanRequest,
-    ) -> Result<pb::RegistryTokenRetirementResponse, RpcError> {
-        const PLAN_KIND: &str = "retire_registry_token";
-        self.require_control_plan_permission(auth, &req.plan_id, Permission::IamAdmin)
+    ) -> Result<pb::InvitationResponse, RpcError> {
+        const PLAN_KIND: &str = "cancel_invitation";
+        let claims = self
+            .require_control_plan_permission(auth, &req.plan_id, Permission::MembersManage)
             .await?;
         if let Some(response) = self
             .replayed_control_result(
@@ -18807,7 +19698,1539 @@ impl RpcService {
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, RegistryTokenRetirementPlanInput) = self
+        let (plan, input): (_, InvitationCancelPlanInput) = self
+            .load_control_plan(auth, &req.plan_id, PLAN_KIND, Some(&req.confirmation_hash))
+            .await?;
+        let org = self
+            .db
+            .org_by_slug(&input.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|org| org.id == input.org_id)
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("organization changed after planning".into())
+            })?;
+        let current = self
+            .db
+            .invitation_record(org.id, input.invitation_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::FailedPrecondition("invitation disappeared".into()))?;
+        let scope = parse_authorization_scope(&current.scope)?;
+        self.require_permission(&claims, Permission::MembersManage, &scope)
+            .await?;
+        if invitation_resource_version(&current)? != input.baseline_resource_version {
+            return Err(RpcError::FailedPrecondition(
+                "invitation changed after planning".into(),
+            ));
+        }
+        let cancelled_at = clock::now_unix_secs();
+        if current.accepted_at.is_some()
+            || current.cancelled_at.is_some()
+            || current.expires_at <= cancelled_at
+        {
+            return Err(RpcError::FailedPrecondition(
+                "invitation changed after planning".into(),
+            ));
+        }
+        let mut cancelled = current;
+        cancelled.cancelled_at = Some(cancelled_at);
+        let event_id = hex::encode(Sha256::digest(
+            format!("invitation:cancel:{}", plan.plan_id).as_bytes(),
+        ));
+        let response = pb::InvitationResponse {
+            invitation: Some(invitation_message(&org.slug, cancelled.clone())?),
+            secret: String::new(),
+        };
+        let result_json = serde_json::to_string(&response).map_err(RpcError::internal)?;
+        self.db
+            .apply_invitation_cancellation_plan(
+                cancelled.id,
+                input.baseline_created_at,
+                cancelled_at,
+                &cancelled.scope,
+                &plan.plan_id,
+                &req.idempotency_key,
+                &result_json,
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                &claims.sub,
+                &event_id,
+            )
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+        Ok(response)
+    }
+
+    /// Accepts an invitation for the authenticated matching user.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication error for a non-user caller,
+    /// [`RpcError::FailedPrecondition`] for an invalid, terminal, expired, or
+    /// conflicting invitation, and [`RpcError::Internal`] on persistence failure.
+    pub async fn accept_invitation(
+        &self,
+        auth: Option<&str>,
+        req: pb::AcceptInvitationRequest,
+    ) -> Result<pb::AcceptInvitationResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let principal = claims_principal(&claims)
+            .filter(|principal| principal.kind == PrincipalKind::User)
+            .ok_or_else(|| {
+                RpcError::PermissionDenied("a human user must accept invitations".into())
+            })?;
+        let email = self
+            .db
+            .user_email(principal.id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::PermissionDenied("authenticated user is not live".into()))?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        if req.secret.is_empty() {
+            return Err(RpcError::invalid("invitation secret is required"));
+        }
+        let token_hash = crate::auth::token::sha256_hex(&req.secret);
+        let event_id = hex::encode(Sha256::digest(
+            format!("invitation:accept:{token_hash}").as_bytes(),
+        ));
+        let accepted = self
+            .db
+            .accept_invitation_audited(
+                &token_hash,
+                org.id,
+                principal.id,
+                &email,
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                &claims.sub,
+                &event_id,
+            )
+            .await
+            .map_err(|error| {
+                RpcError::FailedPrecondition(format!("invitation could not be accepted: {error:#}"))
+            })?
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition(
+                    "invitation is invalid, terminal, expired, or belongs to another user".into(),
+                )
+            })?;
+        Ok(pb::AcceptInvitationResponse {
+            membership: Some(pb::MembershipResponse {
+                principal_kind: "user".to_string(),
+                principal_ref: email,
+                scope: accepted.scope.clone(),
+                role: accepted.role.clone(),
+                resource_version: accepted.role.clone(),
+            }),
+            invitation: Some(invitation_message(&org.slug, accepted)?),
+        })
+    }
+
+    /// Reads an organization's redacted OIDC identity-provider configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication, authorization, lookup, or persistence error.
+    pub async fn get_identity_provider(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetIdentityProviderRequest,
+    ) -> Result<pb::IdentityProviderResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        self.require_permission(&claims, Permission::IamAdmin, &Scope::parse(&org.stable_id))
+            .await?;
+        let record = self
+            .db
+            .idp_config(org.id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("identity provider"))?;
+        Ok(pb::IdentityProviderResponse {
+            identity_provider: Some(identity_provider_message(&org.slug, record)),
+        })
+    }
+
+    /// Plans an exact-version OIDC identity-provider replacement.
+    ///
+    /// Plaintext client credentials are sealed before the plan is serialized.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid configuration, a stale baseline, unavailable
+    /// secret sealing, insufficient authority, or persistence failure.
+    pub async fn plan_set_identity_provider(
+        &self,
+        auth: Option<&str>,
+        req: pb::PlanSetIdentityProviderRequest,
+    ) -> Result<pb::TopologyPlanResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        let scope = Scope::parse(&org.stable_id);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        if req.idempotency_key.is_empty() {
+            return Err(RpcError::invalid("idempotency_key is required"));
+        }
+        if !req.replace_client_secret && !req.client_secret.is_empty() {
+            return Err(RpcError::invalid(
+                "client_secret requires replace_client_secret=true",
+            ));
+        }
+        if let Some(replayed) = self.replayed_identity_provider_plan(&claims, &req).await? {
+            return Ok(replayed);
+        }
+        let existing = self
+            .db
+            .idp_config(org.id)
+            .await
+            .map_err(RpcError::internal)?;
+        let baseline_resource_version = require_exact_identity_version(
+            &req.expected_resource_version,
+            existing
+                .as_ref()
+                .map(|record| (record.resource_version, record.incarnation_id.as_deref())),
+        )?;
+        let baseline_incarnation_id = existing
+            .as_ref()
+            .and_then(|record| record.incarnation_id.clone());
+        let incarnation_id = baseline_incarnation_id
+            .clone()
+            .unwrap_or_else(|| format!("idp-incarnation-{}", uuid::Uuid::new_v4()));
+        let client_secret_action = if !req.replace_client_secret {
+            "preserve"
+        } else if req.client_secret.is_empty() {
+            "clear"
+        } else {
+            "replace"
+        };
+        let client_secret_enc = if req.replace_client_secret {
+            if req.client_secret.is_empty() {
+                None
+            } else {
+                Some(
+                    self.sealer
+                        .as_ref()
+                        .ok_or_else(|| {
+                            RpcError::FailedPrecondition(
+                                "identity-provider credentials require durable secret sealing"
+                                    .into(),
+                            )
+                        })?
+                        .seal(&req.client_secret)
+                        .map_err(RpcError::internal)?,
+                )
+            }
+        } else {
+            existing
+                .as_ref()
+                .and_then(|record| record.client_secret_enc.clone())
+        };
+        let input = IdentityProviderSetPlanInput {
+            org_id: org.id,
+            org_slug: org.slug,
+            issuer: req.issuer.trim().to_string(),
+            authorization_endpoint: req.authorization_endpoint.trim().to_string(),
+            token_endpoint: req.token_endpoint.trim().to_string(),
+            jwks_uri: req.jwks_uri.trim().to_string(),
+            client_id: req.client_id.trim().to_string(),
+            client_secret_enc,
+            client_secret_action: client_secret_action.to_string(),
+            scopes: req.scopes.trim().to_string(),
+            groups_claim: (!req.groups_claim.trim().is_empty())
+                .then(|| req.groups_claim.trim().to_string()),
+            role_map_json: if req.role_map_json.trim().is_empty() {
+                "{}".to_string()
+            } else {
+                req.role_map_json.trim().to_string()
+            },
+            allow_jit: req.allow_jit,
+            enforce_sso: req.enforce_sso,
+            default_role: req.default_role.trim().to_string(),
+            baseline_resource_version,
+            baseline_incarnation_id,
+            incarnation_id,
+        };
+        let candidate =
+            idp_record_from_plan(&input, input.baseline_resource_version.unwrap_or(0) + 1);
+        crate::auth::oidc::validate_idp_config_record(&candidate)
+            .map_err(|error| RpcError::invalid(format!("invalid identity provider: {error:#}")))?;
+        self.create_control_plan(
+            &claims,
+            "set_identity_provider",
+            scope.as_str(),
+            &input,
+            &req.idempotency_key,
+            vec![format!("set OIDC identity provider for {}", input.org_slug)],
+            vec!["SSO login behavior may change immediately after apply".to_string()],
+            Some(control_confirmation_hash(&input)?),
+        )
+        .await
+    }
+
+    /// Applies one reviewed OIDC identity-provider replacement exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the reviewed baseline changed, authority is lost,
+    /// or the atomic mutation cannot be committed.
+    pub async fn apply_set_identity_provider(
+        &self,
+        auth: Option<&str>,
+        req: pb::ApplyTopologyPlanRequest,
+    ) -> Result<pb::IdentityProviderResponse, RpcError> {
+        const KIND: &str = "set_identity_provider";
+        let claims = self
+            .require_control_plan_permission(auth, &req.plan_id, Permission::IamAdmin)
+            .await?;
+        if let Some(response) = self
+            .replayed_control_result(
+                auth,
+                &req.plan_id,
+                KIND,
+                Some(&req.confirmation_hash),
+                &req.idempotency_key,
+            )
+            .await?
+        {
+            return Ok(response);
+        }
+        self.begin_control_plan_apply(
+            auth,
+            &req.plan_id,
+            KIND,
+            &req.idempotency_key,
+            Some(&req.confirmation_hash),
+        )
+        .await?;
+        let (plan, input): (_, IdentityProviderSetPlanInput) = self
+            .load_control_plan(auth, &req.plan_id, KIND, Some(&req.confirmation_hash))
+            .await?;
+        let org = self
+            .db
+            .org_by_slug(&input.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|org| org.id == input.org_id)
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("organization changed after planning".into())
+            })?;
+        let scope = Scope::parse(&org.stable_id);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let version = input.baseline_resource_version.unwrap_or(0) + 1;
+        let config = idp_record_from_plan(&input, version);
+        let response = pb::IdentityProviderResponse {
+            identity_provider: Some(identity_provider_message(&org.slug, config.clone())),
+        };
+        let result_json = serde_json::to_string(&response).map_err(RpcError::internal)?;
+        let event_id = control_audit_event_id("idp:set", &plan.plan_id);
+        self.db
+            .apply_identity_provider_set_plan(
+                &config,
+                input.baseline_resource_version,
+                input.baseline_incarnation_id.as_deref(),
+                scope.as_str(),
+                &plan.plan_id,
+                &req.idempotency_key,
+                &result_json,
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                &claims.sub,
+                &event_id,
+            )
+            .await
+            .map_err(|error| {
+                RpcError::FailedPrecondition(format!(
+                    "identity provider changed after planning: {error:#}"
+                ))
+            })?;
+        Ok(response)
+    }
+
+    /// Plans removal of one exact OIDC identity-provider revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication, authorization, lookup, version, or persistence error.
+    pub async fn plan_remove_identity_provider(
+        &self,
+        auth: Option<&str>,
+        req: pb::PlanRemoveIdentityProviderRequest,
+    ) -> Result<pb::TopologyPlanResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        let scope = Scope::parse(&org.stable_id);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        if let Some(replayed) = self
+            .replayed_identity_provider_remove_plan(&claims, &req)
+            .await?
+        {
+            return Ok(replayed);
+        }
+        let current = self
+            .db
+            .idp_config(org.id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("identity provider"))?;
+        if req.expected_resource_version
+            != identity_resource_version(
+                current.resource_version,
+                current.incarnation_id.as_deref(),
+            )
+        {
+            return Err(RpcError::FailedPrecondition(
+                "identity-provider revision changed".into(),
+            ));
+        }
+        let input = IdentityProviderRemovePlanInput {
+            org_id: org.id,
+            org_slug: org.slug,
+            baseline_resource_version: current.resource_version,
+            baseline_incarnation_id: current.incarnation_id,
+        };
+        self.create_control_plan(
+            &claims,
+            "remove_identity_provider",
+            scope.as_str(),
+            &input,
+            &req.idempotency_key,
+            vec![format!(
+                "remove OIDC identity provider for {}",
+                input.org_slug
+            )],
+            vec!["SSO login for captured domains will stop".to_string()],
+            Some(control_confirmation_hash(&input)?),
+        )
+        .await
+    }
+
+    async fn replayed_identity_provider_remove_plan(
+        &self,
+        claims: &Claims,
+        request: &pb::PlanRemoveIdentityProviderRequest,
+    ) -> Result<Option<pb::TopologyPlanResponse>, RpcError> {
+        let Some((plan, input)) = self
+            .replayed_control_plan_input::<IdentityProviderRemovePlanInput>(
+                claims,
+                "remove_identity_provider",
+                &request.idempotency_key,
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        let expected_version = identity_resource_version(
+            input.baseline_resource_version,
+            input.baseline_incarnation_id.as_deref(),
+        );
+        if input.org_slug != request.org_slug
+            || expected_version != request.expected_resource_version
+        {
+            return Err(RpcError::FailedPrecondition(
+                "plan idempotency key was already used for different input".into(),
+            ));
+        }
+        Self::control_plan_response(plan).map(Some)
+    }
+
+    /// Applies one reviewed OIDC identity-provider removal exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the revision changed or atomic apply fails.
+    pub async fn apply_remove_identity_provider(
+        &self,
+        auth: Option<&str>,
+        req: pb::ApplyTopologyPlanRequest,
+    ) -> Result<pb::DeleteTopologyResourceResponse, RpcError> {
+        const KIND: &str = "remove_identity_provider";
+        let claims = self
+            .require_control_plan_permission(auth, &req.plan_id, Permission::IamAdmin)
+            .await?;
+        if let Some(response) = self
+            .replayed_control_result(
+                auth,
+                &req.plan_id,
+                KIND,
+                Some(&req.confirmation_hash),
+                &req.idempotency_key,
+            )
+            .await?
+        {
+            return Ok(response);
+        }
+        self.begin_control_plan_apply(
+            auth,
+            &req.plan_id,
+            KIND,
+            &req.idempotency_key,
+            Some(&req.confirmation_hash),
+        )
+        .await?;
+        let (plan, input): (_, IdentityProviderRemovePlanInput) = self
+            .load_control_plan(auth, &req.plan_id, KIND, Some(&req.confirmation_hash))
+            .await?;
+        let org = self
+            .db
+            .org_by_slug(&input.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|org| org.id == input.org_id)
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("organization changed after planning".into())
+            })?;
+        let scope = Scope::parse(&org.stable_id);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let response = pb::DeleteTopologyResourceResponse { deleted: true };
+        let result_json = serde_json::to_string(&response).map_err(RpcError::internal)?;
+        let event_id = control_audit_event_id("idp:remove", &plan.plan_id);
+        self.db
+            .apply_identity_provider_remove_plan(
+                org.id,
+                input.baseline_resource_version,
+                input.baseline_incarnation_id.as_deref(),
+                scope.as_str(),
+                &plan.plan_id,
+                &req.idempotency_key,
+                &result_json,
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                &claims.sub,
+                &event_id,
+            )
+            .await
+            .map_err(|error| {
+                RpcError::FailedPrecondition(format!(
+                    "identity provider changed after planning: {error:#}"
+                ))
+            })?;
+        Ok(response)
+    }
+
+    async fn replayed_identity_provider_plan(
+        &self,
+        claims: &Claims,
+        request: &pb::PlanSetIdentityProviderRequest,
+    ) -> Result<Option<pb::TopologyPlanResponse>, RpcError> {
+        let Some(plan) = self
+            .db
+            .topology_plan_for_request(
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                "set_identity_provider",
+                &request.idempotency_key,
+            )
+            .await
+            .map_err(RpcError::internal)?
+        else {
+            return Ok(None);
+        };
+        let input: IdentityProviderSetPlanInput =
+            serde_json::from_str(&plan.input_versions_json).map_err(RpcError::internal)?;
+        let role_map = if request.role_map_json.trim().is_empty() {
+            "{}"
+        } else {
+            request.role_map_json.trim()
+        };
+        let expected_version = input.baseline_resource_version.map_or_else(
+            || "absent".to_string(),
+            |version| identity_resource_version(version, input.baseline_incarnation_id.as_deref()),
+        );
+        let requested_action = if !request.replace_client_secret {
+            "preserve"
+        } else if request.client_secret.is_empty() {
+            "clear"
+        } else {
+            "replace"
+        };
+        let public_input_matches = input.org_slug == request.org_slug
+            && input.issuer == request.issuer.trim()
+            && input.authorization_endpoint == request.authorization_endpoint.trim()
+            && input.token_endpoint == request.token_endpoint.trim()
+            && input.jwks_uri == request.jwks_uri.trim()
+            && input.client_id == request.client_id.trim()
+            && input.client_secret_action == requested_action
+            && input.scopes == request.scopes.trim()
+            && input.groups_claim.as_deref().unwrap_or_default() == request.groups_claim.trim()
+            && input.role_map_json == role_map
+            && input.allow_jit == request.allow_jit
+            && input.enforce_sso == request.enforce_sso
+            && input.default_role == request.default_role.trim()
+            && expected_version == request.expected_resource_version;
+        let credential_matches = match requested_action {
+            "replace" => {
+                let sealed = input.client_secret_enc.as_deref().ok_or_else(|| {
+                    RpcError::internal(anyhow::anyhow!(
+                        "identity-provider replacement plan omitted its sealed credential"
+                    ))
+                })?;
+                self.sealer
+                    .as_ref()
+                    .ok_or_else(|| {
+                        RpcError::FailedPrecondition(
+                            "identity-provider credentials require durable secret sealing".into(),
+                        )
+                    })?
+                    .unseal(sealed)
+                    .map_err(RpcError::internal)?
+                    == request.client_secret
+            }
+            "clear" => input.client_secret_enc.is_none(),
+            "preserve" => true,
+            _ => false,
+        };
+        if !public_input_matches || !credential_matches {
+            return Err(RpcError::FailedPrecondition(
+                "plan idempotency key was already used for different input".into(),
+            ));
+        }
+        Self::control_plan_response(plan).map(Some)
+    }
+
+    /// Lists organization email-domain claims without exposing credentials.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication, authorization, paging, or persistence error.
+    pub async fn list_organization_domains(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListOrganizationDomainsRequest,
+    ) -> Result<pb::ListOrganizationDomainsResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        self.require_permission(&claims, Permission::IamAdmin, &Scope::parse(&org.stable_id))
+            .await?;
+        let domains = self
+            .db
+            .list_org_domains(org.id)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(|record| organization_domain_message(&org.slug, record))
+            .collect();
+        let (domains, next_page_token) = paginate(domains, req.page_size, &req.page_token)?;
+        Ok(pb::ListOrganizationDomainsResponse {
+            domains,
+            next_page_token,
+        })
+    }
+
+    /// Reads one organization email-domain claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication, authorization, lookup, or persistence error.
+    pub async fn get_organization_domain(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetOrganizationDomainRequest,
+    ) -> Result<pb::OrganizationDomainResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        self.require_permission(&claims, Permission::IamAdmin, &Scope::parse(&org.stable_id))
+            .await?;
+        let domain = canonical_identity_domain(&req.domain)?;
+        let record = self
+            .db
+            .org_domain(&domain)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|record| record.org_id == org.id)
+            .ok_or_else(|| RpcError::not_found("organization domain"))?;
+        Ok(pb::OrganizationDomainResponse {
+            domain: Some(organization_domain_message(&org.slug, record)),
+        })
+    }
+
+    /// Plans a new domain claim or exact-version challenge rotation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, foreign ownership, a stale version,
+    /// insufficient authority, or persistence failure.
+    pub async fn plan_claim_organization_domain(
+        &self,
+        auth: Option<&str>,
+        req: pb::PlanClaimOrganizationDomainRequest,
+    ) -> Result<pb::TopologyPlanResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        if req.idempotency_key.is_empty() {
+            return Err(RpcError::invalid("idempotency_key is required"));
+        }
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        let scope = Scope::parse(&org.stable_id);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let domain = canonical_identity_domain(&req.domain)?;
+        if let Some(replayed) = self
+            .replayed_organization_domain_plan(
+                &claims,
+                "claim_organization_domain",
+                &req.org_slug,
+                &domain,
+                &req.expected_resource_version,
+                &req.idempotency_key,
+            )
+            .await?
+        {
+            return Ok(replayed);
+        }
+        let existing = self
+            .db
+            .org_domain(&domain)
+            .await
+            .map_err(RpcError::internal)?;
+        if existing
+            .as_ref()
+            .is_some_and(|record| record.org_id != org.id)
+        {
+            return Err(RpcError::AlreadyExists(
+                "domain is claimed by another organization".into(),
+            ));
+        }
+        let baseline_resource_version = require_exact_identity_version(
+            &req.expected_resource_version,
+            existing
+                .as_ref()
+                .map(|record| (record.resource_version, record.incarnation_id.as_deref())),
+        )?;
+        let baseline_incarnation_id = existing
+            .as_ref()
+            .and_then(|record| record.incarnation_id.clone());
+        let incarnation_id = baseline_incarnation_id
+            .clone()
+            .unwrap_or_else(|| format!("domain-incarnation-{}", uuid::Uuid::new_v4()));
+        let challenge = format!(
+            "aos-domain-verify={}",
+            hex::encode(Sha256::digest(
+                format!("{}:{domain}:{}", org.stable_id, req.idempotency_key).as_bytes()
+            ))
+        );
+        let input = OrganizationDomainPlanInput {
+            org_id: org.id,
+            org_slug: org.slug,
+            domain,
+            txt_challenge: challenge,
+            baseline_resource_version,
+            baseline_incarnation_id,
+            incarnation_id,
+        };
+        self.create_control_plan(
+            &claims,
+            "claim_organization_domain",
+            scope.as_str(),
+            &input,
+            &req.idempotency_key,
+            vec![format!("claim {} for {}", input.domain, input.org_slug)],
+            vec![
+                "the claim remains inactive until its exact DNS TXT challenge is verified"
+                    .to_string(),
+            ],
+            Some(control_confirmation_hash(&input)?),
+        )
+        .await
+    }
+
+    /// Applies one reviewed domain claim or challenge rotation exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when ownership or revision changed or atomic apply fails.
+    pub async fn apply_claim_organization_domain(
+        &self,
+        auth: Option<&str>,
+        req: pb::ApplyTopologyPlanRequest,
+    ) -> Result<pb::OrganizationDomainResponse, RpcError> {
+        const KIND: &str = "claim_organization_domain";
+        let claims = self
+            .require_control_plan_permission(auth, &req.plan_id, Permission::IamAdmin)
+            .await?;
+        if let Some(response) = self
+            .replayed_control_result(
+                auth,
+                &req.plan_id,
+                KIND,
+                Some(&req.confirmation_hash),
+                &req.idempotency_key,
+            )
+            .await?
+        {
+            return Ok(response);
+        }
+        self.begin_control_plan_apply(
+            auth,
+            &req.plan_id,
+            KIND,
+            &req.idempotency_key,
+            Some(&req.confirmation_hash),
+        )
+        .await?;
+        let (plan, input): (_, OrganizationDomainPlanInput) = self
+            .load_control_plan(auth, &req.plan_id, KIND, Some(&req.confirmation_hash))
+            .await?;
+        let org = self
+            .db
+            .org_by_slug(&input.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|org| org.id == input.org_id)
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("organization changed after planning".into())
+            })?;
+        let scope = Scope::parse(&org.stable_id);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let record = crate::db::OrgDomainRecord {
+            domain: input.domain,
+            org_id: org.id,
+            txt_challenge: input.txt_challenge,
+            verified_at: None,
+            resource_version: input.baseline_resource_version.unwrap_or(0) + 1,
+            incarnation_id: Some(input.incarnation_id),
+            mutation_plan_id: Some(plan.plan_id.clone()),
+        };
+        let response = pb::OrganizationDomainResponse {
+            domain: Some(organization_domain_message(&org.slug, record.clone())),
+        };
+        let result_json = serde_json::to_string(&response).map_err(RpcError::internal)?;
+        let event_id = control_audit_event_id("domain:claim", &plan.plan_id);
+        self.db
+            .apply_org_domain_claim_plan(
+                &record,
+                input.baseline_resource_version,
+                input.baseline_incarnation_id.as_deref(),
+                scope.as_str(),
+                &plan.plan_id,
+                &req.idempotency_key,
+                &result_json,
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                &claims.sub,
+                &event_id,
+            )
+            .await
+            .map_err(|error| {
+                RpcError::FailedPrecondition(format!(
+                    "domain claim changed after planning: {error:#}"
+                ))
+            })?;
+        Ok(response)
+    }
+
+    /// Plans DNS verification of one exact pending domain revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication, authorization, lookup, version, or persistence error.
+    pub async fn plan_verify_organization_domain(
+        &self,
+        auth: Option<&str>,
+        req: pb::PlanVerifyOrganizationDomainRequest,
+    ) -> Result<pb::TopologyPlanResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        let scope = Scope::parse(&org.stable_id);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let domain = canonical_identity_domain(&req.domain)?;
+        if let Some(replayed) = self
+            .replayed_organization_domain_plan(
+                &claims,
+                "verify_organization_domain",
+                &req.org_slug,
+                &domain,
+                &req.expected_resource_version,
+                &req.idempotency_key,
+            )
+            .await?
+        {
+            return Ok(replayed);
+        }
+        let record = self
+            .organization_domain_revision(&org, &domain, &req.expected_resource_version)
+            .await?;
+        if record.verified_at.is_some() {
+            return Err(RpcError::FailedPrecondition(
+                "domain is already verified".into(),
+            ));
+        }
+        let input = OrganizationDomainPlanInput {
+            org_id: org.id,
+            org_slug: org.slug,
+            domain: record.domain,
+            txt_challenge: record.txt_challenge,
+            baseline_resource_version: Some(record.resource_version),
+            baseline_incarnation_id: record.incarnation_id.clone(),
+            incarnation_id: record
+                .incarnation_id
+                .clone()
+                .unwrap_or_else(|| format!("domain-incarnation-{}", uuid::Uuid::new_v4())),
+        };
+        self.create_control_plan(
+            &claims,
+            "verify_organization_domain",
+            scope.as_str(),
+            &input,
+            &req.idempotency_key,
+            vec![format!("verify DNS ownership of {}", input.domain)],
+            Vec::new(),
+            Some(control_confirmation_hash(&input)?),
+        )
+        .await
+    }
+
+    /// Resolves DNS and atomically verifies one reviewed domain challenge.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when DNS lacks the exact challenge, the revision changed,
+    /// the runtime has no verifier, or atomic apply fails.
+    pub async fn apply_verify_organization_domain(
+        &self,
+        auth: Option<&str>,
+        req: pb::ApplyTopologyPlanRequest,
+    ) -> Result<pb::OrganizationDomainResponse, RpcError> {
+        const KIND: &str = "verify_organization_domain";
+        let claims = self
+            .require_control_plan_permission(auth, &req.plan_id, Permission::IamAdmin)
+            .await?;
+        if let Some(response) = self
+            .replayed_control_result(
+                auth,
+                &req.plan_id,
+                KIND,
+                Some(&req.confirmation_hash),
+                &req.idempotency_key,
+            )
+            .await?
+        {
+            return Ok(response);
+        }
+        self.begin_control_plan_apply(
+            auth,
+            &req.plan_id,
+            KIND,
+            &req.idempotency_key,
+            Some(&req.confirmation_hash),
+        )
+        .await?;
+        let (plan, input): (_, OrganizationDomainPlanInput) = self
+            .load_control_plan(auth, &req.plan_id, KIND, Some(&req.confirmation_hash))
+            .await?;
+        let org = self
+            .db
+            .org_by_slug(&input.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|org| org.id == input.org_id)
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("organization changed after planning".into())
+            })?;
+        let scope = Scope::parse(&org.stable_id);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let current = self
+            .db
+            .org_domain(&input.domain)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|record| record.org_id == org.id)
+            .ok_or_else(|| RpcError::FailedPrecondition("domain claim disappeared".into()))?;
+        if current.resource_version != input.baseline_resource_version.unwrap_or(-1)
+            || current.incarnation_id != input.baseline_incarnation_id
+            || current.txt_challenge != input.txt_challenge
+            || current.verified_at.is_some()
+        {
+            return Err(RpcError::FailedPrecondition(
+                "domain claim changed after planning".into(),
+            ));
+        }
+        let verifier = self.identity_domain_verifier.as_ref().ok_or_else(|| {
+            RpcError::FailedPrecondition("DNS domain verification is not configured".into())
+        })?;
+        if !verifier
+            .challenge_is_published(&current.domain, &current.txt_challenge)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            return Err(RpcError::FailedPrecondition(
+                "the exact DNS TXT challenge is not published".into(),
+            ));
+        }
+        let verified_at = clock::now_unix_secs();
+        let mut verified = current.clone();
+        verified.verified_at = Some(verified_at);
+        verified.resource_version += 1;
+        verified.incarnation_id = Some(input.incarnation_id.clone());
+        verified.mutation_plan_id = Some(plan.plan_id.clone());
+        let response = pb::OrganizationDomainResponse {
+            domain: Some(organization_domain_message(&org.slug, verified)),
+        };
+        let result_json = serde_json::to_string(&response).map_err(RpcError::internal)?;
+        let event_id = control_audit_event_id("domain:verify", &plan.plan_id);
+        self.db
+            .apply_org_domain_verify_plan(
+                &current,
+                &input.incarnation_id,
+                verified_at,
+                scope.as_str(),
+                &plan.plan_id,
+                &req.idempotency_key,
+                &result_json,
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                &claims.sub,
+                &event_id,
+            )
+            .await
+            .map_err(|error| {
+                RpcError::FailedPrecondition(format!(
+                    "domain claim changed after DNS verification: {error:#}"
+                ))
+            })?;
+        Ok(response)
+    }
+
+    /// Plans release of one exact organization-domain claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication, authorization, lookup, version, or persistence error.
+    pub async fn plan_release_organization_domain(
+        &self,
+        auth: Option<&str>,
+        req: pb::PlanReleaseOrganizationDomainRequest,
+    ) -> Result<pb::TopologyPlanResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("organization"))?;
+        let scope = Scope::parse(&org.stable_id);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let domain = canonical_identity_domain(&req.domain)?;
+        if let Some(replayed) = self
+            .replayed_organization_domain_plan(
+                &claims,
+                "release_organization_domain",
+                &req.org_slug,
+                &domain,
+                &req.expected_resource_version,
+                &req.idempotency_key,
+            )
+            .await?
+        {
+            return Ok(replayed);
+        }
+        let record = self
+            .organization_domain_revision(&org, &domain, &req.expected_resource_version)
+            .await?;
+        let input = OrganizationDomainPlanInput {
+            org_id: org.id,
+            org_slug: org.slug,
+            domain: record.domain,
+            txt_challenge: record.txt_challenge,
+            baseline_resource_version: Some(record.resource_version),
+            baseline_incarnation_id: record.incarnation_id.clone(),
+            incarnation_id: record
+                .incarnation_id
+                .clone()
+                .unwrap_or_else(|| format!("domain-incarnation-{}", uuid::Uuid::new_v4())),
+        };
+        self.create_control_plan(
+            &claims,
+            "release_organization_domain",
+            scope.as_str(),
+            &input,
+            &req.idempotency_key,
+            vec![format!("release {} from {}", input.domain, input.org_slug)],
+            vec!["email-first SSO routing for this domain will stop".to_string()],
+            Some(control_confirmation_hash(&input)?),
+        )
+        .await
+    }
+
+    /// Applies one reviewed organization-domain release exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the claim changed or atomic apply fails.
+    pub async fn apply_release_organization_domain(
+        &self,
+        auth: Option<&str>,
+        req: pb::ApplyTopologyPlanRequest,
+    ) -> Result<pb::DeleteTopologyResourceResponse, RpcError> {
+        const KIND: &str = "release_organization_domain";
+        let claims = self
+            .require_control_plan_permission(auth, &req.plan_id, Permission::IamAdmin)
+            .await?;
+        if let Some(response) = self
+            .replayed_control_result(
+                auth,
+                &req.plan_id,
+                KIND,
+                Some(&req.confirmation_hash),
+                &req.idempotency_key,
+            )
+            .await?
+        {
+            return Ok(response);
+        }
+        self.begin_control_plan_apply(
+            auth,
+            &req.plan_id,
+            KIND,
+            &req.idempotency_key,
+            Some(&req.confirmation_hash),
+        )
+        .await?;
+        let (plan, input): (_, OrganizationDomainPlanInput) = self
+            .load_control_plan(auth, &req.plan_id, KIND, Some(&req.confirmation_hash))
+            .await?;
+        let org = self
+            .db
+            .org_by_slug(&input.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|org| org.id == input.org_id)
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("organization changed after planning".into())
+            })?;
+        let scope = Scope::parse(&org.stable_id);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let current = self
+            .db
+            .org_domain(&input.domain)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|record| record.org_id == org.id)
+            .ok_or_else(|| RpcError::FailedPrecondition("domain claim disappeared".into()))?;
+        if current.resource_version != input.baseline_resource_version.unwrap_or(-1)
+            || current.incarnation_id != input.baseline_incarnation_id
+        {
+            return Err(RpcError::FailedPrecondition(
+                "domain claim changed after planning".into(),
+            ));
+        }
+        let response = pb::DeleteTopologyResourceResponse { deleted: true };
+        let result_json = serde_json::to_string(&response).map_err(RpcError::internal)?;
+        let event_id = control_audit_event_id("domain:release", &plan.plan_id);
+        self.db
+            .apply_org_domain_release_plan(
+                &current,
+                scope.as_str(),
+                &plan.plan_id,
+                &req.idempotency_key,
+                &result_json,
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                &claims.sub,
+                &event_id,
+            )
+            .await
+            .map_err(|error| {
+                RpcError::FailedPrecondition(format!(
+                    "domain claim changed after planning: {error:#}"
+                ))
+            })?;
+        Ok(response)
+    }
+
+    async fn organization_domain_revision(
+        &self,
+        org: &crate::db::OrgRecord,
+        domain: &str,
+        expected_resource_version: &str,
+    ) -> Result<crate::db::OrgDomainRecord, RpcError> {
+        let record = self
+            .db
+            .org_domain(domain)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|record| record.org_id == org.id)
+            .ok_or_else(|| RpcError::not_found("organization domain"))?;
+        if expected_resource_version
+            != identity_resource_version(record.resource_version, record.incarnation_id.as_deref())
+        {
+            return Err(RpcError::FailedPrecondition(
+                "domain claim revision changed".into(),
+            ));
+        }
+        Ok(record)
+    }
+
+    async fn replayed_organization_domain_plan(
+        &self,
+        claims: &Claims,
+        kind: &str,
+        org_slug: &str,
+        domain: &str,
+        expected_resource_version: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<pb::TopologyPlanResponse>, RpcError> {
+        let Some((plan, input)) = self
+            .replayed_control_plan_input::<OrganizationDomainPlanInput>(
+                claims,
+                kind,
+                idempotency_key,
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        let expected_version = input.baseline_resource_version.map_or_else(
+            || "absent".to_string(),
+            |version| identity_resource_version(version, input.baseline_incarnation_id.as_deref()),
+        );
+        if input.org_slug != org_slug
+            || input.domain != domain
+            || expected_version != expected_resource_version
+        {
+            return Err(RpcError::FailedPrecondition(
+                "plan idempotency key was already used for different input".into(),
+            ));
+        }
+        Self::control_plan_response(plan).map(Some)
+    }
+
+    /// Persists an immutable plan for issuing a scoped access token.
+    pub async fn plan_issue_access_token(
+        &self,
+        auth: Option<&str>,
+        req: pb::PlanIssueAccessTokenRequest,
+    ) -> Result<pb::TopologyPlanResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let scope = parse_authorization_scope(&req.scope)?;
+        let context = self
+            .db
+            .authorization_context(scope.as_str())
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("authorization scope"))?;
+        self.require_permission(&claims, Permission::TokensManage, &scope)
+            .await?;
+        if req.ttl_secs < 0 || req.ttl_secs > ACCESS_TOKEN_MAX_TTL_SECS {
+            return Err(RpcError::invalid(format!(
+                "ttl_secs must be 0 or between 1 and {ACCESS_TOKEN_MAX_TTL_SECS}"
+            )));
+        }
+        let (kind, principal_ref) = req.owner.split_once(':').ok_or_else(|| {
+            RpcError::invalid("owner must be 'user:<email>' or 'service_account:<org>/<name>'")
+        })?;
+        let owner_id = self
+            .resolve_existing_principal_id(kind, principal_ref)
+            .await?;
+        let owner = match kind {
+            "user" => crate::domain::Principal::user(owner_id),
+            "service_account" => crate::domain::Principal::service_account(owner_id),
+            other => return Err(RpcError::invalid(format!("unknown owner kind '{other}'"))),
+        };
+        let mut perms = Vec::new();
+        for verb in &req.permissions {
+            let perm = Permission::parse(verb)
+                .ok_or_else(|| RpcError::invalid(format!("unknown permission '{verb}'")))?;
+            perms.push(perm);
+        }
+        // A token can never exceed its owner's authority.
+        let grants = self
+            .db
+            .effective_scopes(owner)
+            .await
+            .map_err(RpcError::internal)?;
+        if perms.is_empty()
+            || perms
+                .iter()
+                .any(|permission| !iam::allow(&grants, *permission, &context))
+        {
+            return Err(RpcError::PermissionDenied(
+                "token permissions exceed the owner's current grants".to_string(),
+            ));
+        }
+        let mut permissions = perms
+            .iter()
+            .map(|permission| permission.as_str().to_string())
+            .collect::<Vec<_>>();
+        permissions.sort();
+        permissions.dedup();
+        let canonical_grants = grants
+            .iter()
+            .map(|(scope, role)| (scope.as_str(), role.as_str()))
+            .collect::<Vec<_>>();
+        let grants_digest = hex::encode(Sha256::digest(
+            serde_json::to_vec(&canonical_grants).map_err(RpcError::internal)?,
+        ));
+        if !req.expected_resource_version.is_empty()
+            && req.expected_resource_version != grants_digest
+        {
+            return Err(RpcError::FailedPrecondition(
+                "token-owner grant revision is stale".into(),
+            ));
+        }
+        let input = AccessTokenIssuePlanInput {
+            owner_kind: kind.to_string(),
+            owner_ref: principal_ref.to_string(),
+            owner_id,
+            scope: scope.as_str().to_string(),
+            permissions,
+            ttl_secs: if req.ttl_secs == 0 {
+                ACCESS_TOKEN_DEFAULT_TTL_SECS
+            } else {
+                req.ttl_secs
+            },
+            comment: (!req.comment.trim().is_empty()).then(|| req.comment.trim().to_string()),
+        };
+        let confirmation_hash = hex::encode(Sha256::digest(
+            serde_json::to_vec(&input).map_err(RpcError::internal)?,
+        ));
+        self.create_control_plan(
+            &claims,
+            "issue_access_token",
+            &input.scope,
+            &input,
+            &req.idempotency_key,
+            vec![format!(
+                "issue access token for {}:{}",
+                input.owner_kind, input.owner_ref
+            )],
+            Vec::new(),
+            Some(confirmation_hash),
+        )
+        .await
+    }
+
+    /// Applies one reviewed access-token issuance plan exactly once.
+    pub async fn apply_issue_access_token(
+        &self,
+        auth: Option<&str>,
+        req: pb::ApplyTopologyPlanRequest,
+    ) -> Result<pb::AccessTokenResponse, RpcError> {
+        const PLAN_KIND: &str = "issue_access_token";
+        let claims = self
+            .require_control_plan_permission(auth, &req.plan_id, Permission::TokensManage)
+            .await?;
+        if let Some(response) = self
+            .replayed_control_result::<pb::AccessTokenResponse>(
+                auth,
+                &req.plan_id,
+                PLAN_KIND,
+                Some(&req.confirmation_hash),
+                &req.idempotency_key,
+            )
+            .await?
+        {
+            if response.secret.is_empty() {
+                return Err(RpcError::FailedPrecondition(
+                    "access token secret was delivered once and cannot be replayed; retire the token if delivery was interrupted"
+                        .to_string(),
+                ));
+            }
+            return Ok(response);
+        }
+        self.begin_control_plan_apply(
+            auth,
+            &req.plan_id,
+            PLAN_KIND,
+            &req.idempotency_key,
+            Some(&req.confirmation_hash),
+        )
+        .await?;
+        let (plan, input): (_, AccessTokenIssuePlanInput) = self
+            .load_control_plan(auth, &req.plan_id, PLAN_KIND, Some(&req.confirmation_hash))
+            .await?;
+        let scope = parse_authorization_scope(&input.scope)?;
+        self.require_permission(&claims, Permission::TokensManage, &scope)
+            .await?;
+        let owner_id = self
+            .resolve_existing_principal_id(&input.owner_kind, &input.owner_ref)
+            .await?;
+        if owner_id != input.owner_id {
+            return Err(RpcError::FailedPrecondition(
+                "token owner changed after planning".into(),
+            ));
+        }
+        let owner = match input.owner_kind.as_str() {
+            "user" => crate::domain::Principal::user(owner_id),
+            "service_account" => crate::domain::Principal::service_account(owner_id),
+            other => return Err(RpcError::invalid(format!("unknown owner kind '{other}'"))),
+        };
+        let permissions = input
+            .permissions
+            .iter()
+            .map(|verb| {
+                Permission::parse(verb)
+                    .ok_or_else(|| RpcError::invalid(format!("unknown permission '{verb}'")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let owner_grants = self
+            .db
+            .effective_scopes(owner)
+            .await
+            .map_err(RpcError::internal)?;
+        let context = self
+            .db
+            .authorization_context(scope.as_str())
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("authorization scope"))?;
+        if permissions
+            .iter()
+            .any(|permission| !iam::allow(&owner_grants, *permission, &context))
+        {
+            return Err(RpcError::FailedPrecondition(
+                "token-owner authority changed after planning".into(),
+            ));
+        }
+        let expires_at =
+            (input.ttl_secs > 0).then_some(clock::now_unix_secs().saturating_add(input.ttl_secs));
+        let (token_id, secret) = self
+            .db
+            .create_token(
+                owner,
+                &input.scope,
+                &permissions,
+                input.comment.as_deref(),
+                expires_at,
+            )
+            .await
+            .map_err(RpcError::internal)?;
+        let response = pb::AccessTokenResponse { token_id, secret };
+        let persisted = pb::AccessTokenResponse {
+            token_id: response.token_id.clone(),
+            secret: String::new(),
+        };
+        self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &persisted)
+            .await?;
+        Ok(response)
+    }
+
+    /// Persists an immutable plan for retiring one access-token generation.
+    pub async fn plan_retire_access_token(
+        &self,
+        auth: Option<&str>,
+        req: pb::PlanRetireAccessTokenRequest,
+    ) -> Result<pb::TopologyPlanResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let (token_scope, current) = self
+            .db
+            .token_scope_and_lifecycle(&req.token_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("access token"))?;
+        self.require_permission(
+            &claims,
+            Permission::TokensManage,
+            &Scope::parse(&token_scope),
+        )
+        .await?;
+        if req.expected_resource_version != current {
+            return Err(RpcError::FailedPrecondition(
+                "access token resource version is stale".into(),
+            ));
+        }
+        if current != "active" {
+            return Err(RpcError::FailedPrecondition(
+                "access token is not active".into(),
+            ));
+        }
+        let input = AccessTokenRetirementPlanInput {
+            token_id: req.token_id,
+        };
+        let confirmation_hash = hex::encode(Sha256::digest(
+            serde_json::to_vec(&input).map_err(RpcError::internal)?,
+        ));
+        self.create_control_plan(
+            &claims,
+            "retire_access_token",
+            &token_scope,
+            &input,
+            &req.idempotency_key,
+            vec![format!("retire access token {}", input.token_id)],
+            Vec::new(),
+            Some(confirmation_hash),
+        )
+        .await
+    }
+
+    /// Applies one reviewed access-token retirement plan exactly once.
+    pub async fn apply_retire_access_token(
+        &self,
+        auth: Option<&str>,
+        req: pb::ApplyTopologyPlanRequest,
+    ) -> Result<pb::AccessTokenRetirementResponse, RpcError> {
+        const PLAN_KIND: &str = "retire_access_token";
+        self.require_control_plan_permission(auth, &req.plan_id, Permission::TokensManage)
+            .await?;
+        if let Some(response) = self
+            .replayed_control_result(
+                auth,
+                &req.plan_id,
+                PLAN_KIND,
+                Some(&req.confirmation_hash),
+                &req.idempotency_key,
+            )
+            .await?
+        {
+            return Ok(response);
+        }
+        self.begin_control_plan_apply(
+            auth,
+            &req.plan_id,
+            PLAN_KIND,
+            &req.idempotency_key,
+            Some(&req.confirmation_hash),
+        )
+        .await?;
+        let (plan, input): (_, AccessTokenRetirementPlanInput) = self
             .load_control_plan(auth, &req.plan_id, PLAN_KIND, Some(&req.confirmation_hash))
             .await?;
         if self
@@ -18819,59 +21242,84 @@ impl RpcService {
             != Some("active")
         {
             return Err(RpcError::FailedPrecondition(
-                "registry token changed after planning".into(),
+                "access token changed after planning".into(),
             ));
         }
         self.db
             .revoke_token(&input.token_id)
             .await
             .map_err(RpcError::internal)?;
-        let response = pb::RegistryTokenRetirementResponse {};
+        let response = pb::AccessTokenRetirementResponse {};
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
             .await?;
         Ok(response)
     }
 
-    /// Lists secret-free token generations at one exact registry scope.
+    /// Lists secret-free token generations at one exact authorization scope.
     ///
     /// # Errors
     ///
     /// [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT;
     /// [`RpcError::Internal`] on database failure.
-    pub async fn list_tokens(
+    pub async fn list_access_tokens(
         &self,
         auth: Option<&str>,
-        req: pb::ListTokensRequest,
-    ) -> Result<pb::ListTokensResponse, RpcError> {
+        req: pb::ListAccessTokensRequest,
+    ) -> Result<pb::ListAccessTokensResponse, RpcError> {
         let claims = self.require_claims(auth)?;
-        let registry = self.registry_or_not_found(&req.scope).await?;
-        let scope = self.registry_scope(&registry).await?;
-        self.require_permission(&claims, Permission::IamAdmin, &scope)
+        let scope = parse_authorization_scope(&req.scope)?;
+        if self
+            .db
+            .authorization_context(scope.as_str())
+            .await
+            .map_err(RpcError::internal)?
+            .is_none()
+        {
+            return Err(RpcError::not_found("authorization scope"));
+        }
+        self.require_permission(&claims, Permission::TokensManage, &scope)
             .await?;
         let rows = self
             .db
-            .list_registry_token_metadata(scope.as_str())
+            .list_access_token_metadata(scope.as_str())
             .await
             .map_err(RpcError::internal)?;
-        let tokens = rows
-            .into_iter()
-            .map(|token| pb::TokenInfo {
+        let mut tokens = Vec::with_capacity(rows.len());
+        for token in rows {
+            let owner_ref = match token.owner_kind.as_str() {
+                "user" => self
+                    .db
+                    .user_email(token.owner_id)
+                    .await
+                    .map_err(RpcError::internal)?,
+                "service_account" => self
+                    .db
+                    .service_account_reference(token.owner_id)
+                    .await
+                    .map_err(RpcError::internal)?,
+                _ => None,
+            }
+            .unwrap_or_else(|| format!("deleted:{}", token.owner_id));
+            tokens.push(pb::TokenInfo {
                 token_id: token.token_id,
-                owner: format!("{}:{}", token.owner_kind, token.owner_id),
+                owner: format!("{}:{owner_ref}", token.owner_kind),
                 scope: token.scope,
                 permissions: token
                     .permissions
                     .iter()
-                    .filter_map(|permission| registry_token_permission_name(*permission))
-                    .map(str::to_string)
+                    .map(|permission| permission.as_str().to_string())
                     .collect(),
                 created_at: token.created_at,
                 expires_at: token.expires_at.unwrap_or_default(),
                 resource_version: token.resource_version,
-            })
-            .collect();
+                comment: token.comment.unwrap_or_default(),
+                last_used_at: token.last_used_at.unwrap_or_default(),
+                rotated_at: token.rotated_at.unwrap_or_default(),
+                retired_at: token.retired_at.unwrap_or_default(),
+            });
+        }
         let (tokens, next_page_token) = paginate(tokens, req.page_size, &req.page_token)?;
-        Ok(pb::ListTokensResponse {
+        Ok(pb::ListAccessTokensResponse {
             tokens,
             next_page_token,
         })
@@ -19015,6 +21463,10 @@ impl RpcService {
         Ok(pb::ListWebhooksResponse {
             webhooks,
             next_page_token,
+            supported_event_types: crate::webhook::SUPPORTED_EVENT_TYPES
+                .iter()
+                .map(|event| (*event).to_string())
+                .collect(),
         })
     }
 
@@ -19542,13 +21994,28 @@ impl RpcService {
 
     // -- BinaryCacheService (RFC-0004 "11-caches") ---------------------------------
 
-    /// Resolves a managed cache by immutable stable identity.
+    /// Resolves a managed cache by immutable stable identity or canonical slug.
+    ///
+    /// Stable identities remain the durable relationship key. Canonical slugs
+    /// are accepted at the API boundary because they are the cache locator
+    /// exposed by the CLI and Web UI. The two namespaces cannot collide:
+    /// generated stable identities use the `cache:` prefix, while validated
+    /// cache slugs are qualified ownership paths.
     async fn binary_cache_or_not_found(
         &self,
-        stable_id: &str,
+        identifier: &str,
     ) -> Result<crate::db::BinaryCache, RpcError> {
+        if let Some(cache) = self
+            .db
+            .binary_cache_by_stable_id(identifier)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            return Ok(cache);
+        }
+
         self.db
-            .binary_cache_by_stable_id(stable_id)
+            .binary_cache_by_slug(identifier)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("cache"))
@@ -21312,6 +23779,90 @@ impl RpcService {
         self.registry_publication_response(&publication_id).await
     }
 
+    /// Lists one registry's publication history in stable newest-first order.
+    ///
+    /// Page tokens are bound to the registry's immutable identity and exact
+    /// state filter, so they cannot be replayed against another inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authorization error when the caller lacks `publish`, an
+    /// invalid-argument error for an unsupported state or mismatched page
+    /// token, or an internal error when durable inventory reads fail.
+    pub async fn list_registry_publications(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListRegistryPublicationsRequest,
+    ) -> Result<pb::ListRegistryPublicationsResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let registry = self.registry_or_not_found(&req.registry).await?;
+        let scope = self.registry_scope(&registry).await?;
+        self.require_permission(&claims, Permission::Publish, &scope)
+            .await?;
+        if !req.state.is_empty()
+            && !matches!(
+                req.state.as_str(),
+                "preparing" | "writing_pointers" | "ready" | "failed" | "retired"
+            )
+        {
+            return Err(RpcError::invalid("invalid publication state filter"));
+        }
+
+        let selector = format!("{}:{}", registry.stable_id, req.state);
+        let selector_digest = hex::encode(Sha256::digest(selector.as_bytes()));
+        let cursor = if req.page_token.is_empty() {
+            None
+        } else {
+            let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(&req.page_token)
+                .map_err(|_| RpcError::invalid("invalid publication page token"))?;
+            let decoded = String::from_utf8(decoded)
+                .map_err(|_| RpcError::invalid("invalid publication page token"))?;
+            let mut fields = decoded.splitn(3, ':');
+            let valid =
+                fields.next() == Some("pub1") && fields.next() == Some(selector_digest.as_str());
+            let ordinal = fields
+                .next()
+                .filter(|_| valid)
+                .and_then(|value| value.parse::<i64>().ok())
+                .filter(|value| *value > 0)
+                .ok_or_else(|| {
+                    RpcError::invalid(
+                        "publication page token belongs to another inventory or state filter",
+                    )
+                })?;
+            Some(ordinal)
+        };
+        let page = self
+            .db
+            .list_registry_publications_page(
+                registry.id,
+                (!req.state.is_empty()).then_some(req.state.as_str()),
+                req.page_size,
+                cursor,
+            )
+            .await
+            .map_err(|error| RpcError::invalid(format!("publication inventory: {error:#}")))?;
+        let next_page_token = page
+            .next_cursor
+            .map(|ordinal| {
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .encode(format!("pub1:{selector_digest}:{ordinal}"))
+            })
+            .unwrap_or_default();
+        let mut publications = Vec::with_capacity(page.records.len());
+        for publication in page.records {
+            publications.push(
+                self.registry_publication_response(&publication.publication_id)
+                    .await?,
+            );
+        }
+        Ok(pb::ListRegistryPublicationsResponse {
+            publications,
+            next_page_token,
+        })
+    }
+
     /// Returns one publication after enforcing registry publish authority.
     ///
     /// # Errors
@@ -21836,9 +24387,9 @@ impl RpcService {
     ///
     /// Returns [`RpcError::NotFound`] for an unknown slug,
     /// [`RpcError::PermissionDenied`] when the caller cannot read the registry,
-    /// [`RpcError::FailedPrecondition`] when the registry has no indexed HEAD
-    /// yet, [`RpcError::InvalidArgument`] for a malformed `page_token`, and
-    /// [`RpcError::Internal`] on database or surface-read failure.
+    /// [`RpcError::InvalidArgument`] for a malformed `page_token`, and
+    /// [`RpcError::Internal`] on database or surface-read failure. A registry
+    /// without an indexed HEAD returns an empty log.
     pub async fn git_log(
         &self,
         auth: Option<&str>,
@@ -21846,7 +24397,23 @@ impl RpcService {
     ) -> Result<pb::GitLogResponse, RpcError> {
         let registry = self.registry_or_not_found(&req.slug).await?;
         self.require_read(auth, &registry).await?;
-        let head = self.head_commit(&registry).await?;
+        // Validate the opaque cursor even when the registry has no HEAD. An
+        // empty collection must obey the same pagination contract as a
+        // populated one.
+        let _ = paginate::<()>(Vec::new(), req.page_size, &req.page_token)?;
+        let Some(head) = self
+            .db
+            .index_status(registry.id)
+            .await
+            .map_err(RpcError::internal)?
+            .and_then(|status| status.last_indexed_commit)
+        else {
+            return Ok(pb::GitLogResponse {
+                commits: Vec::new(),
+                next_page_token: String::new(),
+            });
+        };
+        let head = Oid::from_hex(&head).map_err(|error| RpcError::invalid(format!("{error:#}")))?;
         let fetch = crate::placement_read::TopologySurfaceFetch::for_verified_git_objects(
             Arc::clone(&self.db),
             Arc::clone(&self.surface),
@@ -24376,6 +26943,7 @@ impl RpcService {
             object_count: u64::try_from(usage.object_count).unwrap_or_default(),
             placement_count: u64::try_from(placement_count).unwrap_or_default(),
             retention_root_count: u64::try_from(retention_root_count).unwrap_or_default(),
+            authorization_scope_key: cache.scope_key.clone(),
         })
     }
 
@@ -24413,6 +26981,38 @@ impl RpcService {
             })
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+        Self::control_plan_response(plan)
+    }
+
+    async fn replayed_control_plan_input<T: serde::de::DeserializeOwned>(
+        &self,
+        claims: &Claims,
+        plan_kind: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<(crate::db::TopologyPlanRecord, T)>, RpcError> {
+        if idempotency_key.is_empty() {
+            return Err(RpcError::invalid("idempotency_key is required"));
+        }
+        let Some(plan) = self
+            .db
+            .topology_plan_for_request(
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                plan_kind,
+                idempotency_key,
+            )
+            .await
+            .map_err(RpcError::internal)?
+        else {
+            return Ok(None);
+        };
+        let input = serde_json::from_str(&plan.input_versions_json).map_err(RpcError::internal)?;
+        Ok(Some((plan, input)))
+    }
+
+    fn control_plan_response(
+        plan: crate::db::TopologyPlanRecord,
+    ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let effects = serde_json::from_str(&plan.effects_json).map_err(RpcError::internal)?;
         let warnings = serde_json::from_str(&plan.warnings_json).map_err(RpcError::internal)?;
         let input_value: serde_json::Value =
@@ -27098,7 +29698,7 @@ impl RpcService {
         })
     }
 
-    /// Lists one surface's durable operations.
+    /// Lists durable operations for one target or authorization-scope closure.
     ///
     /// # Errors
     ///
@@ -27108,31 +29708,14 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::ListOperationsRequest,
     ) -> Result<pb::ListOperationsResponse, RpcError> {
-        let target = req
-            .target
-            .ok_or_else(|| RpcError::invalid("target is required"))?;
-        let (target_kind, target_id) = match target
-            .target
-            .ok_or_else(|| RpcError::invalid("typed target is required"))?
-        {
-            pb::operation_resource_ref::Target::RegistryId(id) => ("registry", id),
-            pb::operation_resource_ref::Target::BinaryCacheId(id) => ("binary_cache", id),
-            pb::operation_resource_ref::Target::PlacementId(id) => ("placement", id),
-            pb::operation_resource_ref::Target::DomainId(id) => ("domain", id),
-            pb::operation_resource_ref::Target::NetworkBoundaryId(id) => ("network_boundary", id),
-            pb::operation_resource_ref::Target::DeliveryEndpointId(id) => ("delivery_endpoint", id),
-            pb::operation_resource_ref::Target::StorageGatewayId(id) => ("storage_gateway", id),
-            pb::operation_resource_ref::Target::DeliveryRouteId(id) => ("delivery_route", id),
-            pb::operation_resource_ref::Target::PlacementPolicyId(id) => ("placement_policy", id),
-            pb::operation_resource_ref::Target::RetentionSubscriptionId(id) => {
-                ("retention_subscription", id)
-            }
-            pb::operation_resource_ref::Target::PopulationTargetId(id) => ("population_target", id),
-            pb::operation_resource_ref::Target::CacheGcGenerationId(id) => {
-                ("cache_gc_generation", id)
-            }
-            pb::operation_resource_ref::Target::StorageBindingId(id) => ("storage_binding", id),
-        };
+        let target = req.target.and_then(|target| target.target);
+        let scope_selector = (!req.authorization_scope_key.is_empty())
+            .then_some(req.authorization_scope_key.as_str());
+        if target.is_some() == scope_selector.is_some() {
+            return Err(RpcError::invalid(
+                "exactly one of target or authorization_scope_key is required",
+            ));
+        }
         if !req.state.is_empty()
             && !matches!(
                 req.state.as_str(),
@@ -27141,23 +29724,83 @@ impl RpcService {
         {
             return Err(RpcError::invalid("state is not a closed operation state"));
         }
+
         let claims = self.require_claims(auth)?;
-        let authorization_scope_key = self
-            .db
-            .topology_operation_target_scope(target_kind, &target_id)
-            .await
-            .map_err(|error| RpcError::invalid(format!("operation target: {error:#}")))?
-            .ok_or_else(|| RpcError::not_found("operation target"))?;
-        let scope = Scope::try_parse(&authorization_scope_key)
-            .ok_or_else(|| RpcError::internal(anyhow::anyhow!("target has invalid owner scope")))?;
-        let permission = topology_target_read_permission(target_kind);
-        if self
-            .require_permission(&claims, permission, &scope)
-            .await
-            .is_err()
-        {
-            return Err(RpcError::not_found("operation target"));
-        }
+        let (target_selector, scope_selector) = match target {
+            Some(target) => {
+                let (target_kind, target_id) = match target {
+                    pb::operation_resource_ref::Target::RegistryId(id) => ("registry", id),
+                    pb::operation_resource_ref::Target::BinaryCacheId(id) => ("binary_cache", id),
+                    pb::operation_resource_ref::Target::PlacementId(id) => ("placement", id),
+                    pb::operation_resource_ref::Target::DomainId(id) => ("domain", id),
+                    pb::operation_resource_ref::Target::NetworkBoundaryId(id) => {
+                        ("network_boundary", id)
+                    }
+                    pb::operation_resource_ref::Target::DeliveryEndpointId(id) => {
+                        ("delivery_endpoint", id)
+                    }
+                    pb::operation_resource_ref::Target::StorageGatewayId(id) => {
+                        ("storage_gateway", id)
+                    }
+                    pb::operation_resource_ref::Target::DeliveryRouteId(id) => {
+                        ("delivery_route", id)
+                    }
+                    pb::operation_resource_ref::Target::PlacementPolicyId(id) => {
+                        ("placement_policy", id)
+                    }
+                    pb::operation_resource_ref::Target::RetentionSubscriptionId(id) => {
+                        ("retention_subscription", id)
+                    }
+                    pb::operation_resource_ref::Target::PopulationTargetId(id) => {
+                        ("population_target", id)
+                    }
+                    pb::operation_resource_ref::Target::CacheGcGenerationId(id) => {
+                        ("cache_gc_generation", id)
+                    }
+                    pb::operation_resource_ref::Target::StorageBindingId(id) => {
+                        ("storage_binding", id)
+                    }
+                };
+                let authorization_scope_key = self
+                    .db
+                    .topology_operation_target_scope(target_kind, &target_id)
+                    .await
+                    .map_err(|error| RpcError::invalid(format!("operation target: {error:#}")))?
+                    .ok_or_else(|| RpcError::not_found("operation target"))?;
+                let scope = Scope::try_parse(&authorization_scope_key).ok_or_else(|| {
+                    RpcError::internal(anyhow::anyhow!("target has invalid owner scope"))
+                })?;
+                let permission = topology_target_read_permission(target_kind);
+                if self
+                    .require_permission(&claims, permission, &scope)
+                    .await
+                    .is_err()
+                {
+                    return Err(RpcError::not_found("operation target"));
+                }
+                (Some((target_kind, target_id)), None)
+            }
+            None => {
+                let scope_key = scope_selector
+                    .ok_or_else(|| RpcError::invalid("authorization_scope_key is required"))?;
+                let scope = Scope::try_parse(scope_key)
+                    .ok_or_else(|| RpcError::invalid("authorization_scope_key is invalid"))?;
+                self.require_permission(&claims, Permission::AuditRead, &scope)
+                    .await?;
+                (None, Some(scope_key.to_owned()))
+            }
+        };
+
+        let selector = match (&target_selector, &scope_selector) {
+            (Some((kind, id)), None) => format!("target:{kind}:{id}"),
+            (None, Some(scope)) => format!("scope:{scope}"),
+            _ => {
+                return Err(RpcError::internal(anyhow::anyhow!(
+                    "operation selector invariant failed"
+                )))
+            }
+        };
+        let selector_digest = format!("{:x}", Sha256::digest(selector.as_bytes()));
         let cursor = if req.page_token.is_empty() {
             None
         } else {
@@ -27166,28 +29809,52 @@ impl RpcService {
                 .map_err(|_| RpcError::invalid("invalid operation page token"))?;
             let decoded = String::from_utf8(decoded)
                 .map_err(|_| RpcError::invalid("invalid operation page token"))?;
-            let (token_state, operation_id) = decoded
-                .strip_prefix("op1:")
-                .and_then(|value| value.split_once(':'))
-                .ok_or_else(|| RpcError::invalid("invalid operation page token"))?;
-            if token_state != req.state {
+            let mut fields = decoded.splitn(4, ':');
+            let version = fields.next();
+            let token_state = fields.next();
+            let token_selector_digest = fields.next();
+            let operation_id = fields.next();
+            if version != Some("op2")
+                || token_state != Some(req.state.as_str())
+                || token_selector_digest != Some(selector_digest.as_str())
+                || operation_id.is_none_or(str::is_empty)
+            {
                 return Err(RpcError::invalid(
-                    "operation page token belongs to another state filter",
+                    "operation page token belongs to another inventory or state filter",
                 ));
             }
-            Some(operation_id.to_owned())
+            operation_id.map(str::to_owned)
         };
-        let page = self
-            .db
-            .list_topology_operations_page(
-                target_kind,
-                &target_id,
-                (!req.state.is_empty()).then_some(req.state.as_str()),
-                req.page_size,
-                cursor.as_deref(),
-            )
-            .await
-            .map_err(|error| RpcError::invalid(format!("list operations: {error:#}")))?;
+        let state = (!req.state.is_empty()).then_some(req.state.as_str());
+        let page = match (&target_selector, &scope_selector) {
+            (Some((target_kind, target_id)), None) => {
+                self.db
+                    .list_topology_operations_page(
+                        target_kind,
+                        target_id,
+                        state,
+                        req.page_size,
+                        cursor.as_deref(),
+                    )
+                    .await
+            }
+            (None, Some(scope)) => {
+                self.db
+                    .list_scope_topology_operations_page(
+                        scope,
+                        state,
+                        req.page_size,
+                        cursor.as_deref(),
+                    )
+                    .await
+            }
+            _ => {
+                return Err(RpcError::internal(anyhow::anyhow!(
+                    "operation selector invariant failed"
+                )))
+            }
+        }
+        .map_err(|error| RpcError::invalid(format!("list operations: {error:#}")))?;
         let mut operations = Vec::with_capacity(page.records.len());
         for record in page.records {
             match self.authorized_operation(auth, &record.operation_id).await {
@@ -27201,8 +29868,10 @@ impl RpcService {
             next_page_token: page
                 .next_cursor
                 .map(|operation_id| {
-                    base64::engine::general_purpose::URL_SAFE_NO_PAD
-                        .encode(format!("op1:{}:{operation_id}", req.state))
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!(
+                        "op2:{}:{selector_digest}:{operation_id}",
+                        req.state
+                    ))
                 })
                 .unwrap_or_default(),
         })
@@ -28075,6 +30744,23 @@ impl RpcService {
         }
     }
 
+    fn cache_gc_generation_message(
+        cache_id: &str,
+        state: &crate::db::CacheGcStateRecord,
+    ) -> pb::CacheGcGeneration {
+        pb::CacheGcGeneration {
+            cache_id: cache_id.to_string(),
+            epoch: state.epoch,
+            state: if state.destructive_enabled {
+                "enabled"
+            } else {
+                "first_sweep_required"
+            }
+            .to_string(),
+            resource_version: state.resource_version.to_string(),
+        }
+    }
+
     fn cache_gc_plan_message(cache_id: &str, plan: &crate::db::CacheGcPlanView) -> pb::CacheGcPlan {
         pb::CacheGcPlan {
             plan_id: plan.plan_id.clone(),
@@ -28134,8 +30820,15 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("cache GC policy"))?;
+        let state = self
+            .db
+            .cache_gc_topology_state(cache.id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("cache GC state"))?;
         Ok(pb::GetCacheGcPolicyResponse {
             policy: Some(Self::cache_gc_policy_message(&policy)),
+            generation: Some(Self::cache_gc_generation_message(&cache.slug, &state)),
         })
     }
 
@@ -28264,8 +30957,18 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("cache GC policy"))?;
+        let current_state = self
+            .db
+            .cache_gc_topology_state(cache.id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("cache GC state"))?;
         let response = pb::GetCacheGcPolicyResponse {
             policy: Some(Self::cache_gc_policy_message(&current)),
+            generation: Some(Self::cache_gc_generation_message(
+                &cache.slug,
+                &current_state,
+            )),
         };
         self.complete_control_plan(&req.plan_id, &req.idempotency_key, &response)
             .await?;
@@ -29606,16 +32309,13 @@ impl RpcService {
         let cache = self.binary_cache_or_not_found(cache_slug).await?;
         self.require_cache_permission(auth, &cache, Permission::CacheGcExecute)
             .await?;
-        let placement_id = req
-            .placement_id
-            .parse::<i64>()
-            .map_err(|_| RpcError::invalid("placement_id must be an integer"))?;
         let placement = self
             .db
-            .surface_placement(placement_id)
+            .list_surface_placements(SurfaceTarget::BinaryCache(cache.id))
             .await
             .map_err(RpcError::internal)?
-            .filter(|placement| placement.cache_id == Some(cache.id))
+            .into_iter()
+            .find(|placement| placement.name == req.placement_name)
             .ok_or_else(|| RpcError::not_found("cache placement"))?;
         if req
             .expected_resource_version
@@ -29693,17 +32393,15 @@ impl RpcService {
         let cache = self.binary_cache_or_not_found(cache_slug).await?;
         self.require_cache_permission(auth, &cache, Permission::CacheGcExecute)
             .await?;
-        let placement_id = planned
-            .placement_id
-            .parse::<i64>()
-            .map_err(|_| RpcError::invalid("placement_id must be an integer"))?;
         let placement = self
             .db
-            .surface_placement(placement_id)
+            .list_surface_placements(SurfaceTarget::BinaryCache(cache.id))
             .await
             .map_err(RpcError::internal)?
-            .filter(|placement| placement.cache_id == Some(cache.id))
+            .into_iter()
+            .find(|placement| placement.name == planned.placement_name)
             .ok_or_else(|| RpcError::not_found("cache placement"))?;
+        let placement_id = placement.id;
         let expected_version = planned
             .expected_resource_version
             .as_deref()
@@ -29762,7 +32460,7 @@ impl RpcService {
                     },
                 ],
                 detail_json: serde_json::json!({
-                    "placementId": planned.placement_id,
+                    "placementName": planned.placement_name,
                     "desiredState": "draining"
                 })
                 .to_string(),
@@ -29828,6 +32526,34 @@ impl RpcService {
             .ok_or_else(|| RpcError::not_found("signing key"))?;
         Ok(pb::SigningKeyResponse {
             signing_key: Some(signing_key_message(key)),
+        })
+    }
+
+    /// Reads one typed consumer pin to an immutable signing-key generation.
+    pub async fn get_signing_key_usage(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetSigningKeyUsageRequest,
+    ) -> Result<pb::SigningKeyUsageResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        validate_signing_usage_identity(&req.consumer_stable_id, &req.purpose)?;
+        let consumer = self
+            .db
+            .resolve_signing_key_consumer(&req.consumer_stable_id, &req.purpose)
+            .await
+            .map_err(|error| RpcError::invalid(format!("invalid signing consumer: {error:#}")))?;
+        let consumer_scope = parse_authorization_scope(&consumer.scope_key)?;
+        self.require_permission(&claims, Permission::KeysManage, &consumer_scope)
+            .await?;
+        let usage = self
+            .db
+            .signing_key_usage(&req.consumer_stable_id, &req.purpose)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("signing-key usage"))?;
+
+        Ok(pb::SigningKeyUsageResponse {
+            usage: Some(signing_key_usage_message(usage)),
         })
     }
 
@@ -30431,21 +33157,30 @@ fn normalize_signing_key_mutation(
 fn validate_signing_usage_request(
     request: &pb::PlanSigningKeyUsageRequest,
 ) -> Result<(), RpcError> {
-    if !matches!(
-        request.purpose.as_str(),
-        "registry_publication" | "narinfo" | "channel_frontier"
-    ) || request.consumer_stable_id.is_empty()
-    {
-        return Err(RpcError::invalid(
-            "consumer_stable_id and a supported signing purpose are required",
-        ));
-    }
+    validate_signing_usage_identity(&request.consumer_stable_id, &request.purpose)?;
     if !matches!(request.state.as_str(), "active" | "detached") {
         return Err(RpcError::invalid("usage state must be active or detached"));
     }
     if request.signing_key_generation == 0 {
         return Err(RpcError::invalid(
             "signing_key_generation must be greater than zero",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_signing_usage_identity(
+    consumer_stable_id: &str,
+    purpose: &str,
+) -> Result<(), RpcError> {
+    if consumer_stable_id.is_empty()
+        || !matches!(
+            purpose,
+            "registry_publication" | "narinfo" | "channel_frontier"
+        )
+    {
+        return Err(RpcError::invalid(
+            "consumer_stable_id and a supported signing purpose are required",
         ));
     }
     Ok(())
@@ -30533,6 +33268,64 @@ fn parse_resource_version(value: &str, default: i64) -> Result<i64, RpcError> {
     value
         .parse::<i64>()
         .map_err(|_| RpcError::invalid("expected_resource_version must be an integer"))
+}
+
+fn identity_resource_version(version: i64, incarnation_id: Option<&str>) -> String {
+    format!("{version}@{}", incarnation_id.unwrap_or("legacy"))
+}
+
+fn require_exact_identity_version(
+    supplied: &str,
+    current: Option<(i64, Option<&str>)>,
+) -> Result<Option<i64>, RpcError> {
+    match current {
+        None if supplied == "absent" => Ok(None),
+        None => Err(RpcError::FailedPrecondition(
+            "new resource requires expected_resource_version=absent".into(),
+        )),
+        Some((version, incarnation_id)) => {
+            if supplied == identity_resource_version(version, incarnation_id) {
+                Ok(Some(version))
+            } else {
+                Err(RpcError::FailedPrecondition(
+                    "resource revision changed".into(),
+                ))
+            }
+        }
+    }
+}
+
+fn canonical_identity_domain(value: &str) -> Result<String, RpcError> {
+    crate::db::canonical_delivery_hostname(value.trim())
+        .map_err(|error| RpcError::invalid(format!("invalid organization domain: {error:#}")))
+}
+
+fn idp_record_from_plan(
+    input: &IdentityProviderSetPlanInput,
+    resource_version: i64,
+) -> crate::db::IdpConfigRecord {
+    crate::db::IdpConfigRecord {
+        org_id: input.org_id,
+        issuer: input.issuer.clone(),
+        authorization_endpoint: input.authorization_endpoint.clone(),
+        token_endpoint: input.token_endpoint.clone(),
+        jwks_uri: input.jwks_uri.clone(),
+        client_id: input.client_id.clone(),
+        client_secret_enc: input.client_secret_enc.clone(),
+        scopes: input.scopes.clone(),
+        groups_claim: input.groups_claim.clone(),
+        role_map_json: input.role_map_json.clone(),
+        allow_jit: input.allow_jit,
+        enforce_sso: input.enforce_sso,
+        default_role: input.default_role.clone(),
+        resource_version,
+        incarnation_id: Some(input.incarnation_id.clone()),
+        mutation_plan_id: None,
+    }
+}
+
+fn control_audit_event_id(kind: &str, plan_id: &str) -> String {
+    hex::encode(Sha256::digest(format!("{kind}:{plan_id}").as_bytes()))
 }
 
 fn require_absent_resource_version(value: &str) -> Result<(), RpcError> {
@@ -30976,10 +33769,13 @@ mod cache_upload_tests {
 
     impl SecretSealer for InjectedSealer {
         fn seal(&self, plaintext: &str) -> Result<String> {
-            Ok(plaintext.to_string())
+            Ok(format!("sealed:{plaintext}"))
         }
 
-        fn unseal(&self, _sealed: &str) -> Result<String> {
+        fn unseal(&self, sealed: &str) -> Result<String> {
+            if let Some(plaintext) = sealed.strip_prefix("sealed:") {
+                return Ok(plaintext.to_string());
+            }
             match self
                 .behaviors
                 .lock()
@@ -30990,6 +33786,15 @@ mod cache_upload_tests {
                 SealerBehavior::Credential => Ok("access:secret:us-test-1".into()),
                 SealerBehavior::Failure => bail!("injected secret resolution failure"),
             }
+        }
+    }
+
+    struct PublishedIdentityDomain;
+
+    #[async_trait::async_trait]
+    impl crate::topology_probe::IdentityDomainVerifier for PublishedIdentityDomain {
+        async fn challenge_is_published(&self, _domain: &str, _challenge: &str) -> Result<bool> {
+            Ok(true)
         }
     }
 
@@ -31023,7 +33828,13 @@ mod cache_upload_tests {
                     token_id: "holder".into(),
                     owner: Principal::user(user_id),
                     scope: Scope::root(),
-                    permissions: vec![Permission::RegistryConfigure, Permission::Publish],
+                    permissions: vec![
+                        Permission::RegistryConfigure,
+                        Permission::Publish,
+                        Permission::TokensManage,
+                        Permission::IamAdmin,
+                        Permission::MembersManage,
+                    ],
                 },
                 3600,
             )
@@ -31047,8 +33858,860 @@ mod cache_upload_tests {
             Some(Arc::new(InjectedSealer {
                 behaviors: Mutex::new(sealer_behaviors.into()),
             })),
-        );
+        )
+        .with_identity_domain_verifier(Arc::new(PublishedIdentityDomain));
         (service, db, lease, format!("Bearer {token}"))
+    }
+
+    #[tokio::test]
+    async fn who_am_i_separates_live_grants_from_bearer_authority() {
+        let (service, _db, _lease, auth) = injected_service(vec![], vec![]).await;
+
+        let identity = service
+            .who_am_i(Some(&auth), pb::WhoAmIRequest {})
+            .await
+            .unwrap();
+
+        assert_eq!(identity.principal_kind, "user");
+        assert_eq!(identity.principal_ref, "writer@example.test");
+        assert_eq!(identity.email, "writer@example.test");
+        assert_eq!(
+            identity.grants,
+            vec![pb::IdentityGrant {
+                scope: "instance".into(),
+                role: "owner".into(),
+            }]
+        );
+        assert_eq!(identity.access_scope, "instance");
+        assert_eq!(
+            identity.access_permissions,
+            vec![
+                "registry.configure",
+                "publish",
+                "tokens.manage",
+                "iam.admin",
+                "members.manage"
+            ]
+        );
+        assert!(identity.access_expires_at > crate::clock::now_unix_secs());
+    }
+
+    #[tokio::test]
+    async fn binary_cache_lookup_accepts_stable_identity_and_canonical_slug() {
+        let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+        let org_id = db.create_org("locator", "Locator").await.unwrap();
+        db.create_binary_cache(
+            Some(org_id),
+            "locator/build",
+            "Build cache",
+            "private",
+            40,
+            "zstd",
+            false,
+        )
+        .await
+        .unwrap();
+        let stored = db
+            .binary_cache_by_slug("locator/build")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let by_slug = service
+            .binary_cache_or_not_found("locator/build")
+            .await
+            .unwrap();
+        let by_stable_id = service
+            .binary_cache_or_not_found(&stored.stable_id)
+            .await
+            .unwrap();
+
+        assert_eq!(by_slug.stable_id, stored.stable_id);
+        assert_eq!(by_stable_id.stable_id, stored.stable_id);
+    }
+
+    #[tokio::test]
+    async fn registry_lookup_accepts_stable_identity_and_canonical_slug() {
+        let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+        let org_id = db
+            .create_org("registry-locator", "Registry locator")
+            .await
+            .unwrap();
+        db.create_managed_registry(org_id, "", "packages", "private", &[], false)
+            .await
+            .unwrap();
+        let stored = db
+            .registry_by_slug("registry-locator/packages")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let by_slug = service
+            .registry_or_not_found("registry-locator/packages")
+            .await
+            .unwrap();
+        let by_stable_id = service
+            .registry_or_not_found(&stored.stable_id)
+            .await
+            .unwrap();
+
+        assert_eq!(by_slug.stable_id, stored.stable_id);
+        assert_eq!(by_stable_id.stable_id, stored.stable_id);
+    }
+
+    #[test]
+    fn unset_topology_defaults_return_editable_empty_resources() {
+        let instance = RpcService::topology_defaults_or_empty("instance", None);
+        let organization = RpcService::topology_defaults_or_empty("org:defaults", None);
+
+        assert_eq!(instance.scope_key, "instance");
+        assert!(instance.resource_version.is_empty());
+        assert!(instance.storage_binding_id.is_empty());
+        assert_eq!(organization.scope_key, "org:defaults");
+        assert!(organization.resource_version.is_empty());
+        assert!(organization.storage_binding_id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn git_log_is_empty_before_the_first_indexed_commit() {
+        let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+        let org_id = db.create_org("empty-log", "Empty log").await.unwrap();
+        db.create_managed_registry(org_id, "", "packages", "public", &[], false)
+            .await
+            .unwrap();
+
+        let response = service
+            .git_log(
+                None,
+                pb::GitLogRequest {
+                    slug: "empty-log/packages".into(),
+                    page_size: 100,
+                    page_token: String::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(response.commits.is_empty());
+        assert!(response.next_page_token.is_empty());
+
+        let error = service
+            .git_log(
+                None,
+                pb::GitLogRequest {
+                    slug: "empty-log/packages".into(),
+                    page_size: 100,
+                    page_token: "not-a-page-token".into(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "invalid_argument");
+    }
+
+    #[tokio::test]
+    async fn access_tokens_use_native_permissions_and_stable_scopes() {
+        let (service, _db, _lease, auth) = injected_service(vec![], vec![]).await;
+        let plan = service
+            .plan_issue_access_token(
+                Some(&auth),
+                pb::PlanIssueAccessTokenRequest {
+                    owner: "user:writer@example.test".into(),
+                    scope: "instance".into(),
+                    permissions: vec!["read".into(), "publish".into()],
+                    ttl_secs: 3600,
+                    expected_resource_version: String::new(),
+                    idempotency_key: "plan-access-token-test".into(),
+                    comment: "test publisher".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let issued = service
+            .apply_issue_access_token(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: plan.plan_id,
+                    confirmation_hash: plan.confirmation_hash,
+                    idempotency_key: "apply-access-token-test".into(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(issued.secret.starts_with("aos_"));
+        let listed = service
+            .list_access_tokens(
+                Some(&auth),
+                pb::ListAccessTokensRequest {
+                    scope: "instance".into(),
+                    page_size: 50,
+                    page_token: String::new(),
+                },
+            )
+            .await
+            .unwrap();
+        let token = listed
+            .tokens
+            .iter()
+            .find(|token| token.token_id == issued.token_id)
+            .unwrap();
+        assert_eq!(token.owner, "user:writer@example.test");
+        assert_eq!(token.scope, "instance");
+        assert_eq!(token.permissions, vec!["publish", "read"]);
+        assert_eq!(token.comment, "test publisher");
+        assert_eq!(token.resource_version, "active");
+    }
+
+    #[tokio::test]
+    async fn service_account_crud_preserves_identity_and_removes_memberships() {
+        let (service, db, _lease, auth) = injected_service(vec![], vec![]).await;
+        let org_id = db.create_org("robots", "Robots").await.unwrap();
+        let org = db.org_by_id(org_id).await.unwrap().unwrap();
+
+        let create_plan = service
+            .plan_create_service_account(
+                Some(&auth),
+                pb::PlanCreateServiceAccountRequest {
+                    org_slug: org.slug.clone(),
+                    name: "publisher".into(),
+                    expected_resource_version: String::new(),
+                    idempotency_key: "plan-create-service-account".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let created = service
+            .apply_create_service_account(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: create_plan.plan_id,
+                    confirmation_hash: create_plan.confirmation_hash,
+                    idempotency_key: "apply-create-service-account".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .service_account
+            .unwrap();
+        db.grant_membership(
+            "service_account",
+            created.id,
+            &org.stable_id,
+            Role::Developer.as_str(),
+        )
+        .await
+        .unwrap();
+
+        let update_plan = service
+            .plan_update_service_account(
+                Some(&auth),
+                pb::PlanUpdateServiceAccountRequest {
+                    org_slug: org.slug.clone(),
+                    name: created.name.clone(),
+                    new_name: "releaser".into(),
+                    expected_resource_version: created.resource_version,
+                    idempotency_key: "plan-update-service-account".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let updated = service
+            .apply_update_service_account(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: update_plan.plan_id,
+                    confirmation_hash: update_plan.confirmation_hash,
+                    idempotency_key: "apply-update-service-account".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .service_account
+            .unwrap();
+        assert_eq!(updated.id, created.id);
+        assert_eq!(updated.name, "releaser");
+        assert_eq!(
+            db.service_account_reference(updated.id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("robots/releaser")
+        );
+
+        let listed = service
+            .list_service_accounts(
+                Some(&auth),
+                pb::ListServiceAccountsRequest {
+                    org_slug: org.slug.clone(),
+                    page_size: 50,
+                    page_token: String::new(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.service_accounts.len(), 1);
+
+        let delete_plan = service
+            .plan_delete_service_account(
+                Some(&auth),
+                pb::PlanDeleteServiceAccountRequest {
+                    org_slug: org.slug,
+                    name: updated.name,
+                    expected_resource_version: updated.resource_version,
+                    idempotency_key: "plan-delete-service-account".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let deleted = service
+            .apply_delete_service_account(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: delete_plan.plan_id,
+                    confirmation_hash: delete_plan.confirmation_hash,
+                    idempotency_key: "apply-delete-service-account".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(deleted.deleted);
+        assert!(db
+            .list_memberships_for("service_account", created.id)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn identity_provider_and_domain_lifecycles_are_reviewed_and_versioned() {
+        let (service, db, _lease, auth) = injected_service(vec![], vec![]).await;
+        db.create_org("identity", "Identity").await.unwrap();
+
+        let idp_request = pb::PlanSetIdentityProviderRequest {
+            org_slug: "identity".into(),
+            issuer: "https://idp.example.test".into(),
+            authorization_endpoint: "https://idp.example.test/authorize".into(),
+            token_endpoint: "https://idp.example.test/token".into(),
+            jwks_uri: "https://idp.example.test/jwks".into(),
+            client_id: "hub".into(),
+            client_secret: "credential".into(),
+            replace_client_secret: true,
+            scopes: "openid email profile".into(),
+            groups_claim: "groups".into(),
+            role_map_json: r#"{"admins":"admin"}"#.into(),
+            allow_jit: true,
+            enforce_sso: true,
+            default_role: "viewer".into(),
+            expected_resource_version: "absent".into(),
+            idempotency_key: "plan-idp-set".into(),
+        };
+        let idp_plan = service
+            .plan_set_identity_provider(Some(&auth), idp_request.clone())
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let replay = service
+            .plan_set_identity_provider(Some(&auth), idp_request.clone())
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        assert_eq!(replay.plan_id, idp_plan.plan_id);
+        let idp = service
+            .apply_set_identity_provider(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: idp_plan.plan_id.clone(),
+                    confirmation_hash: idp_plan.confirmation_hash.clone(),
+                    idempotency_key: "apply-idp-set".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .identity_provider
+            .unwrap();
+        assert!(idp.client_secret_configured);
+        assert!(idp.resource_version.starts_with("1@idp-incarnation-"));
+        let replay = service
+            .plan_set_identity_provider(Some(&auth), idp_request)
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        assert_eq!(replay.plan_id, idp_plan.plan_id);
+        let org = db.org_by_slug("identity").await.unwrap().unwrap();
+        let stored = db.idp_config(org.id).await.unwrap().unwrap();
+        assert_eq!(
+            stored.client_secret_enc.as_deref(),
+            Some("sealed:credential")
+        );
+
+        let claim_request = pb::PlanClaimOrganizationDomainRequest {
+            org_slug: "identity".into(),
+            domain: "login.example.test".into(),
+            expected_resource_version: "absent".into(),
+            idempotency_key: "plan-domain-claim".into(),
+        };
+        let claim_plan = service
+            .plan_claim_organization_domain(Some(&auth), claim_request.clone())
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let claimed = service
+            .apply_claim_organization_domain(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: claim_plan.plan_id.clone(),
+                    confirmation_hash: claim_plan.confirmation_hash.clone(),
+                    idempotency_key: "apply-domain-claim".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .domain
+            .unwrap();
+        assert_eq!(claimed.state, "pending");
+        assert!(claimed
+            .resource_version
+            .starts_with("1@domain-incarnation-"));
+        let replay = service
+            .plan_claim_organization_domain(Some(&auth), claim_request)
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        assert_eq!(replay.plan_id, claim_plan.plan_id);
+
+        let verify_request = pb::PlanVerifyOrganizationDomainRequest {
+            org_slug: "identity".into(),
+            domain: claimed.domain.clone(),
+            expected_resource_version: claimed.resource_version.clone(),
+            idempotency_key: "plan-domain-verify".into(),
+        };
+        let verify_plan = service
+            .plan_verify_organization_domain(Some(&auth), verify_request.clone())
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let verified = service
+            .apply_verify_organization_domain(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: verify_plan.plan_id.clone(),
+                    confirmation_hash: verify_plan.confirmation_hash.clone(),
+                    idempotency_key: "apply-domain-verify".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .domain
+            .unwrap();
+        assert_eq!(verified.state, "verified");
+        assert!(verified
+            .resource_version
+            .starts_with("2@domain-incarnation-"));
+        assert!(verified.verified_at > 0);
+        let replay = service
+            .plan_verify_organization_domain(Some(&auth), verify_request)
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        assert_eq!(replay.plan_id, verify_plan.plan_id);
+    }
+
+    #[tokio::test]
+    async fn identity_revisions_reject_delete_recreate_aba() {
+        let (service, db, _lease, auth) = injected_service(vec![], vec![]).await;
+        db.create_org("identity-aba", "Identity ABA").await.unwrap();
+        let idp_request = |idempotency_key: &str| pb::PlanSetIdentityProviderRequest {
+            org_slug: "identity-aba".into(),
+            issuer: "https://idp.example.test".into(),
+            authorization_endpoint: "https://idp.example.test/authorize".into(),
+            token_endpoint: "https://idp.example.test/token".into(),
+            jwks_uri: "https://idp.example.test/jwks".into(),
+            client_id: "hub".into(),
+            client_secret: String::new(),
+            replace_client_secret: false,
+            scopes: "openid email".into(),
+            groups_claim: String::new(),
+            role_map_json: "{}".into(),
+            allow_jit: false,
+            enforce_sso: false,
+            default_role: "viewer".into(),
+            expected_resource_version: "absent".into(),
+            idempotency_key: idempotency_key.into(),
+        };
+        let create = service
+            .plan_set_identity_provider(Some(&auth), idp_request("idp-create"))
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let idp = service
+            .apply_set_identity_provider(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: create.plan_id,
+                    confirmation_hash: create.confirmation_hash,
+                    idempotency_key: "idp-create-apply".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .identity_provider
+            .unwrap();
+        let remove_request = |idempotency_key: &str| pb::PlanRemoveIdentityProviderRequest {
+            org_slug: "identity-aba".into(),
+            expected_resource_version: idp.resource_version.clone(),
+            idempotency_key: idempotency_key.into(),
+        };
+        let stale_remove = service
+            .plan_remove_identity_provider(Some(&auth), remove_request("idp-remove-stale"))
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let winning_remove_request = remove_request("idp-remove-winning");
+        let winning_remove = service
+            .plan_remove_identity_provider(Some(&auth), winning_remove_request.clone())
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        service
+            .apply_remove_identity_provider(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: winning_remove.plan_id.clone(),
+                    confirmation_hash: winning_remove.confirmation_hash.clone(),
+                    idempotency_key: "idp-remove-winning-apply".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let replay = service
+            .plan_remove_identity_provider(Some(&auth), winning_remove_request)
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        assert_eq!(replay.plan_id, winning_remove.plan_id);
+
+        let recreate = service
+            .plan_set_identity_provider(Some(&auth), idp_request("idp-recreate"))
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        service
+            .apply_set_identity_provider(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: recreate.plan_id,
+                    confirmation_hash: recreate.confirmation_hash,
+                    idempotency_key: "idp-recreate-apply".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let error = service
+            .apply_remove_identity_provider(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: stale_remove.plan_id,
+                    confirmation_hash: stale_remove.confirmation_hash,
+                    idempotency_key: "idp-remove-stale-apply".into(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, RpcError::FailedPrecondition(_)));
+
+        let claim_request = |idempotency_key: &str| pb::PlanClaimOrganizationDomainRequest {
+            org_slug: "identity-aba".into(),
+            domain: "aba.example.test".into(),
+            expected_resource_version: "absent".into(),
+            idempotency_key: idempotency_key.into(),
+        };
+        let claim = service
+            .plan_claim_organization_domain(Some(&auth), claim_request("domain-claim"))
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let domain = service
+            .apply_claim_organization_domain(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: claim.plan_id,
+                    confirmation_hash: claim.confirmation_hash,
+                    idempotency_key: "domain-claim-apply".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .domain
+            .unwrap();
+        let release_request = |idempotency_key: &str| pb::PlanReleaseOrganizationDomainRequest {
+            org_slug: "identity-aba".into(),
+            domain: domain.domain.clone(),
+            expected_resource_version: domain.resource_version.clone(),
+            idempotency_key: idempotency_key.into(),
+        };
+        let stale_release = service
+            .plan_release_organization_domain(Some(&auth), release_request("domain-release-stale"))
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let winning_release_request = release_request("domain-release-winning");
+        let winning_release = service
+            .plan_release_organization_domain(Some(&auth), winning_release_request.clone())
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        service
+            .apply_release_organization_domain(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: winning_release.plan_id.clone(),
+                    confirmation_hash: winning_release.confirmation_hash.clone(),
+                    idempotency_key: "domain-release-winning-apply".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let replay = service
+            .plan_release_organization_domain(Some(&auth), winning_release_request)
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        assert_eq!(replay.plan_id, winning_release.plan_id);
+
+        let recreate = service
+            .plan_claim_organization_domain(Some(&auth), claim_request("domain-recreate"))
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        service
+            .apply_claim_organization_domain(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: recreate.plan_id,
+                    confirmation_hash: recreate.confirmation_hash,
+                    idempotency_key: "domain-recreate-apply".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let error = service
+            .apply_release_organization_domain(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: stale_release.plan_id,
+                    confirmation_hash: stale_release.confirmation_hash,
+                    idempotency_key: "domain-release-stale-apply".into(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, RpcError::FailedPrecondition(_)));
+    }
+
+    #[tokio::test]
+    async fn invitation_acceptance_atomically_creates_membership_for_matching_user() {
+        let (service, db, _lease, auth) = injected_service(vec![], vec![]).await;
+        let org_id = db.create_org("invites", "Invites").await.unwrap();
+        let org = db.org_by_id(org_id).await.unwrap().unwrap();
+
+        let plan = service
+            .plan_create_invitation(
+                Some(&auth),
+                pb::PlanCreateInvitationRequest {
+                    org_slug: org.slug.clone(),
+                    email: "New.Member@Example.Test".into(),
+                    scope: org.stable_id.clone(),
+                    role: "developer".into(),
+                    ttl_secs: 3600,
+                    expected_resource_version: String::new(),
+                    idempotency_key: "plan-create-invitation".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let apply = pb::ApplyTopologyPlanRequest {
+            plan_id: plan.plan_id,
+            confirmation_hash: plan.confirmation_hash,
+            idempotency_key: "apply-create-invitation".into(),
+        };
+        let created = service
+            .apply_create_invitation(Some(&auth), apply.clone())
+            .await
+            .unwrap();
+        assert!(created.secret.starts_with("aosi_"));
+        let replayed = service
+            .apply_create_invitation(Some(&auth), apply)
+            .await
+            .unwrap();
+        assert_eq!(replayed.secret, created.secret);
+        assert_eq!(
+            replayed.invitation.as_ref().map(|item| item.invitation_id),
+            created.invitation.as_ref().map(|item| item.invitation_id)
+        );
+        let invitation = created.invitation.unwrap();
+        assert_eq!(invitation.email, "new.member@example.test");
+        assert_eq!(invitation.state, "pending");
+        assert_eq!(
+            db.user_by_email("new.member@example.test").await.unwrap(),
+            None,
+            "creating an invitation must not create a user"
+        );
+
+        let invitee = db
+            .create_user("new.member@example.test", None)
+            .await
+            .unwrap();
+        let token = service
+            .jwt_keys
+            .mint(
+                &TokenAuth {
+                    token_id: "invitee-session".into(),
+                    owner: Principal::user(invitee),
+                    scope: Scope::root(),
+                    permissions: Vec::new(),
+                },
+                3600,
+            )
+            .unwrap();
+        let invitee_auth = format!("Bearer {token}");
+        let accepted = service
+            .accept_invitation(
+                Some(&invitee_auth),
+                pb::AcceptInvitationRequest {
+                    org_slug: org.slug.clone(),
+                    secret: created.secret.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(accepted.invitation.unwrap().state, "accepted");
+        assert_eq!(accepted.membership.unwrap().role, "developer");
+        assert_eq!(
+            db.list_memberships_for("user", invitee).await.unwrap(),
+            vec![(org.stable_id, "developer".to_string())]
+        );
+        assert!(service
+            .accept_invitation(
+                Some(&invitee_auth),
+                pb::AcceptInvitationRequest {
+                    org_slug: org.slug,
+                    secret: created.secret,
+                },
+            )
+            .await
+            .is_err());
+
+        let cancel_plan = service
+            .plan_create_invitation(
+                Some(&auth),
+                pb::PlanCreateInvitationRequest {
+                    org_slug: "invites".into(),
+                    email: "cancelled@example.test".into(),
+                    scope: db.org_by_id(org_id).await.unwrap().unwrap().stable_id,
+                    role: "viewer".into(),
+                    ttl_secs: 3600,
+                    expected_resource_version: String::new(),
+                    idempotency_key: "plan-create-cancelled-invitation".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let cancellable_apply = pb::ApplyTopologyPlanRequest {
+            plan_id: cancel_plan.plan_id,
+            confirmation_hash: cancel_plan.confirmation_hash,
+            idempotency_key: "apply-create-cancelled-invitation".into(),
+        };
+        let cancellable = service
+            .apply_create_invitation(Some(&auth), cancellable_apply.clone())
+            .await
+            .unwrap()
+            .invitation
+            .unwrap();
+        let cancellation = service
+            .plan_cancel_invitation(
+                Some(&auth),
+                pb::PlanCancelInvitationRequest {
+                    org_slug: "invites".into(),
+                    invitation_id: cancellable.invitation_id,
+                    expected_resource_version: cancellable.resource_version,
+                    idempotency_key: "plan-cancel-invitation".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let cancelled = service
+            .apply_cancel_invitation(
+                Some(&auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: cancellation.plan_id,
+                    confirmation_hash: cancellation.confirmation_hash,
+                    idempotency_key: "apply-cancel-invitation".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .invitation
+            .unwrap();
+        assert_eq!(cancelled.state, "cancelled");
+        assert!(matches!(
+            service
+                .apply_create_invitation(Some(&auth), cancellable_apply)
+                .await,
+            Err(RpcError::FailedPrecondition(_))
+        ));
+        let history = service
+            .list_invitations(
+                Some(&auth),
+                pb::ListInvitationsRequest {
+                    org_slug: "invites".into(),
+                    page_size: 50,
+                    page_token: String::new(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(history.invitations.len(), 2);
+        let states = history
+            .invitations
+            .iter()
+            .map(|invitation| invitation.state.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            states,
+            std::collections::BTreeSet::from(["accepted", "cancelled"])
+        );
     }
 
     fn one_signed_raw_image_package() -> aos_registry_surface::manifest::PackageToml {
@@ -31782,6 +35445,18 @@ mod cache_upload_tests {
                 .await,
             Err(RpcError::PermissionDenied(_))
         ));
+        assert!(matches!(
+            service
+                .get_signing_key_usage(
+                    Some(&underprivileged_auth),
+                    pb::GetSigningKeyUsageRequest {
+                        consumer_stable_id: registry.stable_id.clone(),
+                        purpose: "registry_publication".into(),
+                    },
+                )
+                .await,
+            Err(RpcError::PermissionDenied(_))
+        ));
 
         let jwt_keys = JwtKeys::from_secret(b"injected-write-flow-test-key");
         let user_id = db
@@ -31801,6 +35476,18 @@ mod cache_upload_tests {
             )
             .unwrap();
         let auth = format!("Bearer {token}");
+        assert!(matches!(
+            service
+                .get_signing_key_usage(
+                    Some(&auth),
+                    pb::GetSigningKeyUsageRequest {
+                        consumer_stable_id: registry.stable_id.clone(),
+                        purpose: "registry_publication".into(),
+                    },
+                )
+                .await,
+            Err(RpcError::NotFound(_))
+        ));
         let plan = service
             .plan_set_signing_key_usage(Some(&auth), request.clone())
             .await
@@ -31821,6 +35508,17 @@ mod cache_upload_tests {
             .await
             .unwrap();
         assert_eq!(first, replay);
+        let observed = service
+            .get_signing_key_usage(
+                Some(&auth),
+                pb::GetSigningKeyUsageRequest {
+                    consumer_stable_id: registry.stable_id.clone(),
+                    purpose: "registry_publication".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(observed, first);
         assert!(matches!(
             service
                 .plan_set_signing_key_usage(

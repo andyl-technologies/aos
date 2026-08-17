@@ -5,12 +5,12 @@
 //! floor RFC-0004 commits to.
 //!
 //! The pure primitives (`escape`, `table`, `human_size`, `key_fingerprint`)
-//! and the producer-console *foundation* — the page chrome (`page_with_session`,
+//! and the retained identity-page foundation — the page chrome (`page_with_session`,
 //! `StateLine`, `SessionIndicator`, `Pager`, `csrf_field`, `brand`, `ago`, the
 //! small table/`meter`/`datalist`/`urlencode` helpers) — are single-sourced in
 //! the shared, wasm-clean [`aos_hub_core::web`] (RFC-0004 Phase 5,
-//! console-dedup stage A) so the hub, the producer console, and the eventual
-//! Worker render byte-identically. They are re-exported here so every
+//! console-dedup stage A) so the hub and Worker render byte-identically. They
+//! are re-exported here so every
 //! `crate::ui::render::…` call site is unchanged.
 //!
 //! What stays native to the hub is the *task-local* session middleware seam:
@@ -22,7 +22,7 @@
 
 // The pure rendering primitives and the console chrome live in the shared,
 // wasm-clean core crate; re-export them so the hub's richer page builders, the
-// producer console, and the shared browse surface render byte-identically.
+// retained identity pages and shared browse surface render byte-identically.
 pub use aos_hub_core::web::console_render::{
     ago, brand, csrf_field, datalist, live_table, meter, page_with_session, set_app_version,
     set_brand, table_raw_headers, urlencode, Pager, SessionIndicator, StateLine,

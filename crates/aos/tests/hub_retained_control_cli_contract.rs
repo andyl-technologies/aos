@@ -41,12 +41,11 @@ const REVIEWED_ACTION_PATHS: &[&[&str]] = &[
     &["hub", "org", "service-account", "create"],
     &["hub", "org", "member", "set-role"],
     &["hub", "org", "member", "remove"],
-    &["hub", "registry", "token", "issue"],
-    &["hub", "registry", "token", "retire"],
+    &["hub", "access-token", "issue"],
+    &["hub", "access-token", "retire"],
     &["hub", "signing-key", "enroll"],
     &["hub", "signing-key", "rotate"],
     &["hub", "signing-key", "retire"],
-    &["hub", "signing-key", "set-usage"],
 ];
 
 fn command_at<'a>(root: &'a Command, path: &[&str]) -> &'a Command {
@@ -81,12 +80,11 @@ fn retained_queries_use_final_resource_scoped_roots() {
         vec![
             "aos",
             "hub",
-            "registry",
-            "token",
+            "access-token",
             "list",
             "--hub",
             "https://hub.test",
-            "acme/main",
+            "registry:acme/main",
         ],
         vec![
             "aos",
@@ -185,8 +183,7 @@ fn apply_is_sealed_and_requires_plan_confirmation_and_idempotency() {
     let valid = [
         "aos",
         "hub",
-        "registry",
-        "token",
+        "access-token",
         "issue",
         "apply",
         "--hub",
@@ -227,10 +224,21 @@ fn apply_is_sealed_and_requires_plan_confirmation_and_idempotency() {
 #[test]
 fn token_vocabulary_has_no_mint_rotate_or_revoke_paths() {
     let root = cli_command();
-    let token = command_at(&root, &["hub", "registry", "token"]);
+    let token = command_at(&root, &["hub", "access-token"]);
     let names = token
         .get_subcommands()
         .map(Command::get_name)
         .collect::<Vec<_>>();
     assert_eq!(names, ["list", "issue", "retire"]);
+}
+
+#[test]
+fn signing_usage_combines_exact_read_with_reviewed_mutation() {
+    let root = cli_command();
+    let usage = command_at(&root, &["hub", "signing-key", "usage"]);
+    let names = usage
+        .get_subcommands()
+        .map(Command::get_name)
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["show", "plan", "apply"]);
 }

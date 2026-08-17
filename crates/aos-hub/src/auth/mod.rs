@@ -6,9 +6,9 @@
 //! authorization kernel in [`crate::domain::iam`], which it reuses for
 //! every access decision. Two principal planes that never cross:
 //!
-//! - **Machines** present `aos_`-prefixed [provisioning tokens](token),
-//!   hashed at rest, exchanged at `POST /oauth2/token`
-//!   ([`extract::oauth2_token_handler`]) for short-TTL [HS256 JWTs](jwt).
+//! - **Machines** use the shared OAuth device/refresh flow or present an
+//!   `aos_`-prefixed [provisioning token](token) through the explicit bootstrap
+//!   grant at `POST /oauth2/token`; both produce short-TTL [HS256 JWTs](jwt).
 //!   The hub generalizes the `aos-server` token from a set of *views* to a
 //!   `{scope-path, permissions[]}` grant, and *honors* the rotation grace
 //!   window that `aos-server` recorded but ignored.
@@ -42,12 +42,13 @@
 //!   `crate::auth::oidc::…` paths are unchanged.
 //! - [`extract`] — the axum extractors and middleware that gate requests:
 //!   [`extract::BearerAuth`], [`extract::SessionAuth`],
-//!   [`extract::MaybeSession`], plus the `/oauth2/token` handler.
+//!   [`extract::MaybeSession`]. The runtime-neutral OAuth HTTP handlers live in
+//!   [`aos_hub_core::web::console`].
 //!
 //! The on-disk system of record for every credential lives in
-//! [`crate::db`] (migration v4): the `tokens`, `sessions`, `device_codes`,
-//! and `magic_links` tables. Only secret *hashes* are stored, so a database
-//! leak never yields a usable credential.
+//! [`crate::db`]: the `tokens`, `sessions`, `device_codes`, `refresh_tokens`,
+//! and `magic_links` tables. Only secret *hashes* are stored, so a database leak
+//! never yields a usable credential.
 
 pub mod extract;
 pub mod oidc;

@@ -1,0 +1,23 @@
+[
+  "/-/instance/serving",
+  "/-/instance/storage",
+  "/-/org/acme/bindings/binding",
+  "/-/org/acme/caches/build/delivery-routes",
+  "/-/org/acme/caches/build/delivery-routes/canonical-audiences",
+  "/-/org/acme/caches/build/manual-roots",
+  "/-/org/acme/caches/build/population-targets",
+  "/-/org/acme/caches/build/retention-subscriptions",
+  "/-/org/acme/caches/build/signing-key",
+  "/-/org/acme/storage",
+  "/-/org/acme/storage-bindings/binding/grants/plan-grant",
+  "/acme/main/-/settings/cache-stack",
+  "/acme/main/-/settings/delivery-routes",
+  "/acme/main/-/settings/delivery-routes/canonical-audiences",
+  "/acme/main/-/settings/population-targets",
+  "/acme/main/-/settings/retention-consumers",
+  "/acme/main/-/settings/serving",
+  "/acme/main/-/settings/signing-key",
+  "/acme/main/-/settings/signing-keys/rotate",
+  "/acme/main/-/settings/storage",
+  "/acme/main/-/settings/upstream-mirror"
+]

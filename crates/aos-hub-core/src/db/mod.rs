@@ -360,16 +360,24 @@ const MAX_AUDIT_SCAN: i64 = 10_000;
 const PORTABLE_RELATIONAL_ID_MAX: i64 = 9_007_199_254_740_991;
 
 /// Derives a positive, cross-runtime relational key from a stable incarnation.
-fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
+pub(crate) fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
     (incarnation.as_u128() % PORTABLE_RELATIONAL_ID_MAX as u128) as i64 + 1
 }
 
 /// Ordered schema migrations; index = version - 1.
 /// Squashed fresh-install schema for the final Hub topology.
 ///
-/// Upgrade/cutover is deliberately an offline artifact: steady-state native
-/// and Worker runtimes create and understand only this schema.
-pub const MIGRATIONS: &[&str] = &[include_str!("schema.sql")];
+/// Upgrade/cutover is deliberately an offline artifact. The first migration
+/// establishes the topology hard-cutover schema; subsequent entries are
+/// forward-only additions shared by native SQLite and Cloudflare D1.
+pub const MIGRATIONS: &[&str] = &[
+    include_str!("schema.sql"),
+    include_str!("auth_refresh.sql"),
+    include_str!("invitation_lifecycle.sql"),
+    include_str!("identity_control.sql"),
+    include_str!("identity_incarnation.sql"),
+    include_str!("operation_scope_inventory.sql"),
+];
 
 /// Identity stamped into databases created by the topology hard-cutover
 /// schema. Unlike the historical integer version, this value cannot collide
@@ -390,6 +398,45 @@ pub fn migration_statements() -> Vec<String> {
         .iter()
         .flat_map(|m| crate::backend::split_statements(m))
         .collect()
+}
+
+/// Returns a MySQL migration statement that is safe to replay after DDL's
+/// implicit commit boundary.
+fn mysql_replay_safe_migration_sql(sql: &str) -> String {
+    if sql.contains("CREATE TABLE ") && !sql.contains("CREATE TABLE IF NOT EXISTS ") {
+        return sql.replacen("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1);
+    }
+    if sql.contains("CREATE VIEW ") {
+        return sql.replacen("CREATE VIEW ", "CREATE OR REPLACE VIEW ", 1);
+    }
+    if sql.contains(" ADD COLUMN ") && !sql.contains(" ADD COLUMN IF NOT EXISTS ") {
+        return sql.replacen(" ADD COLUMN ", " ADD COLUMN IF NOT EXISTS ", 1);
+    }
+    if sql.contains("INSERT INTO ") && !sql.contains("ON CONFLICT") {
+        return sql.replacen("INSERT INTO ", "INSERT IGNORE INTO ", 1);
+    }
+    sql.to_string()
+}
+
+/// Extracts the table and index names from a migration `CREATE INDEX`.
+fn mysql_migration_index_identity(sql: &str) -> Option<(&str, &str)> {
+    let start = sql
+        .find("CREATE UNIQUE INDEX ")
+        .map(|offset| offset + "CREATE UNIQUE INDEX ".len())
+        .or_else(|| {
+            sql.find("CREATE INDEX ")
+                .map(|offset| offset + "CREATE INDEX ".len())
+        })?;
+    let rest = sql.get(start..)?.trim_start();
+    let index_end = rest.find(char::is_whitespace)?;
+    let index = rest.get(..index_end)?.trim_matches('`');
+    let after_index = rest.get(index_end..)?.trim_start();
+    let after_on = after_index.strip_prefix("ON ")?.trim_start();
+    let table_end = after_on
+        .find(|character: char| character.is_whitespace() || character == '(')
+        .unwrap_or(after_on.len());
+    let table = after_on.get(..table_end)?.trim_matches('`');
+    (!table.is_empty() && !index.is_empty()).then_some((table, index))
 }
 
 /// Marker error: a membership mutation was refused because it would leave an
@@ -756,7 +803,20 @@ pub struct ProjectRecord {
     pub updated_at: i64,
 }
 
-/// A pending invitation system-of-record row.
+/// An organization-owned non-human principal.
+#[derive(Debug, Clone)]
+pub struct ServiceAccountRecord {
+    /// Stable database identity retained across renames.
+    pub id: i64,
+    /// Owning organization identity.
+    pub org_id: i64,
+    /// Name unique within the organization.
+    pub name: String,
+    /// Creation timestamp.
+    pub created_at: i64,
+}
+
+/// An invitation system-of-record row.
 #[derive(Debug, Clone)]
 pub struct InvitationRecord {
     /// Database id.
@@ -769,6 +829,28 @@ pub struct InvitationRecord {
     pub scope: String,
     /// Role the resulting grant confers.
     pub role: String,
+    /// Unix time the invitation was created.
+    pub created_at: i64,
+    /// Unix time the invitation was accepted, when applicable.
+    pub accepted_at: Option<i64>,
+    /// Unix time an administrator cancelled the invitation, when applicable.
+    pub cancelled_at: Option<i64>,
+    /// Unix time after which the invitation can no longer be accepted.
+    pub expires_at: i64,
+}
+
+fn invitation_record_from_row(row: Row) -> Result<InvitationRecord> {
+    Ok(InvitationRecord {
+        id: row.get(0)?,
+        org_id: row.get(1)?,
+        email: row.get(2)?,
+        scope: row.get(3)?,
+        role: row.get(4)?,
+        created_at: row.get(5)?,
+        accepted_at: row.get(6)?,
+        cancelled_at: row.get(7)?,
+        expires_at: row.get(8)?,
+    })
 }
 
 /// An org's OIDC identity-provider configuration (system-of-record row).
@@ -812,6 +894,12 @@ pub struct IdpConfigRecord {
     /// The role a JIT-provisioned user receives at the org scope when no
     /// group mapping applies.
     pub default_role: String,
+    /// Optimistic-concurrency version for retained-control mutations.
+    pub resource_version: i64,
+    /// Immutable incarnation that changes when a deleted resource is recreated.
+    pub incarnation_id: Option<String>,
+    /// Reviewed plan that produced the current state, when any.
+    pub mutation_plan_id: Option<String>,
 }
 
 /// A captured (DNS-TXT-verifiable) email domain bound to an org.
@@ -825,6 +913,12 @@ pub struct OrgDomainRecord {
     pub txt_challenge: String,
     /// Unix time the domain was verified, or `None` while unverified.
     pub verified_at: Option<i64>,
+    /// Optimistic-concurrency version for claim lifecycle mutations.
+    pub resource_version: i64,
+    /// Immutable incarnation that changes when a released domain is reclaimed.
+    pub incarnation_id: Option<String>,
+    /// Reviewed plan that produced the current state, when any.
+    pub mutation_plan_id: Option<String>,
 }
 
 /// An in-flight OIDC authorization-code request (system-of-record row).
@@ -947,23 +1041,31 @@ pub struct TokenAuth {
     pub permissions: Vec<crate::domain::Permission>,
 }
 
-/// Secret-free registry-token metadata exposed to authorized administrators.
+/// Secret-free access-token metadata exposed to authorized administrators.
 #[derive(Debug, Clone)]
-pub struct RegistryTokenMetadata {
+pub struct AccessTokenMetadata {
     /// Stable token-generation identity.
     pub token_id: String,
     /// Owning principal kind.
     pub owner_kind: String,
     /// Owning principal database identity.
     pub owner_id: i64,
-    /// Exact registry authorization scope.
+    /// Exact authorization scope.
     pub scope: String,
     /// Parsed capability set.
     pub permissions: Vec<crate::domain::Permission>,
+    /// Operator-facing purpose, never secret material.
+    pub comment: Option<String>,
     /// Creation timestamp.
     pub created_at: i64,
     /// Optional expiration timestamp.
     pub expires_at: Option<i64>,
+    /// Most recent successful use.
+    pub last_used_at: Option<i64>,
+    /// Rotation timestamp when superseded.
+    pub rotated_at: Option<i64>,
+    /// Retirement timestamp when explicitly revoked.
+    pub retired_at: Option<i64>,
     /// Exact lifecycle revision.
     pub resource_version: String,
 }
@@ -1479,6 +1581,15 @@ pub struct RegistryPublicationRecord {
     pub completed_at: Option<i64>,
     /// Retirement time.
     pub retired_at: Option<i64>,
+}
+
+/// One keyset-paginated registry publication inventory page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryPublicationPage {
+    /// Publications in newest-first ordinal order.
+    pub records: Vec<RegistryPublicationRecord>,
+    /// Exclusive ordinal cursor for the next page.
+    pub next_cursor: Option<i64>,
 }
 
 /// The single authoritative current-publication pointer for a registry.
@@ -3033,9 +3144,36 @@ impl Database {
                 &[],
             )
             .await?;
+        let mysql = self.dialect() == Dialect::Mysql;
+        if mysql {
+            // MySQL needs an actual singleton key: two replicas may initialize
+            // concurrently, and the legacy one-column marker cannot prevent
+            // duplicate rows. Seed the keyed marker from an existing install's
+            // maximum legacy version; the upsert is atomic under the primary key.
+            self.backend
+                .execute(
+                    "CREATE TABLE IF NOT EXISTS hub_schema_version (
+                       id INTEGER PRIMARY KEY, version INTEGER NOT NULL)",
+                    &[],
+                )
+                .await?;
+            self.backend
+                .execute(
+                    "INSERT INTO hub_schema_version(id, version)
+                     SELECT 0, COALESCE(MAX(version), 0) FROM schema_version
+                     ON CONFLICT(id) DO NOTHING",
+                    &[],
+                )
+                .await?;
+        }
+        let marker_query = if mysql {
+            "SELECT version FROM hub_schema_version WHERE id = 0"
+        } else {
+            "SELECT version FROM schema_version"
+        };
         let current: i64 = self
             .backend
-            .query_opt("SELECT version FROM schema_version", &[])
+            .query_opt(marker_query, &[])
             .await?
             .map(|row| row.get::<i64>(0))
             .transpose()?
@@ -3047,26 +3185,107 @@ impl Database {
         if current > target {
             bail!("hub database schema {current} is newer than this build supports ({target})");
         }
-        // Apply all pending migrations as one portable batch. Local SQLite and
-        // Worker HubDb execute the same multi-statement string atomically; the
-        // native server backends use their transaction-backed implementation.
+        // Apply every pending migration *and* advance the version marker in one
+        // portable transaction. Keeping the marker in the same batch matters
+        // for Durable Objects: if an isolate is evicted after DDL commits but
+        // before a separate marker write, startup would replay a non-idempotent
+        // `ALTER TABLE` and permanently wedge the object.
         if (current as usize) < MIGRATIONS.len() {
-            let pending = MIGRATIONS[current as usize..].join("\n");
-            self.backend
-                .execute_batch(&pending)
-                .await
-                .with_context(|| format!("applying migrations v{}..=v{}", current + 1, target))?;
+            if mysql {
+                // MySQL implicitly commits DDL. Apply one replay-safe
+                // statement at a time, checking indexes through the catalog,
+                // then atomically advance the singleton ledger after each
+                // complete migration. A crash can repeat only idempotent work.
+                for (offset, migration) in MIGRATIONS[current as usize..].iter().enumerate() {
+                    let migration_version = current + offset as i64 + 1;
+                    for sql in crate::backend::split_statements(migration) {
+                        if let Some((table, index)) = mysql_migration_index_identity(&sql) {
+                            let exists = self
+                                .backend
+                                .query_opt(
+                                    "SELECT 1 FROM information_schema.statistics
+                                      WHERE table_schema = DATABASE()
+                                        AND table_name = ?1 AND index_name = ?2 LIMIT 1",
+                                    &vals![table, index],
+                                )
+                                .await?
+                                .is_some();
+                            if exists {
+                                continue;
+                            }
+                        }
+                        let replay_safe = mysql_replay_safe_migration_sql(&sql);
+                        if let Err(error) = self.backend.execute(&replay_safe, &[]).await {
+                            // Concurrent starters can both observe an absent
+                            // index. Treat the losing CREATE as success only
+                            // after the catalog proves the exact index exists.
+                            let concurrently_created = if let Some((table, index)) =
+                                mysql_migration_index_identity(&sql)
+                            {
+                                self.backend
+                                    .query_opt(
+                                        "SELECT 1 FROM information_schema.statistics
+                                          WHERE table_schema = DATABASE()
+                                            AND table_name = ?1 AND index_name = ?2 LIMIT 1",
+                                        &vals![table, index],
+                                    )
+                                    .await?
+                                    .is_some()
+                            } else {
+                                false
+                            };
+                            if !concurrently_created {
+                                return Err(error).with_context(|| {
+                                    format!("applying MySQL schema migration v{migration_version}")
+                                });
+                            }
+                        }
+                    }
+                    self.backend
+                        .execute(
+                            "UPDATE hub_schema_version SET version = ?1 WHERE id = 0",
+                            &vals![migration_version],
+                        )
+                        .await?;
+                    // Keep the pre-hard-cutover marker monotonic for a rolling
+                    // old process, but never use its unkeyed shape for new code.
+                    self.backend
+                        .execute(
+                            "UPDATE schema_version SET version = ?1",
+                            &vals![migration_version],
+                        )
+                        .await?;
+                }
+            } else {
+                let mut pending = MIGRATIONS[current as usize..].join("\n");
+                pending.push_str("\nDELETE FROM schema_version;\n");
+                pending.push_str(&format!(
+                    "INSERT INTO schema_version (version) VALUES ({target});\n"
+                ));
+                let statements = crate::backend::split_statements(&pending)
+                    .into_iter()
+                    .map(|sql| Statement::new(sql, Vec::new()))
+                    .collect::<Vec<_>>();
+                self.backend
+                    .batch(&statements)
+                    .await
+                    .with_context(|| format!("applying migrations v{}..=v{target}", current + 1))?;
+            }
             self.require_schema_identity().await?;
+        } else {
+            // Normalize malformed-but-compatible marker tables left by older
+            // builds to exactly one row without making every startup rewrite it.
+            let rows = self
+                .backend
+                .query("SELECT version FROM schema_version", &[])
+                .await?;
+            if !mysql && rows.len() != 1 {
+                let marker = format!(
+                    "DELETE FROM schema_version;\nINSERT INTO schema_version (version) VALUES ({target});"
+                );
+                self.backend.execute_batch(&marker).await?;
+            }
         }
-        self.backend
-            .execute("DELETE FROM schema_version", &[])
-            .await?;
-        self.backend
-            .execute(
-                "INSERT INTO schema_version (version) VALUES (?1)",
-                &vals![target],
-            )
-            .await?;
         Ok(())
     }
 
@@ -3103,6 +3322,8 @@ impl Database {
         trust_keys: &[String],
         require_signatures: bool,
     ) -> Result<i64> {
+        crate::domain::iam::validate_org_slug(slug)
+            .map_err(|error| anyhow::anyhow!("invalid instance registry slug '{slug}': {error}"))?;
         if let Some(existing) = self.registry_by_slug(slug).await? {
             if existing.trust_keys == trust_keys
                 && existing.require_signatures == require_signatures
@@ -3185,6 +3406,23 @@ impl Database {
             )
             .await
             .context("loading registry by slug")?
+            .map(|row| row_to_registry(&row))
+            .transpose()
+    }
+
+    /// Looks up a registry by its immutable stable identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn registry_by_stable_id(&self, stable_id: &str) -> Result<Option<RegistryRecord>> {
+        self.backend
+            .query_opt(
+                &format!("SELECT {REGISTRY_COLUMNS} FROM registries WHERE stable_id = ?1"),
+                &vals![stable_id],
+            )
+            .await
+            .context("loading registry by stable id")?
             .map(|row| row_to_registry(&row))
             .transpose()
     }
@@ -5677,6 +5915,96 @@ impl Database {
                 })
             })
             .transpose()
+    }
+
+    /// Lists one registry's publications in stable newest-first order.
+    ///
+    /// The optional cursor is exclusive and must identify a publication in the
+    /// same registry and state-filtered inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid state or cursor, malformed persisted
+    /// data, or a database failure.
+    pub async fn list_registry_publications_page(
+        &self,
+        registry_id: i64,
+        state: Option<&str>,
+        page_size: u32,
+        before_ordinal: Option<i64>,
+    ) -> Result<RegistryPublicationPage> {
+        let state = state.unwrap_or("");
+        if !state.is_empty()
+            && !matches!(
+                state,
+                "preparing" | "writing_pointers" | "ready" | "failed" | "retired"
+            )
+        {
+            bail!("invalid publication state filter '{state}'");
+        }
+        if let Some(ordinal) = before_ordinal {
+            let belongs = self
+                .backend
+                .query_opt(
+                    "SELECT 1 FROM registry_publications
+                     WHERE registry_id = ?1 AND ordinal = ?2
+                       AND (?3 = '' OR state = ?3)",
+                    &vals![registry_id, ordinal, state],
+                )
+                .await?
+                .is_some();
+            if !belongs {
+                bail!("publication page token does not belong to this inventory");
+            }
+        }
+        let limit = if page_size == 0 {
+            50_i64
+        } else {
+            i64::from(page_size.min(200))
+        };
+        let rows = self
+            .backend
+            .query(
+                "SELECT publication_id, registry_id, ordinal, generation,
+                        manifest_digest, refs_digest, default_commit,
+                        parent_publication_id, state, created_at, completed_at,
+                        retired_at
+                 FROM registry_publications
+                 WHERE registry_id = ?1 AND (?2 = '' OR state = ?2)
+                   AND (?3 IS NULL OR ordinal < ?3)
+                 ORDER BY ordinal DESC LIMIT ?4",
+                &vals![registry_id, state, before_ordinal, limit + 1],
+            )
+            .await?;
+        let mut records = rows
+            .iter()
+            .map(|row| {
+                Ok(RegistryPublicationRecord {
+                    publication_id: row.get(0)?,
+                    registry_id: row.get(1)?,
+                    ordinal: row.get(2)?,
+                    generation: row.get(3)?,
+                    manifest_digest: row.get(4)?,
+                    refs_digest: row.get(5)?,
+                    default_commit: row.get(6)?,
+                    parent_publication_id: row.get(7)?,
+                    state: row.get(8)?,
+                    created_at: row.get(9)?,
+                    completed_at: row.get(10)?,
+                    retired_at: row.get(11)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let next_cursor = if records.len() > limit as usize {
+            records.pop();
+            records.last().map(|record| record.ordinal)
+        } else {
+            None
+        };
+        Ok(RegistryPublicationPage {
+            records,
+            next_cursor,
+        })
     }
 
     /// Lists the exact object manifest declared by a publication.
@@ -8957,6 +9285,35 @@ impl Database {
         rows.first().map(row_to_topology_plan).transpose()
     }
 
+    /// Returns the plan bound to one actor, operation, and request idempotency key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid key material or database failure.
+    pub async fn topology_plan_for_request(
+        &self,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        plan_kind: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<TopologyPlanRecord>> {
+        validate_key_bytes(actor_kind, "topology plan actor kind", 32)?;
+        validate_key_bytes(plan_kind, "topology plan kind", 64)?;
+        validate_key_bytes(idempotency_key, "plan idempotency key", 128)?;
+        let rows = self
+            .backend
+            .query(
+                &format!(
+                    "SELECT {PLAN_COLUMNS} FROM topology_plans
+                      WHERE actor_kind = ?1 AND actor_id = ?2 AND plan_kind = ?3
+                        AND request_idempotency_key = ?4"
+                ),
+                &vals![actor_kind, actor_id, plan_kind, idempotency_key],
+            )
+            .await?;
+        rows.first().map(row_to_topology_plan).transpose()
+    }
+
     /// Marks an unapplied topology plan as consumed.
     ///
     /// The guarded domain mutation remains the authoritative replay fence. A
@@ -9825,6 +10182,100 @@ impl Database {
         } else {
             None
         };
+        Ok(TopologyOperationPage {
+            records,
+            next_cursor,
+        })
+    }
+
+    /// Lists operations owned by a scope or any of its descendants.
+    ///
+    /// The inventory is ordered newest first with a stable operation-id
+    /// tiebreaker. The cursor is accepted only when its operation belongs to
+    /// the same scope closure and state filter.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, an invalid state, or a cursor
+    /// that does not belong to the requested inventory.
+    pub async fn list_scope_topology_operations_page(
+        &self,
+        authorization_scope_key: &str,
+        state: Option<&str>,
+        page_size: u32,
+        after_operation_id: Option<&str>,
+    ) -> Result<TopologyOperationPage> {
+        let state = state.unwrap_or("");
+        if !state.is_empty()
+            && !matches!(
+                state,
+                "pending" | "running" | "succeeded" | "failed" | "cancelled"
+            )
+        {
+            bail!("invalid operation state filter '{state}'");
+        }
+
+        let after_created_at = if let Some(cursor) = after_operation_id {
+            validate_key_bytes(cursor, "operation page token", 64)?;
+            Some(
+                self.backend
+                    .query_opt(
+                        "SELECT o.created_at
+                           FROM topology_operations o
+                           JOIN authorization_scope_ancestors ancestry
+                             ON ancestry.descendant_scope_key = o.authorization_scope_key
+                          WHERE o.operation_id = ?1
+                            AND ancestry.ancestor_scope_key = ?2
+                            AND (?3 = '' OR o.state = ?3)",
+                        &vals![cursor, authorization_scope_key, state],
+                    )
+                    .await?
+                    .context("operation page token does not belong to this inventory")?
+                    .get::<i64>(0)?,
+            )
+        } else {
+            None
+        };
+        let limit = if page_size == 0 {
+            100_i64
+        } else {
+            i64::from(page_size.min(500))
+        };
+        let rows = self
+            .backend
+            .query(
+                &format!(
+                    "SELECT {OPERATION_COLUMNS}
+                       FROM topology_operations o
+                       JOIN authorization_scope_ancestors ancestry
+                         ON ancestry.descendant_scope_key = o.authorization_scope_key
+                      WHERE ancestry.ancestor_scope_key = ?1
+                        AND (?2 = '' OR o.state = ?2)
+                        AND (?3 IS NULL OR o.created_at < ?3
+                          OR (o.created_at = ?3 AND o.operation_id > ?4))
+                      ORDER BY o.created_at DESC, o.operation_id
+                      LIMIT ?5"
+                ),
+                &vals![
+                    authorization_scope_key,
+                    state,
+                    after_created_at,
+                    after_operation_id,
+                    limit + 1
+                ],
+            )
+            .await?;
+        let mut records = rows
+            .iter()
+            .map(row_to_topology_operation)
+            .collect::<Result<Vec<_>>>()?;
+        let next_cursor = if records.len() > limit as usize {
+            records.pop();
+            records.last().map(|record| record.operation_id.clone())
+        } else {
+            None
+        };
+
         Ok(TopologyOperationPage {
             records,
             next_cursor,
@@ -12981,6 +13432,113 @@ impl Database {
             .transpose()
     }
 
+    /// Lists an organization's service accounts in stable name order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_service_accounts(&self, org_id: i64) -> Result<Vec<ServiceAccountRecord>> {
+        self.backend
+            .query(
+                "SELECT id, org_id, name, created_at FROM service_accounts
+                 WHERE org_id = ?1 ORDER BY name, id",
+                &vals![org_id],
+            )
+            .await?
+            .iter()
+            .map(|row| {
+                Ok(ServiceAccountRecord {
+                    id: row.get(0)?,
+                    org_id: row.get(1)?,
+                    name: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Loads one service account by organization and name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn service_account_record(
+        &self,
+        org_id: i64,
+        name: &str,
+    ) -> Result<Option<ServiceAccountRecord>> {
+        self.backend
+            .query_opt(
+                "SELECT id, org_id, name, created_at FROM service_accounts
+                 WHERE org_id = ?1 AND name = ?2",
+                &vals![org_id, name],
+            )
+            .await?
+            .map(|row| {
+                Ok(ServiceAccountRecord {
+                    id: row.get(0)?,
+                    org_id: row.get(1)?,
+                    name: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Renames one service account when its current name still matches.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, including name collisions.
+    pub async fn rename_service_account(
+        &self,
+        id: i64,
+        expected_name: &str,
+        new_name: &str,
+    ) -> Result<bool> {
+        Ok(self
+            .backend
+            .execute(
+                "UPDATE service_accounts SET name = ?3 WHERE id = ?1 AND name = ?2",
+                &vals![id, expected_name, new_name],
+            )
+            .await?
+            == 1)
+    }
+
+    /// Deletes one service account when its current name still matches.
+    ///
+    /// Direct memberships are removed in the same transaction. Owned tokens
+    /// remain as audit metadata but immediately become unusable because token
+    /// validation requires a live principal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn delete_service_account(&self, id: i64, expected_name: &str) -> Result<()> {
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE service_accounts SET name = name WHERE id = ?1 AND name = ?2",
+                    vals![id, expected_name],
+                )
+                .expecting(1),
+                Statement::new(
+                    "DELETE FROM memberships
+                     WHERE principal_kind = 'service_account' AND principal_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM service_accounts WHERE id = ?1 AND name = ?2",
+                    vals![id, expected_name],
+                )
+                .expecting(1),
+            ])
+            .await?;
+        Ok(())
+    }
+
     /// Returns the canonical `org/service-account` reference for a live account.
     ///
     /// # Errors
@@ -13781,6 +14339,11 @@ impl Database {
         compression: &str,
         want_mass_query: bool,
     ) -> Result<i64> {
+        if org_id.is_none() {
+            crate::domain::iam::validate_org_slug(slug).map_err(|error| {
+                anyhow::anyhow!("invalid standalone cache slug '{slug}': {error}")
+            })?;
+        }
         if self.binary_cache_by_slug(slug).await?.is_some() {
             bail!("a cache already exists at '{slug}'");
         }
@@ -15662,7 +16225,8 @@ impl Database {
             .backend
             .query_opt(
                 "SELECT COUNT(*) FROM invitations
-                 WHERE email = ?1 AND accepted_at IS NULL AND expires_at > ?2",
+                 WHERE email = ?1 AND accepted_at IS NULL
+                   AND cancelled_at IS NULL AND expires_at > ?2",
                 &vals![email, now],
             )
             .await?
@@ -16028,6 +16592,147 @@ impl Database {
 
     // -- tenancy: invitations ------------------------------------------------
 
+    /// Lists every invitation owned by an organization, newest first.
+    ///
+    /// Terminal invitations remain visible for audit. Expiry is derived from
+    /// the stored deadline rather than materialized by a background job.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed persisted data.
+    pub async fn list_invitations(&self, org_id: i64) -> Result<Vec<InvitationRecord>> {
+        self.backend
+            .query(
+                "SELECT id, org_id, email, scope_key, role, created_at,
+                        accepted_at, cancelled_at, expires_at
+                   FROM invitations WHERE org_id = ?1
+                  ORDER BY created_at DESC, id DESC",
+                &vals![org_id],
+            )
+            .await?
+            .into_iter()
+            .map(invitation_record_from_row)
+            .collect()
+    }
+
+    /// Reads one invitation by its organization-local numeric identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed persisted data.
+    pub async fn invitation_record(
+        &self,
+        org_id: i64,
+        invitation_id: i64,
+    ) -> Result<Option<InvitationRecord>> {
+        self.backend
+            .query_opt(
+                "SELECT id, org_id, email, scope_key, role, created_at,
+                        accepted_at, cancelled_at, expires_at
+                   FROM invitations WHERE org_id = ?1 AND id = ?2",
+                &vals![org_id, invitation_id],
+            )
+            .await?
+            .map(invitation_record_from_row)
+            .transpose()
+    }
+
+    /// Loads the sealed recovery copy for one live pending invitation.
+    ///
+    /// Terminal transitions erase this value. Callers must unseal it through
+    /// the runtime's retained [`crate::auth::seal::SecretSealer`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn recoverable_invitation_sealed_secret(
+        &self,
+        invitation_id: i64,
+    ) -> Result<Option<String>> {
+        let now = unix_now();
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT secret_enc FROM invitations
+                  WHERE id = ?1 AND accepted_at IS NULL AND cancelled_at IS NULL
+                    AND expires_at > ?2 AND secret_enc IS NOT NULL",
+                &vals![invitation_id, now],
+            )
+            .await?;
+        if let Some(row) = row {
+            return row.get(0).map(Some);
+        }
+        self.backend
+            .execute(
+                "UPDATE invitations SET secret_enc = NULL
+                  WHERE id = ?1 AND secret_enc IS NOT NULL
+                    AND (accepted_at IS NOT NULL OR cancelled_at IS NOT NULL
+                         OR expires_at <= ?2)",
+                &vals![invitation_id, now],
+            )
+            .await?;
+        Ok(None)
+    }
+
+    /// Erases recovery ciphertext and releases live keys for expired invitations.
+    ///
+    /// The bounded batch is safe to repeat and commits both effects atomically.
+    /// `limit` is clamped to keep one maintenance pass from monopolizing the
+    /// database.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn prune_expired_invitation_secrets(&self, now: i64, limit: i64) -> Result<()> {
+        let limit = limit.clamp(1, 10_000);
+        let expired_ids = "SELECT expired_id FROM (
+                            SELECT id AS expired_id FROM invitations
+                             WHERE accepted_at IS NULL AND cancelled_at IS NULL
+                               AND expires_at <= ?1
+                             ORDER BY expires_at, id LIMIT ?2
+                          ) expired_invitations";
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    format!("UPDATE invitations SET secret_enc = NULL WHERE id IN ({expired_ids})"),
+                    vals![now, limit],
+                )
+                .unchecked(),
+                Statement::new(
+                    format!("DELETE FROM live_invitations WHERE invitation_id IN ({expired_ids})"),
+                    vals![now, limit],
+                )
+                .unchecked(),
+            ])
+            .await
+    }
+
+    /// Finds a live invitation for the same email and membership scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn pending_invitation_for(
+        &self,
+        org_id: i64,
+        email: &str,
+        scope: &str,
+    ) -> Result<Option<i64>> {
+        let now = unix_now();
+        self.backend
+            .query_opt(
+                "SELECT id FROM invitations
+                  WHERE org_id = ?1 AND email = ?2 AND scope_key = ?3
+                    AND accepted_at IS NULL AND cancelled_at IS NULL
+                    AND expires_at > ?4
+                  ORDER BY created_at DESC, id DESC LIMIT 1",
+                &vals![org_id, email, scope, now],
+            )
+            .await?
+            .map(|row| row.get(0))
+            .transpose()
+    }
+
     /// Create an invitation; returns its new id.
     ///
     /// The caller passes the SHA-256 hash of the invite secret as
@@ -16054,39 +16759,283 @@ impl Database {
         if crate::domain::Role::parse(role).is_none() {
             bail!("unknown invitation role '{role}'");
         }
-        let invitation_id = self.max_id("invitations").await? + 1;
-        let affected = self
-            .backend
-            .execute(
-                "INSERT INTO invitations
-             (id, org_id, email, scope_key, role, token_hash, created_at, expires_at)
-             SELECT ?1, ?2, ?3, a.scope_key, ?5, ?6, ?7, ?8
-             FROM authorization_scopes a JOIN orgs o ON o.id = a.org_id
-             WHERE a.scope_key = ?4 AND a.org_id = ?2 AND o.deleted_at IS NULL",
-                &vals![
-                    invitation_id,
-                    org_id,
-                    email,
-                    scope,
-                    role,
-                    token_hash,
-                    unix_now(),
-                    expires_at
-                ],
-            )
+        let invitation_id = portable_relational_id(uuid::Uuid::new_v4());
+        let now = unix_now();
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE invitations SET secret_enc = NULL
+                       WHERE id IN (
+                         SELECT invitation_id FROM live_invitations
+                          WHERE org_id = ?1 AND email = ?2 AND scope_key = ?3)
+                         AND expires_at <= ?4",
+                    vals![org_id, email, scope, now],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM live_invitations
+                       WHERE org_id = ?1 AND email = ?2 AND scope_key = ?3
+                         AND invitation_id IN (
+                           SELECT id FROM invitations WHERE expires_at <= ?4)",
+                    vals![org_id, email, scope, now],
+                )
+                .unchecked(),
+                Statement::new(
+                    "INSERT INTO invitations
+                     (id, org_id, email, scope_key, role, token_hash, created_at, expires_at)
+                     SELECT ?1, ?2, ?3, a.scope_key, ?5, ?6, ?7, ?8
+                       FROM authorization_scopes a JOIN orgs o ON o.id = a.org_id
+                      WHERE a.scope_key = ?4 AND a.org_id = ?2 AND o.deleted_at IS NULL",
+                    vals![
+                        invitation_id,
+                        org_id,
+                        email,
+                        scope,
+                        role,
+                        token_hash,
+                        now,
+                        expires_at
+                    ],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO live_invitations(org_id, email, scope_key, invitation_id)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    vals![org_id, email, scope, invitation_id],
+                )
+                .expecting(1),
+            ])
             .await?;
-        if affected != 1 {
-            bail!("invitation scope does not identify a live scope in the organization");
-        }
         Ok(invitation_id)
     }
 
-    /// Accept an invitation by its token hash, returning its details.
+    /// Creates an invitation, audits it, and completes its reviewed plan atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when validation, serialization, authorization-scope
+    /// lookup, live-key uniqueness, plan fencing, or persistence fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn apply_invitation_creation_plan(
+        &self,
+        record: &InvitationRecord,
+        token_hash: &str,
+        sealed_secret: &str,
+        plan_id: &str,
+        apply_idempotency_key: &str,
+        result_json: &str,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        actor_label: &str,
+        audit_event_id: &str,
+    ) -> Result<()> {
+        validate_key_bytes(apply_idempotency_key, "apply idempotency key", 128)?;
+        validate_key_bytes(audit_event_id, "audit event id", 64)?;
+        validate_json_value(result_json, "apply result")?;
+        let now = unix_now();
+        let detail = format!("invitation_id={}", record.id);
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE invitations SET secret_enc = NULL
+                       WHERE id IN (
+                         SELECT invitation_id FROM live_invitations
+                          WHERE org_id = ?1 AND email = ?2 AND scope_key = ?3)
+                         AND expires_at <= ?4",
+                    vals![record.org_id, record.email, record.scope, now],
+                )
+                .unchecked(),
+                Statement::new(
+                    "DELETE FROM live_invitations
+                       WHERE org_id = ?1 AND email = ?2 AND scope_key = ?3
+                         AND invitation_id IN (
+                           SELECT id FROM invitations WHERE expires_at <= ?4)",
+                    vals![record.org_id, record.email, record.scope, now],
+                )
+                .unchecked(),
+                Statement::new(
+                    "INSERT INTO invitations
+                     (id, org_id, email, scope_key, role, token_hash, created_at,
+                      expires_at, secret_enc)
+                     SELECT ?1, ?2, ?3, a.scope_key, ?5, ?6, ?7, ?8, ?9
+                       FROM authorization_scopes a JOIN orgs o ON o.id = a.org_id
+                      WHERE a.scope_key = ?4 AND a.org_id = ?2 AND o.deleted_at IS NULL",
+                    vals![
+                        record.id,
+                        record.org_id,
+                        record.email,
+                        record.scope,
+                        record.role,
+                        token_hash,
+                        record.created_at,
+                        record.expires_at,
+                        sealed_secret
+                    ],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO live_invitations(org_id, email, scope_key, invitation_id)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    vals![record.org_id, record.email, record.scope, record.id],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO audit_log
+                     (outbox_event_id, change_id, actor_kind, actor_id, actor_label,
+                      action, scope, detail, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'invitation.create', ?6, ?7, ?8)",
+                    vals![
+                        audit_event_id,
+                        plan_id,
+                        actor_kind,
+                        actor_id,
+                        sanitize_log_text(actor_label),
+                        sanitize_log_text(&record.scope),
+                        detail,
+                        now
+                    ],
+                )
+                .expecting(1),
+                Statement::new(
+                    "UPDATE topology_plans SET applied_at = ?4, apply_result_json = ?3
+                       WHERE plan_id = ?1 AND apply_idempotency_key = ?2
+                         AND applied_at IS NULL",
+                    vals![plan_id, apply_idempotency_key, result_json, now],
+                )
+                .expecting(1),
+            ])
+            .await
+    }
+
+    /// Cancels a live invitation using an optimistic-concurrency baseline.
+    ///
+    /// Returns `false` when the invitation is absent, terminal, expired, or
+    /// changed since it was reviewed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn cancel_invitation(
+        &self,
+        invitation_id: i64,
+        expected_created_at: i64,
+    ) -> Result<bool> {
+        let now = unix_now();
+        let result = self
+            .backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE invitations SET cancelled_at = ?3, secret_enc = NULL
+                      WHERE id = ?1 AND created_at = ?2
+                        AND accepted_at IS NULL AND cancelled_at IS NULL
+                        AND expires_at > ?3",
+                    vals![invitation_id, expected_created_at, now],
+                )
+                .expecting(1),
+                Statement::new(
+                    "DELETE FROM live_invitations WHERE invitation_id = ?1",
+                    vals![invitation_id],
+                )
+                .expecting(1),
+            ])
+            .await;
+        match result {
+            Ok(()) => Ok(true),
+            Err(error) => {
+                let still_matches = self
+                    .backend
+                    .query_opt(
+                        "SELECT id FROM invitations
+                           WHERE id = ?1 AND created_at = ?2
+                             AND accepted_at IS NULL AND cancelled_at IS NULL
+                             AND expires_at > ?3",
+                        &vals![invitation_id, expected_created_at, now],
+                    )
+                    .await?
+                    .is_some();
+                if still_matches {
+                    Err(error)
+                } else {
+                    Ok(false)
+                }
+            }
+        }
+    }
+
+    /// Cancels an invitation, audits it, and completes its reviewed plan atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the invitation CAS, live-key release, audit
+    /// append, plan fence, validation, or persistence fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn apply_invitation_cancellation_plan(
+        &self,
+        invitation_id: i64,
+        expected_created_at: i64,
+        cancelled_at: i64,
+        scope: &str,
+        plan_id: &str,
+        apply_idempotency_key: &str,
+        result_json: &str,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        actor_label: &str,
+        audit_event_id: &str,
+    ) -> Result<()> {
+        validate_key_bytes(apply_idempotency_key, "apply idempotency key", 128)?;
+        validate_key_bytes(audit_event_id, "audit event id", 64)?;
+        validate_json_value(result_json, "apply result")?;
+        let detail = format!("invitation_id={invitation_id}");
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE invitations SET cancelled_at = ?3, secret_enc = NULL
+                      WHERE id = ?1 AND created_at = ?2
+                        AND accepted_at IS NULL AND cancelled_at IS NULL
+                        AND expires_at > ?3",
+                    vals![invitation_id, expected_created_at, cancelled_at],
+                )
+                .expecting(1),
+                Statement::new(
+                    "DELETE FROM live_invitations WHERE invitation_id = ?1",
+                    vals![invitation_id],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO audit_log
+                     (outbox_event_id, change_id, actor_kind, actor_id, actor_label,
+                      action, scope, detail, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'invitation.cancel', ?6, ?7, ?8)",
+                    vals![
+                        audit_event_id,
+                        plan_id,
+                        actor_kind,
+                        actor_id,
+                        sanitize_log_text(actor_label),
+                        sanitize_log_text(scope),
+                        detail,
+                        cancelled_at
+                    ],
+                )
+                .expecting(1),
+                Statement::new(
+                    "UPDATE topology_plans SET applied_at = ?4, apply_result_json = ?3
+                       WHERE plan_id = ?1 AND apply_idempotency_key = ?2
+                         AND applied_at IS NULL",
+                    vals![plan_id, apply_idempotency_key, result_json, cancelled_at],
+                )
+                .expecting(1),
+            ])
+            .await
+    }
+
+    /// Accepts an invitation and creates its membership in one transaction.
     ///
     /// Succeeds only for an invitation that is unexpired (`expires_at` is
     /// in the future relative to the current clock) and not already
     /// accepted; on success it stamps `accepted_at` and returns the
-    /// invitation so the caller can mint the corresponding membership.
+    /// invitation and inserts the corresponding membership atomically.
     /// Returns `Ok(None)` when no matching, live, unaccepted invitation
     /// exists — covering unknown hashes, expired invites, and replays
     /// alike, without distinguishing them to the caller.
@@ -16094,38 +17043,131 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn accept_invitation(&self, token_hash: &str) -> Result<Option<InvitationRecord>> {
+    pub async fn accept_invitation(
+        &self,
+        token_hash: &str,
+        org_id: i64,
+        user_id: i64,
+        email: &str,
+    ) -> Result<Option<InvitationRecord>> {
+        self.accept_invitation_inner(token_hash, org_id, user_id, email, None)
+            .await
+    }
+
+    /// Accepts an invitation and appends its IAM audit event atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on invalid audit identity or database failure.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn accept_invitation_audited(
+        &self,
+        token_hash: &str,
+        org_id: i64,
+        user_id: i64,
+        email: &str,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        actor_label: &str,
+        audit_event_id: &str,
+    ) -> Result<Option<InvitationRecord>> {
+        validate_key_bytes(audit_event_id, "audit event id", 64)?;
+        self.accept_invitation_inner(
+            token_hash,
+            org_id,
+            user_id,
+            email,
+            Some((actor_kind, actor_id, actor_label, audit_event_id)),
+        )
+        .await
+    }
+
+    async fn accept_invitation_inner(
+        &self,
+        token_hash: &str,
+        org_id: i64,
+        user_id: i64,
+        email: &str,
+        audit: Option<(&str, Option<i64>, &str, &str)>,
+    ) -> Result<Option<InvitationRecord>> {
         let now = unix_now();
         let record = self
             .backend
             .query_opt(
-                "SELECT i.id, i.org_id, i.email, i.scope_key, i.role FROM invitations i
-                 JOIN orgs o ON o.id = i.org_id
-                 WHERE i.token_hash = ?1 AND i.accepted_at IS NULL
-                   AND i.expires_at > ?2 AND o.deleted_at IS NULL",
-                &vals![token_hash, now],
+                "SELECT i.id, i.org_id, i.email, i.scope_key, i.role,
+                        i.created_at, i.accepted_at, i.cancelled_at, i.expires_at
+                   FROM invitations i JOIN orgs o ON o.id = i.org_id
+                  WHERE i.token_hash = ?1 AND i.email = ?2 AND i.org_id = ?5
+                    AND i.accepted_at IS NULL AND i.cancelled_at IS NULL
+                    AND i.expires_at > ?3 AND o.deleted_at IS NULL
+                    AND EXISTS (SELECT 1 FROM users u
+                                 WHERE u.id = ?4 AND u.email = ?2
+                                   AND u.deleted_at IS NULL)",
+                &vals![token_hash, email, now, user_id, org_id],
             )
             .await
             .context("loading invitation by hash")?
-            .map(|row| -> Result<InvitationRecord> {
-                Ok(InvitationRecord {
-                    id: row.get(0)?,
-                    org_id: row.get(1)?,
-                    email: row.get(2)?,
-                    scope: row.get(3)?,
-                    role: row.get(4)?,
-                })
-            })
+            .map(invitation_record_from_row)
             .transpose()?;
         if let Some(record) = &record {
-            self.backend
-                .execute(
-                    "UPDATE invitations SET accepted_at = ?2 WHERE id = ?1",
-                    &vals![record.id, now],
+            let mut statements = vec![
+                Statement::new(
+                    "UPDATE invitations SET accepted_at = ?5, secret_enc = NULL
+                          WHERE id = ?1 AND token_hash = ?2 AND email = ?3
+                            AND accepted_at IS NULL AND cancelled_at IS NULL
+                            AND expires_at > ?5 AND org_id = ?6
+                            AND EXISTS (SELECT 1 FROM users u
+                                         WHERE u.id = ?4 AND u.email = ?3
+                                           AND u.deleted_at IS NULL)",
+                    vals![record.id, token_hash, email, user_id, now, org_id],
                 )
-                .await?;
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO memberships
+                           (principal_kind, principal_id, scope_key, role, created_at)
+                         SELECT 'user', ?1, i.scope_key, i.role, ?3
+                           FROM invitations i
+                          WHERE i.id = ?2 AND i.accepted_at = ?3
+                            AND NOT EXISTS (
+                              SELECT 1 FROM memberships m
+                               WHERE m.principal_kind = 'user'
+                                 AND m.principal_id = ?1
+                                 AND m.scope_key = i.scope_key)",
+                    vals![user_id, record.id, now],
+                )
+                .expecting(1),
+                Statement::new(
+                    "DELETE FROM live_invitations WHERE invitation_id = ?1",
+                    vals![record.id],
+                )
+                .expecting(1),
+            ];
+            if let Some((actor_kind, actor_id, actor_label, event_id)) = audit {
+                statements.push(
+                    Statement::new(
+                        "INSERT INTO audit_log
+                         (outbox_event_id, actor_kind, actor_id, actor_label,
+                          action, scope, detail, created_at)
+                         VALUES (?1, ?2, ?3, ?4, 'invitation.accept', ?5, ?6, ?7)",
+                        vals![
+                            event_id,
+                            actor_kind,
+                            actor_id,
+                            sanitize_log_text(actor_label),
+                            sanitize_log_text(&record.scope),
+                            format!("invitation_id={}", record.id),
+                            now
+                        ],
+                    )
+                    .expecting(1),
+                );
+            }
+            self.backend.checked_batch(&statements).await?;
+            let mut accepted = record.clone();
+            accepted.accepted_at = Some(now);
+            return Ok(Some(accepted));
         }
-        Ok(record)
+        Ok(None)
     }
 
     // -- auth: provisioning tokens ------------------------------------------
@@ -16222,16 +17264,29 @@ impl Database {
     /// Returns an error on database failure or a malformed stored row.
     pub async fn validate_token(&self, secret: &str) -> Result<Option<TokenAuth>> {
         let hash = crate::auth::token::sha256_hex(secret);
+        let row = self
+            .backend
+            .query_opt("SELECT id FROM tokens WHERE hash = ?1", &vals![hash])
+            .await
+            .context("loading token by hash")?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let id: String = row.get(0)?;
+        self.live_token_auth_by_id(&id, true).await
+    }
+
+    async fn live_token_auth_by_id(&self, id: &str, touch: bool) -> Result<Option<TokenAuth>> {
         let now = unix_now();
         let row = self
             .backend
             .query_opt(
-                "SELECT t.id, t.owner_kind, t.owner_id, t.scope_key, t.permissions,
+                "SELECT t.owner_kind, t.owner_id, t.scope_key, t.permissions,
                         t.expires_at, t.revoked_at, t.rotated_at
                  FROM tokens t
                  JOIN authorization_scopes a ON a.scope_key = t.scope_key
                  LEFT JOIN orgs o ON o.id = a.org_id
-                 WHERE t.hash = ?1 AND (a.org_id IS NULL OR o.deleted_at IS NULL)
+                 WHERE t.id = ?1 AND (a.org_id IS NULL OR o.deleted_at IS NULL)
                    AND ((t.owner_kind = 'user' AND EXISTS (
                           SELECT 1 FROM users u
                            WHERE u.id = t.owner_id AND u.deleted_at IS NULL))
@@ -16239,21 +17294,20 @@ impl Database {
                           SELECT 1 FROM service_accounts s
                           JOIN orgs owner_org ON owner_org.id = s.org_id
                            WHERE s.id = t.owner_id AND owner_org.deleted_at IS NULL)))",
-                &vals![hash],
+                &vals![id],
             )
             .await
-            .context("loading token by hash")?;
+            .context("loading live token by id")?;
         let Some(row) = row else {
             return Ok(None);
         };
-        let id: String = row.get(0)?;
-        let owner_kind: String = row.get(1)?;
-        let owner_id: i64 = row.get(2)?;
-        let scope: String = row.get(3)?;
-        let perms_json: String = row.get(4)?;
-        let expires_at: Option<i64> = row.get(5)?;
-        let revoked_at: Option<i64> = row.get(6)?;
-        let rotated_at: Option<i64> = row.get(7)?;
+        let owner_kind: String = row.get(0)?;
+        let owner_id: i64 = row.get(1)?;
+        let scope: String = row.get(2)?;
+        let perms_json: String = row.get(3)?;
+        let expires_at: Option<i64> = row.get(4)?;
+        let revoked_at: Option<i64> = row.get(5)?;
+        let rotated_at: Option<i64> = row.get(6)?;
         if let Some(exp) = expires_at {
             if now >= exp {
                 return Ok(None);
@@ -16294,18 +17348,20 @@ impl Database {
         // decision: a failure here (e.g. a schema drift on the touch column)
         // must never turn a valid token into an authentication error. Log and
         // continue so the caller still receives the resolved `TokenAuth`.
-        if let Err(e) = self
-            .backend
-            .execute(
-                "UPDATE tokens SET last_used_at = ?2 WHERE id = ?1",
-                &vals![id, now],
-            )
-            .await
-        {
-            tracing::warn!(error = %e, token_id = %id, "failed to stamp token last_used_at");
+        if touch {
+            if let Err(e) = self
+                .backend
+                .execute(
+                    "UPDATE tokens SET last_used_at = ?2 WHERE id = ?1",
+                    &vals![id, now],
+                )
+                .await
+            {
+                tracing::warn!(error = %e, token_id = %id, "failed to stamp token last_used_at");
+            }
         }
         Ok(Some(TokenAuth {
-            token_id: id,
+            token_id: id.to_string(),
             owner: principal,
             scope: crate::domain::Scope::parse(&scope),
             permissions,
@@ -16329,7 +17385,7 @@ impl Database {
         Ok(())
     }
 
-    /// Returns the immutable lifecycle revision of a registry token generation.
+    /// Returns the immutable lifecycle revision of an access-token generation.
     ///
     /// The revision is `active`, `rotated`, or `retired`; `None` means the
     /// stable token id does not exist. Callers use this value as an exact
@@ -16346,7 +17402,7 @@ impl Database {
             .map(|(_, lifecycle)| lifecycle))
     }
 
-    /// Returns the exact registry scope and lifecycle revision for one token.
+    /// Returns the exact authorization scope and lifecycle revision for one token.
     ///
     /// # Errors
     ///
@@ -16412,20 +17468,20 @@ impl Database {
         Ok(out)
     }
 
-    /// Lists secret-free token metadata at one exact registry scope.
+    /// Lists secret-free token metadata at one exact authorization scope.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure or malformed stored permissions.
-    pub async fn list_registry_token_metadata(
+    pub async fn list_access_token_metadata(
         &self,
         scope: &str,
-    ) -> Result<Vec<RegistryTokenMetadata>> {
+    ) -> Result<Vec<AccessTokenMetadata>> {
         let rows = self
             .backend
             .query(
-                "SELECT id, owner_kind, owner_id, scope_key, permissions,
-                        created_at, expires_at, revoked_at, rotated_at
+                "SELECT id, owner_kind, owner_id, scope_key, permissions, comment,
+                        created_at, expires_at, last_used_at, rotated_at, revoked_at
                    FROM tokens
                   WHERE scope_key = ?1
                   ORDER BY created_at, id",
@@ -16434,8 +17490,8 @@ impl Database {
             .await?;
         rows.iter()
             .map(|row| {
-                let revoked_at: Option<i64> = row.get(7)?;
-                let rotated_at: Option<i64> = row.get(8)?;
+                let rotated_at: Option<i64> = row.get(9)?;
+                let revoked_at: Option<i64> = row.get(10)?;
                 let resource_version = if revoked_at.is_some() {
                     "retired"
                 } else if rotated_at.is_some() {
@@ -16444,14 +17500,18 @@ impl Database {
                     "active"
                 };
                 let permissions_json: String = row.get(4)?;
-                Ok(RegistryTokenMetadata {
+                Ok(AccessTokenMetadata {
                     token_id: row.get(0)?,
                     owner_kind: row.get(1)?,
                     owner_id: row.get(2)?,
                     scope: row.get(3)?,
                     permissions: parse_permission_names(&permissions_json),
-                    created_at: row.get(5)?,
-                    expires_at: row.get(6)?,
+                    comment: row.get(5)?,
+                    created_at: row.get(6)?,
+                    expires_at: row.get(7)?,
+                    last_used_at: row.get(8)?,
+                    rotated_at,
+                    retired_at: revoked_at,
                     resource_version: resource_version.to_string(),
                 })
             })
@@ -17119,9 +18179,10 @@ impl Database {
         }
         let token_id = uuid::Uuid::new_v4().to_string();
         let perms_out = serde_json::to_string(&permission_names(&granted))?;
-        // The device-code secret becomes the opaque token secret after approval.
-        // Approval therefore needs only the already-persisted SHA-256 hash; no
-        // recoverable token material is ever written to durable storage.
+        // This token is the durable authority behind short-lived access JWTs
+        // and refresh-token families. Discard its generated plaintext so the
+        // one-time device code can never be replayed as an ordinary bearer.
+        let (_discarded_secret, authority_hash) = crate::auth::token::generate_token();
         self.backend
             .checked_batch(&[
                 Statement::new(
@@ -17135,8 +18196,8 @@ impl Database {
                     "INSERT INTO tokens
                  (id, hash, owner_kind, owner_id, scope_key, permissions, comment, created_at,
                   expires_at, revoked_at, last_used_at)
-                 SELECT ?1, device.device_code_hash, ?2, ?3, a.scope_key, ?5,
-                        NULL, ?6, NULL, NULL, NULL
+                 SELECT ?1, ?8, ?2, ?3, a.scope_key, ?5,
+                        'OAuth device authorization', ?6, ?9, NULL, NULL
                  FROM device_codes device
                  JOIN authorization_scopes a ON a.scope_key = ?4
                  LEFT JOIN orgs o ON o.id = a.org_id
@@ -17157,7 +18218,9 @@ impl Database {
                         requested_scope.as_str(),
                         perms_out,
                         now,
-                        user_code
+                        user_code,
+                        authority_hash,
+                        now + crate::auth::token::REFRESH_TOKEN_ABSOLUTE_TTL_SECS,
                     ]
                     .to_vec(),
                 )
@@ -17196,11 +18259,11 @@ impl Database {
     /// Poll a device grant by its device-code secret.
     ///
     /// Returns [`DevicePollResult::Pending`] while the user has neither
-    /// approved nor denied (or after expiry with no resolution),
-    /// [`DevicePollResult::Denied`] on denial, and
-    /// [`DevicePollResult::Approved`] carrying the original device-code secret
-    /// once approved. That secret is also the minted token secret; the token id
-    /// is used only to verify that the resulting credential is still live.
+    /// approved nor denied, [`DevicePollResult::SlowDown`] when the caller
+    /// polls faster than the advertised interval, [`DevicePollResult::Denied`]
+    /// or [`DevicePollResult::Expired`] for terminal failures, and
+    /// [`DevicePollResult::Approved`] with a live token identity and new
+    /// rotating refresh credential after approval.
     ///
     /// # Errors
     ///
@@ -17210,59 +18273,236 @@ impl Database {
         let row = self
             .backend
             .query_opt(
-                "SELECT denied, approved_by_user, expires_at, delivered_at, issued_token_id
+                "SELECT denied, approved_by_user, expires_at, delivered_at, issued_token_id,
+                        last_polled_at
                  FROM device_codes WHERE device_code_hash = ?1",
                 &vals![hash],
             )
             .await
             .context("loading device code for poll")?;
         let Some(row) = row else {
-            return Ok(DevicePollResult::Pending);
+            return Ok(DevicePollResult::Expired);
         };
         let denied: i64 = row.get(0)?;
         let approved_by: Option<i64> = row.get(1)?;
         let expires_at: i64 = row.get(2)?;
         let delivered_at: Option<i64> = row.get(3)?;
         let issued_token_id: Option<String> = row.get(4)?;
+        let last_polled_at: Option<i64> = row.get(5)?;
+        let now = unix_now();
+        if expires_at <= now || delivered_at.is_some() {
+            return Ok(DevicePollResult::Expired);
+        }
+        if last_polled_at.is_some_and(|last| now.saturating_sub(last) < 5) {
+            return Ok(DevicePollResult::SlowDown);
+        }
         if denied != 0 {
             return Ok(DevicePollResult::Denied);
         }
         if approved_by.is_none() || issued_token_id.is_none() {
-            // Pending whether or not the window has lapsed; an expired-and-
-            // unapproved grant simply never resolves.
+            self.backend
+                .execute(
+                    "UPDATE device_codes SET last_polled_at = ?2
+                     WHERE device_code_hash = ?1 AND delivered_at IS NULL",
+                    &vals![hash, now],
+                )
+                .await?;
             return Ok(DevicePollResult::Pending);
         }
-        if expires_at <= unix_now() || delivered_at.is_some() {
-            return Ok(DevicePollResult::Pending);
-        }
-        let now = unix_now();
-        let changed = self
+        let token_id = issued_token_id.context("approved device has no token id")?;
+        let Some(auth) = self.live_token_auth_by_id(&token_id, false).await? else {
+            return Ok(DevicePollResult::Expired);
+        };
+        let family_id = uuid::Uuid::new_v4().to_string();
+        let (refresh_token, refresh_hash) = crate::auth::token::generate_refresh_token();
+        let absolute_expires_at = now + crate::auth::token::REFRESH_TOKEN_ABSOLUTE_TTL_SECS;
+        let refresh_expires_at = now + crate::auth::token::REFRESH_TOKEN_IDLE_TTL_SECS;
+        let delivered = self
             .backend
-            .execute(
-                "UPDATE device_codes SET delivered_at = ?2
-             WHERE device_code_hash = ?1 AND delivered_at IS NULL AND expires_at > ?2
-               AND EXISTS (SELECT 1 FROM tokens token
-                 JOIN authorization_scopes scope ON scope.scope_key = token.scope_key
-                 LEFT JOIN orgs scope_org ON scope_org.id = scope.org_id
-                 WHERE token.id = device_codes.issued_token_id
-                   AND token.revoked_at IS NULL
-                   AND scope.retired_at IS NULL
-                   AND (scope.org_id IS NULL OR scope_org.deleted_at IS NULL)
-                   AND ((token.owner_kind = 'user' AND EXISTS (
-                     SELECT 1 FROM users owner WHERE owner.id = token.owner_id
-                       AND owner.deleted_at IS NULL))
-                   OR (token.owner_kind = 'service_account' AND EXISTS (
-                     SELECT 1 FROM service_accounts owner
-                     JOIN orgs owner_org ON owner_org.id = owner.org_id
-                     WHERE owner.id = token.owner_id AND owner_org.deleted_at IS NULL))))",
-                &vals![hash, now],
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE device_codes SET delivered_at = ?2, last_polled_at = ?2
+                     WHERE device_code_hash = ?1 AND delivered_at IS NULL
+                       AND expires_at > ?2",
+                    vals![hash, now],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO refresh_token_families
+                     (id, token_id, created_at, last_used_at, absolute_expires_at, revoked_at)
+                     VALUES (?1, ?2, ?3, ?3, ?4, NULL)",
+                    vals![family_id, token_id, now, absolute_expires_at],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO refresh_tokens
+                     (hash, family_id, created_at, expires_at, consumed_at)
+                     VALUES (?1, ?2, ?3, ?4, NULL)",
+                    vals![refresh_hash, family_id, now, refresh_expires_at],
+                )
+                .expecting(1),
+            ])
+            .await;
+        match delivered {
+            Ok(()) => Ok(DevicePollResult::Approved(DeviceTokenGrant {
+                auth,
+                refresh_token,
+                refresh_expires_in: refresh_expires_at - now,
+            })),
+            Err(error) => {
+                let already_delivered = self
+                    .backend
+                    .query_opt(
+                        "SELECT delivered_at FROM device_codes WHERE device_code_hash = ?1",
+                        &vals![crate::auth::token::sha256_hex(device_code_secret)],
+                    )
+                    .await?
+                    .and_then(|row| row.get::<Option<i64>>(0).ok())
+                    .flatten()
+                    .is_some();
+                if already_delivered {
+                    Ok(DevicePollResult::Expired)
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
+    /// Rotates one OAuth refresh credential and returns a fresh credential pair.
+    ///
+    /// Refresh credentials are single-use. Presenting a consumed credential
+    /// revokes its complete family, preventing an attacker and the legitimate
+    /// client from racing indefinitely after credential theft.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed stored credential
+    /// metadata.
+    pub async fn rotate_refresh_token(&self, secret: &str) -> Result<RefreshTokenResult> {
+        let hash = crate::auth::token::sha256_hex(secret);
+        let now = unix_now();
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT refresh.family_id, refresh.expires_at, refresh.consumed_at,
+                        family.token_id, family.absolute_expires_at, family.revoked_at
+                 FROM refresh_tokens refresh
+                 JOIN refresh_token_families family ON family.id = refresh.family_id
+                 WHERE refresh.hash = ?1",
+                &vals![hash],
+            )
+            .await
+            .context("loading OAuth refresh credential")?;
+        let Some(row) = row else {
+            return Ok(RefreshTokenResult::Invalid);
+        };
+        let family_id: String = row.get(0)?;
+        let expires_at: i64 = row.get(1)?;
+        let consumed_at: Option<i64> = row.get(2)?;
+        let token_id: String = row.get(3)?;
+        let absolute_expires_at: i64 = row.get(4)?;
+        let revoked_at: Option<i64> = row.get(5)?;
+        if consumed_at.is_some() {
+            self.revoke_refresh_family(&family_id, now).await?;
+            return Ok(RefreshTokenResult::Reused);
+        }
+        if revoked_at.is_some() || expires_at <= now || absolute_expires_at <= now {
+            return Ok(RefreshTokenResult::Invalid);
+        }
+        let Some(auth) = self.live_token_auth_by_id(&token_id, false).await? else {
+            self.revoke_refresh_family(&family_id, now).await?;
+            return Ok(RefreshTokenResult::Invalid);
+        };
+
+        let (refresh_token, refresh_hash) = crate::auth::token::generate_refresh_token();
+        let next_expires_at =
+            (now + crate::auth::token::REFRESH_TOKEN_IDLE_TTL_SECS).min(absolute_expires_at);
+        let rotated = self
+            .backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE refresh_tokens SET consumed_at = ?2
+                     WHERE hash = ?1 AND consumed_at IS NULL AND expires_at > ?2",
+                    vals![hash, now],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO refresh_tokens
+                     (hash, family_id, created_at, expires_at, consumed_at)
+                     VALUES (?1, ?2, ?3, ?4, NULL)",
+                    vals![refresh_hash, family_id, now, next_expires_at],
+                )
+                .expecting(1),
+                Statement::new(
+                    "UPDATE refresh_token_families SET last_used_at = ?2
+                     WHERE id = ?1 AND revoked_at IS NULL AND absolute_expires_at > ?2",
+                    vals![family_id, now],
+                )
+                .expecting(1),
+            ])
+            .await;
+        match rotated {
+            Ok(()) => Ok(RefreshTokenResult::Rotated(DeviceTokenGrant {
+                auth,
+                refresh_token,
+                refresh_expires_in: next_expires_at - now,
+            })),
+            Err(error) => {
+                let consumed = self
+                    .backend
+                    .query_opt(
+                        "SELECT consumed_at FROM refresh_tokens WHERE hash = ?1",
+                        &vals![crate::auth::token::sha256_hex(secret)],
+                    )
+                    .await?
+                    .and_then(|row| row.get::<Option<i64>>(0).ok())
+                    .flatten()
+                    .is_some();
+                if consumed {
+                    self.revoke_refresh_family(&family_id, now).await?;
+                    Ok(RefreshTokenResult::Reused)
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
+    /// Revokes the refresh-token family containing `secret`.
+    ///
+    /// Returns `false` for an unknown credential and `true` when the family is
+    /// known, including an already-revoked family.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn revoke_refresh_token(&self, secret: &str) -> Result<bool> {
+        let hash = crate::auth::token::sha256_hex(secret);
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT family_id FROM refresh_tokens WHERE hash = ?1",
+                &vals![hash],
             )
             .await?;
-        if changed == 1 {
-            Ok(DevicePollResult::Approved(device_code_secret.to_string()))
-        } else {
-            Ok(DevicePollResult::Pending)
-        }
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let family_id: String = row.get(0)?;
+        self.revoke_refresh_family(&family_id, unix_now()).await?;
+        Ok(true)
+    }
+
+    async fn revoke_refresh_family(&self, family_id: &str, now: i64) -> Result<()> {
+        self.backend
+            .execute(
+                "UPDATE refresh_token_families SET revoked_at = ?2
+                 WHERE id = ?1 AND revoked_at IS NULL",
+                &vals![family_id, now],
+            )
+            .await?;
+        Ok(())
     }
 
     // -- auth: magic links --------------------------------------------------
@@ -17357,7 +18597,7 @@ impl Database {
 
     // -- auth: per-org OIDC SSO ---------------------------------------------
 
-    /// Create or replace an org's OIDC identity-provider configuration.
+    /// Seeds an org's OIDC identity-provider configuration for a test fixture.
     ///
     /// One IdP per org (the `org_id` primary key); re-calling overwrites the
     /// existing configuration and bumps `updated_at`. `client_secret_enc`
@@ -17368,6 +18608,7 @@ impl Database {
     ///
     /// Returns an error on database failure, including a foreign-key
     /// violation when `org_id` does not reference an org.
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub async fn upsert_idp_config(&self, config: &IdpConfigRecord) -> Result<()> {
         crate::auth::oidc::validate_idp_config_record(config)?;
         let now = unix_now();
@@ -17391,6 +18632,8 @@ impl Database {
                  allow_jit = excluded.allow_jit,
                  enforce_sso = excluded.enforce_sso,
                  default_role = excluded.default_role,
+                 resource_version = org_idp_configs.resource_version + 1,
+                 mutation_plan_id = NULL,
                  updated_at = excluded.updated_at",
                 &vals![
                     config.org_id,
@@ -17413,12 +18656,12 @@ impl Database {
         Ok(())
     }
 
-    /// Remove an org's OIDC identity-provider configuration; returns whether a
-    /// row was deleted.
+    /// Removes an identity-provider row while constructing a test fixture.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure.
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub async fn delete_idp_config(&self, org_id: i64) -> Result<bool> {
         let n = self
             .backend
@@ -17428,6 +18671,189 @@ impl Database {
             )
             .await?;
         Ok(n > 0)
+    }
+
+    /// Applies an exact-version IdP replacement, audit append, and plan completion atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when validation, optimistic concurrency, plan fencing,
+    /// audit persistence, or database execution fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn apply_identity_provider_set_plan(
+        &self,
+        config: &IdpConfigRecord,
+        baseline_resource_version: Option<i64>,
+        baseline_incarnation_id: Option<&str>,
+        scope: &str,
+        plan_id: &str,
+        apply_idempotency_key: &str,
+        result_json: &str,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        actor_label: &str,
+        audit_event_id: &str,
+    ) -> Result<()> {
+        crate::auth::oidc::validate_idp_config_record(config)?;
+        let incarnation_id = config
+            .incarnation_id
+            .as_deref()
+            .context("reviewed identity-provider mutation has no incarnation")?;
+        validate_key_bytes(apply_idempotency_key, "apply idempotency key", 128)?;
+        validate_key_bytes(audit_event_id, "audit event id", 64)?;
+        validate_json_value(result_json, "apply result")?;
+        let now = unix_now();
+        let mutation = match baseline_resource_version {
+            Some(version) => Statement::new(
+                "UPDATE org_idp_configs SET
+                    issuer = ?2, authorization_endpoint = ?3, token_endpoint = ?4,
+                    jwks_uri = ?5, client_id = ?6, client_secret_enc = ?7,
+                    scopes = ?8, groups_claim = ?9, role_map_json = ?10,
+                    allow_jit = ?11, enforce_sso = ?12, default_role = ?13,
+                    resource_version = resource_version + 1,
+                    incarnation_id = ?14, mutation_plan_id = ?15, updated_at = ?16
+                  WHERE org_id = ?1 AND resource_version = ?17
+                    AND (incarnation_id = ?18
+                         OR (incarnation_id IS NULL AND ?18 IS NULL))",
+                vals![
+                    config.org_id,
+                    config.issuer,
+                    config.authorization_endpoint,
+                    config.token_endpoint,
+                    config.jwks_uri,
+                    config.client_id,
+                    config.client_secret_enc,
+                    config.scopes,
+                    config.groups_claim,
+                    config.role_map_json,
+                    config.allow_jit,
+                    config.enforce_sso,
+                    config.default_role,
+                    incarnation_id,
+                    plan_id,
+                    now,
+                    version,
+                    baseline_incarnation_id
+                ],
+            )
+            .expecting(1),
+            None => Statement::new(
+                "INSERT INTO org_idp_configs
+                 (org_id, issuer, authorization_endpoint, token_endpoint, jwks_uri,
+                  client_id, client_secret_enc, scopes, groups_claim, role_map_json,
+                  allow_jit, enforce_sso, default_role, created_at, updated_at,
+                  resource_version, incarnation_id, mutation_plan_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                         ?13, ?14, ?14, 1, ?15, ?16)",
+                vals![
+                    config.org_id,
+                    config.issuer,
+                    config.authorization_endpoint,
+                    config.token_endpoint,
+                    config.jwks_uri,
+                    config.client_id,
+                    config.client_secret_enc,
+                    config.scopes,
+                    config.groups_claim,
+                    config.role_map_json,
+                    config.allow_jit,
+                    config.enforce_sso,
+                    config.default_role,
+                    now,
+                    incarnation_id,
+                    plan_id
+                ],
+            )
+            .expecting(1),
+        };
+        self.backend
+            .checked_batch(&[
+                mutation,
+                Statement::new(
+                    "INSERT INTO audit_log
+                     (outbox_event_id, change_id, actor_kind, actor_id, actor_label,
+                      action, scope, detail, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'idp.set', ?6, NULL, ?7)",
+                    vals![
+                        audit_event_id,
+                        plan_id,
+                        actor_kind,
+                        actor_id,
+                        sanitize_log_text(actor_label),
+                        sanitize_log_text(scope),
+                        now
+                    ],
+                )
+                .expecting(1),
+                Statement::new(
+                    "UPDATE topology_plans SET applied_at = ?4, apply_result_json = ?3
+                       WHERE plan_id = ?1 AND apply_idempotency_key = ?2
+                         AND applied_at IS NULL",
+                    vals![plan_id, apply_idempotency_key, result_json, now],
+                )
+                .expecting(1),
+            ])
+            .await
+    }
+
+    /// Removes an exact IdP revision and completes its reviewed plan atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the revision changed or persistence fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn apply_identity_provider_remove_plan(
+        &self,
+        org_id: i64,
+        expected_resource_version: i64,
+        expected_incarnation_id: Option<&str>,
+        scope: &str,
+        plan_id: &str,
+        apply_idempotency_key: &str,
+        result_json: &str,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        actor_label: &str,
+        audit_event_id: &str,
+    ) -> Result<()> {
+        validate_key_bytes(apply_idempotency_key, "apply idempotency key", 128)?;
+        validate_key_bytes(audit_event_id, "audit event id", 64)?;
+        validate_json_value(result_json, "apply result")?;
+        let now = unix_now();
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "DELETE FROM org_idp_configs
+                      WHERE org_id = ?1 AND resource_version = ?2
+                        AND (incarnation_id = ?3
+                             OR (incarnation_id IS NULL AND ?3 IS NULL))",
+                    vals![org_id, expected_resource_version, expected_incarnation_id],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO audit_log
+                 (outbox_event_id, change_id, actor_kind, actor_id, actor_label,
+                  action, scope, detail, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'idp.remove', ?6, NULL, ?7)",
+                    vals![
+                        audit_event_id,
+                        plan_id,
+                        actor_kind,
+                        actor_id,
+                        sanitize_log_text(actor_label),
+                        sanitize_log_text(scope),
+                        now
+                    ],
+                )
+                .expecting(1),
+                Statement::new(
+                    "UPDATE topology_plans SET applied_at = ?4, apply_result_json = ?3
+                   WHERE plan_id = ?1 AND apply_idempotency_key = ?2 AND applied_at IS NULL",
+                    vals![plan_id, apply_idempotency_key, result_json, now],
+                )
+                .expecting(1),
+            ])
+            .await
     }
 
     /// Load an org's OIDC identity-provider configuration, if configured.
@@ -17440,7 +18866,8 @@ impl Database {
             .query_opt(
                 "SELECT org_id, issuer, authorization_endpoint, token_endpoint, jwks_uri,
                         client_id, client_secret_enc, scopes, groups_claim, role_map_json,
-                        allow_jit, enforce_sso, default_role
+                        allow_jit, enforce_sso, default_role,
+                        resource_version, incarnation_id, mutation_plan_id
                  FROM org_idp_configs WHERE org_id = ?1",
                 &vals![org_id],
             )
@@ -17450,7 +18877,7 @@ impl Database {
             .transpose()
     }
 
-    /// Claim a domain for an org with a fresh DNS-TXT challenge.
+    /// Seeds a domain claim with a fresh DNS-TXT challenge for a test fixture.
     ///
     /// Returns the generated `txt_challenge` value the org must publish as a
     /// TXT record at the domain to prove control; the domain starts
@@ -17469,6 +18896,7 @@ impl Database {
     ///
     /// Returns an error on database failure, or if the domain is already
     /// claimed by a different organization.
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub async fn add_org_domain(&self, org_id: i64, domain: &str) -> Result<String> {
         let domain = domain.trim().to_lowercase();
         let challenge = format!(
@@ -17511,7 +18939,9 @@ impl Database {
                      ON CONFLICT(domain) DO UPDATE SET
                          org_id = excluded.org_id,
                          txt_challenge = excluded.txt_challenge,
-                         verified_at = NULL",
+                         verified_at = NULL,
+                         resource_version = org_domains.resource_version + 1,
+                         mutation_plan_id = NULL",
                     &vals![domain, org_id, challenge],
                 )
                 .await?;
@@ -17527,7 +18957,9 @@ impl Database {
                  ON CONFLICT(domain) DO UPDATE SET
                      org_id = excluded.org_id,
                      txt_challenge = excluded.txt_challenge,
-                     verified_at = NULL
+                     verified_at = NULL,
+                     resource_version = org_domains.resource_version + 1,
+                     mutation_plan_id = NULL
                  WHERE org_domains.org_id = excluded.org_id",
                     &vals![domain, org_id, challenge],
                 )
@@ -17548,7 +18980,8 @@ impl Database {
         let rows = self
             .backend
             .query(
-                "SELECT domain, org_id, txt_challenge, verified_at
+                "SELECT domain, org_id, txt_challenge, verified_at,
+                        resource_version, incarnation_id, mutation_plan_id
              FROM org_domains WHERE org_id = ?1 ORDER BY domain",
                 &vals![org_id],
             )
@@ -17560,6 +18993,9 @@ impl Database {
                     org_id: row.get(1)?,
                     txt_challenge: row.get(2)?,
                     verified_at: row.get(3)?,
+                    resource_version: row.get(4)?,
+                    incarnation_id: row.get(5)?,
+                    mutation_plan_id: row.get(6)?,
                 })
             })
             .collect()
@@ -17574,9 +19010,12 @@ impl Database {
         let domain = domain.trim().to_lowercase();
         self.backend
             .query_opt(
-                "SELECT domain, org_id, txt_challenge, verified_at FROM org_domains WHERE domain = ?1",
+                "SELECT domain, org_id, txt_challenge, verified_at,
+                        resource_version, incarnation_id, mutation_plan_id
+                   FROM org_domains WHERE domain = ?1",
                 &vals![domain],
-            ).await
+            )
+            .await
             .context("loading org domain")?
             .map(|row| -> Result<OrgDomainRecord> {
                 Ok(OrgDomainRecord {
@@ -17584,12 +19023,15 @@ impl Database {
                     org_id: row.get(1)?,
                     txt_challenge: row.get(2)?,
                     verified_at: row.get(3)?,
+                    resource_version: row.get(4)?,
+                    incarnation_id: row.get(5)?,
+                    mutation_plan_id: row.get(6)?,
                 })
             })
             .transpose()
     }
 
-    /// Mark a claimed domain verified (stamp `verified_at = now`).
+    /// Marks a fixture domain verified without resolving DNS.
     ///
     /// This is the **persistence hook**: the actual DNS-TXT lookup is the
     /// caller's responsibility (an ops tool or the CLI resolving the TXT
@@ -17601,24 +19043,29 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub async fn verify_org_domain(&self, domain: &str) -> Result<bool> {
         let domain = domain.trim().to_lowercase();
         let n = self
             .backend
             .execute(
-                "UPDATE org_domains SET verified_at = ?2 WHERE domain = ?1",
+                "UPDATE org_domains
+                    SET verified_at = ?2,
+                        resource_version = resource_version + 1,
+                        mutation_plan_id = NULL
+                  WHERE domain = ?1",
                 &vals![domain, unix_now()],
             )
             .await?;
         Ok(n > 0)
     }
 
-    /// Release a claimed domain (verified or not); returns whether a row was
-    /// removed. Scoped by `org_id` so one org cannot drop another's claim.
+    /// Removes a domain row while constructing a test fixture.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure.
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub async fn delete_org_domain(&self, org_id: i64, domain: &str) -> Result<bool> {
         let domain = domain.trim().to_lowercase();
         let n = self
@@ -17629,6 +19076,237 @@ impl Database {
             )
             .await?;
         Ok(n > 0)
+    }
+
+    /// Applies a domain claim or challenge rotation and completes its plan atomically.
+    ///
+    /// A new claim is an insert-only operation on every backend, including
+    /// MySQL, so two organizations racing the same unclaimed domain cannot
+    /// overwrite each other. A rotation is fenced by owner and resource version.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on a conflicting claim, changed revision, invalid plan
+    /// metadata, or database failure.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn apply_org_domain_claim_plan(
+        &self,
+        record: &OrgDomainRecord,
+        baseline_resource_version: Option<i64>,
+        baseline_incarnation_id: Option<&str>,
+        scope: &str,
+        plan_id: &str,
+        apply_idempotency_key: &str,
+        result_json: &str,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        actor_label: &str,
+        audit_event_id: &str,
+    ) -> Result<()> {
+        validate_key_bytes(apply_idempotency_key, "apply idempotency key", 128)?;
+        validate_key_bytes(audit_event_id, "audit event id", 64)?;
+        validate_json_value(result_json, "apply result")?;
+        let mutation = match baseline_resource_version {
+            Some(version) => Statement::new(
+                "UPDATE org_domains SET txt_challenge = ?3, verified_at = NULL,
+                        resource_version = resource_version + 1,
+                        incarnation_id = ?4, mutation_plan_id = ?5
+                  WHERE domain = ?1 AND org_id = ?2 AND resource_version = ?6
+                    AND (incarnation_id = ?7
+                         OR (incarnation_id IS NULL AND ?7 IS NULL))",
+                vals![
+                    record.domain,
+                    record.org_id,
+                    record.txt_challenge,
+                    record.incarnation_id,
+                    plan_id,
+                    version,
+                    baseline_incarnation_id
+                ],
+            )
+            .expecting(1),
+            None => Statement::new(
+                "INSERT INTO org_domains
+                 (domain, org_id, txt_challenge, verified_at, resource_version,
+                  incarnation_id, mutation_plan_id)
+                 VALUES (?1, ?2, ?3, NULL, 1, ?4, ?5)",
+                vals![
+                    record.domain,
+                    record.org_id,
+                    record.txt_challenge,
+                    record.incarnation_id,
+                    plan_id
+                ],
+            )
+            .expecting(1),
+        };
+        self.apply_org_domain_mutation_plan(
+            mutation,
+            "domain.claim",
+            &record.domain,
+            scope,
+            plan_id,
+            apply_idempotency_key,
+            result_json,
+            actor_kind,
+            actor_id,
+            actor_label,
+            audit_event_id,
+        )
+        .await
+    }
+
+    /// Verifies an exact pending domain challenge and completes its plan atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when ownership, challenge, revision, or plan state changed.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn apply_org_domain_verify_plan(
+        &self,
+        record: &OrgDomainRecord,
+        incarnation_id: &str,
+        verified_at: i64,
+        scope: &str,
+        plan_id: &str,
+        apply_idempotency_key: &str,
+        result_json: &str,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        actor_label: &str,
+        audit_event_id: &str,
+    ) -> Result<()> {
+        let mutation = Statement::new(
+            "UPDATE org_domains SET verified_at = ?6,
+                    resource_version = resource_version + 1,
+                    incarnation_id = ?4, mutation_plan_id = ?5
+              WHERE domain = ?1 AND org_id = ?2 AND txt_challenge = ?3
+                AND resource_version = ?7 AND verified_at IS NULL
+                AND (incarnation_id = ?8
+                     OR (incarnation_id IS NULL AND ?8 IS NULL))",
+            vals![
+                record.domain,
+                record.org_id,
+                record.txt_challenge,
+                incarnation_id,
+                plan_id,
+                verified_at,
+                record.resource_version,
+                record.incarnation_id
+            ],
+        )
+        .expecting(1);
+        self.apply_org_domain_mutation_plan(
+            mutation,
+            "domain.verify",
+            &record.domain,
+            scope,
+            plan_id,
+            apply_idempotency_key,
+            result_json,
+            actor_kind,
+            actor_id,
+            actor_label,
+            audit_event_id,
+        )
+        .await
+    }
+
+    /// Releases an exact domain claim and completes its plan atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when ownership or revision changed or persistence fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn apply_org_domain_release_plan(
+        &self,
+        record: &OrgDomainRecord,
+        scope: &str,
+        plan_id: &str,
+        apply_idempotency_key: &str,
+        result_json: &str,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        actor_label: &str,
+        audit_event_id: &str,
+    ) -> Result<()> {
+        let mutation = Statement::new(
+            "DELETE FROM org_domains
+              WHERE domain = ?1 AND org_id = ?2 AND resource_version = ?3
+                AND (incarnation_id = ?4
+                     OR (incarnation_id IS NULL AND ?4 IS NULL))",
+            vals![
+                record.domain,
+                record.org_id,
+                record.resource_version,
+                record.incarnation_id
+            ],
+        )
+        .expecting(1);
+        self.apply_org_domain_mutation_plan(
+            mutation,
+            "domain.release",
+            &record.domain,
+            scope,
+            plan_id,
+            apply_idempotency_key,
+            result_json,
+            actor_kind,
+            actor_id,
+            actor_label,
+            audit_event_id,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn apply_org_domain_mutation_plan(
+        &self,
+        mutation: CheckedStatement,
+        action: &str,
+        domain: &str,
+        scope: &str,
+        plan_id: &str,
+        apply_idempotency_key: &str,
+        result_json: &str,
+        actor_kind: &str,
+        actor_id: Option<i64>,
+        actor_label: &str,
+        audit_event_id: &str,
+    ) -> Result<()> {
+        validate_key_bytes(apply_idempotency_key, "apply idempotency key", 128)?;
+        validate_key_bytes(audit_event_id, "audit event id", 64)?;
+        validate_json_value(result_json, "apply result")?;
+        let now = unix_now();
+        self.backend
+            .checked_batch(&[
+                mutation,
+                Statement::new(
+                    "INSERT INTO audit_log
+                 (outbox_event_id, change_id, actor_kind, actor_id, actor_label,
+                  action, scope, detail, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    vals![
+                        audit_event_id,
+                        plan_id,
+                        actor_kind,
+                        actor_id,
+                        sanitize_log_text(actor_label),
+                        sanitize_log_text(action),
+                        sanitize_log_text(scope),
+                        sanitize_log_text(domain),
+                        now
+                    ],
+                )
+                .expecting(1),
+                Statement::new(
+                    "UPDATE topology_plans SET applied_at = ?4, apply_result_json = ?3
+                   WHERE plan_id = ?1 AND apply_idempotency_key = ?2 AND applied_at IS NULL",
+                    vals![plan_id, apply_idempotency_key, result_json, now],
+                )
+                .expecting(1),
+            ])
+            .await
     }
 
     /// Resolve the org that owns a **verified** domain, if any.
@@ -20149,14 +21827,40 @@ impl Database {
 }
 
 /// The outcome of polling a device-authorization grant (RFC 8628).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum DevicePollResult {
     /// The user has neither approved nor denied yet.
     Pending,
+    /// The client polled faster than the advertised interval.
+    SlowDown,
     /// The user denied the request.
     Denied,
-    /// The user approved; carries the minted token's secret.
-    Approved(String),
+    /// The device code is unknown, expired, or was already delivered.
+    Expired,
+    /// The user approved and the credential pair was delivered exactly once.
+    Approved(DeviceTokenGrant),
+}
+
+/// Credentials issued by one successful device-code poll.
+#[derive(Debug, Clone)]
+pub struct DeviceTokenGrant {
+    /// Live authorization projected into the short-lived access JWT.
+    pub auth: TokenAuth,
+    /// Opaque rotating refresh credential returned exactly once.
+    pub refresh_token: String,
+    /// Remaining idle lifetime of the refresh credential, in seconds.
+    pub refresh_expires_in: i64,
+}
+
+/// Outcome of rotating an OAuth refresh credential.
+#[derive(Debug, Clone)]
+pub enum RefreshTokenResult {
+    /// The credential rotated successfully.
+    Rotated(DeviceTokenGrant),
+    /// The credential is unknown, expired, revoked, or has no live authority.
+    Invalid,
+    /// A consumed credential was reused; its complete family was revoked.
+    Reused,
 }
 
 /// The wire names of a permission slice, for JSON storage.
@@ -20654,6 +22358,9 @@ fn row_to_idp_config(row: &Row) -> Result<IdpConfigRecord> {
         allow_jit: row.get(10)?,
         enforce_sso: row.get(11)?,
         default_role: row.get(12)?,
+        resource_version: row.get(13)?,
+        incarnation_id: row.get(14)?,
+        mutation_plan_id: row.get(15)?,
     })
 }
 
@@ -21284,17 +22991,15 @@ source_nar_hash = ""
     }
 
     #[test]
-    fn fresh_schema_is_squashed_final_and_foreign_key_clean() {
-        assert_eq!(
-            MIGRATIONS.len(),
-            1,
-            "fresh installs have one schema baseline"
-        );
+    fn fresh_schema_is_final_and_foreign_key_clean() {
+        assert!(!MIGRATIONS.is_empty(), "the schema has a baseline");
         let connection = Connection::open_in_memory().unwrap();
         connection
             .execute_batch("PRAGMA foreign_keys = ON;")
             .unwrap();
-        connection.execute_batch(MIGRATIONS[0]).unwrap();
+        for migration in MIGRATIONS {
+            connection.execute_batch(migration).unwrap();
+        }
 
         let identity: String = connection
             .query_row("SELECT identity FROM hub_schema_identity", [], |row| {
@@ -21408,6 +23113,31 @@ source_nar_hash = ""
         assert_eq!(public_boundary, (1, "active".to_string()));
     }
 
+    #[test]
+    fn mysql_migration_replay_helpers_cover_every_ddl_shape() {
+        for sql in migration_statements() {
+            if sql.contains("CREATE INDEX ") || sql.contains("CREATE UNIQUE INDEX ") {
+                assert!(
+                    mysql_migration_index_identity(&sql).is_some(),
+                    "unrecognized MySQL migration index statement: {sql}"
+                );
+            }
+            let replay_safe = mysql_replay_safe_migration_sql(&sql);
+            if sql.contains("CREATE TABLE ") {
+                assert!(replay_safe.contains("CREATE TABLE IF NOT EXISTS "));
+            }
+            if sql.contains("CREATE VIEW ") {
+                assert!(replay_safe.contains("CREATE OR REPLACE VIEW "));
+            }
+            if sql.contains(" ADD COLUMN ") {
+                assert!(replay_safe.contains(" ADD COLUMN IF NOT EXISTS "));
+            }
+            if sql.contains("INSERT INTO ") && !sql.contains("ON CONFLICT") {
+                assert!(replay_safe.contains("INSERT IGNORE INTO "));
+            }
+        }
+    }
+
     #[tokio::test]
     async fn migrate_register_and_reopen() {
         let dir = tempfile::tempdir().unwrap();
@@ -21426,6 +23156,36 @@ source_nar_hash = ""
             db.index_status(reg.id).await.unwrap().unwrap().state,
             "empty"
         );
+    }
+
+    #[tokio::test]
+    async fn instance_registry_slugs_cannot_collide_with_stable_ids() {
+        let db = Database::open_in_memory().await.unwrap();
+        let error = db
+            .register_registry("registry:0123456789abcdef0123456789abcdef", &[], false)
+            .await
+            .unwrap_err();
+
+        assert!(format!("{error:#}").contains("invalid instance registry slug"));
+    }
+
+    #[tokio::test]
+    async fn standalone_cache_slugs_cannot_collide_with_stable_ids() {
+        let db = Database::open_in_memory().await.unwrap();
+        let error = db
+            .create_binary_cache(
+                None,
+                "cache:0123456789abcdef0123456789abcdef",
+                "Ambiguous cache",
+                "private",
+                40,
+                "zstd",
+                false,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(format!("{error:#}").contains("invalid standalone cache slug"));
     }
 
     #[tokio::test]
@@ -21451,6 +23211,77 @@ source_nar_hash = ""
             message.contains("predates the topology hard cutover"),
             "{message}"
         );
+    }
+
+    #[tokio::test]
+    async fn invitation_upgrade_reconciles_duplicate_and_expired_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("invitation-upgrade.db");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(MIGRATIONS[0]).unwrap();
+        connection.execute_batch(MIGRATIONS[1]).unwrap();
+        let org_scope = format!("org:{}", "a".repeat(32));
+        connection
+            .execute(
+                "INSERT INTO orgs(id, stable_id, slug, name, created_at)
+                 VALUES (1, ?1, 'acme', 'Acme', 1)",
+                [&org_scope],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO authorization_scopes
+                 (scope_key, kind, org_id, parent_scope_key, resource_stable_id, created_at)
+                 VALUES (?1, 'organization', 1, 'instance', ?1, 1)",
+                [&org_scope],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO invitations
+                 (id, org_id, email, scope_key, role, token_hash, created_at, expires_at)
+                 VALUES
+                 (1, 1, 'duplicate@example.test', ?1, 'viewer', 'old', 10, 9999999999),
+                 (2, 1, 'duplicate@example.test', ?1, 'developer', 'new', 20, 9999999999),
+                 (3, 1, 'expired@example.test', ?1, 'viewer', 'expired', 30, 1)",
+                [&org_scope],
+            )
+            .unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_version(version INTEGER NOT NULL);
+                 INSERT INTO schema_version(version) VALUES (2);",
+            )
+            .unwrap();
+        drop(connection);
+
+        let db = Database::open(&path).await.unwrap();
+        let invitations = db.list_invitations(1).await.unwrap();
+        assert_eq!(invitations.len(), 3);
+        assert!(invitations
+            .iter()
+            .any(|item| item.id == 1 && item.cancelled_at == Some(item.created_at)));
+        assert!(invitations
+            .iter()
+            .any(|item| item.id == 2 && item.cancelled_at.is_none()));
+        assert!(db
+            .has_pending_invitation("duplicate@example.test")
+            .await
+            .unwrap());
+        assert!(!db
+            .has_pending_invitation("expired@example.test")
+            .await
+            .unwrap());
+        db.create_invitation(
+            1,
+            "expired@example.test",
+            &org_scope,
+            "viewer",
+            "replacement",
+            unix_now() + 3600,
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -22656,25 +24487,125 @@ source_nar_hash = ""
         )
         .await
         .unwrap();
-        let accepted = db.accept_invitation("hash-a").await.unwrap().unwrap();
+        assert!(db.has_pending_invitation("new@acme.com").await.unwrap());
+        assert!(db
+            .create_invitation(
+                org,
+                "new@acme.com",
+                &project_scope,
+                "viewer",
+                "hash-duplicate",
+                far_future,
+            )
+            .await
+            .is_err());
+        let invitee = db.create_user("new@acme.com", None).await.unwrap();
+        let accepted = db
+            .accept_invitation("hash-a", org, invitee, "new@acme.com")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(accepted.email, "new@acme.com");
         assert_eq!(accepted.scope, project_scope);
         assert_eq!(accepted.role, "developer");
+        assert_eq!(
+            db.list_memberships_for("user", invitee).await.unwrap(),
+            vec![(project_scope.clone(), "developer".to_string())]
+        );
+        assert!(!db.has_pending_invitation("new@acme.com").await.unwrap());
         // A second accept of the same hash is rejected (already accepted).
-        assert!(db.accept_invitation("hash-a").await.unwrap().is_none());
+        assert!(db
+            .accept_invitation("hash-a", org, invitee, "new@acme.com")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(!db.has_pending_invitation("late@acme.com").await.unwrap());
+
+        let cancelled_id = db
+            .create_invitation(
+                org,
+                "cancelled@acme.com",
+                &org_scope,
+                "viewer",
+                "hash-cancelled",
+                far_future,
+            )
+            .await
+            .unwrap();
+        let created_at = db
+            .invitation_record(org, cancelled_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .created_at;
+        assert!(db
+            .cancel_invitation(cancelled_id, created_at)
+            .await
+            .unwrap());
+        assert!(!db
+            .has_pending_invitation("cancelled@acme.com")
+            .await
+            .unwrap());
+        db.create_invitation(
+            org,
+            "cancelled@acme.com",
+            &org_scope,
+            "viewer",
+            "hash-reinvited",
+            far_future,
+        )
+        .await
+        .unwrap();
         // Unknown hash is rejected.
         assert!(db
-            .accept_invitation("hash-missing")
+            .accept_invitation("hash-missing", org, invitee, "new@acme.com")
             .await
             .unwrap()
             .is_none());
 
         // An already-expired invitation cannot be accepted.
         let past = unix_now() - 10;
-        db.create_invitation(org, "late@acme.com", &org_scope, "viewer", "hash-b", past)
+        let expired_id = db
+            .create_invitation(org, "late@acme.com", &org_scope, "viewer", "hash-b", past)
             .await
             .unwrap();
-        assert!(db.accept_invitation("hash-b").await.unwrap().is_none());
+        db.backend
+            .execute(
+                "UPDATE invitations SET secret_enc = 'sealed-expired' WHERE id = ?1",
+                &vals![expired_id],
+            )
+            .await
+            .unwrap();
+        db.prune_expired_invitation_secrets(unix_now(), 100)
+            .await
+            .unwrap();
+        let expired_secret: Option<String> = db
+            .backend
+            .query_opt(
+                "SELECT secret_enc FROM invitations WHERE id = ?1",
+                &vals![expired_id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert!(expired_secret.is_none());
+        assert!(db
+            .backend
+            .query_opt(
+                "SELECT invitation_id FROM live_invitations WHERE invitation_id = ?1",
+                &vals![expired_id],
+            )
+            .await
+            .unwrap()
+            .is_none());
+        let late = db.create_user("late@acme.com", None).await.unwrap();
+        assert!(db
+            .accept_invitation("hash-b", org, late, "late@acme.com")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -22983,10 +24914,10 @@ source_nar_hash = ""
         assert_eq!(user_code.len(), 9);
 
         // Pending before approval.
-        assert_eq!(
+        assert!(matches!(
             db.poll_device(&device_code).await.unwrap(),
             DevicePollResult::Pending
-        );
+        ));
 
         // Approve as the maintainer.
         assert!(db
@@ -22994,22 +24925,44 @@ source_nar_hash = ""
             .await
             .unwrap());
 
-        // Poll returns Approved with a token secret.
+        // Simulate the client's advertised five-second polling interval.
+        db.backend
+            .execute(
+                "UPDATE device_codes SET last_polled_at = ?1 WHERE user_code = ?2",
+                &vals![unix_now() - 5, user_code],
+            )
+            .await
+            .unwrap();
+
+        // Poll returns a live authorization and rotating refresh credential.
         let result = db.poll_device(&device_code).await.unwrap();
-        let DevicePollResult::Approved(token_secret) = result else {
+        let DevicePollResult::Approved(grant) = result else {
             panic!("expected Approved, got {result:?}");
         };
-        assert_eq!(token_secret, device_code);
 
-        // The minted token is owned by the approver and clamped: it has
-        // read+publish but NOT
-        // members.manage.
-        let auth = db.validate_token(&token_secret).await.unwrap().unwrap();
-        assert_eq!(auth.owner, Principal::user(approver));
-        assert_eq!(auth.scope.as_str(), "instance");
-        assert!(auth.permissions.contains(&Permission::Read));
-        assert!(auth.permissions.contains(&Permission::Publish));
-        assert!(!auth.permissions.contains(&Permission::MembersManage));
+        // The device code is never an ordinary bearer. The durable authority
+        // is owned by the approver and clamped to the requested intersection.
+        assert!(db.validate_token(&device_code).await.unwrap().is_none());
+        assert_eq!(grant.auth.owner, Principal::user(approver));
+        assert_eq!(grant.auth.scope.as_str(), "instance");
+        assert!(grant.auth.permissions.contains(&Permission::Read));
+        assert!(grant.auth.permissions.contains(&Permission::Publish));
+        assert!(!grant.auth.permissions.contains(&Permission::MembersManage));
+
+        // Refresh credentials rotate once. Reuse revokes the complete family,
+        // including the credential most recently returned to the client.
+        let rotated = db.rotate_refresh_token(&grant.refresh_token).await.unwrap();
+        let RefreshTokenResult::Rotated(next) = rotated else {
+            panic!("expected refresh rotation, got {rotated:?}");
+        };
+        assert!(matches!(
+            db.rotate_refresh_token(&grant.refresh_token).await.unwrap(),
+            RefreshTokenResult::Reused
+        ));
+        assert!(matches!(
+            db.rotate_refresh_token(&next.refresh_token).await.unwrap(),
+            RefreshTokenResult::Invalid
+        ));
     }
 
     #[tokio::test]
@@ -23021,10 +24974,10 @@ source_nar_hash = ""
             .await
             .unwrap();
         assert!(db.deny_device(&user_code).await.unwrap());
-        assert_eq!(
+        assert!(matches!(
             db.poll_device(&device_code).await.unwrap(),
             DevicePollResult::Denied
-        );
+        ));
 
         // An unknown user_code cannot be approved or denied.
         assert!(!db
@@ -23032,11 +24985,11 @@ source_nar_hash = ""
             .await
             .unwrap());
         assert!(!db.deny_device("ZZZZ-9999").await.unwrap());
-        // An unknown device_code polls as Pending.
-        assert_eq!(
+        // An unknown device_code is terminal rather than polling forever.
+        assert!(matches!(
             db.poll_device("unknown").await.unwrap(),
-            DevicePollResult::Pending
-        );
+            DevicePollResult::Expired
+        ));
     }
 
     #[tokio::test]
@@ -23087,7 +25040,7 @@ source_nar_hash = ""
             .await
             .unwrap());
         assert_eq!(db.list_tokens_for(principal).await.unwrap().len(), 1);
-        let DevicePollResult::Approved(first_secret) = db.poll_device(&device_code).await.unwrap()
+        let DevicePollResult::Approved(first_grant) = db.poll_device(&device_code).await.unwrap()
         else {
             panic!("expected Approved after first approval");
         };
@@ -23102,12 +25055,11 @@ source_nar_hash = ""
             1,
             "no second token minted on re-approval"
         );
-        assert_eq!(first_secret, device_code);
-        assert_eq!(
+        assert!(!first_grant.refresh_token.is_empty());
+        assert!(matches!(
             db.poll_device(&device_code).await.unwrap(),
-            DevicePollResult::Pending,
-            "the token secret is delivered exactly once"
-        );
+            DevicePollResult::Expired
+        ));
     }
 
     /// M-3: a denied grant cannot subsequently be approved (the claim's
@@ -23246,6 +25198,104 @@ source_nar_hash = ""
         assert_eq!(replay.resource_version, first.resource_version);
         assert!(db
             .mutate_topology_operation("retry-op", 3, "cancel", "retry-key")
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn scope_operation_inventory_includes_only_descendant_scopes() {
+        let db = Database::open_in_memory().await.unwrap();
+        let acme_id = db
+            .create_org("acme-operations", "Acme Operations")
+            .await
+            .unwrap();
+        let other_id = db
+            .create_org("other-operations", "Other Operations")
+            .await
+            .unwrap();
+        let acme_scope = db.org_by_id(acme_id).await.unwrap().unwrap().stable_id;
+
+        let acme_registry_id = db
+            .create_managed_registry(acme_id, "", "main", "private", &[], false)
+            .await
+            .unwrap();
+        let acme_registry = db.registry_by_id(acme_registry_id).await.unwrap().unwrap();
+        let acme_cache_id = db
+            .create_binary_cache(
+                Some(acme_id),
+                "acme-operations/cache",
+                "Cache",
+                "private",
+                0,
+                "zstd",
+                false,
+            )
+            .await
+            .unwrap();
+        let acme_cache = db.binary_cache_by_id(acme_cache_id).await.unwrap().unwrap();
+        let other_registry_id = db
+            .create_managed_registry(other_id, "", "main", "private", &[], false)
+            .await
+            .unwrap();
+        let other_registry = db.registry_by_id(other_registry_id).await.unwrap().unwrap();
+
+        let now = unix_now();
+        let operation = |id: &str, scope: &str, kind: &str, target: &str| {
+            Statement::new(
+                "INSERT INTO topology_operations
+                   (operation_id, operation_kind, authorization_scope_key,
+                    control_permission, primary_target_kind, primary_target_stable_id,
+                    state, detail_json, created_at)
+                 VALUES (?1, 'test_operation', ?2, 'read', ?3, ?4, 'pending', '{}', ?5)",
+                vals![id, scope, kind, target, now],
+            )
+            .expecting(1)
+        };
+        db.backend
+            .checked_batch(&[
+                operation(
+                    "operation-a",
+                    &acme_registry.scope_key,
+                    "registry",
+                    &acme_registry.stable_id,
+                ),
+                operation(
+                    "operation-c",
+                    &acme_cache.scope_key,
+                    "binary_cache",
+                    &acme_cache.stable_id,
+                ),
+                operation(
+                    "operation-b",
+                    &other_registry.scope_key,
+                    "registry",
+                    &other_registry.stable_id,
+                ),
+            ])
+            .await
+            .unwrap();
+
+        let first = db
+            .list_scope_topology_operations_page(&acme_scope, None, 1, None)
+            .await
+            .unwrap();
+        assert_eq!(first.records[0].operation_id, "operation-a");
+        assert_eq!(first.next_cursor.as_deref(), Some("operation-a"));
+
+        let second = db
+            .list_scope_topology_operations_page(&acme_scope, None, 1, first.next_cursor.as_deref())
+            .await
+            .unwrap();
+        assert_eq!(second.records[0].operation_id, "operation-c");
+        assert!(second.next_cursor.is_none());
+
+        let instance = db
+            .list_scope_topology_operations_page("instance", None, 10, None)
+            .await
+            .unwrap();
+        assert_eq!(instance.records.len(), 3);
+        assert!(db
+            .list_scope_topology_operations_page(&acme_scope, None, 10, Some("operation-b"),)
             .await
             .is_err());
     }
@@ -25287,6 +27337,54 @@ source_nar_hash = ""
                 None,
                 Some(defaults.resource_version + 1),
             )
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn registry_publication_inventory_is_stable_and_filter_bound() {
+        let db = Database::open_in_memory().await.unwrap();
+        let registry_id = db
+            .register_registry("publication-history", &[], false)
+            .await
+            .unwrap();
+        for ordinal in 1..=3 {
+            db.create_registry_publication(&NewRegistryPublication {
+                publication_id: format!("publication-history-{ordinal}"),
+                registry_id,
+                generation: format!("generation-{ordinal}"),
+                manifest_digest: format!("{ordinal:064x}"),
+                refs_digest: format!("{:064x}", ordinal + 10),
+                default_commit: None,
+                parent_publication_id: None,
+            })
+            .await
+            .unwrap();
+        }
+        db.fail_registry_publication("publication-history-2", unix_now())
+            .await
+            .unwrap();
+
+        let first = db
+            .list_registry_publications_page(registry_id, None, 1, None)
+            .await
+            .unwrap();
+        assert_eq!(first.records[0].ordinal, 3);
+        assert_eq!(first.next_cursor, Some(3));
+        let second = db
+            .list_registry_publications_page(registry_id, None, 1, first.next_cursor)
+            .await
+            .unwrap();
+        assert_eq!(second.records[0].ordinal, 2);
+
+        let failed = db
+            .list_registry_publications_page(registry_id, Some("failed"), 10, None)
+            .await
+            .unwrap();
+        assert_eq!(failed.records.len(), 1);
+        assert_eq!(failed.records[0].publication_id, "publication-history-2");
+        assert!(db
+            .list_registry_publications_page(registry_id, Some("failed"), 10, Some(3))
             .await
             .is_err());
     }

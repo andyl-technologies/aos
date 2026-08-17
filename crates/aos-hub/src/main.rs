@@ -519,6 +519,7 @@ async fn main() -> Result<()> {
                 .for_image_indexing(),
             );
             index_all(&app_state.db, index_surfaces.as_ref()).await;
+            prune_expired_invitation_secrets(&app_state.db).await;
 
             if reindex_interval > 0 {
                 let db = Arc::clone(&app_state.db);
@@ -531,6 +532,7 @@ async fn main() -> Result<()> {
                         tick.tick().await;
                         index_all(&db, index_surfaces.as_ref()).await;
                         sync_due_mirrors(&db, now_secs()).await;
+                        prune_expired_invitation_secrets(&db).await;
                         match aos_hub::export::purge_expired_orgs(&db, now_secs()).await {
                             Ok(purged) => {
                                 for slug in &purged {
@@ -582,6 +584,12 @@ async fn main() -> Result<()> {
             let route_http: Arc<dyn aos_hub_core::web::console::ports::HttpClient> = Arc::new(
                 aos_hub::coreports::HubHttpClient::new(app_state.http.clone()),
             );
+            app_state.identity_domain_verifier = Some(Arc::new(
+                aos_hub_core::topology_probe::DnsJsonIdentityDomainVerifier::new(
+                    Arc::clone(&route_http),
+                    endpoint.clone(),
+                ),
+            ));
             let mut controller = aos_hub_core::topology_probe::DomainProbeController::new(
                 Arc::clone(&app_state.db),
                 Arc::clone(&route_http),
@@ -1200,6 +1208,16 @@ fn now_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Runs one bounded invitation-credential retention pass.
+async fn prune_expired_invitation_secrets(db: &Database) {
+    if let Err(error) = db.prune_expired_invitation_secrets(now_secs(), 1_000).await {
+        tracing::warn!(
+            error = %format!("{error:#}"),
+            "expired invitation cleanup failed"
+        );
+    }
 }
 
 /// The persisted masthead brand (`instance_config['brand']`), or empty.

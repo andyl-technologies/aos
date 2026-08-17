@@ -61,18 +61,26 @@ reference.
 An interface may link to another owner's editor, but it does not reimplement
 or proxy that mutation under a second resource path.
 
+Resource responses carry both their immutable `authorization_scope_key` and
+their infrastructure `owner_scope_key` wherever those values can differ.
+Clients use the former for resource-local IAM and signing-key calls and the
+latter when selecting shared bindings, endpoints, gateways, or signing keys.
+Neither value is derived from a mutable display slug.
+
 Retained settings features make the same namespace/name cutover; they are not
 left as undocumented Web-only operations:
 
 | Settings owner | Final CLI family | Final `aos.hub.v1` API owner |
 | --- | --- | --- |
 | Organizations and projects | `org`, `project` | `OrganizationService`, `ProjectService` CRUD |
-| Members, invitations, roles, SSO | `org member`, `org sso` | `IdentityService` member and SSO methods |
-| Hosted and surface signing keys | `signing-key` | `SigningKeyService` list/enroll/rotate/retire methods |
-| Webhooks | `org webhook` | `WebhookService` list plus plan/apply create/delete methods |
+| Members, invitations, and roles | `org member`, `org invitation` | `IdentityService` membership and invitation methods |
+| OIDC identity provider | `org identity-provider` | `IdentityService` identity-provider methods |
+| SSO email-domain ownership | `org domain` | `IdentityService` organization-domain methods |
+| Hosted and surface signing keys | `signing-key`, including `usage show/plan/apply` | `SigningKeyService` key lifecycle plus exact usage get/set methods |
+| Webhooks | `org webhook` | `WebhookService` inventory with the closed event taxonomy plus plan/apply create/delete methods |
 | Audit | `audit` | `AuditService` |
 | Registry CRUD and identity/access | `registry`, `registry identity` | `RegistryService` get/list plus plan/apply create/update/delete methods |
-| Registry tokens | `registry token` | `IdentityService` list plus plan/apply issue/retire methods; rotation is explicit issue-then-retire |
+| Scoped access tokens | `access-token` | `IdentityService` list plus plan/apply issue/retire methods; rotation is explicit issue-then-retire |
 | Upstream registry mirror | `registry mirror` | `RegistryMirrorService` |
 | Signed configuration | `registry configuration` | `RegistryConfigurationService` |
 | Change requests | `registry change-request` | `ChangeRequestService` comment/review/close/reopen/apply methods |
@@ -93,6 +101,18 @@ and layout behavior are normative in
 [`10-settings-information-architecture.md`](10-settings-information-architecture.md).
 The exhaustive old method+path deletion and replacement list is normative in
 [`11-web-route-cutover-ledger.md`](11-web-route-cutover-ledger.md).
+
+Authenticated management is a client application, not a parallel HTTP form
+API. A settings GET deep link returns the application shell, which exchanges
+the caller's HttpOnly session and CSRF proof for an in-memory short-lived
+bearer and invokes the canonical Connect-JSON methods directly. All durable
+mutations present the API's semantic plan and apply that exact plan; the client
+does not synthesize effects or call server-side compatibility handlers.
+
+Login, logout, account security, passkey ceremonies, device approval, and
+public registry browsing remain server-rendered. They are deliberately outside
+the management application boundary and are listed explicitly in the route
+cutover ledger.
 
 ### End-user system images
 
@@ -143,6 +163,7 @@ The exact grouped labels and ordering are specified in
 /-/org/{org}/sso
 /-/org/{org}/signing-keys
 /-/org/{org}/signing-keys/new
+/-/org/{org}/tokens
 /-/org/{org}/webhooks
 /-/org/{org}/webhooks/new
 /-/org/{org}/operations
@@ -180,12 +201,14 @@ The exact grouped labels and ordering are specified in
 /-/org/{org}/caches/{cache}/garbage-collection/runs/{operation}
 /-/org/{org}/caches/{cache}/garbage-collection/runs/{operation}/jobs/{job}
 /-/org/{org}/caches/{cache}/access
-/-/org/{org}/caches/{cache}/signing-key
+/-/org/{org}/caches/{cache}/signing-keys
+/-/org/{org}/caches/{cache}/tokens
 /-/org/{org}/caches/{cache}/operations
 /-/org/{org}/caches/{cache}/danger
 
 /-/instance
 /-/instance/identity-and-signup
+/-/instance/tokens
 /-/instance/resource-defaults
 /-/instance/branding
 /-/instance/storage-bindings
@@ -387,6 +410,14 @@ operation id and support `--wait`, `--timeout`, and `operation watch`.
 External probes and reconcile/refresh/scan triggers are effects: callers first
 create an immutable plan, then apply it to receive an operation id. Controller
 observations use separate authenticated and generation-fenced controller RPCs.
+
+Registry publication inventory is `aos hub registry publish list <registry>`
+with an optional exact `--state` filter and the common pagination flags.
+`PublishService.ListRegistryPublications` returns newest-first durable sessions;
+its opaque page token is bound to the registry's immutable identity and exact
+state filter. The Publish history Web page exhausts that pagination and opens
+an exact session for inspection, upload continuation, commit, or abort. Manual
+publication-id entry is not the primary discovery mechanism.
 
 Every successful `--json` response is wrapped as
 `{"schema_version":"aos.hub.cli/v1","kind":"...","data":...}`. The
@@ -695,6 +726,12 @@ aos hub route enable|disable|remove <route>
 aos hub route canonical <route> --audience git|cache|web
 ```
 
+Topology-default reads are total for every existing writable scope. Before the
+first `set`, the API returns that scope key with empty optional references and
+an empty resource version; it does not turn ordinary unset state into a 404.
+The first plan therefore carries no expected resource version, while later
+updates remain version checked.
+
 Endpoint and gateway refs resolve to exact immutable generations in every
 plan; apply rejects a changed desired generation. A direct route has no
 independent base-path option: its path is derived as
@@ -804,6 +841,15 @@ population, and garbage collection remain separate command families below.
 List and show render `BinaryCache` resources even though the user-facing CLI
 noun remains the concise `cache`.
 
+Every `<registry>` and `<cache>` locator accepts either its canonical slug
+(`registry`, `organization/project/registry`, `cache`, or
+`organization/cache`) or its immutable `registry:` / `cache:` stable ID. The
+grammars are disjoint: canonical slug segments exclude `:`, and the
+`registry:` and `cache:` prefixes are reserved exclusively for stable IDs.
+Stable IDs remain the relationship and persistence key; canonical slugs are
+the human-facing Web and CLI path. Reads return the stable ID so automation can
+pin subsequent operations without depending on presentation paths.
+
 ### Upstream registry mirror
 
 ```text
@@ -912,7 +958,9 @@ aos hub cache gc jobs abandon <cache> <job-id>
   --plan-id <id> --confirm-hash <hash> [--yes]
 
 aos hub placement eviction plan <surface-ref> <placement>
-aos hub placement eviction run <surface-ref> <placement> --plan-id <id> [--yes]
+  --if-version <version> --idempotency-key <key>
+aos hub placement eviction run --plan-id <id> --confirm-hash <hash>
+  --idempotency-key <key> [--yes]
 ```
 
 `gc run` is the logical namespace operation. Placement eviction is never
@@ -1015,9 +1063,15 @@ The returned immutable URL accepts `GET` and `HEAD`, one satisfiable HTTP byte
 range, and conditional requests consistently in native and Worker runtimes.
 It returns `Content-Disposition` with the signed filename, the exact image
 media type and integrity metadata, range headers, and immutable cache headers.
-Public images permit anonymous access. Private images require the route's Hub,
-external-provider, or private-network authorization policy. A download always
-serves the encoded disk file itself, never a NAR or store directory.
+Public images permit anonymous access. For a public registry the API selects a
+ready canonical delivery route, falling back to the Hub control origin when no
+public route is ready. For a private registry it returns an immutable
+same-origin `/-/images/{registry-id}/...` URL so a browser session or API bearer
+can authorize the byte request through Hub. Independently authenticated CDN,
+VPN, and direct-backend routes remain simultaneous delivery options, but are
+not returned as the default private URL unless the caller can use their own
+authorization policy. A download always serves the encoded disk file itself,
+never a NAR or store directory.
 
 ### Common messages
 
@@ -1256,7 +1310,6 @@ ListStorageBindingWriteRevisions
 GetStorageBindingWriteRevision
 PlanDeleteStorageBinding / DeleteStorageBinding
 
-GetInstanceDefaultStorageBinding
 GetInstanceTopologyDefaults
 PlanSetInstanceTopologyDefaults / SetInstanceTopologyDefaults
 GetOrganizationTopologyDefaults
@@ -1611,14 +1664,33 @@ Operations expose progress, item/byte counts, current phase, warnings, and
 terminal error details. Cancellation is best-effort and leaves topology in a
 documented resumable state.
 
-`ListOperations` takes the same closed typed resource oneof returned in each
-operation's immutable target list; it does not accept a free-form
-`targetKind`/`targetId` pair. The CLI expresses this as one required qualified
-argument such as `registry:andyl/main`, `cache:andyl/shared`,
-`domain:<stable-id>`, or `route:<stable-id>`. Only the operation's `primary`
-target participates in resource listing and authorization; source,
-destination, policy, and generation targets remain visible in the operation
-detail without making the operation appear in several unrelated inventories.
+`ListOperations` accepts exactly one of two selectors:
+
+- the same closed typed resource oneof returned in each operation's immutable
+  target list; or
+- an immutable `authorization_scope_key`, which includes operations owned by
+  that scope and every descendant in the validated authorization closure.
+
+It does not accept a free-form `targetKind`/`targetId` pair. Target inventory
+requires that resource's read permission. Scope inventory requires
+`audit.read` on the requested scope. Page tokens are bound to the exact
+selector and state filter, and a cursor from a sibling scope is rejected.
+
+The CLI expresses these modes as mutually exclusive `--target KIND:ID` and
+`--scope SCOPE` flags. Examples include `--target registry:andyl/main`,
+`--target domain:<stable-id>`, and `--scope org:<immutable-id>`. There is no
+positional or legacy target form. Only the operation's `primary` target
+participates in exact-target listing. Source, destination, policy, and
+generation targets remain visible in operation detail without making the
+operation appear in several unrelated exact-target inventories.
+
+The Web UI always resolves its mutable route locator through the typed resource
+API and lists by the returned immutable scope. Instance and organization pages
+therefore aggregate descendant work; registry and cache pages use the same
+scope model so operations on subordinate topology are not omitted. Each card
+shows progress, exact target-generation snapshots, error detail, and resource
+version. Cancel and retry require an explicit confirmation and send the exact
+displayed version as the optimistic-concurrency fence.
 
 ### Events and audit
 

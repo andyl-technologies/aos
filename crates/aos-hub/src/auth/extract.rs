@@ -10,11 +10,9 @@
 //! - [`SessionAuth`] requires a valid `__Host-aos_session` cookie (human
 //!   plane); [`MaybeSession`] is its optional sibling for anonymous-capable
 //!   pages.
-//! - [`oauth2_token_handler`] is the small, self-contained `POST
-//!   /oauth2/token` exchange: present a provisioning secret in
-//!   `Authorization: Bearer`, receive a short-TTL JWT. [`oauth2_router`]
-//!   returns it as a mergeable `Router` fragment so the full router
-//!   (phase 2c/2d) can mount it.
+//! OAuth device, refresh, and provisioning grants are handled by the shared
+//! runtime-neutral router in `aos-hub-core` so native and Worker deployments
+//! expose one contract.
 //!
 //! # Two authorization paths
 //!
@@ -34,13 +32,10 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{FromRequestParts, State},
+    extract::FromRequestParts,
     http::{header, request::Parts, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::post,
-    Json, Router,
 };
-use serde::Serialize;
 
 use crate::auth::jwt::{Claims, JwtKeys};
 use crate::db::{Database, SessionAuth as DbSessionAuth};
@@ -223,108 +218,6 @@ pub use aos_hub_core::web::csrf::{connect_or_csrf_ok, mint_csrf_token, verify_cs
 /// Extracts the `__Host-aos_session` value from a request's `Cookie` header.
 fn session_secret_from_cookies(headers: &HeaderMap) -> Option<String> {
     aos_hub_core::web::session::session_secret_from_headers(headers)
-}
-
-/// OAuth2 token-exchange response body.
-#[derive(Serialize)]
-struct TokenResponse {
-    access_token: String,
-    token_type: String,
-    expires_in: i64,
-    capabilities: [&'static str; 2],
-}
-
-/// Returns a `Router` mounting `POST /oauth2/token`.
-///
-/// A mergeable fragment so the full hub router (phase 2c/2d) can compose
-/// the exchange endpoint without this module reaching into `server.rs`.
-pub fn oauth2_router() -> Router<Arc<AuthState>> {
-    Router::new().route("/oauth2/token", post(oauth2_token_handler))
-}
-
-/// `POST /oauth2/token` — exchanges a provisioning secret for a JWT.
-///
-/// The caller authenticates with `Authorization: Bearer <provisioning
-/// secret>` (the `aos_`-prefixed plaintext, *not* a JWT). On success the
-/// response is a `200` JSON body — `access_token`, `token_type`
-/// (`"Bearer"`), and `expires_in` (seconds). Responds `401` when the header
-/// is missing/malformed or the secret is unknown, revoked (past grace), or
-/// expired, and `500` on a token-store or JWT-minting failure.
-pub async fn oauth2_token_handler(State(state): State<Arc<AuthState>>, parts: Parts) -> Response {
-    // Rate-limit the exchange per source IP to bound credential spray (an
-    // attacker probing provisioning secrets). The key is the real TCP peer
-    // unless the deployment trusts its proxy's `X-Forwarded-For`, so a forged
-    // header cannot evade the limit. See [`crate::ratelimit`].
-    let peer = parts
-        .extensions
-        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-        .map_or_else(String::new, |ci| ci.0.ip().to_string());
-    let xff = parts
-        .headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok());
-    let ip = crate::ratelimit::client_ip(xff, &peer, state.trusted_proxy);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    if let crate::ratelimit::RateDecision::Limited { retry_after } =
-        state
-            .ratelimit
-            .check(crate::ratelimit::RateClass::TokenExchange, &ip, now)
-    {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            [(header::RETRY_AFTER, retry_after.max(1).to_string())],
-            "rate limit exceeded",
-        )
-            .into_response();
-    }
-    let header = match parts
-        .headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-    {
-        Some(h) => h,
-        None => return (StatusCode::UNAUTHORIZED, "missing Authorization header").into_response(),
-    };
-    let secret = match header.strip_prefix("Bearer ") {
-        Some(s) => s,
-        None => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                "Authorization header must start with Bearer",
-            )
-                .into_response()
-        }
-    };
-    let auth = match state.db.validate_token(secret).await {
-        Ok(Some(auth)) => auth,
-        Ok(None) => {
-            tracing::warn!("oauth2 exchange failed: invalid provisioning secret");
-            return (StatusCode::UNAUTHORIZED, "invalid provisioning secret").into_response();
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "oauth2 token validation error");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "token validation error").into_response();
-        }
-    };
-    match state.jwt_keys.mint(&auth, state.access_token_ttl) {
-        Ok(access_token) => {
-            tracing::info!(token_id = %auth.token_id, "access token issued");
-            Json(TokenResponse {
-                access_token,
-                token_type: "Bearer".to_string(),
-                expires_in: state.access_token_ttl,
-                capabilities: ["aos.hub.topology.v1", "aos.multipart.v1"],
-            })
-            .into_response()
-        }
-        Err(e) => {
-            tracing::error!(error = %e, token_id = %auth.token_id, "oauth2 minting error");
-            (StatusCode::INTERNAL_SERVER_ERROR, "token creation error").into_response()
-        }
-    }
 }
 
 #[cfg(test)]

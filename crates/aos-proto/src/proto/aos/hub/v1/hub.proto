@@ -40,6 +40,7 @@ service OrganizationService {
 service SigningKeyService {
   rpc ListSigningKeys(ListSigningKeysRequest) returns (ListSigningKeysResponse);
   rpc GetSigningKey(GetSigningKeyRequest) returns (SigningKeyResponse);
+  rpc GetSigningKeyUsage(GetSigningKeyUsageRequest) returns (SigningKeyUsageResponse);
   rpc PlanEnrollSigningKey(PlanSigningKeyMutationRequest) returns (TopologyPlanResponse);
   rpc EnrollSigningKey(ApplyTopologyPlanRequest) returns (SigningKeyResponse);
   rpc PlanRotateSigningKey(PlanSigningKeyMutationRequest) returns (TopologyPlanResponse);
@@ -80,7 +81,6 @@ service StorageBindingService {
   rpc GetStorageBindingWriteRevision(GetStorageBindingWriteRevisionRequest) returns (StorageBindingWriteRevisionResponse);
   rpc PlanDeleteStorageBinding(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
   rpc DeleteStorageBinding(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
-  rpc GetInstanceDefaultStorageBinding(GetInstanceTopologyDefaultsRequest) returns (GetStorageBindingResponse);
   rpc GetInstanceTopologyDefaults(GetInstanceTopologyDefaultsRequest) returns (TopologyDefaultsResponse);
   rpc PlanSetInstanceTopologyDefaults(PlanSetTopologyDefaultsRequest) returns (TopologyPlanResponse);
   rpc SetInstanceTopologyDefaults(ApplySetTopologyDefaultsRequest) returns (TopologyDefaultsResponse);
@@ -338,6 +338,8 @@ service ImageService {
 service PublishService {
   rpc BeginRegistryPublication(BeginRegistryPublicationRequest)
       returns (RegistryPublication);
+  rpc ListRegistryPublications(ListRegistryPublicationsRequest)
+      returns (ListRegistryPublicationsResponse);
   rpc GetRegistryPublication(GetRegistryPublicationRequest)
       returns (RegistryPublication);
   rpc CommitRegistryPublication(CommitRegistryPublicationRequest)
@@ -495,6 +497,9 @@ message SystemImage {
   string format = 6;
   string logical_image_id = 7;
   string filename = 8;
+  // Immutable byte URL. Private images resolve to the Hub control origin so
+  // the caller can reuse its bearer or browser session; public images may
+  // resolve to a ready CDN/direct delivery route.
   string download_url = 9;
   string media_type = 10;
   string compression = 11;
@@ -570,6 +575,10 @@ message Registry {
   string visibility = 15;
   string resource_version = 16;
   int64 updated_at = 17;
+  // Exact immutable scope used to authorize registry-local operations.
+  string authorization_scope_key = 18;
+  // Exact scope that owns shared infrastructure usable by this registry.
+  string owner_scope_key = 19;
 }
 
 message ConsumerCacheStackEntry {
@@ -667,6 +676,8 @@ message Organization {
   // Unix seconds the org was created.
   int64 created_at = 6;
   int64 updated_at = 7;
+  // Exact immutable scope used to authorize organization operations.
+  string authorization_scope_key = 8;
 }
 
 message PlanCreateOrganizationRequest {
@@ -790,6 +801,11 @@ message PlanSigningKeyUsageRequest {
 }
 
 message SigningKeyUsageResponse { SigningKeyUsage usage = 1; }
+
+message GetSigningKeyUsageRequest {
+  string consumer_stable_id = 1;
+  string purpose = 2;
+}
 
 // A project: a materialized-path node within an org.
 message Project {
@@ -1515,6 +1531,19 @@ message BeginRegistryPublicationRequest {
   repeated RegistryPublicationObjectInput objects = 6;
 }
 
+message ListRegistryPublicationsRequest {
+  string registry = 1;
+  // Optional exact lifecycle state.
+  string state = 2;
+  uint32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListRegistryPublicationsResponse {
+  repeated RegistryPublication publications = 1;
+  string next_page_token = 2;
+}
+
 message GetRegistryPublicationRequest {
   string publication_id = 1;
 }
@@ -1616,6 +1645,8 @@ message ListWebhooksRequest {
 message ListWebhooksResponse {
   repeated Webhook webhooks = 1;
   string next_page_token = 2;
+  // Closed event taxonomy accepted by PlanCreateWebhook.
+  repeated string supported_event_types = 3;
 }
 
 message PlanDeleteWebhookRequest {
@@ -1831,6 +1862,8 @@ message BinaryCache {
   uint64 object_count = 14;
   uint64 placement_count = 15;
   uint64 retention_root_count = 16;
+  // Exact immutable scope used to authorize cache-local operations.
+  string authorization_scope_key = 17;
 }
 
 message BinaryCacheSpec {
@@ -1930,6 +1963,9 @@ message ListOperationsRequest {
   string state = 2;
   uint32 page_size = 3;
   string page_token = 4;
+  // Immutable scope whose complete descendant operation inventory is requested.
+  // Exactly one of target or authorization_scope_key must be set.
+  string authorization_scope_key = 5;
 }
 message ListOperationsResponse {
   repeated OperationDetail operations = 1;
@@ -2189,7 +2225,12 @@ message CacheGcPolicy {
   string resource_version = 11;
 }
 message GetCacheGcPolicyRequest { string cache_id = 1; }
-message GetCacheGcPolicyResponse { CacheGcPolicy policy = 1; }
+message GetCacheGcPolicyResponse {
+  CacheGcPolicy policy = 1;
+  // Current cache-wide retention/GC concurrency fence. Clients bind sweep and
+  // first-sweep acknowledgement plans to this resource version.
+  CacheGcGeneration generation = 2;
+}
 message PlanSetCacheGcPolicyRequest {
   string cache_id = 1;
   CacheGcPolicy desired = 2;
@@ -2401,7 +2442,8 @@ message PlanRevokeRetentionLeaseRequest {
 message RetentionLeaseResponse { RetentionLease lease = 1; }
 message PlanRunPlacementEvictionRequest {
   SurfaceRef surface = 1;
-  string placement_id = 2;
+  // Stable, surface-local placement name returned by ListPlacements.
+  string placement_name = 2;
   optional string expected_resource_version = 3;
   string idempotency_key = 4;
 }
@@ -2569,7 +2611,7 @@ message CacheNarinfoRegistrationResponse {
   int64 registered = 1;
 }
 
-// IAM management: service accounts, scoped role grants, and registry-scoped
+// IAM management: service accounts, scoped role grants, and access tokens
 // tokens — the machine API behind the producer console's settings pages, so the
 // CLI and automation administer identities over the authenticated API instead
 // of direct database access (RFC-0004 ch.14 "manage everything via the API").
@@ -2580,35 +2622,182 @@ message CacheNarinfoRegistrationResponse {
 // intersected with the owning principal's grants — a token can never exceed its
 // owner's authority.
 service IdentityService {
-  // Plan creation of an org-owned non-human automation principal.
-  rpc PlanCreateAutomationPrincipal(PlanCreateAutomationPrincipalRequest)
+  // Describe the authenticated principal, its live grants, and this access
+  // token's authority. The response contains no token secret.
+  rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse);
+  // List an organization's service accounts.
+  rpc ListServiceAccounts(ListServiceAccountsRequest)
+      returns (ListServiceAccountsResponse);
+  // Inspect one organization-owned service account.
+  rpc GetServiceAccount(GetServiceAccountRequest)
+      returns (ServiceAccountResponse);
+  // Plan creation of an org-owned service account.
+  rpc PlanCreateServiceAccount(PlanCreateServiceAccountRequest)
       returns (TopologyPlanResponse);
-  // Apply one reviewed automation-principal plan exactly once.
-  rpc CreateAutomationPrincipal(ApplyTopologyPlanRequest)
-      returns (AutomationPrincipalResponse);
+  // Apply one reviewed service-account creation plan exactly once.
+  rpc CreateServiceAccount(ApplyTopologyPlanRequest)
+      returns (ServiceAccountResponse);
+  // Plan renaming one service account without changing its stable identity.
+  rpc PlanUpdateServiceAccount(PlanUpdateServiceAccountRequest)
+      returns (TopologyPlanResponse);
+  // Apply one reviewed service-account update plan exactly once.
+  rpc UpdateServiceAccount(ApplyTopologyPlanRequest)
+      returns (ServiceAccountResponse);
+  // Plan deletion of one service account and its direct memberships.
+  rpc PlanDeleteServiceAccount(PlanDeleteServiceAccountRequest)
+      returns (TopologyPlanResponse);
+  // Apply one reviewed service-account deletion plan exactly once.
+  rpc DeleteServiceAccount(ApplyTopologyPlanRequest)
+      returns (DeleteTopologyResourceResponse);
   // Read one direct membership grant and its exact resource version.
   rpc GetMembership(GetMembershipRequest) returns (MembershipResponse);
   // Plan an exact membership replacement. An empty role removes the grant.
   rpc PlanSetMembership(PlanSetMembershipRequest) returns (TopologyPlanResponse);
   // Apply one reviewed membership replacement exactly once.
   rpc SetMembership(ApplyTopologyPlanRequest) returns (MembershipResponse);
-  // Plan issuance of a registry-scoped bearer token.
-  rpc PlanIssueRegistryToken(PlanIssueRegistryTokenRequest)
+  // List invitation history for one organization.
+  rpc ListInvitations(ListInvitationsRequest) returns (ListInvitationsResponse);
+  // Inspect one invitation without exposing its acceptance secret.
+  rpc GetInvitation(GetInvitationRequest) returns (InvitationResponse);
+  // Plan creation of a pending invitation.
+  rpc PlanCreateInvitation(PlanCreateInvitationRequest)
+      returns (TopologyPlanResponse);
+  // Apply one reviewed invitation-creation plan exactly once.
+  rpc CreateInvitation(ApplyTopologyPlanRequest) returns (InvitationResponse);
+  // Plan cancellation of one pending invitation.
+  rpc PlanCancelInvitation(PlanCancelInvitationRequest)
+      returns (TopologyPlanResponse);
+  // Apply one reviewed invitation cancellation exactly once.
+  rpc CancelInvitation(ApplyTopologyPlanRequest) returns (InvitationResponse);
+  // Accept an invitation as the authenticated user named by it.
+  rpc AcceptInvitation(AcceptInvitationRequest)
+      returns (AcceptInvitationResponse);
+  // Inspect an organization's OIDC identity-provider configuration without
+  // exposing sealed or plaintext client credentials.
+  rpc GetIdentityProvider(GetIdentityProviderRequest)
+      returns (IdentityProviderResponse);
+  // Plan creation or exact-version replacement of one OIDC configuration.
+  rpc PlanSetIdentityProvider(PlanSetIdentityProviderRequest)
+      returns (TopologyPlanResponse);
+  // Apply one reviewed OIDC configuration plan exactly once.
+  rpc SetIdentityProvider(ApplyTopologyPlanRequest)
+      returns (IdentityProviderResponse);
+  // Plan removal of one exact OIDC configuration.
+  rpc PlanRemoveIdentityProvider(PlanRemoveIdentityProviderRequest)
+      returns (TopologyPlanResponse);
+  // Apply one reviewed OIDC configuration removal exactly once.
+  rpc RemoveIdentityProvider(ApplyTopologyPlanRequest)
+      returns (DeleteTopologyResourceResponse);
+  // List claimed email domains for one organization.
+  rpc ListOrganizationDomains(ListOrganizationDomainsRequest)
+      returns (ListOrganizationDomainsResponse);
+  // Inspect one organization email-domain claim.
+  rpc GetOrganizationDomain(GetOrganizationDomainRequest)
+      returns (OrganizationDomainResponse);
+  // Plan creation or challenge rotation of one email-domain claim.
+  rpc PlanClaimOrganizationDomain(PlanClaimOrganizationDomainRequest)
+      returns (TopologyPlanResponse);
+  // Apply one reviewed email-domain claim exactly once.
+  rpc ClaimOrganizationDomain(ApplyTopologyPlanRequest)
+      returns (OrganizationDomainResponse);
+  // Plan DNS-TXT verification of one exact domain challenge.
+  rpc PlanVerifyOrganizationDomain(PlanVerifyOrganizationDomainRequest)
+      returns (TopologyPlanResponse);
+  // Resolve DNS and commit verified state for one reviewed challenge.
+  rpc VerifyOrganizationDomain(ApplyTopologyPlanRequest)
+      returns (OrganizationDomainResponse);
+  // Plan release of one exact email-domain claim.
+  rpc PlanReleaseOrganizationDomain(PlanReleaseOrganizationDomainRequest)
+      returns (TopologyPlanResponse);
+  // Apply one reviewed email-domain release exactly once.
+  rpc ReleaseOrganizationDomain(ApplyTopologyPlanRequest)
+      returns (DeleteTopologyResourceResponse);
+  // Plan issuance of a scoped bearer token.
+  rpc PlanIssueAccessToken(PlanIssueAccessTokenRequest)
       returns (TopologyPlanResponse);
   // Apply one reviewed token-issuance plan; the secret is returned once.
-  rpc IssueRegistryToken(ApplyTopologyPlanRequest)
-      returns (RegistryTokenResponse);
+  rpc IssueAccessToken(ApplyTopologyPlanRequest)
+      returns (AccessTokenResponse);
   // Plan retirement of one token generation.
-  rpc PlanRetireRegistryToken(PlanRetireRegistryTokenRequest)
+  rpc PlanRetireAccessToken(PlanRetireAccessTokenRequest)
       returns (TopologyPlanResponse);
   // Apply one reviewed token-retirement plan exactly once.
-  rpc RetireRegistryToken(ApplyTopologyPlanRequest)
-      returns (RegistryTokenRetirementResponse);
+  rpc RetireAccessToken(ApplyTopologyPlanRequest)
+      returns (AccessTokenRetirementResponse);
   // List the tokens visible at a scope (metadata only — never the secret).
-  rpc ListTokens(ListTokensRequest) returns (ListTokensResponse);
+  rpc ListAccessTokens(ListAccessTokensRequest) returns (ListAccessTokensResponse);
 }
 
-message PlanCreateAutomationPrincipalRequest {
+message WhoAmIRequest {}
+
+// Principal summary returned by the browser session-to-bearer bridge.
+message BrowserSessionPrincipal {
+  // Always "user"; browser sessions cannot belong to service accounts.
+  string kind = 1;
+  int64 id = 2;
+  string email = 3;
+}
+
+// One live grant returned during browser application bootstrap.
+message BrowserSessionGrant {
+  string scope = 1;
+  string role = 2;
+}
+
+// Non-cacheable response from POST /-/auth/session-token.
+message BrowserSessionTokenResponse {
+  string access_token = 1;
+  string token_type = 2;
+  int64 expires_in = 3;
+  BrowserSessionPrincipal principal = 4;
+  repeated BrowserSessionGrant grants = 5;
+  // Effective live permissions on the canonical management route supplied
+  // during this exchange. Empty when the route is absent or unresolved.
+  repeated string route_permissions = 6;
+}
+
+// One live role grant held directly by the authenticated principal.
+message IdentityGrant {
+  // Canonical stable authorization scope.
+  string scope = 1;
+  // Role name: owner | admin | maintainer | developer | viewer.
+  string role = 2;
+}
+
+message WhoAmIResponse {
+  // "user" or "service_account".
+  string principal_kind = 1;
+  // Stable human-facing reference: email or "<org>/<service-account>".
+  string principal_ref = 2;
+  // User email; empty for a service account.
+  string email = 3;
+  // Current live role grants, ordered by canonical scope.
+  repeated IdentityGrant grants = 4;
+  // Canonical scope carried by this access token.
+  string access_scope = 5;
+  // Permission verbs carried by this access token.
+  repeated string access_permissions = 6;
+  // Unix seconds when this access token expires.
+  int64 access_expires_at = 7;
+}
+
+message ListServiceAccountsRequest {
+  string org_slug = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListServiceAccountsResponse {
+  repeated ServiceAccount service_accounts = 1;
+  string next_page_token = 2;
+}
+
+message GetServiceAccountRequest {
+  string org_slug = 1;
+  string name = 2;
+}
+
+message PlanCreateServiceAccountRequest {
   // Owning org slug.
   string org_slug = 1;
   // Service-account name, unique within the org.
@@ -2622,10 +2811,27 @@ message ServiceAccount {
   int64 id = 1;
   string org_slug = 2;
   string name = 3;
+  int64 created_at = 4;
+  string resource_version = 5;
 }
 
-message AutomationPrincipalResponse {
+message ServiceAccountResponse {
   ServiceAccount service_account = 1;
+}
+
+message PlanUpdateServiceAccountRequest {
+  string org_slug = 1;
+  string name = 2;
+  string new_name = 3;
+  string expected_resource_version = 4;
+  string idempotency_key = 5;
+}
+
+message PlanDeleteServiceAccountRequest {
+  string org_slug = 1;
+  string name = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
 }
 
 message GetMembershipRequest {
@@ -2657,38 +2863,224 @@ message MembershipResponse {
   string resource_version = 5;
 }
 
-message PlanIssueRegistryTokenRequest {
+message ListInvitationsRequest {
+  string org_slug = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListInvitationsResponse {
+  repeated Invitation invitations = 1;
+  string next_page_token = 2;
+}
+
+message GetInvitationRequest {
+  string org_slug = 1;
+  int64 invitation_id = 2;
+}
+
+message PlanCreateInvitationRequest {
+  string org_slug = 1;
+  string email = 2;
+  // Canonical authorization scope granted on acceptance.
+  string scope = 3;
+  // Role name: owner | admin | maintainer | developer | viewer.
+  string role = 4;
+  // Optional lifetime in seconds; zero applies the Hub default.
+  int64 ttl_secs = 5;
+  // Creation requires an empty expected resource version.
+  string expected_resource_version = 6;
+  string idempotency_key = 7;
+}
+
+message PlanCancelInvitationRequest {
+  string org_slug = 1;
+  int64 invitation_id = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+
+message AcceptInvitationRequest {
+  string org_slug = 1;
+  // One-time invitation secret delivered out of band.
+  string secret = 2;
+}
+
+message Invitation {
+  int64 invitation_id = 1;
+  string org_slug = 2;
+  string email = 3;
+  string scope = 4;
+  string role = 5;
+  // pending | accepted | cancelled | expired.
+  string state = 6;
+  int64 created_at = 7;
+  int64 accepted_at = 8;
+  int64 cancelled_at = 9;
+  int64 expires_at = 10;
+  string resource_version = 11;
+}
+
+message InvitationResponse {
+  Invitation invitation = 1;
+  // Returned by CreateInvitation and its exact idempotent retry while pending;
+  // absent from reads and erased after acceptance, cancellation, or expiry.
+  string secret = 2;
+}
+
+message AcceptInvitationResponse {
+  Invitation invitation = 1;
+  MembershipResponse membership = 2;
+}
+
+message GetIdentityProviderRequest {
+  string org_slug = 1;
+}
+
+// Redacted organization OIDC configuration.
+message IdentityProvider {
+  string org_slug = 1;
+  string issuer = 2;
+  string authorization_endpoint = 3;
+  string token_endpoint = 4;
+  string jwks_uri = 5;
+  string client_id = 6;
+  bool client_secret_configured = 7;
+  string scopes = 8;
+  string groups_claim = 9;
+  // Canonical JSON object mapping IdP group names to Hub roles.
+  string role_map_json = 10;
+  bool allow_jit = 11;
+  bool enforce_sso = 12;
+  string default_role = 13;
+  // Opaque exact revision token; callers must echo it without parsing.
+  string resource_version = 14;
+}
+
+message IdentityProviderResponse {
+  IdentityProvider identity_provider = 1;
+}
+
+message PlanSetIdentityProviderRequest {
+  string org_slug = 1;
+  string issuer = 2;
+  string authorization_endpoint = 3;
+  string token_endpoint = 4;
+  string jwks_uri = 5;
+  string client_id = 6;
+  // Plaintext credential accepted only at the request edge and sealed before
+  // the immutable plan is persisted.
+  string client_secret = 7;
+  // Replace the current credential with client_secret. An empty value clears
+  // it; false preserves an existing credential and creates a public client.
+  bool replace_client_secret = 8;
+  string scopes = 9;
+  string groups_claim = 10;
+  string role_map_json = 11;
+  bool allow_jit = 12;
+  bool enforce_sso = 13;
+  string default_role = 14;
+  // "absent" for creation, otherwise the exact current resource version.
+  string expected_resource_version = 15;
+  string idempotency_key = 16;
+}
+
+message PlanRemoveIdentityProviderRequest {
+  string org_slug = 1;
+  // Exact opaque resource_version returned by IdentityProvider.
+  string expected_resource_version = 2;
+  string idempotency_key = 3;
+}
+
+message ListOrganizationDomainsRequest {
+  string org_slug = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListOrganizationDomainsResponse {
+  repeated OrganizationDomain domains = 1;
+  string next_page_token = 2;
+}
+
+message GetOrganizationDomainRequest {
+  string org_slug = 1;
+  string domain = 2;
+}
+
+message OrganizationDomain {
+  string org_slug = 1;
+  string domain = 2;
+  // pending | verified.
+  string state = 3;
+  // Exact TXT value to publish while state is pending.
+  string txt_challenge = 4;
+  int64 verified_at = 5;
+  // Opaque exact revision token; callers must echo it without parsing.
+  string resource_version = 6;
+}
+
+message OrganizationDomainResponse {
+  OrganizationDomain domain = 1;
+}
+
+message PlanClaimOrganizationDomainRequest {
+  string org_slug = 1;
+  string domain = 2;
+  // "absent" for a new claim; the exact opaque version rotates a challenge.
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+
+message PlanVerifyOrganizationDomainRequest {
+  string org_slug = 1;
+  string domain = 2;
+  // Exact opaque resource_version returned by OrganizationDomain.
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+
+message PlanReleaseOrganizationDomainRequest {
+  string org_slug = 1;
+  string domain = 2;
+  // Exact opaque resource_version returned by OrganizationDomain.
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+
+message PlanIssueAccessTokenRequest {
   // Token owner: "user:<email>" or "service_account:<org_slug>/<name>".
   string owner = 1;
-  // Canonical live registry scope the token is bound to.
+  // Canonical live authorization scope the token is bound to.
   string scope = 2;
-  // Strict registry permission vocabulary: registry.read, registry.publish,
-  // registry.manage, registry.admin, registry.owner. Every requested permission
-  // must be present in the owner's effective authority at `scope`.
+  // Native permission verbs. Every requested permission must be present in the
+  // owner's effective authority at `scope`.
   repeated string permissions = 3;
   // Optional time-to-live in seconds; 0 applies the hub's default policy.
   int64 ttl_secs = 4;
   string expected_resource_version = 5;
   string idempotency_key = 6;
+  // Operator-facing purpose; never secret material.
+  string comment = 7;
 }
 
-message RegistryTokenResponse {
+message AccessTokenResponse {
   // Stable, non-secret token id (used by Revoke/List).
   string token_id = 1;
   // The token secret — returned ONCE; only its hash is persisted.
   string secret = 2;
 }
 
-message PlanRetireRegistryTokenRequest {
+message PlanRetireAccessTokenRequest {
   string token_id = 1;
   string expected_resource_version = 2;
   string idempotency_key = 3;
 }
 
-message RegistryTokenRetirementResponse {}
+message AccessTokenRetirementResponse {}
 
-message ListTokensRequest {
-  // Canonical live registry scope whose token generations to list.
+message ListAccessTokensRequest {
+  // Canonical live authorization scope whose token generations to list.
   string scope = 1;
   uint32 page_size = 2;
   string page_token = 3;
@@ -2705,9 +3097,13 @@ message TokenInfo {
   int64 expires_at = 6;
   // Exact lifecycle revision (`active`, `rotated`, or `retired`).
   string resource_version = 7;
+  string comment = 8;
+  int64 last_used_at = 9;
+  int64 rotated_at = 10;
+  int64 retired_at = 11;
 }
 
-message ListTokensResponse {
+message ListAccessTokensResponse {
   repeated TokenInfo tokens = 1;
   string next_page_token = 2;
 }

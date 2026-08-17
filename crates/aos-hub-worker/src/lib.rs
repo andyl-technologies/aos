@@ -47,21 +47,15 @@
 //! why the RPC transport is **Connect-JSON** (plain JSON over HTTP) over
 //! ordinary `axum` handlers, with no `connectrpc` runtime on the registry path.
 //!
-//! The producer console (RFC-0004 Phase 5, console-dedup stage C) is served by
+//! Browser authentication and the management application shell are served by
 //! the same shared router too: the Worker builds a
 //! [`ConsoleDeps`](aos_hub_core::web::console::ConsoleDeps) over its console
 //! ports ([`consoleports`]) and merges
 //! [`console_router`](aos_hub_core::web::console::console_router) onto the
-//! RPC/facade/browse router, so the console runs identical code on both shells.
-//! As of stage H3 that includes the git-backed config/change-request flow
-//! (`/{slug}/-/settings/configuration`, `/{slug}/-/settings/change-requests`):
-//! its base-commit reads go
-//! through the R2 [`surface`] read provider and its draft-object writes through
-//! the R2 [`surface::R2SurfaceWriteProvider`] write provider, so **every**
-//! console route is mounted on the Worker. Registries whose canonical paths
-//! contain slashes are offered to the shared nested dispatcher by the Worker
-//! bridge before delivery-route and facade routing, matching the native hub's
-//! catch-all ordering.
+//! RPC/facade/browse router. The identical hermetic Leptos bundle performs all
+//! resource reads and reviewed mutations through `aos.hub.v1` on both
+//! runtimes. Registries whose canonical paths contain slashes are offered to
+//! the shared nested dispatcher before delivery-route and facade routing.
 //!
 //! Worker-local: only the Cron-trigger indexer ([`indexer`]). The `fetch`
 //! handler bridges every request to the shared router; the schema is migrated
@@ -183,7 +177,10 @@ mod entry {
     };
 
     use aos_hub_core::auth::jwt::JwtKeys;
-    use aos_hub_core::db::{Database, TokenAuth};
+    use aos_hub_core::db::Database;
+    #[cfg(feature = "do-e2e")]
+    use aos_hub_core::db::TokenAuth;
+    #[cfg(feature = "do-e2e")]
     use aos_hub_core::domain::{Permission, Principal, Role, Scope};
     use aos_hub_core::ratelimit::RateLimiter;
     use aos_hub_core::service::RpcService;
@@ -272,13 +269,13 @@ mod entry {
         }
     }
 
-    /// Builds the shared API and machine router with the live-workerd storage adapter.
+    /// Builds the complete shared router with the live-workerd storage adapter.
     #[cfg(feature = "do-e2e")]
     async fn router_from_do_e2e(
         state: &State,
         env: &Env,
         db: Arc<Database>,
-    ) -> Result<(Router, Arc<RpcService>)> {
+    ) -> Result<(Router, Arc<RpcService>, ConsoleDeps)> {
         let secret = env.secret(HUB_JWT_SECRET)?.to_string();
         let jwt_keys = JwtKeys::from_secret(secret.as_bytes());
         let external_url = env.var(HUB_EXTERNAL_URL)?.to_string();
@@ -300,9 +297,9 @@ mod entry {
         );
         let service = Arc::new(RpcService::new(
             Arc::clone(&db),
-            jwt_keys,
-            external_url,
-            rate_limiter,
+            jwt_keys.clone(),
+            external_url.clone(),
+            Arc::clone(&rate_limiter),
             fetch,
             write,
             lease,
@@ -312,7 +309,29 @@ mod entry {
             ),
             None,
         ));
-        Ok((aos_hub_core::connect::router(Arc::clone(&service)), service))
+        let egress = worker_egress(env)?;
+        let sealer = sealer_from_secret(&env.secret(HUB_SEAL_KEY)?.to_string())
+            .map_err(|error| worker::Error::RustError(format!("e2e sealer: {error:#}")))?;
+        let console_deps = ConsoleDeps {
+            db,
+            jwt_keys,
+            external_url,
+            dev: false,
+            ratelimit: rate_limiter,
+            mailer: Arc::new(WorkerMailer::new(
+                None,
+                None,
+                None,
+                None,
+                Arc::clone(&egress),
+            )),
+            sealer,
+            http: Arc::new(WorkerHttpClient::new(egress)),
+            control: Some(Arc::clone(&service)),
+        };
+        let router = aos_hub_core::connect::router(Arc::clone(&service))
+            .merge(console_router(console_deps.clone()));
+        Ok((router, service, console_deps))
     }
 
     /// Build the shared `axum` router over HubDb SQLite and R2 bindings.
@@ -326,11 +345,10 @@ mod entry {
     /// - the RPC + facade + browse router built from the [`RpcService`]
     ///   ([`aos_hub_core::connect::router`]), over the R2 surface provider
     ///   ([`crate::surface`]);
-    /// - the producer-console router ([`console_router`]) built from a
-    ///   [`ConsoleDeps`], over the Worker's console ports
-    ///   ([`crate::consoleports`]): the logging [`WorkerMailer`], the gateway-backed
-    ///   [`WorkerHttpClient`], the inline [`WorkerReindexer`], and the shared
-    ///   AES-GCM sealer from `HUB_SEAL_KEY`.
+    /// - the browser identity and application-shell router ([`console_router`])
+    ///   built from [`ConsoleDeps`], the Worker's [`WorkerMailer`] and
+    ///   [`WorkerHttpClient`], and the shared AES-GCM sealer from
+    ///   `HUB_SEAL_KEY`.
     ///
     /// Both routers carry their own state, so they merge into one `Router<()>`
     /// exactly as the native hub composes them; the console's static paths win
@@ -546,7 +564,7 @@ mod entry {
                     &manifest.to_string(),
                     &public_key.to_string(),
                     aos_hub_core::clock::now_unix_secs(),
-                    route_http,
+                    Arc::clone(&route_http),
                 )
                 .map_err(|error| worker::Error::RustError(format!("route publication manifest: {error:#}")))?;
                 route_adapters = route_adapters.with_direct(Arc::new(direct));
@@ -629,6 +647,12 @@ mod entry {
                 Arc::clone(&egress),
             )))
             .with_domain_probe_terminator(domain_probe_terminator)
+            .with_identity_domain_verifier(Arc::new(
+                aos_hub_core::topology_probe::DnsJsonIdentityDomainVerifier::new(
+                    Arc::clone(&route_http),
+                    dns_endpoint.to_string(),
+                ),
+            ))
             .with_route_reservation_keyring(route_reservation_keyring)
             // RFC-0004 ch.14 Phase C: read-through cache hot point-key state
             // (sessions/tokens/config/routing) off the relational read path via Workers
@@ -677,18 +701,7 @@ mod entry {
             )),
             sealer,
             http: Arc::new(WorkerHttpClient::new(Arc::clone(&egress))),
-            surface,
-            surface_write,
-            reindexer,
-            // The default store is this Worker's R2 bucket; show its name (as
-            // `r2://<bucket>`) on instance settings when the deploy baked it.
-            default_storage_location: Some(format!("r2://{default_bucket}")),
-            // RFC-0004 ch.14 Phase C: Workers KV for read-through caching +
-            // token-revocation tombstones (the `SESSIONS` namespace).
-            kv: Some(Arc::new(crate::workerkv::WorkerKv::new(
-                env.kv(crate::handlers::bindings::KV_SESSIONS)?,
-            ))),
-            topology: Arc::clone(&service) as Arc<dyn aos_hub_core::web::console::TopologyConsole>,
+            control: Some(Arc::clone(&service)),
         };
 
         // The service is returned alongside the router so the bridge can run the
@@ -883,6 +896,13 @@ mod entry {
         // Drain already-committed notifications before longer maintenance.
         // A second pass below catches events raised by indexing in this tick.
         run_webhook_batch(make(), env).await?;
+        let now = (worker::Date::now().as_millis() / 1000) as i64;
+        aos_hub_core::db::Database::attach(make())
+            .prune_expired_invitation_secrets(now, 1_000)
+            .await
+            .map_err(|error| {
+                worker::Error::RustError(format!("prune expired invitation credentials: {error:#}"))
+            })?;
         run_domain_probes(make(), env).await;
         let secret_versions = match crate::secretversions::from_env(env) {
             Ok(resolver) => resolver,
@@ -933,7 +953,6 @@ mod entry {
                 ));
             let controller =
                 aos_hub_core::gc_controller::CacheGcDeletionController::new(db, writers);
-            let now = (worker::Date::now().as_millis() / 1000) as i64;
             if let Err(err) = controller.run_due(now, 100).await {
                 worker::console_error!("physical cache deletion controller failed: {err:#}");
             }
@@ -1430,8 +1449,9 @@ mod entry {
                 .unwrap_or_default();
             #[cfg(feature = "do-e2e")]
             {
-                let (router, service) = router_from_do_e2e(&self.state, &self.env, db).await?;
-                return crate::bridge::dispatch_do_e2e(router, &service, req).await;
+                let (router, service, console_deps) =
+                    router_from_do_e2e(&self.state, &self.env, db).await?;
+                return crate::bridge::dispatch(router, &service, console_deps, None, req).await;
             }
             // The DO runs the same shared router as the native shell.
             #[cfg(not(feature = "do-e2e"))]

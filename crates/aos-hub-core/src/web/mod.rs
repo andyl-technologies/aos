@@ -22,8 +22,7 @@
 //!   [`SessionIndicator`](console_render::SessionIndicator), superseding the
 //!   anonymous proto-shaped builders in [`render`].
 //!
-//! The producer console's foundation is shared the same way (RFC-0004 Phase 5,
-//! console-dedup stage A):
+//! The browser identity boundary is shared the same way:
 //!
 //! - [`session`] — runtime-neutral session extraction: turn a request's
 //!   `Cookie` header plus a [`Database`](crate::db::Database) into a resolved,
@@ -31,13 +30,12 @@
 //! - [`csrf`] — the per-session synchronizer-token CSRF defenses
 //!   ([`mint_csrf_token`](csrf::mint_csrf_token),
 //!   [`connect_or_csrf_ok`](csrf::connect_or_csrf_ok)).
-//! - [`console_render`] — the console page chrome
+//! - [`console_render`] — the retained ceremony page chrome
 //!   ([`page_with_session`](console_render::page_with_session),
 //!   [`StateLine`](console_render::StateLine),
 //!   [`SessionIndicator`](console_render::SessionIndicator),
-//!   [`Pager`](console_render::Pager)) and every console page builder, made
-//!   transport- and task-local-free (session email, brand, and CSRF token are
-//!   parameters).
+//!   [`Pager`](console_render::Pager)) and identity page builders, made
+//!   transport- and task-local-free.
 //!
 //! The shared Connect-JSON router ([`crate::connect`]) mounts the browse routes
 //! under the reserved `/` and `/{slug}/-/…` paths, more specific than the
