@@ -27,7 +27,7 @@
     ListenAddress ::
 
     # Host keys (ed25519 preferred, RSA as fallback).
-    HostKey /etc/ssh/ssh_host_ed25519_key
+    HostKey /var/etc/ssh/ssh_host_ed25519_key
 
     # Authentication.
     PermitRootLogin ${cfg.permitRootLogin}
@@ -418,9 +418,10 @@ in {
       text = sshdConfig;
     };
 
-    # Generate SSH host keys on first boot to /var/etc/ssh/ (persistent
-    # across reboots via the /var partition). The /etc overlay makes them
-    # visible at /etc/ssh/ for sshd.
+    # Generate SSH host keys when the service is first enabled and retain them
+    # across reboots on the /var partition. sshd reads the durable path
+    # directly: changing a lower layer after an overlay mount is not a safe
+    # way to publish newly generated files into the live /etc namespace.
     systemd.services."sshd-keygen" = {
       description = "Generate SSH Host Keys";
       serviceConfig = {

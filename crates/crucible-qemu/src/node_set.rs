@@ -248,6 +248,10 @@ impl SimulationBackend for QemuNodeSet {
         self.node_mut(&node)?.open_gdbstub(node, listen)
     }
 
+    fn activate_debug_guest(&mut self, node: &NodeId) -> Result<(), BackendError> {
+        Ok(self.node_mut(node)?.activate_debug_guest()?)
+    }
+
     fn send_guest_introspection(
         &mut self,
         node: &NodeId,

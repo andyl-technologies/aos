@@ -498,6 +498,9 @@ impl ActiveStep {
         outcome: &QuantumOutcome,
         event_log_len_before: u64,
     ) -> Result<bool, ConditionEvaluationError> {
+        if let Some(target) = self.target_frontier {
+            return Ok(outcome.frontier >= target);
+        }
         let prefix = if outcome.event_log_entries.is_empty() {
             ConditionEventLogPrefix::from_evaluation_boundary(
                 event_log_len_before,

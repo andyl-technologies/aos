@@ -527,3 +527,22 @@ pub(crate) fn unsupported_search_backend_error(plan: &SearchDriverPlan) -> CliEr
         plan.on_violation.label()
     ))
 }
+
+#[cfg(test)]
+mod digest_tests {
+    use super::*;
+
+    #[test]
+    fn reproduction_fingerprints_use_the_cli_content_address_namespace() {
+        let hash = crucible::ContentHash::from_canonical_material("live-search", "fingerprint");
+
+        assert_eq!(
+            cli_digest_from_engine_hash(hash),
+            format!("{CONTENT_ADDRESS_PREFIX}{}", hash.to_hex())
+        );
+        assert_eq!(
+            format_content_hash_ref(hash),
+            format!("blake3:{}", hash.to_hex())
+        );
+    }
+}

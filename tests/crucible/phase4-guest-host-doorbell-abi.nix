@@ -8,7 +8,7 @@
   cargoDeps = pkgs.fetchCargoDeps {
     src = crucibleSrc;
     sourceRoot = "source/crates";
-    hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
+    hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
   };
 
   pluginLib = import ./_rust-module-source.nix {
@@ -60,11 +60,11 @@
       }
       {
         label = "aarch64 bytes documented";
-        needle = "aarch64  hlt #0x04c1";
+        needle = "aarch64  hint #0x4c";
       }
       {
         label = "aarch64 instruction word";
-        needle = "0xd4409820";
+        needle = "0xd503299f";
       }
     ]
     ++ failuresFor "crates/crucible-protocol/src/lib.rs" protocolLib [
@@ -80,7 +80,7 @@
     ++ failuresFor "crates/crucible-protocol/src/doorbell_abi.rs" protocolDoorbellAbi [
       {
         label = "instruction ABI version";
-        needle = "pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = 3;";
+        needle = "pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = 4;";
       }
       {
         label = "x86 reserved port";
@@ -88,7 +88,7 @@
       }
       {
         label = "aarch64 reserved immediate";
-        needle = "pub const WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE: u16 = 0x04c1;";
+        needle = "pub const WHITEBOX_DOORBELL_AARCH64_RESERVED_HINT: u8 = 0x4c;";
       }
       {
         label = "x86 bytes";
@@ -96,7 +96,7 @@
       }
       {
         label = "aarch64 bytes";
-        needle = "pub const WHITEBOX_DOORBELL_AARCH64_HLT_BYTES: [u8; 4]";
+        needle = "pub const WHITEBOX_DOORBELL_AARCH64_HINT_BYTES: [u8; 4]";
       }
       {
         label = "ABI table";
@@ -107,8 +107,8 @@
         needle = "pub enum WhiteboxDoorbellTrapAbi";
       }
       {
-        label = "exact aarch64 hlt trap";
-        needle = "Aarch64Hlt";
+        label = "exact aarch64 inert hint";
+        needle = "Aarch64Hint";
       }
       {
         label = "x86 encoder re-export";
@@ -116,7 +116,7 @@
       }
       {
         label = "aarch64 encoder re-export";
-        needle = "encode_aarch64_hlt_instruction";
+        needle = "encode_aarch64_hint_instruction";
       }
       {
         label = "protocol x86 golden test";
@@ -124,7 +124,7 @@
       }
       {
         label = "protocol aarch64 golden test";
-        needle = "doorbell_abi_aarch64_vector_freezes_hlt_immediate";
+        needle = "doorbell_abi_aarch64_vector_freezes_inert_hint";
       }
     ]
     ++ failuresFor "crates/crucible-guest/Cargo.toml" guestCargo [
@@ -160,7 +160,7 @@
       }
       {
         label = "aarch64 byte vector export";
-        needle = "WHITEBOX_DOORBELL_AARCH64_HLT_BYTES";
+        needle = "WHITEBOX_DOORBELL_AARCH64_HINT_BYTES";
       }
       {
         label = "ABI type export";
@@ -182,7 +182,7 @@
       }
       {
         label = "exact aarch64 trap value";
-        needle = "WhiteboxDoorbellTrap::Aarch64Hlt";
+        needle = "WhiteboxDoorbellTrap::Aarch64Hint";
       }
       {
         label = "plugin trap conversion";
@@ -198,7 +198,7 @@
       }
       {
         label = "aarch64 literal vector test";
-        needle = "whitebox_doorbell_aarch64_golden_vector_freezes_hlt_immediate";
+        needle = "whitebox_doorbell_aarch64_golden_vector_freezes_inert_hint";
       }
       {
         label = "single-source registration test";
@@ -316,9 +316,9 @@ in
             check=${attrPath}
             tasks=${taskList}
             gate=gate:abi-conformance
-            instruction_abi_version=3
+            instruction_abi_version=4
             x86_64_doorbell_bytes=e6-e7
-            aarch64_doorbell_bytes=209840d4
+            aarch64_doorbell_bytes=9f2903d5
             abi_source=crucible-protocol::doorbell_abi::WHITEBOX_DOORBELL_ABIS
             RESULT
           '';

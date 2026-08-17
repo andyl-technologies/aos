@@ -205,13 +205,20 @@ pub(super) fn parse_optional_blob_ref(
         .transpose()
 }
 
-pub(super) fn parse_content_hash_ref(value: &str) -> Result<ContentHash, EngineError> {
+pub(super) fn parse_content_hash_ref(
+    field: &'static str,
+    value: &str,
+) -> Result<ContentHash, EngineError> {
     let Some(hex) = value.strip_prefix("blake3:") else {
-        return Err(scenario_serialization_error(
-            "content hash reference must start with blake3:",
-        ));
+        return Err(scenario_serialization_error(format!(
+            "{field} content hash reference must start with blake3:"
+        )));
     };
-    parse_content_hash_hex(hex)
+    parse_content_hash_hex(hex).map_err(|error| {
+        scenario_serialization_error(format!(
+            "{field} content hash reference is invalid: {error}"
+        ))
+    })
 }
 
 pub(super) fn parse_content_hash_hex(hex: &str) -> Result<ContentHash, EngineError> {
@@ -1693,48 +1700,7 @@ pub(super) fn partition_direction_label(direction: PartitionDirection) -> &'stat
     }
 }
 
-pub(super) fn reachable_disposition_label(disposition: ReachableDisposition) -> &'static str {
-    match disposition {
-        ReachableDisposition::Warn => "warn",
-        ReachableDisposition::Fail => "fail",
-    }
-}
+#[path = "material/policy_labels.rs"]
+mod policy_labels;
 
-pub(super) fn fire_policy_label(policy: FirePolicy) -> &'static str {
-    match policy {
-        FirePolicy::Once => "once",
-        FirePolicy::Repeatable => "repeatable",
-    }
-}
-
-pub(super) fn log_level_label(level: LogLevel) -> &'static str {
-    match level {
-        LogLevel::Debug => "debug",
-        LogLevel::Info => "info",
-        LogLevel::Warn => "warn",
-        LogLevel::Error => "error",
-    }
-}
-
-pub(super) fn ready_point_material(ready_point: &ReadyPoint) -> String {
-    match ready_point {
-        ReadyPoint::FixedIcount { icount } => {
-            format!("ready_point=fixed-icount\nready_icount={}", icount.retired)
-        }
-        ReadyPoint::NetworkIdle { window } => {
-            format!("ready_point=network-idle\nidle_window_ns={}", window.nanos)
-        }
-        ReadyPoint::ConsoleMarker { marker } => format!(
-            "ready_point=console-marker\nmarker_len={}\nmarker={marker}",
-            marker.len()
-        ),
-        ReadyPoint::AgentSignal => String::from("ready_point=agent-signal"),
-    }
-}
-
-pub(super) fn white_box_material(policy: WhiteBoxPolicy) -> &'static str {
-    match policy {
-        WhiteBoxPolicy::Disabled => "disabled",
-        WhiteBoxPolicy::Enabled => "enabled",
-    }
-}
+pub(super) use policy_labels::*;

@@ -2,6 +2,39 @@
 
 use super::*;
 
+#[path = "runtime/debug_evidence.rs"]
+mod debug_evidence;
+
+use debug_evidence::*;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RecordedControlBoundary {
+    Pending,
+    Ready,
+    Bypassed,
+}
+
+fn classify_recorded_control_boundary(
+    expected: &BTreeMap<NodeId, VirtualTime>,
+    observed: &BTreeMap<NodeId, VirtualTime>,
+) -> RecordedControlBoundary {
+    let mut pending = false;
+    for (node, expected_at) in expected {
+        let Some(observed_at) = observed.get(node) else {
+            return RecordedControlBoundary::Bypassed;
+        };
+        if observed_at > expected_at {
+            return RecordedControlBoundary::Bypassed;
+        }
+        pending |= observed_at < expected_at;
+    }
+    if pending {
+        RecordedControlBoundary::Pending
+    } else {
+        RecordedControlBoundary::Ready
+    }
+}
+
 impl ProductionVmLifecycleLoop {
     /// Returns the number of QEMU processes currently owned by this lifecycle.
     #[must_use]
@@ -215,24 +248,39 @@ impl ProductionVmLifecycleLoop {
             }
             let control = match controls.get(control_index) {
                 Some(recorded) if recorded.configuration == configuration => {
-                    let boundary_matches = recorded.node_times.iter().all(|(node, expected)| {
-                        replay.inner.backend().node_now(node).is_ok()
-                            && replay
-                                .inner
-                                .loop_impl()
-                                .scheduler_time_for_node(node)
-                                .is_ok_and(|at| at == *expected)
-                    });
-                    if !boundary_matches {
-                        let _ = replay.shutdown();
-                        return Err(SchedulerError::BoundaryViolation {
-                            message: format!(
-                                "whole-world debug replay reached control {} at the wrong node-time boundary",
-                                control_index
-                            ),
-                        });
+                    let mut observed = BTreeMap::new();
+                    for node in recorded.node_times.keys() {
+                        if replay.inner.backend().node_now(node).is_err() {
+                            let _ = replay.shutdown();
+                            return Err(SchedulerError::BoundaryViolation {
+                                message: format!(
+                                    "whole-world debug replay cannot observe node `{}` for control {}",
+                                    node.name, control_index
+                                ),
+                            });
+                        }
+                        let at = match replay.inner.loop_impl().scheduler_time_for_node(node) {
+                            Ok(at) => at,
+                            Err(error) => {
+                                let _ = replay.shutdown();
+                                return Err(error);
+                            }
+                        };
+                        observed.insert(node.clone(), at);
                     }
-                    recorded.control.clone()
+                    match classify_recorded_control_boundary(&recorded.node_times, &observed) {
+                        RecordedControlBoundary::Pending => Vec::new(),
+                        RecordedControlBoundary::Ready => recorded.control.clone(),
+                        RecordedControlBoundary::Bypassed => {
+                            let _ = replay.shutdown();
+                            return Err(SchedulerError::BoundaryViolation {
+                                message: format!(
+                                    "whole-world debug replay bypassed control {} node-time boundary",
+                                    control_index
+                                ),
+                            });
+                        }
+                    }
                 }
                 Some(recorded)
                     if recorded.configuration.schedule.len() <= configuration.schedule.len() =>
@@ -602,11 +650,20 @@ impl ProductionVmLifecycleLoop {
                 node_directory.display()
             ),
         })?;
-        prepare_root_overlay(&self.executable, &self.root_image, &node_directory).map_err(
-            |error| SchedulerError::BoundaryViolation {
+        let root_image =
+            self.root_images
+                .get(node)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "production QEMU restart has no root image for `{}`",
+                        node.name
+                    ),
+                })?;
+        prepare_root_overlay(&self.executable, root_image, &node_directory).map_err(|error| {
+            SchedulerError::BoundaryViolation {
                 message: format!("prepare QEMU restart overlay for `{}`: {error}", node.name),
-            },
-        )?;
+            }
+        })?;
         let white_box_enabled = self
             .trigger_world
             .vm_nodes()
@@ -814,6 +871,7 @@ impl ProductionVmLifecycleLoop {
             .map(|vm| vm.id.clone())
             .collect::<Vec<_>>();
         let mut node_icounts = BTreeMap::new();
+        let mut node_times = BTreeMap::new();
         let mut fingerprints = BTreeMap::new();
         for node in nodes {
             node_icounts.insert(
@@ -822,6 +880,10 @@ impl ProductionVmLifecycleLoop {
                     retired: self.inner.backend().node_now(&node)?.ticks,
                 },
             );
+            node_times.insert(
+                node.clone(),
+                self.inner.loop_impl().scheduler_time_for_node(&node)?,
+            );
             fingerprints.insert(node.clone(), self.inner.backend_mut().fingerprint(node)?);
         }
         let evidence = ProductionVmDebugRuntimeEvidence {
@@ -829,6 +891,7 @@ impl ProductionVmLifecycleLoop {
             event_log: self.inner.loop_impl().event_log_offset(),
             scheduler: self.inner.loop_impl().materialized_scheduler_state(),
             node_icounts,
+            node_times,
             fingerprints,
             graph_runtimes: Vec::new(),
             runtime: None,
@@ -871,13 +934,6 @@ impl ProductionVmLifecycleLoop {
         let evidence = &self.debug_runtime_evidence[latest_index];
         evidence.validate_graph_runtime(configuration.id(), reduced.id, runtime)?;
         let bound_runtime = evidence.bind_graph_runtime(runtime);
-        for (index, recorded) in self.debug_runtime_evidence.iter_mut().enumerate() {
-            if index != latest_index {
-                recorded
-                    .graph_runtimes
-                    .retain(|candidate| candidate != runtime);
-            }
-        }
         let evidence = &mut self.debug_runtime_evidence[latest_index];
         if !evidence.graph_runtimes.contains(runtime) {
             evidence.graph_runtimes.push(runtime.clone());
@@ -897,7 +953,7 @@ impl ProductionVmLifecycleLoop {
             .debug_runtime_evidence
             .iter()
             .rev()
-            .find(|evidence| evidence.graph_runtimes.contains(runtime))
+            .find(|evidence| evidence.matches_graph_runtime(runtime))
             .ok_or_else(|| SchedulerError::BoundaryViolation {
                 message: String::from(
                     "graph debug target has no matching production runtime evidence",
@@ -911,6 +967,90 @@ impl ProductionVmLifecycleLoop {
                     "production runtime evidence was not bound to graph materialization",
                 ),
             })
+    }
+
+    pub(super) fn resolve_recorded_debug_coordinate_runtime_evidence(
+        &self,
+        coordinate: &crucible::DebugCoordinate,
+        runtime: &RuntimeState,
+    ) -> Result<RuntimeState, SchedulerError> {
+        let evidence = match coordinate {
+            crucible::DebugCoordinate::EventSequence(sequence) => self
+                .debug_runtime_evidence
+                .iter()
+                .filter(|evidence| {
+                    evidence.matches_graph_runtime(runtime) && evidence.runtime.is_some()
+                })
+                .find(|evidence| evidence.event_log.events > *sequence),
+            crucible::DebugCoordinate::VirtualTime(time) => self
+                .debug_runtime_evidence
+                .iter()
+                .rev()
+                .filter(|evidence| {
+                    evidence.matches_graph_runtime(runtime) && evidence.runtime.is_some()
+                })
+                .find(|evidence| evidence.scheduler_frontier(*time) <= *time),
+            crucible::DebugCoordinate::NodeIcount { node, icount } => self
+                .debug_runtime_evidence
+                .iter()
+                .rev()
+                .filter(|evidence| {
+                    evidence.matches_graph_runtime(runtime) && evidence.runtime.is_some()
+                })
+                .find(|evidence| {
+                    evidence
+                        .node_icounts
+                        .get(node)
+                        .is_some_and(|observed| observed <= icount)
+                }),
+            crucible::DebugCoordinate::Configuration(_)
+            | crucible::DebugCoordinate::Checkpoint(_) => self
+                .debug_runtime_evidence
+                .iter()
+                .find(|evidence| evidence.runtime.as_ref() == Some(runtime))
+                .or_else(|| {
+                    self.debug_runtime_evidence.iter().rev().find(|evidence| {
+                        evidence.matches_graph_runtime(runtime) && evidence.runtime.is_some()
+                    })
+                }),
+        }
+        .ok_or_else(|| SchedulerError::BoundaryViolation {
+            message: format!(
+                "debug coordinate {coordinate:?} has no matching production runtime boundary evidence"
+            ),
+        })?;
+        evidence
+            .runtime
+            .clone()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "production coordinate evidence was not bound to graph materialization",
+                ),
+            })
+    }
+
+    /// Resolves the production scheduler frontier recorded for a debug target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when the resolved runtime
+    /// has no corresponding production evidence sample.
+    pub(super) fn resolve_recorded_debug_coordinate_frontier(
+        &self,
+        coordinate: &crucible::DebugCoordinate,
+        runtime: &RuntimeState,
+        graph_fallback: VirtualTime,
+    ) -> Result<VirtualTime, SchedulerError> {
+        let evidence = self
+            .debug_runtime_evidence
+            .iter()
+            .find(|evidence| evidence.runtime.as_ref() == Some(runtime))
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "debug coordinate {coordinate:?} has no matching production frontier evidence"
+                ),
+            })?;
+        Ok(evidence.scheduler_frontier(graph_fallback))
     }
 
     fn app_random_continuation_config(
@@ -971,6 +1111,16 @@ impl ProductionVmLifecycleLoop {
         &mut self,
     ) -> Result<Vec<SchedulerEventLogAppend>, SchedulerError> {
         let mut appends = Vec::new();
+        if self.initial_lifecycle_observations_pending {
+            let at = self.inner.loop_impl().frontier();
+            let initial_events = initial_node_state_events(&self.source, at);
+            appends.push(
+                self.inner
+                    .loop_impl_mut()
+                    .append_observable_events(initial_events)?,
+            );
+            self.initial_lifecycle_observations_pending = false;
+        }
         for _ in 0..MAX_TRIGGER_SETTLE_BATCHES {
             let assertion_outcomes = self.assertion_evaluator.observe_prefix(
                 self.inner.loop_impl().condition_event_log_prefix(),
@@ -1018,161 +1168,13 @@ impl ProductionVmLifecycleLoop {
     }
 }
 
-impl ProductionVmDebugRuntimeEvidence {
-    fn same_sample(&self, other: &Self) -> bool {
-        self.configuration == other.configuration
-            && self.event_log == other.event_log
-            && self.scheduler == other.scheduler
-            && self.node_icounts == other.node_icounts
-            && self.fingerprints == other.fingerprints
-    }
-
-    fn bind_graph_runtime(&self, runtime: &RuntimeState) -> RuntimeState {
-        let mut bound = runtime.clone();
-        bound.configuration = self.configuration;
-        bound.event_log = self.event_log;
-        bound.scheduler = self.scheduler.clone();
-        bound.node_icounts = self.node_icounts.clone();
-        bound
-    }
-
-    fn validate_graph_runtime(
-        &self,
-        configuration: ContentHash,
-        reduced_state: ContentHash,
-        runtime: &RuntimeState,
-    ) -> Result<(), SchedulerError> {
-        let graph_nodes = runtime
-            .node_icounts
-            .keys()
-            .collect::<std::collections::BTreeSet<_>>();
-        let evidence_nodes = self
-            .node_icounts
-            .keys()
-            .collect::<std::collections::BTreeSet<_>>();
-        let blob_nodes = runtime
-            .node_blobs
-            .keys()
-            .collect::<std::collections::BTreeSet<_>>();
-        let graph_nodes_valid = (graph_nodes.is_empty() && blob_nodes.is_empty())
-            || (graph_nodes == evidence_nodes && blob_nodes == evidence_nodes);
-        if self.configuration == configuration
-            && runtime.configuration == configuration
-            && runtime.id == reduced_state
-            && graph_nodes_valid
-        {
-            return Ok(());
-        }
-        Err(SchedulerError::BoundaryViolation {
-            message: format!(
-                "graph runtime identity does not match the latest production debugger boundary: boundary_configuration_match={} runtime_configuration_match={} reduced_state_match={} node_sets_match={}",
-                self.configuration == configuration,
-                runtime.configuration == configuration,
-                runtime.id == reduced_state,
-                graph_nodes_valid,
-            ),
-        })
-    }
-
-    fn matches_target(&self, request: &DebugRuntimeRepositionRequest) -> bool {
-        self.configuration == request.target.id()
-            && self.event_log == request.target_runtime.event_log
-            && self.scheduler == request.target_runtime.scheduler
-            && self.node_icounts == request.target_runtime.node_icounts
-            && self.runtime.as_ref() == Some(&request.target_runtime)
-    }
-}
-
-fn debug_candidate_matches_target_runtime(
-    candidate: &ProductionVmLifecycleLoop,
-    request: &DebugRuntimeRepositionRequest,
-) -> Result<bool, SchedulerError> {
-    if candidate.inner.loop_impl().configuration() != &request.target
-        || candidate.inner.loop_impl().event_log_offset() != request.target_runtime.event_log
-        || candidate.inner.loop_impl().materialized_scheduler_state()
-            != request.target_runtime.scheduler
-    {
-        return Ok(false);
-    }
-    let world_nodes = candidate
-        .source
+fn initial_node_state_events(source: &ScenarioDefForm, at: VirtualTime) -> Vec<ObservableEvent> {
+    source
         .world()
         .vm_nodes()
         .iter()
-        .map(|vm| vm.id.clone())
-        .collect::<std::collections::BTreeSet<_>>();
-    if request
-        .target_runtime
-        .node_icounts
-        .keys()
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>()
-        != world_nodes
-    {
-        return Ok(false);
-    }
-    for (node, expected) in &request.target_runtime.node_icounts {
-        if candidate.inner.backend().node_now(node)?.ticks != expected.retired {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-fn verify_debug_replay_against_live_evidence(
-    candidate: &mut ProductionVmLifecycleLoop,
-    evidence: &ProductionVmDebugRuntimeEvidence,
-) -> Result<(), SchedulerError> {
-    for (node, expected) in &evidence.fingerprints {
-        let actual = candidate.inner.backend_mut().fingerprint(node.clone())?;
-        if actual != *expected {
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!(
-                    "whole-world debugger replay for `{}` does not match the original live execution fingerprint",
-                    node.name
-                ),
-            });
-        }
-    }
-    Ok(())
-}
-
-fn verify_debug_replay_pair(
-    candidate: &mut ProductionVmLifecycleLoop,
-    verifier: &mut ProductionVmLifecycleLoop,
-) -> Result<(), SchedulerError> {
-    if candidate.inner.loop_impl().materialized_scheduler_state()
-        != verifier.inner.loop_impl().materialized_scheduler_state()
-    {
-        return Err(SchedulerError::BoundaryViolation {
-            message: String::from(
-                "whole-world debugger replay candidates produced different scheduler state",
-            ),
-        });
-    }
-    for vm in candidate.source.world().vm_nodes() {
-        let candidate_counter = candidate.inner.backend().node_now(&vm.id)?;
-        let verifier_counter = verifier.inner.backend().node_now(&vm.id)?;
-        if candidate_counter != verifier_counter {
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!(
-                    "whole-world debugger replay candidates disagree on `{}` counter",
-                    vm.id.name
-                ),
-            });
-        }
-        let candidate_fingerprint = candidate.inner.backend_mut().fingerprint(vm.id.clone())?;
-        let verifier_fingerprint = verifier.inner.backend_mut().fingerprint(vm.id.clone())?;
-        if candidate_fingerprint != verifier_fingerprint {
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!(
-                    "whole-world debugger replay candidates disagree on `{}` execution fingerprint",
-                    vm.id.name
-                ),
-            });
-        }
-    }
-    Ok(())
+        .map(|node| ObservableEvent::node_state(at, node.id.clone(), NodeLifecycle::Started))
+        .collect()
 }
 
 fn assertion_state_event_from_outcome(outcome: &HostAssertionOutcome) -> Option<ObservableEvent> {
@@ -1194,81 +1196,5 @@ fn assertion_state_event_from_outcome(outcome: &HostAssertionOutcome) -> Option<
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn hash(domain: &str) -> ContentHash {
-        ContentHash::from_canonical_material("debug-runtime-evidence-test", domain)
-    }
-
-    fn node() -> NodeId {
-        NodeId {
-            name: String::from("vm-a"),
-        }
-    }
-
-    fn graph_runtime(configuration: ContentHash, reduced_state: ContentHash) -> RuntimeState {
-        RuntimeState {
-            id: reduced_state,
-            configuration,
-            node_blobs: BTreeMap::new(),
-            node_icounts: BTreeMap::new(),
-            scheduler: SchedulerState::default(),
-            event_log: EventLogOffset::default(),
-        }
-    }
-
-    fn evidence(configuration: ContentHash) -> ProductionVmDebugRuntimeEvidence {
-        ProductionVmDebugRuntimeEvidence {
-            configuration,
-            event_log: EventLogOffset::new(hash("event-log"), 3, 7),
-            scheduler: SchedulerState::default(),
-            node_icounts: BTreeMap::from([(node(), Icount { retired: 41 })]),
-            fingerprints: BTreeMap::new(),
-            graph_runtimes: Vec::new(),
-            runtime: None,
-        }
-    }
-
-    #[test]
-    fn production_debug_evidence_hydrates_only_backend_owned_runtime_fields() {
-        let configuration = hash("configuration");
-        let reduced_state = hash("reduced-state");
-        let mut graph = graph_runtime(configuration, reduced_state);
-        graph
-            .node_blobs
-            .insert(node(), crucible::NodeBlobRef::baked(hash("blob")));
-        graph.node_icounts.insert(node(), Icount { retired: 5 });
-        let evidence = evidence(configuration);
-
-        if let Err(error) = evidence.validate_graph_runtime(configuration, reduced_state, &graph) {
-            panic!("complete graph identity should validate: {error}");
-        }
-        let bound = evidence.bind_graph_runtime(&graph);
-        assert_eq!(bound.id, graph.id);
-        assert_eq!(bound.node_blobs, graph.node_blobs);
-        assert_eq!(bound.event_log, evidence.event_log);
-        assert_eq!(bound.node_icounts, evidence.node_icounts);
-    }
-
-    #[test]
-    fn production_debug_evidence_rejects_forged_or_partial_graph_identity() {
-        let configuration = hash("configuration");
-        let reduced_state = hash("reduced-state");
-        let evidence = evidence(configuration);
-        let mut forged = graph_runtime(configuration, hash("forged-state"));
-        assert!(
-            evidence
-                .validate_graph_runtime(configuration, reduced_state, &forged)
-                .is_err()
-        );
-
-        forged.id = reduced_state;
-        forged.node_icounts.insert(node(), Icount { retired: 5 });
-        assert!(
-            evidence
-                .validate_graph_runtime(configuration, reduced_state, &forged)
-                .is_err()
-        );
-    }
-}
+#[path = "runtime/tests.rs"]
+mod tests;

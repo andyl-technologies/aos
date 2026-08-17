@@ -16,6 +16,7 @@
   config,
   pkgs,
   lib,
+  provenance,
   ...
 }: let
   cfg = config.aos.security.pki;
@@ -42,7 +43,7 @@
   # Otherwise concatenate the Mozilla roots with the extra certificates.
   # runCommand pre-creates $out as a directory, so the bundle lives at a
   # subpath (mirroring the ca-certificates package layout).
-  caBundle =
+  builtCaBundle =
     if !hasExtras
     then mozillaBundle
     else "${pkgs.runCommand "aos-ca-certificates" {} ''
@@ -50,6 +51,35 @@
       cat ${lib.concatMapStringsSep " " builtins.toString sources} \
         > "$out/etc/ssl/certs/ca-certificates.crt"
     ''}/etc/ssl/certs/ca-certificates.crt";
+
+  # Stage 2 cannot invoke the builders above. Preserve the exact ordered
+  # concatenation as pure manifest data instead: the Mozilla and file-backed
+  # roots remain authenticated store-file references, while inline roots are
+  # carried byte-for-byte. The Rust materializer validates every part as a
+  # certificate-only PEM stream before publishing the generation.
+  runtimeBundle =
+    [
+      {source = mozillaBundle;}
+    ]
+    ++ builtins.map (source: {source = builtins.toString source;}) cfg.certificateFiles
+    ++ builtins.map (text: {text = text + "\n";}) cfg.certificates;
+
+  configuredOwners = lib.unique (builtins.filter
+    (owner: owner != "@base")
+    [
+      (provenance.ownerOfOption ["aos" "security" "pki" "certificateFiles"])
+      (provenance.ownerOfOption ["aos" "security" "pki" "certificates"])
+    ]);
+  runtimeBundleOwner =
+    if configuredOwners == []
+    then "@base"
+    else if builtins.length configuredOwners == 1
+    then builtins.head configuredOwners
+    else throw "runtime CA bundle depends on multiple non-image owners: ${lib.concatStringsSep ", " configuredOwners}";
+
+  # Consumers should always use the stable runtime path. In particular, this
+  # prevents forcing builtCaBundle from an otherwise pure stage-2 evaluation.
+  caBundle = "/etc/ssl/certs/ca-certificates.crt";
 in {
   options.aos.security.pki = {
     ## Install the system CA trust store to /etc/ssl.
@@ -95,15 +125,40 @@ in {
         reference this to point a service at the system trust store.
       '';
     };
+
+    _runtimeBundleOwner = lib.mkOption {
+      type = lib.types.str;
+      readOnly = true;
+      internal = true;
+      description = "Resolver-authenticated owner of the runtime CA bundle inputs.";
+    };
   };
 
   config = lib.mkMerge [
     (lib.mkIf cfg.enable {
       # Canonical NixOS/Debian/Arch path, plus the Debian ca-bundle.crt and
       # Fedora/CentOS pki/tls compatibility aliases, matching NixOS.
-      environment.etc."ssl/certs/ca-certificates.crt".source = caBundle;
-      environment.etc."ssl/certs/ca-bundle.crt".source = caBundle;
-      environment.etc."pki/tls/certs/ca-bundle.crt".source = caBundle;
+      environment.etc."ssl/certs/ca-certificates.crt" = {
+        source = builtCaBundle;
+        runtimeCertificateBundle =
+          if hasExtras
+          then runtimeBundle
+          else null;
+      };
+      environment.etc."ssl/certs/ca-bundle.crt" = {
+        source = builtCaBundle;
+        runtimeCertificateBundle =
+          if hasExtras
+          then runtimeBundle
+          else null;
+      };
+      environment.etc."pki/tls/certs/ca-bundle.crt" = {
+        source = builtCaBundle;
+        runtimeCertificateBundle =
+          if hasExtras
+          then runtimeBundle
+          else null;
+      };
 
       # OpenSSL- and curl-based tools honor these in login sessions; gnutls
       # uses its compiled default trust store, which pkgs/security/gnutls.nix
@@ -113,6 +168,11 @@ in {
         NIX_SSL_CERT_FILE = "/etc/ssl/certs/ca-certificates.crt";
       };
     })
-    {aos.security.pki.caBundle = caBundle;}
+    {
+      aos.security.pki = {
+        inherit caBundle;
+        _runtimeBundleOwner = runtimeBundleOwner;
+      };
+    }
   ];
 }

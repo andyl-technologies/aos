@@ -25,6 +25,22 @@
       inherit (pkgs) crucible crucible-controller crucible-qemu-plugin qemu-crucible qemu-crucible-source;
     }
     else {};
+  nativeQemuSystemBinary =
+    {
+      "x86_64-linux" = "qemu-system-x86_64";
+      "aarch64-linux" = "qemu-system-aarch64";
+    }.${
+      pkgs.stdenv.hostPlatform.system
+    }
+    or (throw "crucible phase1 AOS workspace build does not support ${pkgs.stdenv.hostPlatform.system}");
+  nativeGuestArchitecture =
+    {
+      "x86_64-linux" = "x86_64";
+      "aarch64-linux" = "aarch64";
+    }.${
+      pkgs.stdenv.hostPlatform.system
+    }
+    or (throw "crucible phase1 AOS workspace build does not support ${pkgs.stdenv.hostPlatform.system}");
 in
   if attrFailures != []
   then throw "crucible phase1 AOS workspace build lint failed:\n${builtins.concatStringsSep "\n" attrFailures}"
@@ -56,7 +72,18 @@ in
 
             test -x ${packages.crucible}/bin/crucible
             test -x ${packages.crucible}/bin/gdb
+            test -x ${packages.crucible}/bin/ssh
+            test -x ${packages.crucible}/bin/crucible-debugger-live-fixture
+            test -x ${packages.crucible}/bin/crucible-debugger-live-matrix
             test -x ${packages.crucible}/bin/gdbserver
+            ${packages.crucible}/bin/crucible-debugger-live-fixture \
+              ${nativeGuestArchitecture} \
+              ${pkgs.linux-crucible}/boot/vmlinuz-${pkgs.linux-crucible.version} \
+              ${pkgs.crucible-fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4 \
+              'console=crucible-fixture provenance=exact' \
+              "$PWD/debugger-live.scenario.toml"
+            grep -Fx 'cmdline = "console=crucible-fixture provenance=exact"' \
+              "$PWD/debugger-live.scenario.toml"
             test -f ${packages.crucible}/share/licenses/crucible/Apache-2.0.txt
             test -f ${packages.crucible}/share/licenses/crucible/MIT.txt
             test -f ${packages.crucible}/share/licenses/crucible/GPL-2.0-only.txt
@@ -75,19 +102,25 @@ in
               ${packages.crucible-controller}/nix-support/crucible-build-info
             grep -q '^qemu_package=qemu-crucible$' \
               ${packages.crucible}/nix-support/crucible-build-info
-            grep -q '^qemu_path=${packages.qemu-crucible}/bin/qemu-system-x86_64$' \
+            grep -q '^qemu_path=${packages.qemu-crucible}/bin/${nativeQemuSystemBinary}$' \
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^plugin_package=crucible-qemu-plugin$' \
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^plugin_path=${packages.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so$' \
               ${packages.crucible}/nix-support/crucible-build-info
-            grep -q '^component_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later$' \
+            grep -q '^component_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause$' \
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^gdb_package=gdb$' \
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^gdb_path=${packages.gdb}/bin/gdb$' \
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^gdb_license=GPL-3.0-or-later$' \
+              ${packages.crucible}/nix-support/crucible-build-info
+            grep -q '^ssh_package=openssh$' \
+              ${packages.crucible}/nix-support/crucible-build-info
+            grep -q '^ssh_path=${pkgs.openssh}/bin/ssh$' \
+              ${packages.crucible}/nix-support/crucible-build-info
+            grep -q '^ssh_license=BSD-2-Clause$' \
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^boundary_crates=crucible-protocol,crucible-shmem$' \
               ${packages.crucible}/nix-support/crucible-build-info
@@ -118,9 +151,11 @@ in
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^guest_host_protocol_abi=crucible-guest-host-channel-v1$' \
               ${packages.crucible}/nix-support/crucible-build-info
-            grep -q '^rpc_abi_version=4.0.0$' \
+            grep -q '^doorbell_instruction_abi_version=4$' \
               ${packages.crucible}/nix-support/crucible-build-info
-            grep -q '^rpc_abi_build=crucible-rpc-abi-v4$' \
+            grep -q '^rpc_abi_version=5.0.0$' \
+              ${packages.crucible}/nix-support/crucible-build-info
+            grep -q '^rpc_abi_build=crucible-rpc-abi-v5$' \
               ${packages.crucible}/nix-support/crucible-build-info
 
             test -f ${packages.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so
@@ -200,7 +235,7 @@ in
             qemu_plugin_abi=qemu-plugin-api-v4
             shmem_abi=crucible-shmem-abi-v6
             guest_host_protocol_abi=crucible-guest-host-channel-v1
-            rpc_abi=4.0.0+crucible-rpc-abi-v4
+            rpc_abi=5.0.0+crucible-rpc-abi-v5
             qemu_sim_capability=qemu-crucible
             generated_shmem_header=include/aos/crucible/crucible_shmem_abi.h
             RESULT

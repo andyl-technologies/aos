@@ -42,8 +42,8 @@ conversion or use platform tooling that both expands the disk and repairs GPT.
 
 ## Supply first-boot policy
 
-Use a literal Nix module as `host.nix`. Storage provisioning is the currently
-supported runtime surface:
+Use a literal Nix module as `host.nix`. Storage is projected and committed in
+the initrd; general machine policy is evaluated and activated in stage 2:
 
 ```nix
 {
@@ -56,9 +56,10 @@ Choose a transport supported by the target: an `aos-metadata` drive, NoCloud
 user-data channel. Use signed trust only with a transport that also carries the
 detached signature.
 
-Networking, users, access, services, and packages required to reach the host
-must currently be included in the golden image by its release integrator.
-General runtime `host.nix` activation is not complete.
+Stage 2 resolves authenticated package configuration, materializes an EROFS
+`/etc` lower, and commits a numbered configuration generation atomically. Keep
+an image-baked or out-of-band recovery identity while qualifying runtime
+network and access changes.
 
 ## Gate the image in a VM
 
@@ -97,10 +98,10 @@ image-import requirements are satisfied. Provider import policy may require
 additional conversion, account permissions, firmware selection, or image
 metadata.
 
-The native metadata fetchers for Hetzner, Vultr, Scaleway, and Oracle Cloud are
-not implemented. Use an offline metadata drive on those platforms. Signed
-provisioning on GCP, Azure, DigitalOcean, and native OpenStack metadata also
-requires an offline transport that carries a detached signature.
+Native user-data and facts are supported on AWS, GCP, Azure, DigitalOcean, and
+OpenStack. Use an offline metadata drive for other platforms. Signed
+provisioning on GCP, Azure, DigitalOcean, and native OpenStack metadata requires
+an offline transport that carries a detached signature.
 
 ## Write bare-metal media
 
@@ -132,6 +133,8 @@ At every ring, compare the observed image, provisioning audit, package
 generation, service health, and application signals with the deployment
 record. Stop on unexplained drift.
 
-Reimage hosts when a release changes the kernel or UKI. The current APM system
-upgrade path is production-safe only for userspace releases whose boot
-artifacts remain unchanged.
+Exercise both durable A/B image rollback and configuration rollback before a
+ring advances. A changed image is written to the inactive root slot with its
+UKI; sd-boot boot counting falls back automatically when the candidate cannot
+reach the configuration-commit gate. A successful boot re-evaluates the host
+configuration against the new image ABI before blessing it.

@@ -5,9 +5,12 @@ These guides are for developers installing, configuring, and operating AOS on
 their own machines.
 
 AOS is an early preview. The public golden image is not published yet.
-First-boot storage provisioning, package profiles, and userspace system
-generation switching are implemented; general `host.nix` activation and
-durable kernel updates are not complete.
+First-boot storage provisioning, runtime `host.nix` activation, package
+profiles, and durable A/B image and configuration generations are present in
+the tree. They remain early-preview interfaces that must be qualified on the
+exact image and platform. The checked-in verified-boot variants still use
+public test keys, and public image distribution and a production key-custody
+workflow remain separate work.
 
 ## The operating model
 
@@ -15,15 +18,16 @@ durable kernel updates are not complete.
 | --- | --- | --- |
 | System image | Installed from the AOS golden image | Immutable root and UEFI image |
 | First-boot storage | Literal `host.nix` supplied through metadata | Committed once; later changes are drift |
+| Host configuration | Pure `host.nix` evaluation and authenticated package configuration | Numbered configuration generations under `/var/lib/profiles/system` |
 | User packages | `apm install`, `upgrade`, `remove`, and `rollback` after account storage is provisioned | Per-user profile generations under `/var/lib/profiles/per-user` |
 | Runtime system packages | `apm install --system --from DESIRED.toml` | Machine-wide package generations under `/var/lib/profiles/system-packages` |
-| OS userspace | `apm upgrade --system` and `apm rollback --system` | Sysroot generations under `/var/lib/profiles/system` |
+| OS image | `apm upgrade --system` and `apm rollback --system --image` | A/B image generations under `/var/lib/profiles/image` |
 
 Three command names cover different jobs on an AOS system:
 
 | Command | Use it for |
 | --- | --- |
-| `apm` | Consuming packages and switching package or OS generations |
+| `apm` | Consuming packages and switching configuration or image generations |
 | `apr` | Creating, signing, and publishing package registries |
 | `aos` | Repository and AOS Hub tooling; most host package operations use `apm` |
 
@@ -48,8 +52,8 @@ multicall binary, so `aos package` is equivalent to `apm` and
   declarative machine-wide packages, profiles, and package rollback.
 - [Operate an AOS host](operations.md) covers services, logs, storage,
   packages, monitoring, and maintenance.
-- [Upgrade and roll back a host](upgrades.md) covers userspace OS generations,
-  activation modes, and failure semantics.
+- [Upgrade and roll back a host](upgrades.md) covers the independent image and
+  configuration generation axes, A/B boot counting, and failure semantics.
 - [Secure an AOS host](security.md) covers security presets, remote access,
   firewall, audit policy, trust roots, and the verified-boot boundary.
 - [Manage secrets on AOS](secrets.md) defines safe build-time and runtime

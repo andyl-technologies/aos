@@ -201,9 +201,13 @@
           eval_log = node.succeed(
               "journalctl -u aos-eval.service --no-pager --output=cat"
           ).strip()
+          commit_log = node.succeed(
+              "journalctl -u aos-image-boot-commit.service --no-pager --output=cat"
+          ).strip()
           raise AssertionError(
               f"failed units on provisioned boot: {failed!r}\n"
-              f"aos-eval.service journal:\n{eval_log}"
+              f"aos-eval.service journal:\n{eval_log}\n"
+              f"aos-image-boot-commit.service journal:\n{commit_log}"
           )
 
       node.succeed("test -e /dev/disk/by-partlabel/aos-provenance-operator-v1")

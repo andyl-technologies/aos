@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use crate::config::ApmConfig;
 use crate::registry::store_path_hash;
 use crate::sysroot;
-use crate::types::ProfileScope;
 
 // ---------------------------------------------------------------------------
 // Store path parsing
@@ -293,17 +292,7 @@ pub fn build_registry_lookup(config: &ApmConfig) -> HashMap<String, (String, Str
 /// if there is no active sysroot or the sysroot package cannot be found in
 /// any registry.
 pub fn get_sysroot_references(config: &ApmConfig) -> Option<(Vec<String>, String, String)> {
-    let profile_path = ProfileScope::System.profile_path();
-    let state = sysroot::load_generation_state_pub(&profile_path).ok()?;
-
-    if state.current == 0 {
-        return None;
-    }
-
-    let current = state
-        .generations
-        .iter()
-        .find(|g| g.number == state.current)?;
+    let current = sysroot::running_image_generation().ok()?;
 
     // Load registries to get the sysroot package's references.
     let reg_configs = config.enabled_registries();

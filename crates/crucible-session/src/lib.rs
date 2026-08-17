@@ -53,7 +53,9 @@ pub mod engine {
         TopologyShape, TopologySizeRange, UnifiedGraphOperationEvidence, UnifiedGraphOperationKind,
         UnifiedGraphOperationReport, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
         bake, built_in_example_corpus, crash_restart_scenario, fault_campaign_family,
-        happy_path_scenario, partition_recovery_scenario, run_fault_campaign_example, try_step,
+        happy_path_scenario, is_supported_live_world_network_override,
+        live_world_network_override_matches_world, live_world_network_override_point_prefixes,
+        partition_recovery_scenario, run_fault_campaign_example, try_step,
         verify_example_scenario_runs,
     };
 }
@@ -71,19 +73,21 @@ use crucible::{
     Action, BackendError, Checkpoint, CodePoint, Condition, ConditionEvaluationError,
     ConditionEvaluationPass, ConditionEventLogPrefix, ConditionLeaf, ConditionLeafOracle,
     Configuration, ContentHash, ControlOperation, ControlOperationKind, DagStore,
-    DebugAttachReport, DebugAttachRequest, DebugGdbEndpoint, DebugGotoReport, DebugGotoRequest,
-    DebugNonCanonicalBranchReport, DebugNonCanonicalBranchRequest, DebugReverseContinueReport,
-    DebugReverseContinueRequest, DebugReverseStepGrain, DebugReverseStepReport,
-    DebugReverseStepRequest, DebugRuntimeRepositionRequest, Decision, EngineError, Fault, FaultTag,
-    FingerprintSample, GdbListen, MemPlace, NodeId, ObservableEventPayload, QuantumLoop,
-    QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, ResolvedCodePoint, ResolvedMemPlace,
-    RuntimeState, Schedule, ScheduledEventPayload, SchedulerError, SchedulerEvaluationBoundaryKind,
+    DebugAttachReport, DebugAttachRequest, DebugCoordinate, DebugGdbEndpoint, DebugGotoReport,
+    DebugGotoRequest, DebugNonCanonicalBranchAction, DebugNonCanonicalBranchReport,
+    DebugNonCanonicalBranchRequest, DebugReverseContinueReport, DebugReverseContinueRequest,
+    DebugReverseStepGrain, DebugReverseStepReport, DebugReverseStepRequest,
+    DebugRuntimeRepositionRequest, Decision, EngineError, Fault, FaultTag, FingerprintSample,
+    GdbListen, MemPlace, NodeId, ObservableEventPayload, QuantumLoop, QuantumOutcome,
+    QuantumRequest, QuantumTerminalVerdict, ResolvedCodePoint, ResolvedMemPlace, RuntimeState,
+    Schedule, ScheduledEventPayload, SchedulerError, SchedulerEvaluationBoundaryKind,
     SchedulerEventLogClass, SchedulerEventLogEntry, SchedulerEventLogPayload,
     SchedulerLivenessScenario, SchedulerQuiescence, SchedulerWorldInstantiationError, SimDuration,
     SingleScheduler, TemporalGraph, VirtualTime, WhiteBoxPolicy, World, WorldIoLayoutPolicy,
 };
 use crucible_protocol::guest_introspection::{
-    GuestIntrospectionFailureCode, GuestIntrospectionMessage, GuestIntrospectionRecord,
+    GUEST_INTROSPECTION_FEATURE_CHANNEL_ID, GuestIntrospectionFailureCode,
+    GuestIntrospectionFeatures, GuestIntrospectionMessage, GuestIntrospectionRecord,
 };
 use thiserror::Error;
 use tokio::sync::broadcast;

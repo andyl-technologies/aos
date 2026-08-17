@@ -1,7 +1,6 @@
 ##! modules/base/config-artifacts.nix — image-fixed configuration artifacts
 ##!
-##! Layer 2 of the eval-only core (see docs/rfcs/0011-on-host-config-eval/
-##! eval-only-core.md). Some config modules build a *derivation* at eval time
+##! Some config modules build a *derivation* at eval time
 ##! for a `/etc` artifact or a unit input — e.g. `dbus-conf` merges the
 ##! `share/dbus-1` trees of several packages into a system bus config. These
 ##! artifacts are **image-fixed**: they depend on *image* config (which packages
@@ -29,7 +28,8 @@
 ##!     derivation as before and the build is byte-identical.
 ##!
 ##! At base-lib build time the producer forces `_artifactSources.<key>.outPath`
-##! once and ships the resulting `frozenArtifacts` map to stage-2.
+##! once, ships the resulting `frozenArtifacts` map to stage-2, and creates an
+##! output symlink to each source so Nix retains every referenced store closure.
 {
   config,
   lib,

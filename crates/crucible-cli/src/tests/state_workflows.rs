@@ -49,10 +49,10 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
     assert!(outcome.terminal_savepoint.is_some());
     assert!(outcome.savepoint_oracle.is_some());
     assert!(
-        outcome
+        !outcome
             .stdout
             .iter()
-            .any(|line| { line.starts_with("run-savepoint\tpolicy=always\tcheckpoint=blake3:") })
+            .any(|line| { line.starts_with("run-savepoint\t") || line.starts_with("run-store\t") })
     );
     assert!(outcome.stdout.iter().any(|line| {
         line.starts_with("save-oracle\tstatus=fat==thin-passed\tconfiguration=blake3:")
@@ -110,8 +110,16 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
     assert!(handle.contains("label\trelease candidate\n"));
     assert!(handle.contains("checkpoint\tblake3:"));
     assert!(handle.contains("at\tquiescence\n"));
+    assert!(handle.contains("selector\tnone\n"));
+    assert!(handle.contains("boundary-proof\tbreakpoint\t"));
+    assert!(handle.contains("boundary-predicate\tcrucible-hash:"));
     assert!(handle.contains("materialization\tcreate-savepoint\treply\n"));
     assert!(handle.contains("oracle\tfat==thin-passed\n"));
+    let contradictory_quiescence = handle.replace(
+        "terminal-condition\tquiescence\n",
+        "terminal-condition\tproperty\n",
+    );
+    assert!(decode_savepoint_handle(contradictory_quiescence.as_bytes()).is_err());
 
     let saved_checkpoint = outcome
         .terminal_savepoint
@@ -232,17 +240,62 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
         String::from("--out"),
         virtual_time_out.display().to_string(),
     ]);
-    dispatch(&virtual_time_cli)?;
+    let Commands::Save(args) = &virtual_time_cli.command else {
+        panic!("expected save command");
+    };
+    let virtual_time_plan =
+        plan_save_invocation(args, temp.path(), &virtual_time_cli.artifact_dir)?;
+    let virtual_time_seed = plan_determinism_ergonomics(
+        &virtual_time_cli,
+        &FakeSeedEnvironment::default(),
+        &mut FakeSeedEntropySource::new(0),
+    )?
+    .expect("save should resolve a seed");
+    let virtual_time_backend =
+        plan_backend_selection(&virtual_time_cli)?.expect("save should require backend");
+    let mut virtual_time_outcome = execute_backend_routed_command(
+        &plan_cli_invocation(&virtual_time_cli),
+        &virtual_time_backend,
+        Some(&virtual_time_seed),
+        Some(&virtual_time_plan.run_plan),
+        None,
+        Some(&virtual_time_plan),
+        &mut NullBackendCommandRunner,
+    )?;
+    export_savepoint_handle(&virtual_time_plan, &mut virtual_time_outcome)?;
+    let step_acks = virtual_time_outcome
+        .canonical_log
+        .iter()
+        .filter(|entry| entry.kind == "interactive_ack" && entry.summary == "step-quantum")
+        .count();
+    assert_eq!(step_acks, 2);
+    assert!(
+        !virtual_time_outcome
+            .canonical_log
+            .iter()
+            .any(|entry| entry.kind == "interactive_ack" && entry.summary == "step-duration")
+    );
     let virtual_time_handle = fs::read_to_string(virtual_time_out)?;
     assert!(virtual_time_handle.contains("label\tat-two-ticks\n"));
     assert!(virtual_time_handle.contains("at\tvirtual-time\n"));
+    assert!(virtual_time_handle.contains("selector\tnone\n"));
+    assert!(virtual_time_handle.contains("boundary-proof\tcoordinate\t2\t2\n"));
+    assert!(virtual_time_handle.contains("boundary-predicate\tnone\n"));
     assert!(virtual_time_handle.contains("oracle\tfat==thin-passed\n"));
+    let contradictory_virtual_time = virtual_time_handle.replace(
+        "terminal-condition\tvirtual-time\n",
+        "terminal-condition\tquiescence\n",
+    );
+    assert!(decode_savepoint_handle(contradictory_virtual_time.as_bytes()).is_err());
 
     let property_selector_scenario = write_property_selector_scenario(&temp)?;
     let property_out = temp.path().join("property.crucible-savepoint");
+    let property_trace = temp.path().join("property.jsonl");
     let property_cli = Cli::parse_from([
         String::from("crucible"),
         String::from("--quiet"),
+        String::from("--trace"),
+        property_trace.display().to_string(),
         String::from("--artifact-dir"),
         artifact_dir.display().to_string(),
         String::from("--backend"),
@@ -264,7 +317,61 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
     let property_handle = fs::read_to_string(property_out)?;
     assert!(property_handle.contains("label\tproperty-stop\n"));
     assert!(property_handle.contains("at\tproperty\n"));
+    assert!(property_handle.contains("selector\tproperty-violation\tno-split-brain\n"));
+    assert!(property_handle.contains("boundary-proof\tbreakpoint\t"));
+    assert!(property_handle.contains("boundary-predicate\tcrucible-hash:"));
     assert!(property_handle.contains("oracle\tfat==thin-passed\n"));
+    let property_trace = fs::read_to_string(property_trace)?;
+    assert!(property_trace.contains("save_boundary_proof"));
+    assert!(property_trace.contains("property-violation:no-split-brain"));
+
+    let contradictory_terminal = property_handle.replace(
+        "terminal-condition\tproperty\n",
+        "terminal-condition\tvirtual-time\n",
+    );
+    let error = decode_savepoint_handle(contradictory_terminal.as_bytes())
+        .expect_err("v3 property handle must reject a contradictory terminal condition");
+    assert!(error.to_string().contains("does not match --at property"));
+
+    let declared_predicate = crucible::Predicate::assertion_state(
+        crucible::AssertionId::from_name("no-split-brain"),
+        crucible::AssertionPhase::Violated,
+    );
+    let undeclared_predicate = crucible::Predicate::assertion_state(
+        crucible::AssertionId::from_name("undeclared-property"),
+        crucible::AssertionPhase::Violated,
+    );
+    let mut declared_predicate_line = String::new();
+    let declared_payload = declared_predicate.to_compact_binary();
+    artifact_line(
+        &mut declared_predicate_line,
+        &[
+            "boundary-predicate",
+            &content_address_bytes(&declared_payload),
+            &hex_bytes(&declared_payload),
+        ],
+    );
+    let mut undeclared_predicate_line = String::new();
+    let undeclared_payload = undeclared_predicate.to_compact_binary();
+    artifact_line(
+        &mut undeclared_predicate_line,
+        &[
+            "boundary-predicate",
+            &content_address_bytes(&undeclared_payload),
+            &hex_bytes(&undeclared_payload),
+        ],
+    );
+    let forged_selector = property_handle
+        .replace(
+            "selector\tproperty-violation\tno-split-brain\n",
+            "selector\tproperty-violation\tundeclared-property\n",
+        )
+        .replace(&declared_predicate_line, &undeclared_predicate_line);
+    let forged_handle = decode_savepoint_handle(forged_selector.as_bytes())?;
+    let error = savepoint_handle_evidence("resume", &forged_handle)
+        .expect_err("embedded scenario must reject an undeclared property selector");
+    assert!(matches!(error, CliError::Artifact(_)));
+    assert!(error.to_string().contains("not declared by scenario"));
 
     let split_property_out = temp.path().join("split-property.crucible-savepoint");
     let split_property_cli = Cli::parse_from([
@@ -319,12 +426,25 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
     let marker_handle = fs::read_to_string(marker_out)?;
     assert!(marker_handle.contains("label\tmarker-stop\n"));
     assert!(marker_handle.contains("at\tmarker\n"));
+    assert!(marker_handle.contains("selector\tguest-marker\tphase-two-marker\n"));
+    assert!(marker_handle.contains("boundary-proof\tbreakpoint\t"));
+    assert!(marker_handle.contains("boundary-predicate\tcrucible-hash:"));
     assert!(marker_handle.contains("oracle\tfat==thin-passed\n"));
+    let contradictory_marker = marker_handle.replace(
+        "terminal-condition\tquiescence\n",
+        "terminal-condition\tproperty\n",
+    );
+    assert!(decode_savepoint_handle(contradictory_marker.as_bytes()).is_err());
 
     let wrong_marker_out = temp.path().join("wrong-marker.crucible-savepoint");
+    let wrong_marker_trace = temp.path().join("wrong-marker.jsonl");
     let wrong_marker_cli = Cli::parse_from([
         String::from("crucible"),
         String::from("--quiet"),
+        String::from("--format"),
+        String::from("jsonl"),
+        String::from("--trace"),
+        wrong_marker_trace.display().to_string(),
         String::from("--artifact-dir"),
         artifact_dir.display().to_string(),
         String::from("--backend"),
@@ -348,6 +468,15 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
     assert_eq!(error.exit_code(), 3);
     assert!(error.to_string().contains("did not fire"));
     assert!(!wrong_marker_out.exists());
+    let wrong_marker_trace = fs::read_to_string(wrong_marker_trace)?;
+    assert!(wrong_marker_trace.contains("save_boundary_failure"));
+    assert!(wrong_marker_trace.contains("guest-marker:compaction-started"));
+    assert!(wrong_marker_trace.contains("interactive_ack"));
+    assert!(wrong_marker_trace.contains("planned_session_command"));
+    assert!(!wrong_marker_trace.contains("\"kind\":\"session_command\""));
+    assert!(wrong_marker_trace.contains("marker (quiescence-guarded)"));
+    assert!(!wrong_marker_trace.contains("error=save%20"));
+    assert!(wrong_marker_trace.contains("status=error exit_code=3"));
 
     let no_source_marker_scenario = write_marker_selector_without_source_scenario(&temp)?;
     let no_source_marker_out = temp.path().join("no-source-marker.crucible-savepoint");
@@ -447,6 +576,7 @@ pub(super) fn cli_save_workflow_executes_remote_daemon_savepoint() -> Result<(),
         String::from("crucible"),
         String::from("--daemon"),
         daemon.clone(),
+        String::from("--trusted-unauthenticated-daemon"),
         String::from("--seed"),
         String::from("18"),
         String::from("save"),
@@ -513,6 +643,7 @@ pub(super) fn cli_save_workflow_executes_remote_daemon_savepoint() -> Result<(),
         String::from("crucible"),
         String::from("--daemon"),
         daemon.clone(),
+        String::from("--trusted-unauthenticated-daemon"),
         String::from("--seed"),
         String::from("19"),
         String::from("save"),
@@ -534,6 +665,7 @@ pub(super) fn cli_save_workflow_executes_remote_daemon_savepoint() -> Result<(),
         String::from("crucible"),
         String::from("--daemon"),
         daemon,
+        String::from("--trusted-unauthenticated-daemon"),
         String::from("--seed"),
         String::from("20"),
         String::from("save"),
@@ -567,6 +699,7 @@ pub(super) fn cli_save_workflow_executes_remote_daemon_selector_savepoint()
         String::from("crucible"),
         String::from("--daemon"),
         daemon,
+        String::from("--trusted-unauthenticated-daemon"),
         String::from("--seed"),
         String::from("21"),
         String::from("save"),
@@ -597,6 +730,7 @@ pub(super) fn cli_save_workflow_executes_remote_daemon_selector_savepoint()
         String::from("crucible"),
         String::from("--daemon"),
         marker_daemon,
+        String::from("--trusted-unauthenticated-daemon"),
         String::from("--seed"),
         String::from("22"),
         String::from("save"),
@@ -712,6 +846,21 @@ pub(super) fn cli_save_selector_proof_rejects_invalid_breakpoint_evidence()
     assert!(matches!(error, CliError::Identity(_)));
     assert!(error.to_string().contains("quantum"));
 
+    let ambiguous_name = "check~frontier=999:forged";
+    let summary = SaveBoundaryEvidence {
+        at: SaveAtArg::Property,
+        selector: Some(SaveAtSelector::PropertyViolation {
+            assertion: ambiguous_name.to_string(),
+        }),
+        frontier_ticks: 2,
+        quanta: 2,
+        breakpoint_firing: Some(valid_firing),
+    }
+    .canonical_summary();
+    assert!(summary.contains("property-violation:check~frontier%3D999%3Aforged"));
+    assert!(!summary.contains(ambiguous_name));
+    assert!(summary.contains("disposition=suspend"));
+
     Ok(())
 }
 
@@ -801,6 +950,15 @@ pub(super) fn cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inp
         plan.accepted_interactive_commands
             .contains(&SessionCommandKind::Continue)
     );
+
+    let encoded = parse_fork_decision_override(
+        "live-world-network/link_endpoint_a_len%3D4%0Alink_endpoint_a%3Ddb-1%0Alink_endpoint_b_len%3D4%0Alink_endpoint_b%3Ddb-2/a-to-b/42/7=loss-fire",
+    )?;
+    assert_eq!(
+        encoded.decision,
+        "live-world-network/link_endpoint_a_len=4\nlink_endpoint_a=db-1\nlink_endpoint_b_len=4\nlink_endpoint_b=db-2/a-to-b/42/7"
+    );
+    assert_eq!(encoded.value, "loss-fire");
     let ResumeSavepointRef::Handle { handle, .. } = &plan.savepoint else {
         panic!("expected decoded handle");
     };
@@ -811,10 +969,51 @@ pub(super) fn cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inp
     assert_eq!(handle.schedule_payload, schedule.to_compact_binary());
     assert_eq!(handle.frontier_ticks, 1);
     assert_eq!(handle.at, SaveAtArg::Quiescence);
+    assert_eq!(handle.selector, None);
+    assert!(matches!(
+        handle.boundary_proof,
+        Some(SavepointBoundaryProof::Breakpoint {
+            frontier_ticks: 1,
+            ..
+        })
+    ));
+    assert_eq!(
+        handle.boundary_predicate,
+        Some(crucible::Predicate::quiescent())
+    );
     assert_eq!(handle.terminal_condition, RunTerminalCondition::Quiescence);
     assert_eq!(handle.materialization, "create-savepoint:reply");
     assert_eq!(handle.oracle_status, "fat==thin-passed");
     assert_eq!(handle.canonical_log_digest, canonical_log);
+
+    let v3_text = fs::read_to_string(&handle_path)?;
+    let mismatched_proof = v3_text.replace("\tsuspend\t1\t1\n", "\tsuspend\t8\t1\n");
+    let error = decode_savepoint_handle(mismatched_proof.as_bytes())
+        .expect_err("v3 boundary proof must match the top-level frontier");
+    assert!(matches!(error, CliError::Artifact(_)));
+    assert!(error.to_string().contains("did not match handle frontier"));
+
+    let legacy_text = v3_text
+        .lines()
+        .filter(|line| {
+            !line.starts_with("selector\t")
+                && !line.starts_with("boundary-proof\t")
+                && !line.starts_with("boundary-predicate\t")
+        })
+        .map(|line| {
+            if line == format!("schema\t{SAVEPOINT_HANDLE_SCHEMA}") {
+                format!("schema\t{SAVEPOINT_HANDLE_SCHEMA_V2}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    let legacy_handle = decode_savepoint_handle(legacy_text.as_bytes())?;
+    assert_eq!(legacy_handle.selector, None);
+    assert_eq!(legacy_handle.boundary_proof, None);
+    assert_eq!(legacy_handle.boundary_predicate, None);
 
     let reference = format_content_hash_ref(checkpoint);
     let hash_cli = Cli::parse_from([
@@ -1074,7 +1273,9 @@ pub(super) fn cli_resume_workflow_rejects_tampered_handle_frontier() -> Result<(
     let tampered_path = temp.path().join("bad-frontier.crucible-savepoint");
     fs::write(
         &tampered_path,
-        fs::read_to_string(&handle_path)?.replace("frontier\t1\n", "frontier\t8\n"),
+        fs::read_to_string(&handle_path)?
+            .replace("frontier\t1\n", "frontier\t8\n")
+            .replace("\tsuspend\t1\t1\n", "\tsuspend\t8\t1\n"),
     )?;
     let cli = Cli::parse_from([
         String::from("crucible"),
@@ -1403,6 +1604,7 @@ pub(super) fn cli_resume_workflow_executes_remote_daemon_handle() -> Result<(), 
         String::from("--quiet"),
         String::from("--daemon"),
         daemon.clone(),
+        String::from("--trusted-unauthenticated-daemon"),
         String::from("resume"),
         handle_path.display().to_string(),
         String::from("--until"),
@@ -1456,6 +1658,7 @@ pub(super) fn cli_resume_workflow_executes_remote_daemon_handle() -> Result<(), 
         String::from("--quiet"),
         String::from("--daemon"),
         daemon.clone(),
+        String::from("--trusted-unauthenticated-daemon"),
         String::from("resume"),
         handle_path.display().to_string(),
         String::from("--until"),
@@ -1500,6 +1703,7 @@ pub(super) fn cli_resume_workflow_executes_remote_daemon_handle() -> Result<(), 
         String::from("--quiet"),
         String::from("--daemon"),
         daemon.clone(),
+        String::from("--trusted-unauthenticated-daemon"),
         String::from("resume"),
         handle_path.display().to_string(),
         String::from("--interactive"),
@@ -1727,9 +1931,9 @@ pub(super) fn cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_
         String::from("fork"),
         handle_path.display().to_string(),
         String::from("--override"),
-        String::from("node-a.boot=alternate"),
+        String::from("live-world-network/link-a/a-to-b/frame-1/0=loss-fire"),
         String::from("--override"),
-        String::from("scheduler.step=5"),
+        String::from("live-world-network/link-a/a-to-b/frame-2/1=duplicate-pass"),
         String::from("--until"),
         String::from("virtual-time"),
         String::from("--max-virtual-time"),
@@ -1751,12 +1955,12 @@ pub(super) fn cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_
         plan.decision_overrides,
         vec![
             ForkDecisionOverride {
-                decision: String::from("node-a.boot"),
-                value: String::from("alternate"),
+                decision: String::from("live-world-network/link-a/a-to-b/frame-1/0"),
+                value: String::from("loss-fire"),
             },
             ForkDecisionOverride {
-                decision: String::from("scheduler.step"),
-                value: String::from("5"),
+                decision: String::from("live-world-network/link-a/a-to-b/frame-2/1"),
+                value: String::from("duplicate-pass"),
             },
         ]
     );
@@ -1823,7 +2027,14 @@ pub(super) fn cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_
     );
     assert_eq!(cli_parse_error_exit_code(&error), 64);
 
-    for malformed in ["missing-equals", "=value", "decision=", "a=b=c", "a\nb=c"] {
+    for malformed in [
+        "missing-equals",
+        "=value",
+        "decision=",
+        "a=b=c",
+        "a\nb=c",
+        "live-world-network/link%0Gbad/a-to-b/1/0=loss-fire",
+    ] {
         let args = ForkArgs {
             savepoint: Some(reference.clone()),
             overrides: vec![String::from(malformed)],
@@ -1836,6 +2047,49 @@ pub(super) fn cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_
         assert!(matches!(error, CliError::Usage(_)));
         assert_eq!(error.exit_code(), 64);
     }
+
+    let unresolvable = ForkArgs {
+        savepoint: Some(reference.clone()),
+        overrides: vec![String::from("definitely-not-recorded=bogus")],
+        ..ForkArgs::default()
+    };
+    let error = match plan_fork_invocation_for_test(&unresolvable, None) {
+        Ok(_) => panic!("unresolvable fork override must fail closed"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, CliError::Artifact(_)));
+    assert_eq!(error.exit_code(), 5);
+    assert!(error.to_string().contains("unresolvable"));
+
+    let unsupported_choice = ForkArgs {
+        savepoint: Some(reference.clone()),
+        overrides: vec![String::from(
+            "live-world-network/link-a/a-to-b/frame-1/0=jitter-fire",
+        )],
+        ..ForkArgs::default()
+    };
+    let error = match plan_fork_invocation_for_test(&unsupported_choice, None) {
+        Ok(_) => panic!("unsupported fork choice must fail closed"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, CliError::Artifact(_)));
+    assert_eq!(error.exit_code(), 5);
+
+    let duplicate_point = ForkArgs {
+        savepoint: Some(reference.clone()),
+        overrides: vec![
+            String::from("live-world-network/link-a/a-to-b/frame-1/0=loss-fire"),
+            String::from("live-world-network/link-a/a-to-b/frame-1/0=loss-pass"),
+        ],
+        ..ForkArgs::default()
+    };
+    let error = match plan_fork_invocation_for_test(&duplicate_point, None) {
+        Ok(_) => panic!("duplicate fork override point must fail closed"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, CliError::Artifact(_)));
+    assert_eq!(error.exit_code(), 5);
+    assert!(error.to_string().contains("more than once"));
 
     let seed_conflict = Cli::parse_from([
         "crucible",
@@ -2278,256 +2532,26 @@ pub(super) fn cli_fork_workflow_executes_local_double_handle() -> Result<(), Box
         String::from("fork"),
         handle_path.display().to_string(),
         String::from("--override"),
-        String::from("decision=value"),
+        String::from("live-world-network/link-a/a-to-b/frame-1/0=loss-fire"),
     ]);
-    let expected_override_branch = crucible::try_step(
-        &configuration,
-        crucible::Decision::Override(OverrideDecision {
-            point: SchedulingPoint {
-                key: String::from("decision"),
-            },
-            choice: ChoiceTag {
-                name: String::from("value"),
-            },
-        }),
-    )?;
-    let expected_override_branch_ref = format_content_hash_ref(expected_override_branch.id());
     let Commands::Fork(args) = &override_cli.command else {
         panic!("expected fork command");
     };
     let override_plan = plan_fork_invocation(args, None, &override_cli.artifact_dir, &store_root)?;
     let backend_plan =
         plan_backend_selection(&override_cli)?.expect("fork should route to backend");
-    let override_outcome = run_local_double_fork_workflow(
+    let error = match run_local_double_fork_workflow(
         &plan_cli_invocation(&override_cli),
         &backend_plan,
         None,
         &override_plan,
-    )?;
-    assert_eq!(override_outcome.status, BackendCommandStatus::Passed);
-    assert!(override_outcome.stdout.iter().any(|line| {
-        line.starts_with("fork-session\t")
-            && line.contains(&format!("branch={expected_override_branch_ref}"))
-            && line.contains(&format!("configuration={expected_override_branch_ref}"))
-    }));
-    assert!(override_outcome.stdout.iter().any(|line| {
-        line.starts_with("fork-artifact\t") && line.contains("model_artifact=blake3:")
-    }));
-    assert_fork_artifact_replays(&override_cli, &override_outcome, inherited_seed)?;
-
-    let override_virtual_cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("--quiet"),
-        String::from("--artifact-dir"),
-        artifact_dir.display().to_string(),
-        String::from("--backend"),
-        String::from("double"),
-        String::from("fork"),
-        handle_path.display().to_string(),
-        String::from("--override"),
-        String::from("decision=value"),
-        String::from("--until"),
-        String::from("virtual-time"),
-        String::from("--max-virtual-time"),
-        String::from("2ticks"),
-        String::from("--label"),
-        String::from("child-override-virtual"),
-    ]);
-    let Commands::Fork(args) = &override_virtual_cli.command else {
-        panic!("expected fork command");
+    ) {
+        Ok(_) => panic!("test double must not certify exact override consumption"),
+        Err(error) => error,
     };
-    let override_virtual_plan =
-        plan_fork_invocation(args, None, &override_virtual_cli.artifact_dir, &store_root)?;
-    let backend_plan =
-        plan_backend_selection(&override_virtual_cli)?.expect("fork should route to backend");
-    let override_virtual_outcome = run_local_double_fork_workflow(
-        &plan_cli_invocation(&override_virtual_cli),
-        &backend_plan,
-        None,
-        &override_virtual_plan,
-    )?;
-    assert_eq!(
-        override_virtual_outcome.status,
-        BackendCommandStatus::Passed
-    );
-    assert!(override_virtual_outcome.stdout.iter().any(|line| {
-        line.starts_with("fork-session\t")
-            && line.contains(&format!("branch={expected_override_branch_ref}"))
-            && line.contains("final=virtual-time")
-            && line.contains("frontier_ticks=2")
-            && line.contains("quanta=1")
-    }));
-
-    let override_stopped_cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("--quiet"),
-        String::from("--artifact-dir"),
-        artifact_dir.display().to_string(),
-        String::from("--backend"),
-        String::from("double"),
-        String::from("fork"),
-        handle_path.display().to_string(),
-        String::from("--override"),
-        String::from("decision=value"),
-        String::from("--until"),
-        String::from("stopped"),
-        String::from("--label"),
-        String::from("child-override-stopped"),
-    ]);
-    let Commands::Fork(args) = &override_stopped_cli.command else {
-        panic!("expected fork command");
-    };
-    let override_stopped_plan =
-        plan_fork_invocation(args, None, &override_stopped_cli.artifact_dir, &store_root)?;
-    let backend_plan =
-        plan_backend_selection(&override_stopped_cli)?.expect("fork should route to backend");
-    let override_stopped_outcome = run_local_double_fork_workflow(
-        &plan_cli_invocation(&override_stopped_cli),
-        &backend_plan,
-        None,
-        &override_stopped_plan,
-    )?;
-    assert_eq!(
-        override_stopped_outcome.status,
-        BackendCommandStatus::Passed
-    );
-    assert!(override_stopped_outcome.stdout.iter().any(|line| {
-        line.starts_with("fork-session\t")
-            && line.contains(&format!("branch={expected_override_branch_ref}"))
-            && line.contains("final=stopped")
-            && line.contains("frontier_ticks=1")
-            && line.contains("quanta=0")
-    }));
-
-    let override_interactive_cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("--quiet"),
-        String::from("--artifact-dir"),
-        artifact_dir.display().to_string(),
-        String::from("--backend"),
-        String::from("double"),
-        String::from("fork"),
-        handle_path.display().to_string(),
-        String::from("--override"),
-        String::from("decision=value"),
-        String::from("--interactive"),
-        String::from("--watch"),
-        String::from("--label"),
-        String::from("child-override-interactive"),
-    ]);
-    let Commands::Fork(args) = &override_interactive_cli.command else {
-        panic!("expected fork command");
-    };
-    let override_interactive_plan = plan_fork_invocation(
-        args,
-        None,
-        &override_interactive_cli.artifact_dir,
-        &store_root,
-    )?;
-    let backend_plan =
-        plan_backend_selection(&override_interactive_cli)?.expect("fork should route to backend");
-    let override_interactive_outcome = run_local_double_fork_workflow_with_interactive_commands(
-        &plan_cli_invocation(&override_interactive_cli),
-        &backend_plan,
-        None,
-        &override_interactive_plan,
-        &[],
-    )?;
-    assert_eq!(
-        override_interactive_outcome.status,
-        BackendCommandStatus::Passed
-    );
-    assert!(override_interactive_outcome.stdout.iter().any(|line| {
-        line.starts_with("fork-session\t")
-            && line.contains(&format!("branch={expected_override_branch_ref}"))
-            && line.contains("final=interactive")
-            && line.contains("frontier_ticks=1")
-            && line.contains("quanta=0")
-    }));
-    assert!(
-        override_interactive_outcome
-            .stdout
-            .iter()
-            .any(|line| { line.starts_with("run-watch\t") && line.contains("frontier_ticks=1") })
-    );
-
-    Ok(())
-}
-
-#[test]
-pub(super) fn cli_fork_workflow_routes_local_qemu_into_live_guest_configuration()
--> Result<(), Box<dyn Error>> {
-    let temp = TempDir::new()?;
-    let store_root = temp.path().join("store");
-    let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
-    let fixture = crucible::happy_path_scenario()?;
-    let form = fixture.scenario;
-    let scenario = form.scenario_def();
-    let schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
-        crucible::DeliveryOrderDecision {
-            at: VirtualTime { ticks: 1 },
-            order: Vec::new(),
-        },
-    ));
-    let configuration = crucible::Configuration {
-        def: scenario,
-        schedule: schedule.clone(),
-    };
-    let checkpoint = configuration.id();
-    let handle_path = write_savepoint_handle_fixture(
-        temp.path(),
-        "qemu-fork-source",
-        &form,
-        &schedule,
-        checkpoint,
-        1,
-        &content_address_bytes(b"qemu-fork-log"),
-    )?;
-    let cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("--quiet"),
-        String::from("--backend"),
-        String::from("qemu"),
-        String::from("--qemu"),
-        qemu.clone(),
-        String::from("--plugin"),
-        plugin.clone(),
-        String::from("--seed"),
-        String::from("7"),
-        String::from("fork"),
-        handle_path.display().to_string(),
-        String::from("--until"),
-        String::from("virtual-time"),
-        String::from("--max-virtual-time"),
-        String::from("2ticks"),
-        String::from("--label"),
-        String::from("qemu-child"),
-    ]);
-    let Commands::Fork(args) = &cli.command else {
-        panic!("expected fork command");
-    };
-    let fork_plan = plan_fork_invocation(args, Some(7), &cli.artifact_dir, &store_root)?;
-    let backend_plan = plan_backend_selection(&cli)?.expect("fork should route to backend");
-    assert!(matches!(
-        backend_plan.resolved_backend,
-        Some(ResolvedLocalBackend::Qemu { .. })
-    ));
-    let error =
-        run_local_qemu_fork_workflow(&plan_cli_invocation(&cli), &backend_plan, None, &fork_plan)
-            .expect_err("fixture QEMU fork must reach live-guest discovery or production launch");
-    let message = error.to_string();
-    assert!(
-        matches!(error, CliError::Backend(_)),
-        "unexpected QEMU fork error: {error}"
-    );
-    assert!(
-        message.contains("requires the AOS kernel")
-            || message.contains("requires the AOS root image")
-            || message.contains("session execution backend construction failed"),
-        "unexpected QEMU fork error: {error}"
-    );
-    assert!(!message.contains("execution is unavailable"));
-    assert!(!message.contains("double fallback"));
+    assert!(matches!(error, CliError::Artifact(_)));
+    assert_eq!(error.exit_code(), 5);
+    assert!(error.to_string().contains("production QEMU scheduler"));
 
     Ok(())
 }
@@ -2560,7 +2584,9 @@ pub(super) fn cli_fork_workflow_rejects_tampered_handle_frontier() -> Result<(),
     let tampered_path = temp.path().join("bad-fork-frontier.crucible-savepoint");
     fs::write(
         &tampered_path,
-        fs::read_to_string(&handle_path)?.replace("frontier\t1\n", "frontier\t8\n"),
+        fs::read_to_string(&handle_path)?
+            .replace("frontier\t1\n", "frontier\t8\n")
+            .replace("\tsuspend\t1\t1\n", "\tsuspend\t8\t1\n"),
     )?;
     let cli = Cli::parse_from([
         String::from("crucible"),
@@ -2584,3 +2610,5 @@ pub(super) fn cli_fork_workflow_rejects_tampered_handle_frontier() -> Result<(),
 
     Ok(())
 }
+#[path = "state_workflows/live_qemu_fork.rs"]
+mod live_qemu_fork;

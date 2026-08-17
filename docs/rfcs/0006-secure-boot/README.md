@@ -277,10 +277,10 @@ the next implementer doesn't relearn it.
   dumps each measured section (`.linux`/`.osrel`/`.cmdline`/`.initrd`/`.uname`/
   `.sbat`/…) and `systemd-measure calculate` reproduces what sd-stub extends
   into PCR 11 (the same value `ukify` signs into `.pcrsig`). `systemd-measure`
-  emits one value per boot phase; the recorded one is the **`enter-initrd`**
-  phase, where `systemd-cryptsetup` unseals `/var`. A verifier comparing a live
-  `systemd-analyze pcrs` reading must account for the phase the quote was taken
-  at. It is recorded for attestation, not compared in the download-time gate;
+  emits one value per boot phase; the recorded one is the stable **`ready`**
+  phase quoted during generation activation. `systemd-cryptsetup` still unseals
+  `/var` at `enter-initrd` from the signed multi-phase `.pcrsig` policy; it does
+  not consume this catalog scalar. It is recorded for attestation, not compared in the download-time gate;
   `checks.fleet.registry-sb-catalog` cross-checks it against an independent
   recompute so the value can't silently drift from the binary. (Feeding the
   whole UKI to
@@ -333,7 +333,7 @@ the next implementer doesn't relearn it.
   hard requirement ([`measured-boot.md`](measured-boot.md)).
 - **Predicted vs measured PCR-11** — resolved: `expected_pcr11` is now
   `systemd-measure` over the UKI's PE *sections* (the sd-stub section
-  measurement), not the UKI-as-kernel, recorded at the `enter-initrd` boot
-  phase (where `/var` unseals); a verifier comparing a live reading must
-  account for the quote's phase. `checks.fleet.registry-sb-catalog` cross-checks the recorded value
+  measurement), not the UKI-as-kernel, recorded at the `ready` boot phase
+  quoted during generation activation. The earlier `/var` unlock uses the
+  signed multi-phase policy. `checks.fleet.registry-sb-catalog` cross-checks the recorded value
   against an independent recompute ([`registry-catalog.md`](registry-catalog.md)).

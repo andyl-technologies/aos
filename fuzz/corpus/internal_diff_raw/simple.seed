@@ -1,0 +1,2 @@
+# aos-nix-fuzz-source
+let x = 1 + 2; in [ x "ok" true ]

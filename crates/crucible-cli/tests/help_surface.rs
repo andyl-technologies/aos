@@ -325,7 +325,7 @@ fn cli_process_rejects_every_missing_normative_input() -> Result<(), Box<dyn Err
         (
             "debug target",
             &["debug"][..],
-            "<ARTIFACT|SAVEPOINT|--session <ADDR>>",
+            "<ARTIFACT|SAVEPOINT|--session <SESSION>>",
         ),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_crucible"))

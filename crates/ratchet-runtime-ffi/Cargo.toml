@@ -1,0 +1,24 @@
+[package]
+name = "ratchet-runtime-ffi"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[features]
+default = []
+# RFC-0007 Candidate-C value-ABI cutover variant (task #12): forwards the
+# one-word carrier + layout descriptor through the JIT and oracle crates. The
+# FFI return path is already tri-width; the import helpers gain one-word siblings
+# in S2. See design-notes/candidate-c-cutover-plan.md §1.2.
+candidate_c_value = [
+  "ratchet-jit/candidate_c_value",
+  "ratchet-oracle/candidate_c_value",
+]
+
+[dependencies]
+ratchet-jit = { workspace = true }
+ratchet-oracle = { workspace = true }
+
+[dev-dependencies]
+aos-nix-dialect = { workspace = true }
+libc = { workspace = true }

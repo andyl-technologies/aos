@@ -1,31 +1,21 @@
-# tests/fleet/apm-system-upgrade.nix — Live, in-place `apm upgrade --system`.
+# tests/fleet/apm-system-upgrade.nix - Refuse incomplete A/B system upgrades.
 #
-# End-to-end proof for the apm system-upgrade refactor (v2): `apm upgrade
-# --system` must reconfigure the *running* system without a reboot — swap the
-# /etc overlay to the new generation (P1's activate script) AND reconcile the
-# running daemons against the new unit set (the hidden activate pre/post split,
-# driven by P2's diff engine over P3's X-* unit contract). The fleet harness
-# boots a server image with a direct upgrade fixture and full systemd + dbus,
-# which is what the reconciler needs.
+# Live, single-axis sysroot activation is retired. `apm upgrade --system`
+# now accepts only an authenticated raw OTA payload and stages it into the
+# inactive A/B slot; host configuration changes use the evaluator/activation
+# transaction instead. This test preserves the old pre-staged-toplevel fixture
+# as an explicit fail-closed case: catalog metadata without an OTA payload must
+# not create a configuration generation or change the running system.
 #
-# Single machine (N=1): the live upgrade is entirely local to the target — the
-# new generation's closure is pre-staged on its disk (extraClosures) and the
-# upgrade downloads nothing, so no registry/cache peer is needed. (Registry git
-# sync over the L2 is already covered by apm-e2e.nix.)
+# Single machine (N=1): the attempted upgrade is entirely local to the target.
+# Its closure is pre-staged on disk, so no registry/cache peer is needed and the
+# failure can be attributed specifically to incomplete image metadata.
 #
-# Generation pairing:
-#   gen-1 = systems.server + fixture
-#                                 (seeded into state.json at first boot by
-#                                  aos-seed-profiles.service: package "aos",
-#                                  version "0.1.0", registry "seed").
-#   gen-2 = systems/server-2.nix   (imports server.nix; bumps the version,
-#                                   adds an environment.etc marker, and gives
-#                                   the upgrade HTTP fixture a new port, a
-#                                   sysctl, a new oneshot unit, and one
-#                                   removed gen-1 oneshot unit).
-# The target boots a gen-1 system with that same direct fixture. The upgrade
-# then introduces the fixture's gen-2 deltas as a *live* update — exactly the
-# reconciliation surface under test, without depending on legacy role modules.
+# The target boots image generation 1 and completes its initial host-policy
+# evaluation before the rejected upgrade is attempted.
+# The registry advertises a different sysroot version and a valid toplevel
+# closure, but deliberately omits `versions.platforms.*.images`. Dry-run may
+# report the candidate; the real operation must reject it before mutation.
 #
 # ── Why the upgrade needs no network ───────────────────────────────────
 # `extraClosures` pre-stages the entire server-2 closure onto the target's
@@ -153,8 +143,7 @@
   };
 in {
   name = "apm-system-upgrade";
-  # One VM boot + fixture activation + a live generation switch (overlay swap +
-  # daemon reconcile) + rollback. Generous budget for sandbox CPU/IO contention.
+  # One VM boot plus a complete pre-staged closure and fail-closed attempt.
   timeout = 600;
 
   machines = {
@@ -174,17 +163,29 @@ in {
       import json
       import pathlib
 
-      # ── 1. Target is on gen-1 with the test fixture already active ───
+      # -- Initial two-axis state and running-system baseline -----------------
       target.wait_until_succeeds("test -S /run/dbus/system_bus_socket", timeout=120)
       target.wait_until_succeeds(
           "systemctl is-active test-http-server.service", timeout=120
       )
+      image_before = json.loads(
+          target.succeed("cat /var/lib/profiles/image/state.json")
+      )
+      assert image_before["running"] == 1, image_before
+      assert image_before["default"] == 1, image_before
+      # This direct-kernel harness does not pass through sd-boot, so it cannot
+      # produce boot-success evidence that clears the seeded pending marker.
+      assert image_before.get("pending") == 1, image_before
+      assert len(image_before["generations"]) == 1, image_before
 
-      target.succeed("test -L /var/lib/profiles/system/current")
-      gen_before = target.succeed(
-          "readlink /var/lib/profiles/system/current"
-      ).strip()
-      assert gen_before == "gen-1", f"expected gen-1, got {gen_before!r}"
+      config_before = json.loads(
+          target.succeed("cat /var/lib/profiles/system/state.json")
+      )
+      assert config_before["current"] == 1, config_before
+      assert config_before["next"] == 2, config_before
+      assert len(config_before["generations"]) == 1, config_before
+      assert config_before["generations"][0]["image_gen_parent"] == 1, config_before
+      target.succeed("test -e /var/lib/profiles/system/current")
 
       # Fixture baseline. gen-1 opens port 8000 in the base nftables ruleset
       # but does not yet add tcp_keepalive_time to the kernel sysctl drop-in.
@@ -211,25 +212,15 @@ in {
           f"unexpected baseline keepalive {baseline_keepalive!r}"
       )
 
-      # Record test-http-server's MainPID — its unit file is byte-identical
-      # across gen-1 and gen-2, so the reconciler must leave it untouched.
-      # Asserted after the upgrade.
       http_pid_before = int(target.succeed(
           "systemctl show -p MainPID --value test-http-server.service"
       ).strip())
-
-      # Record dbus's MainPID. gen-2 perturbs dbus.service (a serviceConfig
-      # limit), so the reconciler MUST act on it — but because dbus.service is
-      # reloadIfChanged it must *reload* (same daemon, same PID, live bus
-      # preserved), never restart. A restart would tear down the very bus the
-      # reconciler drives itself over and hang (the bug this guards). Asserted
-      # after the upgrade.
       dbus_pid_before = int(target.succeed(
           "systemctl show -p MainPID --value dbus.service"
       ).strip())
       assert dbus_pid_before > 0, "dbus.service has no MainPID before upgrade"
 
-      # ── 2. Stage the registry in SYSTEM scope ───────────────────────
+      # -- Stage deliberately incomplete system registry metadata -------------
       # /etc/apm/registries.d/<name>.toml for the config + the package TOML in
       # the system cache dir /var/lib/apm/remote/<name>/packages/<letter>/.
       # (apm reads system-scope registries from these paths; package "aos" →
@@ -259,15 +250,18 @@ in {
           f"echo {package_toml_b64} | base64 -d > /var/lib/apm/remote/test-reg/packages/a/aos.toml\n"
       )
 
-      # ── 3. The boot-time DB seed covers the pre-staged toplevel ────────
+      # The closure is valid and present, isolating the refusal to missing OTA
+      # metadata rather than a download or Nix database failure.
       target.succeed(
           "systemctl is-active aos-nix-db.service\n"
-          "test -L /nix/var/nix/gcroots/aos-profiles\n"
+          "${pkgs.util-linux}/bin/mountpoint -q /nix/var/nix/gcroots/aos-profiles\n"
+          "test \"$(${pkgs.coreutils}/bin/stat -c %d:%i /var/lib/profiles)\" = "
+          "\"$(${pkgs.coreutils}/bin/stat -c %d:%i /nix/var/nix/gcroots/aos-profiles)\"\n"
           "${pkgs.nix}/bin/nix-store --check-validity '${server2Top}'\n",
           timeout=120,
       )
 
-      # ── 4. Dry-run surfaces the available upgrade ───────────────────
+      # -- Dry-run resolves the different image version -----------------------
       # upgrade_system prints "Current sysroot: aos 0.1.0 ..." and "Upgrade
       # available: aos 0.1.0 -> test-2"; both version strings are the
       # unambiguous signal the test-2 entry was recognised.
@@ -278,137 +272,43 @@ in {
       assert "test-2" in out, f"dry-run did not surface the test-2 target: {out!r}"
       assert "0.1.0" in out, f"dry-run did not name the current 0.1.0 gen: {out!r}"
 
-      # ── 5. The actual upgrade ───────────────────────────────────────
-      # --yes for non-interactive; default kernel mode (no kernel change in
-      # this gen delta, so the kernel handler is a no-op).
-      out = target.succeed(
-          "HOME=/tmp ${pkgs.aos}/bin/apm upgrade --system --yes 2>&1",
+      # -- Real operation refuses the incomplete image before mutation --------
+      target.succeed(
+          "if HOME=/tmp ${pkgs.aos}/bin/apm upgrade --system --yes "
+          "> /tmp/apm-system-upgrade.out 2>&1; then exit 1; fi",
           timeout=300,
       )
-      print("=== apm upgrade --system output ===\n" + out)
+      out = target.succeed("cat /tmp/apm-system-upgrade.out")
+      print("=== rejected apm upgrade --system output ===\n" + out)
+      assert "no authenticated raw OTA image" in out, out
 
-      # ── 6. Generation bookkeeping ───────────────────────────────────
-      gen_after = target.succeed(
-          "readlink /var/lib/profiles/system/current"
-      ).strip()
-      assert gen_after == "gen-2", f"expected gen-2, got {gen_after!r}"
-
-      state = json.loads(
+      image_after = json.loads(
+          target.succeed("cat /var/lib/profiles/image/state.json")
+      )
+      config_after = json.loads(
           target.succeed("cat /var/lib/profiles/system/state.json")
       )
-      assert state["current"] == 2, state
-      assert len(state["generations"]) == 2, state
+      assert image_after == image_before, (image_before, image_after)
+      assert config_after == config_before, (config_before, config_after)
+      target.succeed("test -e /var/lib/profiles/system/current")
 
-      # ── 7. Live /etc reflects gen-2 (overlay swap succeeded) ─────────
-      # The marker file is symlink-mode environment.etc → baked into gen-2's
-      # EROFS metadata image, and the var-seed never writes under /etc/aos/, so
-      # its appearance is a clean proof the EROFS lower was swapped to gen-2.
-      target.succeed("test -f /etc/aos/upgrade-test/marker.conf")
-      marker = target.succeed(
-          "cat /etc/aos/upgrade-test/marker.conf"
-      ).strip()
-      assert marker == "marker = 1", f"unexpected marker content: {marker!r}"
-
-      # os-release reflects gen-2's version. The harness no longer seeds
-      # /var/etc/os-release (it would shadow the gen's EROFS os-release — see
-      # lib/testing/vm.nix), so the active generation's VERSION_ID surfaces.
-      osrel = target.succeed("cat /etc/os-release")
-      assert "VERSION_ID=test-2" in osrel, osrel
-
-      # ── 8. Base /etc policy reflects the gen-2 fixture ──────────────
-      nftd = target.succeed("cat /etc/nftables.conf")
-      assert "8443" in nftd, "new nftables ruleset missing port 8443"
-
-      sysctld = target.succeed(
-          "cat /etc/sysctl.d/10-aos-kernel.conf"
-      )
-      assert "tcp_keepalive_time = 300" in sysctld, sysctld
-
-      # ── 9. Reconciliation acted on the drop-in changes ──────────────
-      # systemd-sysctl restarted (no ExecReload → restart) via its
-      # X-Reload-Triggers on /etc/sysctl.d, re-applying every sysctl — the
-      # kernel's runtime keepalive must now reflect the new drop-in.
-      post_keepalive = target.succeed(
-          "cat /proc/sys/net/ipv4/tcp_keepalive_time"
-      ).strip()
-      assert post_keepalive == "300", (
-          f"sysctl was not re-applied; keepalive is {post_keepalive!r}"
-      )
-
-      # nftables reloaded (it has ExecReload → reload) via its X-Reload-Triggers
-      # on /etc/nftables.conf — port 8443 is now allowed.
-      nft_dump = target.succeed("nft list set inet filter allowed_tcp")
-      assert "8443" in nft_dump, nft_dump
-
-      # ── 10. The newly-added unit was installed and started ──────────
-      target.succeed("systemctl is-active aos-upgrade-test-marker.service")
-
-      # ── 11. The removed unit was stopped before its old definition vanished ─
-      target.fail("systemctl is-active aos-upgrade-removed.service")
-      target.fail("test -e /etc/systemd/system/aos-upgrade-removed.service")
-      target.succeed("test -f /run/removed-stop-ran")
-
-      # ── 12. The unchanged unit was NOT restarted (diff stayed precise) ─
-      http_pid_after = int(target.succeed(
-          "systemctl show -p MainPID --value test-http-server.service"
-      ).strip())
-      assert http_pid_before == http_pid_after, (
-          "test-http-server.service was restarted unnecessarily: PID "
-          f"{http_pid_before} -> {http_pid_after}"
-      )
-
-      # ── 12b. The perturbed dbus.service was RELOADED, not restarted ──
-      # This is the regression guard for the dbus-self-restart hang. gen-2
-      # changed dbus.service's unit text, so the reconciler had to act on it.
-      # Because dbus.service is reloadIfChanged with an ExecReload, it must be
-      # reloaded in place: the daemon keeps running (same MainPID) and the
-      # system bus the reconciler drives itself over is never torn down. A
-      # restart would change the PID — and, over the bus, would have hung the
-      # whole `apm upgrade` (which is exactly the bug we fixed). The bus must
-      # still be live and dbus still active.
-      target.succeed("systemctl is-active dbus.service")
-      target.succeed("test -S /run/dbus/system_bus_socket")
-      dbus_pid_after = int(target.succeed(
-          "systemctl show -p MainPID --value dbus.service"
-      ).strip())
-      assert dbus_pid_before == dbus_pid_after, (
-          "dbus.service was RESTARTED instead of reloaded (the self-restart "
-          f"hang regressed): PID {dbus_pid_before} -> {dbus_pid_after}"
-      )
-      # And the reconcile plan itself classified dbus as a reload, not a
-      # restart — belt-and-suspenders against a future X-* regression.
-      assert "restarting dbus.service" not in out, (
-          "reconcile scheduled a dbus.service RESTART:\n" + out
-      )
-      assert "reloading  dbus.service" in out, (
-          "reconcile did not reload dbus.service as expected:\n" + out
-      )
-
-      # ── 13. No failed units after the reconcile ─────────────────────
-      failed = target.succeed("systemctl --failed --no-legend").strip()
-      assert not failed, f"failed units after upgrade: {failed!r}"
-
-      # ── 14. Rollback reverses the live switch ───────────────────────
-      target.succeed(
-          "HOME=/tmp ${pkgs.aos}/bin/apm rollback --system --yes 2>&1",
-          timeout=300,
-      )
-      gen_rolled = target.succeed(
-          "readlink /var/lib/profiles/system/current"
-      ).strip()
-      assert gen_rolled == "gen-1", f"expected gen-1 after rollback, got {gen_rolled!r}"
-
-      # The marker file is gone (EROFS swapped back to gen-1).
+      # No live configuration surface or daemon changed as a side effect.
       target.fail("test -e /etc/aos/upgrade-test/marker.conf")
-      # The added unit is torn down with gen-2.
       target.fail("test -e /etc/systemd/system/aos-upgrade-test-marker.service")
-      # os-release is back to gen-1's version (no longer the gen-2 "test-2").
-      osrel_back = target.succeed("cat /etc/os-release")
-      assert "VERSION_ID=test-2" not in osrel_back, osrel_back
-
-      # /run/etc bookkeeping: the active system lower points back at system-1,
-      # and Phase C tore down gen-2's mounts.
-      assert target.succeed("readlink /run/etc/system").strip() == "system-1"
-      target.fail("test -d /run/etc/system-2")
+      target.succeed("systemctl is-active aos-upgrade-removed.service")
+      target.fail("test -e /run/removed-stop-ran")
+      assert target.succeed("cat /etc/nftables.conf") == nftd_before
+      assert target.succeed("cat /etc/sysctl.d/10-aos-kernel.conf") == sysctld_before
+      assert target.succeed(
+          "cat /proc/sys/net/ipv4/tcp_keepalive_time"
+      ).strip() == baseline_keepalive
+      assert int(target.succeed(
+          "systemctl show -p MainPID --value test-http-server.service"
+      ).strip()) == http_pid_before
+      assert int(target.succeed(
+          "systemctl show -p MainPID --value dbus.service"
+      ).strip()) == dbus_pid_before
+      failed = target.succeed("systemctl --failed --no-legend").strip()
+      assert not failed, f"failed units after rejected upgrade: {failed!r}"
     '';
 }

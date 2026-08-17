@@ -1,6 +1,7 @@
 //! Search, replay, artifact, and deterministic execution tests.
 
 use super::*;
+
 #[test]
 pub(super) fn cli_search_fuzz_help_surface_lists_wip_flags() {
     let mut command = Cli::command();
@@ -228,11 +229,11 @@ pub(super) fn cli_search_fuzz_workflow_plans_drivers_and_rejects_bad_inputs()
         },
         temp.path(),
     ) {
-        Ok(_) => panic!("missing search scenario must be discovery/config"),
+        Ok(_) => panic!("missing search scenario must be invalid input"),
         Err(error) => error,
     };
-    assert!(matches!(error, CliError::Backend(_)));
-    assert_eq!(error.exit_code(), 4);
+    assert!(matches!(error, CliError::InvalidScenario(_)));
+    assert_eq!(error.exit_code(), 5);
 
     let malformed_named_truths = temp.path().join("bad-search-named-truths.toml");
     fs::write(&malformed_named_truths, "schema = \"wrong.schema\"\n")?;
@@ -525,11 +526,11 @@ quiescent = false
         ..FuzzArgs::default()
     };
     let error = match plan_fuzz_invocation(&malformed_hash, &seed_plan, temp.path()) {
-        Ok(_) => panic!("malformed fuzz family hash must be discovery/config"),
+        Ok(_) => panic!("malformed fuzz family hash must be invalid input"),
         Err(error) => error,
     };
-    assert!(matches!(error, CliError::Backend(_)));
-    assert_eq!(error.exit_code(), 4);
+    assert!(matches!(error, CliError::InvalidScenario(_)));
+    assert_eq!(error.exit_code(), 5);
 
     for args in [
         FuzzArgs::default(),
@@ -609,6 +610,70 @@ pub(super) fn cli_fuzz_runs_builtin_fault_campaign_family() -> Result<(), Box<dy
     );
 
     dispatch(&cli).expect("built-in fault campaign fuzz should run on the local proof path");
+    Ok(())
+}
+
+#[test]
+pub(super) fn cli_fuzz_does_not_run_builtin_proof_for_remote_route() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::parse_from([
+        "crucible",
+        "--daemon",
+        "127.0.0.1:1",
+        "--trusted-unauthenticated-daemon",
+        "--seed",
+        "0x33a4",
+        "fuzz",
+        "builtin:fault-campaign",
+    ]);
+    let Commands::Fuzz(args) = &cli.command else {
+        panic!("expected fuzz command");
+    };
+    let seed_plan = plan_determinism_ergonomics(
+        &cli,
+        &FakeSeedEnvironment::default(),
+        &mut FakeSeedEntropySource::new(0),
+    )?
+    .expect("remote fuzz should resolve a seed");
+    let fuzz_plan = plan_fuzz_invocation(args, &seed_plan, &default_run_store_root(&cli))?;
+    let backend_plan = plan_backend_selection(&cli)?.expect("remote fuzz should route");
+
+    assert_eq!(backend_plan.target, BackendExecutionTarget::RemoteDaemon);
+    assert_eq!(fuzz_dispatch_route(&backend_plan, &fuzz_plan), None);
+
+    let error = dispatch(&cli).expect_err("remote fuzz must fail closed");
+    assert!(matches!(error, CliError::Backend(_)));
+    assert!(
+        error
+            .to_string()
+            .contains("requires the exploration-engine driver")
+    );
+    Ok(())
+}
+
+#[test]
+pub(super) fn cli_fuzz_validates_family_before_backend_discovery() -> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let family = temp.path().join("malformed.family.toml");
+    fs::write(&family, "schema = [")?;
+    let cli = Cli::parse_from([
+        String::from("crucible"),
+        String::from("--backend"),
+        String::from("qemu"),
+        String::from("--seed"),
+        String::from("0x33a4"),
+        String::from("fuzz"),
+        family.display().to_string(),
+    ]);
+
+    let error = dispatch(&cli).expect_err("malformed family must precede backend discovery");
+
+    assert!(matches!(error, CliError::InvalidScenario(_)));
+    assert_eq!(error.exit_code(), 5);
+    assert!(
+        error
+            .to_string()
+            .contains("is not valid scenario-family TOML")
+    );
     Ok(())
 }
 
@@ -1472,8 +1537,8 @@ pub(super) fn cli_search_fuzz_workflow_executes_local_double_fuzz() -> Result<()
         Ok(_) => panic!("missing stored family hashes must fail"),
         Err(error) => error,
     };
-    assert!(matches!(error, CliError::Backend(_)));
-    assert_eq!(error.exit_code(), 4);
+    assert!(matches!(error, CliError::InvalidScenario(_)));
+    assert_eq!(error.exit_code(), 5);
     assert!(error.to_string().contains("could not be loaded from store"));
 
     let corrupt_family = store.put(
@@ -1497,8 +1562,8 @@ pub(super) fn cli_search_fuzz_workflow_executes_local_double_fuzz() -> Result<()
         Ok(_) => panic!("corrupt stored family TOML must fail"),
         Err(error) => error,
     };
-    assert!(matches!(error, CliError::Backend(_)));
-    assert_eq!(error.exit_code(), 4);
+    assert!(matches!(error, CliError::InvalidScenario(_)));
+    assert_eq!(error.exit_code(), 5);
     assert!(error.to_string().contains("unsupported schema"));
 
     let invalid_utf8_family = store.put(&[0xff, 0xfe])?;
@@ -1518,8 +1583,8 @@ pub(super) fn cli_search_fuzz_workflow_executes_local_double_fuzz() -> Result<()
         Ok(_) => panic!("non-UTF-8 stored family bytes must fail"),
         Err(error) => error,
     };
-    assert!(matches!(error, CliError::Backend(_)));
-    assert_eq!(error.exit_code(), 4);
+    assert!(matches!(error, CliError::InvalidScenario(_)));
+    assert_eq!(error.exit_code(), 5);
     assert!(
         error
             .to_string()
@@ -1543,8 +1608,8 @@ pub(super) fn cli_search_fuzz_workflow_executes_local_double_fuzz() -> Result<()
         Ok(_) => panic!("malformed stored family TOML must fail"),
         Err(error) => error,
     };
-    assert!(matches!(error, CliError::Backend(_)));
-    assert_eq!(error.exit_code(), 4);
+    assert!(matches!(error, CliError::InvalidScenario(_)));
+    assert_eq!(error.exit_code(), 5);
     assert!(
         error
             .to_string()
@@ -1883,94 +1948,6 @@ pub(super) fn cli_run_workflow_uses_uniform_outcome_exit_code_mapping() -> Resul
 }
 
 #[test]
-pub(super) fn cli_exit_machine_readable_mapping_matches_rfc_15() {
-    let cases = [
-        (CliError::Outcome(BackendCommandStatus::Passed), 0),
-        (CliError::Outcome(BackendCommandStatus::Failed), 1),
-        (CliError::ReplayCheck(String::from("mismatch")), 1),
-        (CliError::Outcome(BackendCommandStatus::Timeout), 2),
-        (CliError::Outcome(BackendCommandStatus::Crashed), 3),
-        (CliError::Serve(String::from("backend error")), 3),
-        (
-            CliError::Identity(String::from("pinned identity mismatch")),
-            3,
-        ),
-        (CliError::Backend(String::from("discovery/config error")), 4),
-        (CliError::InvalidScenario(String::from("bad scenario")), 5),
-        (CliError::Artifact(String::from("bad artifact")), 5),
-        (CliError::Usage(String::from("bad flags")), 64),
-    ];
-
-    for (error, expected) in cases {
-        assert_eq!(error.exit_code(), expected, "{error}");
-    }
-}
-
-#[test]
-pub(super) fn cli_exit_machine_readable_output_records_final_outcome() -> Result<(), Box<dyn Error>>
-{
-    let temp = TempDir::new()?;
-    let scenario = write_valid_run_scenario(&temp)?;
-    let cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("--backend"),
-        String::from("double"),
-        String::from("--seed"),
-        String::from("1"),
-        String::from("run"),
-        scenario.display().to_string(),
-    ]);
-    let Commands::Run(args) = &cli.command else {
-        panic!("expected run command");
-    };
-    let run_plan = plan_run_invocation(args, temp.path())?;
-    let seed_plan = plan_determinism_ergonomics(
-        &cli,
-        &FakeSeedEnvironment::default(),
-        &mut FakeSeedEntropySource::new(0),
-    )?
-    .expect("run should resolve a seed");
-    let outcome = execute_backend_routed_command(
-        &plan_cli_invocation(&cli),
-        &plan_backend_selection(&cli)?.expect("run should require backend selection"),
-        Some(&seed_plan),
-        Some(&run_plan),
-        None,
-        None,
-        &mut NullBackendCommandRunner,
-    )?;
-
-    let entries = backend_machine_readable_trace_entries(&outcome);
-    let final_entry = entries.last().expect("final outcome entry");
-    assert_eq!(entries.len(), outcome.canonical_log.len() + 1);
-    assert_eq!(final_entry.kind, "final_outcome");
-    assert_eq!(final_entry.node, "cli");
-    assert!(final_entry.summary.contains("subcommand=run"));
-    assert!(final_entry.summary.contains("status=passed"));
-    assert!(final_entry.summary.contains("exit_code=0"));
-    assert!(final_entry.summary.contains(&outcome.canonical_log_digest));
-    assert!(final_entry.summary.contains(&outcome.artifact_digest));
-
-    let jsonl = render_canonical_event_log(OutputFormat::Jsonl, &entries)?;
-    let jsonl_text = String::from_utf8(jsonl.bytes)?;
-    assert_eq!(jsonl_text.lines().count(), entries.len());
-    assert!(
-        jsonl_text
-            .lines()
-            .last()
-            .expect("jsonl final line")
-            .contains("\"kind\":\"final_outcome\"")
-    );
-    let json = render_canonical_event_log(OutputFormat::Json, &entries)?;
-    assert!(String::from_utf8(json.bytes)?.contains("\"kind\":\"final_outcome\""));
-    assert!(!should_emit_human_backend_output(OutputFormat::Jsonl));
-    assert!(!should_emit_human_backend_output(OutputFormat::Json));
-    assert!(should_emit_human_backend_output(OutputFormat::Table));
-
-    Ok(())
-}
-
-#[test]
 pub(super) fn cli_run_workflow_executes_remote_daemon_session_against_production_server()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
@@ -1980,10 +1957,13 @@ pub(super) fn cli_run_workflow_executes_remote_daemon_session_against_production
         String::from("crucible"),
         String::from("--daemon"),
         daemon,
+        String::from("--trusted-unauthenticated-daemon"),
         String::from("--seed"),
         String::from("7"),
         String::from("run"),
         scenario.display().to_string(),
+        String::from("--save-on"),
+        String::from("always"),
     ]);
     let Commands::Run(args) = &cli.command else {
         panic!("expected run command");
@@ -2010,19 +1990,23 @@ pub(super) fn cli_run_workflow_executes_remote_daemon_session_against_production
 
     assert_eq!(outcome.status, BackendCommandStatus::Passed);
     assert_eq!(outcome.exit_code, 0);
+    let checkpoint = outcome
+        .terminal_savepoint
+        .expect("remote always-save run must retain its terminal checkpoint");
+    let evidence = savepoint_store_evidence("remote run test", checkpoint, temp.path())?;
+    assert_eq!(evidence.configuration.id(), checkpoint);
     assert!(outcome.stdout.iter().any(|line| {
         line.starts_with("run-session\t")
             && line.contains("created=paused")
             && line.contains("final=quiescent")
             && !line.contains("events=0")
     }));
-    assert!(
-        outcome
-            .canonical_log
-            .iter()
-            .any(|entry| entry.kind == "run_stream_event"
-                && entry.summary == "crucible.event.diagnostic")
-    );
+    assert!(outcome.canonical_log.iter().any(|entry| {
+        entry.kind == "run_stream_event"
+            && entry
+                .summary
+                .starts_with("crucible.event.diagnostic sequence=")
+    }));
 
     Ok(())
 }
@@ -2098,21 +2082,155 @@ pub(super) async fn cli_run_workflow_acknowledges_interactive_reader_commands()
     let mut command_id = 1;
     let mut acknowledged = Vec::new();
     let mut output = Vec::new();
-    drive_interactive_command_reader(
+    let terminal_snapshot = drive_interactive_command_reader(
         &control,
         &mut command_id,
         &mut acknowledged,
-        io::Cursor::new("query\n# ignored\n\n"),
+        io::Cursor::new("query\ninject-fault\nquery\n# ignored\n\nstop\nquery\n"),
         &mut output,
     )
     .await?;
 
-    assert_eq!(acknowledged, vec![SessionCommandKind::Query]);
-    assert_eq!(command_id, 2);
+    assert_eq!(
+        acknowledged,
+        vec![
+            SessionCommandKind::Query,
+            SessionCommandKind::Query,
+            SessionCommandKind::Stop,
+        ]
+    );
+    assert_eq!(command_id, 4);
+    assert!(matches!(
+        terminal_snapshot.as_deref().map(|snapshot| &snapshot.state),
+        Some(EngineState::Stopped { .. })
+    ));
     assert_eq!(
         String::from_utf8(output)?,
-        "interactive-ack\tcommand=query\tstatus=accepted\n"
+        concat!(
+            "interactive-ack\tcommand=query\tstatus=accepted\n",
+            "interactive-query\tstate=paused\n",
+            "interactive-ack\tcommand=inject-fault\tstatus=rejected\treason=unsupported\tdetail=payload-required\n",
+            "interactive-ack\tcommand=query\tstatus=accepted\n",
+            "interactive-query\tstate=paused\n",
+            "interactive-ack\tcommand=stop\tstatus=accepted\n",
+        )
     );
+
+    Ok(())
+}
+
+#[test]
+pub(super) fn interactive_fault_commands_never_use_representative_fixture_payloads() {
+    for command in [
+        SessionCommandKind::InjectFault,
+        SessionCommandKind::HealFault,
+    ] {
+        let error = match cli_stream_command(command) {
+            Ok(_) => panic!("payload-less fault command must be rejected"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CliError::Usage(_)));
+        assert!(error.to_string().contains("requires a typed fault payload"));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+pub(super) async fn cli_interactive_stop_uses_terminal_snapshot_after_registry_cleanup()
+-> Result<(), Box<dyn Error>> {
+    #[derive(Default)]
+    struct InteractiveLoop {
+        quanta: u64,
+    }
+
+    impl EngineLoop for InteractiveLoop {
+        fn drive_quantum(&mut self, request: QReq) -> Result<QOut, QErr> {
+            self.quanta = self.quanta.saturating_add(1);
+            let frontier = VirtualTime { ticks: self.quanta };
+            let decision = crucible::Decision::DeliveryOrder(crucible::DeliveryOrderDecision {
+                at: frontier,
+                order: Vec::new(),
+            });
+            let configuration = crucible::try_step(&request.configuration, decision.clone())
+                .map_err(|error| crucible::SchedulerError::BoundaryViolation {
+                    message: format!("interactive test could not record decision: {error}"),
+                })?;
+            let event = crucible::SchedulerEventLogEntry::diagnostic(
+                self.quanta.saturating_sub(1),
+                frontier,
+                crucible::EventDiagnosticPayload::new(
+                    "crucible.cli.interactive-stop-test",
+                    crucible::EventLevel::Info,
+                    BTreeMap::new(),
+                ),
+            );
+            Ok(QOut {
+                configuration,
+                frontier,
+                advanced_node: None,
+                resolved_events: Vec::new(),
+                decisions: vec![decision],
+                event_log_entries: vec![event],
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
+                event_log_segment_hash: None,
+                event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, self.quanta),
+                scheduler_quiescence: None,
+            })
+        }
+    }
+
+    let temp = TempDir::new()?;
+    let scenario = write_valid_run_scenario(&temp)?;
+    let cli = Cli::parse_from([
+        String::from("crucible"),
+        String::from("--backend"),
+        String::from("double"),
+        String::from("--seed"),
+        String::from("17"),
+        String::from("run"),
+        scenario.display().to_string(),
+        String::from("--interactive"),
+        String::from("--until"),
+        String::from("stopped"),
+        String::from("--watch"),
+    ]);
+    let Commands::Run(args) = &cli.command else {
+        panic!("expected run command");
+    };
+    let run_plan = plan_run_invocation(args, temp.path())?;
+    let control_plane = LifecycleControlPlane::new(
+        "crucible-cli-interactive-stop-test",
+        Vec::new(),
+        |_scenario: &crucible::ScenarioDef, _seed| InteractiveLoop::default(),
+    );
+    let client = InProcessLifecycleClient::new(control_plane);
+    let report = run_control_client_workflow_async(
+        &client,
+        &run_plan,
+        &[
+            SessionCommandKind::StepQuantum,
+            SessionCommandKind::Stop,
+            SessionCommandKind::Query,
+        ],
+    )
+    .await?;
+
+    assert_eq!(report.status, BackendCommandStatus::Passed);
+    assert_eq!(report.final_state, "stopped");
+    assert_eq!(report.outcome, Some(OutcomeKind::Stopped));
+    assert_eq!(report.final_frontier_ticks, 1);
+    assert_eq!(report.final_quanta, 1);
+    assert!(report.terminal_savepoint.is_some());
+    assert!(report.terminal_configuration.is_some());
+    assert!(!report.streamed_events.is_empty());
+    assert_eq!(
+        report.acknowledged_commands.last(),
+        Some(&SessionCommandKind::Stop)
+    );
+    assert!(report.watch_statuses.iter().any(|status| {
+        status.starts_with("state=stopped\tfrontier_ticks=1\tquanta=1\toutcome=stopped")
+    }));
+    assert!(client.list_sessions().await?.sessions.is_empty());
 
     Ok(())
 }
@@ -2193,6 +2311,7 @@ pub(super) fn cli_backend_selection_covers_every_backend_routed_subcommand()
             String::from("crucible"),
             String::from("--daemon"),
             String::from("127.0.0.1:9000"),
+            String::from("--trusted-unauthenticated-daemon"),
         ];
         daemon_args.extend(tail.iter().map(|arg| (*arg).to_string()));
         let daemon_cli = cli_from_owned(daemon_args);
@@ -2545,5 +2664,9 @@ pub(super) fn cli_verify_workflow_runs_fresh_local_double_reductions() -> Result
 
     Ok(())
 }
+#[path = "replay_artifact/debug_session.rs"]
+mod debug_session;
+#[path = "replay_artifact/output.rs"]
+mod output;
 #[path = "replay_artifact/run_budget.rs"]
 mod run_budget;

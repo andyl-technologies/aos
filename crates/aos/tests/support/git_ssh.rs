@@ -2,8 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
-use anyhow::{Context, Result, bail};
-use aos_package::security::parse_signing_key;
+use anyhow::Result;
 
 static GIT_SSH_PROGRAM: OnceLock<Option<PathBuf>> = OnceLock::new();
 
@@ -22,41 +21,13 @@ pub(crate) fn verify_commit_signature(
     commit: &str,
     trusted_keys: &[String],
 ) -> Result<bool> {
-    let signers_file = write_allowed_signers(trusted_keys)?;
-    let mut command = Command::new("git");
-    command
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .arg("-c")
-        .arg(format!(
-            "gpg.ssh.allowedSignersFile={}",
-            signers_file.path().display()
-        ))
-        .arg("verify-commit")
-        .arg(commit)
-        .current_dir(repo_path);
-    apply_git_ssh_program_env(&mut command);
-    let output = command.output().context("running git verify-commit")?;
-    Ok(output.status.success())
-}
-
-#[allow(dead_code)]
-fn write_allowed_signers(trusted_keys: &[String]) -> Result<tempfile::NamedTempFile> {
-    if trusted_keys.is_empty() {
-        bail!("empty trusted key set; refusing to verify signatures against no keys");
-    }
-
-    let mut signers_content = String::new();
-    for key in trusted_keys {
-        let (_reg, _algo, pubkey) = parse_signing_key(key)?;
-        signers_content.push_str(&format!("registry ssh-ed25519 {pubkey}\n"));
-    }
-
-    let mut signers_file =
-        tempfile::NamedTempFile::new().context("creating temporary allowed-signers file")?;
-    std::io::Write::write_all(&mut signers_file, signers_content.as_bytes())
-        .context("writing temporary allowed-signers file")?;
-    Ok(signers_file)
+    // CLI assertions must exercise the same in-process verifier that accepts
+    // registry commits in production. Stock-Git interoperability belongs to
+    // the security module's focused tests, which create signatures with Git
+    // and verify them through this production boundary. Keeping the CLI suite
+    // on that boundary also avoids making its result depend on a build-only
+    // git/ssh-keygen pair or the Nix builder's dynamic-library environment.
+    aos_package::security::verify_commit_signature(repo_path, commit, trusted_keys)
 }
 
 fn git_ssh_program() -> Option<&'static Path> {
@@ -92,6 +63,7 @@ fn ssh_keygen_can_sign(candidate: &Path) -> bool {
     };
     let key = tmp.path().join("key");
     let Ok(keygen) = Command::new(candidate)
+        .env_remove("LD_LIBRARY_PATH")
         .args(["-q", "-t", "ed25519", "-N", "", "-C", "registry-test", "-f"])
         .arg(&key)
         .output()
@@ -108,6 +80,7 @@ fn ssh_keygen_can_sign(candidate: &Path) -> bool {
     }
 
     Command::new(candidate)
+        .env_remove("LD_LIBRARY_PATH")
         .arg("-Y")
         .arg("sign")
         .arg("-f")

@@ -67,12 +67,46 @@
     # Each definition contributes a `config = def.value` module, so the
     # submodule's option declarations (defaults, types, mkIf/mkMerge)
     # process it as a normal module input.
-    defModules =
-      builtins.map (d: {
+    applyInheritedPriority = priority: value:
+      if priority == 100
+      then value
+      else if builtins.isAttrs value && value ? _type && value._type == "override"
+      then value
+      else if builtins.isAttrs value && value ? _type && value._type == "if"
+      then value // {_value = applyInheritedPriority priority value._value;}
+      else if builtins.isAttrs value && value ? _type && value._type == "merge"
+      then value // {_values = builtins.map (applyInheritedPriority priority) value._values;}
+      else if builtins.isAttrs value
+      then builtins.mapAttrs (_: applyInheritedPriority priority) value
+      else {
+        _type = "override";
+        _priority = priority;
+        _value = value;
+      };
+    defModule = d: {
         _file = d.file or "<anonymous submodule definition>";
-        config = d.value;
-      })
-      defs;
+        config = applyInheritedPriority (
+          if (d.provenance or "@base") == "@host" && (d._priority or 100) == 75
+          then 100
+          else d._priority or 100
+        ) d.value;
+      };
+    baseDefModules = builtins.map defModule (builtins.filter
+      (d: (d.provenance or "@base") == "@base")
+      defs);
+    operatorDefModules = builtins.map defModule (builtins.filter
+      (d:
+        builtins.elem
+        (d.provenance or "@base")
+        ["@host" "@host-import"])
+      defs);
+    packageDefRecords = builtins.map (d: {
+      name = strings.removePrefix "package:" d.provenance;
+      module = defModule d;
+      authorization = d.authorization;
+    }) (builtins.filter
+      (d: strings.hasPrefix "package:" (d.provenance or "@base"))
+      defs);
 
     # For `attrsOf (submodule ...)` and `listOf (submodule ...)`, the
     # last element of `loc` is the attribute name / list index. Nixpkgs-
@@ -88,12 +122,15 @@
       else {};
 
     evaluated = modules.evalModules {
-      modules = baseModules ++ defModules;
+      modules = baseModules ++ baseDefModules;
       # Passing the fully-wired finalLib ensures any nested submodule
       # types inside `baseModules` see the upgraded `types.submodule`
       # and also recursively delegate to `evalSubmodule`.
       lib = finalLib;
       inherit specialArgs;
+      operatorModules = operatorDefModules;
+      packageModules = packageDefRecords;
+      enforcePackageAuthorization = false;
     };
   in
     evaluated.config;
@@ -218,8 +255,7 @@
       # Structured-config format helpers. Each factory takes `{ lib,
       # pkgs, … }` at call time and returns `{ type; generate; }`.
       # See `lib/formats/` (aggregated via `lib/formats/default.nix`)
-      # for the individual factories: `json.nix`, `yaml.nix`,
-      # `toml.nix`, `ignition.nix`.
+      # for the individual factories: `json.nix`, `yaml.nix`, and `toml.nix`.
       inherit formats;
 
       # Re-export submodules for direct access when needed

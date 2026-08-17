@@ -354,64 +354,126 @@ pub fn create_baselib_gc_root(
     })
 }
 
-/// Computes which `baselib/<module_abi>` roots to retain across
-/// §4, OQ1 — "keep ≥1 prior base lib on `/var`, never re-download").
+/// Computes the exact image generations whose base-library roots survive.
 ///
-/// A base-lib root for `module_abi = K` is retained iff **either** (a) `K` is
-/// one of the ESP-resident image-gens (the A/B slots), **or** (b) at least one
-/// retained config-gen records `module_abi_pinned == K`. On top of that an
-/// absolute **floor** applies: at least one *prior distinct* ABI (a candidate
-/// `!= running`) must survive, so cross-ABI rollback re-eval is always
-/// satisfiable from `/var`. When (a)/(b) alone leave no prior ABI, the most
-/// recent prior candidate (highest ABI below `running`, else the highest
-/// distinct candidate) is added to honor the floor.
-///
-/// - `candidates` — every image-gen `module_abi` that currently has a base-lib
-///   closure on disk.
-/// - `esp_resident` — the `module_abi`s of the ESP-resident (A/B) image-gens.
-/// - `pinned_by_configgens` — the `module_abi_pinned` of every *retained*
-///   config-gen.
-/// - `running` — the running image's `module_abi`.
-///
-/// Returns the set of `module_abi`s whose `baselib/` root must be kept; any
-/// candidate outside the returned set is collectable.
-pub fn baselib_retention_set(
-    candidates: &[u32],
-    esp_resident: &std::collections::BTreeSet<u32>,
-    pinned_by_configgens: &std::collections::BTreeSet<u32>,
-    running: u32,
+/// Retention is generation-scoped, not merely ABI-scoped: two releases may
+/// share a module ABI while carrying different measured evaluator/base-library
+/// closures. Keeping an ABI therefore must not accidentally retain every
+/// historical image with that ABI.
+fn retained_baselib_image_generations(
+    images: &crate::types::ImageGenerationState,
+    configs: &crate::types::ConfigGenerationState,
 ) -> std::collections::BTreeSet<u32> {
     let mut keep = std::collections::BTreeSet::new();
-    for &abi in candidates {
-        if esp_resident.contains(&abi) || pinned_by_configgens.contains(&abi) {
-            keep.insert(abi);
-        }
-    }
+    keep.insert(images.running);
+    keep.insert(images.default);
+    keep.extend(images.pending);
 
-    // Floor: guarantee at least one retained *prior* ABI (distinct from the
-    // running one) so a cross-ABI rollback can always re-eval from /var.
-    let has_prior = keep.iter().any(|&abi| abi != running);
-    if !has_prior {
-        // Prefer the most recent prior ABI (highest candidate below running);
-        // otherwise the highest distinct candidate at all.
-        let prior = candidates
+    for slot in [crate::types::ImageSlot::A, crate::types::ImageSlot::B] {
+        if let Some(number) = images
+            .generations
             .iter()
-            .copied()
-            .filter(|&abi| abi < running)
+            .filter(|image| image.slot == slot)
+            .map(|image| image.number)
             .max()
-            .or_else(|| {
-                candidates
-                    .iter()
-                    .copied()
-                    .filter(|&abi| abi != running)
-                    .max()
-            });
-        if let Some(abi) = prior {
-            keep.insert(abi);
+        {
+            keep.insert(number);
         }
     }
 
+    // Retained configuration inputs name the exact image/base library they
+    // were evaluated against. Once configuration pruning removes that record,
+    // its image-scoped root becomes eligible for removal too.
+    keep.extend(
+        configs
+            .generations
+            .iter()
+            .map(|generation| generation.image_gen_parent),
+    );
+
+    let Some(running) = images.running_generation() else {
+        return keep;
+    };
+    // Preserve one exact image for the prior-distinct-ABI recovery floor.
+    // Prefer the greatest ABI below the running ABI, then its newest image;
+    // if ABI numbers are non-monotonic, fall back to the greatest distinct ABI.
+    let prior_abi = images
+        .generations
+        .iter()
+        .map(|image| image.module_abi)
+        .filter(|abi| *abi < running.module_abi)
+        .max()
+        .or_else(|| {
+            images
+                .generations
+                .iter()
+                .map(|image| image.module_abi)
+                .filter(|abi| *abi != running.module_abi)
+                .max()
+        });
+    if let Some(prior_abi) = prior_abi
+        && let Some(number) = images
+            .generations
+            .iter()
+            .filter(|image| image.module_abi == prior_abi)
+            .map(|image| image.number)
+            .max()
+    {
+        keep.insert(number);
+    }
     keep
+}
+
+/// Reconciles production image-scoped base-library roots with the retention
+/// floor.
+///
+/// Roots are retained for the exact A/B-resident generations, exact retained
+/// configuration parents, and one prior-distinct-ABI recovery generation;
+/// every other image-scoped root is removed. The operation never downloads a
+/// missing base library.
+///
+/// # Errors
+///
+/// Returns an error when a required retained store path is absent or a root
+/// cannot be created or removed.
+pub fn reconcile_baselib_gc_roots(
+    image_profile: &Path,
+    images: &crate::types::ImageGenerationState,
+    configs: &crate::types::ConfigGenerationState,
+) -> Result<()> {
+    images
+        .running_generation()
+        .context("image state has no running generation")?;
+    let keep = retained_baselib_image_generations(images, configs);
+    for image in &images.generations {
+        let dir = image_profile.join(format!("image-gen-{}", image.number));
+        let link = dir.join("baselib").join(image.module_abi.to_string());
+        if keep.contains(&image.number) {
+            if !Path::new(&image.evaluator_ref).exists() {
+                bail!(
+                    "retained image generation {} base library is unavailable: {}",
+                    image.number,
+                    image.evaluator_ref
+                );
+            }
+            create_baselib_gc_root(&dir, image.module_abi, &image.evaluator_ref)?;
+        } else if link.exists() || link.symlink_metadata().is_ok() {
+            std::fs::remove_file(&link)
+                .with_context(|| format!("removing obsolete base-lib root {}", link.display()))?;
+            sync_directory(
+                link.parent()
+                    .context("base-library root has no parent directory")?,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn sync_directory(path: &Path) -> Result<()> {
+    std::fs::File::open(path)
+        .with_context(|| format!("opening directory {} for sync", path.display()))?
+        .sync_all()
+        .with_context(|| format!("syncing directory {}", path.display()))
 }
 
 /// Write a `<hash> -> <store path>` symlink farm under `dir`, creating `dir`.
@@ -497,6 +559,7 @@ fn atomic_symlink(target: &str, link_path: &Path) -> Result<()> {
         .with_context(|| format!("creating temp symlink {}", tmp_path.display()))?;
     std::fs::rename(&tmp_path, link_path)
         .with_context(|| format!("renaming {} -> {}", tmp_path.display(), link_path.display()))?;
+    sync_directory(parent)?;
 
     Ok(())
 }
@@ -1079,36 +1142,169 @@ mod tests {
         );
     }
 
-    #[test]
-    fn baselib_retention_keeps_esp_and_pinned_and_floor() {
-        use std::collections::BTreeSet;
-
-        let candidates = [1u32, 2, 3];
-        let esp: BTreeSet<u32> = [3].into_iter().collect(); // running A/B slot
-        let pinned: BTreeSet<u32> = [2].into_iter().collect(); // a retained config-gen
-        let running = 3;
-
-        let keep = baselib_retention_set(&candidates, &esp, &pinned, running);
-        // 3 (ESP) and 2 (pinned). 2 also satisfies the prior-ABI floor.
-        assert!(keep.contains(&3));
-        assert!(keep.contains(&2));
-        assert!(!keep.contains(&1));
+    fn image_generation(
+        number: u32,
+        slot: crate::types::ImageSlot,
+        module_abi: u32,
+    ) -> crate::types::ImageGeneration {
+        crate::types::ImageGeneration {
+            number,
+            slot,
+            uki_path: format!("EFI/Linux/aos-{number}.efi"),
+            uki_source_path: None,
+            toplevel: format!("/nix/store/top-{number}"),
+            package_name: "aos-system".to_string(),
+            version: number.to_string(),
+            registry: "core".to_string(),
+            kernel_path: None,
+            evaluator_ref: format!("/nix/store/base-lib-{number}"),
+            module_abi,
+            baselib_digest: format!("sha256:{number:064x}"),
+            root_verity_roothash: None,
+            expected_pcr11: None,
+            initrd_pcr11: None,
+            created_at: "2026-08-04T00:00:00Z".to_string(),
+        }
     }
 
     #[test]
-    fn baselib_retention_floor_adds_prior_when_only_running_kept() {
-        use std::collections::BTreeSet;
+    fn baselib_retention_drops_historical_images_sharing_a_retained_abi() {
+        use crate::types::{ConfigGenerationState, ImageGenerationState, ImageSlot};
 
-        let candidates = [1u32, 2, 3];
-        let esp: BTreeSet<u32> = [3].into_iter().collect();
-        let pinned: BTreeSet<u32> = BTreeSet::new(); // no config-gen pins a prior ABI
-        let running = 3;
+        let images = ImageGenerationState {
+            running: 3,
+            default: 3,
+            pending: None,
+            generations: vec![
+                image_generation(1, ImageSlot::A, 7),
+                image_generation(2, ImageSlot::B, 7),
+                image_generation(3, ImageSlot::A, 7),
+            ],
+        };
+        let configs = ConfigGenerationState {
+            current: 0,
+            next: 1,
+            generations: Vec::new(),
+        };
 
-        let keep = baselib_retention_set(&candidates, &esp, &pinned, running);
-        // Only the running ABI (3) qualifies via (a)/(b); the floor forces the
-        // most recent prior ABI (2) to be retained for cross-ABI re-eval.
-        assert!(keep.contains(&3));
-        assert!(keep.contains(&2));
-        assert!(!keep.contains(&1));
+        let keep = retained_baselib_image_generations(&images, &configs);
+        assert_eq!(keep, [2, 3].into_iter().collect());
+        assert!(
+            !keep.contains(&1),
+            "ABI equality must not retain every old image"
+        );
+    }
+
+    #[test]
+    fn baselib_reconciliation_removes_only_the_obsolete_same_abi_root() {
+        use crate::types::{ConfigGenerationState, ImageGenerationState, ImageSlot};
+
+        let temp = TempDir::new().unwrap();
+        let image_profile = temp.path().join("image");
+        let mut generations = vec![
+            image_generation(1, ImageSlot::A, 7),
+            image_generation(2, ImageSlot::B, 7),
+            image_generation(3, ImageSlot::A, 7),
+        ];
+        for image in &mut generations {
+            let evaluator = temp.path().join(format!("base-lib-{}", image.number));
+            std::fs::create_dir(&evaluator).unwrap();
+            image.evaluator_ref = evaluator.to_string_lossy().into_owned();
+            create_baselib_gc_root(
+                &image_profile.join(format!("image-gen-{}", image.number)),
+                image.module_abi,
+                &image.evaluator_ref,
+            )
+            .unwrap();
+        }
+        let images = ImageGenerationState {
+            running: 3,
+            default: 3,
+            pending: None,
+            generations,
+        };
+        let configs = ConfigGenerationState {
+            current: 0,
+            next: 1,
+            generations: Vec::new(),
+        };
+
+        reconcile_baselib_gc_roots(&image_profile, &images, &configs).unwrap();
+
+        assert!(
+            image_profile
+                .join("image-gen-1/baselib/7")
+                .symlink_metadata()
+                .is_err()
+        );
+        assert!(image_profile.join("image-gen-2/baselib/7").is_symlink());
+        assert!(image_profile.join("image-gen-3/baselib/7").is_symlink());
+    }
+
+    #[test]
+    fn baselib_retention_floor_keeps_one_exact_prior_abi_image() {
+        use crate::types::{ConfigGenerationState, ImageGenerationState, ImageSlot};
+
+        let images = ImageGenerationState {
+            running: 4,
+            default: 4,
+            pending: None,
+            generations: vec![
+                image_generation(1, ImageSlot::A, 1),
+                image_generation(2, ImageSlot::A, 2),
+                image_generation(3, ImageSlot::A, 2),
+                image_generation(4, ImageSlot::A, 3),
+            ],
+        };
+        let configs = ConfigGenerationState {
+            current: 0,
+            next: 1,
+            generations: Vec::new(),
+        };
+
+        let keep = retained_baselib_image_generations(&images, &configs);
+        assert_eq!(keep, [3, 4].into_iter().collect());
+    }
+
+    #[test]
+    fn baselib_retention_keeps_newest_prior_abi_even_when_an_older_abi_is_a_config_parent() {
+        use crate::types::{
+            ConfigGeneration, ConfigGenerationState, ImageGenerationState, ImageSlot,
+        };
+
+        let images = ImageGenerationState {
+            running: 4,
+            default: 4,
+            pending: None,
+            generations: vec![
+                image_generation(1, ImageSlot::A, 1),
+                image_generation(2, ImageSlot::A, 2),
+                image_generation(3, ImageSlot::B, 2),
+                image_generation(4, ImageSlot::A, 3),
+            ],
+        };
+        let configs = ConfigGenerationState {
+            current: 1,
+            next: 2,
+            generations: vec![ConfigGeneration {
+                number: 1,
+                image_gen_parent: 1,
+                module_abi_pinned: 1,
+                manifest_hash: "sha256:manifest".into(),
+                config_module_closure: "/nix/store/config-closure".into(),
+                config_module_paths: Vec::new(),
+                config_module_packages: Vec::new(),
+                host_nix_ref: "/nix/store/host".into(),
+                host_nix_commit: None,
+                facts_hash: "sha256:facts".into(),
+                facts_ref: "/nix/store/facts".into(),
+                base_lib_ref: "/nix/store/base-1".into(),
+                evaluator_ref: "/nix/store/evaluator-1".into(),
+                created_at: "2026-08-04T00:00:00Z".into(),
+            }],
+        };
+
+        let keep = retained_baselib_image_generations(&images, &configs);
+        assert_eq!(keep, [1, 3, 4].into_iter().collect());
     }
 }

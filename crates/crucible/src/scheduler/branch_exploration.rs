@@ -127,9 +127,7 @@ impl SingleScheduler {
         choices: Vec<OverrideDecision>,
     ) -> Result<(), SchedulerError> {
         for choice in &choices {
-            if !choice.point.key.starts_with("live-world-network/")
-                || !liveness::is_live_network_branch_choice_name(&choice.choice.name)
-            {
+            if !super::is_supported_live_world_network_override(choice) {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
                         "unsupported live World-network branch choice `{}` at `{}`",

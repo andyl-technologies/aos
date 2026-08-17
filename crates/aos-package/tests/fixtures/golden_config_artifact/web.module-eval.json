@@ -1,0 +1,44 @@
+{
+  "artifacts": [
+    {
+      "name": "env",
+      "path": "/etc/aos/packages/web/env",
+      "format": "env",
+      "required": ["TOKEN"],
+      "optional": ["URL"],
+      "units": ["web.service"],
+      "reload": "reload"
+    },
+    {
+      "name": "json",
+      "path": "/etc/aos/packages/web/json",
+      "format": "json",
+      "required": ["a"],
+      "optional": ["b"],
+      "units": ["web.service"],
+      "reload": "reload"
+    },
+    {
+      "name": "toml",
+      "path": "/etc/aos/packages/web/toml",
+      "format": "toml",
+      "required": ["k"],
+      "optional": [],
+      "units": ["web.service"],
+      "reload": "reload"
+    }
+  ],
+  "desired": {
+    "env": {
+      "TOKEN": "abc 123",
+      "URL": "https://x"
+    },
+    "json": {
+      "a": 1,
+      "b": "two"
+    },
+    "toml": {
+      "k": "v"
+    }
+  }
+}

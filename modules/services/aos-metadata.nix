@@ -13,6 +13,7 @@
 ##!   aos-metadata-detect   DMI/ISO → platform.env
 ##!   aos-metadata-network  DHCP gate, cloud-only
 ##!   aos-metadata-fetch    platform → stash
+##!   aos-metadata-network-seed rendered seed → mounted gen-0 /var/etc
 ##!   aos-metadata-authorize trust → exact host.nix
 ##!   aos-provisioning-eval restricted Nix → validated transient repart.d
 ##!
@@ -198,6 +199,43 @@ in {
             exit 0
           fi
           exit 1
+        '';
+      };
+
+      # Fetch must precede repart because host.nix owns the storage plan, while
+      # /var cannot be mounted until repart completes. Keep that dependency
+      # acyclic by rendering the static-network seed into the initrd stash in
+      # aos-metadata-fetch, then copy it into the mounted persistent lower here.
+      # etc-overlay-setup subsequently exposes the seed to stage-2 networkd.
+      "aos-metadata-network-seed" = {
+        description = "Seed DHCP-less metadata networking into gen-0 /var/etc";
+        wantedBy = ["initrd-fs.target"];
+        requires = [
+          "aos-metadata-fetch.service"
+          "mount-var.service"
+        ];
+        after = [
+          "aos-metadata-fetch.service"
+          "mount-var.service"
+        ];
+        before = [
+          "etc-overlay-setup.service"
+          "initrd-fs.target"
+        ];
+        unitConfig = {
+          DefaultDependencies = "no";
+          ConditionPathExists = "${cfg.stashDir}/network/10-aos-seed.network";
+        };
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          StandardOutput = "journal+console";
+          StandardError = "journal+console";
+        };
+        script = ''
+          ${pkgs.coreutils}/bin/install -D -m 0644 \
+            ${cfg.stashDir}/network/10-aos-seed.network \
+            /sysroot/var/etc/systemd/network/10-aos-seed.network
         '';
       };
 

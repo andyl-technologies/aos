@@ -202,6 +202,7 @@ in {
     systemd.services."auditd" = {
       description = "Linux Audit Daemon";
       wantedBy = ["multi-user.target"];
+      reloadIfChanged = true;
       after = [
         "local-fs.target"
         "systemd-tmpfiles-setup.service"

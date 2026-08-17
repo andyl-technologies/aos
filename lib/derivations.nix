@@ -475,6 +475,7 @@
   #   phases;          — ordered list of { name; script; } records
   #   meta;            — package metadata
   #   storeDir;        — store directory (default: /nix/store)
+  #   buildExecutionSystem; — system where build dependencies execute
   #   ...              — additional attributes passed to builtins.derivation
   # }
   mkDerivation = args @ {
@@ -488,6 +489,7 @@
     meta ? {},
     storeDir ? "/nix/store",
     system ? defaultSystem,
+    buildExecutionSystem ? null,
     shell ? builderPath,
     outputs ? ["out"],
     configureFlags ? "",
@@ -631,6 +633,7 @@
       "meta"
       "storeDir"
       "system"
+      "buildExecutionSystem"
       "shell"
       "outputs"
       "configureFlags"
@@ -660,7 +663,12 @@
     ];
 
     # ── Chaining constraint validation ────────────────────────────────
-    buildPlatform = mkPlatform system;
+    schedulingPlatform = mkPlatform system;
+    buildPlatform = mkPlatform (
+      if buildExecutionSystem != null
+      then buildExecutionSystem
+      else system
+    );
 
     # Effective compiler-hardening token set, exported to the builder for
     # the cc-wrapper to translate into flags. Tokens are filtered for the
@@ -680,15 +688,17 @@
         cpu = buildPlatform.constraints.cpu;
       };
 
-    # Rule 1: every buildDep must execute on our build platform
+    # Rule 1: every buildDep must execute in the logical build environment or
+    # on the physical scheduler. Cross transitions use both: target-native
+    # tools run through binfmt while bootstrap helpers remain scheduler-native.
     validateDepExecute = dep: let
       dc = getDepConstraints dep;
       depName = dep.name or dep.pname or "(unknown)";
     in
       dc.execute
       == null
-      || throwIfNot (canRun buildPlatform dc.execute)
-      "mkDerivation (${name}): build dep '${depName}' cannot execute on ${system}"
+      || throwIfNot (canRun buildPlatform dc.execute || canRun schedulingPlatform dc.execute)
+      "mkDerivation (${name}): build dep '${depName}' cannot execute on ${buildPlatform.system} or scheduler ${system}"
       true;
 
     # Rule 2: every toolchain dep must target our execute platform
@@ -721,7 +731,7 @@
       then canBuildOn system meta.build
       # New-style: structured EXECUTE constraint (where does the output run?)
       else if meta ? execute
-      then satisfies (mkPlatform system) meta.execute
+      then satisfies buildPlatform meta.execute
       # Old-style: platform string list (backward compat with ISA awareness)
       else if meta ? platforms
       then platformIsCompatible system meta.platforms

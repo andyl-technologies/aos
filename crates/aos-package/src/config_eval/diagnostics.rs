@@ -112,6 +112,50 @@ pub struct EvalDiagnostic {
     pub summary: String,
 }
 
+/// A terminal on-host evaluation failure with a stable operator-facing class.
+///
+/// This wrapper crosses the CLI boundary so the hidden service subcommand can
+/// preserve both the structured class tag and its distinct process exit code
+/// instead of flattening every fixpoint error into generic exit status 1.
+#[derive(Debug)]
+pub struct EvalCommandFailure {
+    diagnostic: EvalDiagnostic,
+    detail: String,
+}
+
+impl EvalCommandFailure {
+    /// Classifies a terminal fixpoint error for the command boundary.
+    pub fn from_fixpoint(error: &FixpointError) -> Self {
+        Self {
+            diagnostic: classify_failure(error),
+            detail: error.to_string(),
+        }
+    }
+
+    /// Returns the stable journald/JSON class tag.
+    pub fn class_tag(&self) -> &'static str {
+        self.diagnostic.class.tag()
+    }
+
+    /// Returns the class-specific process exit code.
+    pub fn exit_code(&self) -> i32 {
+        self.diagnostic.exit_code()
+    }
+
+    /// Returns the complete underlying diagnostic for verbose logging.
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+}
+
+impl std::fmt::Display for EvalCommandFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.diagnostic.summary)
+    }
+}
+
+impl std::error::Error for EvalCommandFailure {}
+
 impl EvalDiagnostic {
     /// The exit code for this diagnostic's class.
     pub fn exit_code(&self) -> i32 {
@@ -234,6 +278,12 @@ pub fn classify_failure(err: &FixpointError) -> EvalDiagnostic {
                 super::system_roots::ContributableError::NotContributable => format!(
                     "config eval failed: package '{contributor}' contributes '{root}.{path}' but '{path}' is not in the owner's contributable set"
                 ),
+                super::system_roots::ContributableError::InterfaceAbiMismatch {
+                    expected,
+                    actual,
+                } => format!(
+                    "config eval failed: package '{contributor}' expects root '{root}' interface ABI {expected}, but the installed owner exports ABI {actual}; republish the contributor"
+                ),
             },
         ),
         FixpointError::Fetch { provider, .. } => (
@@ -292,6 +342,42 @@ mod tests {
                 .contains("option 'firewall.forwardPolicy' read but no provider")
         );
         assert!(d.summary.contains("read by web/config.nix"));
+    }
+
+    #[test]
+    fn contribution_interface_abi_mismatch_is_typed_and_actionable() {
+        let error = FixpointError::Contributable {
+            contributor: "web@1.0.0".to_string(),
+            root: "nginx".to_string(),
+            path: String::new(),
+            reason: super::super::system_roots::ContributableError::InterfaceAbiMismatch {
+                expected: 1,
+                actual: 2,
+            },
+        };
+        let diagnostic = classify_failure(&error);
+        assert_eq!(diagnostic.class, EvalFailureClass::Contributable);
+        assert!(
+            diagnostic
+                .summary
+                .contains("expects root 'nginx' interface ABI 1")
+        );
+        assert!(diagnostic.summary.contains("exports ABI 2"));
+        assert!(diagnostic.summary.contains("republish"));
+    }
+
+    #[test]
+    fn command_failure_preserves_class_exit_and_full_detail() {
+        let error = FixpointError::AssertionFailed {
+            msg: "required option is false".to_string(),
+            file: Some("host.nix:7".to_string()),
+        };
+        let failure = EvalCommandFailure::from_fixpoint(&error);
+
+        assert_eq!(failure.class_tag(), "assertion");
+        assert_eq!(failure.exit_code(), 10);
+        assert!(failure.to_string().contains("host.nix:7"));
+        assert!(failure.detail().contains("assertion failed"));
     }
 
     #[test]

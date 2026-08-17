@@ -19,8 +19,9 @@ use crucible::{
 use crucible_session::{
     BreakpointDisposition, BreakpointFiring, BreakpointId, BreakpointPolicy, DebugClientId,
     DebugControllerLease, EngineSnapshot, EngineState, LifecycleStateKind, LiveSnapshot,
-    LiveStateKind, Outcome, OutcomeKind, PauseReason, QueryKind, QueryResult, SavepointInfo,
-    SessionCommand, SessionCommandKind, StepMode,
+    LiveStateKind, Outcome, OutcomeKind, PauseReason, QueryKind, QueryResult,
+    SESSION_EVENT_LOG_BROADCAST_CAPACITY, SavepointInfo, SessionCommand, SessionCommandKind,
+    StepMode,
 };
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
@@ -65,20 +66,16 @@ const WATCH_ATTACH_RPC_PATH: &str = "/crucible.rpc/watch";
 const SEND_COMMAND_RPC_PATH: &str = "/crucible.rpc/send";
 const RPC_CONTENT_TYPE: &str = "application/vnd.crucible.rpc";
 const RPC_STREAM_EVENT_CHANNEL_CAPACITY: usize = 16;
-const RPC_STREAM_PENDING_FRAME_CAPACITY: usize = 16;
+const RPC_STREAM_PENDING_FRAME_CAPACITY: usize = SESSION_EVENT_LOG_BROADCAST_CAPACITY;
 
 /// Boxed asynchronous result returned by [`ControlClient`] methods.
 pub type ControlClientFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, ControlClientError>> + Send + 'a>>;
 
-type InProcessLifecycleCommandSend = Arc<
-    dyn Fn(
-            SendRequest,
-        ) -> Pin<
-            Box<dyn Future<Output = Result<SendResponse, ControlClientError>> + Send + 'static>,
-        > + Send
-        + Sync,
->;
+type InProcessLifecycleCommandFuture =
+    Pin<Box<dyn Future<Output = Result<SendResponse, ControlClientError>> + Send + 'static>>;
+type InProcessLifecycleCommandSend =
+    Arc<dyn Fn(SendRequest) -> InProcessLifecycleCommandFuture + Send + Sync>;
 
 /// Attached bidirectional `Control` stream returned by a [`ControlClient`].
 pub enum ClientControlStream {
@@ -121,9 +118,9 @@ impl ClientControlStream {
     ///
     /// # Errors
     ///
-    /// Returns [`ControlClientError`] when the underlying transport fails, the
-    /// RPC state-update frame is malformed, or the in-process state-update
-    /// stream lags.
+    /// Returns [`ControlClientError`] when the underlying transport fails or an
+    /// RPC state-update frame is malformed. Superseded state updates are
+    /// coalesced on both transports.
     pub async fn recv_state_update(
         &mut self,
     ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
@@ -254,9 +251,9 @@ impl ClientWatchStream {
     ///
     /// # Errors
     ///
-    /// Returns [`ControlClientError`] when the underlying transport fails, the
-    /// RPC state-update frame is malformed, or the in-process state-update
-    /// stream lags.
+    /// Returns [`ControlClientError`] when the underlying transport fails or an
+    /// RPC state-update frame is malformed. Superseded state updates are
+    /// coalesced on both transports.
     pub async fn recv_state_update(
         &mut self,
     ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
@@ -364,7 +361,7 @@ struct RpcStreamingEventReceiver {
     pending_events: VecDeque<StreamingEventFrame>,
     pending_state_updates: VecDeque<StreamingStateUpdateFrame>,
     skipped_events: u64,
-    skipped_state_updates: u64,
+    last_state_sequence: Option<u64>,
 }
 
 impl RpcStreamingEventReceiver {
@@ -394,19 +391,15 @@ impl RpcStreamingEventReceiver {
     async fn recv_state_update(
         &mut self,
     ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
-        if self.skipped_state_updates > 0 {
-            let skipped = std::mem::take(&mut self.skipped_state_updates);
-            return Err(ControlClientError::from(
-                StreamingApiError::StateUpdateStreamLagged { skipped },
-            ));
-        }
-        if let Some(frame) = self.pending_state_updates.pop_front() {
-            return Ok(Some(frame));
-        }
-
-        loop {
+        let mut latest = self.pending_state_updates.pop_back();
+        self.pending_state_updates.clear();
+        while latest.is_none() {
             match self.frames.recv().await {
-                Some(Ok(RpcStreamingFrame::StateUpdate(frame))) => return Ok(Some(frame)),
+                Some(Ok(RpcStreamingFrame::StateUpdate(frame))) => {
+                    if self.state_sequence_is_newer(frame.sequence) {
+                        latest = Some(frame);
+                    }
+                }
                 Some(Ok(RpcStreamingFrame::Event(frame))) => {
                     self.push_pending_event(frame);
                 }
@@ -414,6 +407,30 @@ impl RpcStreamingEventReceiver {
                 None => return Ok(None),
             }
         }
+
+        loop {
+            match self.frames.try_recv() {
+                Ok(Ok(RpcStreamingFrame::StateUpdate(frame))) => {
+                    if latest
+                        .as_ref()
+                        .is_none_or(|current| frame.sequence > current.sequence)
+                        && self.state_sequence_is_newer(frame.sequence)
+                    {
+                        latest = Some(frame);
+                    }
+                }
+                Ok(Ok(RpcStreamingFrame::Event(frame))) => self.push_pending_event(frame),
+                Ok(Err(error)) => return Err(error),
+                Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
+                    break;
+                }
+            }
+        }
+
+        if let Some(frame) = &latest {
+            self.last_state_sequence = Some(frame.sequence);
+        }
+        Ok(latest)
     }
 
     fn push_pending_event(&mut self, frame: StreamingEventFrame) {
@@ -425,11 +442,21 @@ impl RpcStreamingEventReceiver {
     }
 
     fn push_pending_state_update(&mut self, frame: StreamingStateUpdateFrame) {
-        if self.pending_state_updates.len() >= RPC_STREAM_PENDING_FRAME_CAPACITY {
-            let _dropped = self.pending_state_updates.pop_front();
-            self.skipped_state_updates = self.skipped_state_updates.saturating_add(1);
+        if !self.state_sequence_is_newer(frame.sequence)
+            || self
+                .pending_state_updates
+                .back()
+                .is_some_and(|pending| pending.sequence >= frame.sequence)
+        {
+            return;
         }
+        self.pending_state_updates.clear();
         self.pending_state_updates.push_back(frame);
+    }
+
+    fn state_sequence_is_newer(&self, sequence: u64) -> bool {
+        self.last_state_sequence
+            .is_none_or(|delivered| sequence > delivered)
     }
 }
 
@@ -1319,7 +1346,7 @@ async fn decode_attached_stream_response(
             pending_events: VecDeque::new(),
             pending_state_updates: VecDeque::new(),
             skipped_events: 0,
-            skipped_state_updates: 0,
+            last_state_sequence: None,
         },
     ))
 }
@@ -2844,41 +2871,6 @@ fn reject_trailing(line: Option<&str>) -> Result<(), ControlClientError> {
     Ok(())
 }
 
-fn push_session_ref(output: &mut String, session: SessionRef) {
-    push_line(output, "session-id", &session.id.value.to_string());
-    push_line(output, "epoch", &session.epoch.to_string());
-    push_line(output, "seed", &session.seed.to_hex());
-}
-
-fn push_line(output: &mut String, key: &str, value: &str) {
-    output.push_str(key);
-    output.push('=');
-    output.push_str(value);
-    output.push('\n');
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        output.push(char::from(HEX[usize::from(byte >> 4)]));
-        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    output
-}
-
-fn rpc_decode(message: impl Into<String>) -> ControlClientError {
-    ControlClientError::RpcDecode {
-        message: message.into(),
-    }
-}
-
-fn command_kind_name(command: SessionCommandKind) -> &'static str {
-    api_command_for_session_command(command)
-        .map(|mapping| mapping.command_name)
-        .unwrap_or("unknown")
-}
-
 fn command_name_from_static(value: &str) -> Result<&'static str, ControlClientError> {
     API_COMMAND_MAPPINGS
         .iter()
@@ -2961,7 +2953,12 @@ fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, ControlClientError> {
     }
     Ok(bytes)
 }
+
+#[cfg(test)]
+mod streaming_receiver_tests;
+
 mod debug;
+pub use debug::{DebugControllerAccess, DebugControllerAcquisition};
 mod query_result;
 
 use query_result::*;

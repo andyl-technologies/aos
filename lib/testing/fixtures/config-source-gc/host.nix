@@ -1,0 +1,3 @@
+{
+  hostName = "cfgsrc-gc-host";
+}

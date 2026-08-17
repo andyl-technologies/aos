@@ -142,9 +142,9 @@ schema; replaying it against a different schema is undefined.
   [`operability.md`](operability.md)). Retaining inputs enables cross-ABI
   re-eval; retaining outputs makes same-ABI
   rollback a pointer switch.
-- **`host.nix` lineage:** track which `host.nix` revision each config-gen was
-  evaluated from, so re-eval after an image rollback reproduces the intended
-  config rather than fork HEAD (open question 5).
+- **`host.nix` lineage:** each config-gen records and GC-roots the exact
+  content-addressed `host_nix_ref`, so re-eval after an image rollback
+  reproduces the intended config rather than following a mutable source ref.
 
 **Net:** a config-gen is pinned to its ABI, freely portable across image-gens of
 the *same* ABI, and recomputable (never blindly replayed) across image-gens of
@@ -184,7 +184,7 @@ needs the ABI contract — which is why the structural-core/extension split
 fetched shared-root extension additionally carries its *own* interface ABI, so
 interfaces evolve independently of the base.
 
-## Open questions (RESOLVED — see [`decisions.md`](decisions.md))
+## Resolved questions (see [`decisions.md`](decisions.md))
 
 > All five are now locked in [`decisions.md`](decisions.md) (OQ): keep ≥1 prior
 > base-lib via a dedicated per-image-gen GC root; `module_abi` measured via the
@@ -195,19 +195,18 @@ interfaces evolve independently of the base.
 1. **Retention depth mismatch.** Config-gens are cheap (`/var`, many);
    image-gens are expensive (ESP ×2 → 2 slots). Keeping config-gens parented to
    a GC'd image-gen loses the base lib needed to re-eval them across an ABI
-   boundary. Decision: keep ≥1 prior base lib on `/var` (just the lib, not the
-   whole UKI) independent of ESP slot count, or accept that cross-pruned-image
-   rollback requires re-download of that base lib.
-2. **Measured locus of `module_abi`.** Confirm the base-lib digest (hence the
-   ABI) is inside the PCR-11-measured UKI section, so "ABI integrity for free"
-   holds (see [`trust-and-secrets.md`](trust-and-secrets.md)).
+   boundary. A dedicated GC root keeps at least one prior base lib on `/var`
+   (just the lib, not the whole UKI) independently of the ESP slot count.
+2. **Measured locus of `module_abi`.** The module ABI and base-lib digest are in
+   the PCR-11-measured UKI `.osrel`; the dm-verity root hash in `.cmdline` binds
+   the root bytes (see [`trust-and-secrets.md`](trust-and-secrets.md)).
 3. **`stateVersion` vs `module_abi`.** `aos.system.stateVersion`
    (`system.nix:131`, state-migration trigger) and `module_abi` (option schema)
-   are adjacent but distinct. Decide whether they collapse or stay orthogonal; a
-   breaking option change often coincides with a state migration but not always.
+   are adjacent but distinct and remain orthogonal; a breaking option change
+   often coincides with a state migration but not always.
 4. **Auto-reboot orchestration.** With the base lib in the image, an image
-   upgrade *requires* reboot before config can be evaluated. Decide whether
-   `apm upgrade` orchestrates a reboot-spanning two-phase transaction or leaves
-   post-reboot re-eval to a first-boot service (the latter is simpler and
-   matches today's first-boot ignition rendering, `activate.sh.in:186-208`).
-5. **host.nix provenance per config-gen** (see retention, above).
+   upgrade requires reboot before config can be evaluated. `apm upgrade`
+   records pending intent; `aos-firstboot-reeval.service` performs the
+   idempotent post-reboot re-evaluation without a reboot-spanning transaction.
+5. **host.nix provenance per config-gen.** `host_nix_ref` is an exact content
+   pin retained by the generation's `cfgsrc` GC root (see retention, above).

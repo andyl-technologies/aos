@@ -27,6 +27,13 @@ in
     runtimeDeps = [runc];
     propagatedDeps = [];
 
+    # Pure stage-2 inventory: generateUnits can reproduce the historical
+    # systemd.packages symlink farm without inspecting this output at eval
+    # time (and therefore without import-from-derivation).
+    passthru.systemdUnitInventory.system = [
+      "lib/systemd/system/containerd.service"
+    ];
+
     # Guard: containerd's shim used to bake the go-1.26.0 store path into
     # its DWARF + runtime.GOROOT(). The -trimpath flags below strip that;
     # disallowedReferences catches any future regression at build time.

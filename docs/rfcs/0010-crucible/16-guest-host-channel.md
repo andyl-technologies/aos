@@ -253,6 +253,17 @@ nondeterminism the injection contract bans ([DET-13]). The doorbell has no such
 race because servicing is synchronous with the guest instruction; there is nothing
 to drain.
 
+[GHC-14] governs marker and guest-introspection **data** channels. RFC 36
+[DBG-45A] permits one narrower host-to-guest control edge after an explicit
+non-canonical debugger fork. A fixed, content-addressed virtio-serial endpoint is
+present but inert in the canonical topology; Crucible owns its already-connected
+Unix stream and sends one fixed versioned token to a blocking guest bootstrap
+only after the fork commits. The endpoint carries no marker, `CRGX`, `CRGI`,
+credential, command, or stream payload.
+It is not a fallback when the shared-memory rings are full. Any bidirectional,
+payload-bearing, pre-fork, or operator-selected use remains forbidden by
+[GHC-14].
+
 Implementation caveat: on Linux x86_64, architectural port I/O is privileged.
 The userspace `crucible-guest` emitter therefore requests permission for the
 single reserved port with `ioperm(2)` before executing `out 0xe7,al`, and fails
@@ -288,15 +299,24 @@ The disabled doorbell remains uninstalled and inert by construction.
 In short, a collision is a setup error, not a silently installed shared trap.
 
 ```text
-instruction_abi_version = 3
+instruction_abi_version = 4
 
 arch     trap                    payload registers  trap bytes
 -------  ----------------------  -----------------  --------------------------
 x86_64   out 0xe7,al              ptr=rax len=rcx    e6 e7
-aarch64  hlt #0x04c1              ptr=x0  len=x1     20 98 40 d4
+aarch64  hint #0x4c               ptr=x0  len=x1     9f 29 03 d5
 
-aarch64 trap bytes are the little-endian encoding of instruction word 0xd4409820.
+aarch64 doorbell bytes are the little-endian encoding of instruction word
+0xd503299f.
 ```
+
+The static guest package, fixture sidecar, controller/suite build information,
+and release manifest all record `doorbell_instruction_abi_version=4`. A
+native-only suite that accepts externally retained AArch64 assets requires the
+operator to declare that same version and rejects a mismatch before launching
+QEMU. The production AArch64 setup API likewise accepts an explicit retained
+guest instruction ABI and rejects every value other than v4; an older HLT image
+cannot be attested as the inert-HINT contract through this supported path.
 
 - **[GHC-15]** On **x86_64**, the doorbell MUST be a write to a **reserved port-I/O
   address** (`out` to a configured, otherwise-unused port). Port I/O is the
@@ -313,24 +333,27 @@ aarch64 trap bytes are the little-endian encoding of instruction word 0xd4409820
   §16.4.
 
 - **[GHC-16]** On **aarch64**, where architectural port I/O does not exist, the
-  doorbell MUST use an aarch64-appropriate trappable instruction — the default is a
-  reserved-immediate `HLT`/`BRK`-class debug/exception instruction (or an `hvc`
-  with a reserved immediate) that the plugin traps synchronously, with the payload
-  pointer/length passed in a fixed register pair per [GHC-11](b). The exact
-  encoding is fixed in the channel configuration and the scenario hash. The
-  per-arch doorbell mechanism differs, but the protocol above it (§16.5) is
-  identical. *Gate:* `gate:abi-conformance`. *Spec:* §16.4.
+  doorbell MUST use the reserved `HINT #0x4c` encoding. The plugin observes that
+  instruction synchronously and reads the payload pointer/length from the fixed
+  register pair in [GHC-11](b); after the callback, the instruction MUST retire
+  inertly at EL0 so the guest agent can continue polling. Exception-class
+  instructions such as `HLT`, `BRK`, or `HVC` MUST NOT be used unless the emulator
+  consumes the exception and the live gate proves that a sustained guest agent
+  returns from repeated doorbells. The exact encoding is fixed in the channel
+  configuration and scenario hash. The per-arch doorbell mechanism differs, but
+  the protocol above it (§16.5) is identical. *Gate:* `gate:abi-conformance`.
+  *Spec:* §16.4.
 
 - **[GHC-17]** The reserved doorbell instruction/port for each architecture MUST
   be chosen so it **cannot collide** with instructions or I/O a real guest would
   legitimately execute: the x86 port MUST be one with no device behind it, and the
   aarch64 immediate MUST be one reserved for this use. The channel MUST define what
   happens if the doorbell fires when white-box mode is *disabled*: it MUST be inert
-  (the instruction behaves as it normally would on the platform — e.g. an
-  unhandled port write or an exception delivered to the guest) and MUST NOT be
+  (the instruction behaves as it normally would on the platform — an unhandled
+  port write on x86_64 or an architectural no-op HINT on aarch64) and MUST NOT be
   intercepted, so a guest that happens to use the encoding for something else is
-  unaffected when the channel is off. *Gate:* `gate:any-guest`, `gate:abi-conformance`.
-  *Spec:* §16.4, §16.7.
+  unaffected when the channel is off. *Gate:* `gate:any-guest`,
+  `gate:abi-conformance`. *Spec:* §16.4, §16.7.
 
 - **[GHC-18]** The doorbell encoding for each architecture MUST be documented in
   the channel ABI and covered by `gate:abi-conformance`, and the guest emitter
@@ -348,7 +371,8 @@ Doorbell, abstractly (per-arch instruction, arch-independent payload):
                                           ;     at the exact retirement icount
 
   aarch64:  ; payload guest-address in x0, length in x1
-            hlt   #<reserved_imm>         ; <-- plugin traps synchronously here
+            hint  #0x4c                   ; <-- plugin observes synchronously;
+                                          ;     guest execution continues
 
   Above the instruction, the bytes the plugin reads from guest memory are the
   same on every architecture: the binary, versioned, length-prefixed frame
@@ -713,7 +737,7 @@ Black-box (default, required, zero guest cooperation):
   => enough for determinism, faults, coverage, most properties, OS-agnosticism.
 
 White-box (opt-in, optional, additive — NEVER required):
-  doorbell = reserved trapped instruction (x86_64: port I/O; aarch64: HLT/BRK)
+  doorbell = reserved observed instruction (x86_64: port I/O; aarch64: HINT)
            serviced synchronously at the exact icount
   payload  = shared page or ptr+len in registers, read by the plugin memory API
   protocol = binary, versioned, length-prefixed (NOT JSON), arch-independent
@@ -799,17 +823,30 @@ the transport layer by construction.
   production execution fingerprint unchanged. Live collision validation,
   decoded host event-log routing, and host-to-guest replies are now covered by
   the same gate. Its AArch64 leg boots the packaged `qemu-system-aarch64`
-  target, executes the frozen `hlt #0x04c1` instruction, reads `x0`/`x1`
+  target, executes the frozen `hint #0x4c` instruction, reads `x0`/`x1`
   inline, admits the same marker at the live callback boundary, reaches the
   exact host-published ceiling, and exits through normal plugin teardown.
+  Instruction ABI version 4 supersedes the version-3 `HLT #0x04c1` candidate.
+  The plugin's pre-execution callback could publish one version-3 response, but
+  the exception-class instruction then prevented the EL0 agent from reaching its
+  next poll. The inert HINT preserves the synchronous callback boundary and lets
+  the instruction retire normally; sustained request/reply coverage is therefore
+  required in addition to the one-shot marker gate. Because an inert HINT can
+  remain inside a larger translation block, its instruction callback MUST NOT
+  call QEMU's committing raw-icount reader. The live adapter instead carries the
+  translation block's instruction count and the HINT's zero-based index in
+  allocation-free callback metadata. A callback at the translation block entry
+  invokes QEMU's non-mutating TB-entry helper in its documented context and
+  caches the result per vCPU; the HINT callback validates the block length and
+  derives the exact coordinate by adding its index.
 - [x] **T-GHC-5** Define the per-arch doorbell: x86_64 reserved port I/O and
-  aarch64 reserved-immediate HLT/BRK (or hvc), from a single-source ABI
+  aarch64 reserved-immediate HINT, from a single-source ABI
   definition; document and golden-vector the encodings. — satisfies [GHC-15],
   [GHC-16], [GHC-18]; spec §16.4.
   Completed by `checks.crucible.phase4.guestHostDoorbellAbi`: `crucible-protocol`
   now exports `WHITEBOX_DOORBELL_ABIS` as the single-source instruction ABI, the
   QEMU plugin and guest-agent boundary re-export it, the x86_64 `out 0xe7,al`
-  byte vector (`e6 e7`) and aarch64 `hlt #0x04c1` byte vector (`20 98 40 d4`) are frozen,
+  byte vector (`e6 e7`) and aarch64 `hint #0x4c` byte vector (`9f 29 03 d5`) are frozen,
   the payload register contract is recorded (`rax`/`rcx`, `x0`/`x1`), and plugin
   registration state is built from those ABI trap entries.
 - [x] **T-GHC-6** Implement collision avoidance and inertness for the reserved

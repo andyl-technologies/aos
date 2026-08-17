@@ -92,7 +92,12 @@ After a scenario passes its ordinary run, compare independent reductions:
 
 Two runs are a useful pull-request gate. Increase `--runs` for scheduled jobs
 when the extra backend time is justified. `--bisect` prints the first causal
-divergence if fingerprints or canonical logs differ.
+divergence if fingerprints or canonical logs differ. The report keeps evidence
+coordinates distinct: `first_virtual_time` comes from a canonical-log event,
+while `first_instruction` comes from a fingerprint sample. A coordinate is
+`unknown` when that evidence stream does not localize the mismatch. Each
+coordinate has its own adjacent node field; do not pair an instruction count
+with `first_virtual_time_node`.
 
 ## Recheck a reported failure
 

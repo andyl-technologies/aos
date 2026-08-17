@@ -53,13 +53,14 @@ Without it, SB is load-time only and `/var` (every generation, apm state, the
 >   PCR ops mean the agent answers before `multi-user.target`; the test polls
 >   with `wait_until_succeeds`.
 
-## What's missing (all of it)
+## Historical starting point
 
-From [`current-state.md`](current-state.md): no TPM packages, systemd built
-`-Dtpm=false`/`-Dtpm2=disabled`, the initrd *strips* `systemd-measure`/
-`systemd-creds`/`systemd-cryptenroll` (`_initrd-builder.nix:632`), no kernel
-`CONFIG_TCG_*` drivers, no vTPM in the QEMU harness. This is a full bring-up,
-not a tweak.
+Before RFC-0006 phase 3, AOS had no TPM packages, systemd was built without
+TPM2 support, the initrd stripped the systemd measurement and enrollment
+tools, the kernel omitted the TCG drivers, and the QEMU harness had no vTPM.
+The implementation summarized above closed that bring-up gap; this paragraph
+is retained only to explain why the phase was designed as a complete stack
+rather than an incremental sealing tweak.
 
 ## The PCR-policy problem (why naive sealing breaks OTA)
 

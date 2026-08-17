@@ -48,6 +48,7 @@ in
             --prefix=$out \
             --enable-pkgconfig \
             --enable-cmdlib \
+            --enable-udev_rules \
             --enable-dmeventd=none \
             --with-thin=none \
             --with-cache=none \
@@ -66,6 +67,14 @@ in
         name = "install";
         script = ''
           make install_device-mapper
+
+          # systemd can observe the initial dm add event before activation and
+          # persist SYSTEMD_READY=0. Since libdevmapper cannot depend on
+          # systemd's libudev in the bootstrap graph, clear that conservative
+          # state only after sysfs confirms that the mapping is unsuspended.
+          cat > $out/lib/udev/rules.d/99-z-aos-dm-ready.rules <<'EOF'
+          SUBSYSTEM=="block", KERNEL=="dm-*", TEST=="dm/name", ATTR{dm/suspended}=="0", ENV{DM_NAME}="$attr{dm/name}", ENV{SYSTEMD_READY}="1", TAG+="systemd"
+          EOF
         '';
       }
     ];
