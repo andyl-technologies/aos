@@ -580,8 +580,7 @@ impl CacheBackend for HttpBackend {
             "sha256": sha256.unwrap_or_default(),
         });
         let mut req = TransferRequest::post(&url, serde_json::to_vec(&body)?);
-        req.headers
-            .push(("Content-Type".to_string(), "application/json".to_string()));
+        add_connect_json_headers(&mut req);
         let req = self.add_headers(req);
         let result = self
             .engine
@@ -668,8 +667,7 @@ impl CacheBackend for HttpBackend {
             })).collect::<Vec<_>>(),
         }))?;
         let mut req = TransferRequest::post(&url, payload);
-        req.headers
-            .push(("Content-Type".to_string(), "application/json".to_string()));
+        add_connect_json_headers(&mut req);
         let req = self.add_headers(req);
         let result = self
             .engine
@@ -695,8 +693,7 @@ impl CacheBackend for HttpBackend {
             &url,
             serde_json::to_vec(&serde_json::json!({ "uploadId": upload_id }))?,
         );
-        req.headers
-            .push(("Content-Type".to_string(), "application/json".to_string()));
+        add_connect_json_headers(&mut req);
         let req = self.add_headers(req);
         let result = self
             .engine
