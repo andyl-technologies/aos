@@ -12,6 +12,7 @@ base64 = { workspace = true }
 hex = { workspace = true }
 semver = { workspace = true }
 flate2 = { workspace = true }
+crc32fast = { workspace = true }
 ed25519-dalek = { workspace = true }
 serde = { workspace = true }
 # The committed-file TOML schemas (registry.toml root config, keys.toml trust

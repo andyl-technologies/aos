@@ -9744,7 +9744,8 @@ impl Database {
     /// while preserving its currently published identity.
     ///
     /// This migration is reserved for loose-object paths whose URL binds the
-    /// decompressed object and per-release `objects/info/*` server metadata.
+    /// decompressed object, replaceable pack indexes, and per-release
+    /// `objects/info/*` server metadata.
     /// When a current publication exists, the converted row remains owned by
     /// it until the new publication completes, so reads stay available
     /// throughout migration.
@@ -9766,6 +9767,7 @@ impl Database {
         validate_key_bytes(preparing_publication_id, "publication id", 64)?;
         if !aos_registry_surface::keymap::is_loose_git_object_path(object_key)
             && !aos_registry_surface::keymap::is_release_object_info_path(object_key)
+            && !aos_registry_surface::keymap::is_git_pack_index_path(object_key)
         {
             bail!("surface object is not replaceable Git object metadata");
         }
@@ -29632,6 +29634,38 @@ source_nar_hash = ""
             converted.mutable_publication_id.as_deref(),
             Some(current_publication_id)
         );
+
+        for pack_index_key in [
+            "objects/pack/pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.idx",
+            "releases/1/0/0/objects/pack/pack-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.idx",
+        ] {
+            let pack_index = db
+                .create_surface_object(&SetSurfaceObject {
+                    surface: SurfaceTarget::Registry(registry_id),
+                    object_key: pack_index_key.into(),
+                    content_hash: Some("f".repeat(64)),
+                    size: Some(2048),
+                    object_kind: "immutable".into(),
+                    mutable_publication_id: None,
+                })
+                .await
+                .unwrap();
+            let converted = db
+                .convert_registry_git_object_to_mutable(
+                    registry_id,
+                    pack_index.id,
+                    pack_index_key,
+                    publication_id,
+                )
+                .await
+                .unwrap();
+            assert_eq!(converted.object_kind, "mutable_pointer");
+            assert_eq!(converted.content_hash, Some("f".repeat(64)));
+            assert_eq!(
+                converted.mutable_publication_id.as_deref(),
+                Some(current_publication_id)
+            );
+        }
     }
 
     #[tokio::test]

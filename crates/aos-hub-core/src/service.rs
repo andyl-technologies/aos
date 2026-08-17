@@ -2115,6 +2115,13 @@ struct RegistryPublicationUploadPlacement {
 const REGISTRY_PUBLICATION_UPLOAD_TTL_SECS: i64 = 86_400;
 const MAX_REGISTRY_PUBLICATION_MULTIPART_PARTS: u64 = 10_000;
 const REGISTRY_PUBLICATION_PART_CLAIM_SECS: i64 = 300;
+const REGISTRY_PUBLICATION_GIT_PACK_OPERATION_TIMEOUT_SECS: u64 = 120;
+
+fn pack_validation_gate() -> Arc<futures_util::lock::Mutex<()>> {
+    static GATE: std::sync::OnceLock<Arc<futures_util::lock::Mutex<()>>> =
+        std::sync::OnceLock::new();
+    Arc::clone(GATE.get_or_init(|| Arc::new(futures_util::lock::Mutex::new(()))))
+}
 
 fn multipart_next_part(
     upload: &crate::db::RegistryPublicationMultipartUploadRecord,
@@ -2283,6 +2290,7 @@ fn verify_publication_bytes(
         ));
     }
     verify_loose_publication_bytes(&object.object_key, bytes)?;
+    verify_pack_index_publication_bytes(&object.object_key, bytes)?;
     Ok(())
 }
 
@@ -2298,11 +2306,24 @@ fn verify_loose_publication_bytes(path: &str, bytes: &[u8]) -> Result<(), RpcErr
         .and_then(|value| value.split_once('/'))
         .map(|(directory, filename)| format!("{directory}{filename}"))
         .ok_or_else(|| RpcError::invalid("loose Git object path is invalid"))?;
-    let oid = Oid::from_hex(&rest)
-        .map_err(|_| RpcError::invalid("loose Git object path is invalid"))?;
+    let oid =
+        Oid::from_hex(&rest).map_err(|_| RpcError::invalid("loose Git object path is invalid"))?;
     aos_registry_surface::object::decode_loose(bytes, Some(oid))
         .map_err(|_| RpcError::invalid("loose Git object bytes do not match their object id"))?;
     Ok(())
+}
+
+/// Verifies Git pack payloads and replaceable indexes before placement writes.
+fn verify_pack_index_publication_bytes(path: &str, bytes: &[u8]) -> Result<(), RpcError> {
+    if keymap::is_git_pack_path(path) {
+        return aos_registry_surface::pack_index::validate_pack(path, bytes)
+            .map_err(|_| RpcError::invalid("Git pack bytes do not match their stable path"));
+    }
+    if !keymap::is_git_pack_index_path(path) {
+        return Ok(());
+    }
+    aos_registry_surface::pack_index::validate(path, bytes)
+        .map_err(|_| RpcError::invalid("pack index bytes do not match their companion pack"))
 }
 
 /// Upper bound on nodes returned by `CacheClosure`, so a pathological closure
@@ -2456,6 +2477,8 @@ pub struct RpcService {
     pub identity_domain_verifier: Option<Arc<dyn crate::topology_probe::IdentityDomainVerifier>>,
     /// Runtime-owned active and retained route-reservation HMAC keys.
     pub route_reservation_keyring: Option<Arc<dyn RouteReservationKeyring>>,
+    /// Serializes memory-bounded Git pack/index verification within the process or Worker isolate.
+    pack_validation: Arc<futures_util::lock::Mutex<()>>,
 }
 
 macro_rules! reviewed_external_operation {
@@ -10022,6 +10045,7 @@ impl RpcService {
             domain_probe_terminator: None,
             identity_domain_verifier: None,
             route_reservation_keyring: None,
+            pack_validation: pack_validation_gate(),
         }
     }
 
@@ -23851,16 +23875,37 @@ impl RpcService {
             }
             if keymap::is_loose_git_object_path(&object.path)
                 && object.byte_size as u64
-                    > complete_upload_limit.min(
-                        aos_registry_surface::object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES,
-                    )
+                    > complete_upload_limit
+                        .min(aos_registry_surface::object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES)
             {
                 return Err(RpcError::invalid(format!(
                     "loose Git object exceeds the {}-byte whole-upload limit",
-                    complete_upload_limit.min(
-                        aos_registry_surface::object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES,
-                    )
+                    complete_upload_limit
+                        .min(aos_registry_surface::object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES,)
                 )));
+            }
+            if keymap::is_git_pack_index_path(&object.path)
+                && object.byte_size as u64
+                    > complete_upload_limit
+                        .min(aos_registry_surface::pack_index::MAX_PUBLISHED_PACK_INDEX_BYTES)
+            {
+                return Err(RpcError::invalid(format!(
+                    "Git pack index exceeds the {}-byte whole-upload limit",
+                    complete_upload_limit
+                        .min(aos_registry_surface::pack_index::MAX_PUBLISHED_PACK_INDEX_BYTES,)
+                )));
+            }
+            if keymap::is_git_pack_path(&object.path) {
+                if object.byte_size as u64
+                    > complete_upload_limit
+                        .min(aos_registry_surface::pack_index::MAX_PUBLISHED_PACK_BYTES)
+                {
+                    return Err(RpcError::invalid(format!(
+                        "Git pack exceeds the {}-byte whole-upload limit",
+                        complete_upload_limit
+                            .min(aos_registry_surface::pack_index::MAX_PUBLISHED_PACK_BYTES)
+                    )));
+                }
             }
             if !publication_nar_path_matches_sha256(&object.path, &object.sha256) {
                 return Err(RpcError::invalid(
@@ -23874,6 +23919,26 @@ impl RpcService {
                 object.kind.clone(),
                 object.media_type.clone(),
             ));
+        }
+        for path in paths
+            .iter()
+            .filter(|path| keymap::is_git_pack_index_path(path))
+        {
+            let companion = aos_registry_surface::pack_index::companion_pack_path(path)
+                .ok_or_else(|| RpcError::invalid("Git pack index path is invalid"))?;
+            if !paths.contains(companion.as_str()) {
+                return Err(RpcError::invalid(format!(
+                    "Git pack index has no companion pack: {path}"
+                )));
+            }
+        }
+        for path in paths.iter().filter(|path| keymap::is_git_pack_path(path)) {
+            let companion = format!("{}.idx", path.trim_end_matches(".pack"));
+            if !paths.contains(companion.as_str()) {
+                return Err(RpcError::invalid(format!(
+                    "Git pack has no companion index: {path}"
+                )));
+            }
         }
         canonical.sort();
         if !canonical.iter().any(|object| object.3 == "immutable")
@@ -23962,7 +24027,8 @@ impl RpcService {
                         if existing.object_kind == "immutable"
                             && object.kind == "mutable_pointer"
                             && (keymap::is_loose_git_object_path(&object.path)
-                                || keymap::is_release_object_info_path(&object.path)) =>
+                                || keymap::is_release_object_info_path(&object.path)
+                                || keymap::is_git_pack_index_path(&object.path)) =>
                     {
                         Some(
                             self.db
@@ -24506,9 +24572,12 @@ impl RpcService {
             .await?;
         self.prepare_registry_publication_object_upload(&publication, &registry, &object)
             .await?;
-        if keymap::is_loose_git_object_path(&object.object_key) {
+        if keymap::is_loose_git_object_path(&object.object_key)
+            || keymap::is_git_pack_index_path(&object.object_key)
+            || keymap::is_git_pack_path(&object.object_key)
+        {
             return Err(RpcError::FailedPrecondition(
-                "loose Git objects must use bounded whole-object upload".into(),
+                "Git object metadata and packs must use bounded whole-object upload".into(),
             ));
         }
         let expected_size = u64::try_from(object.expected_size)
@@ -25175,15 +25244,101 @@ impl RpcService {
                 "publication object requires bounded multipart upload".into(),
             ));
         }
-        let bytes = collect_exact_publication_body(body, expected_size).await?;
+        let pack_validation = Arc::clone(&self.pack_validation);
+        let validates_git_pack = keymap::is_git_pack_path(&object.object_key)
+            || keymap::is_git_pack_index_path(&object.object_key);
+        let _pack_validation_guard = if validates_git_pack {
+            Some(pack_validation.lock().await)
+        } else {
+            None
+        };
+        let bytes = if validates_git_pack {
+            let collect = collect_exact_publication_body(body, expected_size);
+            let timeout = clock::sleep(std::time::Duration::from_secs(
+                REGISTRY_PUBLICATION_GIT_PACK_OPERATION_TIMEOUT_SECS,
+            ));
+            futures_util::pin_mut!(collect, timeout);
+            match futures_util::future::select(collect, timeout).await {
+                futures_util::future::Either::Left((result, _)) => result?,
+                futures_util::future::Either::Right(((), _)) => {
+                    return Err(RpcError::Unavailable(
+                        "Git pack upload body timed out".into(),
+                    ));
+                }
+            }
+        } else {
+            collect_exact_publication_body(body, expected_size).await?
+        };
         verify_publication_bytes(&object, &bytes)?;
-        for upload in &mut uploads {
-            upload
-                .writer
-                .write(&object.object_key, &bytes)
-                .await
-                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+        if keymap::is_git_pack_index_path(&object.object_key) {
+            let companion =
+                aos_registry_surface::pack_index::companion_pack_path(&object.object_key)
+                    .ok_or_else(|| RpcError::invalid("Git pack index path is invalid"))?;
+            for upload in &mut uploads {
+                let fetch = self
+                    .surface
+                    .placement_fetcher(&upload.placement)
+                    .await
+                    .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+                let read = fetch.fetch_bounded(
+                    &companion,
+                    aos_registry_surface::pack_index::MAX_PUBLISHED_PACK_BYTES as usize,
+                );
+                let timeout = clock::sleep(std::time::Duration::from_secs(
+                    REGISTRY_PUBLICATION_GIT_PACK_OPERATION_TIMEOUT_SECS,
+                ));
+                futures_util::pin_mut!(read, timeout);
+                let pack = match futures_util::future::select(read, timeout).await {
+                    futures_util::future::Either::Left((result, _)) => result
+                        .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?
+                        .ok_or_else(|| {
+                            RpcError::FailedPrecondition(
+                                "pack index companion is absent from a required placement".into(),
+                            )
+                        })?,
+                    futures_util::future::Either::Right(((), _)) => {
+                        return Err(RpcError::Unavailable(
+                            "Git pack companion read timed out".into(),
+                        ));
+                    }
+                };
+                aos_registry_surface::pack_index::validate_against_pack(
+                    &object.object_key,
+                    &bytes,
+                    &pack,
+                )
+                .map_err(|_| {
+                    RpcError::invalid("pack index does not describe its companion pack")
+                })?;
+            }
         }
+        for upload in &mut uploads {
+            if validates_git_pack {
+                let write = upload.writer.write(&object.object_key, &bytes);
+                let timeout = clock::sleep(std::time::Duration::from_secs(
+                    REGISTRY_PUBLICATION_GIT_PACK_OPERATION_TIMEOUT_SECS,
+                ));
+                futures_util::pin_mut!(write, timeout);
+                match futures_util::future::select(write, timeout).await {
+                    futures_util::future::Either::Left((result, _)) => {
+                        result.map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+                    }
+                    futures_util::future::Either::Right(((), _)) => {
+                        return Err(RpcError::Unavailable(
+                            "Git pack publication write timed out".into(),
+                        ));
+                    }
+                }
+            } else {
+                upload
+                    .writer
+                    .write(&object.object_key, &bytes)
+                    .await
+                    .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+            }
+        }
+        drop(_pack_validation_guard);
+        drop(bytes);
 
         for upload in &mut uploads {
             let fetch = self
@@ -35073,6 +35228,7 @@ mod publication_upload_limit_tests {
     use super::{
         complete_upload_bytes, is_mutable_pointer, publication_media_type,
         publication_nar_path_matches_sha256, verify_loose_publication_bytes,
+        verify_pack_index_publication_bytes,
     };
     use crate::connect::CONNECT_REQUEST_BODY_LIMIT_BYTES;
 
@@ -35098,6 +35254,8 @@ mod publication_upload_limit_tests {
             "objects/info/packs",
             "objects/ab/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
             "releases/1/0/0/objects/info/packs",
+            "objects/pack/pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.idx",
+            "releases/1/0/0/objects/pack/pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.idx",
             "web/config.json",
             "web/index.json",
             "web/packages/aos.json",
@@ -35135,6 +35293,20 @@ mod publication_upload_limit_tests {
             "images/disk.qcow2",
             &digest
         ));
+    }
+
+    #[test]
+    fn pack_index_uploads_are_semantically_validated() {
+        let basename = format!("objects/pack/pack-{}", "42".repeat(32));
+        assert!(
+            verify_pack_index_publication_bytes(&format!("{basename}.idx"), b"not an index")
+                .is_err()
+        );
+        assert!(
+            verify_pack_index_publication_bytes(&format!("{basename}.pack"), b"not a pack")
+                .is_err()
+        );
+        assert!(verify_pack_index_publication_bytes("objects/info/packs", b"P pack\n").is_ok());
     }
 
     #[test]

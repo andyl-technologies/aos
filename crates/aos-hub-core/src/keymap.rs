@@ -23,9 +23,9 @@
 //! ```
 
 pub use aos_registry_surface::keymap::{
-    cache_control, content_type, image_object_sha256, is_loose_git_object_path, is_machine_path,
-    is_producer_document, is_release_object_info_path, IMMUTABLE_CACHE_CONTROL,
-    MUTABLE_CACHE_CONTROL,
+    cache_control, content_type, image_object_sha256, is_git_pack_index_path, is_git_pack_path,
+    is_loose_git_object_path, is_machine_path, is_producer_document, is_release_object_info_path,
+    IMMUTABLE_CACHE_CONTROL, MUTABLE_CACHE_CONTROL,
 };
 
 /// Map a registry prefix and a machine path to its R2 object key.
@@ -106,6 +106,8 @@ mod tests {
             "index.html",
             "web/index.json",
             "browse/curl.html",
+            "objects/pack/pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.idx",
+            "releases/1/2/3/objects/pack/pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.idx",
             "publication-receipts/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
             "images/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aos.img.zst",
         ] {

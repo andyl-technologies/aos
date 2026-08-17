@@ -8752,9 +8752,8 @@ async fn upload_publication_object_class(
     let snapshot_budget = std::sync::Arc::new(tokio::sync::Semaphore::new(
         SNAPSHOT_BUDGET_PERMITS as usize,
     ));
-    let multipart_budget = std::sync::Arc::new(tokio::sync::Semaphore::new(
-        CONCURRENT_MULTIPART_UPLOADS,
-    ));
+    let multipart_budget =
+        std::sync::Arc::new(tokio::sync::Semaphore::new(CONCURRENT_MULTIPART_UPLOADS));
 
     stream::iter(objects.iter().copied().map(move |object| {
         let declared = inputs.iter().find(|declared| declared.path == object.path);
@@ -9013,6 +9012,7 @@ fn publication_from_root(root: &std::path::Path, registry: &str) -> Result<Pinne
     let mut entries = 0;
     let root = open_publication_root(root)?;
     collect_publication_objects(&root, "", 0, &mut entries, &mut objects)?;
+    validate_publication_pack_indexes(&root, &objects)?;
     validate_publication_nar_urls(&root, &objects)?;
     let refs_object = objects
         .get("info/refs")
@@ -9048,6 +9048,39 @@ fn publication_from_root(root: &std::path::Path, registry: &str) -> Result<Pinne
         },
         root,
     })
+}
+
+fn validate_publication_pack_indexes(
+    root: &std::os::fd::OwnedFd,
+    objects: &std::collections::BTreeMap<String, hub_types::RegistryPublicationObjectInput>,
+) -> Result<()> {
+    for path in objects
+        .keys()
+        .filter(|path| aos_package::registry::surface_keymap::is_git_pack_index_path(path))
+    {
+        let companion = aos_package::registry::pack_index::companion_pack_path(path)
+            .with_context(|| format!("deriving companion pack path for {path}"))?;
+        anyhow::ensure!(
+            objects.contains_key(&companion),
+            "publication pack index has no companion pack: {path}"
+        );
+        let index_file = snapshot_publication_object(root, &objects[path])?;
+        let index = read_pinned_publication_file(
+            index_file,
+            path,
+            aos_package::registry::pack_index::MAX_PUBLISHED_PACK_INDEX_BYTES,
+        )?;
+        let pack_object = &objects[&companion];
+        let pack_file = snapshot_publication_object(root, pack_object)?;
+        let pack = read_pinned_publication_file(
+            pack_file,
+            &companion,
+            aos_package::registry::pack_index::MAX_PUBLISHED_PACK_BYTES,
+        )?;
+        aos_package::registry::pack_index::validate_against_pack(path, &index, &pack)
+            .with_context(|| format!("validating publication pack/index pair {path}"))?;
+    }
+    Ok(())
 }
 
 fn validate_publication_nar_urls(
@@ -9223,10 +9256,25 @@ fn publication_input(
         .with_context(|| format!("reading pinned publication object {relative}"))?;
     if aos_package::registry::surface_keymap::is_loose_git_object_path(relative) {
         anyhow::ensure!(
-            metadata.len()
-                <= aos_package::registry::MAX_PUBLISHED_LOOSE_OBJECT_BYTES,
+            metadata.len() <= aos_package::registry::MAX_PUBLISHED_LOOSE_OBJECT_BYTES,
             "loose Git object {relative} exceeds the {}-byte publication limit",
             aos_package::registry::MAX_PUBLISHED_LOOSE_OBJECT_BYTES
+        );
+    }
+    if aos_package::registry::surface_keymap::is_git_pack_index_path(relative) {
+        let bytes = read_pinned_publication_file(
+            file.try_clone()?,
+            relative,
+            aos_package::registry::pack_index::MAX_PUBLISHED_PACK_INDEX_BYTES,
+        )?;
+        aos_package::registry::pack_index::validate(relative, &bytes)
+            .with_context(|| format!("validating publication pack index {relative}"))?;
+    }
+    if aos_package::registry::surface_keymap::is_git_pack_path(relative) {
+        anyhow::ensure!(
+            metadata.len() <= aos_package::registry::pack_index::MAX_PUBLISHED_PACK_BYTES,
+            "Git pack {relative} exceeds the {}-byte publication limit",
+            aos_package::registry::pack_index::MAX_PUBLISHED_PACK_BYTES
         );
     }
     file.seek(SeekFrom::Start(0))?;

@@ -45,6 +45,7 @@ pub mod webgen;
 pub use aos_registry_surface::keymap as surface_keymap;
 /// Re-exports the maximum loose-object wire size accepted by Hub publication.
 pub use aos_registry_surface::object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES;
+pub use aos_registry_surface::pack_index;
 
 use std::collections::HashMap;
 use std::path::Path;
