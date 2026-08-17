@@ -574,6 +574,7 @@ impl CacheBackend for HttpBackend {
             self.origin
         );
         let body = aos_proto_types::BeginCacheMultipartUploadRequest {
+            cache_id: String::new(),
             delivery_url: self.base_url.clone(),
             path: nar_path.to_string(),
             byte_size: size,
