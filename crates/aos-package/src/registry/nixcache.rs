@@ -672,9 +672,16 @@ pub async fn upload_static_cache(
         if !no_skip && cache.exists(&relative_path).await? {
             return Ok(());
         }
-        let data = std::fs::read(&path)
-            .with_context(|| format!("reading referenced NAR {}", path.display()))?;
-        cache.put_nar(&name, &data).await
+        cache
+            .put_static_file(
+                &relative_path,
+                &path,
+                Some("application/x-nix-nar"),
+                Some(aos_cache::backend::IMMUTABLE_CACHE_CONTROL),
+                None,
+                None,
+            )
+            .await
     }))
     .await?;
 

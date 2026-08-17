@@ -801,7 +801,6 @@ impl CacheBackend for HttpBackend {
         content_disposition: Option<&str>,
         sha256: Option<&str>,
     ) -> Result<()> {
-        const MULTIPART_THRESHOLD: u64 = 16 * 1024 * 1024;
         let size = std::fs::metadata(source)
             .with_context(|| format!("stat static file {}", source.display()))?
             .len();
@@ -819,7 +818,41 @@ impl CacheBackend for HttpBackend {
         } else {
             None
         };
-        if self.is_hub.load(Ordering::Relaxed) && size > MULTIPART_THRESHOLD {
+
+        if self.is_hub.load(Ordering::Relaxed) {
+            let admitted_url = match admitted_url {
+                Some(url) => Some(url),
+                None => self.create_object_upload(relative_path, size).await?,
+            };
+            if let Some(url) = admitted_url {
+                let mut req = TransferRequest::put_file(&url, source.to_path_buf());
+                add_static_metadata_headers(
+                    &mut req,
+                    content_type,
+                    cache_control,
+                    content_disposition,
+                    sha256,
+                );
+                let req = if url.starts_with(&format!(
+                    "{}/aos.hub.v1.BinaryCacheService/UploadObject/",
+                    self.origin
+                )) {
+                    self.add_headers(req)
+                } else {
+                    req
+                };
+                let result =
+                    self.engine.execute(req).await.with_context(|| {
+                        format!("uploading admitted static file {relative_path}")
+                    })?;
+                anyhow::ensure!(
+                    result.status < 400,
+                    "uploading admitted static file {relative_path} failed with HTTP {}",
+                    result.status
+                );
+                return Ok(());
+            }
+
             if !self.supports_multipart() {
                 anyhow::bail!(
                     "AOS server did not negotiate multipart support for large static file {relative_path}"
@@ -879,18 +912,7 @@ impl CacheBackend for HttpBackend {
             }
             return Ok(());
         }
-        if self.is_hub.load(Ordering::Relaxed) {
-            let bytes = std::fs::read(source)
-                .with_context(|| format!("reading static file {}", source.display()))?;
-            let upload_url = match admitted_url {
-                Some(url) => url,
-                None => self
-                    .create_object_upload(relative_path, size)
-                    .await?
-                    .context("Hub did not admit the static-file upload")?,
-            };
-            return self.upload_to_admitted_url(&upload_url, &bytes).await;
-        }
+
         let url = self.static_file_url(relative_path);
         let mut req = TransferRequest::put_file(&url, source.to_path_buf());
         add_static_metadata_headers(
