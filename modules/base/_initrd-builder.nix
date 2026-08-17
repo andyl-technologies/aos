@@ -539,38 +539,38 @@ in
           ${generatorSymlinks}
 
           ${lib.optionalString validateBootIdentity ''
-          # The normal boot-identity validator owns the only verity generator
-          # path. It validates before upstream parsing, stages upstream output
-          # privately, and publishes the success marker last. The initrd omits
-          # systemd-debug-generator and systemd-run-generator, so no independent
-          # generator can turn appended boot-control input into a shell or
-          # outrank the passive failure target.
-          cat > root/lib/systemd/system-generators/systemd-veritysetup-generator <<'GENERATOR'
-          #!${bash}/bin/bash
-          set -eu
+            # The normal boot-identity validator owns the only verity generator
+            # path. It validates before upstream parsing, stages upstream output
+            # privately, and publishes the success marker last. The initrd omits
+            # systemd-debug-generator and systemd-run-generator, so no independent
+            # generator can turn appended boot-control input into a shell or
+            # outrank the passive failure target.
+            cat > root/lib/systemd/system-generators/systemd-veritysetup-generator <<'GENERATOR'
+            #!${bash}/bin/bash
+            set -eu
 
-          mkdir -p /run/aos
-          staging=/run/aos/verity-generator.$$
-          trap 'rm -rf "$staging"' EXIT
-          mkdir "$staging" "$staging/normal" "$staging/early" "$staging/late"
+            mkdir -p /run/aos
+            staging=/run/aos/verity-generator.$$
+            trap 'rm -rf "$staging"' EXIT
+            mkdir "$staging" "$staging/normal" "$staging/early" "$staging/late"
 
-          if diagnostic=$(${pkgs.aos-boot-identity}/bin/aos-boot-identity /proc/cmdline 2>&1) \
-            && ${systemd}/lib/systemd/system-generators/systemd-veritysetup-generator \
-              "$staging/normal" "$staging/early" "$staging/late"; then
-            cp -a "$staging/normal/." "$1/"
-            cp -a "$staging/early/." "$2/"
-            cp -a "$staging/late/." "$3/"
-            : > /run/aos/boot-identity-valid
-            exit 0
-          fi
+            if diagnostic=$(${pkgs.aos-boot-identity}/bin/aos-boot-identity /proc/cmdline 2>&1) \
+              && ${systemd}/lib/systemd/system-generators/systemd-veritysetup-generator \
+                "$staging/normal" "$staging/early" "$staging/late"; then
+              cp -a "$staging/normal/." "$1/"
+              cp -a "$staging/early/." "$2/"
+              cp -a "$staging/late/." "$3/"
+              : > /run/aos/boot-identity-valid
+              exit 0
+            fi
 
-          diagnostic="''${diagnostic:-upstream verity generator rejected validated identity}"
-          printf '<3>%s\n' "$diagnostic" > /dev/kmsg 2>/dev/null \
-            || printf '%s\n' "$diagnostic" >&2
-          mkdir -p "$2"
-          ln -sfn /etc/systemd/system/aos-boot-identity-failure.target "$2/default.target"
-          GENERATOR
-          chmod 0755 root/lib/systemd/system-generators/systemd-veritysetup-generator
+            diagnostic="''${diagnostic:-upstream verity generator rejected validated identity}"
+            printf '<3>%s\n' "$diagnostic" > /dev/kmsg 2>/dev/null \
+              || printf '%s\n' "$diagnostic" >&2
+            mkdir -p "$2"
+            ln -sfn /etc/systemd/system/aos-boot-identity-failure.target "$2/default.target"
+            GENERATOR
+            chmod 0755 root/lib/systemd/system-generators/systemd-veritysetup-generator
           ''}
 
           # ── 7. Rendered initrd units from boot.initrd.systemd.* ────────

@@ -30,39 +30,39 @@
 in
   assert builtins.elem "emergency.service" failClosedSystem.config.boot.initrd.systemd.maskedUnits;
   assert builtins.elem "rescue.service" failClosedSystem.config.boot.initrd.systemd.maskedUnits; {
-  name = "initrd-emergency-fail-closed";
-  timeout = 300;
-  bootTimeout = 120;
+    name = "initrd-emergency-fail-closed";
+    timeout = 300;
+    bootTimeout = 120;
 
-  machines.target = {
-    system = failClosedSystem;
-    bootMode = "image";
-    imageDiskMiB = 16384;
-    expectAgent = false;
-  };
+    machines.target = {
+      system = failClosedSystem;
+      bootMode = "image";
+      imageDiskMiB = 16384;
+      expectAgent = false;
+    };
 
-  testScript =
-    # python
-    ''
-      import time
-      from pathlib import Path
+    testScript =
+      # python
+      ''
+        import time
+        from pathlib import Path
 
-      serial_log = Path(target.serial_log_path)
-      deadline = time.monotonic() + 60
-      transcript = ""
+        serial_log = Path(target.serial_log_path)
+        deadline = time.monotonic() + 60
+        transcript = ""
 
-      while time.monotonic() < deadline:
-          if serial_log.exists():
-              transcript = serial_log.read_text(errors="replace")
-              if "Reached target Emergency Mode" in transcript:
-                  break
-          time.sleep(1)
+        while time.monotonic() < deadline:
+            if serial_log.exists():
+                transcript = serial_log.read_text(errors="replace")
+                if "Reached target Emergency Mode" in transcript:
+                    break
+            time.sleep(1)
 
-      assert "Reached target Emergency Mode" in transcript, transcript[-8000:]
-      assert "Switching root" not in transcript, transcript[-8000:]
-      assert "Press Enter for maintenance" not in transcript, transcript[-8000:]
-      assert "Give root password for maintenance" not in transcript, transcript[-8000:]
-      assert "target login:" not in transcript, transcript[-8000:]
-      assert "Initrd Debug Shell" not in transcript, transcript[-8000:]
-    '';
-}
+        assert "Reached target Emergency Mode" in transcript, transcript[-8000:]
+        assert "Switching root" not in transcript, transcript[-8000:]
+        assert "Press Enter for maintenance" not in transcript, transcript[-8000:]
+        assert "Give root password for maintenance" not in transcript, transcript[-8000:]
+        assert "target login:" not in transcript, transcript[-8000:]
+        assert "Initrd Debug Shell" not in transcript, transcript[-8000:]
+      '';
+  }
