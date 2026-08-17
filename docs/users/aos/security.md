@@ -263,16 +263,18 @@ The mechanisms currently demonstrated are:
 
 - Authenticode-signed UKIs and systemd-boot;
 - optional kernel lockdown with enforced module signing and signed kexec;
-- TPM2 sealing of `/var` to a signed PCR 11 policy and pinned PCR 7 value;
+- TPM2 sealing of `/var` to a signed PCR 11 policy and pinned PCR 7 and 12
+  values;
 - dm-verity verification of the read-only EROFS root.
 
 Durable upgrades preserve those bindings per image generation: APM validates
 the signed catalog, writes the inactive root/hash slot and slot-specific UKI,
 and selects the counted entry. A boot is blessed only after the TPM reaches the
 ready PCR phase, configuration has been rebound to the running image, and the
-boot-commit verifier confirms the stored quote's signature, nonce, and PCR 7/11
-values against both the live TPM and published image record. This mechanism
-does not supply production signing keys, enrollment, or key custody.
+boot-commit verifier confirms the stored quote's signature, nonce, and PCR
+7/11/12 values against the live TPM, with PCR 11 also checked against the
+published image record. This mechanism does not supply production signing
+keys, enrollment, or key custody.
 
 The seed image gets its expected ready-phase PCR 11 from build-produced UKI
 measurement metadata. That metadata is signed by the PCR-policy key and bound
@@ -301,8 +303,9 @@ cat "$current/gen-attestation.json"
 
 For a remote trust decision, use the public verifier with an enrolled quote
 identity, the host CEL and quote bundle, and a policy populated from the
-verifier's image catalog. It validates the exact embedded quote bytes, PCR
-7/11/15, dm-verity root, authorized host-input source, signed release receipt,
+verifier's fleet authorization and signed image catalog. It validates the
+exact embedded quote bytes, PCR
+7/11/12/15, dm-verity root, authorized host-input source, signed release receipt,
 active key roster, signed module/store graph, and optional independent manifest
 re-derivation. See [Verify runtime attestation evidence](cli.md#verify-runtime-attestation-evidence).
 
@@ -311,6 +314,14 @@ Measured boot writes a generated LUKS recovery key to a configured path under
 before it disappears. Until key generation, external signing, enrollment,
 escrow, rotation, and recovery are integrated and exercised together, treat
 these variants as validation fixtures rather than production images.
+
+Existing PCR-7-only enrollments are never rewritten unattended. From a clean,
+signed boot, an operator supplies the off-machine recovery key to
+`aos-var-policy-migrate` together with the deployment PCR public key and the
+current UKI PCR signature. The tool proves the recovery key, enrolls a new
+PCR-7+12 token, tests that exact token through cryptsetup's token ID, and only
+then removes older TPM slots. It preserves the recovery slot throughout and
+atomically writes a non-secret evidence record under `/var`.
 
 ## Verify a deployed host
 

@@ -4,7 +4,7 @@
 ##! are already on) and additionally turns on measured boot: the UKI gets
 ##! a signed PCR policy, and first boot LUKS2-formats /var and seals its
 ##! key to a TPM2 token bound to that policy (PCR 11, signature-flexible)
-##! plus PCR 7 (pinned by value). `tests/fleet/measured-boot.nix` boots
+##! plus PCRs 7 and 12 (pinned by value). `tests/fleet/measured-boot.nix` boots
 ##! this image with a vTPM, enrolls SB keys, reboots into enforcing mode,
 ##! and asserts /var unlocks unattended via the TPM2 token across a reboot.
 ##!

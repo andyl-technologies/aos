@@ -269,6 +269,8 @@ pub struct QuotedPcrs {
     pub pcr7: String,
     /// Measured-boot PCR 11, lowercase hex.
     pub pcr11: String,
+    /// Boot-input PCR 12, lowercase hex.
+    pub pcr12: String,
     /// Application PCR 15 (record binding), lowercase hex.
     pub pcr15: String,
 }
@@ -276,7 +278,7 @@ pub struct QuotedPcrs {
 /// Verifies a quote signature under an attestation key and recovers its PCRs.
 ///
 /// The production implementation checks the TPM2B_ATTEST + signature under the
-/// AK public key over `(PCR{7,11,15}, nonce)`; tests inject a mock that returns
+/// AK public key over `(PCR{7,11,12,15}, nonce)`; tests inject a mock that returns
 /// scripted PCRs (or an error to model a bad signature).
 pub trait QuoteChecker {
     /// Verify `quote` over `nonce` and return the quoted PCR values.
@@ -809,6 +811,8 @@ pub struct VerifierPolicy {
     pub expected_pcr7: String,
     /// Catalog `expected_pcr11` for the booted UKI, `sha256:<hex>`.
     pub expected_pcr11: String,
+    /// Authorized PCR 12 boot-input state, lowercase hex.
+    pub expected_pcr12: String,
     /// The published image's `root.roothash` (UKI `.cmdline` token), 64 hex.
     pub expected_root_roothash: String,
     /// Optional verifier-known canonical instance-facts hash.
@@ -885,6 +889,8 @@ pub enum GenAttestationFailure {
     SbState,
     /// PCR 11 did not match `pcr11_expected` and/or the catalog value.
     Pcr11,
+    /// PCR 12 did not match the verifier-authorized boot-input state.
+    Pcr12,
     /// The F1 root-verity binding did not hold across record/catalog.
     RootVerity,
     /// Recorded instance facts disagree with verifier-known facts.
@@ -911,6 +917,7 @@ impl std::fmt::Display for GenAttestationFailure {
             GenAttestationFailure::Pcr11 => {
                 "PCR 11 does not match the expected measured-boot value"
             }
+            GenAttestationFailure::Pcr12 => "PCR 12 does not match the authorized boot-input state",
             GenAttestationFailure::RootVerity => "F1 root-verity roothash binding failed",
             GenAttestationFailure::Facts => "instance-facts binding failed",
             GenAttestationFailure::Tag => "release tag is unsigned, revoked, or off-roster",
@@ -996,7 +1003,12 @@ pub fn verify_gen_attestation(
         return Err(GenAttestationFailure::Pcr11);
     }
 
-    // 6. F1 root binding: record roothash == catalog/published roothash.
+    // 6. PCR12 == verifier-authorized boot-input state.
+    if !ct_eq(&pcrs.pcr12, &policy.expected_pcr12) {
+        return Err(GenAttestationFailure::Pcr12);
+    }
+
+    // 7. F1 root binding: record roothash == catalog/published roothash.
     if !ct_eq(
         record
             .inputs
@@ -1408,6 +1420,7 @@ mod tests {
             let blob = serde_json::json!({
                 "pcr7": self.pcr7,
                 "pcr11": self.pcr11,
+                "pcr12": PCR12_HEX,
                 "pcr15": pcr15,
                 "nonce": hex::encode(nonce),
             });
@@ -1429,6 +1442,7 @@ mod tests {
             Ok(QuotedPcrs {
                 pcr7: v["pcr7"].as_str().unwrap_or_default().to_string(),
                 pcr11: v["pcr11"].as_str().unwrap_or_default().to_string(),
+                pcr12: v["pcr12"].as_str().unwrap_or_default().to_string(),
                 pcr15: v["pcr15"].as_str().unwrap_or_default().to_string(),
             })
         }
@@ -1454,6 +1468,7 @@ mod tests {
 
     const ROOTHASH: &str = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
     const PCR11_HEX: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+    const PCR12_HEX: &str = "0000000000000000000000000000000000000000000000000000000000000000";
     const PCR7_HEX: &str = "7777777777777777777777777777777777777777777777777777777777777777";
 
     #[test]
@@ -1527,6 +1542,7 @@ mod tests {
         VerifierPolicy {
             expected_pcr7: PCR7_HEX.to_string(),
             expected_pcr11: format!("sha256:{PCR11_HEX}"),
+            expected_pcr12: PCR12_HEX.to_string(),
             expected_root_roothash: ROOTHASH.to_string(),
             expected_facts_hash: None,
             pcr15_baseline: None,
@@ -1684,6 +1700,16 @@ mod tests {
         let res =
             verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None);
         assert!(res.is_ok(), "got {res:?}");
+    }
+
+    #[test]
+    fn rejects_unexpected_boot_input_pcr() {
+        let record = computed();
+        let mut policy = sample_policy();
+        policy.expected_pcr12 = "12".repeat(32);
+        let err =
+            verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None).unwrap_err();
+        assert_eq!(err, GenAttestationFailure::Pcr12);
     }
 
     #[test]

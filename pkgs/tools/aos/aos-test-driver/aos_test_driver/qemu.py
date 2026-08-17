@@ -102,6 +102,7 @@ class QemuMachine(Machine):
     qemu_proc: subprocess.Popen[bytes] | None
     drain_proc: subprocess.Popen[bytes] | None
     swtpm_proc: subprocess.Popen[bytes] | None
+    smbios_oem_strings: list[str]
 
     def __init__(
         self,
@@ -158,6 +159,7 @@ class QemuMachine(Machine):
         self.tpm_socket = str(self.tmpdir / f"{name}-tpm.sock") if tpm else None
         self.tpm_state_dir = str(self.tmpdir / f"{name}-tpm-state") if tpm else None
         self.swtpm_log = str(self.tmpdir / f"{name}-swtpm.log")
+        self.smbios_oem_strings = []
 
         self.qemu_proc = None
         self.drain_proc = None
@@ -460,6 +462,9 @@ class QemuMachine(Machine):
                 "-drive", f"file={self.disk_copy},format=raw,if=virtio",
             ]
 
+        for value in self.smbios_oem_strings:
+            argv += ["-smbios", f"type=11,value={value}"]
+
         for index, (disk, path) in enumerate(
             zip(self.extra_disks, self.extra_disk_copies, strict=True)
         ):
@@ -621,6 +626,85 @@ class QemuMachine(Machine):
         """
         self.metadata_src = None
         self.reboot(timeout=timeout)
+
+    def relaunch_with_smbios_oem_strings(
+        self,
+        values: list[str],
+        *,
+        expect_agent: bool = True,
+        timeout: float = 600.0,
+        settle: float = 60.0,
+    ) -> str:
+        """Relaunch an image boot with an exact SMBIOS Type-11 string set.
+
+        The writable disk, firmware variables, and vTPM state are preserved.
+        This is intended for boot-input tests where QEMU must be restarted to
+        change firmware-provided data. When ``expect_agent`` is false, the
+        method requires the guest agent to remain unavailable for ``settle``
+        seconds and returns the serial-log tail.
+
+        Raises:
+            RuntimeError: If a value is unsafe for QEMU's Type-11 syntax, the
+                current VM cannot be stopped, or the relaunched VM has the
+                opposite agent outcome from ``expect_agent``.
+        """
+        if any(not value or "\x00" in value or "\n" in value or "," in value for value in values):
+            raise RuntimeError(
+                f"[{self.name}] SMBIOS OEM strings must be nonempty and contain no NUL, newline, or comma"
+            )
+
+        self._stop_runtime_for_relaunch(timeout)
+        self.smbios_oem_strings = list(values)
+        self._launch()
+
+        if expect_agent:
+            self.agent.wait_ready(time.monotonic() + timeout)
+            return ""
+
+        try:
+            self.agent.wait_ready(time.monotonic() + settle)
+        except RuntimeError:
+            try:
+                with open(self.serial_log_path, "r", errors="replace") as serial:
+                    return serial.read()[-12000:]
+            except OSError:
+                return ""
+        raise RuntimeError(
+            f"[{self.name}] guest agent became ready after rejected SMBIOS boot input"
+        )
+
+    def _stop_runtime_for_relaunch(self, timeout: float) -> None:
+        """Stops QEMU and swtpm without recreating per-run disk artifacts."""
+        if self.qemu_proc is not None and self.qemu_proc.poll() is None:
+            try:
+                self.execute(
+                    "(sleep 1; systemctl poweroff) >/dev/null 2>&1 &", timeout=30
+                )
+                self.agent.close()
+                self.qemu_proc.wait(timeout=min(timeout, 120.0))
+            except Exception:
+                self.agent.close()
+                self.qemu_proc.terminate()
+                try:
+                    self.qemu_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.qemu_proc.kill()
+                    self.qemu_proc.wait()
+
+        if self.swtpm_proc is not None and self.swtpm_proc.poll() is None:
+            try:
+                self.swtpm_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.swtpm_proc.terminate()
+                try:
+                    self.swtpm_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.swtpm_proc.kill()
+                    self.swtpm_proc.wait()
+
+        if self._qemu_log_fd is not None:
+            self._qemu_log_fd.close()
+            self._qemu_log_fd = None
 
     # ------------------------------------------------------------------
     def reboot_expect_rejected(

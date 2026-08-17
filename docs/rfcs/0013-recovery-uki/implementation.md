@@ -159,11 +159,20 @@ Prove that supported clean boots share the policy's expected PCR-12 state. Any
 current feature that intentionally extends PCR 12 must be modeled before the
 default changes.
 
+The measured-boot fleet path populates the inactive slot from the verified A
+bytes, boots the slot-B UKI under a counted Type-2 filename, commits it with
+`systemd-bless-boot`, and observes the subsequent stable reboot. It requires
+the reset PCR-12 value for clean A, counted B, committed B, and the ordinary
+post-commit B reboot. The test driver can relaunch the same writable disk,
+firmware-variable store, and vTPM state with an exact SMBIOS Type-11 string set
+so firmware-provided boot inputs are tested rather than simulated in the
+guest.
+
 ### 3.2 Enrollment policy
 
-Change `aos.boot.secureBoot.measuredBoot.pinnedPcrs` from `"7"` to `"7,12"`
-and update option documentation, system fixture documentation, recovery docs,
-and tests.
+Change `aos.boot.secureBoot.measuredBoot.pinnedPcrs` from `"7"` to `"7+12"`
+(systemd's plus-separated command syntax) and update option documentation,
+system fixture documentation, recovery docs, and tests.
 
 Implement recovery-key-authorized token migration:
 
@@ -173,13 +182,40 @@ Implement recovery-key-authorized token migration:
 4. publish durable migration evidence; and
 5. remove the PCR-7-only token only after successful verification.
 
+`aos-var-policy-migrate` implements this as a recovery-key-authenticated,
+idempotent transaction. It snapshots the LUKS2 JSON metadata, adds the new
+token without wiping the old one, and validates the token ID and keyslot, PCR
+7+12 pin, signed PCR 11 selection, embedded public-key bytes, SHA-256 bank, and
+absence of alternate token modes. The supplied recovery key must open the
+single keyslot named by the retained `systemd-recovery` token before and after
+the transaction. The exact new external token is tested using systemd's
+canonical runtime signature path.
+
+Evidence advances atomically through `prepared`, `verified`, and `complete`
+states, with file and containing-directory synchronization at each published
+boundary. The `verified` record contains the exact retained and removal
+keyslots before cleanup begins. Resume accepts only a subset of that recorded
+removal set, so partial cleanup cannot expand its authority. Completed evidence
+is validated and preserved byte-for-byte on idempotent reruns. The record
+contains metadata digests, LUKS UUID, public-key digest, exact token identities,
+and policy without recording key material.
+
 An interrupted migration retains at least one working authorized unlock path.
+
+Generation quote verification carries PCR 12 through the checked quote instead
+of discarding it. Local boot commit compares quoted PCR 12 with the live TPM;
+remote verification requires `aos.gen-attestation-policy/v2` and compares it
+with the operator-authorized `expected_pcr12`. Version 1 policy is rejected
+because it has no PCR-12 authorization field.
 
 ### 3.3 Injection tests
 
 Inject an appended command line that changes PCR 12 and prove automatic unlock
 fails. Exercise at least `SYSTEMD_SULOGIN_FORCE=1`, a duplicate `roothash=`, and
 an alternate `rd.systemd.unit=`. The recovery key must still unlock the volume.
+The fleet test also extends PCR 12 directly after a valid boot to isolate the
+TPM-policy property: exact TPM-token use and local boot-commit verification
+must fail, while the exact retained recovery keyslot must still open.
 
 ## Phase 4: Build the dedicated recovery initrd and UKI
 
