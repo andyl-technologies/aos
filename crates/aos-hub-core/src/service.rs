@@ -25433,22 +25433,68 @@ impl RpcService {
                 .registry_publication_response(&req.publication_id)
                 .await;
         }
-        if publication.state != "writing_pointers"
-            || !self
-                .db
-                .registry_publication_class_is_complete(&req.publication_id, "immutable")
-                .await
-                .map_err(RpcError::internal)?
-            || !self
-                .db
-                .registry_publication_class_is_complete(&req.publication_id, "mutable_pointer")
-                .await
-                .map_err(RpcError::internal)?
-        {
+        let immutable_complete = self
+            .db
+            .registry_publication_class_is_complete(&req.publication_id, "immutable")
+            .await
+            .map_err(RpcError::internal)?;
+        let pointers_complete = self
+            .db
+            .registry_publication_class_is_complete(&req.publication_id, "mutable_pointer")
+            .await
+            .map_err(RpcError::internal)?;
+        if !immutable_complete || !pointers_complete {
             return Err(RpcError::FailedPrecondition(
                 "publication is not complete on every required placement".into(),
             ));
         }
+
+        if publication.state == "preparing" {
+            // A publication whose exact objects already exist needs no upload
+            // request. Open its pointer phase here so reuse-only generations
+            // follow the same watermark protocol as generations that wrote a
+            // pointer body.
+            self.lease
+                .acquire(
+                    registry.id,
+                    &publication.publication_id,
+                    clock::now_unix_secs(),
+                )
+                .await
+                .map_err(|holder| {
+                    RpcError::FailedPrecondition(format!(
+                        "registry publication lease is held by {holder}"
+                    ))
+                })?;
+            if !self
+                .db
+                .advance_registry_publication(
+                    &req.publication_id,
+                    "preparing",
+                    "writing_pointers",
+                    clock::now_unix_secs(),
+                )
+                .await
+                .map_err(RpcError::internal)?
+            {
+                let current = self
+                    .db
+                    .registry_publication(&req.publication_id)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| RpcError::not_found("registry publication"))?;
+                if current.state != "writing_pointers" {
+                    return Err(RpcError::FailedPrecondition(
+                        "publication pointer phase changed concurrently".into(),
+                    ));
+                }
+            }
+        } else if publication.state != "writing_pointers" {
+            return Err(RpcError::FailedPrecondition(
+                "publication is not ready to commit".into(),
+            ));
+        }
+
         for progress in self
             .db
             .registry_publication_placement_records(&req.publication_id)
@@ -25458,12 +25504,28 @@ impl RpcService {
             if !progress.required || progress.state == "ready" {
                 continue;
             }
-            let placement = self
+            let mut placement = self
                 .db
                 .surface_placement(progress.placement_id)
                 .await
                 .map_err(RpcError::internal)?
                 .ok_or_else(|| RpcError::FailedPrecondition("placement disappeared".into()))?;
+            if progress.state == "preparing" {
+                let watermark_version = placement.watermark_resource_version.ok_or_else(|| {
+                    RpcError::FailedPrecondition("placement has no publication watermark".into())
+                })?;
+                placement = self
+                    .db
+                    .begin_registry_pointer_advance(
+                        &req.publication_id,
+                        placement.id,
+                        placement.resource_version,
+                        watermark_version,
+                        clock::now_unix_secs(),
+                    )
+                    .await
+                    .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+            }
             let watermark_version = placement.watermark_resource_version.ok_or_else(|| {
                 RpcError::FailedPrecondition("placement has no publication watermark".into())
             })?;
@@ -35345,9 +35407,11 @@ mod cache_upload_tests {
     use crate::auth::seal::SecretSealer;
     use crate::coordinator::InMemoryCoordinator;
     use crate::db::{
-        ChannelSummary, Database, IndexSnapshot, IndexedSystemImage, NewSurfacePlacementSpec,
-        RegistryRecord, ReleaseImageSnapshot, ReleaseRow, SurfacePlacementBlockers, SurfaceTarget,
-        TokenAuth, VerifiedRegistryImageObject, WriteTicketPartRecord,
+        ChannelSummary, Database, IndexSnapshot, IndexedSystemImage, NewRegistryPublication,
+        NewSurfacePlacementSpec, RegistryRecord, ReleaseImageSnapshot, ReleaseRow,
+        SetRegistryPublicationObject, SetRegistryPublicationPlacement, SetSurfaceObject,
+        SurfacePlacementBlockers, SurfaceTarget, TokenAuth, VerifiedRegistryImageObject,
+        WriteTicketPartRecord,
     };
     use crate::domain::{Permission, Principal, Role, Scope};
     use crate::fetch::{StreamedRead, SurfaceFetch, SurfaceObjectEvidence, SurfaceProvider};
@@ -35676,6 +35740,137 @@ mod cache_upload_tests {
         )
         .with_identity_domain_verifier(Arc::new(PublishedIdentityDomain));
         (service, db, lease, format!("Bearer {token}"))
+    }
+
+    #[tokio::test]
+    async fn commit_advances_a_fully_reused_publication_without_uploads() {
+        let (service, db, _lease, auth) = injected_service(vec![], vec![]).await;
+        let org_id = db.create_org("reuse-only", "Reuse only").await.unwrap();
+        let registry_id = db
+            .create_managed_registry(org_id, "", "main", "private", &[], false)
+            .await
+            .unwrap();
+        let org = db.org_by_id(org_id).await.unwrap().unwrap();
+        let binding_id = db
+            .create_topology_storage_binding(
+                Some(org_id),
+                "binding-reuse-only",
+                &org.stable_id,
+                "registry",
+                "r2",
+                None,
+                Some("reuse-only"),
+                Some("registry"),
+                Some("https"),
+                Some("dns"),
+                Some(b"storage.example.invalid"),
+                Some(443),
+                Some("auto"),
+                Some("private"),
+            )
+            .await
+            .unwrap();
+        let placement = db
+            .create_surface_placement(&NewSurfacePlacementSpec {
+                surface: SurfaceTarget::Registry(registry_id),
+                name: "primary".into(),
+                storage_binding_id: binding_id,
+                prefix: "main".into(),
+                kind: "complete".into(),
+                desired_state: "active".into(),
+                hash_range: None,
+                desired_read_enabled: true,
+                read_order: 0,
+                requires_conditional_writes: false,
+            })
+            .await
+            .unwrap();
+        let placement = db
+            .observe_surface_placement(placement.id, "ready", "complete", 1)
+            .await
+            .unwrap();
+
+        let publication_id = "reuseonlypublication00000000000001";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: publication_id.into(),
+            registry_id,
+            generation: "reuse-only-generation".into(),
+            manifest_digest: "a".repeat(64),
+            refs_digest: "b".repeat(64),
+            default_commit: Some("c".repeat(64)),
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+            publication_id: publication_id.into(),
+            placement_id: placement.id,
+            required: true,
+            state: "preparing".into(),
+            observed_at: 2,
+        })
+        .await
+        .unwrap();
+
+        for (path, kind, hash, size) in [
+            ("nar/reused.nar.zst", "immutable", "d".repeat(64), 7),
+            ("info/refs", "mutable_pointer", "e".repeat(64), 9),
+        ] {
+            let object = db
+                .create_surface_object(&SetSurfaceObject {
+                    surface: SurfaceTarget::Registry(registry_id),
+                    object_key: path.into(),
+                    content_hash: Some(hash.clone()),
+                    size: Some(size),
+                    object_kind: kind.into(),
+                    mutable_publication_id: (kind == "mutable_pointer")
+                        .then(|| publication_id.into()),
+                })
+                .await
+                .unwrap();
+            db.set_registry_publication_object(&SetRegistryPublicationObject {
+                publication_id: publication_id.into(),
+                surface_object_id: object.id,
+                object_kind: kind.into(),
+                expected_hash: hash.clone(),
+                expected_size: size,
+            })
+            .await
+            .unwrap();
+            db.record_registry_publication_object_presence(
+                publication_id,
+                object.id,
+                placement.id,
+                &hash,
+                size,
+                Some("reused"),
+                3,
+            )
+            .await
+            .unwrap();
+        }
+
+        let committed = service
+            .commit_registry_publication(
+                Some(&auth),
+                pb::CommitRegistryPublicationRequest {
+                    publication_id: publication_id.into(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(committed.state, "ready");
+        assert_eq!(committed.placements[0].state, "ready");
+        assert_eq!(
+            db.registry_publication_state(registry_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .current_publication_id
+                .as_deref(),
+            Some(publication_id)
+        );
     }
 
     #[tokio::test]
