@@ -107,7 +107,13 @@ instruction_exception_probe:
     add x6, x6, :lo12:instruction_result_fault_count
     ldr w8, [x6]
     cmp w8, #1
-    b.ne 15f
+    b.eq 141f
+    cbnz w8, 15f
+    adrp x6, instruction_result_fault_source
+    add x6, x6, :lo12:instruction_result_fault_source
+    bl instruction_result_fault_instruction
+    b 15f
+141:
     str wzr, [x6]
     bl instruction_result_fault
 15:
@@ -323,7 +329,7 @@ instruction_natural_exception_count:
     .word 1
 .global instruction_result_fault_count
 instruction_result_fault_count:
-    .word 1
+    .word 2
 .global instruction_result_fault_value
 instruction_result_fault_value:
     .word 0

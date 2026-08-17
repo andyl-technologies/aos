@@ -87,7 +87,7 @@ pub(super) fn assert_aggregate_and_default() -> Result<(), Box<dyn Error>> {
     assert_contains(&aggregate, "grep -q '^vcpus=2$'");
     assert_contains(
         &aggregate,
-        "grep -q '^sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(accelerator=sim,thread=single,stop_at=4194304)$'",
+        "grep -q '^sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(canonical-long-horizon)$'",
     );
     assert_contains(
         &aggregate,

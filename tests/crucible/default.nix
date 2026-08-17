@@ -2874,6 +2874,7 @@ in rec {
             "T-QEMU-0079"
             "T-QEMU-0080"
             "T-QEMU-0081"
+            "T-QEMU-0082"
             "T-QEMU-LICENSE"
             "T-SPEC-1"
             "T-SPEC-2"

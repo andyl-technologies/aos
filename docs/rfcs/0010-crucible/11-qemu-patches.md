@@ -212,6 +212,7 @@ PLUGIN TIME CONTROL (API surface)                      class  enforces
   crucible-stopped-state-control-progress bounded native-stop wake D  DET-1, INV-10, QEMU-43
   crucible-inactive-retention-clock-guard active-rule-before-clock D  DET-1, QFP-STATE-2, FAULT-ORDER
   crucible-deferred-result-evidence-test typed deferred evidence coverage F  QEMU-44, FAULT-EVIDENCE
+  crucible-deterministic-instruction-input-state stable instruction selector identity D  DET-1, QEMU-44, FAULT-EVIDENCE
 
 DEVICE CO-SIM (shmem transport)                        class  enforces
   crucible-blk-shmem ............ virtio-blk over shmem      F    PATCH-26, DET-16, E19, SHM-13
@@ -1193,6 +1194,31 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 - **Inertness:** [PATCH-3](a) — this changes test code only and adds no runtime
   path.
 - **Risk:** F.
+
+### crucible-deterministic-instruction-input-state — stabilize selector identity
+
+- **Patch:** `0082-crucible-deterministic-instruction-input-state.patch`.
+- **Enforces:** [DET-1], [QEMU-44], [FAULT-EVIDENCE].
+- **Mechanism:** instruction `input_state_sha256` selectors use a versioned
+  digest of canonical architecture-register state. PC, exact instruction bytes
+  and/or opcode class remain independently bound by the instruction selector.
+  Whole RAM and raw non-RAM VMState stay in occurrence evidence and the
+  normalized host fingerprint, but are excluded from the QEMU-local selector
+  because unrelated RAM and raw device bookkeeping are not canonical
+  instruction inputs. A dedicated register-state digest excludes icount and
+  round-robin scheduler coordinates while the existing full execution
+  fingerprint remains unchanged in occurrence evidence. Both digests are
+  derived from one ordered register sample when needed together. The live
+  retry fixture arms its naturally faulting load only after the exact-PC rule
+  is translated and QEMU confirms commit installation.
+- **Micro-test:** captures selector identities in one patched-QEMU process and
+  reuses them in a fresh process for single and composed x86-64 and AArch64
+  result transforms; the explicit mismatch and stock-QEMU controls remain red.
+  The same matrix proves committed retry after a natural guest page fault and
+  exhausts all 4,096 event slots without reducing production capacity.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — the digest is computed only for an
+  admitted instruction rule at its exact safe boundary.
+- **Risk:** D.
 
 ### crucible-whitebox-guest-write — return synchronous doorbell replies
 

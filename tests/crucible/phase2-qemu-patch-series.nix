@@ -566,6 +566,13 @@
       enforces = "QEMU-44,FAULT-EVIDENCE";
       capability = "live instruction-fault coverage validates the canonical typed evidence added to deferred completions";
     }
+    {
+      file = "0082-crucible-deterministic-instruction-input-state.patch";
+      catalogName = "crucible-deterministic-instruction-input-state";
+      class = "D";
+      enforces = "DET-1,QEMU-44,FAULT-EVIDENCE";
+      capability = "instruction input selectors use a cross-process-stable architectural-register digest while retaining full RAM and device state in canonical evidence";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

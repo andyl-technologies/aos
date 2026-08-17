@@ -157,7 +157,18 @@ width constraint.
 overflow. `instruction_bytes` and `opcode_class` cannot both be `null`: every
 selector must bind either the exact encoding, the immutable manifest class, or
 both. `input_state_sha256` is `null` or exactly 32 bytes encoded as 64
-hexadecimal digits. A mismatch consumes the selected occurrence, emits
+hexadecimal digits. It uses the versioned
+`crucible.instruction-input-state.v1` digest of canonical architecture-register
+state at the instruction boundary. The selector's PC, instruction bytes and/or
+opcode class independently bind instruction identity. Whole RAM and raw device
+VMState hashes remain in authenticated occurrence evidence and the canonical host
+fingerprint rather than this QEMU-local cross-process selector; unrelated RAM
+and device bookkeeping therefore cannot destabilize a local instruction match.
+This is a register precondition, not an operand-value predicate: memory or MMIO
+bytes addressed by those registers are not part of this digest and may differ
+without suppressing the transform. Use memory-fault or assertion surfaces when
+the scenario must precondition on memory contents.
+A mismatch consumes the selected occurrence, emits
 `suppressed` evidence containing the expected and observed input digests, and
 executes the unmodified instruction.
 

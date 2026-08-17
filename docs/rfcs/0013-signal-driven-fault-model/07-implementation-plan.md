@@ -359,6 +359,13 @@ produce live patched-QEMU architectural or device evidence.
   [`crucible-deferred-result-evidence-test`](14-qemu-fault-patches/32-deferred-result-evidence-test.md):
   validate canonical typed node-result evidence for every deferred instruction
   completion, including the exact payload selected by composed commands.
+- [x] **T-QEMU-0082** Implement
+  [`crucible-deterministic-instruction-input-state`](14-qemu-fault-patches/33-deterministic-instruction-input-state.md):
+  bind instruction input selectors to a versioned cross-process-stable
+  architectural-register digest while retaining full RAM and device state hashes in
+  authenticated evidence and canonical host fingerprints; co-derive execution
+  and input identities from one register sample, and prove a naturally
+  faulting load is armed only after its exact-PC rule is installed.
 - [x] **T-QEMU-0060** Implement
   [`crucible-block-typed-errors`](14-qemu-fault-patches/14-block-typed-errors.md):
   the closed block result ABI, exact Linux errno translation, malformed-result

@@ -115,7 +115,13 @@ instruction_exception_probe:
     call instruction_natural_exception
 14:
     cmpl $1, instruction_result_fault_count(%rip)
+    je 141f
+    cmpl $0, instruction_result_fault_count(%rip)
     jne 15f
+    lea instruction_result_fault_source(%rip), %rdi
+    call instruction_result_fault_instruction
+    jmp 15f
+141:
     movl $0, instruction_result_fault_count(%rip)
     call instruction_result_fault
 15:
@@ -271,7 +277,7 @@ instruction_natural_exception_count:
     .long 1
 .global instruction_result_fault_count
 instruction_result_fault_count:
-    .long 1
+    .long 2
 .global instruction_result_fault_value
 instruction_result_fault_value:
     .long 0

@@ -524,6 +524,12 @@
         inherit pkgs lib qemuPackage;
       };
     }
+    {
+      patch = "0082-crucible-deterministic-instruction-input-state.patch";
+      check = import ./phase2-qemu-deterministic-instruction-input-state.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
   ];
 
   microtestPatchNames =

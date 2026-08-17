@@ -12,7 +12,7 @@
   patchSource = builtins.readFile (patchDir + "/${patchName}");
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
-  liveCaseCount = 73;
+  liveCaseCount = 72;
 
   failures =
     failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
@@ -212,7 +212,8 @@ in
                   instruction_exception_count instruction_natural_exception_count \
                   instruction_control_count instruction_store_count \
                   instruction_atomic_count instruction_load_result \
-                  instruction_fp_result instruction_result_fault_value; do
+                  instruction_fp_result instruction_result_fault_count \
+                  instruction_result_fault_value; do
                   echo "$architecture''${symbol#instruction_}_address=$(instruction_address \
                     "$nm_binary" "$guest" "$symbol")"
                 done
@@ -237,6 +238,8 @@ in
               target="$3"
               register="$4"
               input_state="''${5-}"
+              timeout_seconds=120
+              smp_count=1
               case "$architecture" in
                 x86_64)
                   architecture_id=2
@@ -263,6 +266,11 @@ in
                   esac
                   iterations_address="$x86_iterations_address"
                   exception_address="$x86_exception_count_address"
+                  result_fault_count_address="$x86_result_fault_count_address"
+                  if test "$mode" = event-saturation; then
+                    machine_args='-machine pc -m 2M'
+                    timeout_seconds=900
+                  fi
                   ;;
                 aarch64)
                   architecture_id=3
@@ -289,13 +297,19 @@ in
                   esac
                   iterations_address="$aarch64_iterations_address"
                   exception_address="$aarch64_exception_count_address"
+                  result_fault_count_address="$aarch64_result_fault_count_address"
                   ;;
                 *)
                   echo "unknown instruction architecture: $architecture" >&2
                   exit 1
                   ;;
               esac
-              plugin_args="$PWD/crucible-instruction.so,architecture=$architecture_id,mode=$mode,pc=$pc,bytes=$bytes,register=$register,selected-address=$selected_address,iterations-address=$iterations_address,exception-address=$exception_address"
+              case "$mode" in
+                result|result-compose|result-input|result-input-compose)
+                  smp_count=2
+                  ;;
+              esac
+              plugin_args="$PWD/crucible-instruction.so,architecture=$architecture_id,mode=$mode,pc=$pc,bytes=$bytes,register=$register,selected-address=$selected_address,iterations-address=$iterations_address,exception-address=$exception_address,result-fault-count-address=$result_fault_count_address"
               if test -n "$input_state"; then
                 plugin_args="$plugin_args,input-state=$input_state"
               fi
@@ -309,11 +323,11 @@ in
               test "''${#bytes}" -le 64
               echo "running instruction case architecture=$architecture mode=$mode target=$target pc=$pc bytes=$bytes"
               set +e
-              timeout 120 $qemu_binary \
+              timeout "$timeout_seconds" $qemu_binary \
                 $machine_args \
                 -accel sim \
                 -icount shift=0,rr_switch_quantum=256 \
-                -smp 1 \
+                -smp "$smp_count" \
                 -nographic \
                 -no-reboot \
                 -serial none \
@@ -345,7 +359,6 @@ in
             run_instruction x86_64 result-input result rax "$x86_result_input"
             run_instruction x86_64 result-input-compose result rax "$x86_compose_input"
             run_instruction x86_64 result-fault-retry result_fault_instruction rax
-            run_instruction x86_64 event-saturation result rax
             run_instruction x86_64 reject-overlap result rax
             run_instruction x86_64 exclusive-selectors result rax
             run_instruction x86_64 skip skip rax
@@ -387,7 +400,6 @@ in
             run_instruction aarch64 result-input result x0 "$aarch64_result_input"
             run_instruction aarch64 result-input-compose result x0 "$aarch64_compose_input"
             run_instruction aarch64 result-fault-retry result_fault_instruction x9
-            run_instruction aarch64 event-saturation result x0
             run_instruction aarch64 reject-overlap result x0
             run_instruction aarch64 exclusive-selectors result x0
             run_instruction aarch64 skip skip x0
@@ -421,6 +433,8 @@ in
             run_instruction aarch64 reject-a64-fp-type result v0
             run_instruction aarch64 reject-a64-vector-size result v0
 
+            run_instruction x86_64 event-saturation result rax
+
             set +e
             timeout 5 ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc -m 64M \
@@ -432,7 +446,7 @@ in
               -serial none \
               -monitor none \
               -kernel instruction-guest-x86.elf \
-              -plugin "$PWD/crucible-instruction.so,architecture=2,mode=result,pc=$x86_result_pc,bytes=$x86_result_bytes,register=rax,selected-address=$x86_result_value_address,iterations-address=$x86_iterations_address,exception-address=$x86_exception_count_address" \
+              -plugin "$PWD/crucible-instruction.so,architecture=2,mode=result,pc=$x86_result_pc,bytes=$x86_result_bytes,register=rax,selected-address=$x86_result_value_address,iterations-address=$x86_iterations_address,exception-address=$x86_exception_count_address,result-fault-count-address=$x86_result_fault_count_address" \
               > logs/patched-tcg-inert.log 2>&1
             patched_tcg_status=$?
             set -e

@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "e4a4ea1a0516bc3734f30bebe4f90eb6a471c5df6c1b27b30545629d2823a82d";
+  patchBranchBundleSha256 = "1bec2963f1259a7f6ee217f5237e4cd682eb71f7b366dc4d8096828961813f09";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "8f210516874503b36183faffdfdb3217010a3766";
+  patchBranchHeadCommit = "afdb4a8355e52233cc1b16f948d67b184d0fa18f";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -745,6 +745,16 @@ let
       class = "F";
       enforces = "QEMU-44,FAULT-EVIDENCE";
       capability = "live instruction-fault coverage validates the canonical typed evidence added to deferred completions";
+    }
+    {
+      file = "0082-crucible-deterministic-instruction-input-state.patch";
+      branchSubject = "crucible: stabilize instruction input selectors";
+      branchCommit = "afdb4a8355e52233cc1b16f948d67b184d0fa18f";
+      branchTree = "853243bee1d6792f2bbb0c31a6958dfc04614258";
+      catalogName = "crucible-deterministic-instruction-input-state";
+      class = "D";
+      enforces = "DET-1,QEMU-44,FAULT-EVIDENCE";
+      capability = "instruction input-state selectors use a cross-process-stable architectural-register digest while full CPU, RAM, and device state hashes remain in canonical evidence";
     }
   ];
   catalogOnlyCapabilities = [
