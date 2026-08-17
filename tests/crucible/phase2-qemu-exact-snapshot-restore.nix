@@ -13,7 +13,7 @@
   qemuNodeFactory = builtins.readFile ../../crates/crucible-qemu/src/node_factory.rs;
   qemuExactRunner = builtins.readFile ../../crates/crucible-qemu/examples/crucible-qemu-live-exact-snapshot.rs;
   productionLoop = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop.rs;
-  productionRuntime = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/runtime.rs;
+  productionRuntime = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle.rs;
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   failures =
@@ -47,9 +47,9 @@
       {label = "production paired capture"; needle = ".capture_exact_snapshot(&node, checkpoint)";}
       {label = "VMState artifact persistence"; needle = "PRODUCTION_VMSTATE_FILE_NAME";}
     ]
-    ++ failuresFor "crates/crucible-api/src/vm_lifecycle/runtime.rs" productionRuntime [
+    ++ failuresFor "crates/crucible-api/src/vm_lifecycle.rs" productionRuntime [
       {label = "production exact relaunch"; needle = "launch_production_live_node_exact_snapshot";}
-      {label = "artifact authentication"; needle = "failed authentication";}
+      {label = "artifact authentication"; needle = "failed content authentication";}
       {label = "restored fingerprint check"; needle = "restored_fingerprint != expected_fingerprint";}
     ]
     ++ forbiddenFor "crates/crucible-qemu/src/exact_snapshot_policy.rs" (builtins.readFile ../../crates/crucible-qemu/src/exact_snapshot_policy.rs) [
@@ -158,15 +158,20 @@ in
               grep -Fxq 'replay_oracle_pair_match=true' "$report"
               grep -Fxq 'smp_vcpus=2' "$report"
               grep -Fxq 'multi_vcpu_exact_restore=true' "$report"
+              grep -Fxq 'nonzero_intra_turn_rr_cursor_restored=true' "$report"
+              grep -Fxq 'rr_cursor_negative_control_rejected=true' "$report"
               grep -Eq '^capture_icount=[1-9][0-9]*$' "$report"
               grep -Eq '^restored_icount=[1-9][0-9]*$' "$report"
+              grep -Eq '^capture_rr_current_vcpu=[01]$' "$report"
+              grep -Eq '^capture_rr_position_in_quantum=[1-9][0-9]*$' "$report"
+              grep -Eq '^capture_rr_switch_quantum=[1-9][0-9]*$' "$report"
               grep -Eq '^suffix_icount=[1-9][0-9]*$' "$report"
               grep -Eq '^capture_fingerprint=[0-9a-f]{64}$' "$report"
               grep -Eq '^suffix_fingerprint=[0-9a-f]{64}$' "$report"
             done
             grep -Fxq 'pending_block_io_captured=false' "$diskless_report"
-            grep -Fxq 'idle_jump_calibration_replayed=true' "$diskless_report"
-            grep -Eq '^capture_logical_time_offset=[1-9][0-9]*$' "$diskless_report"
+            grep -Fxq 'logical_time_calibration_restored=true' "$diskless_report"
+            grep -Eq '^capture_logical_time_offset=[0-9]+$' "$diskless_report"
             grep -Fxq 'pending_block_io_captured=true' "$block_report"
 
             mkdir -p "$out"

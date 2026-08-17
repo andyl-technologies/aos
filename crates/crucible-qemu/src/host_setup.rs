@@ -1436,6 +1436,7 @@ pub(crate) mod tests {
             .map_err(|error| error.to_string())?;
 
         publish_capability_result(&mut mapped, rows).map_err(|error| error.to_string())?;
+        publish_system_manifest_result(&mut mapped).map_err(|error| error.to_string())?;
 
         plugin
             .plugin_send_ready_setup_ack()
@@ -1450,11 +1451,12 @@ pub(crate) mod tests {
         Ok(validated)
     }
 
-    pub(crate) fn publish_test_capability_result(
+    pub(crate) fn publish_test_admission_results(
         mapped: &mut crucible_shmem::MappedSetupRegion,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let rows = QemuFaultCapabilityRequirement::abi_boundary_v1();
-        publish_capability_result(mapped, rows.rows())
+        publish_capability_result(mapped, rows.rows())?;
+        publish_system_manifest_result(mapped)
     }
 
     fn publish_capability_result(
@@ -1501,6 +1503,72 @@ pub(crate) mod tests {
                 status: FaultResultStatus::Applied,
                 semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
                 command_sequence: 1,
+                observed_icount: 0,
+                applied_icount: 0,
+                capability_version: 1,
+                phase: FaultBoundaryPhase::NodeBoundary,
+                before_hash: [0; 32],
+                after_hash: [0; 32],
+                evidence_hash: *blake3::hash(&payload).as_bytes(),
+                result_payload_hash: [0; 32],
+                result_offset: 0,
+                result_length: 0,
+            },
+            &payload,
+        )?;
+        Ok(())
+    }
+
+    fn publish_system_manifest_result(
+        mapped: &mut crucible_shmem::MappedSetupRegion,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let command_transport = mapped.fault_command_transport_mut(0)?;
+        let command = crucible_shmem::dequeue_fault_command(
+            command_transport.ring,
+            command_transport.slots,
+            command_transport.arena_header,
+            command_transport.arena,
+            command_transport.arena_region_offset,
+        )?
+        .ok_or("system-manifest query was not published before descriptor handoff")?;
+        let (header, query_payload) = match command {
+            crucible_shmem::DequeuedFaultCommand::Valid { header, payload } => (header, payload),
+            crucible_shmem::DequeuedFaultCommand::Rejected { error, .. } => {
+                return Err(format!("system-manifest query was invalid: {error}").into());
+            }
+        };
+        let query = FaultTargetManifestQueryV1::decode(&query_payload)?;
+        if header.command_kind != FaultCommandKind::QueryTargetManifest
+            || header.command_sequence != 6
+            || query.kind != FaultTargetManifestKind::System
+        {
+            return Err("unexpected setup-time system-manifest command".into());
+        }
+
+        let payload = FaultSystemCapabilityManifestV1 {
+            semantic_version: 1,
+            vmstate_format_version: 1,
+            vmstate_section_count: 9,
+            vmstate_sections_sha256: [1; 32],
+            qemu_build_id: [2; 32],
+            qemu_patch_series_hash: [3; 32],
+            shmem_header_hash: [4; 32],
+        }
+        .encode()?;
+        let result_transport = mapped.fault_result_transport_mut(0)?;
+        crucible_shmem::enqueue_fault_result(
+            result_transport.ring,
+            result_transport.slots,
+            result_transport.arena_header,
+            result_transport.arena,
+            result_transport.arena_region_offset,
+            crucible_shmem::FaultResultHeaderV1 {
+                abi_major: FAULT_COMMAND_ABI_MAJOR,
+                abi_minor: FAULT_COMMAND_ABI_MINOR,
+                command_kind: FaultCommandKind::QueryTargetManifest as u16,
+                status: FaultResultStatus::Applied,
+                semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+                command_sequence: 6,
                 observed_icount: 0,
                 applied_icount: 0,
                 capability_version: 1,

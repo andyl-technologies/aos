@@ -133,9 +133,8 @@ impl ProductionFaultRuntime {
         {
             return Err(FaultExecutionError::CheckpointPresence.into());
         }
-        if checkpoint.qemu_fingerprints != nodes.execution_fingerprints()? {
-            return Err(ProductionFaultRuntimeError::QemuFingerprintMismatch);
-        }
+        let observed_qemu_fingerprints = nodes.execution_fingerprints()?;
+        validate_qemu_fingerprints(&checkpoint.qemu_fingerprints, &observed_qemu_fingerprints)?;
         if plan.programs().is_empty() && !checkpoint.host.is_empty() {
             return Err(FaultExecutionError::CheckpointPresence.into());
         }
@@ -262,4 +261,29 @@ impl ProductionFaultRuntime {
             .ok_or(FaultExecutionError::CheckpointPresence)?
             .recorded_trace(mode)?)
     }
+}
+
+pub(crate) fn validate_qemu_fingerprints(
+    expected: &BTreeMap<NodeId, ContentHash>,
+    observed: &BTreeMap<NodeId, ContentHash>,
+) -> Result<(), ProductionFaultRuntimeError> {
+    if expected == observed {
+        return Ok(());
+    }
+
+    let node = expected
+        .keys()
+        .chain(observed.keys())
+        .find(|node| expected.get(*node) != observed.get(*node))
+        .cloned()
+        .ok_or(FaultExecutionError::CheckpointPresence)?;
+    Err(ProductionFaultRuntimeError::QemuFingerprintMismatch {
+        expected: expected
+            .get(&node)
+            .map_or_else(|| String::from("<missing>"), |hash| (*hash).to_hex()),
+        observed: observed
+            .get(&node)
+            .map_or_else(|| String::from("<missing>"), |hash| (*hash).to_hex()),
+        node: node.name,
+    })
 }

@@ -142,6 +142,7 @@ impl QemuLiveNetworkIoServicer {
             node_slot,
             first,
             second,
+            ..
         } = pair;
         let MappedDirectedRingMut {
             header: outbound_header,

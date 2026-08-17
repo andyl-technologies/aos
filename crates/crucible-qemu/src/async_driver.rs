@@ -178,13 +178,32 @@ pub trait QemuHostIoRuntime: Send {
         Ok(())
     }
 
-    /// Clears a coordinated checkpoint pause after capture or restore.
+    /// Clears a coordinated plugin pause while QEMU is already stopped.
+    ///
+    /// This operation must not wake the plugin's scheduler futex or main-loop
+    /// doorbell. A vCPU-idle callback owns QEMU's big lock while it waits on
+    /// that futex; waking it while QMP deliberately holds the VM stopped can
+    /// strand the following VMState command behind that lock.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuAsyncDriverRuntimeError`] when the live executor cannot be
-    /// released from the checkpoint barrier.
-    fn resume_after_checkpoint(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+    /// Returns [`QemuAsyncDriverRuntimeError`] when the live executor cannot
+    /// clear the checkpoint barrier without making it runnable.
+    fn clear_checkpoint_pause_while_stopped(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Ok(())
+    }
+
+    /// Aborts a plugin checkpoint pause while QEMU may still be running.
+    ///
+    /// Unlike [`Self::clear_checkpoint_pause_while_stopped`], rollback must
+    /// wake both plugin wait mechanisms so a failed pre-stop transaction cannot
+    /// leave the process stranded behind a cleared flag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when the live executor cannot
+    /// clear and actively release the failed checkpoint barrier.
+    fn abort_checkpoint_pause(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
         Ok(())
     }
 

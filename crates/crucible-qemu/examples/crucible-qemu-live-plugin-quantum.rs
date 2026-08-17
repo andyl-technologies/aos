@@ -74,7 +74,6 @@ fn run() -> Result<(), String> {
                 240,
             )?))
             .with_second_run_host_load(env_flag("CRUCIBLE_QUANTUM_SECOND_RUN_LOAD", true)?)
-            .with_prove_idle_jump(env_flag("CRUCIBLE_QUANTUM_PROVE_IDLE_JUMP", false)?)
             .with_smp_vcpus(env_u16("CRUCIBLE_QUANTUM_SMP_VCPUS", 1)?)
             .with_memory_mib(env_u32("CRUCIBLE_QUANTUM_MEMORY_MIB", 64)?);
     if let Some(initrd) = initrd {
@@ -118,12 +117,6 @@ fn run() -> Result<(), String> {
     println!("idle_icount_per_second={}", rates.idle_icount_per_second());
     println!("terminal_icount={}", rates.terminal_icount);
     println!("idle_jump_proven={}", report.idle_jump_proven);
-    if !report.idle_jump_proven {
-        // Descoped while the QEMU-side queued-time-advance completion defect is
-        // open. The plugin correctly reads the deadline, releases, enqueues, and
-        // arms the idle advance, but QEMU never commits it (patches 0010/0021/0025).
-        println!("idle_jump_defect=T-PLUG-7-live-idle-jump-advance-completion");
-    }
     println!(
         "deterministic_under_host_load={}",
         report.deterministic_under_host_load

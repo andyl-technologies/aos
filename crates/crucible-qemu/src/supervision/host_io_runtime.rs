@@ -316,8 +316,8 @@ impl QemuLiveHostIoRuntime {
         Ok(request)
     }
 
-    /// Clears a coordinated pause and wakes both plugin wait mechanisms.
-    fn release_checkpoint_pause(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+    /// Aborts a coordinated pause and wakes both plugin wait mechanisms.
+    fn abort_checkpoint_pause_with_wake(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
         self.region.header().clear_pause();
         let futex_result = self
             .region
@@ -348,7 +348,7 @@ impl QemuLiveHostIoRuntime {
         &mut self,
         primary: QemuAsyncDriverRuntimeError,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
-        match self.release_checkpoint_pause() {
+        match self.abort_checkpoint_pause_with_wake() {
             Ok(()) => Err(primary),
             Err(cleanup) => Err(QemuAsyncDriverRuntimeError::new(
                 "rollback failed checkpoint pause",
@@ -875,8 +875,18 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         ))
     }
 
-    fn resume_after_checkpoint(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
-        self.release_checkpoint_pause()
+    fn clear_checkpoint_pause_while_stopped(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        // QMP has already confirmed RUN_STATE_PAUSED. Clearing the protocol
+        // flag is sufficient for the later `cont`; waking either the shared
+        // futex or QEMU's doorbell here can re-enter the vCPU-idle callback
+        // while the VM remains stopped. That callback waits with the BQL held,
+        // which would prevent the intervening VMState QMP job from running.
+        self.region.header().clear_pause();
+        Ok(())
+    }
+
+    fn abort_checkpoint_pause(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.abort_checkpoint_pause_with_wake()
     }
 
     fn has_pending_device_io(&mut self) -> Result<bool, QemuAsyncDriverRuntimeError> {
@@ -1489,6 +1499,8 @@ mod tests {
     #[test]
     fn completed_clamp_accepts_preserved_future_idle_deadline() {
         let slot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM);
+        slot.arm_external_state_restore_ceiling(200)
+            .unwrap_or_else(|error| panic!("idle ceiling should publish: {error}"));
         slot.publish_idle(40, 200, 0)
             .unwrap_or_else(|error| panic!("idle state should publish: {error}"));
         let snapshot = slot.snapshot();

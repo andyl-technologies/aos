@@ -46,6 +46,7 @@
 //! boundary -- the M3 raw-versus-logical aggregation regression this accounting
 //! guards against.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -219,6 +220,7 @@ pub struct QemuLiveNodeStepGateConfig {
     whitebox: QemuLaunchPluginSwitch,
     app_random: Option<QemuLaunchAppRandomConfig>,
     coverage: QemuLaunchPluginSwitch,
+    fingerprint: QemuLaunchPluginSwitch,
     shmem_network_mac: Option<String>,
     shmem_block: Option<QemuLiveNodeStepBlockConfig>,
     shmem_ninep: Option<QemuLiveNodeStepNinepConfig>,
@@ -294,6 +296,7 @@ impl QemuLiveNodeStepGateConfig {
             whitebox: QemuLaunchPluginSwitch::Off,
             app_random: None,
             coverage: QemuLaunchPluginSwitch::Off,
+            fingerprint: QemuLaunchPluginSwitch::Off,
             shmem_network_mac: None,
             shmem_block: None,
             shmem_ninep: None,
@@ -344,6 +347,7 @@ impl QemuLiveNodeStepGateConfig {
             whitebox: QemuLaunchPluginSwitch::Off,
             app_random: None,
             coverage: QemuLaunchPluginSwitch::Off,
+            fingerprint: QemuLaunchPluginSwitch::Off,
             shmem_network_mac: None,
             shmem_block: None,
             shmem_ninep: None,
@@ -460,6 +464,13 @@ impl QemuLiveNodeStepGateConfig {
     #[must_use]
     pub const fn with_coverage(mut self, coverage: QemuLaunchPluginSwitch) -> Self {
         self.coverage = coverage;
+        self
+    }
+
+    /// Returns this configuration with black-box execution fingerprinting set.
+    #[must_use]
+    pub const fn with_fingerprint(mut self, fingerprint: QemuLaunchPluginSwitch) -> Self {
+        self.fingerprint = fingerprint;
         self
     }
 
@@ -654,9 +665,15 @@ pub struct QemuLiveExactSnapshotReport {
     pub capture_icount: u64,
     /// Raw node icount observed immediately after restore.
     pub restored_icount: u64,
+    /// Serialized RR vCPU selected at the captured boundary.
+    pub capture_rr_current_vcpu: u32,
+    /// Nonzero instruction offset within the captured RR turn.
+    pub capture_rr_position_in_quantum: u64,
+    /// Fixed RR turn length serialized with the captured cursor.
+    pub capture_rr_switch_quantum: u64,
     /// Raw node icount reached by the restored and independently replayed suffix.
     pub suffix_icount: u64,
-    /// Captured logical icount minus QEMU's raw icount after an idle jump.
+    /// Captured logical icount minus QEMU's raw icount at the save boundary.
     pub capture_logical_time_offset: u64,
     /// Execution fingerprint at capture and immediately after restore.
     pub capture_fingerprint: ContentHash,
@@ -668,6 +685,9 @@ pub struct QemuLiveExactSnapshotReport {
     pub old_process_force_crashed: bool,
     /// The captured block continuation contained pending work.
     pub pending_block_io_captured: bool,
+    /// Production admission rejected an otherwise identical fingerprint whose
+    /// RR position was reset to zero.
+    pub rr_cursor_negative_control_rejected: bool,
 }
 
 /// Evidence from one signal-driven lifecycle effect applied by live patched QEMU.
@@ -1552,17 +1572,56 @@ pub fn run_qemu_live_exact_snapshot_gate(
         .map_err(|source| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
             reason: format!("captured logical-time calibration is invalid: {source}"),
         })?;
-    if !require_pending_block_io && capture_logical_time_offset == 0 {
-        return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-            reason: String::from(
-                "diskless exact restore did not capture a nonzero idle-jump logical-time offset",
-            ),
-        });
-    }
     let capture_fingerprint = capture_node
         .execution_fingerprint()
         .map_err(|source| QemuLiveNodeStepGateError::ExecutionFingerprint { source })?
         .hash;
+    let capture_sample = capture_node.fingerprint_sample().map_err(|source| {
+        QemuLiveNodeStepGateError::node_op("read capture fingerprint sample", source)
+    })?;
+    if capture_sample.sample_icount != capture_icount
+        || capture_sample.vcpu_count != u32::from(config.smp_vcpus)
+        || capture_sample.rr_switch_quantum == 0
+        || capture_sample.rr_position_in_quantum == 0
+        || capture_sample.rr_position_in_quantum >= capture_sample.rr_switch_quantum
+        || capture_sample.rr_current_vcpu >= capture_sample.vcpu_count
+    {
+        return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: format!(
+                "capture did not expose a valid nonzero intra-turn RR cursor: icount={}/{capture_icount}, vcpus={}/{}, current={}, position={}, quantum={}",
+                capture_sample.sample_icount,
+                capture_sample.vcpu_count,
+                config.smp_vcpus,
+                capture_sample.rr_current_vcpu,
+                capture_sample.rr_position_in_quantum,
+                capture_sample.rr_switch_quantum,
+            ),
+        });
+    }
+    let mut altered_cursor_sample = capture_sample;
+    altered_cursor_sample.rr_position_in_quantum = 0;
+    let altered_cursor_fingerprint =
+        crate::mapped_quantum::black_box_execution_fingerprint(&identity, &altered_cursor_sample)
+            .map_err(|source| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+                reason: format!("cannot fingerprint altered RR cursor: {source}"),
+            })?
+            .hash;
+    let expected_fingerprints = BTreeMap::from([(identity.clone(), capture_fingerprint)]);
+    let altered_fingerprints = BTreeMap::from([(identity.clone(), altered_cursor_fingerprint)]);
+    let rr_cursor_negative_control_rejected = matches!(
+        crate::production_fault_runtime::validate_qemu_fingerprints(
+            &expected_fingerprints,
+            &altered_fingerprints,
+        ),
+        Err(crate::ProductionFaultRuntimeError::QemuFingerprintMismatch { .. })
+    );
+    if !rr_cursor_negative_control_rejected {
+        return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: String::from(
+                "production restore admission accepted a fingerprint with a reset RR cursor",
+            ),
+        });
+    }
     capture_node
         .force_crash_and_reap_for_gate()
         .map_err(|source| {
@@ -1591,12 +1650,24 @@ pub fn run_qemu_live_exact_snapshot_gate(
         .execution_fingerprint()
         .map_err(|source| QemuLiveNodeStepGateError::ExecutionFingerprint { source })?
         .hash;
-    if restored_icount != capture_icount || restored_fingerprint != capture_fingerprint {
+    let restored_sample = restored.fingerprint_sample().map_err(|source| {
+        QemuLiveNodeStepGateError::node_op("read restored fingerprint sample", source)
+    })?;
+    if restored_icount != capture_icount
+        || restored_fingerprint != capture_fingerprint
+        || restored_sample != capture_sample
+    {
+        let components =
+            fingerprint_sample_mismatch_components(&restored_sample, &capture_sample).join(",");
         return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
             reason: format!(
-                "restore boundary differs: icount {restored_icount}/{capture_icount}, fingerprint {}/{}",
+                "restore boundary differs: icount {restored_icount}/{capture_icount}, fingerprint {}/{}, RR cursor ({}, {})/({}, {}), differing components [{components}]",
                 restored_fingerprint.to_hex(),
-                capture_fingerprint.to_hex()
+                capture_fingerprint.to_hex(),
+                restored_sample.rr_current_vcpu,
+                restored_sample.rr_position_in_quantum,
+                capture_sample.rr_current_vcpu,
+                capture_sample.rr_position_in_quantum,
             ),
         });
     }
@@ -1662,6 +1733,9 @@ pub fn run_qemu_live_exact_snapshot_gate(
         smp_vcpus: config.smp_vcpus,
         capture_icount,
         restored_icount,
+        capture_rr_current_vcpu: capture_sample.rr_current_vcpu,
+        capture_rr_position_in_quantum: capture_sample.rr_position_in_quantum,
+        capture_rr_switch_quantum: capture_sample.rr_switch_quantum,
         suffix_icount,
         capture_logical_time_offset,
         capture_fingerprint,
@@ -1669,7 +1743,48 @@ pub fn run_qemu_live_exact_snapshot_gate(
         replay_oracle_pair_match,
         old_process_force_crashed: true,
         pending_block_io_captured,
+        rr_cursor_negative_control_rejected,
     })
+}
+
+fn fingerprint_sample_mismatch_components(
+    restored: &crucible_shmem::FingerprintSample,
+    captured: &crucible_shmem::FingerprintSample,
+) -> Vec<&'static str> {
+    let mut components = Vec::new();
+    if restored.sample_icount != captured.sample_icount {
+        components.push("sample_icount");
+    }
+    if restored.vcpu_count != captured.vcpu_count {
+        components.push("vcpu_count");
+    }
+    if restored.rr_current_vcpu != captured.rr_current_vcpu {
+        components.push("rr_current_vcpu");
+    }
+    if restored.rr_position_in_quantum != captured.rr_position_in_quantum {
+        components.push("rr_position_in_quantum");
+    }
+    if restored.rr_switch_quantum != captured.rr_switch_quantum {
+        components.push("rr_switch_quantum");
+    }
+    if restored.component_failures != captured.component_failures {
+        components.push("component_failures");
+    }
+    if restored.ram_bytes != captured.ram_bytes || restored.ram_digest != captured.ram_digest {
+        components.push("ram");
+    }
+    if restored.device_state_bytes != captured.device_state_bytes
+        || restored.device_state_digest != captured.device_state_digest
+    {
+        components.push("device_state");
+    }
+    if restored.device_state_schema_digest != captured.device_state_schema_digest {
+        components.push("device_state_schema");
+    }
+    if restored.vcpus != captured.vcpus {
+        components.push("vcpu_registers");
+    }
+    components
 }
 
 fn drive_to_pending_block_boundary(

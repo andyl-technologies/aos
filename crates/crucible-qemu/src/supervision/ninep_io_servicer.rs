@@ -831,6 +831,7 @@ impl QemuLive9pIoServicer {
             node_slot,
             first,
             second,
+            ..
         } = pair;
         let MappedDirectedRingMut {
             header: request_header,

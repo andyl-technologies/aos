@@ -102,9 +102,6 @@ pub enum LiveVcpuTimeCallbackError {
         /// Host thread-spawn diagnostic.
         message: String,
     },
-    /// The bounded fingerprint digest queue still contains the prior boundary.
-    #[error("fingerprint digest worker queue is full at a new sample boundary")]
-    FingerprintWorkerQueueFull,
     /// The fingerprint digest worker is no longer accepting captures.
     #[error("fingerprint digest worker is unavailable")]
     FingerprintWorkerUnavailable,

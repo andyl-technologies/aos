@@ -429,6 +429,7 @@ impl QemuSharedBlockDevice {
         if source_id == destination_id || self.ptr_eq(destination) {
             return Err(QemuLiveBlockIoServicerError::CrossDeviceIdentityMismatch);
         }
+        let remote_boundary = resolved.opportunity.ready_nanos;
         let dependency = if source_id < destination_id {
             let mut source_device = self.lock()?;
             let mut destination_device = destination.lock()?;
@@ -444,7 +445,9 @@ impl QemuSharedBlockDevice {
                 Ok(dependency) => dependency,
                 Err(source) => return Err(QemuLiveBlockIoServicerError::Device { source }),
             };
-            let deadline = destination_device.next_exact_local_event();
+            let deadline = destination_device
+                .next_exact_local_event()
+                .or(Some(remote_boundary));
             if let Err(error) = destination.publish_remote_mutation(deadline, prior_deadline) {
                 *source_device = prior_source;
                 *destination_device = prior_destination;
@@ -466,7 +469,9 @@ impl QemuSharedBlockDevice {
                 Ok(dependency) => dependency,
                 Err(source) => return Err(QemuLiveBlockIoServicerError::Device { source }),
             };
-            let deadline = destination_device.next_exact_local_event();
+            let deadline = destination_device
+                .next_exact_local_event()
+                .or(Some(remote_boundary));
             if let Err(error) = destination.publish_remote_mutation(deadline, prior_deadline) {
                 *source_device = prior_source;
                 *destination_device = prior_destination;
@@ -517,6 +522,7 @@ impl QemuSharedBlockDevice {
         {
             return Err(QemuLiveBlockIoServicerError::CrossDeviceIdentityMismatch);
         }
+        let remote_boundary = resolved.opportunity.ready_nanos;
         let mut handles = Vec::with_capacity(destinations.len() + 1);
         handles.push((source_id, self.clone()));
         handles.extend(
@@ -616,7 +622,12 @@ impl QemuSharedBlockDevice {
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
         let deadlines = staged
             .iter()
-            .map(|device| device.next_exact_local_event())
+            .enumerate()
+            .map(|(index, device)| {
+                device
+                    .next_exact_local_event()
+                    .or_else(|| (index != source_index).then_some(remote_boundary))
+            })
             .collect::<Vec<_>>();
         for (device, next) in devices.iter_mut().zip(staged) {
             **device = next;
@@ -1246,6 +1257,7 @@ impl QemuLiveBlockIoServicer {
             node_slot,
             first,
             second,
+            ..
         } = pair;
         let MappedDirectedRingMut {
             header: request_header,

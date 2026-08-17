@@ -770,10 +770,134 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
     }
 
     fn execution_fingerprint(&mut self) -> Result<ExecutionFingerprint, QemuNodeChannelError> {
-        self.with_hot_path("execution_fingerprint", |hot_path| {
-            QemuShmemHotPathChannel::execution_fingerprint(hot_path)
-        })
+        let current_icount = self.with_hot_path("execution_fingerprint", |hot_path| {
+            Ok(hot_path.node_snapshot().current_icount)
+        })?;
+        let sample = QemuMappedQuantumShmemHotPath::fingerprint_sample(self)
+            .map_err(|source| {
+                QemuNodeChannelError::new("execution_fingerprint", source.to_string())
+            })?
+            .ok_or_else(|| {
+                QemuNodeChannelError::retryable(
+                    "execution_fingerprint",
+                    "the plugin has not published a black-box fingerprint sample",
+                )
+            })?;
+        if sample.sample_icount < current_icount {
+            return Err(QemuNodeChannelError::retryable(
+                "execution_fingerprint",
+                format!(
+                    "black-box fingerprint sample at icount {} is behind current boundary {current_icount}",
+                    sample.sample_icount
+                ),
+            ));
+        }
+        if sample.sample_icount != current_icount {
+            return Err(QemuNodeChannelError::new(
+                "execution_fingerprint",
+                format!(
+                    "black-box fingerprint sample at icount {} is ahead of current boundary {current_icount}",
+                    sample.sample_icount
+                ),
+            ));
+        }
+        black_box_execution_fingerprint(&self.config.node, &sample)
     }
+
+    fn fingerprint_sample(&mut self) -> Result<FingerprintSample, QemuNodeChannelError> {
+        QemuMappedQuantumShmemHotPath::fingerprint_sample(self)
+            .map_err(|source| QemuNodeChannelError::new("fingerprint_sample", source.to_string()))?
+            .ok_or_else(|| {
+                QemuNodeChannelError::retryable(
+                    "fingerprint_sample",
+                    "the plugin has not published a black-box fingerprint sample",
+                )
+            })
+    }
+}
+
+const BLACK_BOX_EXECUTION_FINGERPRINT_DOMAIN: &str =
+    "crucible.qemu.black-box-execution-fingerprint.v1";
+
+pub(crate) fn black_box_execution_fingerprint(
+    node: &crucible::NodeId,
+    sample: &FingerprintSample,
+) -> Result<ExecutionFingerprint, QemuNodeChannelError> {
+    sample
+        .validate()
+        .map_err(|source| QemuNodeChannelError::new("execution_fingerprint", source.to_string()))?;
+    if sample.component_failures != 0 {
+        return Err(QemuNodeChannelError::new(
+            "execution_fingerprint",
+            format!(
+                "black-box fingerprint sample has component failure mask {:#x}",
+                sample.component_failures
+            ),
+        ));
+    }
+    if sample.vcpu_count == 0 {
+        return Err(QemuNodeChannelError::new(
+            "execution_fingerprint",
+            "black-box fingerprint sample contains no vCPU state",
+        ));
+    }
+
+    let mut material = vec![
+        format!("node={}", node.name),
+        format!("sample_icount={}", sample.sample_icount),
+        format!("vcpu_count={}", sample.vcpu_count),
+        format!("rr_current_vcpu={}", sample.rr_current_vcpu),
+        format!("rr_position_in_quantum={}", sample.rr_position_in_quantum),
+        format!("rr_switch_quantum={}", sample.rr_switch_quantum),
+    ];
+    for (index, vcpu) in sample
+        .vcpus
+        .iter()
+        .take(sample.vcpu_count as usize)
+        .enumerate()
+    {
+        material.push(format!(
+            "vcpu[{index}].register_digest={}",
+            lowercase_hex(&vcpu.register_digest)
+        ));
+        material.push(format!(
+            "vcpu[{index}].register_file_bytes={}",
+            vcpu.register_file_bytes
+        ));
+        material.push(format!(
+            "vcpu[{index}].retired_instruction_count={}",
+            vcpu.retired_instruction_count
+        ));
+    }
+    material.extend([
+        format!("ram_bytes={}", sample.ram_bytes),
+        format!("ram_digest={}", lowercase_hex(&sample.ram_digest)),
+        format!("device_state_bytes={}", sample.device_state_bytes),
+        format!(
+            "device_state_digest={}",
+            lowercase_hex(&sample.device_state_digest)
+        ),
+        format!(
+            "device_state_schema_digest={}",
+            lowercase_hex(&sample.device_state_schema_digest)
+        ),
+    ]);
+    Ok(ExecutionFingerprint {
+        hash: crucible::ContentHash::from_canonical_material(
+            BLACK_BOX_EXECUTION_FINGERPRINT_DOMAIN,
+            &material.join("\n"),
+        ),
+    })
+}
+
+fn lowercase_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
 }
 
 #[derive(Debug)]
@@ -785,3 +909,88 @@ struct QemuMappedPendingQuantum {
 mod support;
 
 use support::*;
+
+#[cfg(test)]
+mod fingerprint_tests {
+    use crucible_shmem::{FingerprintSample, FingerprintSampleVcpu};
+
+    use super::*;
+
+    fn sample() -> FingerprintSample {
+        let mut sample = FingerprintSample {
+            sample_icount: 41,
+            vcpu_count: 1,
+            rr_current_vcpu: 0,
+            rr_position_in_quantum: 41,
+            rr_switch_quantum: 4096,
+            component_failures: 0,
+            ram_bytes: 4096,
+            ram_digest: [0x11; 32],
+            device_state_bytes: 512,
+            device_state_digest: [0x22; 32],
+            device_state_schema_digest: [0x33; 32],
+            ..FingerprintSample::default()
+        };
+        sample.vcpus[0] = FingerprintSampleVcpu {
+            register_digest: [0x44; 32],
+            register_file_bytes: 256,
+            retired_instruction_count: 0,
+        };
+        sample
+    }
+
+    #[test]
+    fn black_box_fingerprint_covers_live_register_ram_and_device_state() {
+        let node = crucible::NodeId {
+            name: String::from("vm-a"),
+        };
+        let baseline = black_box_execution_fingerprint(&node, &sample()).unwrap();
+
+        let mut changed = sample();
+        changed.vcpus[0].register_digest[0] ^= 1;
+        assert_ne!(
+            baseline,
+            black_box_execution_fingerprint(&node, &changed).unwrap()
+        );
+        changed = sample();
+        changed.ram_digest[0] ^= 1;
+        assert_ne!(
+            baseline,
+            black_box_execution_fingerprint(&node, &changed).unwrap()
+        );
+        changed = sample();
+        changed.device_state_digest[0] ^= 1;
+        assert_ne!(
+            baseline,
+            black_box_execution_fingerprint(&node, &changed).unwrap()
+        );
+    }
+
+    #[test]
+    fn black_box_fingerprint_excludes_unused_vcpu_slots() {
+        let node = crucible::NodeId {
+            name: String::from("vm-a"),
+        };
+        let baseline = black_box_execution_fingerprint(&node, &sample()).unwrap();
+        let mut changed = sample();
+        changed.vcpus[1].register_digest = [0xff; 32];
+        assert_eq!(
+            baseline,
+            black_box_execution_fingerprint(&node, &changed).unwrap()
+        );
+    }
+
+    #[test]
+    fn black_box_fingerprint_rejects_incomplete_samples() {
+        let node = crucible::NodeId {
+            name: String::from("vm-a"),
+        };
+        let mut failed = sample();
+        failed.component_failures = 1;
+        assert!(black_box_execution_fingerprint(&node, &failed).is_err());
+
+        let mut empty = sample();
+        empty.vcpu_count = 0;
+        assert!(black_box_execution_fingerprint(&node, &empty).is_err());
+    }
+}

@@ -1007,8 +1007,8 @@ component that makes that purity true *inside* the QEMU process.
   validate the exact target before clock/ring/RX commit so the wake-point
   architectural state is bit-identical regardless of host timing. — satisfies
   [PLUG-16]; spec §12.3.5.
-  Completed by `checks.crucible.phase2.qemuLivePluginQuantum` with
-  `prove_idle_jump` on: the diskless multiboot guest arms a periodic PIT timer,
+  Completed by `checks.crucible.phase2.qemuLivePluginQuantum`: the diskless
+  multiboot guest arms a periodic PIT timer,
   parks in HLT, and the plugin advances virtual time by an authorized 40M-icount
   O(1) jump through the exact `QEMU_CLOCK_VIRTUAL` timer deadline. The guest
   wakes, runs, and re-idles below the published scheduler ceiling without

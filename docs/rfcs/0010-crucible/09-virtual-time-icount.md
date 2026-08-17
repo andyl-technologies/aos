@@ -687,9 +687,9 @@ instruction-primary.
   shmem region, coordinate the idle/advance handoff with a futex, and forbid any
   node self-extending past the published ceiling. — satisfies [TIME-27],
   [TIME-28], [TIME-29], [TIME-30]; spec §9.9.
-  Completed by `checks.crucible.phase2.qemuLivePluginQuantum` with
-  `prove_idle_jump` on: the plugin converts the introspected deadline horizon to a
-  ceiling icount, publishes ceiling/reached-icount in the shmem region, and hands
+  Completed by `checks.crucible.phase2.qemuLivePluginQuantum`: the plugin
+  converts the introspected deadline horizon to a ceiling icount, publishes
+  ceiling/reached-icount in the shmem region, and hands
   the idle vCPU off through the wake futex; the idle guest advances through the
   exact deadline by a 40M-icount O(1) jump, wakes, and re-idles below the
   published ceiling, never self-extending past it, because the max-advance

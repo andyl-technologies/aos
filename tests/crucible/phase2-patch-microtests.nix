@@ -493,6 +493,18 @@
         patchName = "0076-crucible-9p-completion-wake-registration.patch";
       };
     }
+    {
+      patch = "0077-crucible-serialize-rr-cursor.patch";
+      check = import ./phase2-qemu-rr-cursor-vmstate.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
+    {
+      patch = "0078-crucible-fingerprint-guest-state-domains.patch";
+      check = import ./phase2-qemu-fingerprint-state-domains.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
   ];
 
   microtestPatchNames =

@@ -90,6 +90,8 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0074-crucible-arm-accelerator-result-opportunities.patch",
     "0075-crucible-restore-authenticated-fault-event-requests.patch",
     "0076-crucible-9p-completion-wake-registration.patch",
+    "0077-crucible-serialize-rr-cursor.patch",
+    "0078-crucible-fingerprint-guest-state-domains.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

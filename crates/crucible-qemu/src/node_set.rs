@@ -887,26 +887,22 @@ impl SimulationBackend for QemuNodeSet {
             if observation.reached == ceiling {
                 return Ok(observation);
             }
-            if let crucible::AdvanceOutcome::Paused { at } = observation.outcome {
+            if let crucible::AdvanceOutcome::Paused { .. } = observation.outcome {
                 let idle = backend.idle_state().map_err(BackendError::from)?;
-                let Some(deadline) = idle.next_deadline else {
-                    return Err(BackendError::Rejected {
-                        message: format!(
-                            "QEMU node `{}` reported a pause at {} without an idle deadline",
-                            node.name, at.retired
-                        ),
-                    });
-                };
-                if deadline.retired <= ceiling.ticks {
-                    return Err(BackendError::Rejected {
-                        message: format!(
-                            "QEMU node `{}` paused at {} with deadline {} not beyond ceiling {}",
-                            node.name, at.retired, deadline.retired, ceiling.ticks
-                        ),
-                    });
+                if let Some(deadline) = idle.next_deadline {
+                    if deadline.retired > ceiling.ticks {
+                        observation.reached = ceiling;
+                        return Ok(observation);
+                    }
+                    // A delivery-capped quantum can stop exactly where an idle
+                    // timer is also due. Both causes are within the original
+                    // scheduler horizon, so resume through a fresh quantum.
+                    // The monotone-progress check below still rejects a plugin
+                    // that reports the same reachable deadline twice.
                 }
-                observation.reached = ceiling;
-                return Ok(observation);
+                // An inbound frame already staged in the shared-memory ring can
+                // likewise cap a running (non-idle) quantum. The hot path drains
+                // it before returning; issue a fresh quantum for the remainder.
             }
             if observation.reached <= previous {
                 return Err(BackendError::Rejected {

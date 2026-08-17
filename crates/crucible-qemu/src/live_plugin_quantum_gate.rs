@@ -8,10 +8,8 @@
 //!    guest is busy and requires every stop at the host-published ceiling.
 //! 2. **Idle observation.** The parked guest must report `IDLE` and an exact
 //!    `next_deadline` beyond the ceiling (T-PLUG-5/6, T-TIME-6).
-//! 3. **Idle-jump advancement.** When enabled with
-//!    [`LivePluginQuantumGateConfig::with_prove_idle_jump`], a wide quantum must
-//!    advance in O(1) deadline jumps (T-PLUG-7, T-TIME-5/7). It remains descoped
-//!    by default until QEMU commits the queued time advance for a parked guest.
+//! 3. **Idle-jump advancement.** A wide quantum must advance in O(1) deadline
+//!    jumps (T-PLUG-7, T-TIME-5/7).
 //!
 //! The whole scenario runs twice — the second run under deliberate host CPU
 //! load — and requires byte-identical fingerprints and idle observations,
@@ -116,7 +114,6 @@ pub struct LivePluginQuantumGateConfig {
     schedule: LivePluginQuantumSchedule,
     completion_timeout: Duration,
     second_run_host_load: bool,
-    prove_idle_jump: bool,
     smp_vcpus: u16,
     memory_mib: u32,
     rr_switch_quantum: u64,
@@ -144,7 +141,6 @@ impl LivePluginQuantumGateConfig {
             schedule: LivePluginQuantumSchedule::new(),
             completion_timeout: Duration::from_secs(240),
             second_run_host_load: true,
-            prove_idle_jump: false,
             smp_vcpus: 1,
             memory_mib: GATE_MEMORY_MIB,
             rr_switch_quantum: 4096,
@@ -194,19 +190,6 @@ impl LivePluginQuantumGateConfig {
     #[must_use]
     pub const fn with_second_run_host_load(mut self, second_run_host_load: bool) -> Self {
         self.second_run_host_load = second_run_host_load;
-        self
-    }
-
-    /// Returns this configuration with idle-jump advancement proof toggled.
-    ///
-    /// While the QEMU-side queued-time-advance completion defect is open, this
-    /// stays `false`: the gate proves ceiling ownership, idle park, and deadline
-    /// introspection (T-PLUG-4/5/6) but stops at the idle observation without
-    /// requiring the plugin to advance the parked guest (T-PLUG-7). Set `true`
-    /// once the completion defect is fixed to also assert the idle-jump.
-    #[must_use]
-    pub const fn with_prove_idle_jump(mut self, prove_idle_jump: bool) -> Self {
-        self.prove_idle_jump = prove_idle_jump;
         self
     }
 
@@ -267,12 +250,6 @@ impl LivePluginQuantumGateConfig {
     #[must_use]
     pub(crate) const fn completion_timeout(&self) -> Duration {
         self.completion_timeout
-    }
-
-    /// Returns whether the scenario asserts idle-jump advancement (T-PLUG-7).
-    #[must_use]
-    pub(crate) const fn prove_idle_jump(&self) -> bool {
-        self.prove_idle_jump
     }
 }
 
@@ -386,16 +363,13 @@ pub fn run_live_plugin_quantum_gate(
     assert_runs_match(&reference, &second)?;
     assert_sim_double_schedule_matches(&reference.host_observable_schedule)?;
 
-    // Idle-jump advancement (T-PLUG-7) is proven only when it was actually
-    // driven and the idle advancement rate exceeds the busy boot rate by the
-    // required factor. When descoped, the idle-jump quantum is not run, so this
-    // is unconditionally false and the emitted evidence records the open defect.
-    let idle_jump_proven = config.prove_idle_jump
-        && reference.rates.idle_icount_per_second()
-            >= reference
-                .rates
-                .boot_icount_per_second()
-                .saturating_mul(u128::from(config.schedule.min_idle_speedup_ratio));
+    // Idle-jump advancement (T-PLUG-7) is part of every run. The evidence is
+    // true only when its rate exceeds the busy boot rate by the required factor.
+    let idle_jump_proven = reference.rates.idle_icount_per_second()
+        >= reference
+            .rates
+            .boot_icount_per_second()
+            .saturating_mul(u128::from(config.schedule.min_idle_speedup_ratio));
 
     Ok(LivePluginQuantumReport {
         smp_vcpus: config.smp_vcpus,

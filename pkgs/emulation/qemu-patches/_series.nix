@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "fd996a9ffe11ad7b73b86b641b91f72c8be7b6a2683c63fef543b8040d86c55c";
+  patchBranchBundleSha256 = "6efa89c60bc13846c6ecd69bcd3384dd558286b11353ccfc6555a27f182257af";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "eb95903e6489ccce60f3a33b7bf817638de3e53f";
+  patchBranchHeadCommit = "91f6d0efc37d4a5796d1f84b60418543b78b588d";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -695,6 +695,26 @@ let
       class = "D";
       enforces = "PATCH-20,DET-1,INV-10";
       capability = "realize-time 9p completion notifier registration independent of plugin installation order";
+    }
+    {
+      file = "0077-crucible-serialize-rr-cursor.patch";
+      branchSubject = "crucible: serialize authoritative RR cursor";
+      branchCommit = "9b6199044c7fa120751f4ef22672cc352de57138";
+      branchTree = "faa5d131f3e50e608845a5479eadff35eb1b32b0";
+      catalogName = "crucible-serialized-rr-cursor";
+      class = "D";
+      enforces = "DET-29,QEMU-34,QEMU-43,QFP-STATE-2";
+      capability = "authoritative multi-vCPU round-robin cursor accounting and VMState restoration across host scheduling ceilings";
+    }
+    {
+      file = "0078-crucible-fingerprint-guest-state-domains.patch";
+      branchSubject = "crucible: fingerprint guest-visible state domains";
+      branchCommit = "91f6d0efc37d4a5796d1f84b60418543b78b588d";
+      branchTree = "d692a45c07328169f5d972a0d5bf1e1323780de5";
+      catalogName = "crucible-fingerprint-guest-state-domains";
+      class = "D";
+      enforces = "DET-29,QEMU-34,QFP-STATE-2";
+      capability = "guest black-box fingerprints exclude separately authenticated process-local control state and target-declared transient CPU notifications";
     }
   ];
   catalogOnlyCapabilities = [
