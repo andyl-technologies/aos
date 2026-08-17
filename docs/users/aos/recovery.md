@@ -14,6 +14,13 @@ interactive emergency or rescue login services. A failure before switch-root
 therefore stops noninteractively; there is no fleet-wide or image-default
 password that grants an initrd shell.
 
+On dm-verity images, a malformed, duplicated, or control-bearing kernel
+command line is rejected before the verity mapper, `/var` unlock, or `/var`
+mount can start. The host stops in a passive boot-identity failure target; it
+does not honor command-line requests for emergency, debug, breakpoint, or
+transient-command units. Treat the console diagnostic as evidence to preserve,
+not as a prompt that can be authenticated locally.
+
 The development debug profile can add direct autologin gettys, but enabling it
 is an explicit security waiver and it must not be used for production images.
 Until a release provides the dedicated signed recovery UKI described by the

@@ -1,8 +1,9 @@
 # Normal initrd emergency-mode negative test.
 #
-# The machine deliberately selects emergency.target as its initrd boot target.
-# It must reach that target, proving the initrd ran far enough to activate an
-# emergency path, while exposing neither sulogin nor an AOS debug shell. The
+# The fixture deliberately requires emergency.target from initrd.target and
+# keeps it active against switch-root. It must reach that target, proving the
+# initrd ran far enough to activate an emergency path, while exposing neither
+# sulogin nor an AOS debug shell. The
 # base initrd builder independently materializes emergency.service and
 # rescue.service as /dev/null masks, so the runtime transcript and rendered
 # unit topology together prove the failure is noninteractive.
@@ -14,7 +15,11 @@
   failClosedSystem = mkSystem [
     ../../systems/server.nix
     {
-      aos.boot.kernelParams = ["rd.systemd.unit=emergency.target"];
+      boot.initrd.systemd.targets.emergency = {
+        overrideStrategy = "asDropin";
+        requiredBy = ["initrd.target"];
+        conflicts = ["initrd-switch-root.target"];
+      };
       aos.image.erofsCompressionLevel = 1;
       aos.packages.aos-test-agent = {
         package = pkgs.aos-test-agent;

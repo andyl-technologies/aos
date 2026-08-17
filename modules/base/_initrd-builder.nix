@@ -45,6 +45,7 @@
   initrdExtraPackages ? [],
   initrdNetworkDir ? null,
   maskedUnits ? [],
+  validateBootIdentity ? false,
 }: let
   inherit
     (pkgs)
@@ -63,6 +64,7 @@
     util-linux
     zstd
     ;
+  bootIdentityPackages = lib.optional validateBootIdentity pkgs.aos-boot-identity;
 
   # Packages whose full runtime closures are copied into the initrd's
   # /nix/store. See the docstring at the top of this file for why.
@@ -80,6 +82,7 @@
       systemd
       util-linux
     ]
+    ++ bootIdentityPackages
     # Feature-specific closures injected by modules (e.g. the measured-boot
     # PCR-policy public key — RFC-0006 phase 3).
     ++ initrdExtraPackages;
@@ -300,8 +303,6 @@
   initrdGenerators = [
     "systemd-fstab-generator"
     "systemd-gpt-auto-generator"
-    "systemd-run-generator"
-    "systemd-debug-generator"
   ];
 
   # Render the (pkg, binary, src) triples into `ln -sfn` invocations.
@@ -309,11 +310,10 @@
     lib.concatMapStringsSep "\n" (e: "ln -sfn ${e.pkg}/${e.src}/${e.bin} root/bin/${e.bin}")
     initrdBinaries;
 
-  # Upstream unit symlinks go into /lib/systemd/system/ (not /etc/)
-  # so that systemd.mask= on the kernel cmdline can override them.
-  # Generators write masks to /run/systemd/generator/ which sits
-  # between /etc/ (highest) and /lib/ (lowest) in systemd's unit
-  # search priority.
+  # Upstream unit symlinks go into /lib/systemd/system/ (not /etc/) so AOS's
+  # explicit /etc masks and drop-ins retain higher priority. Production
+  # initrds deliberately omit systemd-debug-generator, so command-line masks
+  # cannot rewrite the stage-1 unit graph.
   unitSymlinks =
     lib.concatMapStringsSep "\n" (u: ''
       if [ ! -e ${systemd}/lib/systemd/system/${u} ]; then
@@ -537,6 +537,41 @@ in
           # ── 6. Upstream systemd units and generators ───────────────────
           ${unitSymlinks}
           ${generatorSymlinks}
+
+          ${lib.optionalString validateBootIdentity ''
+          # The normal boot-identity validator owns the only verity generator
+          # path. It validates before upstream parsing, stages upstream output
+          # privately, and publishes the success marker last. The initrd omits
+          # systemd-debug-generator and systemd-run-generator, so no independent
+          # generator can turn appended boot-control input into a shell or
+          # outrank the passive failure target.
+          cat > root/lib/systemd/system-generators/systemd-veritysetup-generator <<'GENERATOR'
+          #!${bash}/bin/bash
+          set -eu
+
+          mkdir -p /run/aos
+          staging=/run/aos/verity-generator.$$
+          trap 'rm -rf "$staging"' EXIT
+          mkdir "$staging" "$staging/normal" "$staging/early" "$staging/late"
+
+          if diagnostic=$(${pkgs.aos-boot-identity}/bin/aos-boot-identity /proc/cmdline 2>&1) \
+            && ${systemd}/lib/systemd/system-generators/systemd-veritysetup-generator \
+              "$staging/normal" "$staging/early" "$staging/late"; then
+            cp -a "$staging/normal/." "$1/"
+            cp -a "$staging/early/." "$2/"
+            cp -a "$staging/late/." "$3/"
+            : > /run/aos/boot-identity-valid
+            exit 0
+          fi
+
+          diagnostic="''${diagnostic:-upstream verity generator rejected validated identity}"
+          printf '<3>%s\n' "$diagnostic" > /dev/kmsg 2>/dev/null \
+            || printf '%s\n' "$diagnostic" >&2
+          mkdir -p "$2"
+          ln -sfn /etc/systemd/system/aos-boot-identity-failure.target "$2/default.target"
+          GENERATOR
+          chmod 0755 root/lib/systemd/system-generators/systemd-veritysetup-generator
+          ''}
 
           # ── 7. Rendered initrd units from boot.initrd.systemd.* ────────
           # Matches generateUnits output — a directory whose entries are

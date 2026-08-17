@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "aos",
     "aos-core",
+    "aos-boot-identity",
     "aos-nix",
     "aos-nix-syntax",
     "aos-nix-compat",
