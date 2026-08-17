@@ -88,9 +88,13 @@
         "etc-overlay-setup.service"
         "initrd-fs.target"
       ];
-      requires = ["sysroot.mount"] ++ lib.optional (disksUnit != null) disksUnit;
+      requires =
+        ["sysroot.mount"]
+        ++ lib.optional config.aos.security.verity.enable "aos-boot-identity-guard.service"
+        ++ lib.optional (disksUnit != null) disksUnit;
       after =
         ["sysroot.mount"]
+        ++ lib.optional config.aos.security.verity.enable "aos-boot-identity-guard.service"
         ++ lib.optional (disksUnit != null) disksUnit
         ++ ["systemd-udev-settle.service"];
       unitConfig = {

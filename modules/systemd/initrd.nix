@@ -212,6 +212,41 @@ in {
         overrideStrategy = "asDropin";
         serviceConfig.RemainAfterExit = false;
       })
+      // lib.optionalAttrs config.aos.security.verity.enable {
+        "aos-boot-identity-guard" = {
+          description = "Require a validated normal boot identity";
+          requiredBy = ["initrd-fs.target"];
+          before = ["initrd-fs.target"];
+          unitConfig = {
+            DefaultDependencies = "no";
+            OnFailure = "aos-boot-identity-failure.target";
+          };
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+          };
+          script = ''
+            test -f /run/aos/boot-identity-valid
+          '';
+        };
+
+        "aos-boot-identity-failure-report" = {
+          description = "Confirm rejected boot identity left storage closed";
+          requiredBy = ["aos-boot-identity-failure.target"];
+          before = ["aos-boot-identity-failure.target"];
+          unitConfig.DefaultDependencies = "no";
+          serviceConfig = {
+            Type = "oneshot";
+            StandardOutput = "journal+console";
+            StandardError = "journal+console";
+          };
+          script = ''
+            test ! -e /dev/mapper/root
+            ! ${pkgs.util-linux}/bin/mountpoint -q /sysroot/var
+            echo "AOS boot identity failure: verity root absent; /var unmounted"
+          '';
+        };
+      }
       // {
         # modules-load already ignores
         # missing (-ENOENT) and hardware-absent (-ENODEV) modules; it exits
@@ -227,6 +262,14 @@ in {
         };
       };
 
+    boot.initrd.systemd.targets."aos-boot-identity-failure" = lib.mkIf config.aos.security.verity.enable {
+      description = "AOS boot identity rejected";
+      unitConfig = {
+        DefaultDependencies = "no";
+        Conflicts = "initrd-switch-root.target";
+      };
+    };
+
     system.build.systemdInitrdUnits = systemdLib.materializeUnits {
       type = "initrd";
       etc = systemdLib.unitsToEtc pureInitrdUnits;
@@ -241,6 +284,7 @@ in {
       initrdExtraPackages = config.aos.boot.initrd.extraPackages;
       inherit initrdNetworkDir;
       maskedUnits = cfg.maskedUnits;
+      validateBootIdentity = config.aos.security.verity.enable;
     };
   };
 }

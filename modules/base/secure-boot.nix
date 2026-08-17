@@ -335,6 +335,7 @@ in {
       boot.initrd.systemd.services."aos-var-crypt" = {
         description = "Encrypt and TPM2-seal /var (measured boot)";
         requiredBy = ["initrd-fs.target"];
+        requires = ["aos-boot-identity-guard.service"];
         before = ["mount-var.service" "initrd-fs.target"];
         # Only ORDER after the disk carver (aos-repart), don't Require it: on a
         # reboot (var already provisioned) repart is a no-op. No
@@ -342,7 +343,12 @@ in {
         # partition udev surfaces /dev/disk/by-partlabel/var late, which would
         # condition-skip this whole unit on the unlock boot; the script waits
         # for it instead.
-        after = ["aos-repart.service" "systemd-udev-settle.service"];
+        after = [
+          "aos-boot-identity-guard.service"
+          "aos-repart.service"
+          "systemd-udev-settle.service"
+        ];
+        unitConfig.ConditionKernelCommandLine = "!aos.recovery=1";
         environment.PATH = lib.mkForce (lib.concatStringsSep ":" [
           "${pkgs.coreutils}/bin"
           "${pkgs.util-linux}/bin"

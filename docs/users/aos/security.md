@@ -20,6 +20,19 @@ mechanism; a credential present in every public image provides no
 authentication. Production recovery must use a separately signed recovery
 environment and per-machine authorization material.
 
+On dm-verity images, the initrd also validates the complete root identity
+before systemd can generate the verity mapper or touch `/var`. The data and
+hash devices must identify the same A/B slot, the root hash must be canonical,
+and every scalar must occur exactly once. Alternate initrd targets, recovery
+selectors, debug/break/run controls, unit injection, verity options, and their
+`rd.` aliases fail into a passive target with no shell. AOS does not ship the
+upstream debug or transient-command generators in its initrd.
+
+This early validation establishes an unambiguous tuple, but PCR 12 remains the
+authorization boundary for appended boot input. Until the documented PCR-12
+migration is complete, do not describe the tuple guard alone as preventing an
+attacker from substituting one otherwise valid A/B tuple for the other.
+
 ## Start with a production baseline
 
 `systems/server.nix` and `systems/edge.nix` define immutable roots and

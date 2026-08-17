@@ -126,8 +126,12 @@ in {
     # add event can leave the device conservatively marked not ready forever.
     boot.initrd.systemd.services."systemd-veritysetup@root" = {
       overrideStrategy = "asDropin";
+      requires = ["aos-boot-identity-guard.service"];
       wants = ["systemd-udev-settle.service"];
-      after = ["systemd-udev-settle.service"];
+      after = [
+        "aos-boot-identity-guard.service"
+        "systemd-udev-settle.service"
+      ];
       postStart = ''
         # Without libudev synchronization, the initial mapper event may be
         # observed before activation finishes. A change event after the

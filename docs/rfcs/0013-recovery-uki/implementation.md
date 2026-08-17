@@ -7,7 +7,7 @@ invariants.
 
 ## Implementation status
 
-Phase 1 is implemented. Every base initrd now carries an impossible root
+Phases 1 and 2 are implemented. Every base initrd now carries an impossible root
 password hash and masks the upstream interactive emergency and rescue
 services. The debug profile retains separate, explicitly enabled direct
 gettys; its stage-2 empty root password remains part of that development-only
@@ -19,6 +19,29 @@ initrd emergency target, proves that the target was reached and switch-root
 did not occur, and rejects any sulogin, login, or debug-shell prompt in the
 serial transcript. The rendered initrd unit topology supplies the complementary
 proof that both interactive upstream services resolve to `/dev/null`.
+
+Verity images now install a single generator-path boot-identity guard. It
+requires the complete canonical normal tuple, rejects duplicate scalars,
+uppercase hashes, recovery selectors, verity options, rd/non-rd systemd
+control aliases, and generator-provided unit or drop-in controls. Non-verity
+images do not install this strict production guard; they retain the locked
+initrd boundary from Phase 1.
+
+The guarded initrd deliberately omits `systemd-debug-generator` and
+`systemd-run-generator`. Debug images continue to use their explicit gettys,
+not kernel-command-line generator controls. The verity wrapper runs the
+upstream generator against private output directories and publishes its unit
+output and success marker only after both validation stages succeed. Rejection
+selects the passive failure target through the early generator directory.
+`systemd-veritysetup@root`, `/var` unlock, and `/var` mounting all require the
+success marker. This makes the guard a storage dependency instead of a
+diagnostic race.
+
+Phase 2 validates internal consistency but cannot by itself distinguish a
+complete valid slot-A tuple appended in place of slot B (or the reverse),
+because both UKIs currently share the same initrd. The PCR-12 binding in Phase
+3 is the required authorization boundary for any appended tuple substitution;
+the implementation must not claim that guarantee until Phase 3 lands.
 
 ## Phase 1: Lock the normal initrd
 
@@ -78,6 +101,11 @@ non-identity fields such as `console=` remain permitted.
 Share test vectors with the later recovery slot verifier so runtime and
 off-line interpretation cannot drift.
 
+The first implementation configures no verity options and therefore rejects
+`systemd.verity_root_options` rather than accepting an arbitrary nonempty
+value. A future configured option must be matched exactly before the allowlist
+is widened.
+
 ### 2.2 Generator integration
 
 Run validation before upstream verity generator output becomes actionable.
@@ -99,6 +127,12 @@ Reject normal-mode `SYSTEMD_SULOGIN_FORCE`, alternate `rd.systemd.unit`, debug
 shell, and recovery selectors unless they are part of the exact supported
 signed posture. A guard failure enters a noninteractive fail-closed target; it
 must not route attacker-controlled input into `emergency.target`.
+
+Both `rd.` and non-`rd.` aliases are rejected for target, wants, debug shell,
+breakpoint, transient command, and environment controls. Unit/drop-in command
+line injection is rejected by prefix. The initrd also omits the upstream
+generators that implement these controls, so later parser drift cannot silently
+re-enable them.
 
 ### 2.3 Negative coverage
 
