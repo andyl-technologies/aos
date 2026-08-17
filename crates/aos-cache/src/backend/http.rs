@@ -573,12 +573,12 @@ impl CacheBackend for HttpBackend {
             "{}/aos.hub.v1.BinaryCacheService/BeginCacheMultipartUpload",
             self.origin
         );
-        let body = serde_json::json!({
-            "deliveryUrl": self.base_url,
-            "path": nar_path,
-            "byteSize": connect_json_u64(size),
-            "sha256": sha256.unwrap_or_default(),
-        });
+        let body = aos_proto_types::BeginCacheMultipartUploadRequest {
+            delivery_url: self.base_url.clone(),
+            path: nar_path.to_string(),
+            byte_size: size,
+            sha256: sha256.unwrap_or_default().to_string(),
+        };
         let mut req = TransferRequest::post(&url, serde_json::to_vec(&body)?);
         add_connect_json_headers(&mut req);
         let req = self.add_headers(req);
@@ -596,14 +596,7 @@ impl CacheBackend for HttpBackend {
         let body = result
             .body
             .ok_or_else(|| anyhow::anyhow!("empty initiate-multipart response"))?;
-        #[derive(serde::Deserialize)]
-        struct InitiateResp {
-            #[serde(rename = "uploadId")]
-            upload_id: String,
-            #[serde(rename = "partSize")]
-            part_size: u64,
-        }
-        let resp: InitiateResp =
+        let resp: aos_proto_types::BeginCacheMultipartUploadResponse =
             serde_json::from_slice(&body).context("parsing initiate-multipart response")?;
         Ok((resp.upload_id, resp.part_size))
     }
@@ -998,5 +991,19 @@ mod tests {
 
         assert_eq!(single["size"], size.to_string());
         assert_eq!(batch["sizes"][0], size.to_string());
+    }
+
+    #[test]
+    fn multipart_admission_decodes_proto_json_u64_strings() {
+        let response: aos_proto_types::BeginCacheMultipartUploadResponse = serde_json::from_value(
+            serde_json::json!({
+                "uploadId": "upload-one",
+                "partSize": "8388608",
+                "partUploadUrl": "https://hub.example/upload/one",
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(response.part_size, 8 * 1024 * 1024);
     }
 }
