@@ -52,7 +52,7 @@ in
       # fixed-output hash.
       name = "aos-vendor-${version}";
       sourceRoot = "source/crates";
-      hash = "sha256-byK2knHIciv8rLm+TLiOfTXNU9m/u7idWbSsvG6mIys=";
+      hash = "sha256-7kIzauWmyPnrmEMKLhOfpeuRkh8oi5uSLCOMnbzIvcs=";
     };
 
     buildDeps = [perl pkg-config openssl cmake libssh2];

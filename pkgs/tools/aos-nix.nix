@@ -27,7 +27,7 @@ in
     cargoDeps = fetchCargoVendor {
       inherit src;
       name = "aos-nix-vendor-${version}";
-      hash = "sha256-byK2knHIciv8rLm+TLiOfTXNU9m/u7idWbSsvG6mIys=";
+      hash = "sha256-7kIzauWmyPnrmEMKLhOfpeuRkh8oi5uSLCOMnbzIvcs=";
     };
     buildDeps = [perl pkg-config openssl cmake libssh2];
     runtimeDeps = [openssl libssh2 zlib zstd];
