@@ -13,6 +13,8 @@
 //!
 //! - [`object`] — SHA-256 loose objects: inflate, hash-verify, and parse
 //!   commits, trees, and tags.
+//! - [`pack_index`] — bounded SHA-256 pack-index structural and checksum
+//!   validation.
 //! - [`keymap`] — machine paths, mutability, and HTTP response metadata shared
 //!   by producers and serving runtimes.
 //! - [`sshsig`] — OpenSSH SSHSIG signature parsing and Ed25519
@@ -36,6 +38,7 @@
 pub mod keymap;
 pub mod manifest;
 pub mod object;
+pub mod pack_index;
 pub mod refs;
 pub mod sshsig;
 pub mod stack;

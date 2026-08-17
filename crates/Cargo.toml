@@ -175,6 +175,7 @@ rayon = "1"
 # zlib (de)compression for loose git objects (dumb-HTTP reader + hub indexer);
 # pure-Rust rust_backend so it stays wasm-clean for the Cloudflare Worker.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+crc32fast = "1"
 bzip2 = { version = "0.5", features = ["static"] }
 xz2 = { version = "0.1", features = ["static"] }
 # Pure-Rust NAR decompressors used by the mirror/pull-through to verify a

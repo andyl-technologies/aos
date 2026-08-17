@@ -53,6 +53,12 @@ impl Oid {
         hex::encode(self.0)
     }
 
+    /// Returns the raw 32-byte object id.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
     /// The loose-object path relative to the surface root:
     /// `objects/<first two hex chars>/<remaining 62>`.
     pub fn loose_path(&self) -> String {

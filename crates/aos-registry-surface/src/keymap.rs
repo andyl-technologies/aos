@@ -37,11 +37,15 @@ pub fn is_machine_path(path: &str) -> bool {
 #[must_use]
 pub fn cache_control(path: &str) -> &'static str {
     let immutable = if let Some(rest) = path.strip_prefix("objects/") {
-        !rest.starts_with("info/") && !is_loose_git_object_path(path)
+        !rest.starts_with("info/")
+            && !is_loose_git_object_path(path)
+            && !is_git_pack_index_path(path)
     } else if let Some(rest) = path.strip_prefix("web/") {
         rest != "config.json" && rest != "index.json" && !rest.starts_with("packages/")
     } else {
-        (path.starts_with("releases/") && !is_release_object_info_path(path))
+        (path.starts_with("releases/")
+            && !is_release_object_info_path(path)
+            && !is_git_pack_index_path(path))
             || path.starts_with("publication-receipts/")
             || path.starts_with("nar/")
             || is_image_object_path(path)
@@ -129,6 +133,39 @@ pub fn is_loose_git_object_path(path: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
+/// Reports whether `path` is a SHA-256 Git pack-index location.
+///
+/// The basename identifies the companion pack bytes, not the index encoding.
+/// Different Git implementations may therefore produce equivalent `.idx`
+/// bytes at the same URL. Pack payloads remain immutable; their replaceable
+/// indexes use the publication pointer protocol.
+#[must_use]
+pub fn is_git_pack_index_path(path: &str) -> bool {
+    git_pack_digest(path, ".idx").is_some()
+}
+
+/// Reports whether `path` is a content-addressed SHA-256 Git pack location.
+#[must_use]
+pub fn is_git_pack_path(path: &str) -> bool {
+    git_pack_digest(path, ".pack").is_some()
+}
+
+fn git_pack_digest<'a>(path: &'a str, suffix: &str) -> Option<&'a str> {
+    let parts = path.split('/').collect::<Vec<_>>();
+    let filename = match parts.as_slice() {
+        ["objects", "pack", filename] | ["releases", _, _, _, "objects", "pack", filename] => {
+            *filename
+        }
+        _ => return None,
+    };
+    let digest = filename.strip_prefix("pack-")?.strip_suffix(suffix)?;
+    (digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    .then_some(digest)
+}
+
 fn is_image_object_path(path: &str) -> bool {
     image_object_sha256(path).is_some()
 }
@@ -186,6 +223,8 @@ mod tests {
             "web/packages/aos.json",
             "releases/1/0/0/objects/info/packs",
             "objects/ab/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "objects/pack/pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.idx",
+            "releases/1/0/0/objects/pack/pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.idx",
         ] {
             assert!(is_machine_path(path), "{path}");
             assert_eq!(cache_control(path), MUTABLE_CACHE_CONTROL, "{path}");
@@ -194,6 +233,7 @@ mod tests {
             "objects/ab/not-an-object-id",
             "releases/aos.json",
             "releases/1/0/0/objects/pack/pack-demo.pack",
+            "objects/pack/pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pack",
             "nar/aos.nar.zst",
             "images/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aos.qcow2",
         ] {
