@@ -208,6 +208,7 @@ dependencies = [
  "anyhow",
  "aos-core",
  "aos-net",
+ "aos-proto-types",
  "async-trait",
  "base64 0.22.1",
  "console",
