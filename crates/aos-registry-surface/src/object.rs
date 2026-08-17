@@ -157,6 +157,12 @@ pub fn encode_loose(kind: ObjectKind, content: &[u8]) -> Result<Vec<u8>> {
 /// bomb) rather than read into memory.
 pub const MAX_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Maximum encoded size of a loose object accepted by registry publication.
+///
+/// Loose objects require semantic verification before any placement write, so
+/// they use the bounded whole-object request instead of multipart upload.
+pub const MAX_PUBLISHED_LOOSE_OBJECT_BYTES: u64 = 8 * 1024 * 1024;
+
 /// Decode a zlib-compressed loose object into its kind and content.
 ///
 /// The decoded bytes are verified against `expected` when given, so a

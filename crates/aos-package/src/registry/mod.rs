@@ -43,6 +43,8 @@ pub mod webgen;
 
 /// Re-exports the canonical machine-surface path and response classification.
 pub use aos_registry_surface::keymap as surface_keymap;
+/// Re-exports the maximum loose-object wire size accepted by Hub publication.
+pub use aos_registry_surface::object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES;
 
 use std::collections::HashMap;
 use std::path::Path;

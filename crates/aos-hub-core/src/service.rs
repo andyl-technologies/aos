@@ -23809,6 +23809,7 @@ impl RpcService {
         }
         let mut paths = BTreeSet::new();
         let mut canonical = Vec::with_capacity(req.objects.len());
+        let complete_upload_limit = self.effective_complete_upload_bytes().await as u64;
         for object in &req.objects {
             if !paths.insert(object.path.as_str()) {
                 return Err(RpcError::invalid("publication paths must be unique"));
@@ -23847,6 +23848,19 @@ impl RpcService {
                 return Err(RpcError::invalid(
                     "publication objects require a lowercase SHA-256 and non-negative size",
                 ));
+            }
+            if keymap::is_loose_git_object_path(&object.path)
+                && object.byte_size as u64
+                    > complete_upload_limit.min(
+                        aos_registry_surface::object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES,
+                    )
+            {
+                return Err(RpcError::invalid(format!(
+                    "loose Git object exceeds the {}-byte whole-upload limit",
+                    complete_upload_limit.min(
+                        aos_registry_surface::object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES,
+                    )
+                )));
             }
             if !publication_nar_path_matches_sha256(&object.path, &object.sha256) {
                 return Err(RpcError::invalid(
@@ -23943,6 +23957,28 @@ impl RpcService {
                     .surface_object_named(SurfaceTarget::Registry(registry.id), &object.path)
                     .await
                     .map_err(RpcError::internal)?;
+                let existing = match existing {
+                    Some(existing)
+                        if existing.object_kind == "immutable"
+                            && object.kind == "mutable_pointer"
+                            && keymap::is_loose_git_object_path(&object.path) =>
+                    {
+                        Some(
+                            self.db
+                                .convert_registry_loose_object_to_mutable(
+                                    registry.id,
+                                    existing.id,
+                                    &object.path,
+                                    &publication_id,
+                                )
+                                .await
+                                .map_err(|error| {
+                                    RpcError::FailedPrecondition(format!("{error:#}"))
+                                })?,
+                        )
+                    }
+                    existing => existing,
+                };
                 let surface_object = match existing {
                     Some(existing)
                         if existing.object_kind == object.kind
@@ -35044,6 +35080,10 @@ mod publication_upload_limit_tests {
         assert_eq!(
             complete_upload_bytes(20 * 1024 * 1024),
             CONNECT_REQUEST_BODY_LIMIT_BYTES
+        );
+        assert!(
+            aos_registry_surface::object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES as usize
+                <= CONNECT_REQUEST_BODY_LIMIT_BYTES
         );
         assert_eq!(complete_upload_bytes(1024), 1024);
     }
