@@ -27203,6 +27203,42 @@ impl RpcService {
             let declared_size =
                 i64::try_from(declared_size).map_err(|_| SurfaceWriteOutcome::TooLarge)?;
             let now = clock::now_unix_secs();
+
+            // A transport-limit reduction can leave an observing single-PUT
+            // admission that ingress can no longer deliver. Multipart is the
+            // authoritative recovery path for this size. Terminalize only the
+            // exact pre-mutation ticket under the current topology; a racing
+            // activation advances its version and makes this CAS a no-op.
+            if declared_size > self.effective_complete_upload_bytes().await as i64 {
+                if let Some(single) = self
+                    .db
+                    .reusable_cache_write_ticket(
+                        cache.id,
+                        path,
+                        declared_size,
+                        "single",
+                        "observing",
+                        None,
+                        placement.id,
+                        placement.resource_version,
+                        binding_revision,
+                        credential_generation,
+                        now,
+                    )
+                    .await
+                    .map_err(internal_write)?
+                {
+                    settle_cache_write_failure(
+                        &self.db,
+                        &single.ticket_id,
+                        single.resource_version,
+                        false,
+                        now,
+                    )
+                    .await;
+                }
+            }
+
             for state in ["completing", "active"] {
                 if let Some(ticket) = self
                     .db
