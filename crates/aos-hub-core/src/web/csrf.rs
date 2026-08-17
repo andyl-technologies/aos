@@ -1,5 +1,5 @@
 //! Cross-site request forgery (CSRF) defenses for the cookie-authenticated
-//! producer console.
+//! browser identity and management surfaces.
 //!
 //! A cookie-authenticated mutation is reachable with the browser's ambient
 //! session cookie, so it is forgeable from another origin unless it carries
@@ -16,7 +16,7 @@
 //!
 //! - [`mint_csrf_token`] derives the token an SSR form embeds.
 //! - [`verify_csrf_token`] checks a submitted token against the session secret.
-//! - [`connect_or_csrf_ok`] is the request gate: a Connect-protocol header (a
+//! - [`connect_or_csrf_ok`] is the request gate: a Connect-protocol header (an
 //!   no-JS form cannot send it; a cross-origin XHR that does triggers a CORS
 //!   preflight) *or* a valid `x-aos-csrf` header lets the request proceed.
 
@@ -25,7 +25,7 @@ use axum::http::HeaderMap;
 /// Returns `true` if the request may proceed past CSRF defenses.
 ///
 /// For a cookie-authenticated Connect-JSON call, either the
-/// `connect-protocol-version` header is present (a no-JS form cannot send it,
+/// `connect-protocol-version` header is present (an HTML form cannot send it,
 /// and a cross-origin XHR that does triggers a preflight blocked by strict
 /// CORS), or the SSR form path supplies a valid per-session synchronizer token
 /// via the `x-aos-csrf` header. Bearer requests carry no ambient credential and

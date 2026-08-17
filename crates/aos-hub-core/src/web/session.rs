@@ -1,6 +1,6 @@
 //! Runtime-neutral session extraction for the cookie-authenticated console.
 //!
-//! Humans reach the producer console with a `__Host-aos_session` cookie (see
+//! Humans reach the browser console with a `__Host-aos_session` cookie (see
 //! [`crate::auth::session`]). This module turns that cookie into a resolved,
 //! already-validated identity a handler can trust, independent of any specific
 //! HTTP server or async runtime: it takes a raw `Cookie` header value (or an
@@ -20,7 +20,7 @@ use crate::auth::session::COOKIE_NAME;
 use crate::db::{Database, SessionAuth};
 use crate::domain::Principal;
 
-/// A resolved, validated console session.
+/// A resolved, validated browser session.
 ///
 /// Produced by [`resolve_session`] (or [`resolve_session_from_headers`]) when a
 /// request's session cookie checks out: it bundles everything a console handler

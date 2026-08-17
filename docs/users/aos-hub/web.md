@@ -1,10 +1,11 @@
 # Use the AOS Hub web interface
 
-The Hub web interface is rendered on the server. Its browse and management
-forms work without JavaScript; passkey sign-in uses a small first-party script.
-Public registry pages can be read anonymously. Account, organization, project,
-registry, and instance changes require a signed-in account with permission on
-the relevant scope.
+The Hub has two browser surfaces. Public registry browsing and the login,
+account-security, invitation, and device-approval ceremonies are rendered on
+the server. Authenticated resource management uses the first-party AOS Hub
+console and requires JavaScript. Public registry pages can be read anonymously.
+Account, organization, project, registry, and instance changes require a
+signed-in account with permission on the relevant scope.
 
 ## Browse published data
 
@@ -19,11 +20,18 @@ named `cdn` in the `acme` organization:
 | Channels | `/acme/cdn/-/channels` |
 | Channel detail | `/acme/cdn/-/channels/<name>` |
 | Releases | `/acme/cdn/-/releases` |
+| System images | `/acme/cdn/-/images` |
 | Registry health | `/acme/cdn/-/health` |
 
 The `/-/` segment keeps human-facing routes separate from the machine facade at
 the registry root. Git objects, AOS releases and channels, Nix cache metadata,
 and NARs therefore keep their native paths.
+
+The Images page presents signed release encodings as end-user disk downloads,
+including architecture, format, compatible target, size, checksum, and
+verification state. Public downloads may use a ready CDN or direct delivery
+route. Private downloads stay on the Hub origin so the signed-in browser can
+authorize the exact disk bytes with its session cookie.
 
 ## Sign in and administer a Hub
 
@@ -37,12 +45,74 @@ After signing in, use:
 - the organization and instance settings under `/-/` for administrative work;
 - `/<org>/<registry>/-/settings` for registry configuration.
 
-The console uses the same IAM roles and scope inheritance as the API.
+Organization resource inventories keep creation separate from browsing:
+`/-/org/<org>/projects/new`, `registries/new`, `caches/new`,
+`storage-bindings/new`, `domains/new`, `network-boundaries/new`,
+`delivery-endpoints/new`, and `storage-gateways/new` open focused reviewed-
+creation workflows below the same organization root. The inventory pages link
+to those routes and do not mix full create forms into the resource list.
+Deployment-wide domain, network-boundary, delivery-endpoint, and
+storage-gateway inventories use the same pattern below `/-/instance`, with a
+`new` route below each collection. A create action is shown only when the live
+scope grants the API permission required by that resource; organization
+creation remains governed by the instance signup policy.
+
+The management console uses the same `aos.hub.v1` Connect API, reviewed
+plan/apply mutations, and IAM checks as the CLI. It exchanges the HttpOnly
+browser session and page CSRF proof for a five-minute bearer held only in
+memory; it never stores that bearer in local storage or IndexedDB. Canonical
+management deep links therefore load the same client application, while login
+and account-security ceremonies remain ordinary server-rendered pages.
+
+The console uses the same IAM roles and scope inheritance as the API. Its
+navigation is filtered using live permissions evaluated by the Hub for the
+exact current resource; typing a sensitive deep link directly does not reveal
+the page when that permission is absent.
 Permissions inherit down the scope tree, from the instance to an organization,
 project, and registry. Roles are task-oriented rather than a simple ladder:
 Admin manages organization settings, while Maintainer owns publishing,
 channels, and keys. Owner has both sets of permissions; Developer and Viewer
 are narrower roles.
+
+Registry and cache **Placements** pages show desired placement state separately
+from controller observations and effective read/write authority. The request
+explainer tests an absolute URL, optional machine-path override, and `web`,
+`git`, or `nix_cache` access class against the live simultaneous route set. The
+object-presence lookup shows the reported digest, size, and state at every
+placement. Cache administrators with GC execution authority can review a
+physical placement eviction from the placement card; this is distinct from
+logical cache garbage collection and starts a durable evacuation operation.
+
+The cache **Objects** page accepts a canonical machine path and exact file. The
+Hub admits either a short-lived direct-origin upload or an authenticated
+same-origin proxy upload. Large files automatically use the Hub's multipart
+protocol, and a failed part aborts the durable upload. The browser never sends
+its Hub bearer to a direct storage URL.
+
+The organization's **Members** page includes member and invitation inventory.
+**Invite a member** creates a reviewed pending invitation and shows its
+acceptance link after apply; it does not pre-create an account or
+membership. Deliver that link only to the intended email. The invitee signs in
+as the exact matching address. The first visit exchanges the URL credential
+for a short-lived, HttpOnly browser handoff and redirects to a clean URL before
+showing navigation or login. Password, magic-link, passkey, and SSO login all
+return to that clean acceptance page. The invitee reviews and accepts it; the
+Hub then consumes the invitation and creates the membership atomically. Member
+managers can cancel a pending invitation from the same page. Accepted,
+cancelled, and expired invitations remain visible as history.
+
+The organization **SSO** page manages one OIDC identity provider and its email
+domains. Provider reads are redacted to a “client secret configured” state.
+Saving or removing a provider first shows an immutable effects review and then
+applies the exact reviewed revision. A blank client-secret field preserves the
+current credential; the explicit clear checkbox removes it.
+
+Claiming a domain returns the TXT value to publish. **Verify DNS** also uses a
+reviewed plan and performs the DNS lookup in the Hub; it cannot mark a domain
+verified merely because an administrator clicked the button. Only a verified
+domain participates in email-first SSO routing. Domain release is separately
+reviewed and stops that routing. Rotating a challenge returns the domain to
+pending state until the new value is published and verified.
 
 ## Browse a binary cache
 
@@ -90,5 +160,5 @@ authenticated visibility, writes, or stable service methods.
   idle and 30 days absolute, with a 15-minute reauthentication window for
   sensitive work; the absolute lifetime cannot exceed 30 days.
 
-Device-code login is not currently a complete client flow and should not be
-used as an authentication plan.
+The `aos hub login` device-code flow uses the same identity and authorization
+state as browser sign-in; see the [CLI guide](cli.md).

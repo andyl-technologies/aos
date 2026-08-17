@@ -57,6 +57,7 @@ uuid = { workspace = true }
 # and the trusted-key fingerprint line; aos-registry-surface is the wasm-clean
 # surface reader already shared with the Worker.
 aos-registry-surface = { workspace = true }
+aos-hub-console-contract = { workspace = true }
 # The wasm-clean Connect-JSON message structs (prost-build + serde) for the
 # aos.hub.v1 API. The shared `service` layer speaks these on both the
 # native hub and the Cloudflare Worker (RFC-0004 Phase 5, single transport).
@@ -88,6 +89,9 @@ query-timing = []
 # Disposable live-workerd fixtures. This feature is enabled only by the
 # purpose-built `aos-hub-worker-do-e2e` artifact and is absent from production.
 do-e2e-test-support = []
+# Exposes direct identity-table seed helpers to integration fixtures. Production
+# mutations remain available only through the reviewed control-plane service.
+test-fixtures = []
 
 # The concrete native database driver. `sqlx` does not build for
 # wasm32-unknown-unknown, so it is a native-only dependency: the SqlxBackend

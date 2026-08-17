@@ -55,6 +55,7 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         dev: false,
         delivery_attestation_verifier: None,
         domain_probe_terminator: None,
+        identity_domain_verifier: None,
         route_reservation_keyring: None,
     })
 }
@@ -635,11 +636,12 @@ async fn device_authorization_is_rate_limited_per_ip() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let app = router(app_state(db).await).await;
     let ip = "198.51.100.4";
+    let body = "client_id=aos-cli";
     for _ in 0..aos_hub::ratelimit::DEVICE_AUTH_PER_IP {
-        let (status, _) = post_form(&app, "/oauth2/device_authorization", "", Some(ip)).await;
+        let (status, _) = post_form(&app, "/oauth2/device_authorization", body, Some(ip)).await;
         assert_eq!(status, StatusCode::OK, "within-budget device auth");
     }
-    let (status, retry) = post_form(&app, "/oauth2/device_authorization", "", Some(ip)).await;
+    let (status, retry) = post_form(&app, "/oauth2/device_authorization", body, Some(ip)).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert!(retry.is_some());
 }

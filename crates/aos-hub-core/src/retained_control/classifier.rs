@@ -76,6 +76,9 @@ pub enum MethodClass {
     ControllerObservation,
     /// Cancellation or retry of an existing operation.
     OperationLifecycle,
+    /// A user-authorized identity ceremony whose presented secret is the
+    /// mutation precondition rather than an administrator-reviewed plan.
+    IdentityCeremony,
 }
 
 /// One method in the generated API mutation-classification manifest.
@@ -302,6 +305,20 @@ pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestVio
                     violations.push(violation(
                         method,
                         "operation-lifecycle exception is limited to cancel and retry",
+                    ));
+                }
+            }
+            MethodClass::IdentityCeremony => {
+                require_durability(
+                    method,
+                    MethodDurability::Durable,
+                    "identity ceremonies mutate durable identity state",
+                    &mut violations,
+                );
+                if path != "IdentityService/AcceptInvitation" || method.external_effects {
+                    violations.push(violation(
+                        method,
+                        "identity-ceremony exception is limited to local invitation acceptance",
                     ));
                 }
             }

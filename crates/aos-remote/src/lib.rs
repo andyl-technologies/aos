@@ -33,7 +33,10 @@ pub use aos_proto_types as hub_types;
 pub use client::AosClient;
 pub use hub::hub_rpc;
 pub use hub::{HubClient, HubRpc, HubSurfaceRef};
-pub use login::{TokenGrant, exchange_token};
+pub use login::{
+    DeviceAuthorization, DeviceTokenPoll, TokenGrant, exchange_token, poll_device_token,
+    refresh_token, revoke_refresh_token, start_device_authorization,
+};
 
 // Re-export proto types that consumers need.
 pub use aos_proto::aos::build::v1::BuildEvent;

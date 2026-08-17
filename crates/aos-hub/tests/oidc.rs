@@ -237,6 +237,9 @@ async fn seed_org(
         allow_jit,
         enforce_sso,
         default_role: "viewer".into(),
+        resource_version: 1,
+        incarnation_id: None,
+        mutation_plan_id: None,
     })
     .await
     .unwrap();
@@ -573,6 +576,9 @@ async fn begin_login_sets_pkce_s256_and_records_flow() {
         allow_jit: true,
         enforce_sso: false,
         default_role: "viewer".into(),
+        resource_version: 1,
+        incarnation_id: None,
+        mutation_plan_id: None,
     })
     .await
     .unwrap();
@@ -613,6 +619,9 @@ fn idp_config_from_record_parses_role_map() {
         allow_jit: true,
         enforce_sso: true,
         default_role: "developer".into(),
+        resource_version: 1,
+        incarnation_id: None,
+        mutation_plan_id: None,
     };
     let config = IdpConfig::from_record(record);
     assert_eq!(config.role_map.get("g"), Some(&Role::Maintainer));
