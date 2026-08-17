@@ -93,7 +93,10 @@ pub fn content_type(path: &str) -> &'static str {
     }
 }
 
-fn is_release_object_info_path(path: &str) -> bool {
+/// Reports whether `path` is replaceable server metadata for one release
+/// object store.
+#[must_use]
+pub fn is_release_object_info_path(path: &str) -> bool {
     let parts = path.split('/').collect::<Vec<_>>();
     matches!(
         parts.as_slice(),
