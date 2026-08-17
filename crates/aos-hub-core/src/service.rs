@@ -2103,7 +2103,7 @@ pub const MAX_REGISTRY_PUBLICATION_PATH_COMPONENTS: usize = 33;
 /// remains below the request-memory ceilings of both supported Hub runtimes.
 const REGISTRY_PUBLICATION_PART_BYTES: usize = 8 * 1024 * 1024;
 
-fn registry_publication_complete_upload_bytes(configured_limit: usize) -> usize {
+fn complete_upload_bytes(configured_limit: usize) -> usize {
     configured_limit.min(crate::connect::CONNECT_REQUEST_BODY_LIMIT_BYTES)
 }
 
@@ -22408,7 +22408,7 @@ impl RpcService {
         self.require_cache_admin(auth, &cache).await?;
         let now = clock::now_unix_secs();
         let expires_at = now + i64::from(PRESIGN_EXPIRES_SECS);
-        let proxy_limit = self.effective_max_upload_bytes().await as u64;
+        let proxy_limit = self.effective_complete_upload_bytes().await as u64;
         // Batch form: one round-trip mints a URL per path (the single-path
         // `upload_url` is unused). A non-machine path or a non-presignable cache
         // yields an empty URL for that entry, so the client falls back per-NAR.
@@ -24451,7 +24451,7 @@ impl RpcService {
             .await?;
         let expected_size = u64::try_from(object.expected_size)
             .map_err(|_| RpcError::invalid("publication object size is out of range"))?;
-        if expected_size <= self.effective_registry_publication_upload_bytes().await as u64 {
+        if expected_size <= self.effective_complete_upload_bytes().await as u64 {
             return Err(RpcError::FailedPrecondition(
                 "publication object does not require multipart upload".into(),
             ));
@@ -25108,7 +25108,7 @@ impl RpcService {
 
         let expected_size = usize::try_from(object.expected_size)
             .map_err(|_| RpcError::invalid("publication object size is out of range"))?;
-        if expected_size > self.effective_max_upload_bytes().await {
+        if expected_size > self.effective_complete_upload_bytes().await {
             return Err(RpcError::FailedPrecondition(
                 "publication object requires bounded multipart upload".into(),
             ));
@@ -25377,7 +25377,7 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("registry"))?;
-        let max_complete_upload = self.effective_registry_publication_upload_bytes().await as i64;
+        let max_complete_upload = self.effective_complete_upload_bytes().await as i64;
         let objects = self
             .db
             .registry_publication_upload_objects(publication_id)
@@ -26545,16 +26545,16 @@ impl RpcService {
         }
     }
 
-    /// The effective limit for a complete registry-publication upload request.
+    /// The effective limit for any complete object upload request.
     ///
-    /// Publication object uploads share the static Connect namespace even
-    /// though their bodies contain raw bytes. Both runtime shells therefore
-    /// apply the unary-request buffer limit before dispatch. Advertise
-    /// multipart delivery above the smaller of that transport limit and the
-    /// operator-configured object limit so clients never receive a direct URL
-    /// whose request the ingress must reject.
-    async fn effective_registry_publication_upload_bytes(&self) -> usize {
-        registry_publication_complete_upload_bytes(self.effective_max_upload_bytes().await)
+    /// Cache and publication object uploads share the static Connect namespace
+    /// even though their bodies contain raw bytes. Both runtime shells apply
+    /// the unary-request buffer limit before dispatch. Advertise multipart
+    /// delivery above the smaller of that transport limit and the configured
+    /// object limit so clients never receive a direct URL whose request the
+    /// ingress must reject.
+    async fn effective_complete_upload_bytes(&self) -> usize {
+        complete_upload_bytes(self.effective_max_upload_bytes().await)
     }
 
     /// Writes one admitted object (`<hash>.narinfo` or `nar/<file>`) into a
@@ -34973,18 +34973,18 @@ mod image_body_tests {
 #[cfg(test)]
 mod publication_upload_limit_tests {
     use super::{
-        is_mutable_pointer, publication_media_type, publication_nar_path_matches_sha256,
-        registry_publication_complete_upload_bytes,
+        complete_upload_bytes, is_mutable_pointer, publication_media_type,
+        publication_nar_path_matches_sha256,
     };
     use crate::connect::CONNECT_REQUEST_BODY_LIMIT_BYTES;
 
     #[test]
     fn complete_upload_admission_never_exceeds_the_shared_transport_limit() {
         assert_eq!(
-            registry_publication_complete_upload_bytes(20 * 1024 * 1024),
+            complete_upload_bytes(20 * 1024 * 1024),
             CONNECT_REQUEST_BODY_LIMIT_BYTES
         );
-        assert_eq!(registry_publication_complete_upload_bytes(1024), 1024);
+        assert_eq!(complete_upload_bytes(1024), 1024);
     }
 
     #[test]
