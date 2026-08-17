@@ -317,6 +317,7 @@ fn drained_control_boundary_acknowledges_pause_without_resuming_halted_vcpu() {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .mark_halted(0)
         .unwrap_or_else(|error| panic!("test vCPU should halt: {error}"));
+    state.all_halted_idle_handled.store(true, Ordering::Release);
 
     slot.request_control_boundary()
         .unwrap_or_else(|error| panic!("ordinary control request should publish: {error}"));
@@ -336,9 +337,11 @@ fn drained_control_boundary_acknowledges_pause_without_resuming_halted_vcpu() {
         .on_control_boundary(0)
         .unwrap_or_else(|error| panic!("ordinary control wake should be inert: {error}"));
     assert_eq!(slot.snapshot().control_boundary_ack, 3);
+    assert!(!state.all_halted_idle_handled.load(Ordering::Acquire));
     header
         .request_pause([&slot])
         .unwrap_or_else(|error| panic!("pause request should publish: {error}"));
+    state.all_halted_idle_handled.store(true, Ordering::Release);
     slot.request_control_boundary()
         .unwrap_or_else(|error| panic!("pause control request should publish: {error}"));
     state
@@ -355,6 +358,7 @@ fn drained_control_boundary_acknowledges_pause_without_resuming_halted_vcpu() {
     );
     assert_eq!(slot.snapshot().status, STATUS_IDLE);
     assert_eq!(slot.snapshot().control_boundary_ack, 5);
+    assert!(state.all_halted_idle_handled.load(Ordering::Acquire));
     assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 1);
 }
 

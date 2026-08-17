@@ -74,7 +74,8 @@ impl MappedSetupRegion {
         Ok(unsafe { &*base.add(node_slot_offset).cast::<NodeSlot>() })
     }
 
-    /// Borrows one mapped node slot and two distinct directed rings.
+    /// Borrows one mapped node slot, its fingerprint sample, and two distinct
+    /// directed rings.
     ///
     /// This accessor is the runtime bridge for host adapters that need a VM
     /// slot plus an inbound and outbound SPSC ring from an owned mapping. It
@@ -108,6 +109,8 @@ impl MappedSetupRegion {
         }
 
         let node_slot_offset = mapped_node_slot_offset(layout, self.len, node_slot)?;
+        let fingerprint_sample_offset =
+            mapped_fingerprint_sample_offset(layout, self.len, node_slot)?;
         let first_header_offset = mapped_ring_header_offset(layout, self.len, first_descriptor)?;
         let second_header_offset = mapped_ring_header_offset(layout, self.len, second_descriptor)?;
         let first_entries_offset = mapped_ring_entries_offset(layout, self.len, first_descriptor)?;
@@ -130,9 +133,19 @@ impl MappedSetupRegion {
         // SAFETY: all offsets and byte lengths were checked against the owned
         // mapping, alignment was validated for each typed segment, and duplicate
         // ring indices were rejected so the returned mutable slices are disjoint.
-        let (node_slot_ref, first_header, second_header, first_entries, second_entries) = unsafe {
+        let (
+            node_slot_ref,
+            fingerprint_sample,
+            first_header,
+            second_header,
+            first_entries,
+            second_entries,
+        ) = unsafe {
             (
                 &*base.add(node_slot_offset).cast::<NodeSlot>(),
+                &*base
+                    .add(fingerprint_sample_offset)
+                    .cast::<FingerprintSampleSlot>(),
                 &*base.add(first_header_offset).cast::<RingHeader>(),
                 &*base.add(second_header_offset).cast::<RingHeader>(),
                 core::slice::from_raw_parts_mut(
@@ -147,6 +160,7 @@ impl MappedSetupRegion {
         };
         Ok(MappedNodeRingPairMut {
             node_slot: node_slot_ref,
+            fingerprint_sample,
             first: MappedDirectedRingMut {
                 descriptor: first_descriptor,
                 header: first_header,

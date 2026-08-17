@@ -486,29 +486,54 @@ struct LiveFingerprintCallbackState {
     synchronous_oracle: bool,
 }
 
+/// One detached fingerprint capture queued for ordered digest publication.
+enum LiveFingerprintDigestWork {
+    /// Publishes asynchronously for an ordinary scheduler quantum.
+    Publish(CapturedFingerprintSample),
+    /// Publishes before acknowledging an exact stopped control boundary.
+    PublishAndAcknowledge {
+        captured: CapturedFingerprintSample,
+        completion: mpsc::SyncSender<Result<(), String>>,
+    },
+}
+
 /// Bounded owner thread that digests detached captures and publishes samples.
 struct LiveFingerprintDigestWorker {
-    sender: Option<mpsc::SyncSender<CapturedFingerprintSample>>,
+    sender: Option<mpsc::SyncSender<LiveFingerprintDigestWork>>,
     failed: Arc<Mutex<Option<String>>>,
     join: Option<JoinHandle<()>>,
 }
 
 impl LiveFingerprintDigestWorker {
     fn spawn(slot: StableFingerprintSlotHandle) -> Result<Self, LiveVcpuTimeCallbackError> {
-        let (sender, receiver) = mpsc::sync_channel::<CapturedFingerprintSample>(1);
+        let (sender, receiver) = mpsc::sync_channel::<LiveFingerprintDigestWork>(1);
         let failed = Arc::new(Mutex::new(None));
         let worker_failed = Arc::clone(&failed);
         let join = thread::Builder::new()
             .name("crucible-fingerprint-digest".to_owned())
             .spawn(move || {
-                while let Ok(captured) = receiver.recv() {
+                while let Ok(work) = receiver.recv() {
+                    let (captured, completion) = match work {
+                        LiveFingerprintDigestWork::Publish(captured) => (captured, None),
+                        LiveFingerprintDigestWork::PublishAndAcknowledge {
+                            captured,
+                            completion,
+                        } => (captured, Some(completion)),
+                    };
                     let sample = captured.digest();
-                    if let Err(error) = slot.get().publish(&sample) {
+                    let result = slot
+                        .get()
+                        .publish(&sample)
+                        .map_err(|error| error.to_string());
+                    if let Some(completion) = completion {
+                        let _completion_result = completion.send(result.clone());
+                    }
+                    if let Err(message) = result {
                         let mut failure = match worker_failed.lock() {
                             Ok(failure) => failure,
                             Err(poisoned) => poisoned.into_inner(),
                         };
-                        *failure = Some(error.to_string());
+                        *failure = Some(message);
                         break;
                     }
                 }
@@ -538,14 +563,42 @@ impl LiveFingerprintDigestWorker {
             .sender
             .as_ref()
             .ok_or(LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable)?;
-        sender.try_send(captured).map_err(|error| match error {
-            mpsc::TrySendError::Full(_captured) => {
-                LiveVcpuTimeCallbackError::FingerprintWorkerQueueFull
-            }
-            mpsc::TrySendError::Disconnected(_captured) => {
-                LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable
-            }
-        })
+        // This callback runs only at a scheduler boundary where guest time is
+        // already fenced. Backpressure preserves every exact sample without
+        // making host digest speed part of simulated execution.
+        sender
+            .send(LiveFingerprintDigestWork::Publish(captured))
+            .map_err(|_error| LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable)
+    }
+
+    fn submit_and_wait(
+        &self,
+        captured: CapturedFingerprintSample,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        let failure = match self.failed.lock() {
+            Ok(failure) => failure,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(message) = failure.as_ref() {
+            return Err(LiveVcpuTimeCallbackError::FingerprintWorkerFailed {
+                message: message.clone(),
+            });
+        }
+        drop(failure);
+
+        let (completion, completed) = mpsc::sync_channel(1);
+        self.sender
+            .as_ref()
+            .ok_or(LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable)?
+            .send(LiveFingerprintDigestWork::PublishAndAcknowledge {
+                captured,
+                completion,
+            })
+            .map_err(|_error| LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable)?;
+        completed
+            .recv()
+            .map_err(|_error| LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable)?
+            .map_err(|message| LiveVcpuTimeCallbackError::FingerprintWorkerFailed { message })
     }
 }
 
@@ -938,21 +991,26 @@ impl LiveVcpuTimeCallbackState {
     /// when the published icount equals the host-set scheduler ceiling — the
     /// host's ceiling is the sample request, so the dirty-tracked immutable copy
     /// runs once per host-driven quantum boundary rather than on every
-    /// intermediate progress publish. SHA-256 runs on the worker after this
-    /// callback returns, allowing the guest to resume; the host waits
-    /// independently for the matching sample coordinate. The vCPU count is
+    /// intermediate progress publish. Ordinary quantum SHA-256 work runs after
+    /// this callback returns, allowing the guest to resume. A stopped checkpoint
+    /// control boundary instead waits for ordered digest publication before its
+    /// acknowledgement, so a same-icount resample cannot be confused with the
+    /// preceding quantum sample. The vCPU count is
     /// `self.vcpu_count` — the install-time
     /// `smp_vcpus` QEMU reported to the plugin (`execution_model.smp_vcpus()`),
     /// bound into this callback state at construction — so the sample covers
-    /// every configured vCPU. Multi-vCPU aggregation of the sampled material is
-    /// deferred to M3 (T-TIME-9); this provenance is what that slice keys on.
+    /// every configured vCPU.
     ///
     /// # Errors
     ///
     /// Returns [`LiveVcpuTimeCallbackError::FingerprintSample`] when boundary
     /// introspection or capture fails, or a worker error when the bounded digest
     /// worker cannot accept the exact-boundary capture.
-    fn publish_fingerprint_sample(&self, icount: u64) -> Result<(), LiveVcpuTimeCallbackError> {
+    fn publish_fingerprint_sample(
+        &self,
+        icount: u64,
+        wait_for_publication: bool,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
         let Some(fingerprint) = self.fingerprint.as_ref() else {
             return Ok(());
         };
@@ -965,7 +1023,11 @@ impl LiveVcpuTimeCallbackState {
             .sampling
             .capture(icount, self.vcpu_count, fingerprint.synchronous_oracle)
             .map_err(|source| LiveVcpuTimeCallbackError::FingerprintSample { source })?;
-        fingerprint.worker.submit(captured)?;
+        if wait_for_publication {
+            fingerprint.worker.submit_and_wait(captured)?;
+        } else {
+            fingerprint.worker.submit(captured)?;
+        }
         fingerprint
             .last_capture_icount
             .store(icount, Ordering::Release);
@@ -1182,7 +1244,7 @@ impl LiveVcpuTimeCallbackState {
         raw_icount: u64,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
         self.require_initialized_vcpu(vcpu_index)?;
-        if self.publish_pause_for_boundary(raw_icount, true, "vcpu-resume")? {
+        if self.publish_pause_for_boundary(raw_icount, true, false, "vcpu-resume")? {
             return Ok(());
         }
         if PluginShmemOrdering::control_boundary_is_requested(self.slot.get()) {
@@ -1220,7 +1282,16 @@ impl LiveVcpuTimeCallbackState {
         // a host acquire-load of the odd successor orders every boundary field.
         // Halt tracking and idle publication remain owned by the real
         // idle/resume callbacks.
-        if !self.publish_pause_for_boundary(raw_icount, true, "control-boundary")? {
+        if let Some(fingerprint) = self.fingerprint.as_ref() {
+            // A checkpoint control wake can revisit an icount already sampled
+            // by the preceding scheduler quantum. Replace that sample with the
+            // exact stopped-state capture before acknowledging the boundary.
+            fingerprint
+                .capture_submitted
+                .store(false, Ordering::Release);
+        }
+        let paused = self.publish_pause_for_boundary(raw_icount, true, true, "control-boundary")?;
+        if !paused {
             let current_icount = self.logical_icount_for_raw(raw_icount)?;
             PluginShmemOrdering::publish_control_boundary(
                 self.slot.get(),
@@ -1231,6 +1302,14 @@ impl LiveVcpuTimeCallbackState {
             .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
             self.last_raw_icount.store(raw_icount, Ordering::Release);
             self.last_icount.store(current_icount, Ordering::Release);
+
+            // Returning from the all-halted callback for an ordinary control
+            // boundary ends that invocation without a real vCPU resume. Re-arm
+            // the plugin-side all-halted edge so the RR loop can enter a fresh
+            // idle wait and consume the next scheduler ceiling. A checkpoint
+            // pause deliberately remains armed until QEMU is resumed through
+            // the lifecycle control path.
+            self.all_halted_idle_handled.store(false, Ordering::Release);
         }
         PluginShmemOrdering::acknowledge_control_boundary(self.slot.get());
         Ok(())
@@ -1247,7 +1326,7 @@ impl LiveVcpuTimeCallbackState {
         checkpoint_handoff: bool,
         boundary: &'static str,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
-        if self.publish_pause_for_boundary(raw_icount, checkpoint_handoff, boundary)? {
+        if self.publish_pause_for_boundary(raw_icount, checkpoint_handoff, false, boundary)? {
             return Ok(());
         }
         let raw_icount_at_entry = self.last_raw_icount.load(Ordering::Acquire);
@@ -1292,7 +1371,7 @@ impl LiveVcpuTimeCallbackState {
         // the guest-RAM SHA-256 runs once per host-read boundary rather than on
         // every publish.
         if current_icount == ceiling_icount {
-            self.publish_fingerprint_sample(current_icount)?;
+            self.publish_fingerprint_sample(current_icount, false)?;
         }
         PluginShmemOrdering::publish_reached_icount(
             self.slot.get(),
@@ -1316,13 +1395,14 @@ impl LiveVcpuTimeCallbackState {
         &self,
         raw_icount: u64,
     ) -> Result<bool, LiveVcpuTimeCallbackError> {
-        self.publish_pause_for_boundary(raw_icount, true, "progress-publication")
+        self.publish_pause_for_boundary(raw_icount, true, false, "progress-publication")
     }
 
     fn publish_pause_for_boundary(
         &self,
         raw_icount: u64,
         checkpoint_handoff: bool,
+        wait_for_fingerprint_publication: bool,
         boundary: &'static str,
     ) -> Result<bool, LiveVcpuTimeCallbackError> {
         self.restore_logical_time_if_requested(raw_icount)?;
@@ -1349,6 +1429,12 @@ impl LiveVcpuTimeCallbackState {
                         current_icount,
                         ceiling_icount,
                     });
+                }
+                if current_icount == ceiling_icount {
+                    self.publish_fingerprint_sample(
+                        current_icount,
+                        wait_for_fingerprint_publication,
+                    )?;
                 }
                 PluginShmemOrdering::publish_pause_quiesced(
                     self.slot.get(),
@@ -1387,6 +1473,15 @@ impl LiveVcpuTimeCallbackState {
         self.last_raw_icount.store(raw_icount, Ordering::Release);
         self.last_icount
             .store(request.target_icount, Ordering::Release);
+        if let Some(fingerprint) = self.fingerprint.as_ref() {
+            // A fresh QEMU generation may have sampled the throwaway boot
+            // barrier priming state at the same coordinate as the restored
+            // VMState. Force the following exact pause to capture the loaded
+            // registers, RAM, and devices rather than retaining that sample.
+            fingerprint
+                .capture_submitted
+                .store(false, Ordering::Release);
+        }
         PluginShmemOrdering::acknowledge_logical_time_restore(
             self.slot.get(),
             request,
@@ -1572,7 +1667,7 @@ impl LiveVcpuTimeCallbackState {
         };
 
         if target_icount == ceiling_icount {
-            self.publish_fingerprint_sample(target_icount)?;
+            self.publish_fingerprint_sample(target_icount, false)?;
         }
 
         // Reacquire after callback-capable work so TX emitted by the guest while
@@ -1817,8 +1912,14 @@ impl LiveVcpuTimeCallbackState {
         boundary: &'static str,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
         if !PluginShmemOrdering::device_io_active(self.slot.get()) {
+            if let Some(fingerprint) = self.fingerprint.as_ref() {
+                fingerprint
+                    .capture_submitted
+                    .store(false, Ordering::Release);
+            }
             let raw_icount = (self.icount_raw)();
-            let _pause_observed = self.publish_pause_for_boundary(raw_icount, true, boundary)?;
+            let _pause_observed =
+                self.publish_pause_for_boundary(raw_icount, true, true, boundary)?;
         }
         Ok(())
     }
@@ -1905,7 +2006,7 @@ impl LiveVcpuTimeCallbackState {
     /// patch.
     fn max_advance_icount(&self) -> Result<u64, LiveVcpuTimeCallbackError> {
         let raw_icount = (self.icount_raw)();
-        if self.publish_pause_for_boundary(raw_icount, true, "max-advance")? {
+        if self.publish_pause_for_boundary(raw_icount, true, false, "max-advance")? {
             return Ok(raw_icount);
         }
         self.pump_fault_commands(raw_icount)?;

@@ -117,6 +117,8 @@ enum ChannelCall {
     ShmemEmit,
     ShmemIdle,
     ShmemFingerprint,
+    HostCheckpointClearWhileStopped,
+    HostCheckpointAbort,
     QmpStop,
     QmpContinue,
     QmpTerminalLifecycle {
@@ -159,6 +161,7 @@ struct ScriptedHostIoRuntime {
 #[derive(Clone)]
 struct ScriptedQmpMachineControl {
     log: SharedLog,
+    fail_stop: bool,
     fail_snapshot: bool,
     timeout_snapshot: bool,
 }
@@ -309,11 +312,28 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
             hash: content_hash("fingerprint", "vm-a"),
         })
     }
+
+    fn fingerprint_sample(&mut self) -> Result<QemuFingerprintSample, QemuNodeChannelError> {
+        let mut sample = QemuFingerprintSample {
+            sample_icount: 11,
+            vcpu_count: 1,
+            rr_switch_quantum: 4_096,
+            ..QemuFingerprintSample::default()
+        };
+        sample.vcpus[0].register_file_bytes = 1;
+        Ok(sample)
+    }
 }
 
 impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
     fn stop_for_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
         self.log.lock().unwrap().push(ChannelCall::QmpStop);
+        if self.fail_stop {
+            return Err(QemuNodeChannelError::new(
+                "stop_for_checkpoint",
+                "injected QMP stop failure",
+            ));
+        }
         Ok(())
     }
 
@@ -389,6 +409,22 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
 }
 
 impl QemuHostIoRuntime for ScriptedHostIoRuntime {
+    fn clear_checkpoint_pause_while_stopped(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::HostCheckpointClearWhileStopped);
+        Ok(())
+    }
+
+    fn abort_checkpoint_pause(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::HostCheckpointAbort);
+        Ok(())
+    }
+
     fn yield_to_control_plane(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
         self.log.lock().unwrap().push(ChannelCall::HostYield);
         Ok(())
@@ -569,6 +605,7 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
         },
         ScriptedQmpMachineControl {
             log: Arc::clone(&log),
+            fail_stop: false,
             fail_snapshot: false,
             timeout_snapshot: false,
         },
@@ -723,6 +760,7 @@ fn qemu_node_captures_one_identity_bound_vmstate_and_host_io_pair() -> Result<()
             ChannelCall::ShmemCurrentIcount,
             ChannelCall::ShmemCurrentIcount,
             ChannelCall::QmpStop,
+            ChannelCall::HostCheckpointClearWhileStopped,
             ChannelCall::ShmemCurrentIcount,
             ChannelCall::QmpExactSave(snapshot.checkpoint().id),
             ChannelCall::QmpContinue,
@@ -756,6 +794,7 @@ fn qemu_node_terminates_after_failed_exact_capture() -> Result<(), Box<dyn Error
             ChannelCall::ShmemCurrentIcount,
             ChannelCall::ShmemCurrentIcount,
             ChannelCall::QmpStop,
+            ChannelCall::HostCheckpointClearWhileStopped,
             ChannelCall::ShmemCurrentIcount,
             ChannelCall::QmpExactSave(checkpoint.id),
             ChannelCall::PluginQuit,
@@ -763,6 +802,44 @@ fn qemu_node_terminates_after_failed_exact_capture() -> Result<(), Box<dyn Error
         ]
     );
     assert!(node.child_reaped());
+    Ok(())
+}
+
+#[test]
+fn qemu_node_actively_aborts_plugin_pause_when_qmp_stop_fails() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node_with_options(
+        Arc::clone(&log),
+        ScriptedNodeOptions {
+            fail_qmp_stop: true,
+            ..ScriptedNodeOptions::default()
+        },
+        [QemuAsyncWaitOutcome::Completed],
+    )?;
+    let mut checkpoint = checkpoint("failed-stop");
+    checkpoint.virtual_time = node.synchronize_observed_time()?;
+    let node_identity = node_id("vm-a");
+    checkpoint.node_icounts.insert(
+        node_identity.clone(),
+        Icount {
+            retired: checkpoint.virtual_time.ticks,
+        },
+    );
+
+    let error = node
+        .capture_exact_snapshot(&node_identity, checkpoint)
+        .expect_err("failed QMP stop must reject the checkpoint");
+    let calls = recorded(&log);
+
+    assert!(error.to_string().contains("injected QMP stop failure"));
+    assert!(calls.contains(&ChannelCall::QmpStop));
+    assert!(calls.contains(&ChannelCall::HostCheckpointAbort));
+    assert!(!calls.contains(&ChannelCall::HostCheckpointClearWhileStopped));
+    assert!(
+        !calls
+            .iter()
+            .any(|call| matches!(call, ChannelCall::QmpExactSave(_)))
+    );
     Ok(())
 }
 
@@ -1014,6 +1091,7 @@ fn scripted_node_with_runtime(
         ScriptedNodeOptions {
             fail_plugin_quit,
             fail_shmem_advance,
+            fail_qmp_stop: false,
             fail_qmp_snapshot,
             qmp_snapshot_timeout: false,
         },
@@ -1025,6 +1103,7 @@ fn scripted_node_with_runtime(
 struct ScriptedNodeOptions {
     fail_plugin_quit: bool,
     fail_shmem_advance: bool,
+    fail_qmp_stop: bool,
     fail_qmp_snapshot: bool,
     qmp_snapshot_timeout: bool,
 }
@@ -1064,6 +1143,7 @@ fn scripted_node_with_fault_events(
         },
         ScriptedQmpMachineControl {
             log: Arc::clone(&log),
+            fail_stop: false,
             fail_snapshot: false,
             timeout_snapshot: false,
         },
@@ -1138,6 +1218,7 @@ fn scripted_node_with_coverage(
         },
         ScriptedQmpMachineControl {
             log: Arc::clone(&log),
+            fail_stop: options.fail_qmp_stop,
             fail_snapshot: options.fail_qmp_snapshot,
             timeout_snapshot: options.qmp_snapshot_timeout,
         },

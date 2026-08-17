@@ -17,7 +17,6 @@
 use std::error::Error;
 use std::time::Duration;
 
-use crucible::model::{FaultObservationKind, FaultTargetKind};
 use crucible::{
     Checkpoint, CheckpointKind, Icount, LinkDef, LinkLossProbability, NodeId, NodeTemplate, Plan,
     Properties, QuantumLoop, QuantumRequest, ReadyPoint, ScenarioDefForm, Seed, SimDuration,
@@ -117,6 +116,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut delivered_frames = 0_usize;
     let mut selected_branch = None;
     let mut checkpoint_frontier = VirtualTime::default();
+    let link_rng_domain = crucible::RngStreamId::for_link(String::new()).domain;
     // Twelve quanta are enough for the purpose-built guests to emit traffic and
     // for delayed frames to reach the opposite guest. The loop also waits until
     // search exposes a counterfactual `loss-fire` choice for later replay.
@@ -132,25 +132,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .event_log_entries
                 .iter()
                 .filter(|entry| {
-                    let crucible::SchedulerEventLogPayload::FaultObservation(observation) =
-                        entry.payload()
-                    else {
-                        return false;
-                    };
-                    observation.kind == FaultObservationKind::EffectChoice
-                        && observation.target.as_ref().is_some_and(|target| {
-                            matches!(
-                                target.kind(),
-                                FaultTargetKind::NetworkInterface
-                                    | FaultTargetKind::NetworkSegment
-                                    | FaultTargetKind::NetworkMedium
-                                    | FaultTargetKind::NetworkQueue
-                                    | FaultTargetKind::NetworkForwarder
-                                    | FaultTargetKind::NetworkPath
-                                    | FaultTargetKind::NetworkAttachment
-                                    | FaultTargetKind::NetworkContact
-                            )
-                        })
+                    matches!(
+                        entry.payload(),
+                        crucible::SchedulerEventLogPayload::Decision(
+                            crucible::Decision::RngDraw(draw)
+                        ) if draw.stream.domain == link_rng_domain
+                    )
                 })
                 .count(),
         );

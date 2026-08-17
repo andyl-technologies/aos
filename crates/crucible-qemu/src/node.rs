@@ -24,7 +24,7 @@ use crucible::{
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 use crucible_shmem::{
     DequeuedFaultEvent, DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1,
-    FaultResultStatus, SchedulerPreemptionCommand,
+    FaultResultStatus, FingerprintSample as QemuFingerprintSample, SchedulerPreemptionCommand,
     SchedulerPreemptionKind as ShmemSchedulerPreemptionKind,
 };
 // crucible-lint: allow host-nondeterminism-state -- node transport exposes untrusted causal records for scheduler validation.
@@ -615,6 +615,13 @@ pub trait QemuShmemHotPathChannel: Send {
     ///
     /// Returns [`QemuNodeChannelError`] when the fingerprint cannot be read.
     fn execution_fingerprint(&mut self) -> Result<ExecutionFingerprint, QemuNodeChannelError>;
+
+    /// Reads the complete plugin-published fingerprint sample.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the sample is absent or invalid.
+    fn fingerprint_sample(&mut self) -> Result<QemuFingerprintSample, QemuNodeChannelError>;
 }
 
 /// Type-erased token returned after a shared-memory quantum is started.
@@ -1623,11 +1630,77 @@ impl QemuNode {
     ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeError`] when the fingerprint cannot be read.
+    /// Returns [`QemuNodeError`] when the plugin reports an invalid sample,
+    /// exits, or does not publish the current boundary's complete sample within
+    /// the configured bounded advance-completion timeout.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "host time bounds fingerprint-worker liveness and never enters modeled state"
+    )]
     pub fn execution_fingerprint(&mut self) -> Result<ExecutionFingerprint, QemuNodeError> {
+        let timeout = self.async_policy.advance_completion_timeout;
+        let started = Instant::now();
+        loop {
+            match self.channels.shmem_hot_path.execution_fingerprint() {
+                Ok(fingerprint) => return Ok(fingerprint),
+                Err(source) if source.is_retryable() && started.elapsed() < timeout => {
+                    match self.child.try_wait_natural_exit() {
+                        Ok(None) => std::thread::sleep(Duration::from_millis(1)),
+                        Ok(Some(status)) => {
+                            return Err(QemuNodeError::from_channel(
+                                QemuNodeChannelPlane::ShmemHotPath,
+                                QemuNodeChannelError::new(
+                                    "execution_fingerprint",
+                                    format!(
+                                        "QEMU exited with {status} before publishing the current black-box fingerprint"
+                                    ),
+                                ),
+                            ));
+                        }
+                        Err(error) => {
+                            return Err(QemuNodeError::from_channel(
+                                QemuNodeChannelPlane::ShmemHotPath,
+                                QemuNodeChannelError::new(
+                                    "execution_fingerprint",
+                                    format!("poll QEMU while awaiting fingerprint: {error}"),
+                                ),
+                            ));
+                        }
+                    }
+                }
+                Err(source) if source.is_retryable() => {
+                    return Err(QemuNodeError::from_channel(
+                        QemuNodeChannelPlane::ShmemHotPath,
+                        QemuNodeChannelError::bounded_await_timeout(
+                            "execution_fingerprint",
+                            format!(
+                                "plugin did not publish the current black-box fingerprint within {timeout:?}: {}",
+                                source.message
+                            ),
+                            timeout,
+                        ),
+                    ));
+                }
+                Err(source) => {
+                    return Err(QemuNodeError::from_channel(
+                        QemuNodeChannelPlane::ShmemHotPath,
+                        source,
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Reads the complete black-box fingerprint sample at the current boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the plugin has not published the current
+    /// sample or the shared-memory channel cannot read it.
+    pub fn fingerprint_sample(&mut self) -> Result<QemuFingerprintSample, QemuNodeError> {
         self.channels
             .shmem_hot_path
-            .execution_fingerprint()
+            .fingerprint_sample()
             .map_err(|source| {
                 QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
             })
@@ -1763,22 +1836,22 @@ impl QemuNode {
             })?;
         if let Err(source) = self.channels.qmp_machine_control.stop_for_checkpoint() {
             self.host_io_runtime
-                .resume_after_checkpoint()
+                .abort_checkpoint_pause()
                 .map_err(|cleanup| {
                     QemuNodeError::checkpoint(format!(
-                        "QMP stop failed ({source}); releasing the plugin pause also failed ({cleanup})"
+                        "QMP stop failed ({source}); aborting the plugin pause also failed ({cleanup})"
                     ))
                 })?;
             return self.handle_qmp_channel_error(source);
         }
-        if let Err(source) = self.host_io_runtime.resume_after_checkpoint() {
+        if let Err(source) = self.host_io_runtime.clear_checkpoint_pause_while_stopped() {
             let resume = self.channels.qmp_machine_control.resume_after_checkpoint();
             return match resume {
                 Ok(()) => Err(QemuNodeError::from_async_driver(
                     crate::QemuAsyncDriverError::Runtime(source),
                 )),
                 Err(qmp) => Err(QemuNodeError::checkpoint(format!(
-                    "releasing the plugin checkpoint pause failed ({source}); resuming QEMU also failed ({qmp})"
+                    "clearing the stopped plugin checkpoint pause failed ({source}); resuming QEMU also failed ({qmp})"
                 ))),
             };
         }

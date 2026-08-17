@@ -78,21 +78,6 @@ pub(super) fn drive_scenario(
     };
     let boot_wall_micros = wall_micros_since(boot_started);
 
-    if !config.prove_idle_jump() {
-        // Descoped: the boot phase (exact per-quantum ceiling ownership) and the
-        // idle observation (parked node + computed timer deadline) are the live
-        // proof of T-PLUG-4/5/6. The idle-jump advancement quantum is skipped
-        // while the QEMU-side queued-time-advance completion defect is open.
-        let rates = LivePluginAdvancementRates {
-            boot_icount_span: idle.idle_onset_icount,
-            boot_wall_micros,
-            idle_icount_span: 0,
-            idle_wall_micros: 0,
-            terminal_icount: idle.idle_onset_icount,
-        };
-        return Ok((idle, rates, host_observable_schedule));
-    }
-
     // Idle-jump: raise the ceiling far beyond the parked deadline in one quantum.
     // A time-owning plugin advances the idle guest by O(1) deadline jumps, so the
     // whole span collapses in wall time even though it spans a large icount range.

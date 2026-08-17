@@ -327,6 +327,17 @@ produce live patched-QEMU architectural or device evidence.
   make every occurrence event self-contained with its authenticated original
   request, reconstruct fresh-process state without a plugin-private cache, and
   bind accelerator events to the exact selected job sequence and opportunity.
+- [ ] **T-QEMU-0076** Implement
+  [`crucible-9p-completion-wake-registration`](14-qemu-fault-patches/27-9p-completion-wake-registration.md):
+  register completion wakes at device realization, prove both plugin/device
+  installation orders, and exercise an event-driven completion after
+  fresh-process restore without polling.
+- [ ] **T-QEMU-0077** Implement
+  [`crucible-serialize-rr-cursor`](14-qemu-fault-patches/28-serialized-rr-cursor.md):
+  account an authoritative cursor across host ceilings, serialize it with
+  icount VMState, restore the selected vCPU before guest execution, and prove a
+  nonzero intra-turn multi-vCPU checkpoint fingerprint matches in a fresh QEMU
+  process.
 - [ ] **T-QEMU-0060** Implement
   [`crucible-block-typed-errors`](14-qemu-fault-patches/14-block-typed-errors.md):
   the closed block result ABI, exact Linux errno translation, malformed-result

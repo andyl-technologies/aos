@@ -159,8 +159,17 @@ pub enum ProductionFaultRuntimeError {
     #[error(transparent)]
     Backend(#[from] BackendError),
     /// Restored live QEMU state differs from the paired fault checkpoint.
-    #[error("live QEMU execution fingerprints do not match the fault checkpoint")]
-    QemuFingerprintMismatch,
+    #[error(
+        "live QEMU black-box fingerprint for `{node}` does not match the fault checkpoint: expected {expected}, observed {observed}"
+    )]
+    QemuFingerprintMismatch {
+        /// First canonical node whose restored state differs.
+        node: String,
+        /// Checkpoint digest, or `<missing>` when the checkpoint omitted the node.
+        expected: String,
+        /// Live digest, or `<missing>` when realization omitted the node.
+        observed: String,
+    },
     /// A QEMU occurrence event has not yet entered the authoritative log.
     #[error("cannot checkpoint while QEMU fault events await boundary admission")]
     PendingQemuFaultEvents,
@@ -226,6 +235,7 @@ mod checkpoint;
 mod checkpoint_identity;
 #[path = "production_fault_runtime/construction.rs"]
 mod construction;
+pub(crate) use construction::validate_qemu_fingerprints;
 #[path = "production_fault_runtime/evaluation.rs"]
 mod evaluation;
 #[path = "production_fault_runtime/evidence.rs"]

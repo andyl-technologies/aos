@@ -30,6 +30,7 @@ pub(super) fn mapped_view<'a>(
         .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })?;
     let MappedNodeRingPairMut {
         node_slot,
+        fingerprint_sample,
         first,
         second,
     } = pair;
@@ -45,6 +46,7 @@ pub(super) fn mapped_view<'a>(
     } = second;
     QemuQuantumShmemView::new(
         node_slot,
+        fingerprint_sample,
         inbound_ring,
         inbound_entries,
         outbound_ring,

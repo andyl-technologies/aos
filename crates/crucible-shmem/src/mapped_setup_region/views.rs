@@ -475,10 +475,13 @@ pub(super) struct GuestIntrospectionRingPairMut<'a> {
     pub(super) response: GuestIntrospectionRawRingMut<'a>,
 }
 
-/// A mutable view of two distinct mapped directed rings and one node slot.
+/// A mutable view of two distinct mapped directed rings, one node slot, and
+/// that node's fingerprint-sample slot.
 pub struct MappedNodeRingPairMut<'a> {
     /// Node slot associated with the consumer VM.
     pub node_slot: &'a NodeSlot,
+    /// Fingerprint sample slot associated with the consumer VM.
+    pub fingerprint_sample: &'a FingerprintSampleSlot,
     /// First directed ring requested by the caller.
     pub first: MappedDirectedRingMut<'a>,
     /// Second directed ring requested by the caller.

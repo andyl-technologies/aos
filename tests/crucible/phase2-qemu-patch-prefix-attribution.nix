@@ -379,6 +379,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0077-crucible-serialize-rr-cursor.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

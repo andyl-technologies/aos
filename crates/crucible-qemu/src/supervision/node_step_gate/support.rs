@@ -342,6 +342,7 @@ fn live_node_plugin_base(config: &QemuLiveNodeStepGateConfig) -> QemuLaunchPlugi
     QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
         .with_process_generation(config.process_generation)
         .with_coverage(config.coverage)
+        .with_fingerprint(config.fingerprint)
 }
 
 pub(super) const fn basic_block_coverage_config(

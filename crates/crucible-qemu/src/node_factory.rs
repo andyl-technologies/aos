@@ -621,8 +621,9 @@ where
 /// Restores QEMU VMState into a scheduler-facing node that remains paused.
 ///
 /// This is the power-off realization path. It performs the complete restore
-/// handshake, including the one bounded run needed to acknowledge logical-time
-/// calibration, but does not resume the guest after the final native stop.
+/// handshake, including a stopped-state control wake that acknowledges
+/// logical-time calibration without executing guest instructions, but does not
+/// resume the guest after the final native stop.
 ///
 /// # Errors
 ///
@@ -728,13 +729,13 @@ where
         ));
     }
     if let Err(stop) = qmp.stop_for_checkpoint() {
-        let primary = match host_io_runtime.resume_after_checkpoint() {
+        let primary = match host_io_runtime.abort_checkpoint_pause() {
             Ok(()) => QemuNodeFactoryError::CheckpointStop { source: stop },
             Err(release) => QemuNodeFactoryError::CheckpointStopAndPauseRelease { stop, release },
         };
         return Err(reap_failed_restore_child(&mut child, primary));
     }
-    if let Err(release) = host_io_runtime.resume_after_checkpoint() {
+    if let Err(release) = host_io_runtime.clear_checkpoint_pause_while_stopped() {
         return Err(reap_failed_restore_child(
             &mut child,
             QemuNodeFactoryError::CheckpointPauseRelease { source: release },
@@ -789,10 +790,13 @@ where
         Ok(generation) => generation,
         Err(error) => return Err(reap_failed_restore_child(&mut child, error)),
     };
-    if let Err(source) = qmp.begin_restore_boundary() {
+    if let Err(source) = prepared_setup.plugin_control.signal_plugin_wake() {
         return Err(reap_failed_restore_child(
             &mut child,
-            QemuNodeFactoryError::CheckpointResume { source },
+            QemuNodeFactoryError::LogicalTimeRestoreBoundary {
+                stage: "signal stopped control wake",
+                message: source.to_string(),
+            },
         ));
     }
     let polls = bounded_warm_restore_polls(async_policy.qmp_command_timeout);

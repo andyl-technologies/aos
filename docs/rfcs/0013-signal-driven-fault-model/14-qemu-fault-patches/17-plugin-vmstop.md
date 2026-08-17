@@ -98,14 +98,20 @@ The host and QEMU processes execute this ordered transaction:
    `stop` returns either that retained asynchronous flush failure or a failure
    from its own confirming flush. A retained failure also makes `cont` fail
    before any resume side effect. `query-status` confirms the paused transition.
-6. The host clears the shared-memory pause request while QEMU remains stopped.
+6. The host clears the shared-memory pause request while QEMU remains stopped,
+   without waking either the scheduler futex or the QEMU main-loop doorbell.
 7. The Apache host captures its network, block, 9p, fault, scheduler, and node
    continuation; QMP saves VMState under the same checkpoint identity.
 8. A successful QMP `cont` clears the fence immediately before QEMU resumes
    vCPUs; `query-status` then confirms the running state.
 
 No wake thread runs alongside the blocking QMP command. No futex remains held
-by the plugin after it publishes the boundary. Any failed stop, pause release,
+by the plugin after it publishes the boundary. A successful stop uses the
+clear-without-wake operation because waking a vCPU-idle callback while QEMU is
+intentionally stopped would let that callback wait on the scheduler futex while
+holding the BQL and strand the intervening VMState command. A failed stop uses
+a separate abort operation that clears the flag and wakes both plugin wait
+mechanisms, because QEMU may still be running. Any failed stop, pause release,
 host capture, VMState save, or continue follows a typed cleanup path; a QMP
 timeout terminates the unusable child rather than exposing a partly resumed
 node.
@@ -119,7 +125,8 @@ uses the same stop handoff:
    invariants;
 2. request and observe a fresh exact plugin boundary;
 3. confirm QEMU's native paused state through typed QMP;
-4. clear the plugin pause while QEMU remains stopped;
+4. clear the plugin pause without a futex or doorbell wake while QEMU remains
+   stopped;
 5. submit an ABI-v8 logical/raw calibration transaction and require its matching
    request-ID acknowledgement and exact raw-coordinate result;
 6. arm the shared-memory restore ceiling at that calibrated raw coordinate;

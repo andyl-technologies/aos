@@ -6,8 +6,8 @@ use std::os::unix::net::UnixStream;
 use crucible::Checkpoint;
 
 use super::{
-    QmpClient, QmpCommand, QmpCommandComplete, QmpError, QmpIoTimeoutPolicy, QmpJobPollPolicy,
-    QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
+    QmpClient, QmpCommandComplete, QmpError, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind,
+    QmpSnapshotTag, QmpTimeoutStream,
 };
 use crate::{
     QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QemuLoadvmCommandAuthorization, QemuNodeChannelError,
@@ -114,26 +114,7 @@ where
             .map_err(QemuNodeChannelError::from)
     }
 
-    /// Begins the bounded post-restore calibration run.
-    ///
-    /// Unlike an ordinary checkpoint resume, the plugin is expected to pause
-    /// QEMU again as soon as it reconstructs and publishes the logical-time
-    /// boundary. The command acknowledgement therefore proves only that QEMU
-    /// admitted the run; [`Self::confirm_restore_boundary_pause`] proves its
-    /// terminal state after the shared-memory acknowledgement is observed.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when QEMU rejects or cannot acknowledge
-    /// the `cont` command.
-    pub(crate) fn begin_restore_boundary(&mut self) -> Result<(), QemuNodeChannelError> {
-        self.client
-            .send_command(QmpCommand::Cont)
-            .map(|_complete| ())
-            .map_err(QemuNodeChannelError::from)
-    }
-
-    /// Confirms that the plugin's post-restore calibration run ended paused.
+    /// Confirms that stopped-state post-restore calibration preserved the pause.
     ///
     /// # Errors
     ///
@@ -145,7 +126,7 @@ where
             return Ok(());
         }
         Err(QmpError::UnexpectedRunState {
-            command: super::QmpCommandKind::Cont,
+            command: super::QmpCommandKind::QueryStatus,
             status: state.status,
             running: state.running,
         }

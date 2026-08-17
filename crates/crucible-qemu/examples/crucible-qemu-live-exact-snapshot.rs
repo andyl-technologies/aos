@@ -28,7 +28,9 @@ use crucible_device::block::{
     BlockLatency,
 };
 #[cfg(target_os = "linux")]
-use crucible_qemu::{QemuLiveNodeStepGateConfig, run_qemu_live_exact_snapshot_gate};
+use crucible_qemu::{
+    QemuLaunchPluginSwitch, QemuLiveNodeStepGateConfig, run_qemu_live_exact_snapshot_gate,
+};
 
 #[cfg(target_os = "linux")]
 const BLOCK_DEVICE_BYTES: u64 = 4 * 1024 * 1024;
@@ -64,6 +66,7 @@ fn run() -> Result<(), String> {
     let require_pending_block = env_flag("CRUCIBLE_EXACT_PENDING_BLOCK", false)?;
     let mut config = QemuLiveNodeStepGateConfig::new(qemu, plugin, kernel, firmware, run_directory)
         .with_vm_shape(256, 2, 0)
+        .with_fingerprint(QemuLaunchPluginSwitch::On)
         .with_completion_timeout(Duration::from_secs(env_u64(
             "CRUCIBLE_EXACT_TIMEOUT_SECS",
             240,
@@ -121,6 +124,15 @@ fn run() -> Result<(), String> {
     );
     println!("capture_icount={}", report.capture_icount);
     println!("restored_icount={}", report.restored_icount);
+    println!("capture_rr_current_vcpu={}", report.capture_rr_current_vcpu);
+    println!(
+        "capture_rr_position_in_quantum={}",
+        report.capture_rr_position_in_quantum
+    );
+    println!(
+        "capture_rr_switch_quantum={}",
+        report.capture_rr_switch_quantum
+    );
     println!("suffix_icount={}", report.suffix_icount);
     println!("smp_vcpus={}", report.smp_vcpus);
     println!(
@@ -141,10 +153,12 @@ fn run() -> Result<(), String> {
         report.pending_block_io_captured
     );
     println!("multi_vcpu_exact_restore=true");
+    println!("nonzero_intra_turn_rr_cursor_restored=true");
     println!(
-        "idle_jump_calibration_replayed={}",
-        report.capture_logical_time_offset > 0
+        "rr_cursor_negative_control_rejected={}",
+        report.rr_cursor_negative_control_rejected
     );
+    println!("logical_time_calibration_restored=true");
     Ok(())
 }
 

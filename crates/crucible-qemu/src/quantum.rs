@@ -14,9 +14,10 @@ use crucible::{
     SchedulingNodeKind,
 };
 use crucible_shmem::{
-    AdvanceCeiling, FrameDeliveryKey, FrameEntry, FrameEntryError, LookaheadGateError, NodeSlot,
-    NodeSlotError, NodeSlotSnapshot, RingHeader, STATUS_IDLE, SchedulerWakePublicationError,
-    SpscRingError, authorize_advance_ceiling, validate_frame_delivery_is_future,
+    AdvanceCeiling, FingerprintSample, FingerprintSampleSlot, FrameDeliveryKey, FrameEntry,
+    FrameEntryError, LookaheadGateError, NodeSlot, NodeSlotError, NodeSlotSnapshot, RingHeader,
+    STATUS_IDLE, SchedulerWakePublicationError, SpscRingError, authorize_advance_ceiling,
+    validate_frame_delivery_is_future,
 };
 use thiserror::Error;
 
@@ -88,6 +89,7 @@ impl QemuQuantumShmemConfig {
 /// Borrowed shared-memory ABI objects for one QEMU node.
 pub struct QemuQuantumShmemView<'a> {
     node_slot: &'a NodeSlot,
+    fingerprint_sample: &'a FingerprintSampleSlot,
     inbound_ring: &'a RingHeader,
     inbound_entries: &'a mut [FrameEntry],
     outbound_ring: &'a RingHeader,
@@ -103,6 +105,7 @@ impl<'a> QemuQuantumShmemView<'a> {
     /// to a power-of-two SPSC capacity.
     pub fn new(
         node_slot: &'a NodeSlot,
+        fingerprint_sample: &'a FingerprintSampleSlot,
         inbound_ring: &'a RingHeader,
         inbound_entries: &'a mut [FrameEntry],
         outbound_ring: &'a RingHeader,
@@ -112,6 +115,7 @@ impl<'a> QemuQuantumShmemView<'a> {
         validate_queue_capacity(outbound_entries.len(), "outbound ring")?;
         Ok(Self {
             node_slot,
+            fingerprint_sample,
             inbound_ring,
             inbound_entries,
             outbound_ring,
@@ -288,7 +292,14 @@ impl QemuQuantumOperation {
 pub struct QemuPendingQuantum {
     /// Initial node report read before publishing the scheduler ceiling.
     pub initial_state: QemuNodeIdleState,
+    /// Horizon requested by the authoritative scheduler.
+    pub requested_horizon: Icount,
     /// Scheduler-published ceiling.
+    ///
+    /// An already-enqueued inbound frame can cap this below
+    /// [`Self::requested_horizon`]. The resulting completion is reported as a
+    /// pause at the delivery boundary so the frame can become visible before
+    /// the backend continues toward the original horizon in a fresh quantum.
     pub ceiling: Icount,
     /// Earliest delivery icount still valid for this scheduler pass.
     pub passed_delivery_floor: Icount,
@@ -464,9 +475,13 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
                 operation: "peek inbound delivery icount",
                 source,
             })?;
+        let effective_ceiling = earliest_delivery
+            .map_or(horizon.icount.retired, |delivery_icount| {
+                horizon.icount.retired.min(delivery_icount)
+            });
         let ceiling = authorize_qemu_delivery_ceiling(
             initial_state.current_icount.retired,
-            horizon.icount.retired,
+            effective_ceiling,
             earliest_delivery,
         )
         .map_err(|source| QemuQuantumError::Lookahead { source })?;
@@ -490,7 +505,10 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
 
         Ok(QemuPendingQuantum {
             initial_state,
-            ceiling: horizon.icount,
+            requested_horizon: horizon.icount,
+            ceiling: Icount {
+                retired: effective_ceiling,
+            },
             passed_delivery_floor,
             initial_device_io_freeze,
             report_generation: initial_snapshot.publish_gen,
@@ -545,7 +563,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         )?);
         due_inbound_frames.sort_by_key(QemuDueInboundFrame::delivery_key);
         let emitted_frames = self.drain_emitted_outbound()?;
-        let outcome = quantum_outcome(pending.ceiling, final_state)?;
+        let outcome = quantum_outcome(pending.requested_horizon, pending.ceiling, final_state)?;
         let operations = self.operation_log[pending.operation_start..].to_vec();
         assert_qemu_quantum_hot_path_is_shmem_only(&operations)?;
 
@@ -965,6 +983,16 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
             hash: ContentHash::from_canonical_material(QUANTUM_FINGERPRINT_DOMAIN, &material),
         })
     }
+
+    fn fingerprint_sample(&mut self) -> Result<FingerprintSample, QemuNodeChannelError> {
+        self.record(QemuQuantumOperation::ReadNodeReport);
+        self.view.fingerprint_sample.snapshot().ok_or_else(|| {
+            QemuNodeChannelError::retryable(
+                "fingerprint_sample",
+                "the plugin has not published a black-box fingerprint sample",
+            )
+        })
+    }
 }
 
 impl From<QemuQuantumError> for QemuNodeChannelError {
@@ -1090,20 +1118,24 @@ fn qemu_scheduler_node(node: &NodeId, kind: SchedulingNodeKind) -> SchedulerNode
 }
 
 fn quantum_outcome(
-    horizon: Icount,
+    requested_horizon: Icount,
+    published_ceiling: Icount,
     final_state: QemuNodeIdleState,
 ) -> Result<AdvanceOutcome, QemuQuantumError> {
-    if final_state.current_icount.retired >= horizon.retired {
+    if final_state.current_icount.retired >= requested_horizon.retired {
         return Ok(AdvanceOutcome::ReachedHorizon);
     }
-    if final_state.next_deadline.is_some() {
+    if (published_ceiling.retired < requested_horizon.retired
+        && final_state.current_icount.retired >= published_ceiling.retired)
+        || final_state.next_deadline.is_some()
+    {
         return Ok(AdvanceOutcome::Paused {
             at: final_state.current_icount,
         });
     }
     Err(QemuQuantumError::IncompleteQuantumReport {
         current_icount: final_state.current_icount.retired,
-        ceiling: horizon.retired,
+        ceiling: published_ceiling.retired,
     })
 }
 
@@ -1553,7 +1585,7 @@ mod tests {
     }
 
     #[test]
-    fn qemu_quantum_rejects_horizon_that_would_pass_possible_frame_delivery() {
+    fn qemu_quantum_caps_horizon_at_next_possible_frame_delivery() {
         let slot = NodeSlot::default();
         let inbound_ring = RingHeader::new();
         let outbound_ring = RingHeader::new();
@@ -1574,18 +1606,24 @@ mod tests {
         });
         assert!(enqueue.is_ok());
 
-        let result = hot_path.start_quantum(horizon(6));
+        let pending = match hot_path.start_quantum(horizon(6)) {
+            Ok(pending) => pending,
+            Err(error) => panic!("pending delivery should cap the quantum: {error}"),
+        };
+        assert_eq!(pending.requested_horizon, icount(6));
+        assert_eq!(pending.ceiling, icount(5));
+        if let Err(error) = slot.publish_reached_icount(5, 0) {
+            panic!("plugin should stop at the delivery boundary: {error}");
+        }
+        let report = match hot_path.finish_quantum(pending) {
+            Ok(report) => report,
+            Err(error) => panic!("delivery-capped quantum should finish: {error}"),
+        };
 
-        assert!(matches!(
-            result,
-            Err(QemuQuantumError::Lookahead {
-                source: LookaheadGateError::AdvanceReachesPossibleDelivery {
-                    max_advance_icount: 6,
-                    earliest_possible_delivery_icount: 5,
-                },
-            })
-        ));
-        assert_eq!(inbound_ring.read_index(), 0);
+        assert_eq!(report.ceiling, icount(5));
+        assert_eq!(report.outcome, AdvanceOutcome::Paused { at: icount(5) });
+        assert_eq!(report.due_inbound_frames.len(), 1);
+        assert_eq!(inbound_ring.read_index(), 1);
     }
 
     #[test]
@@ -1953,8 +1991,10 @@ mod tests {
         outbound_entries: &'a mut [FrameEntry],
         send_authorizer: &'a dyn crucible::SchedulerSendAuthorizer,
     ) -> QemuQuantumShmemHotPath<'a> {
+        static FINGERPRINT_SAMPLE: FingerprintSampleSlot = FingerprintSampleSlot::new();
         let view = match QemuQuantumShmemView::new(
             slot,
+            &FINGERPRINT_SAMPLE,
             inbound_ring,
             inbound_entries,
             outbound_ring,

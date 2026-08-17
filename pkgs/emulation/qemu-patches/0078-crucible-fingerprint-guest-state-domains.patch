@@ -1,0 +1,118 @@
+diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
+index db2f5f2d4..fea949d6e 100644
+--- a/include/hw/core/cpu.h
++++ b/include/hw/core/cpu.h
+@@ -164,6 +164,10 @@ typedef int (*CrucibleCPURegisterWriteFn)(
+  * @gdb_adjust_breakpoint: Callback for adjusting the address of a
+  *       breakpoint.  Used by AVR to handle a gdb mis-feature with
+  *       its Harvard architecture split code and data.
++ * @crucible_fingerprint_transient_interrupt_mask: Target-specific
++ *       CPU_INTERRUPT_TGT_* bits that are host-control notifications rather
++ *       than guest-observable architectural state. Crucible masks these bits
++ *       only while serializing its black-box fingerprint.
+  * @gdb_num_core_regs: Number of core registers accessible to GDB or 0 to infer
+  *                     from @gdb_core_xml_file.
+  * @gdb_core_xml_file: File name for core registers GDB XML description.
+@@ -205,6 +209,7 @@ struct CPUClass {
+     CrucibleCPURegisterReadFn crucible_register_read;
+     CrucibleCPURegisterValidateWriteFn crucible_register_validate_write;
+     CrucibleCPURegisterWriteFn crucible_register_write;
++    uint32_t crucible_fingerprint_transient_interrupt_mask;
+ 
+     const char *gdb_core_xml_file;
+     const gchar * (*gdb_arch_name)(CPUState *cpu);
+diff --git a/plugins/api.c b/plugins/api.c
+index 57a11d764..8f50cd98f 100644
+--- a/plugins/api.c
++++ b/plugins/api.c
+@@ -50,6 +50,7 @@
+ #include "tcg/tcg.h"
+ #include "exec/address-spaces.h"
+ #include "exec/cpu-common.h"
++#include "exec/cpu-interrupt.h"
+ #include "exec/gdbstub.h"
+ #include "exec/memory.h"
+ #include "exec/ramblock.h"
+@@ -800,7 +801,9 @@ int qemu_plugin_crucible_device_state_hash(uint64_t *hash_out,
+ 
+     buffer = qio_channel_buffer_new(4096);
+     file = qemu_file_new_output(QIO_CHANNEL(buffer));
+-    status = qemu_save_device_state(file);
++    status = qemu_save_device_state_domains(
++        file, QEMU_CRUCIBLE_LIFECYCLE_STATE_VOLATILE |
++              QEMU_CRUCIBLE_LIFECYCLE_STATE_DEVICE);
+     if (status == 0) {
+         status = qemu_fflush(file);
+     }
+@@ -939,6 +942,41 @@ int qemu_plugin_crucible_guest_ram_sha256(uint8_t digest_out[32],
+     return 0;
+ }
+ 
++static int qemu_plugin_crucible_save_fingerprint_device_state(QEMUFile *file)
++{
++    g_autoptr(GArray) interrupt_requests =
++        g_array_new(false, false, sizeof(int));
++    CPUState *cpu;
++    bool acquired_bql = false;
++    size_t index = 0;
++    int status;
++
++    if (!bql_locked()) {
++        bql_lock();
++        acquired_bql = true;
++    }
++    CPU_FOREACH(cpu) {
++        int interrupt_request = cpu->interrupt_request;
++
++        g_array_append_val(interrupt_requests, interrupt_request);
++        cpu->interrupt_request &=
++            ~(CPU_INTERRUPT_EXITTB |
++              cpu->cc->crucible_fingerprint_transient_interrupt_mask);
++    }
++    status = qemu_save_device_state_domains(
++        file, QEMU_CRUCIBLE_LIFECYCLE_STATE_VOLATILE |
++              QEMU_CRUCIBLE_LIFECYCLE_STATE_DEVICE);
++    CPU_FOREACH(cpu) {
++        g_assert(index < interrupt_requests->len);
++        cpu->interrupt_request =
++            g_array_index(interrupt_requests, int, index++);
++    }
++    if (acquired_bql) {
++        bql_unlock();
++    }
++    return status;
++}
++
+ int qemu_plugin_crucible_device_state_sha256(uint8_t digest_out[32],
+                                              uint64_t *bytes_out)
+ {
+@@ -956,7 +994,7 @@ int qemu_plugin_crucible_device_state_sha256(uint8_t digest_out[32],
+     *bytes_out = 0;
+     buffer = qio_channel_buffer_new(4096);
+     file = qemu_file_new_output(QIO_CHANNEL(buffer));
+-    status = qemu_save_device_state(file);
++    status = qemu_plugin_crucible_save_fingerprint_device_state(file);
+     if (status == 0) {
+         status = qemu_fflush(file);
+     }
+@@ -1442,7 +1480,7 @@ int qemu_plugin_crucible_fingerprint_capture(
+ 
+     buffer = qio_channel_buffer_new(4096);
+     file = qemu_file_new_output(QIO_CHANNEL(buffer));
+-    status = qemu_save_device_state(file);
++    status = qemu_plugin_crucible_save_fingerprint_device_state(file);
+     if (status == 0) {
+         status = qemu_fflush(file);
+     }
+diff --git a/target/i386/cpu.c b/target/i386/cpu.c
+index 2f2002722..0d83f87af 100644
+--- a/target/i386/cpu.c
++++ b/target/i386/cpu.c
+@@ -9007,6 +9007,7 @@ static void x86_cpu_common_class_init(ObjectClass *oc, void *data)
+     cc->crucible_register_write = x86_crucible_register_write;
+ #endif
+ #endif
++    cc->crucible_fingerprint_transient_interrupt_mask = CPU_INTERRUPT_POLL;
+     cc->get_arch_id = x86_cpu_get_arch_id;
+ 
+ #ifndef CONFIG_USER_ONLY

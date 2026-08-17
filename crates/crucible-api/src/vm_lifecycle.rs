@@ -1010,6 +1010,7 @@ pub fn build_production_vm_lifecycle_loop(
         .with_scenario_seed(launch_seed)
         .with_whitebox(whitebox)
         .with_coverage(config.coverage)
+        .with_fingerprint(crucible_qemu::QemuLaunchPluginSwitch::On)
         .with_queue_capacity(PRODUCTION_QUEUE_CAPACITY)
         .with_completion_timeout(config.completion_timeout)
         .with_console_capture()
@@ -1157,6 +1158,33 @@ pub fn build_production_vm_lifecycle_loop(
                 return Err(loop_factory_error(format!(
                     "QEMU node `{}` restored at unauthenticated instruction boundary {observed}",
                     vm.id.name
+                )));
+            }
+            let Some(expected_fingerprint) = target.fault_checkpoint.qemu_fingerprint(&vm.id)
+            else {
+                let _ = SimulationBackend::shutdown(&mut backend);
+                return Err(loop_factory_error(format!(
+                    "exact checkpoint for `{}` has no authenticated QEMU fingerprint",
+                    vm.id.name
+                )));
+            };
+            let restored_fingerprint = match backend.execution_fingerprint() {
+                Ok(fingerprint) => fingerprint.hash,
+                Err(error) => {
+                    let _ = SimulationBackend::shutdown(&mut backend);
+                    return Err(loop_factory_error(format!(
+                        "read restored QEMU fingerprint for `{}`: {error}",
+                        vm.id.name
+                    )));
+                }
+            };
+            if restored_fingerprint != expected_fingerprint {
+                let _ = SimulationBackend::shutdown(&mut backend);
+                return Err(loop_factory_error(format!(
+                    "QEMU node `{}` restored with an unauthenticated execution fingerprint: expected {}, observed {}",
+                    vm.id.name,
+                    expected_fingerprint.to_hex(),
+                    restored_fingerprint.to_hex(),
                 )));
             }
         } else if initial_ticks.is_some_and(|initial| initial != observed) {

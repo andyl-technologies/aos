@@ -13,10 +13,6 @@
   # phase1-clock-deadline.
   taskIds ? ["T-HARN-4" "T-PLUG-4" "T-PLUG-5" "T-PLUG-6" "T-PLUG-7" "T-TIME-5" "T-TIME-7"],
   openTaskIds ? [],
-  # Drive the authorized idle-jump advancement (not just observe idle onset). The
-  # example reads this via `.with_prove_idle_jump`; on it asserts the guest jumps
-  # from idle onset past the timer deadline and the O(1) idle-advance rate.
-  proveIdleJump ? "1",
   # Scheduler tuning for the diskless multiboot guest, which arms a periodic PIT
   # deadline and then parks every configured vCPU in HLT.
   ceilingStep ? "4000000",
@@ -71,7 +67,6 @@ in
     CRUCIBLE_QUANTUM_MIN_IDLE_SPEEDUP = minIdleSpeedup;
     CRUCIBLE_QUANTUM_TIMEOUT_SECS = quantumTimeoutSecs;
     CRUCIBLE_QUANTUM_SECOND_RUN_LOAD = secondRunLoad;
-    CRUCIBLE_QUANTUM_PROVE_IDLE_JUMP = proveIdleJump;
     CRUCIBLE_QUANTUM_SMP_VCPUS = smpVcpus;
     CRUCIBLE_QUANTUM_MEMORY_MIB = memoryMib;
     TASK_IDS = taskList;
@@ -187,7 +182,6 @@ in
           # idle_wall_micros of wall time), byte-identical on the second,
           # host-loaded run.
           grep -Fxq 'idle_jump_proven=true' "$report"
-          ! grep -q '^idle_jump_defect=' "$report"
           grep -Eq '^idle_icount_span=[1-9][0-9]*$' "$report"
           grep -Eq '^idle_wall_micros=[0-9]+$' "$report"
           grep -Eq '^terminal_icount=[1-9][0-9]*$' "$report"

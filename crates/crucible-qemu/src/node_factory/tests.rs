@@ -177,11 +177,11 @@ fn factory_restores_vmstate_before_exposing_exact_snapshot_control() -> Result<(
     let (qmp_stream, qmp_written) = scripted_qmp_with_written([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
+        r#"{"return":{"running":true,"status":"running"}}"#,
         r#"{"return":{}}"#,
         r#"{"return":{"running":false,"status":"paused"}}"#,
         r#"{"return":{}}"#,
         r#"{"return":[{"id":"crucible-load-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
-        r#"{"return":{}}"#,
         r#"{"return":{}}"#,
         r#"{"return":{"running":false,"status":"paused"}}"#,
         r#"{"return":{}}"#,
@@ -244,24 +244,27 @@ fn factory_restores_vmstate_before_exposing_exact_snapshot_control() -> Result<(
         execute_name(json_line(&lines, 0)),
         Some(QMP_CAPABILITIES_COMMAND)
     );
-    assert_eq!(execute_name(json_line(&lines, 1)), Some(QMP_STOP_COMMAND));
     assert_eq!(
-        execute_name(json_line(&lines, 2)),
+        execute_name(json_line(&lines, 1)),
+        Some(QMP_QUERY_STATUS_COMMAND)
+    );
+    assert_eq!(execute_name(json_line(&lines, 2)), Some(QMP_STOP_COMMAND));
+    assert_eq!(
+        execute_name(json_line(&lines, 3)),
         Some(QMP_QUERY_STATUS_COMMAND)
     );
     assert_eq!(
-        execute_name(json_line(&lines, 3)),
+        execute_name(json_line(&lines, 4)),
         Some(QMP_SNAPSHOT_LOAD_COMMAND)
     );
     assert_eq!(
-        execute_name(json_line(&lines, 4)),
+        execute_name(json_line(&lines, 5)),
         Some(QMP_QUERY_JOBS_COMMAND)
     );
     assert_eq!(
-        execute_name(json_line(&lines, 5)),
+        execute_name(json_line(&lines, 6)),
         Some(QMP_JOB_DISMISS_COMMAND)
     );
-    assert_eq!(execute_name(json_line(&lines, 6)), Some(QMP_CONT_COMMAND));
     assert_eq!(
         execute_name(json_line(&lines, 7)),
         Some(QMP_QUERY_STATUS_COMMAND)
@@ -299,6 +302,7 @@ fn post_load_host_restore_failure_kills_child_without_resuming_qemu() -> Result<
     let (qmp_stream, qmp_written) = scripted_qmp_with_written([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
+        r#"{"return":{"running":true,"status":"running"}}"#,
         r#"{"return":{}}"#,
         r#"{"return":{"running":false,"status":"paused"}}"#,
         r#"{"return":{}}"#,
@@ -339,7 +343,7 @@ fn post_load_host_restore_failure_kills_child_without_resuming_qemu() -> Result<
     }
 
     let lines = written_json_lines_from_shared(&qmp_written)?;
-    assert_eq!(lines.len(), 6);
+    assert_eq!(lines.len(), 7);
     assert!(
         lines
             .iter()
@@ -367,13 +371,12 @@ fn missing_post_load_calibration_ack_kills_child_before_exposure() -> Result<(),
     let (qmp_stream, qmp_written) = scripted_qmp_with_written([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
+        r#"{"return":{"running":true,"status":"running"}}"#,
         r#"{"return":{}}"#,
         r#"{"return":{"running":false,"status":"paused"}}"#,
         r#"{"return":{}}"#,
         r#"{"return":[{"id":"crucible-load-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
         r#"{"return":{}}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":{"running":true,"status":"running"}}"#,
     ]);
     let qmp = QemuQmpVmStateControlChannel::connect(qmp_stream)?;
     let checkpoint = checkpoint_with_hash_byte(0xab);
@@ -404,8 +407,12 @@ fn missing_post_load_calibration_ack_kills_child_before_exposure() -> Result<(),
     }
 
     let lines = written_json_lines_from_shared(&qmp_written)?;
-    assert_eq!(execute_name(json_line(&lines, 6)), Some(QMP_CONT_COMMAND));
-    assert_eq!(lines.len(), 8);
+    assert_eq!(lines.len(), 7);
+    assert!(
+        lines
+            .iter()
+            .all(|line| execute_name(line) != Some(QMP_CONT_COMMAND))
+    );
     assert!(
         lines
             .iter()
@@ -435,11 +442,11 @@ fn factory_restores_baked_genesis_without_oracle_admission() -> Result<(), Box<d
     let (qmp_stream, qmp_written) = scripted_qmp_with_written([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
+        r#"{"return":{"running":true,"status":"running"}}"#,
         r#"{"return":{}}"#,
         r#"{"return":{"running":false,"status":"paused"}}"#,
         r#"{"return":{}}"#,
         r#"{"return":[{"id":"crucible-load-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
-        r#"{"return":{}}"#,
         r#"{"return":{}}"#,
         r#"{"return":{"running":false,"status":"paused"}}"#,
         r#"{"return":{}}"#,
@@ -477,24 +484,27 @@ fn factory_restores_baked_genesis_without_oracle_admission() -> Result<(), Box<d
         execute_name(json_line(&lines, 0)),
         Some(QMP_CAPABILITIES_COMMAND)
     );
-    assert_eq!(execute_name(json_line(&lines, 1)), Some(QMP_STOP_COMMAND));
     assert_eq!(
-        execute_name(json_line(&lines, 2)),
+        execute_name(json_line(&lines, 1)),
+        Some(QMP_QUERY_STATUS_COMMAND)
+    );
+    assert_eq!(execute_name(json_line(&lines, 2)), Some(QMP_STOP_COMMAND));
+    assert_eq!(
+        execute_name(json_line(&lines, 3)),
         Some(QMP_QUERY_STATUS_COMMAND)
     );
     assert_eq!(
-        execute_name(json_line(&lines, 3)),
+        execute_name(json_line(&lines, 4)),
         Some(QMP_SNAPSHOT_LOAD_COMMAND)
     );
     assert_eq!(
-        execute_name(json_line(&lines, 4)),
+        execute_name(json_line(&lines, 5)),
         Some(QMP_QUERY_JOBS_COMMAND)
     );
     assert_eq!(
-        execute_name(json_line(&lines, 5)),
+        execute_name(json_line(&lines, 6)),
         Some(QMP_JOB_DISMISS_COMMAND)
     );
-    assert_eq!(execute_name(json_line(&lines, 6)), Some(QMP_CONT_COMMAND));
     assert_eq!(
         execute_name(json_line(&lines, 7)),
         Some(QMP_QUERY_STATUS_COMMAND)
@@ -811,7 +821,7 @@ fn plugin_peer_complete_setup(
         .validate_header()
         .map_err(|error| error.to_string())?;
     assert_fd_open(setup.descriptors.wake_fd.as_raw_fd()).map_err(|error| error.to_string())?;
-    crate::host_setup::tests::publish_test_capability_result(&mut mapped)
+    crate::host_setup::tests::publish_test_admission_results(&mut mapped)
         .map_err(|error| error.to_string())?;
 
     plugin
