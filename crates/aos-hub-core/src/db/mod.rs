@@ -9740,13 +9740,14 @@ impl Database {
             .context("created surface object disappeared")
     }
 
-    /// Converts one legacy immutable registry object into a replaceable
-    /// pointer while preserving its currently published identity.
+    /// Converts one legacy immutable Git object into a replaceable pointer
+    /// while preserving its currently published identity.
     ///
-    /// This migration is reserved for Git loose-object paths whose URL binds
-    /// the decompressed object rather than its zlib wire bytes. When a current
-    /// publication exists, the converted row remains owned by it until the new
-    /// publication completes, so reads stay available throughout migration.
+    /// This migration is reserved for loose-object paths whose URL binds the
+    /// decompressed object and per-release `objects/info/*` server metadata.
+    /// When a current publication exists, the converted row remains owned by
+    /// it until the new publication completes, so reads stay available
+    /// throughout migration.
     ///
     /// # Errors
     ///
@@ -9754,7 +9755,7 @@ impl Database {
     /// the same registry, the object is active and immutable (or was already
     /// converted by an equivalent concurrent admission), or the database
     /// operation fails.
-    pub async fn convert_registry_loose_object_to_mutable(
+    pub async fn convert_registry_git_object_to_mutable(
         &self,
         registry_id: i64,
         surface_object_id: i64,
@@ -9763,8 +9764,10 @@ impl Database {
     ) -> Result<SurfaceObjectRecord> {
         validate_key_bytes(object_key, "surface object key", 512)?;
         validate_key_bytes(preparing_publication_id, "publication id", 64)?;
-        if !aos_registry_surface::keymap::is_loose_git_object_path(object_key) {
-            bail!("surface object is not a SHA-256 Git loose-object path");
+        if !aos_registry_surface::keymap::is_loose_git_object_path(object_key)
+            && !aos_registry_surface::keymap::is_release_object_info_path(object_key)
+        {
+            bail!("surface object is not replaceable Git object metadata");
         }
         let now = unix_now();
         self.backend
@@ -29523,7 +29526,7 @@ source_nar_hash = ""
     }
 
     #[tokio::test]
-    async fn legacy_loose_object_conversion_preserves_identity_and_is_idempotent() {
+    async fn legacy_git_object_conversion_preserves_identity_and_is_idempotent() {
         let db = Database::open_in_memory().await.unwrap();
         let registry_id = db
             .register_registry("loose-migration", &[], false)
@@ -29585,7 +29588,7 @@ source_nar_hash = ""
 
         for _ in 0..2 {
             let converted = db
-                .convert_registry_loose_object_to_mutable(
+                .convert_registry_git_object_to_mutable(
                     registry_id,
                     object.id,
                     object_key,
@@ -29601,6 +29604,34 @@ source_nar_hash = ""
                 Some(current_publication_id)
             );
         }
+
+        let release_info_key = "releases/1/0/0/objects/info/packs";
+        let release_info = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry_id),
+                object_key: release_info_key.into(),
+                content_hash: Some("e".repeat(64)),
+                size: Some(12),
+                object_kind: "immutable".into(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        let converted = db
+            .convert_registry_git_object_to_mutable(
+                registry_id,
+                release_info.id,
+                release_info_key,
+                publication_id,
+            )
+            .await
+            .unwrap();
+        assert_eq!(converted.object_kind, "mutable_pointer");
+        assert_eq!(converted.content_hash, Some("e".repeat(64)));
+        assert_eq!(
+            converted.mutable_publication_id.as_deref(),
+            Some(current_publication_id)
+        );
     }
 
     #[tokio::test]
