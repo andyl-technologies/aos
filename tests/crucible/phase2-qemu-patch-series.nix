@@ -531,6 +531,41 @@
       enforces = "PATCH-20,DET-1,INV-10";
       capability = "realize-time 9p completion notifier registration independent of plugin installation order";
     }
+    {
+      file = "0077-crucible-serialize-rr-cursor.patch";
+      catalogName = "crucible-serialize-rr-cursor";
+      class = "D";
+      enforces = "DET-1,DET-18,INV-10";
+      capability = "authoritative record/replay cursor accounting and VMState restore before guest execution";
+    }
+    {
+      file = "0078-crucible-fingerprint-guest-state-domains.patch";
+      catalogName = "crucible-fingerprint-state-domains";
+      class = "D";
+      enforces = "DET-18,DET-19,INV-10";
+      capability = "guest-semantic CPU and interrupt fingerprint domains with target-declared transient interrupt canonicalization";
+    }
+    {
+      file = "0079-crucible-stopped-state-control-progress.patch";
+      catalogName = "crucible-stopped-state-control-progress";
+      class = "D";
+      enforces = "DET-1,INV-10,QEMU-43,QFP-STATE-2";
+      capability = "level-triggered native-stop progress with all-vCPU queued-work admission and a bounded BQL-aware wait";
+    }
+    {
+      file = "0080-crucible-inactive-retention-clock-guard.patch";
+      catalogName = "crucible-inactive-retention-clock-guard";
+      class = "D";
+      enforces = "DET-1,QFP-STATE-2,FAULT-ORDER";
+      capability = "inactive memory-retention boundaries return before sampling a transient fresh-process restore clock";
+    }
+    {
+      file = "0081-crucible-deferred-result-evidence-test.patch";
+      catalogName = "crucible-deferred-result-evidence-test";
+      class = "F";
+      enforces = "QEMU-44,FAULT-EVIDENCE";
+      capability = "live instruction-fault coverage validates the canonical typed evidence added to deferred completions";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

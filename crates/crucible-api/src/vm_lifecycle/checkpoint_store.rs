@@ -1899,6 +1899,8 @@ fn hex_bytes(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
+
     use super::*;
 
     fn manifest() -> ClosureManifest {
@@ -2139,8 +2141,10 @@ mod tests {
         fs::create_dir(root.path().join("not-a-checkpoint")).expect("create unrelated directory");
         fs::create_dir(root.path().join("0".repeat(64)))
             .expect("create one published checkpoint directory");
-        let mut limits = FaultResourceLimits::default();
-        limits.checkpoint_count = 1;
+        let limits = FaultResourceLimits {
+            checkpoint_count: 1,
+            ..FaultResourceLimits::default()
+        };
 
         enforce_published_checkpoint_count(root.path(), limits)
             .expect("only the published identity counts against the limit");

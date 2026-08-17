@@ -64,6 +64,12 @@
         {label = "original opportunity identity"; needle = "qemu_crucible_fault_rule_opportunity_hash";}
         {label = "clock arithmetic evidence"; needle = "stq_le_p(record + 276, old_additive)";}
       ]
+      else if lib.hasPrefix "0080-" patchName
+      then [
+        {label = "zero-initialized retention boundary count"; needle = "+    CrucibleRetentionBoundaryCount count = { 0 };";}
+        {label = "active-rule guard precedes clock sample"; needle = "!qemu_crucible_fault_memory_rules_active()) {\n         return;\n     }\n+    count.now = node_virtual_now();";}
+        {label = "eager inactive clock sample removed"; needle = "-    CrucibleRetentionBoundaryCount count = { .now = node_virtual_now() };";}
+      ]
       else [
         {label = "final fault-system manifest"; needle = "qemu_plugin_crucible_fault_system_manifest";}
         {label = "complete fault-system capability"; needle = "qemu.fault-system.complete.v1";}
@@ -147,13 +153,41 @@ in
               socket="$1"
               request="$2"
               response="$3"
-              {
-                sleep 0.1
-                printf '%s\r\n' '{"execute":"qmp_capabilities"}'
-                sleep 0.1
-                printf '%s\r\n' "$request"
-                sleep 0.4
-              } | socat -T 4 - "UNIX-CONNECT:$socket" > "$response" 2> "$response.err" || true
+              : > "$response"
+              : > "$response.err"
+              tagged_request=$(printf '%s' "$request" | jq -c '. + {id: "command"}')
+
+              coproc CRUCIBLE_QMP {
+                socat -T 10 - "UNIX-CONNECT:$socket" 2> "$response.err"
+              }
+              qmp_read_fd="''${CRUCIBLE_QMP[0]}"
+              qmp_write_fd="''${CRUCIBLE_QMP[1]}"
+              qmp_pid="$CRUCIBLE_QMP_PID"
+
+              if { IFS= read -r -t 10 qmp_line <&"$qmp_read_fd"; } 2>/dev/null; then
+                printf '%s\n' "$qmp_line" >> "$response"
+              fi
+              printf '%s\r\n' '{"execute":"qmp_capabilities","id":"capabilities"}' \
+                >&"$qmp_write_fd"
+              while { IFS= read -r -t 10 qmp_line <&"$qmp_read_fd"; } 2>/dev/null; do
+                printf '%s\n' "$qmp_line" >> "$response"
+                if printf '%s' "$qmp_line" \
+                    | jq -e '(.id // "") == "capabilities"' >/dev/null 2>&1; then
+                  break
+                fi
+              done
+
+              printf '%s\r\n' "$tagged_request" >&"$qmp_write_fd"
+              while { IFS= read -r -t 10 qmp_line <&"$qmp_read_fd"; } 2>/dev/null; do
+                printf '%s\n' "$qmp_line" >> "$response"
+                if printf '%s' "$qmp_line" \
+                    | jq -e '(.id // "") == "command"' >/dev/null 2>&1; then
+                  break
+                fi
+              done
+
+              eval "exec $qmp_write_fd>&-" 2>/dev/null || true
+              wait "$qmp_pid" 2>/dev/null || true
             }
 
             qmp_expect_success() {
@@ -275,8 +309,30 @@ in
 
             continue_qemu() {
               socket="$1"
-              qmp_expect_success "$socket" '{"execute":"cont"}' "$TMPDIR/cont.json" \
-                || fail "QEMU refused to continue"
+              attempts=0
+              while [ "$attempts" -lt 60 ]; do
+                qmp "$socket" '{"execute":"cont"}' "$TMPDIR/cont.json"
+                if ! jq -e -s 'any(.[]; has("error"))' "$TMPDIR/cont.json" >/dev/null &&
+                   jq -e -s '[.[] | select(has("return"))] | length >= 2' \
+                     "$TMPDIR/cont.json" >/dev/null; then
+                  return 0
+                fi
+
+                # A delayed reply can arrive after the client half-closes even
+                # though QEMU accepted the command. Querying the authoritative
+                # runstate makes retrying cont idempotent under builder load.
+                qmp "$socket" '{"execute":"query-status"}' "$TMPDIR/cont-status.json"
+                if jq -e -s '
+                    ([.[] | select(has("return"))][-1].return.status // "")
+                    == "running"
+                  ' "$TMPDIR/cont-status.json" >/dev/null; then
+                  return 0
+                fi
+                sleep 0.1
+                attempts=$((attempts + 1))
+              done
+              cat "$TMPDIR/cont.json" "$TMPDIR/cont-status.json" >&2
+              fail "QEMU refused to continue"
             }
 
             patched_image="$TMPDIR/patched.qcow2"

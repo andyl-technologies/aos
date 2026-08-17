@@ -34,7 +34,7 @@
     failuresFor "pkgs/emulation/qemu.nix" qemuNix [
       {
         label = "QEMU net TX callback patch wiring";
-        needle = "patch -p1 < \${./qemu-patches/0020-crucible-net-tx-callback.patch}";
+        needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
       }
     ]
     ++ failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [

@@ -235,12 +235,12 @@
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [
       {
-        label = "Plan kind discriminates scheduled and graph forms";
-        needle = "enum PlanKind";
+        label = "Plan has one graph-native representation";
+        needle = "pub struct Plan";
       }
       {
-        label = "Plan carries event graph";
-        needle = "EventGraph { graph: EventGraph }";
+        label = "Plan carries signal-driven faults beside the event graph";
+        needle = "fault_signals: FaultSignalPlan";
       }
       {
         label = "assertion-aware graph Plan constructor";
@@ -256,23 +256,23 @@
       }
       {
         label = "graph Plan accessor";
-        needle = "pub fn event_graph(&self) -> Option<&EventGraph>";
+        needle = "pub const fn event_graph(&self) -> &EventGraph";
       }
       {
         label = "scenario composition validates graph Plan with properties";
         needle = "fn validate_event_graph_plan";
       }
       {
-        label = "Plan-kind canonical material";
-        needle = "fn plan_kind_material";
+        label = "unified Plan canonical material";
+        needle = "fn plan_parts_material";
       }
       {
         label = "event graph canonical material";
         needle = "fn event_graph_plan_material";
       }
       {
-        label = "event graph TOML discriminant";
-        needle = "PlanKindToml::EventGraph";
+        label = "signal-binding TOML discriminant";
+        needle = "FaultModelToml::SignalBindingsV2";
       }
       {
         label = "event binary writer";

@@ -97,7 +97,7 @@
     ++ failuresFor "crates/crucible/tests/gate_minimization.rs" minimizationTest [
       {
         label = "deterministic shrink gate";
-        needle = "gate_minimization_shrinks_schedule_and_fault_decisions_deterministically";
+        needle = "gate_minimization_shrinks_schedule_and_rng_decisions_deterministically";
       }
       {
         label = "non reproducing start gate";
@@ -128,8 +128,8 @@
         needle = "assert_eq!(first, second)";
       }
       {
-        label = "fault decision removed";
-        needle = "fault_decision(\"unused-network-loss\", false)";
+        label = "unused RNG decision removed";
+        needle = "rng_decision(\"unused-network-draw\", 0)";
       }
       {
         label = "minimal schedule assertion";

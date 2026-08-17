@@ -33,7 +33,7 @@
   qemuNixRequirements = [
     {
       label = "deterministic entropy patch wiring";
-      needle = "patch -p1 < \${./qemu-patches/0005-crucible-det-glib-prng.patch}";
+      needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
     }
   ];
 

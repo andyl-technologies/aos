@@ -8,6 +8,14 @@ contains the selected vCPU and the number of retired instructions within its
 pinned `rr_switch_quantum`. It is the cursor exported to the fingerprint plugin
 and the cursor restored with VMState.
 
+This position is QEMU's authoritative precise-icount value, not the trace
+plugin's per-vCPU instruction-callback counter. Both streams are deterministic
+and are fingerprinted, but exception and assist execution may advance precise
+icount before the observation plugin receives the same number of callbacks on a
+newly runnable vCPU. Import therefore validates the cursor against its own
+closed domain (`current_vcpu < vcpu_count` and `position < quantum`) and does
+not compare it numerically with `register_retired`.
+
 The earlier introspection helper derived its answer from `current_cpu` and the
 temporary budget of one `tcg_cpu_exec` call. That representation is unavailable
 while a freshly restored VM is stopped and resets at every host scheduler

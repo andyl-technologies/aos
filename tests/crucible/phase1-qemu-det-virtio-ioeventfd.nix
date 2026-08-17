@@ -180,7 +180,7 @@
   qemuNixRequirements = [
     {
       label = "det virtio ioeventfd patch wiring";
-      needle = "patch -p1 < \${./qemu-patches/0032-crucible-det-virtio-ioeventfd.patch}";
+      needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
     }
   ];
 

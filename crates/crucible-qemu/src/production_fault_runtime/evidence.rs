@@ -151,7 +151,7 @@ pub(super) fn validate_lifecycle_evidence(
         || !(1..=3).contains(&device_policy)
         || preserved_domains != expected_preserved_domains
         || virtual_before.checked_add(downtime) != Some(virtual_after)
-        || !read_u64(bytes, 48).is_some_and(|ram_bytes| ram_bytes > 0)
+        || read_u64(bytes, 48).is_none_or(|ram_bytes| ram_bytes == 0)
         || read_u64(bytes, 56).is_none()
     {
         return false;

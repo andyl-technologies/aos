@@ -404,12 +404,12 @@ a partition that splits the cluster, a node that rejoins — are modeled entirel
 as **faults in the `Plan`** (17) over the static topology, not as mutations of
 the topology itself.
 
-A crash is `Fault::Crash` over a still-declared node; a partition is
-`Fault::Partition` that suppresses delivery on still-declared links; a heal
-removes the fault and restores the declared link's behavior. The node and link
-never leave the `World`; what changes is whether they are *active*, expressed as
-fault state layered over the static graph and resolved deterministically by the
-scheduler.
+A crash is a persistent `node.lifecycle` binding over a still-declared node; a
+partition is a persistent `network.delivery` binding that suppresses delivery
+on still-declared links. When the driving signal changes, the binding removes or
+replaces its contribution and restores the declared behavior. The node and link
+never leave the `World`; what changes is the signal-driven effect state layered
+over the static graph and resolved deterministically by the scheduler.
 
 This is a determinism decision, not a capability limitation. Dynamic membership —
 genuinely adding a node to the `World` at virtual time `t` — would mean the set of
@@ -589,10 +589,8 @@ let scenario = ScenarioBuilder::new()
     .link("db-0", "db-1", LinkDef::lan().latency_ms(5).jitter_ms(1).loss(0.0))
     .link("db-1", "db-2", LinkDef::lan().latency_ms(5))
     .link("db-0", "db-2", LinkDef::lan().latency_ms(5))
-    // ── Plan: faults/events over virtual time (orthogonal layer, file 17) ─
-    .plan(Plan::builder()
-        .at_virtual_secs(10).inject(Fault::partition("db-0", "db-1").tag("split"))
-        .at_virtual_secs(40).heal("split"))
+    // ── Plan: event graph plus the sole signal/binding fault layer (17) ───
+    .plan(Plan::empty().with_fault_signals(fault_signals))
     // ── Properties: assertions (orthogonal layer, file 18) ────────────────
     .properties(Properties::builder()
         .always("no_split_brain", Predicate::AtMostOneLeader)
@@ -849,9 +847,9 @@ The required checks:
 | Jitter floor | `latency - jitter >= MIN_LINK_LATENCY` | [SPAT-12] |
 | Loss range | every link `loss ∈ [0.0, 1.0]` | [SPAT-13] |
 | Plan refs | every `Plan` node/link reference is declared | [SPAT-19] |
-| Fault params | fault rates ∈ [0.0, 1.0]; counts/windows valid; directions known | [SPAT-31] |
-| Heal tags | every heal references a tag injected somewhere in the `Plan` | [SPAT-31] |
-| Plan time | every `Plan` entry is scheduled in virtual time, non-negative | [SPAT-20] |
+| Signal/binding params | closed signal, selector, mapping, sampling, effect, and resource-limit contracts are valid | [SPAT-31] |
+| Persistent effect removal | every removal is produced by the same binding identity that installed the contribution | [SPAT-31] |
+| Plan coordinates | every event and signal coordinate is typed, bounded, and non-negative where required | [SPAT-20] |
 | Property refs | every predicate's node reference is declared | [SPAT-21] |
 | Ready point | white-box ready point requires the node's white-box opt-in | [SPAT-9] |
 | vCPU count | a fixed count `N >= 1`; `N > 1` uses single-threaded RR-TCG | [SPAT-8] |
@@ -867,20 +865,21 @@ pub enum BuildError {
     LatencyBelowFloor { link: (NodeId, NodeId), latency: VirtualDuration },
     JitterBelowFloor { link: (NodeId, NodeId) },
     LossOutOfRange { link: (NodeId, NodeId), loss: f64 },
-    FaultParamOutOfRange { entry: PlanEntryId, detail: String },
-    HealWithoutInject { entry: PlanEntryId, tag: FaultTag },
-    NegativePlanTime { entry: PlanEntryId },
+    FaultSignalPlan { detail: String },
+    InvalidPlanCoordinate { event: ScenarioEventId, detail: String },
     WhiteBoxReadyPointWithoutOptIn { node: NodeId },
     InvalidIcountShift { node: NodeId, shift_was_auto: bool },
     // ... one variant per row of the validation table ...
 }
 ```
 
-- **[SPAT-31]** Fault and event parameters in the `Plan` MUST be validated at
-  build time: rates/probabilities in `[0.0, 1.0]`, counts and windows in valid
-  ranges, partition directions among the known set, and every `heal` tag MUST
-  reference a tag injected somewhere in the `Plan`. An out-of-range or dangling
-  reference MUST be rejected with a precise error before hashing/running. *Gate:*
+- **[SPAT-31]** Signal, binding, effect, and event parameters in the `Plan` MUST
+  be validated at build time: probability totals, counts, windows, resource
+  limits, target selectors, mapping types, and effect parameters MUST satisfy
+  their closed contracts. Persistent effect removal MUST be tied to the binding
+  identity that installed the contribution; there is no independent tag-based
+  heal operation. An out-of-range or dangling reference MUST be rejected with a
+  precise error before hashing/running. *Gate:*
   `gate:e2e-determinism`. *Spec:* §9; cross-ref 17.
 
 - **[SPAT-32]** All well-formedness checks (the §9 table) MUST run at parse/build
@@ -1103,30 +1102,24 @@ authority for its shape. The contract those files may rely on:
 - [x] **T-SPAT-11** Model membership dynamics (crash/restart/partition/heal/
   isolate/rejoin) as `Plan` faults over the static topology; verify a not-yet-joined
   participant is a declared node held inactive. — satisfies [SPAT-17]; spec §4.
-  - Completed in `crates/crucible/src/model.rs`: `Plan` and `PlanEntry`
-    carry typed `MembershipFault` values (`Crash`, `Partition`, `Isolate`, and
-    `NotYetJoined`) plus `Heal` entries, and `Plan::from_entries_for_world`
-    validates every membership fault against declared `World` nodes and links.
-    The focused `membership_plan_faults_layer_over_static_world_topology` test
-    proves not-yet-joined nodes remain declared participants and bake nodes,
-    with rejoin expressed as healing the `NotYetJoined` tag after activation,
-    while `membership_plan_rejects_dynamic_or_undeclared_topology_targets`
-    rejects undeclared node/link targets, premature heals, and not-yet-joined
-    holds scheduled after `t = 0`. `checks.crucible.phase1.spatialMembershipFaults`
-    gates the task.
+  - Completed by the sole signal-driven model in
+    `crates/crucible/src/model/fault_signal/`: `node.lifecycle` and
+    `network.delivery` bindings target declared world objects, while persistent
+    contributions are installed, replaced, and removed by binding identity.
+    Static-topology validation rejects undeclared node/link targets before
+    execution. `checks.crucible.phase7.gates.signalFaultSystem` gates the
+    complete membership model and its live node/network adapters.
 - [x] **T-SPAT-12** Carry `Plan` as an orthogonal content-addressed component
   (defined in 17) with build-time validation of node/link references and
   virtual-time scheduling. — satisfies [SPAT-19], [SPAT-20]; spec §5.1.
-  - Completed in `crates/crucible/src/model.rs`: `Plan` now carries an
-    independent content hash over canonical `PlanEntry` material, entries are
-    canonicalized by virtual time and semantic fault material, and
-    `World::scenario_def_with_plan` composes `World` and `Plan` component
-    hashes without folding the plan into topology. The focused
-    `plan_content_address_is_orthogonal_and_canonical` test covers
-    authoring-order independence, plan reuse across compatible worlds, virtual
-    time ordering, scenario identity sensitivity to the plan, and continued
-    build-time node/link validation. `checks.crucible.phase1.spatialPlanComponent`
-    gates the task.
+  - Completed in `crates/crucible/src/model/plan_properties.rs` and
+    `crates/crucible/src/model/fault_signal/plan.rs`: `Plan` carries one event
+    graph plus one canonical `FaultSignalPlan`, and
+    `World::scenario_def_with_plan` composes the independent world and plan
+    hashes without folding plan state into topology. Canonical program and
+    binding ordering makes authoring order irrelevant while preserving scenario
+    identity sensitivity to every semantic plan change. The terminal
+    `checks.crucible.phase7.gates.signalFaultSystem` gate covers this contract.
 - [x] **T-SPAT-13** Carry `Properties` as an orthogonal content-addressed component
   (defined in 18) with build-time predicate node-reference validation. — satisfies
   [SPAT-21]; spec §5.2.
@@ -1240,21 +1233,15 @@ authority for its shape. The contract those files may rely on:
     signal, or content-addressed artifact material does change identity.
 - [x] **T-SPAT-20** Implement build-time validation for fault params, heal tags,
   and Plan times with precise localized errors. — satisfies [SPAT-31]; spec §9.
-  - Completed in `crates/crucible/src/model.rs`: `Plan::from_entries_for_world`
-    rejects invalid membership fault targets, undeclared partition links,
-    unknown heal tags, heal-before-activate times, and non-zero-time
-    `NotYetJoined` activations before hashing/running. Fault params and plan
-    times are typed (`MembershipFault`, `PartitionDirection`, unsigned
-    `VirtualTime`), while serialized TOML parsing for plan components and full
-    scenario forms rejects negative `at_ticks`, unknown partition directions, and
-    unsupported fault-parameter fields before serde can collapse them into generic parse
-    failures. Failures carry localized `EngineError` payloads naming the
-    offending node, link endpoints, heal tag, activation time, heal time, plan
-    entry index, invalid direction, and unsupported field.
-    The focused `plan_validation_reports_precise_fault_heal_and_time_errors`
-    test and `checks.crucible.phase1.spatialPlanValidation` gate lock down the
-    exact build-time and parse-time error payloads plus canonical
-    partition-parameter spelling.
+  - Completed in `crates/crucible/src/model/fault_signal/plan.rs`,
+    `binding.rs`, `effect_registry.rs`, and the typed effect modules. Admission
+    rejects missing programs, duplicate identities, invalid selectors,
+    undeclared targets, incompatible mapping types, malformed effect
+    parameters, and exceeded resource ceilings before hashing or execution.
+    Typed signal coordinates prevent negative time from entering the runtime,
+    and TOML decoding rejects unknown or unsupported fields. The terminal
+    `checks.crucible.phase7.gates.signalFaultSystem` gate locks down canonical
+    admission and production adapter execution.
 - [x] **T-SPAT-21** Implement the full parse/build-time validation pass (the §9
   table) rejecting ill-formed scenarios before hashing/running; assert no
   well-formedness check is deferred to runtime. — satisfies [SPAT-32]; spec §9.

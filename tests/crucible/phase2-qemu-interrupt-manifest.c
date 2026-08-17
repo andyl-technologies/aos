@@ -226,6 +226,9 @@ static void poll_events(void)
     const uint8_t *evidence;
     int status;
 
+    if (finished) {
+        return;
+    }
     do {
         memset(&event, 0, sizeof(event));
         envelope_len = 0;
@@ -287,6 +290,9 @@ static void completion(void *opaque)
     int status;
 
     (void)opaque;
+    if (finished) {
+        return;
+    }
     memset(&result, 0, sizeof(result));
     status = qemu_plugin_crucible_fault_poll(
         &result, result_payload, sizeof(result_payload), &result_len);

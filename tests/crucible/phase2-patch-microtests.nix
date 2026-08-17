@@ -505,6 +505,25 @@
         inherit pkgs lib qemuPackage;
       };
     }
+    {
+      patch = "0079-crucible-stopped-state-control-progress.patch";
+      check = import ./phase2-qemu-stopped-state-control-progress.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
+    {
+      patch = "0080-crucible-inactive-retention-clock-guard.patch";
+      check = import ./phase2-qemu-fault-vmstate.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0080-crucible-inactive-retention-clock-guard.patch";
+      };
+    }
+    {
+      patch = "0081-crucible-deferred-result-evidence-test.patch";
+      check = import ./phase2-qemu-deferred-result-evidence.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
   ];
 
   microtestPatchNames =
@@ -698,7 +717,7 @@ in
             grep -q '^PASS$' "$out/qemu-rr-quantum-icount.result"
             grep -q '^accelerator=sim,thread=single$' "$out/qemu-rr-quantum-icount.result"
             grep -q '^vcpus=2$' "$out/qemu-rr-quantum-icount.result"
-            grep -q '^sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(accelerator=sim,thread=single,stop_at=4194304)$' "$out/qemu-rr-quantum-icount.result"
+            grep -q '^sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(canonical-long-horizon)$' "$out/qemu-rr-quantum-icount.result"
             grep -q '^cross_run_switch_icount_trace_match=true$' "$out/qemu-rr-quantum-icount.result"
             grep -q '^cross_run_per_vcpu_delta_trace_match=true$' "$out/qemu-rr-quantum-icount.result"
             grep -q '^adaptive_realtime_quantum_negative_control=red$' "$out/qemu-rr-quantum-icount.result"

@@ -1273,13 +1273,13 @@ impl QemuTraceFingerprintImport {
                 ),
             });
         }
-        let current_retired = retired_counts[rr_cursor.current_vcpu() as usize];
-        if current_retired < rr_cursor.position_in_quantum() {
-            return Err(QemuTraceFingerprintImportError::MalformedTrace {
-                line,
-                reason: "RR cursor position exceeds the current vCPU retired count".to_owned(),
-            });
-        }
+        // The authoritative QEMU RR cursor counts precise-icount execution,
+        // while `register_retired` counts observation-plugin instruction
+        // callbacks. Those domains are independently deterministic but are not
+        // numerically interchangeable: exception/assist execution can advance
+        // QEMU's cursor before the plugin has observed the same number of
+        // callbacks on a newly runnable vCPU. `SingleVmRoundRobinCursor::new`
+        // already enforces the actual cursor invariant (position < quantum).
 
         let ram_bytes = u64_field(value, "ram_bytes", line)?;
         if ram_bytes != self.guest_ram_bytes {

@@ -34,7 +34,7 @@
     failuresFor "pkgs/emulation/qemu.nix" qemuNix [
       {
         label = "network deterministic patch wiring";
-        needle = "patch -p1 < \${./qemu-patches/0009-crucible-net-deterministic.patch}";
+        needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
       }
     ]
     ++ failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [

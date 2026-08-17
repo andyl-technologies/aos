@@ -18,6 +18,11 @@
   memoryMib ? 256,
   vcpuCount ? 4,
   detIpiProbe ? false,
+  # Some focused boot-prefix probes exercise deterministic INIT/SIPI delivery
+  # before Linux starts the secondary vCPU's normal RR execution. They still
+  # validate every exported cursor snapshot but leave the positive handoff
+  # proof to the canonical long-horizon S11 run.
+  requireRrSwitchEvents ? true,
   # This bounds host wall time only. The deterministic proof horizon remains
   # the content-addressed stopAt node-icount under all host load conditions.
   runTimeoutSeconds ? 2400,
@@ -412,6 +417,12 @@ in
       # emits no rr_switch rows.
       EXPECT_RR_CURSOR =
         if lib.hasPrefix "sim," accelerator || accelerator == "sim"
+        then "1"
+        else "0";
+      REQUIRE_RR_SWITCH_EVENTS =
+        if
+          requireRrSwitchEvents
+          && (lib.hasPrefix "sim," accelerator || accelerator == "sim")
         then "1"
         else "0";
 
@@ -950,6 +961,7 @@ in
                 --argjson stop_at "$STOP_AT_VALUE" \
                 --argjson cadence "$CADENCE" \
                 --arg expect_rr_cursor "$EXPECT_RR_CURSOR" \
+                --arg require_rr_switch_events "$REQUIRE_RR_SWITCH_EVENTS" \
                 --arg sustain_workload "$SUSTAIN_WORKLOAD" \
                 --arg launch_definition_digest "$launch_definition_digest" \
                 --arg qemu_build_digest "$qemu_build_digest" \
@@ -1037,7 +1049,7 @@ in
                     end
                   )
                   and (
-                    if $expect_rr_cursor == "1" then
+                    if $require_rr_switch_events == "1" then
                       ($switches | length) > 0
                       and all($switches[]; (
                         .rr_switch_event > 0
@@ -1056,8 +1068,10 @@ in
                         and all(.per_vcpu_delta[]; . >= 0)
                         and any(.per_vcpu_delta[]; . > 0)
                       ))
-                    else
+                    elif $expect_rr_cursor != "1" then
                       ($switches | length) == 0
+                    else
+                      true
                     end
                   )
                 ' "$TMPDIR/trace-$label.jsonl" >/dev/null; then
@@ -1071,9 +1085,9 @@ in
             rr_switch_events_a=$(jq -s '[.[] | select(.kind == "rr_switch")] | length' "$TMPDIR/trace-a.jsonl")
             rr_switch_events_b=$(jq -s '[.[] | select(.kind == "rr_switch")] | length' "$TMPDIR/trace-b.jsonl")
             [ "$samples_a" -ge 4 ] || fail "expected at least 4 samples in run a"
-            if [ "$EXPECT_RR_CURSOR" -eq 1 ]; then
+            if [ "$REQUIRE_RR_SWITCH_EVENTS" -eq 1 ]; then
               [ "$rr_switch_events_a" -gt 0 ] || fail "expected RR switch events in run a"
-            else
+            elif [ "$EXPECT_RR_CURSOR" -eq 0 ]; then
               [ "$rr_switch_events_a" -eq 0 ] \
                 || fail "unexpected RR switch events under non-sim accelerator in run a"
             fi
@@ -1503,7 +1517,11 @@ in
               echo authoritative_trace_scope="$authoritative_trace_scope"
               if [ "$EXPECT_RR_CURSOR" -eq 1 ]; then
                 echo rr_cursor_export=sim
-                echo rr_cursor_assertion=nonempty_valid_snapshot
+                if [ "$REQUIRE_RR_SWITCH_EVENTS" -eq 1 ]; then
+                  echo rr_cursor_assertion=nonempty_valid_snapshot_and_positive_handoff_trace
+                else
+                  echo rr_cursor_assertion=valid_boot_prefix_snapshot
+                fi
               else
                 echo rr_cursor_export=inert-non-sim
                 echo rr_cursor_assertion=inert_non_sim

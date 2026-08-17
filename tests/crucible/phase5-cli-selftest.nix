@@ -102,7 +102,7 @@
       }
       {
         label = "per-gate output row";
-        needle = "crucible: selftest gate=";
+        needle = "gate={} status={} runner={}";
       }
       {
         label = "built-in corpus runner";

@@ -183,7 +183,7 @@ in
           require_fixed "$risk_doc" "**RISK-23 / RISK-24** are enforced as a Phase-0 checklist guard by \`T-RISK-16\`"
           require_fixed "$risk_doc" "**RISK-25** is retired by \`T-RISK-17\`"
           require_fixed "$risk_doc" "\`horizon_icount=4000000000\`"
-          require_fixed "$risk_doc" "\`rr_switch_events=389751\`"
+          require_fixed "$risk_doc" "\`rr_switch_events=731765\`"
           require_fixed "$risk_doc" "\`fallback=smp1_not_needed\`"
           require_fixed "$risk_doc" "**RISK-26** is retired by \`T-RISK-18\` with live preemption"
           require_fixed "$risk_doc" "\`preemption_injection_api_available=qemu_plugin_inject_preemption\`"

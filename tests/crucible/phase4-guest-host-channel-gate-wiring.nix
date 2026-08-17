@@ -207,7 +207,7 @@
     ++ failuresFor "tests/crucible/phase4-guest-host-emitter-absence.nix" emitterAbsenceGate [
       {
         label = "emitter absence preserves black-box function";
-        needle = "preserved=determinism,faults,coverage,observable-io,backend-fingerprint";
+        needle = "preserved=determinism,signal-faults,coverage,observable-io,backend-fingerprint";
       }
       {
         label = "canonical gate wiring pointer";

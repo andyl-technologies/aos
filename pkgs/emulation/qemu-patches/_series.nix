@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "6efa89c60bc13846c6ecd69bcd3384dd558286b11353ccfc6555a27f182257af";
+  patchBranchBundleSha256 = "e4a4ea1a0516bc3734f30bebe4f90eb6a471c5df6c1b27b30545629d2823a82d";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "91f6d0efc37d4a5796d1f84b60418543b78b588d";
+  patchBranchHeadCommit = "8f210516874503b36183faffdfdb3217010a3766";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -715,6 +715,36 @@ let
       class = "D";
       enforces = "DET-29,QEMU-34,QFP-STATE-2";
       capability = "guest black-box fingerprints exclude separately authenticated process-local control state and target-declared transient CPU notifications";
+    }
+    {
+      file = "0079-crucible-stopped-state-control-progress.patch";
+      branchSubject = "crucible: bound stopped-state control progress";
+      branchCommit = "a06573f44b8b35f12c576a9bb77b079c09fcbbe9";
+      branchTree = "fc845a99dc50f21f65395f5b342de82fa615eeba";
+      catalogName = "crucible-stopped-state-control-progress";
+      class = "D";
+      enforces = "DET-1,INV-10,QEMU-43,QFP-STATE-2";
+      capability = "level-triggered stopped-state control progress with queued-work admission and a bounded BQL wait";
+    }
+    {
+      file = "0080-crucible-inactive-retention-clock-guard.patch";
+      branchSubject = "crucible: guard inactive retention clock reads";
+      branchCommit = "2630d8d23b22309bf4cd4ce62f29e1aaa115bd89";
+      branchTree = "21eb8bf369b2288b9601ec1f58cafac0d96642e6";
+      catalogName = "crucible-inactive-retention-clock-guard";
+      class = "D";
+      enforces = "DET-1,QFP-STATE-2,FAULT-ORDER";
+      capability = "memory-retention clock sampling only after an active-rule admission check so fresh-process restore cannot observe an irrelevant transient clock sentinel";
+    }
+    {
+      file = "0081-crucible-deferred-result-evidence-test.patch";
+      branchSubject = "crucible: validate deferred result evidence";
+      branchCommit = "8f210516874503b36183faffdfdb3217010a3766";
+      branchTree = "3be9aea4da2990ac882a9c8cb43720bd117d0495";
+      catalogName = "crucible-deferred-result-evidence-test";
+      class = "F";
+      enforces = "QEMU-44,FAULT-EVIDENCE";
+      capability = "live instruction-fault coverage validates the canonical typed evidence added to deferred completions";
     }
   ];
   catalogOnlyCapabilities = [

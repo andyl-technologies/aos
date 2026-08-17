@@ -735,12 +735,13 @@ that exists in the `World`, was booted once to its ready point by `bake`, and is
 held *inactive* until a scheduled point activates it.
 
 This is exactly the membership model 06 already mandates: a "not-yet-joined"
-participant is "a declared node held inactive by a fault until a `Plan` event
-activates it" ([SPAT-17]). `StartNode` is the activation; `StopNode` is the
-inverse. Semantically a `StopNode` is the choreography sibling of `Fault::Crash`
-([FAULT-19]) restricted to a clean stop, and a `StartNode` is the choreography
-sibling of a heal that restarts from the baked ready point ([FAULT-20]
-`FromReadyPoint`). The distinction this file draws: `StartNode`/`StopNode` are
+participant is a declared node whose `node.lifecycle` binding holds it inactive
+until a `Plan` event activates it ([SPAT-17]). `StartNode` is the activation;
+`StopNode` is the inverse. Semantically a `StopNode` is the choreography sibling
+of a `node.lifecycle` crash transition ([FAULT-19]) restricted to a clean stop,
+and a `StartNode` is the choreography sibling of a lifecycle recovery that
+restarts from the baked ready point ([FAULT-20] `FromReadyPoint`). The
+distinction this file draws: `StartNode`/`StopNode` are
 *deliberate scheduling of a baked node's activity* (rolling-restart choreography,
 "bring the standby online at 30s"), expressed as a first-class action so the
 author need not phrase routine choreography as a crash fault. They schedule a

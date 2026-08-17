@@ -1,6 +1,6 @@
 # 14 — QEMU fault-mutation patch series
 
-The complete node adapter and its exact-checkpoint handoff require twenty-eight new single-purpose patches after the
+The complete node adapter and its exact-checkpoint handoff require thirty-two new single-purpose patches after the
 currently carried `0046-crucible-translation-prefetch-helper.patch`. Each patch
 has its own specification in this directory and remains part of the one atomic
 RFC-0013 implementation PR.
@@ -45,6 +45,9 @@ and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-pa
 | [`0076-crucible-9p-completion-wake-registration`](27-9p-completion-wake-registration.md) | Realize-time 9p completion notifier independent of plugin installation order | Determinism-critical device lifecycle |
 | [`0077-crucible-serialize-rr-cursor`](28-serialized-rr-cursor.md) | Authoritative RR-turn accounting and VMState restoration | Determinism-critical scheduler state |
 | [`0078-crucible-fingerprint-guest-state-domains`](29-fingerprint-guest-state-domains.md) | Guest-state-only fingerprints with target-declared transient interrupt canonicalization | Determinism-critical restore admission |
+| [`0079-crucible-stopped-state-control-progress`](30-stopped-state-control-progress.md) | Level-triggered queued-work checks and bounded progress for a paused native-stop handshake | Determinism-critical scheduler lifecycle |
+| [`0080-crucible-inactive-retention-clock-guard`](31-inactive-retention-clock-guard.md) | Active-rule admission before restore-sensitive memory-retention clock sampling | Determinism-critical restore ordering |
+| [`0081-crucible-deferred-result-evidence-test`](32-deferred-result-evidence-test.md) | Live validation of canonical typed evidence on deferred instruction completions | Feature-contract regression coverage |
 
 The numbers are reserved by this RFC. If the existing series grows before
 implementation, the PR may renumber the files while preserving this exact order
@@ -68,7 +71,14 @@ selected job sequence and opportunity identity. Patch `0076` makes 9p
 completion wakes independent of plugin installation order, and patch `0077`
 serializes the authoritative inter-vCPU RR cursor. Patch `0078` limits the
 black-box fingerprint to guest continuation state and canonicalizes transient
-CPU interrupt-control notifications without changing live QEMU state.
+CPU interrupt-control notifications without changing live QEMU state. Patch
+`0079` closes the remaining native-stop lost-wake window so exact checkpoint and
+restore control work progresses while guest execution remains paused. Patch
+`0080` orders memory-retention admission before virtual-time observation so an
+inactive fault domain remains inert during fresh-process restore. Patch `0081`
+then makes the live instruction matrix validate the typed deferred-result
+evidence contract introduced by patch `0074`, including composed-command
+payload identity.
 
 ## 14.2 Process and license boundary
 

@@ -393,13 +393,15 @@ fn real_qemu_trace_import_rejects_qmp_topology_or_incomplete_observation() {
 
     let mut values = trace_values(2);
     values[0]["rr_cursor_position"] = Value::from(3000);
-    let error = importer(2)
+    let stream = importer(2)
         .import(Cursor::new(json_lines(&values)))
-        .expect_err("RR position cannot exceed current-vCPU retired count");
-    assert!(
-        error
-            .to_string()
-            .contains("exceeds the current vCPU retired count")
+        .expect("authoritative icount cursor is independent of plugin callback counts");
+    assert_eq!(
+        stream.samples[0]
+            .nvcpu_fingerprint
+            .rr_cursor()
+            .position_in_quantum(),
+        3000
     );
 
     let mut values = trace_values(2);

@@ -24,22 +24,10 @@
   };
   qemuMultiVcpuLaunch = import ./phase2-qemu-multi-vcpu-launch.nix {inherit pkgs lib;};
   qemuNvcpuFingerprint = import ./phase2-qemu-nvcpu-fingerprint.nix {inherit pkgs lib;};
-  simS11 = import ./phase0-s11.nix {
-    inherit pkgs lib;
-    accelerator = "sim,thread=single";
-    # RR switch rows retain quantum-boundary resolution independently of the
-    # fingerprint cadence. Four periodic samples keep this short fixture from
-    # hashing the 128 MiB RAM image once per 4K quantum.
-    cadence = 1048576;
-    requireGuestPass = false;
-    # The previous 16K horizon stopped before Linux brought a second vCPU into
-    # the RR loop, so it could not observe even one switch. This remains a
-    # short boot-prefix fixture while reaching the AP startup window already
-    # exercised by the deterministic-IPI check.
-    stopAt = 4194304;
-    memoryMib = 128;
-    vcpuCount = 2;
-  };
+  # Reuse the canonical long-horizon S11 derivation. Secondary vCPUs remain
+  # halted during the short boot prefix, so a shortened fixture cannot prove a
+  # real RR handoff even though the exported cursor is already valid.
+  simS11 = import ./phase0-s11.nix {inherit pkgs lib;};
 
   taskList = builtins.concatStringsSep "," taskIds;
 
@@ -329,19 +317,20 @@ in
             s11_result="${simS11}/result"
             require_line "$s11_result" "PASS"
             require_line "$s11_result" "accelerator=sim,thread=single"
-            require_line "$s11_result" "vcpus=2"
+            require_line "$s11_result" "vcpus=4"
             require_line "$s11_result" "rr_switch_quantum=4096"
-            require_line "$s11_result" "cadence=1048576"
-            require_line "$s11_result" "run_horizon=plugin-stop_at-4194304"
-            require_line "$s11_result" "periodic_samples_expected=4"
-            require_line "$s11_result" "periodic_samples_observed=4"
-            require_line "$s11_result" "samples=5"
-            require_line "$s11_result" "require_guest_pass=0"
+            require_line "$s11_result" "cadence=100000000"
+            require_line "$s11_result" "run_horizon=plugin-stop_at-4000000000"
+            require_line "$s11_result" "periodic_samples_expected=40"
+            require_line "$s11_result" "periodic_samples_observed=40"
+            require_line "$s11_result" "samples=41"
+            require_line "$s11_result" "require_guest_pass=1"
             require_line "$s11_result" "host_adversary=jitter-load"
             require_line "$s11_result" "extended_fingerprint_match=true"
             require_line "$s11_result" "aggregate_icount_stream_match=true"
             require_line "$s11_result" "rr_switch_trace_match=true"
             require_line "$s11_result" "per_vcpu_delta_trace_match=true"
+            require_line "$s11_result" "rr_cursor_assertion=nonempty_valid_snapshot_and_positive_handoff_trace"
             grep -E -q '^rr_switch_events=[1-9][0-9]*$' "$s11_result"
             require_line "$s11_result" "first_differing_node_icount=none"
             require_line "$s11_result" "first_differing_component=none"
@@ -357,13 +346,13 @@ in
             gate=gate:single-vm-fingerprint
             patch=${patchName}
             accelerator=sim,thread=single
-            vcpus=2
+            vcpus=4
             rr_switch_quantum=4096
             rr_switch_boundary=node-icount
             rr_vcpu_rotation=ascending-vcpu-id
             cross_run_switch_icount_trace_match=true
             cross_run_per_vcpu_delta_trace_match=true
-            sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(accelerator=sim,thread=single,stop_at=4194304)
+            sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(canonical-long-horizon)
             rr_budget_pinned=true
             rr_switch_trace_pinned_under_host_jitter=true
             adaptive_realtime_quantum_negative_control=red

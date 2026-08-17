@@ -859,8 +859,8 @@ pub fn build_production_vm_lifecycle_loop(
     let restore_checkpoint = config.restore_checkpoint.clone();
     let checkpoint_dag =
         checkpoint_store::checkpoint_dag_store(&config.run_state_root, scenario.id());
-    if let Some(checkpoint) = &restore_checkpoint {
-        if checkpoint.configuration.def.id() != scenario.id()
+    if let Some(checkpoint) = &restore_checkpoint
+        && (checkpoint.configuration.def.id() != scenario.id()
             || checkpoint.configuration.id()
                 != checkpoint
                     .scheduler
@@ -870,12 +870,11 @@ pub fn build_production_vm_lifecycle_loop(
                             "decode production scheduler checkpoint: {error}"
                         ))
                     })?
-                    .id()
-        {
-            return Err(loop_factory_error(
-                "production exact checkpoint does not match the requested scenario and scheduler configuration",
-            ));
-        }
+                    .id())
+    {
+        return Err(loop_factory_error(
+            "production exact checkpoint does not match the requested scenario and scheduler configuration",
+        ));
     }
     let nodes = source.world().vm_nodes();
     let first = nodes
@@ -1514,9 +1513,7 @@ pub fn build_production_vm_lifecycle_loop(
             .and_then(|checkpoint| checkpoint.terminal_cause.clone()),
         initial_lifecycle_observations_pending: restore_checkpoint
             .as_ref()
-            .map_or(true, |checkpoint| {
-                checkpoint.initial_lifecycle_observations_pending
-            }),
+            .is_none_or(|checkpoint| checkpoint.initial_lifecycle_observations_pending),
         branch: active_branch,
         launch_configs,
         block_bindings,

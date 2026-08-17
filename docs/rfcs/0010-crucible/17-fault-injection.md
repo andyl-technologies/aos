@@ -41,10 +41,12 @@ behaves: it drops or delays a frame, mutates a payload, stops a node, slows a
 node's progress, fails an I/O, or skews a guest's perceived time. A fault is
 **not** a topology edit ([SPAT-16]): the node and link it affects remain declared
 members of the static `World`; what changes is whether — and how — they *behave*.
-A crash is `Fault::Crash` over a still-declared node; a partition is
-`Fault::Partition` over still-declared links; a heal removes the perturbation and
-restores declared behavior. Membership dynamics (crash/restart, partition/heal,
-isolation, rejoin) are *all* expressed this way ([SPAT-17]).
+A crash is a persistent `node.lifecycle` binding over a still-declared node; a
+partition is a persistent `network.delivery` binding over still-declared links.
+When the driving signal changes, the binding removes or replaces its persistent
+contribution and restores declared behavior. Membership dynamics
+(crash/restart, partition/recovery, isolation, rejoin) are *all* expressed this
+way ([SPAT-17]).
 
 The one design rule that governs the whole model:
 

@@ -1,0 +1,24 @@
+diff --git a/tests/tcg/plugins/crucible-instruction.c b/tests/tcg/plugins/crucible-instruction.c
+index 010fc1e00..db8ef828b 100644
+--- a/tests/tcg/plugins/crucible-instruction.c
++++ b/tests/tcg/plugins/crucible-instruction.c
+@@ -1431,12 +1431,13 @@ static void test_completion(void *opaque)
+                            evidence_len);
+                 test_fail("fault commit was not applied");
+             }
+-            if (evidence_len != 0 ||
+-                memcmp(result.evidence_hash,
+-                       (uint8_t[32]) { 0 }, 32) != 0) {
+-                test_fail("deferred fault completion carried premature "
+-                          "evidence");
+-            }
++            test_validate_rule_evidence(
++                &result, evidence, evidence_len,
++                test_compose_mode() && result.command_sequence == 4 ?
++                    test_payload2 : test_payload,
++                test_compose_mode() && result.command_sequence == 4 ?
++                    test_payload2_len : test_payload_len,
++                CRUCIBLE_NODE_FAULT_OPERATION_APPLY);
+             if (test_compose_mode()) {
+                 test_compose_completions++;
+                 test_rule_installed = test_compose_completions == 2;

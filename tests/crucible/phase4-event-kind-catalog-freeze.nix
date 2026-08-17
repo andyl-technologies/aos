@@ -11,7 +11,7 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   catalog = builtins.readFile ../../crates/crucible/src/event_catalog.rs;
   catalogTest = builtins.readFile ../../crates/crucible/tests/event_kind_catalog.rs;
-  triggerTest = builtins.readFile ../../crates/crucible/tests/trigger_firing_causal_log.rs;
+  triggerTest = builtins.readFile ../../crates/crucible/tests/event_graph_replay_oracle.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -202,10 +202,10 @@
         needle = "EXPECTED_CATALOG_SERIALIZATION";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/trigger_firing_causal_log.rs" triggerTest [
+    ++ failuresFor "crates/crucible/tests/event_graph_replay_oracle.rs" triggerTest [
       {
         label = "trigger firing causal test";
-        needle = "trigger_firing_is_causal_event_log_entry_not_schedule_decision";
+        needle = "event_graph_replay_oracle_rederives_identical_firings_actions_and_verdict";
       }
       {
         label = "trigger firing not decision assertion";
@@ -300,7 +300,7 @@ in
               --target-dir "$TMPDIR/crucible-event-kind-catalog-freeze-target" \
               -p crucible \
               --test event_kind_catalog \
-              --test trigger_firing_causal_log \
+              --test event_graph_replay_oracle \
               -- --test-threads=1
           '';
         }
