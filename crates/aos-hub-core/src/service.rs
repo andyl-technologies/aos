@@ -2282,6 +2282,26 @@ fn verify_publication_bytes(
             "upload bytes do not match the declared size and SHA-256",
         ));
     }
+    verify_loose_publication_bytes(&object.object_key, bytes)?;
+    Ok(())
+}
+
+/// Verifies the semantic content address before replaceable loose bytes reach
+/// any placement. This permits migration between equivalent zlib encodings
+/// without allowing a publisher to corrupt an existing Git object path.
+fn verify_loose_publication_bytes(path: &str, bytes: &[u8]) -> Result<(), RpcError> {
+    if !keymap::is_loose_git_object_path(path) {
+        return Ok(());
+    }
+    let rest = path
+        .strip_prefix("objects/")
+        .and_then(|value| value.split_once('/'))
+        .map(|(directory, filename)| format!("{directory}{filename}"))
+        .ok_or_else(|| RpcError::invalid("loose Git object path is invalid"))?;
+    let oid = Oid::from_hex(&rest)
+        .map_err(|_| RpcError::invalid("loose Git object path is invalid"))?;
+    aos_registry_surface::object::decode_loose(bytes, Some(oid))
+        .map_err(|_| RpcError::invalid("loose Git object bytes do not match their object id"))?;
     Ok(())
 }
 
@@ -24449,6 +24469,11 @@ impl RpcService {
             .await?;
         self.prepare_registry_publication_object_upload(&publication, &registry, &object)
             .await?;
+        if keymap::is_loose_git_object_path(&object.object_key) {
+            return Err(RpcError::FailedPrecondition(
+                "loose Git objects must use bounded whole-object upload".into(),
+            ));
+        }
         let expected_size = u64::try_from(object.expected_size)
             .map_err(|_| RpcError::invalid("publication object size is out of range"))?;
         if expected_size <= self.effective_complete_upload_bytes().await as u64 {
@@ -35010,7 +35035,7 @@ mod image_body_tests {
 mod publication_upload_limit_tests {
     use super::{
         complete_upload_bytes, is_mutable_pointer, publication_media_type,
-        publication_nar_path_matches_sha256,
+        publication_nar_path_matches_sha256, verify_loose_publication_bytes,
     };
     use crate::connect::CONNECT_REQUEST_BODY_LIMIT_BYTES;
 
@@ -35030,6 +35055,7 @@ mod publication_upload_limit_tests {
             "nix-cache-info",
             "index.html",
             "objects/info/packs",
+            "objects/ab/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
             "releases/1/0/0/objects/info/packs",
             "web/config.json",
             "web/index.json",
@@ -35068,6 +35094,22 @@ mod publication_upload_limit_tests {
             "images/disk.qcow2",
             &digest
         ));
+    }
+
+    #[test]
+    fn replaceable_loose_object_bytes_must_match_their_git_identity() {
+        use aos_registry_surface::object::{encode_loose, hash_object, ObjectKind};
+
+        let content = b"canonical registry object";
+        let oid = hash_object(ObjectKind::Blob, content);
+        let path = oid.loose_path();
+        let encoded = encode_loose(ObjectKind::Blob, content).unwrap();
+
+        verify_loose_publication_bytes(&path, &encoded).unwrap();
+        assert!(verify_loose_publication_bytes(&path, b"not zlib").is_err());
+
+        let other = hash_object(ObjectKind::Blob, b"other").loose_path();
+        assert!(verify_loose_publication_bytes(&other, &encoded).is_err());
     }
 }
 

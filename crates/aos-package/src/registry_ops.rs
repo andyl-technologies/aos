@@ -1369,6 +1369,7 @@ fn commit_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Resu
 
 /// Refresh the static dumb-HTTP object indexes after refs or commits change.
 fn refresh_registry_object_store(dir: &Path) -> Result<()> {
+    let _publish_lock = RegistryPublishLock::acquire_or_join_current_process(dir)?;
     objectstore::assert_sha256(dir)?;
     let releases = semver_tag_versions(dir)?;
     for release in &releases {
@@ -10628,6 +10629,10 @@ pub async fn run_origin(
                 );
             }
             let dir = config.scope.registries_path().join(&registry_name);
+            // Ref metadata and loose-object canonicalization form one
+            // publication snapshot. Keep registry writers out until every
+            // destination has consumed that snapshot.
+            let _publish_lock = RegistryPublishLock::acquire(&dir)?;
             refresh_registry_object_store(&dir)
                 .context("refreshing static git origin before upload")?;
             let auth =
