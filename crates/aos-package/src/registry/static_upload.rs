@@ -125,9 +125,7 @@ pub fn collect_static_origin_files(registry_dir: &Path) -> Result<Vec<StaticOrig
         StaticOriginClass::Mutable,
     )?;
     push_dir(&mut files, &git_dir, "objects", classify_git_path)?;
-    push_dir(&mut files, &git_dir, "releases", |_| {
-        Ok(StaticOriginClass::Immutable)
-    })?;
+    push_dir(&mut files, &git_dir, "releases", classify_release_path)?;
     push_dir(
         &mut files,
         &git_dir.join("aos-image-staging"),
@@ -704,6 +702,18 @@ fn classify_git_path(relative_path: &str) -> Result<StaticOriginClass> {
     }
 }
 
+/// Classify a path under `releases/`: pack payloads are immutable, while each
+/// release object store's `info/*` files are replaceable pack indexes.
+fn classify_release_path(relative_path: &str) -> Result<StaticOriginClass> {
+    if aos_registry_surface::keymap::cache_control(relative_path)
+        == aos_registry_surface::keymap::MUTABLE_CACHE_CONTROL
+    {
+        Ok(StaticOriginClass::Mutable)
+    } else {
+        Ok(StaticOriginClass::Immutable)
+    }
+}
+
 /// Render `path` relative to `root` as a `/`-joined string, rejecting
 /// non-UTF-8, `..`, and other unsafe components.
 fn relative_path(root: &Path, path: &Path) -> Result<String> {
@@ -743,6 +753,9 @@ fn content_type(relative_path: &str) -> &'static str {
     if relative_path == "HEAD"
         || relative_path == "info/refs"
         || relative_path.starts_with("objects/info/")
+        || (relative_path.starts_with("releases/")
+            && aos_registry_surface::keymap::cache_control(relative_path)
+                == aos_registry_surface::keymap::MUTABLE_CACHE_CONTROL)
     {
         "text/plain"
     } else if relative_path.ends_with(".pack") {
@@ -882,6 +895,10 @@ mod tests {
             "releases/1/0/0/objects/pack/pack-demo.pack",
             StaticOriginClass::Immutable
         )));
+        assert!(paths.contains(&(
+            "releases/1/0/0/objects/info/packs",
+            StaticOriginClass::Mutable
+        )));
         let disk_path = files
             .iter()
             .find(|file| file.class == StaticOriginClass::ImageDisk)
@@ -962,6 +979,12 @@ mod tests {
             "releases/1/0/0/objects/pack/pack-demo.pack",
             "application/x-git-packed-objects",
             IMMUTABLE_CACHE_CONTROL,
+        );
+        assert_static_metadata(
+            &files,
+            "releases/1/0/0/objects/info/packs",
+            "text/plain",
+            MUTABLE_CACHE_CONTROL,
         );
         assert_static_metadata(
             &files,
@@ -1432,6 +1455,7 @@ mod tests {
         std::fs::create_dir_all(root.join("objects/info")).unwrap();
         std::fs::create_dir_all(root.join("channels/stable")).unwrap();
         std::fs::create_dir_all(root.join("releases/1/0/0/objects/pack")).unwrap();
+        std::fs::create_dir_all(root.join("releases/1/0/0/objects/info")).unwrap();
         std::fs::create_dir_all(root.join("aos-static-origin/publication-receipts")).unwrap();
         let disk_bytes = b"qcow2 bytes";
         let info_bytes = b"{}";
@@ -1452,6 +1476,11 @@ mod tests {
         std::fs::write(
             root.join("releases/1/0/0/objects/pack/pack-demo.pack"),
             b"pack",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("releases/1/0/0/objects/info/packs"),
+            b"P pack-demo.pack\n",
         )
         .unwrap();
         std::fs::write(

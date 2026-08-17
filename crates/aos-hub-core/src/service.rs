@@ -35030,6 +35030,7 @@ mod publication_upload_limit_tests {
             "nix-cache-info",
             "index.html",
             "objects/info/packs",
+            "releases/1/0/0/objects/info/packs",
             "web/config.json",
             "web/index.json",
             "web/packages/aos.json",
@@ -35039,6 +35040,7 @@ mod publication_upload_limit_tests {
         for path in [
             "objects/aa/object",
             "releases/aos.json",
+            "releases/1/0/0/objects/pack/pack-demo.pack",
             "nar/hash.nar.zst",
             "images/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/disk.qcow2",
         ] {
