@@ -3,6 +3,10 @@
 use super::*;
 use crucible_api as production_api;
 
+// Live QEMU quanta can spend most of the backend completion window outside the
+// actor. Polling by yield count races the VM and can report a false timeout.
+pub(super) const RESUME_WORKFLOW_OBSERVER_TIMEOUT: Duration = Duration::from_secs(300);
+
 #[path = "run_save/qemu_live.rs"]
 mod qemu_live;
 pub(super) use qemu_live::*;
@@ -31,6 +35,107 @@ pub(super) struct RunWorkflowReport {
 pub(super) struct SaveWorkflowReport {
     pub(super) run: RunWorkflowReport,
     pub(super) oracle: SavepointOracleProof,
+    pub(super) boundary_evidence: SaveBoundaryEvidence,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SaveBoundaryEvidence {
+    pub(crate) at: SaveAtArg,
+    pub(crate) selector: Option<SaveAtSelector>,
+    pub(crate) frontier_ticks: u64,
+    pub(crate) quanta: u64,
+    pub(crate) breakpoint_firing: Option<crucible_session::BreakpointFiring>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SaveWorkflowFailureTrace {
+    pub(crate) selector: SaveAtSelector,
+    pub(crate) frontier_ticks: u64,
+    pub(crate) quanta: u64,
+    pub(crate) state_updates: Vec<String>,
+    pub(crate) acknowledged_commands: Vec<SessionCommandKind>,
+}
+
+impl SaveWorkflowFailureTrace {
+    pub(crate) fn canonical_summary(&self, error: &CliError) -> String {
+        let (at, kind, name) = match &self.selector {
+            SaveAtSelector::PropertyViolation { assertion } => {
+                ("property", "property-violation", assertion.as_str())
+            }
+            SaveAtSelector::Marker { name } => ("marker", "guest-marker", name.as_str()),
+        };
+        format!(
+            "at={at} selector={kind}:{} frontier={} quanta={} error={:?}",
+            encode_canonical_summary_value(name),
+            self.frontier_ticks,
+            self.quanta,
+            error.to_string()
+        )
+    }
+}
+
+impl SaveBoundaryEvidence {
+    pub(crate) fn selector_kind(&self) -> &'static str {
+        match &self.selector {
+            Some(SaveAtSelector::PropertyViolation { .. }) => "property-violation",
+            Some(SaveAtSelector::Marker { .. }) => "guest-marker",
+            None => "none",
+        }
+    }
+
+    pub(crate) fn selector_name(&self) -> Option<&str> {
+        match &self.selector {
+            Some(SaveAtSelector::PropertyViolation { assertion }) => Some(assertion),
+            Some(SaveAtSelector::Marker { name }) => Some(name),
+            None => None,
+        }
+    }
+
+    pub(crate) fn canonical_summary(&self) -> String {
+        let selector = self
+            .selector_name()
+            .map(|name| {
+                format!(
+                    "{}:{}",
+                    self.selector_kind(),
+                    encode_canonical_summary_value(name)
+                )
+            })
+            .unwrap_or_else(|| String::from("none"));
+        let proof = self
+            .breakpoint_firing
+            .as_ref()
+            .map(|firing| {
+                format!(
+                    "breakpoint={} disposition=suspend firing_frontier={} firing_quanta={}",
+                    firing.id, firing.frontier.ticks, firing.quanta
+                )
+            })
+            .unwrap_or_else(|| String::from("breakpoint=none"));
+        format!(
+            "at={} selector={} frontier={} quanta={} {}",
+            self.at.label(),
+            selector,
+            self.frontier_ticks,
+            self.quanta,
+            proof
+        )
+    }
+}
+
+pub(super) fn encode_canonical_summary_value(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+    }
+    encoded
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -112,8 +217,10 @@ pub(super) struct VerifyDivergenceReport {
     pub(super) mismatch: VerifyMismatchKind,
     pub(super) first_different_decision: Option<usize>,
     pub(super) first_different_fingerprint_sample: Option<usize>,
-    pub(super) first_different_instruction: u64,
-    pub(super) node: Option<String>,
+    pub(super) first_different_virtual_time: Option<u64>,
+    pub(super) first_different_virtual_time_node: Option<String>,
+    pub(super) first_different_instruction: Option<u64>,
+    pub(super) first_different_instruction_node: Option<String>,
     pub(super) first_different_byte: usize,
     pub(super) left_state_digest: String,
     pub(super) right_state_digest: String,
@@ -151,446 +258,10 @@ pub(super) struct RunObservation {
 }
 
 #[cfg(any(test, feature = "test-double"))]
-pub(super) fn run_local_double_workflow(
-    thin_plan: &CliThinWrapperPlan,
-    backend_plan: &BackendSelectionPlan,
-    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    run_plan: &RunInvocationPlan,
-) -> Result<BackendCommandOutcome, CliError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let report = if matches!(run_plan.execution_mode, RunExecutionMode::Interactive) {
-        runtime.block_on(run_local_double_workflow_stdin_async(
-            run_plan,
-            ergonomics_plan,
-        ))?
-    } else {
-        runtime.block_on(run_local_double_workflow_async(
-            run_plan,
-            ergonomics_plan,
-            &[],
-        ))?
-    };
-    finish_run_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, run_plan, report)
-}
-
+#[path = "run_save/test_double.rs"]
+mod test_double;
 #[cfg(any(test, feature = "test-double"))]
-pub(super) fn run_local_double_save_workflow(
-    thin_plan: &CliThinWrapperPlan,
-    backend_plan: &BackendSelectionPlan,
-    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    save_plan: &SaveInvocationPlan,
-) -> Result<BackendCommandOutcome, CliError> {
-    run_local_save_recording_workflow(thin_plan, backend_plan, ergonomics_plan, save_plan)
-}
-
-#[cfg(any(test, feature = "test-double"))]
-#[derive(Clone, Debug)]
-pub(super) struct SaveRecordingSources {
-    pub(super) assertion_evaluator: crucible::HostAssertionEvaluator,
-    pub(super) assertion_oracle: crucible::BlackBoxHostOracle,
-    pub(super) emitted_assertions: BTreeSet<crucible::AssertionId>,
-    pub(super) guest_markers: Vec<SaveGuestMarkerSource>,
-    pub(super) emitted_guest_markers: Vec<SaveGuestMarkerSource>,
-}
-
-#[cfg(any(test, feature = "test-double"))]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct SaveGuestMarkerSource {
-    pub(super) node: crucible::NodeId,
-    pub(super) marker: crucible::MarkerId,
-}
-
-#[cfg(any(test, feature = "test-double"))]
-impl SaveRecordingSources {
-    pub(super) fn from_scenario_form(scenario_form: &crucible::ScenarioDefForm) -> Self {
-        Self {
-            assertion_evaluator: crucible::HostAssertionEvaluator::new(scenario_form.properties())
-                .with_world_white_box_policies(scenario_form.world()),
-            assertion_oracle: crucible::BlackBoxHostOracle,
-            emitted_assertions: BTreeSet::new(),
-            guest_markers: save_guest_marker_sources(scenario_form),
-            emitted_guest_markers: Vec::new(),
-        }
-    }
-}
-
-#[cfg(any(test, feature = "test-double"))]
-pub(super) fn save_guest_marker_sources(
-    scenario_form: &crucible::ScenarioDefForm,
-) -> Vec<SaveGuestMarkerSource> {
-    scenario_form
-        .world()
-        .vm_nodes()
-        .iter()
-        .filter(|node| node.white_box == crucible::WhiteBoxPolicy::Enabled)
-        .flat_map(|node| {
-            node.cmdline.split_whitespace().filter_map(|token| {
-                token
-                    .strip_prefix(SAVE_GUEST_MARKER_CMDLINE_PREFIX)
-                    .filter(|marker| !marker.is_empty())
-                    .map(|marker| SaveGuestMarkerSource {
-                        node: node.id.clone(),
-                        marker: crucible::MarkerId::from_name(marker.to_owned()),
-                    })
-            })
-        })
-        .collect()
-}
-
-#[cfg(any(test, feature = "test-double"))]
-#[derive(Clone, Debug)]
-pub(super) struct SaveRecordingLifecycleLoop {
-    pub(super) sources: SaveRecordingSources,
-    pub(super) quanta: u64,
-    pub(super) event_log_events: u64,
-    pub(super) retained_event_log: Vec<crucible::SchedulerEventLogEntry>,
-}
-
-#[cfg(any(test, feature = "test-double"))]
-impl SaveRecordingLifecycleLoop {
-    pub(super) fn new(sources: SaveRecordingSources) -> Self {
-        Self {
-            sources,
-            quanta: 0,
-            event_log_events: 0,
-            retained_event_log: Vec::new(),
-        }
-    }
-
-    fn diagnostic_entry(
-        &self,
-        sequence: u64,
-        frontier: crucible::VirtualTime,
-    ) -> crucible::SchedulerEventLogEntry {
-        let mut details = BTreeMap::new();
-        details.insert(
-            String::from("quantum"),
-            crucible::EventAttributeValue::U64(self.quanta),
-        );
-        crucible::SchedulerEventLogEntry::diagnostic(
-            sequence,
-            frontier,
-            crucible::EventDiagnosticPayload::new(
-                "crucible.cli.save-lifecycle",
-                crucible::EventLevel::Info,
-                details,
-            ),
-        )
-    }
-
-    fn next_event_log_sequence(&mut self) -> u64 {
-        let sequence = self.event_log_events;
-        self.event_log_events = self.event_log_events.saturating_add(1);
-        sequence
-    }
-
-    fn record_entry(
-        &mut self,
-        quantum_entries: &mut Vec<crucible::SchedulerEventLogEntry>,
-        entry: crucible::SchedulerEventLogEntry,
-    ) {
-        self.retained_event_log.push(entry.clone());
-        quantum_entries.push(entry);
-    }
-
-    fn record_scenario_guest_markers(
-        &mut self,
-        frontier: crucible::VirtualTime,
-        quantum_entries: &mut Vec<crucible::SchedulerEventLogEntry>,
-    ) {
-        for source in self.sources.guest_markers.clone() {
-            if self.sources.emitted_guest_markers.contains(&source) {
-                continue;
-            }
-            self.sources.emitted_guest_markers.push(source.clone());
-            let entry = crucible::SchedulerEventLogEntry::guest_marker_observation(
-                self.next_event_log_sequence(),
-                crucible::Icount {
-                    retired: frontier.ticks,
-                },
-                source.node,
-                source.marker,
-            );
-            self.record_entry(quantum_entries, entry);
-        }
-    }
-
-    fn record_scenario_assertion_events(
-        &mut self,
-        quantum_entries: &mut Vec<crucible::SchedulerEventLogEntry>,
-    ) -> Result<(), crucible::SchedulerError> {
-        let prefix = crucible::ConditionEventLogPrefix::from_scheduler_event_log_entries(
-            self.retained_event_log.clone(),
-        )
-        .map_err(|error| crucible::SchedulerError::BoundaryViolation {
-            message: format!("save lifecycle could not check scenario event prefix: {error}"),
-        })?;
-        let outcomes = self
-            .sources
-            .assertion_evaluator
-            .observe_prefix(&prefix, &mut self.sources.assertion_oracle);
-        for outcome in outcomes {
-            if outcome.kind != crucible::HostAssertionOutcomeKind::Violated
-                || self.sources.emitted_assertions.contains(&outcome.assertion)
-            {
-                continue;
-            }
-            self.sources
-                .emitted_assertions
-                .insert(outcome.assertion.clone());
-            let entry = crucible::SchedulerEventLogEntry::assertion_state_observation(
-                self.next_event_log_sequence(),
-                outcome.at,
-                outcome.assertion,
-                crucible::AssertionPhase::Violated,
-            );
-            self.record_entry(quantum_entries, entry);
-        }
-        Ok(())
-    }
-}
-
-#[cfg(any(test, feature = "test-double"))]
-impl crucible::QuantumLoop for SaveRecordingLifecycleLoop {
-    impl_quantum_drive_method!(drive_quantum, QReq, QOut, QErr, |loop_state, request| {
-        let previous = request.configuration.clone();
-        loop_state.quanta = loop_state.quanta.saturating_add(1);
-        let frontier = crucible::VirtualTime {
-            ticks: loop_state.quanta,
-        };
-        let mut event_log_entries = Vec::new();
-        let diagnostic_sequence = loop_state.next_event_log_sequence();
-        let diagnostic = loop_state.diagnostic_entry(diagnostic_sequence, frontier);
-        loop_state.record_entry(&mut event_log_entries, diagnostic);
-        loop_state.record_scenario_guest_markers(frontier, &mut event_log_entries);
-        loop_state.record_scenario_assertion_events(&mut event_log_entries)?;
-        let decision = crucible::Decision::DeliveryOrder(crucible::DeliveryOrderDecision {
-            at: frontier,
-            order: Vec::new(),
-        });
-        let configuration = crucible::try_step(&previous, decision.clone()).map_err(|error| {
-            crucible::SchedulerError::BoundaryViolation {
-                message: format!(
-                    "save lifecycle double could not record virtual-time decision: {error}"
-                ),
-            }
-        })?;
-        Ok(crucible::QuantumOutcome {
-            configuration,
-            frontier,
-            advanced_node: None,
-            resolved_events: Vec::new(),
-            decisions: vec![decision],
-            event_log_entries,
-            event_log_segment_bytes: Vec::new(),
-            event_log_segment_text: String::new(),
-            event_log_segment_hash: None,
-            event_log_offset: crucible::EventLogOffset::new(
-                Default::default(),
-                0,
-                loop_state.event_log_events,
-            ),
-            scheduler_quiescence: Some(crucible::SchedulerQuiescence::default()),
-        })
-    });
-
-    fn sample_fingerprint(
-        &mut self,
-        node: crucible::NodeId,
-    ) -> Result<crucible::FingerprintSample, crucible::SchedulerError> {
-        let material = format!(
-            "node={}\nquanta={}\nevent-log-events={}\n",
-            node.name, self.quanta, self.event_log_events
-        );
-        Ok(crucible::FingerprintSample {
-            node,
-            at: crucible::VirtualTime { ticks: self.quanta },
-            fingerprint: crucible::ExecutionFingerprint {
-                hash: crucible::ContentHash::from_canonical_material(
-                    "crucible.lifecycle.save-fingerprint.v1",
-                    &material,
-                ),
-            },
-        })
-    }
-}
-
-#[cfg(any(test, feature = "test-double"))]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct ResumeRecordingLifecycleLoop {
-    pub(super) frontier: u64,
-    pub(super) fixture: ResumeRecordingFixture,
-    pub(super) fixture_emitted: bool,
-    pub(super) event_log_events: u64,
-    pub(super) post_fork_seed: Option<crucible::Seed>,
-    pub(super) post_fork_draws: u64,
-}
-
-#[cfg(any(test, feature = "test-double"))]
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) enum ResumeRecordingFixture {
-    #[default]
-    None,
-    PropertyViolation {
-        assertion: crucible::AssertionId,
-    },
-}
-
-#[cfg(any(test, feature = "test-double"))]
-impl ResumeRecordingLifecycleLoop {
-    pub(super) fn new(frontier: VirtualTime) -> Self {
-        Self {
-            frontier: frontier.ticks,
-            fixture: ResumeRecordingFixture::None,
-            fixture_emitted: false,
-            event_log_events: 0,
-            post_fork_seed: None,
-            post_fork_draws: 0,
-        }
-    }
-
-    pub(super) fn with_property_violation(
-        frontier: VirtualTime,
-        assertion: crucible::AssertionId,
-    ) -> Self {
-        Self {
-            fixture: ResumeRecordingFixture::PropertyViolation { assertion },
-            ..Self::new(frontier)
-        }
-    }
-
-    pub(super) fn with_post_fork_seed(mut self, seed: crucible::Seed) -> Self {
-        self.post_fork_seed = Some(seed);
-        self
-    }
-
-    fn selector_fixture_entry(
-        &self,
-        frontier: crucible::VirtualTime,
-    ) -> Option<crucible::SchedulerEventLogEntry> {
-        match &self.fixture {
-            ResumeRecordingFixture::None => None,
-            ResumeRecordingFixture::PropertyViolation { assertion } => Some(
-                crucible::SchedulerEventLogEntry::assertion_state_observation(
-                    self.event_log_events,
-                    frontier,
-                    assertion.clone(),
-                    crucible::AssertionPhase::Violated,
-                ),
-            ),
-        }
-    }
-}
-
-#[cfg(any(test, feature = "test-double"))]
-impl crucible::QuantumLoop for ResumeRecordingLifecycleLoop {
-    impl_quantum_drive_method!(drive_quantum, QReq, QOut, QErr, |loop_state, request| {
-        loop_state.frontier = loop_state.frontier.saturating_add(1);
-        let frontier = VirtualTime {
-            ticks: loop_state.frontier,
-        };
-        let mut event_log_entries = Vec::new();
-        if !loop_state.fixture_emitted {
-            if let Some(entry) = loop_state.selector_fixture_entry(frontier) {
-                event_log_entries.push(entry);
-                loop_state.event_log_events = loop_state.event_log_events.saturating_add(1);
-            }
-            loop_state.fixture_emitted = true;
-        }
-        let decision = if let Some(seed) = loop_state.post_fork_seed {
-            let stream = crucible::RngStreamId::new(
-                "crucible.cli.fork.reseed",
-                format!("post-fork-{}", loop_state.post_fork_draws),
-            );
-            loop_state.post_fork_draws = loop_state.post_fork_draws.saturating_add(1);
-            crucible::Decision::RngDraw(crucible::RngDecision {
-                value: seed.stream_seed(&stream),
-                stream,
-            })
-        } else {
-            crucible::Decision::DeliveryOrder(crucible::DeliveryOrderDecision {
-                at: frontier,
-                order: Vec::new(),
-            })
-        };
-        let configuration =
-            crucible::try_step(&request.configuration, decision.clone()).map_err(|error| {
-                crucible::SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "resume lifecycle double could not record post-fork decision: {error}"
-                    ),
-                }
-            })?;
-        Ok(crucible::QuantumOutcome {
-            configuration,
-            frontier,
-            advanced_node: None,
-            resolved_events: Vec::new(),
-            decisions: vec![decision],
-            event_log_entries,
-            event_log_segment_bytes: Vec::new(),
-            event_log_segment_text: String::new(),
-            event_log_segment_hash: None,
-            event_log_offset: crucible::EventLogOffset::new(
-                Default::default(),
-                0,
-                loop_state.event_log_events,
-            ),
-            scheduler_quiescence: Some(crucible::SchedulerQuiescence::default()),
-        })
-    });
-
-    fn sample_fingerprint(
-        &mut self,
-        node: crucible::NodeId,
-    ) -> Result<crucible::FingerprintSample, crucible::SchedulerError> {
-        Ok(crucible::FingerprintSample {
-            node,
-            at: VirtualTime {
-                ticks: self.frontier,
-            },
-            fingerprint: crucible::ExecutionFingerprint {
-                hash: crucible::ContentHash::from_canonical_material(
-                    "crucible.lifecycle.resume-fingerprint.v1",
-                    &format!("frontier={}\n", self.frontier),
-                ),
-            },
-        })
-    }
-}
-
-#[cfg(any(test, feature = "test-double"))]
-pub(super) fn run_local_double_verify_workflow(
-    thin_plan: &CliThinWrapperPlan,
-    backend_plan: &BackendSelectionPlan,
-    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    verify_plan: &VerifyInvocationPlan,
-) -> Result<BackendCommandOutcome, CliError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let control_plane = LifecycleControlPlane::new(
-        "crucible-cli-double",
-        Vec::new(),
-        |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
-    );
-    let client = InProcessLifecycleClient::new(control_plane);
-    let report = runtime.block_on(run_control_client_verify_workflow_async(
-        &client,
-        verify_plan,
-        backend_plan.resolved_backend.as_ref(),
-        ergonomics_plan,
-    ))?;
-    finish_verify_workflow_outcome(
-        thin_plan,
-        backend_plan,
-        ergonomics_plan,
-        verify_plan,
-        report,
-    )
-}
+pub(super) use test_double::*;
 
 pub(super) fn run_local_qemu_save_workflow(
     thin_plan: &CliThinWrapperPlan,
@@ -784,6 +455,32 @@ where
     C: ControlClient + Sync,
 {
     let evidence = resume_handle_evidence(resume_plan)?;
+    run_remote_control_client_resume_from_evidence_with_driver_async(
+        client,
+        resume_plan,
+        evidence,
+        interactive_driver,
+        false,
+    )
+    .await
+}
+
+/// Resumes through a control client from already validated checkpoint evidence.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the remote lifecycle rejects the checkpoint or a
+/// command, or when the observed terminal evidence violates the resume oracle.
+pub(super) async fn run_remote_control_client_resume_from_evidence_with_driver_async<C>(
+    client: &C,
+    resume_plan: &ResumeInvocationPlan,
+    evidence: ResumeHandleEvidence,
+    interactive_driver: ResumeInteractiveCommandDriver<'_>,
+    reject_pending_branch_choices: bool,
+) -> Result<ResumeWorkflowReport, CliError>
+where
+    C: ControlClient + Sync,
+{
     let request = ResumeSessionRequest::new(
         evidence.scenario_form.clone(),
         evidence.schedule.clone(),
@@ -814,6 +511,8 @@ where
     let mut watch_statuses = Vec::new();
     let mut command_id = 1;
     let mut property_violation_reached = false;
+    let mut property_suspension = None;
+    let mut expected_virtual_boundary = None;
 
     let boundary = if matches!(resume_plan.execution_mode, RunExecutionMode::Interactive) {
         drive_remote_resume_interactive_commands(
@@ -836,23 +535,40 @@ where
     } else {
         let boundary = match resume_plan.terminal_condition {
             RunTerminalCondition::Quiescence => {
-                let before =
-                    wait_for_resume_workflow_state(client, resumed.session, LiveStateKind::Paused)
-                        .await?;
                 send_resume_workflow_command(
                     client,
                     resumed.session,
                     &mut command_id,
-                    SessionCommand::step(StepMode::Quantum),
+                    SessionCommand::SetBreakpoint {
+                        spec: BreakpointSpec::suspend_once(crucible::Predicate::quiescent()),
+                        reply: CommandReply::discard(),
+                    },
                     &mut acknowledged_commands,
                     &mut state_updates,
                 )
                 .await?;
-                wait_for_resume_workflow_advanced_paused(
+                wait_for_resume_workflow_state(client, resumed.session, LiveStateKind::Paused)
+                    .await?;
+                send_resume_workflow_command(
                     client,
                     resumed.session,
-                    &before,
-                    "paused remote quiescence resume boundary",
+                    &mut command_id,
+                    SessionCommand::Continue,
+                    &mut acknowledged_commands,
+                    &mut state_updates,
+                )
+                .await?;
+                wait_for_resume_workflow_summary(
+                    client,
+                    resumed.session,
+                    |candidate| {
+                        matches!(
+                            candidate.state,
+                            LiveStateKind::Paused | LiveStateKind::Stopped
+                        )
+                    },
+                    "quiescent remote resume boundary",
+                    RESUME_WORKFLOW_OBSERVER_TIMEOUT,
                 )
                 .await?
             }
@@ -860,10 +576,11 @@ where
                 let budget = resume_plan.max_virtual_time_ticks.ok_or_else(|| {
                     usage_error("resume --until virtual-time requires --max-virtual-time")
                 })?;
+                expected_virtual_boundary = Some(budget);
                 let summary =
                     wait_for_resume_workflow_state(client, resumed.session, LiveStateKind::Paused)
                         .await?;
-                let boundary = if summary.frontier.ticks < budget {
+                if summary.frontier.ticks < budget {
                     send_resume_workflow_command(
                         client,
                         resumed.session,
@@ -879,24 +596,20 @@ where
                         client,
                         resumed.session,
                         |candidate| {
-                            candidate.state == LiveStateKind::Paused
-                                && candidate.frontier.ticks >= budget
+                            matches!(
+                                candidate.state,
+                                LiveStateKind::Paused | LiveStateKind::Stopped
+                            ) && (candidate.frontier.ticks >= budget
+                                || candidate.state == LiveStateKind::Stopped)
                                 && candidate.quanta_stepped > summary.quanta_stepped
                         },
-                        "paused requested remote virtual-time resume boundary",
-                        resume_actor_boundary_yield_budget(summary.frontier.ticks, budget),
+                        "requested remote virtual-time resume boundary",
+                        RESUME_WORKFLOW_OBSERVER_TIMEOUT,
                     )
                     .await?
                 } else {
                     summary
-                };
-                if boundary.frontier.ticks != budget {
-                    return Err(CliError::Identity(format!(
-                        "resume remote virtual-time boundary reached {}, expected {}",
-                        boundary.frontier.ticks, budget
-                    )));
                 }
-                boundary
             }
             RunTerminalCondition::Stopped => {
                 wait_for_resume_workflow_state(client, resumed.session, LiveStateKind::Paused)
@@ -909,10 +622,7 @@ where
                     resumed.session,
                     &mut command_id,
                     SessionCommand::SetBreakpoint {
-                        spec: BreakpointSpec::fail_once(
-                            predicate.clone(),
-                            "requested property was violated",
-                        ),
+                        spec: BreakpointSpec::suspend_once(predicate.clone()),
                         reply: CommandReply::discard(),
                     },
                     &mut acknowledged_commands,
@@ -924,54 +634,31 @@ where
                         "remote resume property breakpoint command returned no breakpoint id",
                     )
                 })?;
-                let before =
-                    wait_for_resume_workflow_state(client, resumed.session, LiveStateKind::Paused)
-                        .await?;
+                wait_for_resume_workflow_state(client, resumed.session, LiveStateKind::Paused)
+                    .await?;
                 send_resume_workflow_command(
                     client,
                     resumed.session,
                     &mut command_id,
-                    SessionCommand::step(StepMode::Quantum),
+                    SessionCommand::Continue,
                     &mut acknowledged_commands,
                     &mut state_updates,
                 )
                 .await?;
-                let boundary = wait_for_resume_workflow_advanced_paused(
+                let boundary = wait_for_resume_workflow_summary(
                     client,
                     resumed.session,
-                    &before,
-                    "paused remote property resume boundary",
+                    |candidate| {
+                        matches!(
+                            candidate.state,
+                            LiveStateKind::Paused | LiveStateKind::Stopped
+                        )
+                    },
+                    "property remote resume boundary",
+                    RESUME_WORKFLOW_OBSERVER_TIMEOUT,
                 )
                 .await?;
-                let firings_response = send_resume_workflow_command(
-                    client,
-                    resumed.session,
-                    &mut command_id,
-                    SessionCommand::query_breakpoint_firings(),
-                    &mut acknowledged_commands,
-                    &mut state_updates,
-                )
-                .await?;
-                let firings = match firings_response.query_result {
-                    Some(QueryResult::BreakpointFirings(firings)) => firings,
-                    Some(other) => {
-                        return Err(backend_error(format!(
-                            "remote resume property proof query returned unexpected payload: {other:?}"
-                        )));
-                    }
-                    None => {
-                        return Err(backend_error(
-                            "remote resume property proof query returned no breakpoint firing payload",
-                        ));
-                    }
-                };
-                validate_resume_property_firing_summary(
-                    breakpoint_id,
-                    &predicate,
-                    &boundary,
-                    &firings,
-                )?;
-                property_violation_reached = true;
+                property_suspension = Some((breakpoint_id, predicate));
                 boundary
             }
         };
@@ -980,6 +667,84 @@ where
         }
         boundary
     };
+
+    if reject_pending_branch_choices {
+        let response = send_resume_workflow_command(
+            client,
+            resumed.session,
+            &mut command_id,
+            SessionCommand::Query {
+                kind: QueryKind::SearchFrontier,
+                reply: CommandReply::discard(),
+            },
+            &mut acknowledged_commands,
+            &mut state_updates,
+        )
+        .await?;
+        let pending = match response.query_result {
+            Some(QueryResult::SearchFrontier {
+                pending_branch_choices,
+                ..
+            }) => pending_branch_choices,
+            Some(other) => {
+                return Err(backend_error(format!(
+                    "fork override validation returned unexpected query payload: {other:?}"
+                )));
+            }
+            None => {
+                return Err(backend_error(
+                    "fork override validation returned no search-frontier payload",
+                ));
+            }
+        };
+        if pending != 0 {
+            destroy_remote_resume_session_best_effort(client, resumed.session).await;
+            return Err(artifact_error(format!(
+                "fork stopped with {pending} unconsumed override choice(s); the recorded scheduling point was not reached"
+            )));
+        }
+    }
+
+    if let Some(expected) = expected_virtual_boundary
+        && boundary.frontier.ticks != expected
+    {
+        return Err(CliError::Identity(format!(
+            "resume remote virtual-time boundary reached {}, expected {expected}",
+            boundary.frontier.ticks
+        )));
+    }
+
+    if let Some((breakpoint_id, predicate)) = property_suspension {
+        let firings_response = send_resume_workflow_command(
+            client,
+            resumed.session,
+            &mut command_id,
+            SessionCommand::query_breakpoint_firings(),
+            &mut acknowledged_commands,
+            &mut state_updates,
+        )
+        .await?;
+        let firings = match firings_response.query_result {
+            Some(QueryResult::BreakpointFirings(firings)) => firings,
+            Some(other) => {
+                return Err(backend_error(format!(
+                    "remote resume property proof query returned unexpected payload: {other:?}"
+                )));
+            }
+            None => {
+                return Err(backend_error(
+                    "remote resume property proof query returned no breakpoint firing payload",
+                ));
+            }
+        };
+        validate_resume_property_suspension_summary(
+            breakpoint_id,
+            &predicate,
+            &boundary,
+            &firings,
+        )?;
+        property_violation_reached = true;
+    }
 
     let snapshot_response = send_resume_workflow_command(
         client,
@@ -1289,6 +1054,11 @@ where
         let Some(command) = parse_interactive_session_command_line(&line)? else {
             continue;
         };
+        if interactive_stream_command(command)?.is_none() {
+            write_interactive_payload_required(writer, command)?;
+            writer.flush()?;
+            continue;
+        }
         if command == SessionCommandKind::Stop {
             let boundary = current_remote_resume_summary(client, session).await?;
             if watch_streams_live_status {
@@ -1319,6 +1089,9 @@ where
             "interactive-ack\tcommand={}\tstatus=accepted",
             session_command_name(command)
         )?;
+        if command == SessionCommandKind::Query {
+            write_interactive_query_state(writer, boundary.state)?;
+        }
         writer.flush()?;
     }
     Ok(())
@@ -1374,7 +1147,7 @@ where
                         || summary.state == LiveStateKind::Stopped
                 },
                 "remote interactive resume command boundary",
-                RUN_INTERACTIVE_ACK_QUANTA_BOUND,
+                RESUME_WORKFLOW_OBSERVER_TIMEOUT,
             )
             .await
         }

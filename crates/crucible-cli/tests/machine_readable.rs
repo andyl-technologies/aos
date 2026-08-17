@@ -45,6 +45,50 @@ fn cli_exit_machine_readable_process_stdout_is_pure_json() -> Result<(), Box<dyn
 }
 
 #[test]
+fn cli_selftest_honors_machine_output_trace_and_quiet() -> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let trace = temp.path().join("selftest.jsonl");
+    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args(["--backend", "double", "--format", "jsonl", "--trace"])
+        .arg(&trace)
+        .arg("selftest")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "selftest should pass; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout)?;
+    assert_machine_readable_jsonl(
+        &stdout,
+        &["selftest_gate", "selftest_scenario", "final_outcome"],
+    )?;
+    assert_eq!(stdout.as_bytes(), fs::read(&trace)?);
+
+    let quiet_trace = temp.path().join("selftest-quiet.jsonl");
+    let quiet = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args([
+            "--backend",
+            "double",
+            "--format",
+            "jsonl",
+            "--quiet",
+            "--trace",
+        ])
+        .arg(&quiet_trace)
+        .arg("selftest")
+        .output()?;
+    assert!(quiet.status.success());
+    assert!(quiet.stdout.is_empty());
+    let quiet_trace = fs::read_to_string(quiet_trace)?;
+    assert_machine_readable_jsonl(
+        &quiet_trace,
+        &["selftest_gate", "selftest_scenario", "final_outcome"],
+    )?;
+    Ok(())
+}
+
+#[test]
 fn cli_save_machine_readable_jsonl_reports_handle_path() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let fixture = crucible::happy_path_scenario()?;
@@ -464,6 +508,26 @@ fn cli_exit_machine_readable_replay_check_jsonl_reports_final_outcome() -> Resul
 }
 
 #[test]
+fn cli_exit_machine_readable_replay_error_reports_one_failed_outcome() -> Result<(), Box<dyn Error>>
+{
+    let temp = TempDir::new()?;
+    let artifact = temp.path().join("malformed.crucible");
+    fs::write(&artifact, "not a reproduction artifact")?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args(["--format", "jsonl", "--backend", "double", "replay"])
+        .arg(&artifact)
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(5));
+    let stdout = String::from_utf8(output.stdout)?;
+    assert_machine_readable_jsonl_with_exit(&stdout, &["replay_error"], 5)?;
+    assert!(stdout.contains("status=failed"));
+    assert!(!stdout.contains("status=passed"));
+    Ok(())
+}
+
+#[test]
 fn cli_exit_machine_readable_replay_to_savepoint_jsonl_reports_final_outcome()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
@@ -594,6 +658,14 @@ fn assert_machine_readable_entries(
             "{context} kinds {kinds:?} must contain `{expected_kind}`",
         );
     }
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|kind| kind.as_str() == "final_outcome")
+            .count(),
+        1,
+        "{context} must contain exactly one final_outcome record, got {kinds:?}",
+    );
     let final_entry = entries
         .last()
         .ok_or_else(|| invalid_data(format!("{context} must include a final outcome line")))?;
@@ -858,7 +930,7 @@ fn replay_to_savepoint_artifact_text(
         &[
             "identity",
             env!("CARGO_PKG_VERSION"),
-            "crucible-harness-e2e-v1",
+            "crucible-harness-e2e-v2",
             "crucible.reproduction-artifact.v3",
             &content_address_bytes(b"mock-backend-source-v1"),
             &content_address_bytes(b"mock-qemu-patch-series-v1"),

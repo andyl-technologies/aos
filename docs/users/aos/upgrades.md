@@ -1,166 +1,210 @@
 # Upgrade and roll back an AOS host
 
-An AOS system upgrade switches the immutable userspace sysroot to another
-numbered generation. Package registry policy controls which sysroot is offered;
-APM performs the download, activation, and generation-pointer update.
+AOS records two independent generation axes:
 
-The current production-safe scope is a userspace upgrade whose kernel and UKI
-are unchanged. Durable kernel/UKI replacement is not complete: the stock EFI
-System Partition is read-only, while the current kernel handler still stages a
-legacy boot entry. Reimage the host for a release that changes its boot
-artifacts.
+- an image generation owns an A/B root slot, UKI, kernel, initrd, base module
+  library, evaluator, and expected measurements;
+- a configuration generation owns the evaluated manifest, retained inputs,
+  package projection, and EROFS `/etc` lower activated on the running image.
+
+Image state is under `/var/lib/profiles/image`; configuration state is under
+`/var/lib/profiles/system`. Advancing one axis does not silently rewrite the
+other.
+
+These paths become durable on measured-boot systems only after Secure Boot key
+enrollment and the first enforcing boot have created the TPM-sealed `/var`.
+Do not stage an image update while the machine is still using the disposable
+plaintext `/var` provided in UEFI Setup Mode.
 
 ## Prepare the rollout
 
-The system registry must contain a package with the same name as the installed
-sysroot, normally `aos`, and its metadata must set `sysroot = true`.
+The system registry must contain one package with the same name as the running
+sysroot, normally `aos`, with `sysroot = true`. Its signed metadata must publish
+the raw OTA payload, both slot-specific UKIs, module ABI, and the root-hash,
+expected-measurement, and Secure Boot facts required by the target policy.
 
-Registry and channel configuration must establish rollout direction. The
-upgrade resolver does not sort semantic versions or reject a downgrade; it
-selects the first enabled same-name sysroot whose version string differs from
-the installed version.
+Registry and channel policy establishes rollout direction. The upgrade
+resolver selects the first enabled same-name sysroot whose version differs
+from the running image; it does not infer semantic-version ordering.
 
 Before changing a host:
 
 1. restrict it to the intended registry and channel;
-2. verify the published userspace closure uses the same kernel and UKI;
+2. verify the image, UKIs, root hashes, and expected measurements in the signed
+   catalog;
 3. synchronize system metadata;
-4. record the current generation;
+4. record both generation axes and the running slot;
 5. preview the candidate.
 
 ```sh
 apm update --system
+apm rollback --system --image --list
 apm rollback --system --list
 apm upgrade --system --dry-run
 ```
 
-`apm list --installed --system` and `--upgradable --system` inspect ordinary
-machine-wide runtime packages, not the OS sysroot generation.
+The dry run resolves the selected candidate and reports the plan without
+downloading, writing a root slot, changing the boot default, or activating
+configuration. Use `apm switch --dry-run` as documented in the
+[configuration guide](configuration.md) to preview a
+`host.nix` configuration transaction, including `/etc`, unit, closure, and
+provider-resolution changes.
 
-`--dry-run` identifies the selected candidate but returns before downloading
-and validating its complete closure. It is a selection check, not a substitute
-for a staged rollout.
-
-## Apply an upgrade
-
-The unqualified command is supported when the candidate keeps the current
-kernel and UKI. It does not provide a durable kernel/UKI update for the stock
-image:
+## Stage an A/B image upgrade
 
 ```sh
 apm upgrade --system
 ```
 
+APM verifies the registry graph and Secure Boot policy, imports the
+authenticated OTA payload, copies the currently needed evaluator closure to
+the persistent store overlay, writes the inactive root and, for a verity image,
+its hash slot, publishes its UKI last, and makes the counted UKI the durable
+next-boot default. The running image and active configuration are unchanged
+until reboot.
+
 Activation modes are:
 
 | Mode | Behavior |
 | --- | --- |
-| no mode flag | Activate userspace; for a changed kernel, attempt the incomplete boot-entry update before advising |
-| `--live` | Invoke the incomplete legacy boot-entry handler; unsupported for durable stock-image kernel upgrades |
-| `--reboot` | Activate, then request a full reboot through the incomplete kernel-update path |
-| `--kexec` | Activate, then hot-load the new kernel through the incomplete kernel-update path |
-| `--drain` | Drain workloads before `--reboot` or `--kexec` |
+| no mode flag | Stage the inactive slot and print a reboot advisory |
+| `--live` | Stage only; like the default, defer the image transition until reboot |
+| `--reboot` | Stage, then request a full reboot |
+| `--kexec` | Rejected for A/B images because kexec cannot change the root slot |
+| `--drain` | Drain workloads before a requested `--reboot` |
 
-Because durable kernel handling is not ready, do not use any mode to deploy a
-changed kernel in production. Even with no mode flag, APM commits the new
-generation and then attempts to update the boot entry. On the stock read-only
-EFI System Partition that step can exit `1` before the advisory is printed,
-while the new userspace generation remains current. The same boundary applies
-when rolling back across kernels. For a userspace-only release, the unqualified
-command is the clear operating default.
+The candidate UKI carries an sd-boot boot-counting suffix. Each unsuccessful
+attempt decrements its counter; exhaustion demotes the candidate and falls back
+to the other slot. A candidate is blessed only after it boots, re-evaluates the
+host configuration against its own ABI-pinned base library, commits a matching
+configuration generation, reaches the TPM ready phase, and passes local
+verification of the generation quote against the live PCR 7/11 values and the
+published image PCR 11. A failed ready transition leaves evaluation and boot
+blessing inactive.
 
-System upgrade does not prompt for confirmation. Automation and runbooks should
-always execute and review the dry run first.
+For the initially installed image, the expected ready-phase value comes from a
+build-produced measurement sidecar signed by the PCR-policy key and bound to
+the exact UKI hash. AOS verifies it before importing it into durable image
+state. Later registry images obtain the same authority from their signed
+release catalog; a live PCR reading is never promoted into either source.
 
-## Verify the active generation
+## Verify an image transition
+
+After reboot:
 
 ```sh
+cat /proc/cmdline
 cat /etc/os-release
+cat /var/lib/profiles/image/state.json
+cat /var/lib/profiles/system/state.json
 readlink /var/lib/profiles/system/current
-apm rollback --system --list
+cat /run/aos/activation.json
 
 systemctl is-system-running
 systemctl --failed
 journalctl -b -p warning
 ```
 
-Verify application health in addition to systemd state. A generation switch
-can complete even when a unit fails afterward.
+Confirm that `running` names the expected image, `pending` has been cleared,
+the current configuration's `image_gen_parent` matches it, and the activation
+record describes the same committed transaction. Verify application health in
+addition to systemd state.
 
-## Interpret activation results
+## Roll back configuration
 
-The activation script reports how far the transaction progressed. APM maps
-those internal statuses to its ordinary success or error exit:
-
-| Activation status | APM exit | State after the command | Operator action |
-| --- | --- | --- | --- |
-| `0` | `0` | New generation is live and healthy | Complete application checks |
-| `5` | `0` with warning | New generation is live; stale mount cleanup failed | Inspect mounts and logs; schedule cleanup |
-| `6` | `1` | New generation and `/etc` are committed; one or more units failed | Inspect failed units and roll back if service is impaired |
-| `1`–`3` | `1` | Failure occurred before the `/etc` swap | Previous generation remains live; inspect the reported phase |
-| `4` | `1` | `/etc` swap was incomplete | Treat state as indeterminate and recover from console |
-
-A generic APM exit `1` does not reveal where the operation failed. Resolution,
-download, verification, or import can fail before activation; kernel or reboot
-handling can fail after the generation is committed. The table applies when
-the activation script reports one of its numbered phases. Read the direct error
-first, then check the generation pointer and `/etc/os-release` before taking a
-second action.
-
-## Roll back
-
-List generations and preview the target:
+List configuration generations and preview a target:
 
 ```sh
 apm rollback --system --list
 apm rollback --system --generation N --dry-run
 ```
 
-Apply the selected rollback:
+Apply it:
 
 ```sh
 apm rollback --system --generation N
 ```
 
-Without `--generation`, APM selects the previous generation:
+Without `--generation`, APM chooses the most recent earlier configuration.
+When its module ABI matches the running image, rollback validates the retained
+manifest and switches directly. Across an ABI boundary, direct activation is
+refused: APM re-evaluates the retained `host.nix`, instance facts, and exact
+authenticated package module inputs against the running image, then commits a
+new compatible configuration generation. This replay requires no registry
+round trip because each generation retains its `cfgsrc` inputs.
+
+## Roll back the image
+
+List and preview the image axis separately:
 
 ```sh
-apm rollback --system --dry-run
-apm rollback --system
+apm rollback --system --image --list
+apm rollback --system --image --generation N --dry-run
 ```
 
-Rollback uses the same activation machinery and status mapping as upgrade. If
-APM reports that units failed after the generation became live, an explicit
-rollback is usually the safest recovery once diagnostics have been captured.
+Select the older image as the durable next boot, optionally rebooting in the
+same operation:
+
+```sh
+apm rollback --system --image --generation N
+apm rollback --system --image --generation N --reboot
+```
+
+The running kernel does not change until reboot. On the selected image's first
+boot, AOS re-evaluates the exact inputs retained by the active configuration
+generation against that image's base library. This preserves the machine's
+current intent instead of reverting to its original provisioning metadata. AOS
+commits the rebound configuration before making the image the durable
+successful default.
+
+## Interpret configuration activation results
+
+The activation script publishes a transaction-bound record after the pointer
+and `/etc` swap. Its `activation_exit` field has this meaning; the outer `apm`
+command can still report a generic failure from graph orchestration:
+
+| `activation_exit` | State after the command | Operator action |
+| --- | --- | --- |
+| `0` | New generation is live and healthy | Complete application checks |
+| `5` | New generation is live; stale mount cleanup warned | Inspect mounts and schedule cleanup |
+| `6` | New generation is committed but one or more units failed | Inspect failed units; roll back configuration if service is impaired |
+| `1`-`3` | Failure occurred before the `/etc` swap | Previous generation remains live; inspect the reported phase |
+| `4` | `/etc` swap or post-swap evidence is indeterminate | Use console access and the recovery procedure |
+
+Graph recovery does not treat a degraded or stale activation record as a
+completed transaction. Re-running the same transaction retries its package
+and activation work rather than silently skipping it.
 
 ## Install a selected sysroot
 
-For a controlled bootstrap or recovery, select the registry and sysroot package
-explicitly:
+For controlled staging, select the registry and sysroot package explicitly:
 
 ```sh
 apm install aos --system --registry acme --dry-run
 apm install aos --system --registry acme --yes
 ```
 
-This command only accepts one package marked `sysroot = true`. It is not a
-machine-wide ordinary package install; those use a desired file as documented
-in [Manage packages](packages.md#manage-machine-wide-packages).
+This accepts exactly one package marked `sysroot = true` and stages its A/B
+image. Ordinary machine-wide packages use a desired file as documented in
+[Manage packages](packages.md#manage-machine-wide-packages).
 
 ## Keep scopes separate
 
-These profiles advance independently:
-
 ```text
-/var/lib/profiles/system           OS sysroot generations
-/var/lib/profiles/system-packages  ordinary machine-wide package generations
-/var/lib/profiles/per-user/$USER   user package generations
+/var/lib/profiles/image             A/B image generations
+/var/lib/profiles/system            configuration generations
+/var/lib/profiles/system-packages   ordinary machine-wide package generations
+/var/lib/profiles/per-user/$USER    user package generations
 ```
 
-Rolling back the OS does not select an earlier user profile. Conversely, a user
-package rollback does not change `/etc` or the sysroot.
+Rolling back an image does not pick an arbitrary old configuration; boot-time
+re-evaluation establishes a compatible one. Conversely, configuration or user
+package rollback does not replace the running kernel or root slot.
 
-There is no supported command to prune old sysroot or system-package
-generations today. `apm clean --generations` only targets the invoking user's
-profile, and `aos gc --list-generations` refers to an unrelated Nix profile.
-Keep enough space under `/var` for the rollout and its rollback generation.
+`apm clean --generations --keep N` prunes the invoking user's package profile.
+Add `--system` to prune both ordinary machine-wide package generations and
+configuration generations, keeping the latest `N` of each plus each profile's
+current generation. Configuration pruning is serialized with activation and
+releases its `cfg/` and `cfgsrc/` roots; a later `apm gc` can reclaim the now
+unreachable store paths. A/B image-generation pruning remains unavailable.
+`aos gc --list-generations` refers to an unrelated Nix profile.

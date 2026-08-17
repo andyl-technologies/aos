@@ -22,7 +22,7 @@ pub use app_random::{
     PLUGIN_ARG_APP_RANDOM_POSITIONS, PLUGIN_ARG_APP_RANDOM_SEED, PluginAppRandomConfig,
 };
 pub use whitebox::{
-    WHITEBOX_SETUP_AARCH64_HLT_UNCLAIMED_V1, WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1,
+    WHITEBOX_SETUP_AARCH64_HINT_INERT_V1, WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1,
     WhiteboxSetupAttestation,
 };
 /// The required host-to-plugin control-socket argument key.

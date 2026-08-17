@@ -1,4 +1,4 @@
-//! Live QEMU x86 doorbell-port collision discovery.
+//! Live QEMU doorbell collision discovery and inert-instruction attestation.
 //!
 //! White-box setup launches the exact configured machine in a stopped,
 //! plugin-free probe process and asks QEMU's monitor for the flattened I/O
@@ -12,7 +12,7 @@ use std::{
 };
 
 use crucible_protocol::{
-    WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE, WHITEBOX_DOORBELL_X86_64_RESERVED_PORT,
+    WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION, WHITEBOX_DOORBELL_X86_64_RESERVED_PORT,
 };
 use thiserror::Error;
 
@@ -20,7 +20,7 @@ use super::QemuLaunchCommand;
 
 const UNASSIGNED_X86_IO_REGION: &str = "io";
 
-/// A setup-time proof that the frozen x86 doorbell port is unclaimed.
+/// A setup-time proof for the architecture's frozen white-box instruction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuWhiteboxSetupValidation {
     trap: QemuWhiteboxSetupTrap,
@@ -30,11 +30,14 @@ pub struct QemuWhiteboxSetupValidation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum QemuWhiteboxSetupTrap {
     X86Port,
-    Aarch64Hlt,
+    Aarch64Hint,
 }
 
 impl QemuWhiteboxSetupValidation {
-    /// Returns the collision-checked reserved port.
+    /// Returns the collision-checked x86 reserved port.
+    ///
+    /// This compatibility accessor is meaningful only for validation returned
+    /// by [`probe_x86_whitebox_setup`].
     #[must_use]
     pub const fn port(&self) -> u16 {
         WHITEBOX_DOORBELL_X86_64_RESERVED_PORT
@@ -49,7 +52,7 @@ impl QemuWhiteboxSetupValidation {
     pub(super) const fn attestation(&self) -> &'static str {
         match self.trap {
             QemuWhiteboxSetupTrap::X86Port => super::WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1,
-            QemuWhiteboxSetupTrap::Aarch64Hlt => super::WHITEBOX_SETUP_AARCH64_HLT_UNCLAIMED_V1,
+            QemuWhiteboxSetupTrap::Aarch64Hint => super::WHITEBOX_SETUP_AARCH64_HINT_INERT_V1,
         }
     }
 
@@ -109,28 +112,29 @@ impl QemuWhiteboxSetupValidation {
     }
 }
 
-/// Validates that the frozen aarch64 HLT immediate is unclaimed.
+/// Validates the retained guest's frozen aarch64 HINT instruction ABI.
 ///
-/// The caller supplies the complete reserved-immediate catalog for the exact
-/// guest/platform pair being launched. Unlike x86 port I/O, QEMU has no runtime
-/// device map for architectural HLT immediates, so the versioned guest contract
-/// is the setup authority.
+/// Unlike x86 port I/O, QEMU has no runtime device map for architectural HINT
+/// immediates. The versioned retained-guest manifest is therefore the setup
+/// authority: ABI v4 reserves HINT `0x4c` for Crucible and guarantees that it is
+/// otherwise inert. Callers must obtain the version from retained asset metadata.
 ///
 /// # Errors
 ///
-/// Returns [`QemuWhiteboxSetupError::Aarch64ImmediateCollision`] when the
-/// reserved catalog already contains Crucible's frozen immediate.
+/// Returns [`QemuWhiteboxSetupError::InstructionAbiMismatch`] when the retained
+/// guest declares another instruction ABI.
 pub fn validate_aarch64_whitebox_setup(
-    reserved_immediates: &[u16],
+    instruction_abi_version: u16,
 ) -> Result<QemuWhiteboxSetupValidation, QemuWhiteboxSetupError> {
-    if reserved_immediates.contains(&WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE) {
-        return Err(QemuWhiteboxSetupError::Aarch64ImmediateCollision {
-            immediate: WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE,
+    if instruction_abi_version != WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION {
+        return Err(QemuWhiteboxSetupError::InstructionAbiMismatch {
+            expected: WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION,
+            actual: instruction_abi_version,
         });
     }
     Ok(QemuWhiteboxSetupValidation {
-        trap: QemuWhiteboxSetupTrap::Aarch64Hlt,
-        observed_region: "aarch64-hlt-04c1".to_owned(),
+        trap: QemuWhiteboxSetupTrap::Aarch64Hint,
+        observed_region: "aarch64-hint-4c-inert".to_owned(),
     })
 }
 
@@ -228,6 +232,14 @@ pub fn validate_x86_whitebox_hmp_mtree(
 /// A failure while discovering or validating the live x86 I/O port map.
 #[derive(Debug, Error)]
 pub enum QemuWhiteboxSetupError {
+    /// The retained guest asset declares another doorbell instruction ABI.
+    #[error("guest doorbell instruction ABI {actual} does not match plugin ABI {expected}")]
+    InstructionAbiMismatch {
+        /// Instruction ABI required by the plugin.
+        expected: u16,
+        /// Instruction ABI declared by the guest asset.
+        actual: u16,
+    },
     /// The launch command ended with an option lacking its value.
     #[error("QEMU launch option `{option}` is missing its value")]
     MalformedLaunchCommand {
@@ -293,12 +305,6 @@ pub enum QemuWhiteboxSetupError {
         /// QEMU memory-region owner.
         region: String,
     },
-    /// The guest/platform contract already reserves Crucible's HLT immediate.
-    #[error("reserved aarch64 white-box HLT immediate {immediate:#06x} is already in use")]
-    Aarch64ImmediateCollision {
-        /// Colliding HLT immediate.
-        immediate: u16,
-    },
 }
 
 #[cfg(test)]
@@ -333,6 +339,17 @@ FlatView #2
                 port: WHITEBOX_DOORBELL_X86_64_RESERVED_PORT,
                 region,
             }) if region == "debugcon"
+        ));
+    }
+
+    #[test]
+    fn aarch64_setup_rejects_a_mismatched_guest_instruction_abi() {
+        assert!(matches!(
+            validate_aarch64_whitebox_setup(WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION - 1),
+            Err(QemuWhiteboxSetupError::InstructionAbiMismatch {
+                expected: WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION,
+                actual,
+            }) if actual == WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION - 1
         ));
     }
 }

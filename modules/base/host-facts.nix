@@ -4,10 +4,11 @@
 ##! (hostname, networking-by-MAC, disk IDs, operator SSH keys) enter the
 ##! pure on-host evaluation **only** as typed config under a privileged-owned
 ##! `host.facts.*` root — never via `specialArgs` (which is untyped, unmerged,
-##! provenance-less, and absent from the manifest). Under `--pure-eval` there
-##! is no ambient channel (`getEnv`/`currentSystem` are blocked), so facts are
-##! the one declared, typed, assertable input that reconciles "deterministic
-##! given declared inputs" with per-host variation: the eval is a pure
+##! provenance-less, and absent from the manifest). The P1 stock evaluator
+##! combines restricted evaluation with an empty process environment and the
+##! image-frozen target system, so `getEnv`/ambient `currentSystem` cannot add
+##! host data. Facts are therefore the one declared, typed, assertable input
+##! that reconciles determinism with per-host variation: evaluation is a pure
 ##! function of `(modules + host.nix data + facts)`. The resolved `host.facts.*`
 ##! subtree is what `manifest.inputs.instance_facts.facts_hash` is taken over.
 ##!
@@ -75,6 +76,40 @@
       };
     };
   });
+
+  ## Metadata-delivered static network facts used only to bootstrap a route to
+  ## the stage-2 evaluator. Keeping the complete normalized input here makes
+  ## the manifest facts hash sensitive to gateway and DNS changes as well as
+  ## interface addresses.
+  staticNetworkType = types.submodule {
+    options = {
+      mac = mkOption {
+        type = types.nullOr types.nonEmptyStr;
+        default = null;
+        description = "Canonical MAC selector reported by platform metadata.";
+      };
+      interface_name = mkOption {
+        type = types.nullOr types.nonEmptyStr;
+        default = null;
+        description = "Explicit kernel interface selector used when no MAC was reported.";
+      };
+      addresses = mkOption {
+        type = types.listOf types.nonEmptyStr;
+        default = [];
+        description = "Static CIDR addresses reported by platform metadata.";
+      };
+      gateway = mkOption {
+        type = types.nullOr types.nonEmptyStr;
+        default = null;
+        description = "Default gateway reported by platform metadata.";
+      };
+      dns = mkOption {
+        type = types.listOf types.nonEmptyStr;
+        default = [];
+        description = "DNS server addresses reported by platform metadata.";
+      };
+    };
+  };
 in {
   options.host.facts = {
     hostname = mkOption {
@@ -87,12 +122,39 @@ in {
       '';
     };
 
+    instance_id = mkOption {
+      type = types.nullOr types.nonEmptyStr;
+      default = null;
+      description = "Opaque platform instance identifier, when reported by metadata.";
+    };
+
+    region = mkOption {
+      type = types.nullOr types.nonEmptyStr;
+      default = null;
+      description = "Cloud region reported by the platform metadata service.";
+    };
+
+    availability_zone = mkOption {
+      type = types.nullOr types.nonEmptyStr;
+      default = null;
+      description = "Cloud availability zone reported by the platform metadata service.";
+    };
+
     interfaces = mkOption {
       type = types.attrsOf interfaceType;
       default = {};
       description = ''
         Network interfaces keyed by MAC address. The key is injected as each
         submodule's `name`. Empty by default (no facts gathered yet).
+      '';
+    };
+
+    static_network = mkOption {
+      type = types.nullOr staticNetworkType;
+      default = null;
+      description = ''
+        Normalized metadata-delivered static networking used for DHCP-less
+        bootstrap. This is a recorded fact, never an authorization decision.
       '';
     };
 

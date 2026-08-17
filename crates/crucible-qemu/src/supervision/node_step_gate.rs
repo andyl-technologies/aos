@@ -47,7 +47,7 @@
 //! guards against.
 
 use std::fs;
-use std::os::unix::net::UnixStream;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -60,14 +60,15 @@ use crucible::{
 };
 use crucible_shmem::{RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region};
 
+use crate::console_observation::{QemuConsoleObservationReader, QemuConsoleObservationSpool};
 use crate::supervision::QemuLiveHostIoRuntime;
 use crate::{
     CrucibleShmemNetworkDevice, IcountShiftSetting, LaunchProfileCandidate, LaunchProfileError,
-    QemuAsyncDriverPolicy, QemuCrashDetector, QemuGdbstubChannelConfig, QemuHostPluginSetupError,
-    QemuLaunchAppRandomConfig, QemuLaunchArtifact, QemuLaunchCommandBuilder,
-    QemuLaunchCommandError, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
-    QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError, QemuNode,
-    QemuNodeChannelError, QemuNodeError, QemuNodeFactoryError, QemuNodeFactoryRuntime,
+    LivePluginGuestArchitecture, QemuAsyncDriverPolicy, QemuCrashDetector,
+    QemuGdbstubChannelConfig, QemuHostPluginSetupError, QemuLaunchAppRandomConfig,
+    QemuLaunchArtifact, QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchPluginConfig,
+    QemuLaunchPluginSwitch, QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError,
+    QemuNode, QemuNodeChannelError, QemuNodeError, QemuNodeFactoryError, QemuNodeFactoryRuntime,
     QemuNodeRestorePlan, QemuQmpChannelConfig, QemuQuantumShmemConfig, QemuRootImageFormat,
     QemuShmemHotPathChannel, QemuShutdownPolicy, QemuVmLaunchConfig, QemuWhiteboxSetupError,
     QmpError, build_qemu_node_from_completed_setup, build_qemu_node_from_restored_checkpoint,
@@ -178,6 +179,8 @@ impl Default for QemuLiveNodeStepSchedule {
 /// Inputs for one live [`QemuNode`] bounded-step gate run.
 #[derive(Clone, Debug)]
 pub struct QemuLiveNodeStepGateConfig {
+    architecture: LivePluginGuestArchitecture,
+    doorbell_instruction_abi_version: u16,
     qemu_executable: PathBuf,
     plugin: PathBuf,
     kernel: PathBuf,
@@ -228,6 +231,9 @@ impl QemuLiveNodeStepGateConfig {
         run_directory: impl Into<PathBuf>,
     ) -> Self {
         Self {
+            architecture: LivePluginGuestArchitecture::X86_64,
+            doorbell_instruction_abi_version:
+                crucible_protocol::WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION,
             qemu_executable: qemu_executable.into(),
             plugin: plugin.into(),
             kernel: kernel.into(),
@@ -267,6 +273,9 @@ impl QemuLiveNodeStepGateConfig {
         run_directory: impl Into<PathBuf>,
     ) -> Self {
         Self {
+            architecture: LivePluginGuestArchitecture::X86_64,
+            doorbell_instruction_abi_version:
+                crucible_protocol::WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION,
             qemu_executable: qemu_executable.into(),
             plugin: plugin.into(),
             kernel: kernel.into(),
@@ -291,6 +300,23 @@ impl QemuLiveNodeStepGateConfig {
             second_run_host_load: true,
             console_capture: false,
         }
+    }
+
+    /// Returns this configuration with the selected guest architecture.
+    #[must_use]
+    pub const fn with_guest_architecture(
+        mut self,
+        architecture: LivePluginGuestArchitecture,
+    ) -> Self {
+        self.architecture = architecture;
+        self
+    }
+
+    /// Returns this configuration with the retained guest's doorbell instruction ABI.
+    #[must_use]
+    pub const fn with_doorbell_instruction_abi_version(mut self, version: u16) -> Self {
+        self.doorbell_instruction_abi_version = version;
+        self
     }
 
     /// Returns this configuration with the immutable root image's format.
@@ -636,8 +662,24 @@ pub(super) fn build_live_node(
             source,
         }
     })?;
+    let debug_guest_activation_listener = (config.whitebox == QemuLaunchPluginSwitch::On)
+        .then(|| {
+            UnixListener::bind(
+                run_directory.join(crate::QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME),
+            )
+        })
+        .transpose()
+        .map_err(|source| {
+            QemuLiveNodeStepGateError::prime(
+                "bind debug guest activation listener",
+                QemuNodeChannelError::new(
+                    "bind debug guest activation listener",
+                    source.to_string(),
+                ),
+            )
+        })?;
 
-    let mut candidate = LaunchProfileCandidate::default()
+    let mut candidate = launch_profile_candidate(config.architecture)
         .with_memory_mib(config.memory_mib)
         .with_smp_vcpus(config.smp_vcpus)
         .with_icount_shift(IcountShiftSetting::Fixed(config.icount_shift))
@@ -663,6 +705,9 @@ pub(super) fn build_live_node(
     let mut command =
         QemuLaunchCommandBuilder::new(profile, vm, path_text(&config.qemu_executable), plugin)
             .with_qmp(qmp_config.clone());
+    if config.whitebox == QemuLaunchPluginSwitch::On {
+        command = command.with_debug_guest_activation_endpoint();
+    }
     if let Some(gdbstub) = &config.gdbstub {
         command = command.with_gdbstub(gdbstub.clone());
     }
@@ -689,6 +734,18 @@ pub(super) fn build_live_node(
     if !setup.setup_ack().can_schedule() {
         return Err(QemuLiveNodeStepGateError::SetupAckNotReady);
     }
+    let debug_guest_activation_stream = debug_guest_activation_listener
+        .map(|listener| listener.accept().map(|(stream, _address)| stream))
+        .transpose()
+        .map_err(|source| {
+            QemuLiveNodeStepGateError::prime(
+                "accept debug guest activation stream",
+                QemuNodeChannelError::new(
+                    "accept debug guest activation stream",
+                    source.to_string(),
+                ),
+            )
+        })?;
     let console_observation = config
         .console_capture
         .then(|| {
@@ -704,6 +761,9 @@ pub(super) fn build_live_node(
             )
         })?;
 
+    let console_spool = console_observation
+        .as_ref()
+        .map(|_stream| QemuConsoleObservationSpool::new());
     let runtime = QemuLiveHostIoRuntime::from_shmem_fd(
         setup.shmem_as_fd(),
         setup.wake_as_fd(),
@@ -711,6 +771,33 @@ pub(super) fn build_live_node(
         GATE_SLOT,
     )
     .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })?;
+    let runtime = match (console_observation, console_spool.as_ref()) {
+        (Some(output), Some(spool)) => {
+            let reader =
+                QemuConsoleObservationReader::new(output, spool.clone()).map_err(|source| {
+                    QemuLiveNodeStepGateError::prime(
+                        "configure console observation",
+                        QemuNodeChannelError::new(
+                            "configure QEMU console stream",
+                            source.to_string(),
+                        ),
+                    )
+                })?;
+            runtime
+                .with_console_observation(reader)
+                .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })?
+        }
+        (None, None) => runtime,
+        _ => {
+            return Err(QemuLiveNodeStepGateError::prime(
+                "configure console observation",
+                QemuNodeChannelError::new(
+                    "configure QEMU console stream",
+                    "console stream and staging spool disagreed",
+                ),
+            ));
+        }
+    };
     let priming_network_outputs = prime_guest_off_boot_barrier(
         &setup,
         config.completion_timeout,
@@ -720,6 +807,20 @@ pub(super) fn build_live_node(
     )?;
     let qmp = connect_qmp_priming_main_loop(&setup, &qmp_config.socket_path(run_directory))
         .map_err(|source| QemuLiveNodeStepGateError::QmpConnect { source })?;
+    let qmp = if config.whitebox == QemuLaunchPluginSwitch::On {
+        qmp.with_predeclared_debug_guest_endpoint()
+            .with_debug_guest_activation_stream(debug_guest_activation_stream.ok_or_else(|| {
+                QemuLiveNodeStepGateError::prime(
+                    "configure debug guest activation stream",
+                    QemuNodeChannelError::new(
+                        "configure debug guest activation stream",
+                        "white-box launch omitted its activation stream",
+                    ),
+                )
+            })?)
+    } else {
+        qmp
+    };
 
     let shmem_config = QemuQuantumShmemConfig::new(node_id(identity.node), GATE_SLOT)
         .with_router(node_id(identity.router), SLOT_NET_ROUTER as u32)
@@ -743,12 +844,8 @@ pub(super) fn build_live_node(
     if let Some(gdbstub) = &config.gdbstub {
         node = node.with_gdbstub(gdbstub.clone());
     }
-    if let Some(console_observation) = console_observation {
-        node = node
-            .with_console_observation(node_id(identity.node), console_observation)
-            .map_err(|source| {
-                QemuLiveNodeStepGateError::prime("configure console observation", source)
-            })?;
+    if let Some(console_spool) = console_spool {
+        node = node.with_console_observation(node_id(identity.node), console_spool);
     }
     if !restoring_checkpoint {
         node.retain_priming_network_outputs(priming_network_outputs);

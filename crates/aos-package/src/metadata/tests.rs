@@ -9,7 +9,7 @@ use std::path::Path;
 
 use tempfile::tempdir;
 
-use super::detect::{classify_dmi, detect, needs_network};
+use super::detect::{PlatformCapability, classify_dmi, detect, needs_network, platform_capability};
 use super::facts_render::render_host_facts_nix;
 use super::fetcher::{Facts, MacIface, PlatformFetcher, StaticNetwork, UserData};
 use super::http::{RecordedHttp, RecordedMethod};
@@ -38,7 +38,7 @@ fn dmi_table_matches_nix_decision_order() {
     let cases: &[(&str, &str, &str, &str, &str)] = &[
         // Asset tag wins over everything.
         ("", "", "", "7783-7084-3265-9085-8269-3286-77", "azure"),
-        ("Amazon EC2", "", "", "OracleCloud.com", "oraclecloud"),
+        ("Amazon EC2", "", "", "OracleCloud.com", "aws"),
         // sys_vendor.
         ("Amazon EC2", "", "", "", "aws"),
         ("Google", "", "", "", "gcp"),
@@ -46,6 +46,10 @@ fn dmi_table_matches_nix_decision_order() {
         ("Microsoft Corporation", "", "Other", "", "metal"),
         ("DigitalOcean", "", "", "", "digitalocean"),
         ("OpenStack Foundation", "", "", "", "openstack"),
+        // Vendors without a native, recorded contract are not advertised.
+        ("Hetzner", "", "", "", "metal"),
+        ("Vultr", "", "", "", "metal"),
+        ("Scaleway", "", "", "", "metal"),
         ("VMware, Inc.", "", "", "", "vmware"),
         ("innotek GmbH", "", "", "", "virtualbox"),
         ("QEMU", "", "", "", "qemu"),
@@ -70,6 +74,16 @@ fn network_platforms_gated() {
     assert!(!needs_network("qemu"));
     assert!(!needs_network("metal"));
     assert!(!needs_network("aos-metadata"));
+    assert_eq!(
+        platform_capability("config-drive"),
+        Some(PlatformCapability::LocalMetadata)
+    );
+    assert_eq!(
+        platform_capability("openstack"),
+        Some(PlatformCapability::NetworkMetadata)
+    );
+    assert_eq!(platform_capability("hetzner"), None);
+    assert!(super::select_fetcher("hetzner", None).is_err());
 }
 
 #[test]
@@ -195,6 +209,41 @@ fn nocloud_fetcher_parses_netplan_network_config() {
     assert_eq!(net.gateway.as_deref(), Some("10.0.0.1"));
     assert_eq!(net.dns, vec!["1.1.1.1"]);
     assert_eq!(net.mac.as_deref(), Some("0a:1b:2c:3d:4e:5f"));
+    assert_eq!(net.interface_name.as_deref(), Some("eth0"));
+}
+
+#[test]
+fn nocloud_fixtures_support_common_flow_mappings_and_fail_closed() {
+    let dir = tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("meta-data"),
+        include_bytes!("../../tests/fixtures/metadata/nocloud/meta-data.yaml"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("network-config"),
+        include_bytes!("../../tests/fixtures/metadata/nocloud/network-config-flow.yaml"),
+    )
+    .unwrap();
+    let fetcher = NoCloudFetcher::new(dir.path());
+    let facts = block_on(fetcher.fetch_facts(&RecordedHttp::new())).unwrap();
+    assert_eq!(facts.hostname.as_deref(), Some("flow-node"));
+    assert_eq!(facts.instance_id.as_deref(), Some("iid-flow-001"));
+    let network = facts.network.expect("flow fixture must be seedable");
+    assert_eq!(network.interface_name.as_deref(), Some("ens3"));
+    assert_eq!(network.mac.as_deref(), Some("52:54:00:12:34:56"));
+    assert_eq!(network.addresses, ["192.0.2.22/24", "2001:db8::22/64"]);
+    assert_eq!(network.gateway.as_deref(), Some("192.0.2.1"));
+    assert_eq!(network.dns, ["1.1.1.1", "2606:4700:4700::1111"]);
+
+    std::fs::write(
+        dir.path().join("network-config"),
+        include_bytes!("../../tests/fixtures/metadata/nocloud/network-config-malformed-flow.yaml"),
+    )
+    .unwrap();
+    let error = block_on(fetcher.fetch_facts(&RecordedHttp::new()))
+        .expect_err("malformed flow mapping must fail closed");
+    assert!(error.to_string().contains("NoCloud network-config"));
 }
 
 #[test]
@@ -433,6 +482,119 @@ fn native_cloud_fetchers_acquire_provider_user_data() {
     }
 }
 
+#[test]
+fn digitalocean_facts_include_static_and_anchor_networks() {
+    let base = "http://169.254.169.254/metadata/v1";
+    let interface = format!("{base}/interfaces/public/0");
+    let http = RecordedHttp::new()
+        .on(
+            RecordedMethod::Get,
+            &format!("{interface}/ipv4/address"),
+            200,
+            b"203.0.113.10",
+        )
+        .on(
+            RecordedMethod::Get,
+            &format!("{interface}/ipv4/netmask"),
+            200,
+            b"255.255.255.0",
+        )
+        .on(
+            RecordedMethod::Get,
+            &format!("{interface}/ipv4/gateway"),
+            200,
+            b"203.0.113.1",
+        )
+        .on(
+            RecordedMethod::Get,
+            &format!("{interface}/anchor_ipv4/address"),
+            200,
+            b"10.10.0.2",
+        )
+        .on(
+            RecordedMethod::Get,
+            &format!("{interface}/anchor_ipv4/netmask"),
+            200,
+            b"255.255.0.0",
+        )
+        .on(
+            RecordedMethod::Get,
+            &format!("{interface}/mac"),
+            200,
+            b"0A:1B:2C:3D:4E:5F",
+        )
+        .on(
+            RecordedMethod::Get,
+            &format!("{base}/dns/nameservers"),
+            200,
+            b"67.207.67.2\n67.207.67.3\n",
+        )
+        .on(
+            RecordedMethod::Get,
+            &format!("{base}/hostname"),
+            200,
+            b"do-1",
+        )
+        .on(RecordedMethod::Get, &format!("{base}/id"), 200, b"1001")
+        .on(RecordedMethod::Get, &format!("{base}/region"), 200, b"nyc3");
+    let facts = block_on(super::cloud::DigitalOceanFetcher.fetch_facts(&http)).unwrap();
+    let network = facts.network.expect("DigitalOcean static network");
+    assert_eq!(network.addresses, ["203.0.113.10/24", "10.10.0.2/16"]);
+    assert_eq!(network.gateway.as_deref(), Some("203.0.113.1"));
+    assert_eq!(network.dns, ["67.207.67.2", "67.207.67.3"]);
+    assert_eq!(network.mac.as_deref(), Some("0a:1b:2c:3d:4e:5f"));
+}
+
+#[test]
+fn openstack_imds_facts_include_network_data() {
+    let base = "http://169.254.169.254/openstack/latest";
+    let http = RecordedHttp::new()
+        .on(
+            RecordedMethod::Get,
+            &format!("{base}/meta_data.json"),
+            200,
+            br#"{"hostname":"os-1","uuid":"u-1"}"#,
+        )
+        .on(
+            RecordedMethod::Get,
+            &format!("{base}/network_data.json"),
+            200,
+            br#"{"links":[{"id":"e0","ethernet_mac_address":"0A:00:00:00:00:01"}],"networks":[{"link":"e0","ip_address":"10.1.1.5","netmask":"255.255.255.0","gateway":"10.1.1.1"}]}"#,
+        );
+    let facts = block_on(super::cloud::OpenStackImdsFetcher.fetch_facts(&http)).unwrap();
+    let network = facts.network.expect("OpenStack static network");
+    assert_eq!(network.addresses, ["10.1.1.5/24"]);
+    assert_eq!(network.gateway.as_deref(), Some("10.1.1.1"));
+}
+
+#[test]
+fn production_http_timeout_bounds_a_nonresponding_endpoint() {
+    use std::time::{Duration, Instant};
+
+    use aos_net::transfer::{TransferEngine, TransferEngineConfig};
+
+    use super::http::{EngineHttp, MetadataHttp};
+
+    block_on(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let _connection = listener.accept().await;
+            std::future::pending::<()>().await;
+        });
+        let http = EngineHttp::new(TransferEngine::new(TransferEngineConfig::default()))
+            .with_timeout(Duration::from_millis(25));
+        let started = Instant::now();
+        let error = http
+            .get(&format!("http://{address}/black-hole"), &[])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        server.abort();
+    });
+}
+
 // ---------------------------------------------------------------------------
 // static-net parse + render
 // ---------------------------------------------------------------------------
@@ -441,11 +603,37 @@ fn native_cloud_fetchers_acquire_provider_user_data() {
 fn openstack_network_data_to_networkd() {
     let json = br#"{"links":[{"id":"tap0","ethernet_mac_address":"0a:1b:2c:3d:4e:5f"}],"networks":[{"link":"tap0","ip_address":"203.0.113.10","netmask":"255.255.255.0","gateway":"203.0.113.1"}],"services":[{"type":"dns","address":"67.207.67.2"}]}"#;
     let net = parse_openstack_network_data(json).unwrap();
-    let rendered = render_networkd(&net);
+    let rendered = render_networkd(&net).unwrap();
     assert!(rendered.contains("MACAddress=0a:1b:2c:3d:4e:5f"));
     assert!(rendered.contains("Address=203.0.113.10/24"));
     assert!(rendered.contains("Gateway=203.0.113.1"));
     assert!(rendered.contains("DNS=67.207.67.2"));
+}
+
+#[test]
+fn static_seed_uses_interface_name_and_never_matches_every_link() {
+    let named = StaticNetwork {
+        interface_name: Some("ens3".into()),
+        addresses: vec!["192.0.2.22/24".into()],
+        ..StaticNetwork::default()
+    };
+    let rendered = render_networkd(&named).unwrap();
+    assert!(rendered.contains("[Match]\nName=ens3\n"));
+
+    let unqualified = StaticNetwork {
+        addresses: vec!["192.0.2.22/24".into()],
+        ..StaticNetwork::default()
+    };
+    assert!(!unqualified.is_seedable());
+    assert!(render_networkd(&unqualified).is_err());
+
+    let wildcard = StaticNetwork {
+        interface_name: Some("en*".into()),
+        addresses: vec!["192.0.2.22/24".into()],
+        ..StaticNetwork::default()
+    };
+    assert!(!wildcard.is_seedable());
+    assert!(render_networkd(&wildcard).is_err());
 }
 
 #[test]
@@ -473,16 +661,82 @@ fn facts_render_is_deterministic_and_typed() {
             iface: "ens5".into(),
         }],
         disk_ids: vec!["nvme-Amazon_EBS_vol0abc".into()],
-        network: None,
+        network: Some(StaticNetwork {
+            mac: Some("0A:1B:2C:3D:4E:5F".into()),
+            interface_name: Some("ens5".into()),
+            addresses: vec!["10.0.1.22/24".into()],
+            gateway: Some("10.0.1.1".into()),
+            dns: vec!["1.1.1.1".into()],
+        }),
     };
     let a = render_host_facts_nix(&facts);
     let b = render_host_facts_nix(&facts);
     assert_eq!(a, b, "render must be deterministic");
     assert!(a.contains("hostname = \"ip-10-0-1-22\";"));
-    assert!(a.contains("instanceId = \"i-0abc\";"));
-    assert!(a.contains("sshAuthorizedKeys = [ \"ssh-ed25519 AAAA op@host\" ];"));
-    assert!(a.contains("{ mac = \"0a:1b:2c:3d:4e:5f\"; iface = \"ens5\"; }"));
-    assert!(a.contains("diskIds = [ \"nvme-Amazon_EBS_vol0abc\" ];"));
+    assert!(a.contains("instance_id = \"i-0abc\";"));
+    assert!(a.contains("ssh_authorized_keys = [ \"ssh-ed25519 AAAA op@host\" ];"));
+    assert!(a.contains(
+        "\"0a:1b:2c:3d:4e:5f\" = { names = [ \"ens5\" ]; addresses = [ \"10.0.1.22/24\" ]; };"
+    ));
+    assert!(a.contains("static_network = {"));
+    assert!(a.contains("gateway = \"10.0.1.1\";"));
+    assert!(a.contains("\"nvme-Amazon_EBS_vol0abc\" = { };"));
+}
+
+#[test]
+fn facts_hash_is_canonical_and_includes_static_network() {
+    let first = Facts {
+        mac_to_iface: vec![
+            MacIface {
+                mac: "AA:BB:CC:DD:EE:FF".into(),
+                iface: "ens5".into(),
+            },
+            MacIface {
+                mac: "aa:bb:cc:dd:ee:ff".into(),
+                iface: "eth0".into(),
+            },
+        ],
+        network: Some(StaticNetwork {
+            mac: Some("AA:BB:CC:DD:EE:FF".into()),
+            interface_name: Some("ens5".into()),
+            addresses: vec!["2001:db8::2/64".into(), "192.0.2.2/24".into()],
+            gateway: Some("192.0.2.1".into()),
+            dns: vec!["9.9.9.9".into(), "1.1.1.1".into()],
+        }),
+        ..Facts::default()
+    };
+    let mut reordered = first.clone();
+    reordered.mac_to_iface.reverse();
+    let network = reordered.network.as_mut().unwrap();
+    network.addresses.reverse();
+    network.dns.reverse();
+
+    let first_dir = tempdir().unwrap();
+    let second_dir = tempdir().unwrap();
+    let first_hash = Stash::open(first_dir.path())
+        .unwrap()
+        .write_facts(&first)
+        .unwrap();
+    let second_hash = Stash::open(second_dir.path())
+        .unwrap()
+        .write_facts(&reordered)
+        .unwrap();
+    assert_eq!(
+        first_hash, second_hash,
+        "fact collection order is not identity"
+    );
+
+    let mut changed = first;
+    changed.network.as_mut().unwrap().gateway = Some("192.0.2.254".into());
+    let changed_dir = tempdir().unwrap();
+    let changed_hash = Stash::open(changed_dir.path())
+        .unwrap()
+        .write_facts(&changed)
+        .unwrap();
+    assert_ne!(
+        first_hash, changed_hash,
+        "static network facts affect facts_hash"
+    );
 }
 
 #[test]
@@ -877,8 +1131,10 @@ fn provisioning_state_persists_audit_definitions_and_runtime_input() {
         instance_id: Some("instance-7".into()),
         ..Default::default()
     };
-    let facts_bytes = serde_json::to_vec_pretty(&facts).unwrap();
-    std::fs::write(stash.path().join("facts.json"), &facts_bytes).unwrap();
+    let facts_hash = Stash::open(stash.path())
+        .unwrap()
+        .write_facts(&facts)
+        .unwrap();
     std::fs::write(
         stash.path().join(".metadata-result.json"),
         serde_json::to_vec_pretty(&MetadataResult {
@@ -887,7 +1143,7 @@ fn provisioning_state_persists_audit_definitions_and_runtime_input() {
             user_data_source: "config-drive".into(),
             user_data_sha256: Some(super::stash::sha256_hex(host)),
             sig_present: false,
-            facts_hash: super::stash::sha256_hex(&facts_bytes),
+            facts_hash,
             network_seed_written: false,
             timestamp: "2026-07-24T00:00:00Z".into(),
         })

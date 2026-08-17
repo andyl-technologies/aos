@@ -45,10 +45,64 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 
 use super::types::{PackageMeta, RegistryConfig, TrackingMode};
 use parse::parse_registry_matching;
 use store::StoreMap;
+
+/// Cache-local receipt for the signed release tag that authenticated the
+/// extracted registry tree. The receipt is not itself a trust anchor: remote
+/// attestation verification revalidates every field against the signed
+/// registry catalog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseTrustReceipt {
+    /// Literal schema discriminator.
+    pub schema: String,
+    /// Registry name bound into the verified keys.
+    pub registry: String,
+    /// Name-bound semver release tag.
+    pub release_tag: String,
+    /// Release commit selected by that tag.
+    pub commit: String,
+    /// Fingerprint of the key whose release-tag signature verified.
+    pub tag_signer_key: String,
+}
+
+/// File placed beside authenticated package/store metadata after sync.
+pub const RELEASE_TRUST_RECEIPT: &str = ".release-trust.json";
+
+pub(crate) fn load_release_trust_receipt(
+    registry_dir: &Path,
+    expected_registry: &str,
+) -> Result<Option<ReleaseTrustReceipt>> {
+    let path = registry_dir.join(RELEASE_TRUST_RECEIPT);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let receipt: ReleaseTrustReceipt = serde_json::from_slice(
+        &std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?,
+    )
+    .with_context(|| format!("parsing {}", path.display()))?;
+    if receipt.schema != "aos.registry-release-trust/v1"
+        || receipt.registry != expected_registry
+        || semver::Version::parse(&receipt.release_tag).is_err()
+        || !matches!(receipt.commit.len(), 40 | 64)
+        || !receipt
+            .commit
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || receipt.tag_signer_key.len() != 8
+        || !receipt
+            .tag_signer_key
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        anyhow::bail!("invalid signed-release trust receipt for registry '{expected_registry}'");
+    }
+    Ok(Some(receipt))
+}
 
 /// A loaded registry with all its packages for the current platform.
 #[derive(Debug)]
@@ -67,6 +121,8 @@ pub struct Registry {
     /// The registry's `store/` realisation graph: dependency shape, blessed
     /// NAR bytes, and content addresses, keyed by IA store-path hash.
     store: StoreMap,
+    /// Verified release identity associated with this extracted cache tree.
+    release_trust: Option<ReleaseTrustReceipt>,
 }
 
 impl Registry {
@@ -104,6 +160,7 @@ impl Registry {
         // silently.
         let store = StoreMap::load(&registry_dir)
             .with_context(|| format!("loading store/ graph for registry '{}'", config.name))?;
+        let release_trust = load_release_trust_receipt(&registry_dir, &config.name)?;
 
         // Package TOMLs no longer carry nar_hash/nar_size/references - the
         // graph is the single authority. Backfill the in-memory metas from a
@@ -123,12 +180,18 @@ impl Registry {
             hash_index,
             versions,
             store,
+            release_trust,
         })
     }
 
     /// Returns the registry's `store/` realisation graph.
     pub fn store_map(&self) -> &StoreMap {
         &self.store
+    }
+
+    /// Returns the signed-release receipt for this exact extracted cache.
+    pub fn release_trust(&self) -> Option<&ReleaseTrustReceipt> {
+        self.release_trust.as_ref()
     }
 
     /// Returns all loaded package-version entries for this registry.
@@ -363,6 +426,35 @@ pub(crate) mod tests {
     /// zlib's store record: a leaf.
     pub(crate) fn zlib_store_record() -> (&'static str, String) {
         ("r4q1m2kp8v3x", format!("nar:sha256:{FIX_NAR}:524288\n"))
+    }
+
+    #[test]
+    fn release_trust_receipt_is_strictly_validated() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join(RELEASE_TRUST_RECEIPT);
+        let mut receipt = ReleaseTrustReceipt {
+            schema: "aos.registry-release-trust/v1".to_string(),
+            registry: "aos-core".to_string(),
+            release_tag: "1.4.0".to_string(),
+            commit: "a".repeat(40),
+            tag_signer_key: "deadbeef".to_string(),
+        };
+        fs::write(&path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+        assert_eq!(
+            load_release_trust_receipt(tmp.path(), "aos-core")
+                .unwrap()
+                .unwrap(),
+            receipt
+        );
+
+        receipt.tag_signer_key = "DEADBEEF".to_string();
+        fs::write(&path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+        assert!(load_release_trust_receipt(tmp.path(), "aos-core").is_err());
+
+        receipt.tag_signer_key = "deadbeef".to_string();
+        receipt.commit = "not-a-commit".to_string();
+        fs::write(&path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+        assert!(load_release_trust_receipt(tmp.path(), "aos-core").is_err());
     }
 
     /// Helper: create a registry in a temp directory from TOML test fixtures.

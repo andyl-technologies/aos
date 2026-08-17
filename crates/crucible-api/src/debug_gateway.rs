@@ -206,6 +206,38 @@ impl DebugGatewayProcess {
         }
     }
 
+    /// Acquires scheduler ownership of the active QEMU backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayClientError`] when control transport or backend
+    /// breakpoint suspension fails.
+    pub fn acquire_scheduler_lease(&mut self) -> Result<(), DebugGatewayClientError> {
+        match self.client.acquire_scheduler_lease() {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                self.reconnect_control()?;
+                self.client.acquire_scheduler_lease()
+            }
+        }
+    }
+
+    /// Releases scheduler ownership of the active QEMU backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayClientError`] when control transport or backend
+    /// breakpoint restoration fails.
+    pub fn release_scheduler_lease(&mut self) -> Result<(), DebugGatewayClientError> {
+        match self.client.release_scheduler_lease() {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                self.reconnect_control()?;
+                self.client.release_scheduler_lease()
+            }
+        }
+    }
+
     /// Reconnects and renegotiates the private control channel.
     ///
     /// The gateway process and any operator-facing GDB connection remain
@@ -484,6 +516,37 @@ impl DebugGatewayControlClient {
             });
         }
         self.pending_run_control_stream = None;
+        Ok(())
+    }
+
+    /// Acquires scheduler ownership while preserving operator RSP state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayClientError`] when the gateway has pending RSP
+    /// work, no active backend, or cannot suspend installed hardware breakpoints.
+    pub fn acquire_scheduler_lease(&mut self) -> Result<(), DebugGatewayClientError> {
+        self.scheduler_lease_request(1)
+    }
+
+    /// Releases scheduler ownership and restores operator RSP state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayClientError`] when the gateway cannot restore the
+    /// active backend's installed hardware breakpoints.
+    pub fn release_scheduler_lease(&mut self) -> Result<(), DebugGatewayClientError> {
+        self.scheduler_lease_request(2)
+    }
+
+    fn scheduler_lease_request(&mut self, operation: u8) -> Result<(), DebugGatewayClientError> {
+        let reply = self.request(DebugGatewayMessageKind::SchedulerLease, 0, vec![operation])?;
+        if reply.kind != DebugGatewayMessageKind::Ack {
+            return Err(DebugGatewayClientError::UnexpectedReply {
+                expected: DebugGatewayMessageKind::Ack,
+                actual: reply.kind,
+            });
+        }
         Ok(())
     }
 

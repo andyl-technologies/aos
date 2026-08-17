@@ -96,15 +96,6 @@ impl NoCloudFetcher {
     }
 }
 
-/// NoCloud `meta-data` (a small YAML map).
-#[derive(Debug, Deserialize)]
-struct NoCloudMeta {
-    #[serde(default, rename = "local-hostname")]
-    local_hostname: Option<String>,
-    #[serde(default, rename = "instance-id")]
-    instance_id: Option<String>,
-}
-
 #[async_trait::async_trait]
 impl PlatformFetcher for NoCloudFetcher {
     fn platform_id(&self) -> &'static str {
@@ -127,9 +118,8 @@ impl PlatformFetcher for NoCloudFetcher {
     async fn fetch_facts(&self, _http: &dyn MetadataHttp) -> Result<Facts> {
         let mut facts = Facts::default();
         if let Some(bytes) = read_opt(&self.dir.join("meta-data"))? {
-            let meta: NoCloudMeta =
-                serde_yaml::from_slice(&bytes).context("parsing NoCloud meta-data")?;
-            facts.hostname = meta.local_hostname;
+            let meta = super::yaml::parse_metadata(&bytes).context("parsing NoCloud meta-data")?;
+            facts.hostname = meta.hostname;
             facts.instance_id = meta.instance_id;
         }
         if let Some(bytes) = read_opt(&self.dir.join("network-config"))? {

@@ -6,9 +6,7 @@
 //! keeping per-quantum timing and frame traffic on the shared-memory channel.
 
 use std::any::Any;
-use std::io::Read as _;
 use std::net::SocketAddr;
-use std::os::unix::net::UnixStream;
 use std::process::Child;
 use std::time::Duration;
 
@@ -25,6 +23,7 @@ use crucible_shmem::{
 // crucible-lint: allow host-nondeterminism-state -- node transport exposes untrusted causal records for scheduler validation.
 use crucible::Decision;
 
+use crate::console_observation::QemuConsoleObservationSpool;
 use crate::shutdown::{
     QemuChildWait, QemuReap, QemuShutdownPolicy, QemuShutdownReport, QemuShutdownRung,
     QemuShutdownTarget, QemuShutdownTargetError, shutdown_qemu_child, signal_child, wait_child,
@@ -453,6 +452,19 @@ pub trait QemuQmpMachineControlChannel: Send {
     ///
     /// Returns [`QemuNodeChannelError`] when QMP cannot send the quit command.
     fn quit(&mut self) -> Result<(), QemuNodeChannelError>;
+
+    /// Sends the fixed fork-time activation token to the dormant guest bootstrap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the channel has no activation
+    /// device or QMP rejects the bounded command.
+    fn activate_debug_guest(&mut self) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "activate_debug_guest",
+            "QMP debug guest activation is unavailable",
+        ))
+    }
 }
 
 /// The three logical channel roles owned by one QEMU node.
@@ -494,7 +506,7 @@ impl QemuNodeChannels {
 /// Reader for QEMU's output-only per-node console stream.
 struct QemuConsoleObservation {
     node: NodeId,
-    output: UnixStream,
+    spool: QemuConsoleObservationSpool,
 }
 
 /// Host-side wrapper exposing one QEMU child as a synchronous scheduler node.
@@ -517,6 +529,20 @@ pub struct QemuNode {
 }
 
 impl QemuNode {
+    /// Activates the dormant guest-introspection bootstrap after a non-canonical fork.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the bounded QMP activation command fails.
+    pub fn activate_debug_guest(&mut self) -> Result<(), QemuNodeError> {
+        self.channels
+            .qmp_machine_control
+            .activate_debug_guest()
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::QmpMachineControl, source)
+            })
+    }
+
     /// Sends one request to this VM's debug guest agent.
     ///
     /// # Errors
@@ -580,22 +606,14 @@ impl QemuNode {
         }
     }
 
-    /// Returns this node with output-only console bytes exposed as observations.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the QEMU console stream cannot be
-    /// configured for non-blocking boundary reads.
-    pub fn with_console_observation(
+    /// Returns this node with staged console bytes exposed as observations.
+    pub(crate) fn with_console_observation(
         mut self,
         node: NodeId,
-        output: UnixStream,
-    ) -> Result<Self, QemuNodeChannelError> {
-        output.set_nonblocking(true).map_err(|error| {
-            QemuNodeChannelError::new("configure QEMU console stream", error.to_string())
-        })?;
-        self.console_observation = Some(QemuConsoleObservation { node, output });
-        Ok(self)
+        spool: QemuConsoleObservationSpool,
+    ) -> Self {
+        self.console_observation = Some(QemuConsoleObservation { node, spool });
+        self
     }
 
     /// Attaches a configured mediated gdbstub channel to this node wrapper.
@@ -950,69 +968,10 @@ impl QemuNode {
     }
 }
 
-struct QemuNodeAsyncStepTarget<'a> {
-    child: &'a mut QemuNodeChild,
-    channels: &'a mut QemuNodeChannels,
-    lifecycle_state: &'a mut QemuNodeLifecycleState,
-    shutdown_policy: QemuShutdownPolicy,
-}
+#[path = "node/async_step.rs"]
+mod async_step;
 
-impl QemuAsyncCrashEscalationTarget for QemuNodeAsyncStepTarget<'_> {
-    fn shutdown_after_crash(&mut self) -> Result<QemuShutdownReport, QemuAsyncDriverTargetError> {
-        shutdown_node_child(
-            self.child,
-            self.channels,
-            self.lifecycle_state,
-            self.shutdown_policy,
-        )
-        .map_err(|error| QemuAsyncDriverTargetError::new("shutdown after crash", error.to_string()))
-    }
-}
-
-impl QemuAsyncNodeStepTarget for QemuNodeAsyncStepTarget<'_> {
-    type PendingQuantum = QemuNodePendingQuantum;
-
-    fn start_quantum(
-        &mut self,
-        horizon: ExecutionHorizon,
-    ) -> Result<Self::PendingQuantum, QemuNodeChannelError> {
-        self.channels.shmem_hot_path.start_quantum(horizon)
-    }
-
-    fn finish_quantum(
-        &mut self,
-        pending: &mut Self::PendingQuantum,
-    ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
-        self.channels.shmem_hot_path.poll_quantum(pending)
-    }
-}
-
-fn shutdown_node_child(
-    child: &mut QemuNodeChild,
-    channels: &mut QemuNodeChannels,
-    lifecycle_state: &mut QemuNodeLifecycleState,
-    shutdown_policy: QemuShutdownPolicy,
-) -> Result<QemuShutdownReport, QemuNodeError> {
-    if child.reaped() {
-        *lifecycle_state = QemuNodeLifecycleState::ShutdownRequested;
-        return Ok(QemuShutdownReport {
-            attempts: Vec::new(),
-            failures: Vec::new(),
-            reaped: true,
-            leaked: false,
-        });
-    }
-
-    let mut target = QemuNodeShutdownTarget {
-        child,
-        plugin_control: channels.plugin_control.as_mut(),
-        qmp_machine_control: channels.qmp_machine_control.as_mut(),
-    };
-    let report =
-        shutdown_qemu_child(&mut target, shutdown_policy).map_err(QemuNodeError::from_shutdown)?;
-    *lifecycle_state = QemuNodeLifecycleState::ShutdownRequested;
-    Ok(report)
-}
+use async_step::*;
 
 impl Backend for QemuNode {
     fn advance_to_horizon(
@@ -1089,20 +1048,12 @@ impl SimulationBackend for QemuNode {
                 ))
             })?;
         if let Some(console) = self.console_observation.as_mut() {
-            let mut bytes = Vec::new();
-            let mut buffer = [0_u8; 4096];
-            loop {
-                match console.output.read(&mut buffer) {
-                    Ok(0) => break,
-                    Ok(count) => bytes.extend_from_slice(&buffer[..count]),
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                    Err(error) => {
-                        return Err(BackendError::Rejected {
-                            message: format!("read QEMU console output: {error}"),
-                        });
-                    }
-                }
-            }
+            let bytes = console
+                .spool
+                .take()
+                .map_err(|error| BackendError::Rejected {
+                    message: format!("take staged QEMU console output: {error}"),
+                })?;
             if !bytes.is_empty() {
                 events.push(ObservableEvent::console_output(
                     self.console_observation_boundary,
@@ -1898,14 +1849,14 @@ mod tests {
     #[test]
     fn qemu_node_stamps_polled_console_at_the_scheduler_boundary() -> Result<(), Box<dyn Error>> {
         let log = shared_log();
-        let (mut console_writer, console_reader) = UnixStream::pair()?;
-        std::io::Write::write_all(&mut console_writer, b"guest output")?;
+        let spool = QemuConsoleObservationSpool::new();
+        spool.append(b"guest output")?;
         let mut node = scripted_node_with_options(
             log,
             ScriptedNodeOptions::default(),
             [QemuAsyncWaitOutcome::Completed],
         )?
-        .with_console_observation(node_id("vm-a"), console_reader)?;
+        .with_console_observation(node_id("vm-a"), spool);
 
         let boundary = VirtualTime { ticks: 97 };
         SimulationBackend::step_to(&mut node, boundary)?;

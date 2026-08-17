@@ -77,6 +77,29 @@
     lib = lib;
   };
 
+  # --- Case 5: absent optional argument keeps its pattern default ----
+  case5 = lib.evalModules {
+    modules = [
+      ({optionalFlag ? "defaulted", ...}: {
+        options.case5.got = lib.mkOption {type = lib.types.str;};
+        config.case5.got = optionalFlag;
+      })
+    ];
+    lib = lib;
+  };
+
+  # --- Case 6: caller value still overrides an optional default ------
+  case6 = lib.evalModules {
+    modules = [
+      ({optionalFlag ? "defaulted", ...}: {
+        options.case6.got = lib.mkOption {type = lib.types.str;};
+        config.case6.got = optionalFlag;
+      })
+    ];
+    lib = lib;
+    specialArgs.optionalFlag = "provided";
+  };
+
   # --- Eval-time assertions ------------------------------------------
   evalAssertions =
     lib.throwIfNot (case1.config.case1.got == "got: injected")
@@ -87,7 +110,11 @@
         "module-args case 3 failed (extraArgs should win): ${case3.config.case3.got}"
         (lib.throwIfNot (case4.config.case4.got == "no custom args here")
           "module-args case 4 failed: ${case4.config.case4.got}"
-          true)));
+          (lib.throwIfNot (case5.config.case5.got == "defaulted")
+            "module-args case 5 failed: ${case5.config.case5.got}"
+            (lib.throwIfNot (case6.config.case6.got == "provided")
+              "module-args case 6 failed: ${case6.config.case6.got}"
+              true)))));
 in
   pkgs.mkDerivation {
     pname = "module-args-check";
@@ -104,6 +131,8 @@ in
           echo "  case 2 (function setter + function reader): OK"
           echo "  case 3 (extraArgs beats _module.args): OK"
           echo "  case 4 (module without custom args): OK"
+          echo "  case 5 (optional function default): OK"
+          echo "  case 6 (caller overrides optional default): OK"
           mkdir -p "$out"
           echo PASS > "$out/result"
         '';

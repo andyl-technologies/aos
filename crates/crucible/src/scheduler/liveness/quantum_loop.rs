@@ -87,6 +87,13 @@ impl QuantumLoop for SingleScheduler {
         Ok(event_log.entries)
     }
 
+    fn append_noncanonical_debug_event_log_entries(
+        &mut self,
+        entries: Vec<SchedulerEventLogEntry>,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        Ok(self.event_log.append_entries(entries)?.entries)
+    }
+
     fn append_backend_observable_events(
         &mut self,
         events: Vec<ObservableEvent>,

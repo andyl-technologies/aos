@@ -18,10 +18,10 @@
 #                 peer over the fleet L2.
 #   4. INSTALL  — `apm install bc` downloads a package off the wire
 #                 (bc is deliberately NOT in the image's closure).
-#   5. UPGRADE  — `apm upgrade --system` pulls the server-2 generation
-#                 from the registry's static cache, switches live, then
-#                 the machine REBOOTS through UEFI and must come back on
-#                 the new generation.
+#   5. UPGRADE  — `apm upgrade --system` authenticates a measured raw image,
+#                 stages it into the inactive A/B slot, then the machine
+#                 REBOOTS through UEFI and commits the new image and its
+#                 re-evaluated host configuration.
 #
 # The target machine is the production server image plus the bundled
 # aos-test-agent package — the boot and provisioning path is fully stock;
@@ -38,9 +38,75 @@
   lib,
   mkSystem,
   pkgs,
-  systems,
 }: let
-  server2Top = systems.server-2.config.system.build.toplevel;
+  candidateAgentUnit = pkgs.writeTextFile {
+    name = "aos-install-image-agent-unit";
+    destination = "/aos-test-agent.service";
+    text = ''
+      [Unit]
+      Description=AOS VM Test Guest Agent
+      RefuseManualStop=true
+
+      [Service]
+      Type=simple
+      ExecStart=${pkgs.aos-test-agent}/share/aos-test-agent/aos-test-agent
+      Restart=on-failure
+      RestartSec=1
+      Environment=PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin
+    '';
+  };
+
+  candidate = mkSystem [
+    ../../systems/server-2.nix
+    ../../systems/server-measured-boot.nix
+    {
+      aos.boot.kernelParams = ["net.ifnames=0"];
+      environment.etc."systemd/network/10-fleet-eth0.network".text = ''
+        [Match]
+        MACAddress=52:54:00:12:00:02
+
+        [Network]
+        Address=192.168.50.11/24
+      '';
+      systemd.services.aos-test-agent = {
+        description = "AOS VM Test Guest Agent";
+        wantedBy = ["multi-user.target"];
+        restartIfChanged = false;
+        stopIfChanged = false;
+        unitConfig.RefuseManualStop = true;
+        serviceConfig = {
+          Type = "simple";
+          ExecStart = "${pkgs.aos-test-agent}/share/aos-test-agent/aos-test-agent";
+          Restart = "on-failure";
+          RestartSec = 1;
+          Environment = "PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin";
+        };
+      };
+      systemd.services.aos-test-agent-bootstrap = {
+        description = "Install the AOS VM test control channel";
+        wantedBy = ["multi-user.target"];
+        before = ["aos-eval.service"];
+        stopOnRemoval = false;
+        unitConfig.RefuseManualStop = true;
+        serviceConfig.Type = "oneshot";
+        script = ''
+          ${pkgs.coreutils}/bin/mkdir -p /run/systemd/system
+          ${pkgs.coreutils}/bin/ln -sfn ${candidateAgentUnit}/aos-test-agent.service \
+            /run/systemd/system/aos-test-agent.service
+          ${pkgs.systemd}/bin/systemctl daemon-reload
+          ${pkgs.systemd}/bin/systemctl start aos-test-agent.service
+        '';
+      };
+    }
+  ];
+  server2Top = candidate.config.system.build.toplevel;
+  server2Image = candidate.config.system.build.image.raw;
+  server2Uki = candidate.config.system.build.uki;
+
+  targetSystem = mkSystem [
+    ../../systems/server-verity.nix
+    {environment.systemPackages = [pkgs.git];}
+  ];
 
   # The server profile keeps the test fixtures and guest agent out of the
   # production image (bundle = mkDefault false; modules/profiles/server.nix).
@@ -69,7 +135,7 @@
   # same shape, same labels.
   rootSizeMiB = 1024;
   swapSizeMiB = 1024;
-  diskSizeMiB = 16384;
+  diskSizeMiB = 32768;
 in {
   name = "install-from-image";
   # First boot does real partitioning + mkfs; the publish step
@@ -83,12 +149,20 @@ in {
       system = serverWithRegistry;
       # Kernel boot with baked /var matches apm-registry-upgrade.
       packages = ["aos-registry-server" "test-static-cache-server"];
-      extraClosures = [server2Top pkgs.bc];
+      extraClosures = [
+        server2Top
+        server2Image
+        server2Uki
+        pkgs.bc
+        pkgs.sbsigntools
+        pkgs.binutils
+        pkgs.systemd
+      ];
       # Static cache of the full closure lands under /var/lib/sysreg-cache, and
       # publish/cache generation stages rewritten store paths in the /nix
       # overlay upper on /var. Keep this aligned with apm-registry-upgrade's
       # producer headroom as the server closure grows.
-      varSizeMiB = 4096;
+      varSizeMiB = 12288;
       # `apr cache generate` zstd-compresses the full server-2 + bc closure
       # (~1.5 GiB) while the image-boot target hammers the same host with UEFI
       # partitioning/mkfs. At the 2 GiB default the producer's working set
@@ -100,7 +174,7 @@ in {
     };
 
     target = {
-      system = systems.server-test;
+      system = targetSystem;
       bootMode = "image";
       # systemd-repart carves swap and var (and
       # the reserved root-b slot) in the trailing free space of the grown
@@ -111,14 +185,24 @@ in {
       # The upgrade leg imports the gen-2 closure delta (NAR decompress + nix
       # import) into the /nix overlay on /var; extra RAM keeps that working set
       # in page cache so it finishes within the deadline on a loaded builder.
-      memoryMiB = 4096;
+      memoryMiB = 8192;
+      tpm = true;
     };
   };
 
   testScript =
     # python
     ''
+      import json
       import textwrap
+
+      SB_GUID = "8be4df61-93ca-11d2-aa0d-00e098032b8c"
+
+
+      def efivar_byte(name):
+          path = f"/sys/firmware/efi/efivars/{name}-{SB_GUID}"
+          out = target.succeed(f"od -An -tu1 -j4 -N1 {path}").strip()
+          return int(out)
 
       # ════ 1+2. INSTALL + BOOT ═════════════════════════════════════════
       # Reaching this point already proves a lot: the driver's agent
@@ -175,6 +259,24 @@ in {
       gen = target.succeed("readlink /var/lib/profiles/system/current").strip()
       assert gen == "gen-1", f"expected gen-1 after install, got {gen!r}"
 
+      # Enroll the image's disposable test keys so the upgrade path validates
+      # the candidate UKIs against the firmware's active db certificate.
+      assert efivar_byte("SetupMode") == 1
+      keys = "${pkgs.secure-boot-test-keys}"
+      efi_update = (
+          "PATH=${pkgs.util-linux}/bin:$PATH "
+          "${pkgs.efitools}/bin/efi-updatevar"
+      )
+      for variable in ("db", "KEK", "PK"):
+          target.succeed(
+              f"{efi_update} -f {keys}/{variable}.auth {variable} 2>&1"
+          )
+      target.reboot(timeout=600)
+      target.wait_until_succeeds(
+          "systemctl is-active --quiet multi-user.target", timeout=420
+      )
+      assert efivar_byte("SecureBoot") == 1
+
       # ════ Producer: publish a package + the gen-2 system ══════════════
       # Same producer block as apm-registry-upgrade.nix, plus a regular
       # (non-sysroot) bc package for the `apm install` leg.
@@ -199,8 +301,9 @@ in {
           export GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@test
           export NIX_REMOTE=""
           export NIX_CONF_DIR=/tmp/nix-conf
+          export PATH="${pkgs.sbsigntools}/bin:${pkgs.binutils}/bin:${pkgs.systemd}/lib/systemd:$PATH"
           mkdir -p "$NIX_CONF_DIR"
-          printf 'experimental-features = nix-command\\nsandbox = false\\n' \\
+          printf 'experimental-features = nix-command\\nsandbox = false\\nbuild-users-group =\\n' \\
             > "$NIX_CONF_DIR/nix.conf"
 
           ${pkgs.aos}/bin/apr create sysreg
@@ -220,15 +323,29 @@ in {
             --registry sysreg \\
             --no-commit
 
-          ${pkgs.aos}/bin/apr publish '${server2Top}' \\
+          set -- '${server2Uki}'/*.efi
+          test "$#" -eq 1
+          CANDIDATE_UKI="$1"
+          ${pkgs.aos}/bin/apr --json publish '${server2Top}' \\
             --name aos \\
             --version test-2 \\
             --description 'install-from-image system fixture' \\
             --license MIT \\
             --maintainer test \\
             --sysroot \\
+            --image '${server2Image}' --image-format raw \\
+            --image-uki "$CANDIDATE_UKI" \\
+            --no-ca \\
             --registry sysreg \\
-            --no-commit
+            --no-commit > /tmp/publish-system.json
+          index=0
+          ${pkgs.jq}/bin/jq -r \\
+            '.images[].ukis[].sb_signer_cert_sha256' \\
+            /tmp/publish-system.json | sort -u | while IFS= read -r signer; do
+              ${pkgs.aos}/bin/apr sb-certs add "image-db-$index" \\
+                --cert-sha256 "$signer" --registry sysreg --no-commit
+              index=$((index + 1))
+            done
           ${pkgs.aos}/bin/apr verify --registry sysreg
 
           ${pkgs.aos}/bin/apr cache generate \\
@@ -292,15 +409,15 @@ in {
       )
 
       # ════ 5. UPGRADE the system, then reboot into it ══════════════════
-      # System scope: /etc/apm/registries.d config + git clone into
+      # System scope: durable registry config + git clone into
       # /var/lib/apm/registries (`apm update` has no --system flag; this
       # is the documented system-scope sync, same as
       # tests/vm/apm/e2e.nix's e2e-system-lifecycle).
       target.succeed(textwrap.dedent("""
           set -eu
-          mkdir -p /etc/apm/registries.d /var/lib/apm/registries \\
+          mkdir -p /var/lib/apm/config/registries.d /var/lib/apm/registries \\
             /var/lib/apm/remote /var/lib/apm/cache
-          cat > /etc/apm/registries.d/sysreg.toml <<'EOF'
+          cat > /var/lib/apm/config/registries.d/sysreg.toml <<'EOF'
           [registry]
           name = "sysreg"
           url = "git://registry:9418/sysreg"
@@ -321,10 +438,9 @@ in {
       )
       assert "test-2" in out, f"dry-run did not surface test-2: {out!r}"
 
-      # Downloads + imports the gen-2 closure delta over the emulated L2 and
-      # switches the system profile. The NARs download quickly; the CPU-bound
-      # zstd decompress + nix import into the /nix overlay on /var then runs
-      # long, so the deadline has generous headroom over the ~normal cost.
+      # Download and authenticate the closure and raw image, then stage them
+      # into the inactive slot. Configuration remains on generation 1 until
+      # the candidate boots and re-evaluates the retained host inputs.
       out = target.succeed(
           "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos}/bin/apm upgrade --system --yes 2>&1",
           timeout=1800,
@@ -333,17 +449,27 @@ in {
       assert "Downloading" in out, (
           f"system upgrade did not download the generation delta: {out!r}"
       )
+      assert "staged in slot B" in out, out
 
       gen = target.succeed("readlink /var/lib/profiles/system/current").strip()
-      assert gen == "gen-2", f"expected gen-2 after upgrade, got {gen!r}"
+      assert gen == "gen-1", f"configuration changed before reboot: {gen!r}"
       osrel = target.succeed("cat /etc/os-release")
-      assert "VERSION_ID=test-2" in osrel, osrel
+      assert "VERSION_ID=0.1.0" in osrel, osrel
+      image = json.loads(target.succeed(
+          "cat /var/lib/profiles/image/state.json"
+      ))
+      assert image["pending"] == 2, image
 
-
-      # Reboot through the full UEFI path. The upgraded generation and
-      # the user-installed package live on /var and must survive.
-      target.reboot()
-      target.wait_until_succeeds("systemctl is-active multi-user.target", timeout=120)
+      # Reboot through the full UEFI path. First-boot evaluation activates the
+      # retained host configuration, then boot assessment blesses the image.
+      target.reboot(timeout=600)
+      target.wait_until_succeeds(
+          "systemctl is-active --quiet aos-image-boot-commit.service",
+          timeout=420,
+      )
+      target.wait_until_succeeds(
+          "systemctl is-active --quiet multi-user.target", timeout=420
+      )
 
       gen = target.succeed("readlink /var/lib/profiles/system/current").strip()
       assert gen == "gen-2", f"generation reverted across reboot: {gen!r}"
@@ -351,6 +477,12 @@ in {
       assert "VERSION_ID=test-2" in osrel, (
           f"booted system is not the upgraded generation:\n{osrel}"
       )
+      image = json.loads(target.succeed(
+          "cat /var/lib/profiles/image/state.json"
+      ))
+      assert image["running"] == 2, image
+      assert image["default"] == 2, image
+      assert image.get("pending") is None, image
       target.succeed(
           "/var/lib/profiles/per-user/root/current/bin/bc --version"
       )

@@ -26,6 +26,7 @@ fn enforced_config(
     config.signing = Some(SigningConfig {
         required: true,
         public_key: anchor,
+        root_owner_signers: Vec::new(),
     });
     config
 }

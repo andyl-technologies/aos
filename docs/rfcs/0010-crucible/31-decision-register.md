@@ -226,7 +226,7 @@ genuinely unresolved and is tracked as a spike in
 
 ### D-7 — White-box signalling is a trapped-instruction doorbell over a virtio-serial channel
 
-- **Status:** Decided
+- **Status:** Superseded by D-38
 - **Decision:** The optional white-box guest→host signal is a **trapped
   instruction doorbell** (a reserved port-I/O / hypercall-style trap) serviced
   synchronously by the in-VM plugin, carrying its payload over a **virtio-serial
@@ -1415,6 +1415,68 @@ becomes a new `Decided` entry referencing the one it supersedes).
 - **Affects:** [STD-22], [STD-23], [HARN-33]; files 13, 24, and 28.
 - **Date:** 2026-07-28.
 
+### D-38 — Guest introspection uses doorbell/shared-memory data with fork-only activation
+
+- **Status:** Amended
+- **Decision:** Supersede D-7's virtio-serial payload choice. White-box markers
+  and every guest-introspection feature, command, stream, resize, exit, and close
+  record use the trapped-instruction `CRGX` exchange and ABI-v6 shared-memory
+  rings. A virtual device carries no payload. After an explicit whole-world
+  non-canonical debugger fork commits, Crucible may send one fixed versioned
+  token over a fixed activation-only virtio-serial endpoint. The empty controller,
+  named port, and Unix chardev are content-addressed canonical launch topology;
+  the Crucible-owned stream is established at launch but no token is written and
+  no agent runs before the fork.
+- **Rationale:** The doorbell provides exact icount placement and the shared
+  rings provide a bounded, pointer-free, versioned process protocol. A dormant
+  guest agent cannot receive a host wake through that guest-to-host trap alone.
+  The narrow one-shot activation edge solves only that wakeup problem without
+  making the device a data-channel fallback. Runtime PCIe hotplug was rejected:
+  the portable fixture kernel has no PCIe hotplug support, and an output-oriented
+  QEMU ring buffer cannot inject the token. A live direct-QEMU exercise proved
+  that the host-listener/QEMU-client stream wakes the blocking guest reader.
+- **Evidence:** The launch test freezes the exact inert controller, named port,
+  chardev, absent token, and hash material; the validator permits only that fixed
+  Unix endpoint. ABI conformance continues to cover all `CRGI` records and rings.
+- **Affects:** [GHC-14], [QEMU-17]–[QEMU-19], [SHM-47], [SHM-48], [DBG-9],
+  [DBG-34], [DBG-45], [DBG-45A], [DBG-46]; files 10, 13, 16, and 36.
+- **Supersedes:** D-7.
+- **Date:** 2026-08-08.
+
+### D-39 — AArch64 doorbell ABI v4 uses an inert HINT and TB-relative exact coordinates
+
+- **Status:** Decided
+- **Decision:** Encode the AArch64 white-box doorbell as the architecturally
+  inert `hint #0x4c`. At translation time, register one TB-entry callback and
+  the matching per-instruction callbacks. At execution, cache the TB-entry
+  retired-instruction count and derive each doorbell's exact coordinate by
+  adding its translation-time instruction index. Missing or stale TB metadata
+  fails closed. Guest, fixture, suite, release-manifest, and external-asset
+  admission metadata all carry instruction ABI version 4; mixed versions are
+  rejected before launch.
+- **Rationale:** The historical ABI-v3 `hlt #0x04c1` callback was observable
+  before execution but raised an architectural exception afterward, so a
+  one-shot test could pass while a sustained EL0 agent could not poll again.
+  The reserved HINT retires normally when Crucible is disabled. TB-entry state
+  is the QEMU-supported point for reading the entry icount, while the immutable
+  instruction index supplies an allocation-free exact coordinate for adjacent
+  markers.
+- **Evidence:** The production loaded-QEMU gate observed two adjacent HINT
+  markers at icounts 8 and 9, reproduced both coordinates in a second run,
+  completed at icount 16000000, and proved white-box-off inertness. The packaged
+  AArch64 debugger matrix then passed non-empty reverse history, repeated
+  complete landed-coordinate replacement, stable GDB across replacement,
+  scheduler run control, fork-time exec, PTY, SSH, and typed stream closure.
+  A combined x86_64/AArch64 invocation repeated the complete workflow on both
+  architectures. This closes the sustained-agent qualification that ABI v3 did
+  not provide.
+- **Affects:** [GHC-11], [GHC-13], [GHC-16], [GHC-17], [GHC-34], [RISK-17],
+  [DBG-10], [DBG-14]; files 12, 16, 30, and 36.
+- **Supersedes:** the instruction-ABI-v3 portion of D-33 and the historical
+  RISK-17 / T-RISK-10 HLT result. D-38's fork-only activation and shared-memory
+  data-channel decision is unchanged.
+- **Date:** 2026-08-11.
+
 ---
 
 ## Relationship to spikes already in the determinism contract
@@ -1832,8 +1894,8 @@ register.
     fallback remains useful only as provenance for the older 9.2.4 spike.
 
 - **RISK-17 / T-RISK-10 — S10 aarch64 doorbell**
-  - **Status:** PASS; the AOS-built AArch64 QEMU target and production
-    synchronous doorbell adapter are live.
+  - **Status:** PASS for instruction ABI v4; the AOS-built AArch64 QEMU target,
+    exact inert-HINT adapter, and sustained guest agent are live.
   - **Check:** `checks.crucible.phase0.s10Aarch64Doorbell`.
   - **Result:** `qemu_package=qemu-crucible`,
     `qemu_target_list=x86_64-softmmu,aarch64-softmmu`,
@@ -1851,6 +1913,11 @@ register.
     virtual payload, admits the marker at the live callback boundary, reaches
     the exact host-published ceiling, and tears down normally.
   - **Fallback:** none.
+  - **Superseded:** this is historical instruction-ABI-v3 evidence only. The
+    pre-execution plugin callback observed HLT before the guest took its
+    architectural exception, so the one-shot result did not prove a sustained
+    EL0 agent. D-39 records the passing HINT-based v4 result; this block remains
+    unchanged evidence of why v3 was replaced.
 
 - **RISK-10 / RISK-11 / T-RISK-3 — S4 shmem visibility is icount-not-wallclock**
   - **Status:** PASS; the measured §13.9 shared-memory visibility discipline

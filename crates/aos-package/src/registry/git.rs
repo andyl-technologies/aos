@@ -20,7 +20,7 @@
 //! rotation). See [`sync_git`] for the full sequence.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
@@ -237,10 +237,7 @@ pub async fn sync_git(
                     &resolved.semver,
                     unix_now_secs(),
                 )?;
-                ResolvedHead {
-                    commit: resolved.commit,
-                    release_tag: None,
-                }
+                resolved_head_from_verified_release(resolved)
             }
             Err(err) => {
                 return Err(channel_refresh_error(
@@ -290,9 +287,28 @@ pub async fn sync_git(
         enforce_fast_forward(&repo_dir, old_commit, &new_commit).await?;
     }
 
-    if enforcing && let Some(release_tag) = release_tag.as_deref() {
-        verify_release_tag(&repo_dir, release_tag, &post_pin_trusted_keys)?;
-    }
+    let release_trust = if enforcing {
+        if let Some(release_tag) = release_tag.as_deref() {
+            verify_release_tag(&repo_dir, release_tag, &post_pin_trusted_keys)?;
+            let tag_signer_key = verified_release_tag_signer(
+                &repo_dir,
+                release_tag,
+                &config.name,
+                &post_pin_trusted_keys,
+            )?;
+            Some(crate::registry::ReleaseTrustReceipt {
+                schema: "aos.registry-release-trust/v1".to_string(),
+                registry: config.name.clone(),
+                release_tag: release_tag.to_string(),
+                commit: new_commit.clone(),
+                tag_signer_key,
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     let verified_tuf = if enforcing {
         let enforce_tuf_expiry = !tracking_mode_is_immutable_pin(tracking_mode);
@@ -314,9 +330,20 @@ pub async fn sync_git(
     let registry_cache_dir = cache_dir.join(&config.name);
     let packages_dir = registry_cache_dir.join("packages");
     let old_packages = count_toml_files(&packages_dir).await;
+    let release_trust_path = registry_cache_dir.join(crate::registry::RELEASE_TRUST_RECEIPT);
+    // A receipt describes the complete extracted cache tree, so invalidate the
+    // previous one before replacing any member. A failed or interrupted
+    // extraction must never leave old release identity beside new bytes.
+    remove_release_trust_receipt(&release_trust_path)?;
     extract_packages(&repo_dir, &new_commit, &packages_dir).await?;
     extract_store(&repo_dir, &new_commit, &registry_cache_dir.join("store")).await?;
     extract_provenance(&repo_dir, &new_commit, &packages_dir, &registry_cache_dir).await?;
+    if let Some(receipt) = release_trust {
+        write_release_trust_receipt(
+            &release_trust_path,
+            &serde_json::to_vec(&receipt).context("serializing signed-release trust receipt")?,
+        )?;
+    }
     let new_packages = count_toml_files(&packages_dir).await;
 
     // Step 7b: Materialise root registry files so resolve_mirror and trust
@@ -389,6 +416,63 @@ pub async fn sync_git(
         packages_updated: updated,
         packages_removed: removed,
     })
+}
+
+fn resolved_head_from_verified_release(resolved: verify::VerifiedRelease) -> ResolvedHead {
+    ResolvedHead {
+        release_tag: Some(resolved.semver.to_string()),
+        commit: resolved.commit,
+    }
+}
+
+fn remove_release_trust_receipt(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => {
+            let parent = path
+                .parent()
+                .with_context(|| format!("{} has no parent", path.display()))?;
+            File::open(parent)
+                .with_context(|| format!("opening {}", parent.display()))?
+                .sync_all()
+                .with_context(|| format!("syncing {}", parent.display()))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("removing {}", path.display())),
+    }
+}
+
+fn write_release_trust_receipt(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .with_context(|| format!("{} has no parent", path.display()))?;
+    let temporary = parent.join(format!(
+        ".release-trust.pending.{}.{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    let result = (|| -> Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o644)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&temporary)
+            .with_context(|| format!("opening {}", temporary.display()))?;
+        file.write_all(bytes)
+            .with_context(|| format!("writing {}", temporary.display()))?;
+        file.sync_all()
+            .with_context(|| format!("syncing {}", temporary.display()))?;
+        std::fs::rename(&temporary, path)
+            .with_context(|| format!("publishing {}", path.display()))?;
+        File::open(parent)
+            .with_context(|| format!("opening {}", parent.display()))?
+            .sync_all()
+            .with_context(|| format!("syncing {}", parent.display()))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -471,6 +555,31 @@ fn verify_release_tag(repo_dir: &Path, tag: &str, trusted_keys: &[String]) -> Re
         );
     }
     Ok(())
+}
+
+fn verified_release_tag_signer(
+    repo_dir: &Path,
+    tag: &str,
+    registry: &str,
+    trusted_keys: &[String],
+) -> Result<String> {
+    let mut fingerprints = BTreeSet::new();
+    for key in trusted_keys {
+        let (key_registry, _algorithm, public_key) = security::parse_signing_key(key)?;
+        if key_registry == registry
+            && security::verify_tag_signature(repo_dir, tag, std::slice::from_ref(key))?
+        {
+            fingerprints.insert(key_fingerprint(&public_key));
+        }
+    }
+    let mut fingerprints = fingerprints.into_iter();
+    let signer = fingerprints.next().with_context(|| {
+        format!("release tag '{tag}' verified without an attributable roster signer")
+    })?;
+    if fingerprints.next().is_some() {
+        bail!("release tag '{tag}' validates under multiple distinct roster keys");
+    }
+    Ok(signer)
 }
 
 /// Load and validate the trust roster committed at the verified head.
@@ -1809,8 +1918,34 @@ mod tests {
             signing: Some(SigningConfig {
                 required: true,
                 public_key: Some("core:Ed25519:base64key".to_string()),
+                root_owner_signers: Vec::new(),
             }),
         }
+    }
+
+    #[test]
+    fn channel_release_keeps_verified_semver_tag_for_attestation() {
+        let head = resolved_head_from_verified_release(verify::VerifiedRelease {
+            semver: semver::Version::parse("1.4.0").unwrap(),
+            commit: "a".repeat(40),
+        });
+        assert_eq!(head.release_tag.as_deref(), Some("1.4.0"));
+        assert_eq!(head.commit, "a".repeat(40));
+    }
+
+    #[test]
+    fn release_trust_receipt_publication_is_atomic_and_invalidatable() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join(crate::registry::RELEASE_TRUST_RECEIPT);
+        write_release_trust_receipt(&path, br#"{"release":"1.0.0"}"#).unwrap();
+        write_release_trust_receipt(&path, br#"{"release":"1.1.0"}"#).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"release":"1.1.0"}"#
+        );
+        remove_release_trust_receipt(&path).unwrap();
+        assert!(!path.exists());
+        remove_release_trust_receipt(&path).unwrap();
     }
 
     #[test]

@@ -114,6 +114,17 @@ impl ContentHash {
         }
     }
 
+    /// Computes the RFC-0010 DAG-store key from a raw object byte stream.
+    /// # Errors
+    /// Returns an I/O error when the reader cannot supply the complete object.
+    pub fn from_reader(mut reader: impl std::io::Read) -> Result<Self, std::io::Error> {
+        let mut hasher = blake3::Hasher::new();
+        std::io::copy(&mut reader, &mut hasher)?;
+        Ok(Self {
+            bytes: *hasher.finalize().as_bytes(),
+        })
+    }
+
     /// Computes a stable content hash from canonical material.
     ///
     /// `domain` separates independently versioned material streams, and

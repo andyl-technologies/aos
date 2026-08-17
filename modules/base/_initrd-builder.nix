@@ -420,6 +420,27 @@ in
             cp -a "$p" root"$p"
           done < closure-paths
 
+          # udev only searches its configured vendor directory plus the
+          # conventional /etc and /run override directories. Dependencies
+          # such as device-mapper install rules beneath their own immutable
+          # prefixes, so collect those rules into the initrd's vendor view.
+          # Without 10-dm.rules/13-dm-disk.rules, veritysetup can create
+          # /dev/dm-0 while systemd waits forever for dev-mapper-root.device.
+          mkdir -p root/lib/udev/rules.d
+          for rules_dir in root/nix/store/*/lib/udev/rules.d; do
+            [ -d "$rules_dir" ] || continue
+            for rule in "$rules_dir"/*.rules; do
+              [ -e "$rule" ] || continue
+              name=$(basename "$rule")
+              target="/''${rule#root/}"
+              if [ -e "root/lib/udev/rules.d/$name" ]; then
+                echo "initrd-builder: duplicate udev rule $name" >&2
+                exit 1
+              fi
+              ln -s "$target" "root/lib/udev/rules.d/$name"
+            done
+          done
+
           # ── 3. Short /bin symlinks for the binaries we need by name ────
           ${binarySymlinks}
 

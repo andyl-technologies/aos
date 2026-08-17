@@ -37,9 +37,13 @@ impl<L> Engine<L> {
     }
 
     /// Publishes an actor failure as a terminal crash even if checkpointing fails.
-    pub(crate) fn stop_after_actor_crash(&mut self, mut detail: String) {
+    pub(crate) fn stop_after_actor_crash(&mut self, mut detail: String)
+    where
+        L: QuantumLoop,
+    {
         self.pending_control.clear();
         self.active_step = None;
+        self.resolve_guest_introspection_for_terminal();
         match self.save_current_checkpoint() {
             Ok(checkpoint) => self.terminal_savepoint = Some(checkpoint),
             Err(error) => {
@@ -56,7 +60,11 @@ impl<L> Engine<L> {
         };
     }
 
-    pub(super) fn enter_stopped(&mut self, cause: TerminalCause) -> Result<(), SessionError> {
+    pub(super) fn enter_stopped(&mut self, cause: TerminalCause) -> Result<(), SessionError>
+    where
+        L: QuantumLoop,
+    {
+        self.resolve_guest_introspection_for_terminal();
         let outcome = match cause {
             TerminalCause::Failed(violations) => Outcome::Failed { violations },
             TerminalCause::Passed => Outcome::Passed,
