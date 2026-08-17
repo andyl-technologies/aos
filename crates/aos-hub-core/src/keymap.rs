@@ -23,8 +23,8 @@
 //! ```
 
 pub use aos_registry_surface::keymap::{
-    cache_control, content_type, image_object_sha256, is_machine_path, is_producer_document,
-    IMMUTABLE_CACHE_CONTROL, MUTABLE_CACHE_CONTROL,
+    cache_control, content_type, image_object_sha256, is_loose_git_object_path, is_machine_path,
+    is_producer_document, IMMUTABLE_CACHE_CONTROL, MUTABLE_CACHE_CONTROL,
 };
 
 /// Map a registry prefix and a machine path to its R2 object key.

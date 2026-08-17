@@ -37,7 +37,7 @@ pub fn is_machine_path(path: &str) -> bool {
 #[must_use]
 pub fn cache_control(path: &str) -> &'static str {
     let immutable = if let Some(rest) = path.strip_prefix("objects/") {
-        !rest.starts_with("info/")
+        !rest.starts_with("info/") && !is_loose_git_object_path(path)
     } else if let Some(rest) = path.strip_prefix("web/") {
         rest != "config.json" && rest != "index.json" && !rest.starts_with("packages/")
     } else {
@@ -95,7 +95,35 @@ pub fn content_type(path: &str) -> &'static str {
 
 fn is_release_object_info_path(path: &str) -> bool {
     let parts = path.split('/').collect::<Vec<_>>();
-    matches!(parts.as_slice(), ["releases", _, _, _, "objects", "info", ..])
+    matches!(
+        parts.as_slice(),
+        ["releases", _, _, _, "objects", "info", ..]
+    )
+}
+
+/// Reports whether `path` is a SHA-256 Git loose-object location.
+///
+/// Git addresses the decompressed object preimage rather than its zlib wire
+/// representation. A publisher may therefore replace the bytes at this path
+/// with an equivalent canonical encoding without changing the object Git
+/// observes.
+#[must_use]
+pub fn is_loose_git_object_path(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("objects/") else {
+        return false;
+    };
+    let Some((directory, filename)) = rest.split_once('/') else {
+        return false;
+    };
+    directory.len() == 2
+        && filename.len() == 62
+        && !filename.contains('/')
+        && directory
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        && filename
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 fn is_image_object_path(path: &str) -> bool {
@@ -154,12 +182,13 @@ mod tests {
             "web/index.json",
             "web/packages/aos.json",
             "releases/1/0/0/objects/info/packs",
+            "objects/ab/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         ] {
             assert!(is_machine_path(path), "{path}");
             assert_eq!(cache_control(path), MUTABLE_CACHE_CONTROL, "{path}");
         }
         for path in [
-            "objects/ab/cd",
+            "objects/ab/not-an-object-id",
             "releases/aos.json",
             "releases/1/0/0/objects/pack/pack-demo.pack",
             "nar/aos.nar.zst",

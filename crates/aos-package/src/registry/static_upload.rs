@@ -692,10 +692,15 @@ fn push_source(
     Ok(())
 }
 
-/// Classify a path under `objects/`: `objects/info/*` metadata is mutable,
-/// content-addressed objects and packs are immutable.
+/// Classify a path under `objects/` using the delivery contract.
+///
+/// Loose Git paths identify the decompressed object, not its zlib bytes, so a
+/// canonical wire encoding may replace an older equivalent representation.
+/// Packs remain byte-addressed immutable payloads.
 fn classify_git_path(relative_path: &str) -> Result<StaticOriginClass> {
-    if relative_path.starts_with("objects/info/") {
+    if aos_registry_surface::keymap::cache_control(relative_path)
+        == aos_registry_surface::keymap::MUTABLE_CACHE_CONTROL
+    {
         Ok(StaticOriginClass::Mutable)
     } else {
         Ok(StaticOriginClass::Immutable)
@@ -848,6 +853,9 @@ fn image_content_disposition(relative_path: &str) -> Result<Option<String>> {
 mod tests {
     use super::*;
 
+    const TEST_LOOSE_OBJECT_PATH: &str =
+        "objects/ab/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
     #[test]
     fn image_upload_snapshot_rejects_same_size_corruption_and_pins_verified_bytes() {
         let tmp = tempfile::tempdir().unwrap();
@@ -891,6 +899,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(paths.contains(&("objects/aa/object", StaticOriginClass::Immutable)));
+        assert!(paths.contains(&(TEST_LOOSE_OBJECT_PATH, StaticOriginClass::Mutable)));
         assert!(paths.contains(&(
             "releases/1/0/0/objects/pack/pack-demo.pack",
             StaticOriginClass::Immutable
@@ -956,6 +965,12 @@ mod tests {
             "objects/aa/object",
             "application/octet-stream",
             IMMUTABLE_CACHE_CONTROL,
+        );
+        assert_static_metadata(
+            &files,
+            TEST_LOOSE_OBJECT_PATH,
+            "application/octet-stream",
+            MUTABLE_CACHE_CONTROL,
         );
         let disk_path = files
             .iter()
@@ -1068,8 +1083,37 @@ mod tests {
             b"object"
         );
         assert_eq!(
+            std::fs::read(dest.join(TEST_LOOSE_OBJECT_PATH)).unwrap(),
+            b"canonical-object"
+        );
+        assert_eq!(
             std::fs::read(dest.join("channels/stable/00")).unwrap(),
             b"channel"
+        );
+    }
+
+    #[tokio::test]
+    async fn static_origin_upload_replaces_equivalent_loose_wire_encoding() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("origin.git");
+        write_fixture_origin(&root);
+        let dest = tmp.path().join("dest");
+        std::fs::create_dir_all(dest.join("objects/ab")).unwrap();
+        std::fs::write(dest.join(TEST_LOOSE_OBJECT_PATH), b"legacy-zlib-object").unwrap();
+
+        upload_static_origin_to_all(
+            &root,
+            &[format!("file://{}", dest.display())],
+            &AuthOptions::default(),
+            false,
+            &Printer::new(0, true, false),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read(dest.join(TEST_LOOSE_OBJECT_PATH)).unwrap(),
+            b"canonical-object"
         );
     }
 
@@ -1452,6 +1496,7 @@ mod tests {
         repository.set_head("refs/heads/stable").unwrap();
         std::fs::create_dir_all(root.join("info")).unwrap();
         std::fs::create_dir_all(root.join("objects/aa")).unwrap();
+        std::fs::create_dir_all(root.join("objects/ab")).unwrap();
         std::fs::create_dir_all(root.join("objects/info")).unwrap();
         std::fs::create_dir_all(root.join("channels/stable")).unwrap();
         std::fs::create_dir_all(root.join("releases/1/0/0/objects/pack")).unwrap();
@@ -1467,6 +1512,7 @@ mod tests {
         .unwrap();
         std::fs::write(root.join("info/refs"), b"refs\n").unwrap();
         std::fs::write(root.join("objects/aa/object"), b"object").unwrap();
+        std::fs::write(root.join(TEST_LOOSE_OBJECT_PATH), b"canonical-object").unwrap();
         std::fs::write(
             root.join("objects/info/alternates"),
             b"../releases/1/0/0/objects/\n",
