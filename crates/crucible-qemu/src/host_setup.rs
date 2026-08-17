@@ -470,8 +470,14 @@ pub fn complete_qemu_host_plugin_setup(
             required_digest,
             observed_digest,
             first_mismatch_index,
-            required_row: expected_capabilities.get(first_mismatch_index).cloned(),
-            observed_row: fault_capabilities.get(first_mismatch_index).cloned(),
+            required_row: expected_capabilities
+                .get(first_mismatch_index)
+                .cloned()
+                .map(Box::new),
+            observed_row: fault_capabilities
+                .get(first_mismatch_index)
+                .cloned()
+                .map(Box::new),
         });
     }
     let admitted_capability_digest = fault_capability_manifest_digest(&fault_capabilities)
@@ -1182,9 +1188,9 @@ pub enum QemuHostPluginSetupError {
         /// First row index at which the exact manifests differ.
         first_mismatch_index: usize,
         /// Launch-bound row at the first mismatch, or `None` when QEMU has an extra row.
-        required_row: Option<FaultCapabilityRowV1>,
+        required_row: Option<Box<FaultCapabilityRowV1>>,
         /// QEMU row at the first mismatch, or `None` when QEMU omitted a row.
-        observed_row: Option<FaultCapabilityRowV1>,
+        observed_row: Option<Box<FaultCapabilityRowV1>>,
     },
     /// QEMU's immutable build, patch, ABI, or VMState identity changed across replay.
     #[error("fault system manifest differs from the launch-bound exact identity")]

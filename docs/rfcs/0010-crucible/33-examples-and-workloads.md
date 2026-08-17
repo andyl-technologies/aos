@@ -259,8 +259,9 @@ the user-controlled test application links the `crucible-guest` emitter and
 reports the semantic `no-split-brain` and `replicas-reconciled` verdicts through
 the structured assertion doorbell. Readiness remains each replica's existing
 "ready to accept connections" banner (`ConsoleMatch`) plus a coverage point on
-the cluster-join path. The partition is a `Fault::Partition` over still-declared
-links (17, no topology mutation). The host owns fault state, timers, lifecycle,
+the cluster-join path. The partition is a persistent `network.delivery` binding
+over still-declared links (17, no topology mutation). The host owns fault state,
+timers, lifecycle,
 and quiescence; it does not infer application correctness from packet payloads.
 
 The full trigger graph:
@@ -401,9 +402,10 @@ heal of the crash fault with a `FromReadyPoint` restart policy (17 §17.4.3),
 choreographed by `StartNode` — a *baked declared node*, not a topology mutation
 (17a §17a.4.1).
 
-**Any kernel.** Crash is `Fault::Crash` (the modeled VM reset, 17), restart is
-the scheduler bringing the *already-declared, already-baked* node back from its
-ready snapshot (05 §6). The user-controlled store test application reports
+**Any kernel.** Crash is the modeled VM reset selected by a `node.lifecycle`
+binding (17); restart is the scheduler bringing the *already-declared,
+already-baked* node back from its ready snapshot (05 §6). The user-controlled
+store test application reports
 durability and reconciliation through structured guest assertions; no kernel or
 image modification is required.
 
@@ -1121,7 +1123,7 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   convergence) as a corpus fixture; assert `no-split-brain`/`converges-after-heal`
   and byte-identical reproduction. — satisfies [EX-1], [EX-2], [EX-3]; spec §A.2;
   cross-ref 17a §17a.5.1.
-  Completed by `checks.crucible.phase7.partitionRecoveryExample`: the built-in
+  Completed by `checks.crucible.phase7.adversarialExampleVerify`: the built-in
   `partition-recovery.scn` fixture is exported from `crucible::example_corpus`,
   uses the observable readiness graph, grouped partition injection plus
   relative timer, timer-driven heal, and guest-assertion convergence pass event,
@@ -1129,13 +1131,14 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   `converges-after-heal`, captures a replayable multi-step
   reproduction schedule, is exercised by `crucible selftest`, and verifies five
   independent local reductions as byte-identical.
-- [x] **T-EX-3** Ship the crash+restart scenario (A.3) exercising `Fault::Crash`
-  with a `FromReadyPoint` restart policy and `StartNode` choreography; assert
+- [x] **T-EX-3** Ship the crash+restart scenario (A.3) exercising a
+  `node.lifecycle` crash transition with a `FromReadyPoint` restart policy and
+  `StartNode` choreography; assert
   `data-not-lost`/`reconverges` and reproduction. — satisfies [EX-1], [EX-2],
   [EX-3]; spec §A.3; cross-ref 17 §17.4.3, 17a §17a.4.1.
-  Completed by `checks.crucible.phase7.crashRestartExample`: the built-in
+  Completed by `checks.crucible.phase7.adversarialExampleVerify`: the built-in
   `crash-restart.scn` fixture is exported from `crucible::example_corpus`, uses
-  the observable WAL-write crash trigger, `Fault::Crash` with
+  the observable WAL-write crash trigger, a `node.lifecycle` binding with
   `RestartPolicy::FromReadyPoint`, an `After`-anchored `StartNode` restart event,
   derived crash/restart lifecycle facts, and
   scheduler crash/restart/topology application evidence for the declared
@@ -1148,7 +1151,7 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   reduces to a self-contained artifact that `crucible replay` reproduces
   bit-identically, and that `save`/`resume`/`fork` walk the neighborhood. —
   satisfies [EX-1], [EX-2], [EX-3]; spec §A.4; cross-ref 22, 06 §7.
-  Completed by `checks.crucible.phase7.faultCampaignExample`: the built-in
+  Completed by `checks.crucible.phase7.adversarialExampleVerify`: the built-in
   `fault-campaign.fam` fixture exports a deterministic `ScenarioFamily`
   over seed, fault density, topology size, and topology shape; `crucible fuzz
   --family fault-campaign.fam` runs the local proof path with unified event-log

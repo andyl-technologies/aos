@@ -33,7 +33,7 @@
   qemuNixRequirements = [
     {
       label = "RR fingerprint helper patch wiring";
-      needle = "patch -p1 < \${./qemu-patches/0002-crucible-rr-fingerprint-helpers.patch}";
+      needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
     }
   ];
 

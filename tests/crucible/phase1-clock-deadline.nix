@@ -41,7 +41,7 @@
     failuresFor "pkgs/emulation/qemu.nix" qemuNix [
       {
         label = "clock deadline patch wiring";
-        needle = "patch -p1 < \${./qemu-patches/0006-crucible-clock-deadline.patch}";
+        needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
       }
     ]
     ++ failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [

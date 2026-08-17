@@ -38,7 +38,7 @@
       }
       {
         label = "event graph serialization task text";
-        needle = "serializable content-addressed form";
+        needle = "content-addressed** form";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [

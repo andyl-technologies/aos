@@ -912,6 +912,8 @@ use support::*;
 
 #[cfg(test)]
 mod fingerprint_tests {
+    #![allow(clippy::unwrap_used)]
+
     use crucible_shmem::{FingerprintSample, FingerprintSampleVcpu};
 
     use super::*;

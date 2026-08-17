@@ -1,5 +1,7 @@
 //! Certification and deterministic-projection tests for the live 9p gate.
 
+#![allow(clippy::expect_used)]
+
 use super::super::ninep_io_servicer::QemuLive9pIoServiceStep;
 use super::*;
 use crucible_shmem::{KIND_VM, STATUS_RUNNING};

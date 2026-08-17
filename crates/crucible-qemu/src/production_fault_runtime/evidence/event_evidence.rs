@@ -245,7 +245,7 @@ fn validate_memory_access_evidence(event: &DequeuedFaultEvent) -> bool {
         return false;
     }
     let expected = 480_u64
-        .checked_add(inline.checked_mul(3).unwrap_or(u64::MAX))
+        .checked_add(inline.saturating_mul(3))
         .and_then(|length| length.checked_add(mutations.checked_mul(96)?))
         .and_then(|length| length.checked_add(counters.checked_mul(64)?));
     expected.and_then(|length| usize::try_from(length).ok()) == Some(bytes.len())

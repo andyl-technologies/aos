@@ -1061,6 +1061,7 @@ fn control_transform_action(
         FaultOperation::NetworkAssociate,
         kind,
         result,
+        object_id("network-association-inputs-i64-v1"),
         association_control_event([0, 0]).action.target,
     )
 }
@@ -1070,6 +1071,7 @@ fn typed_control_transform_action(
     operation: FaultOperation,
     kind: crucible::model::NetworkControlResultKind,
     result: FaultObjectId,
+    result_schema: FaultObjectId,
     target: ResolvedFaultTarget,
 ) -> ResolvedBindingAction {
     ResolvedBindingAction {
@@ -1105,7 +1107,7 @@ fn typed_control_transform_action(
                 technology: technology.clone(),
                 event_sequence: 1,
                 request_digest: ContentHash::from_bytes(b"request"),
-                result_schema: kind,
+                result_schema,
                 result_digest: ContentHash::from_bytes(b"result"),
             },
         },
@@ -1372,6 +1374,7 @@ fn forwarder_and_contact_replacements_execute_only_within_world_contracts() {
             FaultOperation::NetworkChange,
             crucible::model::NetworkControlResultKind::Replace,
             object_id("forwarder-result"),
+            object_id("network-forwarder-state-v1"),
             forwarder_target,
         )],
         &topology,
@@ -1393,6 +1396,7 @@ fn forwarder_and_contact_replacements_execute_only_within_world_contracts() {
             FaultOperation::NetworkAcquire,
             crucible::model::NetworkControlResultKind::Replace,
             object_id("contact-result"),
+            object_id("network-contact-plan-v1"),
             contact_target.clone(),
         )],
         &topology,
@@ -1411,6 +1415,7 @@ fn forwarder_and_contact_replacements_execute_only_within_world_contracts() {
             FaultOperation::NetworkAcquire,
             crucible::model::NetworkControlResultKind::Replace,
             object_id("contact-result-invalid"),
+            object_id("network-contact-plan-v1"),
             contact_target,
         )],
         &topology,

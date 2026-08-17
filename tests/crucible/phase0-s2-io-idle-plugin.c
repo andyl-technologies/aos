@@ -24,6 +24,7 @@ struct medium_stats {
   uint64_t operations;
   uint64_t completed_operations;
   uint64_t idled_operations;
+  uint64_t inline_operations;
   uint64_t busy_polled_operations;
   uint64_t operations_with_io_events;
   uint64_t operations_without_io_events;
@@ -31,10 +32,22 @@ struct medium_stats {
   uint64_t max_operation_instructions;
   uint64_t total_busy_poll_instructions;
   uint64_t max_busy_poll_instructions;
+  uint64_t total_inline_instructions;
+  uint64_t max_inline_instructions;
   uint64_t total_hlt_events;
   uint64_t max_hlt_events;
   uint64_t total_io_events;
   uint64_t max_io_events;
+};
+
+enum {
+  /*
+   * An operation that returns within this instruction budget, without an HLT,
+   * completed inline rather than spinning for an asynchronous completion.  The
+   * budget is deliberately more than twice the measured stock-Linux direct-I/O
+   * path while remaining far below one scheduler polling interval.
+   */
+  INLINE_COMPLETION_MAX_INSTRUCTIONS = 20000
 };
 
 static FILE *out_file;
@@ -159,6 +172,13 @@ end_operation(enum medium medium)
 
   if (operation_hlt_events > 0) {
     current->idled_operations++;
+  } else if (operation_io_events > 0 &&
+             operation_instructions <= INLINE_COMPLETION_MAX_INSTRUCTIONS) {
+    current->inline_operations++;
+    current->total_inline_instructions += operation_instructions;
+    if (operation_instructions > current->max_inline_instructions) {
+      current->max_inline_instructions = operation_instructions;
+    }
   } else {
     current->busy_polled_operations++;
     current->total_busy_poll_instructions += operation_instructions;
@@ -283,6 +303,11 @@ write_medium_stats(enum medium medium)
       current->idled_operations);
   fprintf(
       out_file,
+      "%s_inline_operations=%" PRIu64 "\n",
+      name,
+      current->inline_operations);
+  fprintf(
+      out_file,
       "%s_busy_polled_operations=%" PRIu64 "\n",
       name,
       current->busy_polled_operations);
@@ -321,6 +346,21 @@ write_medium_stats(enum medium medium)
       "%s_max_busy_poll_instructions=%" PRIu64 "\n",
       name,
       current->max_busy_poll_instructions);
+  fprintf(
+      out_file,
+      "%s_total_inline_instructions=%" PRIu64 "\n",
+      name,
+      current->total_inline_instructions);
+  fprintf(
+      out_file,
+      "%s_max_inline_instructions=%" PRIu64 "\n",
+      name,
+      current->max_inline_instructions);
+  fprintf(
+      out_file,
+      "%s_inline_completion_max_instructions=%u\n",
+      name,
+      INLINE_COMPLETION_MAX_INSTRUCTIONS);
   fprintf(out_file, "%s_total_hlt_events=%" PRIu64 "\n", name, current->total_hlt_events);
   fprintf(out_file, "%s_max_hlt_events=%" PRIu64 "\n", name, current->max_hlt_events);
   fprintf(out_file, "%s_total_io_events=%" PRIu64 "\n", name, current->total_io_events);

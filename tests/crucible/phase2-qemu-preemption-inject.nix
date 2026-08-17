@@ -47,7 +47,7 @@
     ++ failuresFor "pkgs/emulation/qemu.nix" qemuNix [
       {
         label = "QEMU package applies preemption inject patch";
-        needle = "patch -p1 < \${./qemu-patches/${patchName}}";
+        needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
       }
     ]
     ++ failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginPackage [

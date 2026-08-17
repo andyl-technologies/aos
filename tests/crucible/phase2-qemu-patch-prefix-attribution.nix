@@ -383,6 +383,22 @@
       kind = "recorded";
       symbols = [];
     };
+    "0078-crucible-fingerprint-guest-state-domains.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0079-crucible-stopped-state-control-progress.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0080-crucible-inactive-retention-clock-guard.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0081-crucible-deferred-result-evidence-test.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

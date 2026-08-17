@@ -832,11 +832,13 @@ in rec {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.triggerFiringCausalLog";
       taskIds = ["T-TRIG-11"];
+      dependencies = [phase4.gates.replayOracle.rawGate];
     };
     triggerActionApplication = import ./phase4-trigger-action-application.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.triggerActionApplication";
       taskIds = ["T-TRIG-12"];
+      dependencies = [phase4.eventGraphControlFlow phase4.triggerNodeScheduling phase4.triggerVerdictComposition phase4.gates.replayOracle.rawGate];
     };
     triggerNodeScheduling = import ./phase4-trigger-node-scheduling.nix {
       inherit pkgs lib;
@@ -847,16 +849,19 @@ in rec {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.triggerRelativeTimers";
       taskIds = ["T-TRIG-14"];
+      dependencies = [phase4.timeConditionLeaves phase4.gates.replayOracle.rawGate];
     };
     triggerGraphValidator = import ./phase4-trigger-graph-validator.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.triggerGraphValidator";
       taskIds = ["T-TRIG-15"];
+      dependencies = [phase4.eventGraphControlFlow phase4.timeConditionLeaves phase4.compoundConditionCombinators phase4.triggerNodeScheduling phase4.eventGraphSerialization];
     };
     triggerPlanLowering = import ./phase4-trigger-plan-lowering.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.triggerPlanLowering";
       taskIds = ["T-TRIG-16"];
+      dependencies = [phase4.eventGraphSerialization];
     };
     triggerVerdictComposition = import ./phase4-trigger-verdict-composition.nix {
       inherit pkgs lib;
@@ -1080,6 +1085,7 @@ in rec {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.guestHostEmitterAbsence";
       taskIds = ["T-GHC-11"];
+      dependencies = [phase4.guestHostOsAgnostic phase4.blackBoxFirstGuarantee phase4.guestHostChannelDeterminism];
     };
     guestHostChannelDeterminism = import ./phase4-guest-host-channel-determinism.nix {
       inherit pkgs lib;
@@ -2612,6 +2618,7 @@ in rec {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.happyPathExample";
       taskIds = ["T-EX-1"];
+      dependencies = [phase4.eventGraphSerialization phase4.blackBoxFirstGuarantee phase7.adversarialExampleVerify];
     };
     nginxCurlHttp200 = import ./phase7-nginx-curl-http-200.nix {
       inherit pkgs lib;
@@ -2849,12 +2856,24 @@ in rec {
             "T-QEMU-0061"
             "T-QEMU-0062"
             "T-QEMU-0063"
+            "T-QEMU-0064"
+            "T-QEMU-0065"
+            "T-QEMU-0066"
             "T-QEMU-0067"
             "T-QEMU-0068"
             "T-QEMU-0069"
             "T-QEMU-0070"
             "T-QEMU-0071"
             "T-QEMU-0072"
+            "T-QEMU-0073"
+            "T-QEMU-0074"
+            "T-QEMU-0075"
+            "T-QEMU-0076"
+            "T-QEMU-0077"
+            "T-QEMU-0078"
+            "T-QEMU-0079"
+            "T-QEMU-0080"
+            "T-QEMU-0081"
             "T-QEMU-LICENSE"
             "T-SPEC-1"
             "T-SPEC-2"

@@ -257,18 +257,6 @@
         label = "post-idle-advance control reschedule";
         needle = "qemu_plugin_schedule_control_boundary();";
       }
-      {
-        label = "VM-stop park closes the lost-kick window";
-        needle = "!rr_crucible_sim_stop_or_unplug_pending()";
-      }
-      {
-        label = "VM-stop park observes queued vCPU work";
-        needle = "!rr_crucible_sim_vcpu_work_pending()";
-      }
-      {
-        label = "VM-stop park has bounded control progress";
-        needle = "qemu_cond_timedwait_bql(first_cpu->halt_cond, 1)";
-      }
     ];
 
   failures =
@@ -1083,10 +1071,6 @@ in
             grep -q 'qemu_plugin_register_control_boundary_cb' "${patchDir}/0073-crucible-device-wait-vmstop.patch"
             grep -q 'qemu_plugin_fire_control_boundary_cb(first_cpu);' "${patchDir}/0073-crucible-device-wait-vmstop.patch"
             grep -q 'qatomic_load_acquire(&qemu_plugin_time_advance_pending)' "${patchDir}/0073-crucible-device-wait-vmstop.patch"
-            grep -q 'the condition signal is a latency hint, never the sole source' "${patchDir}/0073-crucible-device-wait-vmstop.patch"
-            grep -q '!rr_crucible_sim_stop_or_unplug_pending()' "${patchDir}/0073-crucible-device-wait-vmstop.patch"
-            grep -q '!rr_crucible_sim_vcpu_work_pending()' "${patchDir}/0073-crucible-device-wait-vmstop.patch"
-            grep -q 'qemu_cond_timedwait_bql(first_cpu->halt_cond, 1)' "${patchDir}/0073-crucible-device-wait-vmstop.patch"
             grep -q '^diff --git a/block/crucible-shmem.c ' "${patchDir}/0073-crucible-device-wait-vmstop.patch"
             grep -q '^diff --git a/hw/9pfs/virtio-9p-device.c ' "${patchDir}/0073-crucible-device-wait-vmstop.patch"
             grep -q '^diff --git a/hw/virtio/virtio-crucible-accelerator.c ' "${patchDir}/0073-crucible-device-wait-vmstop.patch"

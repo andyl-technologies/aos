@@ -1356,22 +1356,23 @@ gates/spikes.
 **RISK-6 / RISK-7** are retired by `T-RISK-2`:
 `checks.crucible.phase0.s2HltBusyPoll` booted the target stock Linux kernel plus
 initramfs under `-accel sim,thread=single` and
-`-icount shift=0,sleep=off,align=off`, attached a synchronous virtio block read
-device with `throttling.iops-read=20`, attached a virtio-9p tree with
+`-icount shift=0,sleep=off,align=off`, attached a deterministic-inline virtio
+block read device, attached a virtio-9p tree with
 `throttling.iops-read=20`, and bracketed 32 reads from each path with
 observation-only guest markers. The plugin counted retired instructions, `HLT`
 opcodes, and MMIO events inside each bracket, and the gate requires every
 bracketed operation to include device I/O events. The run reported
-`block_outstanding_wait_source=qemu_block_read_throttle_iops_20`,
+`block_completion_mode=bounded_inline_or_hlt_idle`,
 `ninep_outstanding_wait_source=qemu_9p_read_throttle_iops_20`,
-`idle_threshold_ppm=900000`, `block_idle_fraction_requirement=ge_900000`,
-`block_busy_poll_fraction_requirement=le_100000`,
-`block_idled_operations=31..32`, `block_busy_polled_operations=0..1`,
-`block_idle_fraction_ppm=968750..1000000`,
+`idle_threshold_ppm=900000`, `block_inline_instruction_requirement=le_20000`,
+`block_idled_operations+block_inline_operations=32`,
+`block_busy_polled_operations=0`,
 `block_operations_with_io_events=32`, `block_operations_without_io_events=0`,
-`block_busy_poll_instruction_distribution=empty`, `block_hlt_observed=true`,
+`block_inline_max_instructions<=20000`,
+`block_busy_poll_instruction_distribution=empty`,
+`block_hlt_required=false_but_permitted`,
 `block_io_events_observed_per_operation=true`,
-`block_idle_threshold_met=true`, `ninep_idle_fraction_requirement=ge_900000`,
+`block_inline_completion_bounded=true`, `ninep_idle_fraction_requirement=ge_900000`,
 `ninep_busy_poll_fraction_requirement=le_100000`,
 `ninep_idled_operations=32`, `ninep_busy_polled_operations=0`,
 `ninep_idle_fraction_ppm=1000000`,
@@ -1379,12 +1380,15 @@ bracketed operation to include device I/O events. The run reported
 `ninep_busy_poll_instruction_distribution=empty`, `ninep_hlt_observed=true`,
 `ninep_io_events_observed_per_operation=true`,
 `ninep_idle_threshold_met=true`, `fallback_adopted=false`, and
-`busy_poll_mitigation_decision=not_needed_for_measured_delayed_sync_read_path`.
-The guest workload completed all 64 synchronous reads and printed
-`TEST_RESULT:PASS`. This retires the S2 performance risk for delayed synchronous
-virtio-block and virtio-9p reads on the target Linux guest: idle fast-forward is
-valid for the measured blocking-read path, and the exactness-preserving busy-poll
-fallback remains specified by [IO-30] but is not adopted for this path.
+`busy_poll_mitigation_decision=not_needed_for_measured_inline_block_and_delayed_9p_paths`.
+The guest workload completed all 64 reads and printed `TEST_RESULT:PASS`. This
+retires the S2 performance risk for delayed synchronous virtio-9p reads and
+bounded deterministic-inline virtio-block reads on the target Linux guest. The
+classifier accepts a non-HLT operation as inline only when it contains device
+I/O and returns within 20,000 guest instructions; longer non-HLT operations
+remain busy-poll failures. Idle fast-forward is valid for the measured delayed
+9p path, and the exactness-preserving busy-poll fallback remains specified by
+[IO-30] but is not adopted for either measured path.
 
 **RISK-10 / RISK-11** are retired by `T-RISK-3`:
 `checks.crucible.phase0.s4ShmemVisibility` runs a throwaway shared-memory
@@ -1627,7 +1631,7 @@ host-jitter run, with `vcpus=4`, `rr_switch_quantum=4096`,
 `cadence=100000000`, and an exact `horizon_icount=4000000000`. The sustained
 pthread spinlock workload reported affinity on vCPUs `0,1,2,3`; both runs
 produced 33 periodic samples plus a sole final teardown record,
-`rr_switch_events=389751`, identical aggregate/per-vCPU/RR traces through the
+`rr_switch_events=731765`, identical aggregate/per-vCPU/RR traces through the
 exact horizon, four nonempty
 3868-byte register files with 66 descriptors each, and a nonzero 256 MiB RAM
 digest. The sample at `observed_icount=4000000000` is authoritative. The two
@@ -1916,7 +1920,7 @@ never tolerated). Results live in the decision register (31).
   mismatch to the first differing node-icount + component. Block multi-vCPU
   foundation work until green; fall back to `-smp 1` if irrecoverable. Phase 0
   completed the two sim-mode runs through 4 billion aggregate instructions,
-  observed all four affinity-pinned workload vCPUs and 389163 RR switches, and
+  observed all four affinity-pinned workload vCPUs and 731765 RR switches, and
   matched the complete horizon fingerprint under host jitter; no `-smp 1`
   fallback was needed. —
   satisfies [RISK-25], [G-10], [DET-23], [SCHED-45], [PLUG-3]; spec §30.11a.

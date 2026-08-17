@@ -70,7 +70,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
                                            const qemu_info_t *info,
                                            int argc, char **argv)
 {
-    struct qemu_plugin_crucible_fault_capability capabilities[8];
+    struct qemu_plugin_crucible_fault_capability capabilities[64];
     struct qemu_plugin_crucible_fault_command command = { 0 };
     size_t capability_count;
     bool found_abi = false;

@@ -35,21 +35,21 @@ does not create a separate device adapter.
 
 ## 7.2 No legacy or partial path
 
-- [ ] **T-ATOM-1** Remove `FaultPlanEntry`, finite/permanent fault entries,
+- [x] **T-ATOM-1** Remove `FaultPlanEntry`, finite/permanent fault entries,
   imperative `inject_fault`/`heal_fault`, fault activation/heal scheduler
   payloads, old fault-tag state, old random-fault configuration, and their
   builders, codecs, CLI surfaces, examples, tests, and documentation.
-- [ ] **T-ATOM-2** Replace the old `Fault` execution hierarchy with the new
+- [x] **T-ATOM-2** Replace the old `Fault` execution hierarchy with the new
   signal/binding/typed-adapter representation. Existing device algorithms may
   be moved into adapters; the old dispatcher and active-fault tables may not
   remain alongside them.
-- [ ] **T-ATOM-3** Bump the scenario schema version. Older scenario versions
+- [x] **T-ATOM-3** Bump the scenario schema version. Older scenario versions
   fail admission with a concise migration error and are not parsed, lowered, or
   replayed by a compatibility engine.
-- [ ] **T-ATOM-4** Add repository guards for retired type, field, event, and CLI
+- [x] **T-ATOM-4** Add repository guards for retired type, field, event, and CLI
   names. Historical RFC text and an explicit migration guide are the only
   allowed occurrences.
-- [ ] **T-ATOM-5** Prohibit dormant feature flags, placeholder adapters,
+- [x] **T-ATOM-5** Prohibit dormant feature flags, placeholder adapters,
   accepted-but-unapplied variants, fallback approximations, `todo!`,
   `unimplemented!`, and wildcard handling of effect or operator enums.
 
@@ -64,35 +64,35 @@ This workstream implements the closed grammar in
 algorithms in
 [`13-resource-and-performance-bounds.md`](13-resource-and-performance-bounds.md).
 
-- [ ] **T-SIG-1** Implement the complete typed value/unit set using validated
+- [x] **T-SIG-1** Implement the complete typed value/unit set using validated
   `i64`/`u64` stored values, probability millionths, reduced rationals, and
   checked `i128`/`u128` intermediates with explicit rounding/overflow policy.
-- [ ] **T-SIG-2** Implement virtual-time, node-counter, operation, spatial,
+- [x] **T-SIG-2** Implement virtual-time, node-counter, operation, spatial,
   event, and modeled-state domains with explicit sampling/projection nodes.
-- [ ] **T-SIG-3** Implement constant, step, pulse, periodic pulse, ramp,
+- [x] **T-SIG-3** Implement constant, step, pulse, periodic pulse, ramp,
   event-sequence, normalized trace, spatial point/grid/zone/seeded field, and
   admitted telemetry sources.
-- [ ] **T-SIG-4** Implement every pure operator in §1.4 and every stateful
+- [x] **T-SIG-4** Implement every pure operator in §1.4 and every stateful
   operator in §1.5, including hysteresis, debounce, filters, integration,
   counter, finite-state machine, burst process, and delay state.
-- [ ] **T-SIG-5** Implement counter-based keyed stochastic choices and hazard
+- [x] **T-SIG-5** Implement counter-based keyed stochastic choices and hazard
   integration without a shared mutable RNG cursor.
-- [ ] **T-SIG-6** Implement exact next-change/crossing discovery and scheduler
+- [x] **T-SIG-6** Implement exact next-change/crossing discovery and scheduler
   boundary admission. Continuous values are evaluated on demand and do not
   create periodic polling events.
-- [ ] **T-SIG-7** Implement graph type checking, cycle detection, canonical
+- [x] **T-SIG-7** Implement graph type checking, cycle detection, canonical
   topological order, semantic versioning, content identity, bounds, and complete
   malformed-input diagnostics.
-- [ ] **T-TRACE-1** Specify and implement the canonical trace binary codec:
+- [x] **T-TRACE-1** Specify and implement the canonical trace binary codec:
   manifest, per-channel chunks of at most 4,096 entries, byte order, integer
   widths, string normalization, digest domains, indexes, and bounds.
-- [ ] **T-TRACE-2** Implement exact time alignment, piecewise clock correction,
+- [x] **T-TRACE-2** Implement exact time alignment, piecewise clock correction,
   coordinate frames, quality channels, missing-data policies, and deterministic
   spatial redaction.
-- [ ] **T-TRACE-3** Implement generic typed CSV and JSONL import/export plus
+- [x] **T-TRACE-3** Implement generic typed CSV and JSONL import/export plus
   PCAP/PCAPNG network-outcome import. These are hermetic AOS-built tools; a run
   never parses raw capture formats.
-- [ ] **T-TRACE-4** Implement trace capture/provenance manifests, seekable store
+- [x] **T-TRACE-4** Implement trace capture/provenance manifests, seekable store
   objects, dependency closure, resource limits, malformed fixtures, and
   deterministic repeated-import gates.
 
@@ -102,37 +102,37 @@ The registries, algebras, and taxonomy mapping in
 [`08-executable-effect-contracts.md`](08-executable-effect-contracts.md) are
 normative inputs to generated schema, code, capabilities, evidence, and docs.
 
-- [ ] **T-BIND-1** Implement stable opportunity schemas for every supported
+- [x] **T-BIND-1** Implement stable opportunity schemas for every supported
   network frame/path/queue transition, block/9p operation, and node/QEMU
   boundary. Identity must be invariant under unrelated bindings and host
   scheduling.
-- [ ] **T-BIND-2** Implement typed selectors, static target resolution, dynamic
+- [x] **T-BIND-2** Implement typed selectors, static target resolution, dynamic
   association/route/domain membership, empty-selection policy, and symbolic
   target resolution before execution.
-- [ ] **T-BIND-3** Implement every mapping kind, lifetime class, persistent
+- [x] **T-BIND-3** Implement every mapping kind, lifetime class, persistent
   contribution, impulse record, and deterministic boundary ordering specified
   in §2.
-- [ ] **T-BIND-4** Implement adapter-owned composition algebras with contributor
+- [x] **T-BIND-4** Implement adapter-owned composition algebras with contributor
   attribution, conflict rejection, canonical ordering where order is physical,
   and property tests independent of TOML/map insertion order.
-- [ ] **T-BIND-5** Generate versioned capability manifests from the same closed
+- [x] **T-BIND-5** Generate versioned capability manifests from the same closed
   effect registry used by schema validation. Admission fails before guest start
   if any required production capability or declared bound is absent.
-- [ ] **T-STATE-1** Add every signal, binding, adapter, queue, path, medium,
+- [x] **T-STATE-1** Add every signal, binding, adapter, queue, path, medium,
   association, storage media, durability, node, QEMU, and trace-cursor state item
   to canonical state, fingerprints, fat checkpoints, thin reconstruction, and
   savepoint dependency closure.
-- [ ] **T-REPLAY-1** Implement recomputed replay with first-divergence evidence
+- [x] **T-REPLAY-1** Implement recomputed replay with first-divergence evidence
   for signals, opportunities, decisions, composition, application, event log,
   and final fingerprints.
-- [ ] **T-REPLAY-2** Implement resolved-effect recording and locked replay with
+- [x] **T-REPLAY-2** Implement resolved-effect recording and locked replay with
   exact target, opportunity, phase, profile, capability version, precondition,
   and final-fingerprint validation. No semantic-version compatibility shim is
   included.
-- [ ] **T-SEARCH-1** Implement finite outcome/transition/parameter branching,
+- [x] **T-SEARCH-1** Implement finite outcome/transition/parameter branching,
   bounded trace-window and mapping mutation, independence analysis, schedule
   export, and signature-preserving minimization.
-- [ ] **T-OBS-1** Implement the complete typed event vocabulary in §5.6,
+- [x] **T-OBS-1** Implement the complete typed event vocabulary in §5.6,
   JSON/JSONL rendering, configurable high-rate sample retention, causal
   explanation, provenance inspection, and sensitive-export closure reporting.
 
@@ -145,36 +145,36 @@ ledger in [§8](08-executable-effect-contracts.md), the technology contracts in
 effect registry must have a checked one-to-one mapping; a row cannot be marked
 executable merely because a generic loss or latency approximation exists.
 
-- [ ] **T-NET-1** Replace the current logical-link model with directed
+- [x] **T-NET-1** Replace the current logical-link model with directed
   interfaces, segments, forwarders, queues, paths, shared media, route and
   association state, and explicit physical/administrative fault domains.
-- [ ] **T-NET-2** Implement `EffectiveLinkProfile` with attributed propagation,
+- [x] **T-NET-2** Implement `EffectiveLinkProfile` with attributed propagation,
   access, processing, serialization, queue, jitter, reorder, retransmission,
   service, availability, loss, duplication, corruption, MTU, and technology
   state.
-- [ ] **T-NET-3** Implement integrated piecewise-constant service, token buckets,
+- [x] **T-NET-3** Implement integrated piecewise-constant service, token buckets,
   bounded queues, strict priority, weighted round-robin, fixed slots, overflow,
   backpressure, shared load, and checkpointed accounting. A stateless
   sample-at-emission rate path is not retained.
-- [ ] **T-NET-4** Implement ordered path traversal, encapsulation/MTU behavior,
+- [x] **T-NET-4** Implement ordered path traversal, encapsulation/MTU behavior,
   segment-local opportunities, bounded loops, ECMP, route transition,
   convergence, asymmetry, blackhole, and in-flight/buffer treatment.
-- [ ] **T-NET-5** Implement switch, router, firewall, NAT, tunnel, load-balancer,
+- [x] **T-NET-5** Implement switch, router, firewall, NAT, tunnel, load-balancer,
   provider, conduit, chassis, line-card, and control-plane effects required by
   the executable taxonomy.
-- [ ] **T-NET-6** Implement joint shared-medium transmission ordering,
+- [x] **T-NET-6** Implement joint shared-medium transmission ordering,
   occupancy, arbitration, collision/capture, backoff, interference, channel
   allocation, and fair/shared service for the listed wired buses and radios.
-- [ ] **T-NET-7** Implement exact truth trajectories, spatial attenuation and
+- [x] **T-NET-7** Implement exact truth trajectories, spatial attenuation and
   interference fields, channel-profile lookup, association, authentication,
   roaming, cellular handoff/reselection, radio reconnect, and observed network
   telemetry.
-- [ ] **T-NET-8** Implement satellite/contact traces, range-varying propagation,
+- [x] **T-NET-8** Implement satellite/contact traces, range-varying propagation,
   acquisition, beam/gateway handover, rain/weather fade, shared transponder
   service, bounded store-and-forward queues, and contact-plan routing.
-- [ ] **T-NET-9** Implement outcome, channel, and mobility/environment replay,
+- [x] **T-NET-9** Implement outcome, channel, and mobility/environment replay,
   including exact packet/frame alignment modes and fail-loud ambiguity.
-- [ ] **T-NET-10** Provide isolated, overlap, shared-cause, mobility revisit,
+- [x] **T-NET-10** Provide isolated, overlap, shared-cause, mobility revisit,
   queue conservation, checkpoint, search, and both replay tests for every
   executable network effect and every supported network structure.
 
@@ -186,23 +186,23 @@ in [§8](08-executable-effect-contracts.md), the state machines in
 [§13](13-resource-and-performance-bounds.md), including stateful durability and
 media behavior rather than approximating them as completion errors.
 
-- [ ] **T-STOR-1** Implement admission, queue, resolve, persistence, flush, reset,
+- [x] **T-STOR-1** Implement admission, queue, resolve, persistence, flush, reset,
   and delivery opportunities for block and 9p operations with stable IDs.
-- [ ] **T-STOR-2** Implement integrated bandwidth/IOPS service, queue depth,
+- [x] **T-STOR-2** Implement integrated bandwidth/IOPS service, queue depth,
   latency/jitter, stall/timeout, typed errors, reorder, corruption, stale data,
   and read-only/offline/reset transitions.
-- [ ] **T-STOR-3** Implement explicit volatile-cache and durable-media state so
+- [x] **T-STOR-3** Implement explicit volatile-cache and durable-media state so
   lost writes, torn/partial writes, reordered persistence, volatile-cache loss,
   and lying flushes have distinct testable semantics.
-- [ ] **T-STOR-4** Implement persistent bad ranges, latent failures,
+- [x] **T-STOR-4** Implement persistent bad ranges, latent failures,
   program/erase failures, wear state, controller/path loss, RAID/multipath
   degraded state, and rebuild load for all executable rows.
-- [ ] **T-STOR-5** Implement filesystem-facing errno, stale data/metadata, reset,
+- [x] **T-STOR-5** Implement filesystem-facing errno, stale data/metadata, reset,
   visibility, and ordering semantics for every executable 9p row.
-- [ ] **T-STOR-6** Include cache, durability, wear, bad-range, queue, retry,
+- [x] **T-STOR-6** Include cache, durability, wear, bad-range, queue, retry,
   controller, and multipath state in snapshots, fingerprints, event evidence,
   search, and both replay modes.
-- [ ] **T-STOR-7** Provide live shared-memory block and 9p conformance gates plus
+- [x] **T-STOR-7** Provide live shared-memory block and 9p conformance gates plus
   isolated, overlap, power/reset common-cause, checkpoint, and mismatch tests for
   every executable storage effect.
 
@@ -215,161 +215,182 @@ current crash/slow/clock-skew implementation and requires new patched-QEMU/plugi
 APIs. Mock, fake, and test-double backends are prohibited; every effect must
 produce live patched-QEMU architectural or device evidence.
 
-- [ ] **T-NODE-1** Implement crash, hang, boot failure, power-cycle reset,
+- [x] **T-NODE-1** Implement crash, hang, boot failure, power-cycle reset,
   intermittent reset, restart/recovery, and volatile-state-loss semantics at
   exact scheduler boundaries.
-- [ ] **T-NODE-2** Implement CPU capacity and thermal throttling, vCPU stall and
+- [x] **T-NODE-2** Implement CPU capacity and thermal throttling, vCPU stall and
   offline state, register bit flips, and architecture-specific machine checks
   with exact vCPU/register/exception schemas.
-- [ ] **T-NODE-3** Implement dropped, delayed, duplicate, spurious, and storm
+- [x] **T-NODE-3** Implement dropped, delayed, duplicate, spurious, and storm
   interrupt effects with exact source, target vCPU, vector/type, phase, and
   round-robin delivery semantics.
-- [ ] **T-NODE-4** Implement transient memory bit flips, persistent stuck-at,
+- [x] **T-NODE-4** Implement transient memory bit flips, persistent stuck-at,
   opportunity-specific read corruption, poison, corrected and uncorrectable ECC
   events, persistent failed ranges, and memory latency/bandwidth degradation.
-- [ ] **T-NODE-5** Implement guest clock offset, exact rational drift, jump,
+- [x] **T-NODE-5** Implement guest clock offset, exact rational drift, jump,
   freeze, jitter/wander, and synchronization-loss state without changing global
   scheduler time.
-- [ ] **T-NODE-6** Implement instruction-result corruption, instruction
+- [x] **T-NODE-6** Implement instruction-result corruption, instruction
   skip/replay, illegal/spurious exception injection, lost/torn memory writes,
   retention decay, rowhammer-style disturbance, clock-source fallback, and all
   other `Advanced` CPU/memory/clock rows with exact architectural opportunities.
-- [ ] **T-NODE-7** Implement accelerator disappearance/reset, result corruption,
+- [x] **T-NODE-7** Implement accelerator disappearance/reset, result corruption,
   device-memory/ECC error, and thermal/power throttle for declared QEMU GPU,
   TPU, and FPGA device classes with complete device-specific capability gates.
-- [ ] **T-QEMU-0047** Implement
+- [x] **T-QEMU-0047** Implement
   [`crucible-fault-command-abi`](14-qemu-fault-patches/01-command-abi.md): the
   closed command/result layouts, dispatcher, version negotiation, capability
   enumeration, failure statuses, ring ownership, and ABI microtests.
-- [ ] **T-QEMU-0048** Implement
+- [x] **T-QEMU-0048** Implement
   [`crucible-fault-safe-boundary`](14-qemu-fault-patches/02-safe-boundary.md):
   exact-icount arming, all-vCPU/device quiescence, authorization, ordered commit,
   acknowledgement, past-boundary rejection, and boundary microtests.
-- [ ] **T-QEMU-0049** Implement
+- [x] **T-QEMU-0049** Implement
   [`crucible-memory-boundary-mutate`](14-qemu-fault-patches/03-memory-boundary-mutation.md):
   atomic GPA/GVA impulse mutation, translation records, before/after evidence,
   dirty tracking, translation-cache handling, and x86-64/AArch64 live tests.
-- [ ] **T-QEMU-0050** Implement
+- [x] **T-QEMU-0050** Implement
   [`crucible-memory-access-faults`](14-qemu-fault-patches/04-memory-access-faults.md):
   load/store/fetch/DMA transforms, stuck and failed ranges, poison, lost/torn
   writes, retention, rowhammer disturbance, memory service, state, and live
   access-path tests.
-- [ ] **T-QEMU-0051** Implement
+- [x] **T-QEMU-0051** Implement
   [`crucible-register-mutate`](14-qemu-fault-patches/05-register-mutation.md):
   complete architecture register manifests, typed bit/field mutation, derived
   state repair, persistent stuck rules, evidence, and live register tests.
-- [ ] **T-QEMU-0052** Implement
+- [x] **T-QEMU-0052** Implement
   [`crucible-instruction-faults`](14-qemu-fault-patches/06-instruction-faults.md):
   instruction metadata and exact result corruption, skip, replay, illegal and
   spurious exception semantics, ordering, state, and live instruction tests.
-- [ ] **T-QEMU-0053** Implement
+- [x] **T-QEMU-0053** Implement
   [`crucible-interrupt-faults`](14-qemu-fault-patches/07-interrupt-faults.md):
   architecture interrupt manifests and exact drop, delay, duplicate, replace,
   and storm behavior across request, pending, selection, and delivery phases.
-- [ ] **T-QEMU-0054** Implement
+- [x] **T-QEMU-0054** Implement
   [`crucible-hardware-error-inject`](14-qemu-fault-patches/08-hardware-errors.md):
   x86 machine checks, AArch64 hardware errors, corrected and uncorrectable ECC,
   platform reporting, guest acknowledgement, and architecture-specific tests.
-- [ ] **T-QEMU-0055** Implement
+- [x] **T-QEMU-0055** Implement
   [`crucible-vcpu-service-control`](14-qemu-fault-patches/09-vcpu-service.md):
   rational capacity credits, thermal throttle, deterministic stall and offline
   state, multi-vCPU scheduling, VMState, and live throughput tests.
-- [ ] **T-QEMU-0056** Implement
+- [x] **T-QEMU-0056** Implement
   [`crucible-node-lifecycle-faults`](14-qemu-fault-patches/10-node-lifecycle.md):
   crash, hang, boot failure, reset, power-cycle, restart/recovery, volatile-state
   policies, process lifecycle acknowledgement, and live reboot tests.
-- [ ] **T-QEMU-0067** Implement
+- [x] **T-QEMU-0067** Implement
   [`crucible-core-fault-vmstate`](14-qemu-fault-patches/21-core-fault-vmstate.md):
   bounded canonical save/restore for command, memory, CPU, interrupt,
   hardware-error, vCPU-service, and lifecycle state with transactional staging,
   cross-section referential checks, and corruption/rejection tests.
-- [ ] **T-QEMU-0068** Implement
+- [x] **T-QEMU-0068** Implement
   [`crucible-guest-clock-faults`](14-qemu-fault-patches/11-guest-clocks.md): every
   guest-visible clock source, offset, rational drift, jump, freeze,
   jitter/wander, source failure/fallback, synchronization loss, timer rearming,
   VMState, and live clock tests.
-- [ ] **T-QEMU-0069** Implement
+- [x] **T-QEMU-0069** Implement
   [`crucible-accelerator-fault-device`](14-qemu-fault-patches/12-accelerator-device.md):
   a real QEMU/virtio GPU, TPU, and FPGA co-simulation device with lifecycle,
   result, memory/ECC, service, guest driver, workload, VMState, and live tests;
   existing virtio-gpu devices remain outside the capability because they lack
   the required closed compute-job/ECC contract, and no in-memory substitute is
   accepted.
-- [ ] **T-QEMU-0070** Implement
+- [x] **T-QEMU-0070** Implement
   [`crucible-fault-vmstate`](14-qemu-fault-patches/13-vmstate-and-final-gates.md):
   save/restore for all fault state, a cross-patch snapshot barrier, system
   evidence closure, rollback/revert-sensitive tests, inertness/performance gates,
   and final capability closure.
-- [ ] **T-QEMU-0071** Implement
+- [x] **T-QEMU-0071** Implement
   [`crucible-lifecycle-precondition`](14-qemu-fault-patches/22-lifecycle-precondition.md):
   bind lifecycle prepare and apply to one live VM-state digest, prove the
   production signal-driven process-exit path, and reject a changed precondition
   without requesting an exit.
-- [ ] **T-QEMU-0072** Implement
+- [x] **T-QEMU-0072** Implement
   [`crucible-typed-node-result-schema`](14-qemu-fault-patches/23-typed-node-result-schema.md):
   preserve the fixed typed-command result schema for every immediate node
   impulse, carry command-specific bytes only in authenticated occurrence events,
   encode prepare-only results as unchanged frozen state, retain correlation
   through repeated composite-target preparation records, and prove the
   production host validates both channels independently.
-- [ ] **T-QEMU-0073** Implement
+- [x] **T-QEMU-0073** Implement
   [`crucible-device-wait-vmstop`](14-qemu-fault-patches/24-device-wait-vmstop.md):
   admit exact checkpoint stops from drained device callbacks without blocking
   an I/O thread, reject unsafe callback and runstate contexts, and prove QMP
   observes the native paused state before checkpoint capture.
-- [ ] **T-QEMU-0074** Implement
+- [x] **T-QEMU-0074** Implement
   [`crucible-arm-accelerator-result-opportunities`](14-qemu-fault-patches/25-accelerator-result-opportunity.md):
   retain bounded one-shot accelerator result mutations until one exact job
   opportunity consumes them, checkpoint their authenticated request and event
   reservations, and publish canonical deferred typed results exactly once.
-- [ ] **T-QEMU-0075** Implement
+- [x] **T-QEMU-0075** Implement
   [`crucible-restore-authenticated-fault-event-requests`](14-qemu-fault-patches/26-authenticated-event-request-envelope.md):
   make every occurrence event self-contained with its authenticated original
   request, reconstruct fresh-process state without a plugin-private cache, and
   bind accelerator events to the exact selected job sequence and opportunity.
-- [ ] **T-QEMU-0076** Implement
+- [x] **T-QEMU-0076** Implement
   [`crucible-9p-completion-wake-registration`](14-qemu-fault-patches/27-9p-completion-wake-registration.md):
   register completion wakes at device realization, prove both plugin/device
   installation orders, and exercise an event-driven completion after
   fresh-process restore without polling.
-- [ ] **T-QEMU-0077** Implement
+- [x] **T-QEMU-0077** Implement
   [`crucible-serialize-rr-cursor`](14-qemu-fault-patches/28-serialized-rr-cursor.md):
   account an authoritative cursor across host ceilings, serialize it with
   icount VMState, restore the selected vCPU before guest execution, and prove a
   nonzero intra-turn multi-vCPU checkpoint fingerprint matches in a fresh QEMU
   process.
-- [ ] **T-QEMU-0060** Implement
+- [x] **T-QEMU-0078** Implement
+  [`crucible-fingerprint-state-domains`](14-qemu-fault-patches/29-fingerprint-state-domains.md):
+  fingerprint guest-semantic CPU and interrupt state only, preserve live
+  interrupt delivery state while sampling it under the BQL, canonicalize each
+  target's transient scheduler exits explicitly, and prove a changed replay
+  cursor is rejected through the production restore-admission path.
+- [x] **T-QEMU-0079** Implement
+  [`crucible-stopped-state-control-progress`](14-qemu-fault-patches/30-stopped-state-control-progress.md):
+  close the native-stop lost-wake window with level-triggered stop/unplug and
+  all-vCPU queued-work checks, bound the BQL-aware wait without advancing guest
+  time, and prove a fresh-process exact restore completes while guest execution
+  remains paused.
+- [x] **T-QEMU-0080** Implement
+  [`crucible-inactive-retention-clock-guard`](14-qemu-fault-patches/31-inactive-retention-clock-guard.md):
+  admit active memory-retention work before sampling virtual time, keep the
+  inactive domain side-effect free during fresh-process restore, and prove the
+  restored pending command continues exactly once without a memory rule.
+- [x] **T-QEMU-0081** Implement
+  [`crucible-deferred-result-evidence-test`](14-qemu-fault-patches/32-deferred-result-evidence-test.md):
+  validate canonical typed node-result evidence for every deferred instruction
+  completion, including the exact payload selected by composed commands.
+- [x] **T-QEMU-0060** Implement
   [`crucible-block-typed-errors`](14-qemu-fault-patches/14-block-typed-errors.md):
   the closed block result ABI, exact Linux errno translation, malformed-result
   rejection, and live guest-visible error tests.
-- [ ] **T-QEMU-0061** Implement
+- [x] **T-QEMU-0061** Implement
   [`crucible-block-discard`](14-qemu-fault-patches/15-block-discard.md):
   payload-free discard transport, closed readback policies, deterministic
   persistence composition, and live discard tests.
-- [ ] **T-QEMU-0062** Implement
+- [x] **T-QEMU-0062** Implement
   [`crucible-block-transport-reset`](14-qemu-fault-patches/16-block-transport-reset.md):
   epoch-scoped reset, recovery admission, every outstanding-request policy,
   duplicate history, VMState, and declared topology re-enumeration.
-- [ ] **T-QEMU-0063** Implement
+- [x] **T-QEMU-0063** Implement
   [`crucible-plugin-vmstop`](14-qemu-fault-patches/17-plugin-vmstop.md): an exact
   plugin-boundary handoff into QEMU's native paused runstate, fail-closed mode
   validation, capture/restore cleanup, and diskless plus dirty-cache live gates.
-- [ ] **T-QEMU-0064** Implement
+- [x] **T-QEMU-0064** Implement
   [`crucible-terminal-lifecycle-completion`](14-qemu-fault-patches/18-terminal-lifecycle-completion.md):
   publish a two-phase authenticated lifecycle occurrence at the exact stopped
   boundary, require a separate QMP authorization before process exit, and make
   retries idempotent without resuming guest execution.
-- [ ] **T-QEMU-0065** Implement
+- [x] **T-QEMU-0065** Implement
   [`crucible-authenticated-terminal-lifecycle`](14-qemu-fault-patches/19-authenticated-terminal-lifecycle.md):
   bind terminal authorization to the action, occurrence evidence, and process
   generation with a dedicated QAPI command, rejecting stale, mismatched, or
   replayed authorizations fail-closed.
-- [ ] **T-QEMU-0066** Implement
+- [x] **T-QEMU-0066** Implement
   [`crucible-immutable-process-generation`](14-qemu-fault-patches/20-immutable-process-generation.md):
   provision a nonzero immutable process generation before plugin command
   admission, include it in terminal authorization and VMState identity, and
   reject launch or restore generation mismatches.
-- [ ] **T-QEMU-LICENSE** Land every numbered patch as a separate DCO-signed
+- [x] **T-QEMU-LICENSE** Land every numbered patch as a separate DCO-signed
   commit, retain applicable upstream notices, update the series/catalog/license
   inventories, preserve the public shared-memory process boundary, and ship the
   identity-matched complete corresponding source required by
@@ -377,29 +398,29 @@ produce live patched-QEMU architectural or device evidence.
 
 ## 7.8 Specification-only domain guard
 
-- [ ] **T-SPEC-1** Keep sensor truth/observation, sensor samples, IoT buses,
+- [x] **T-SPEC-1** Keep sensor truth/observation, sensor samples, IoT buses,
   actuators, power devices, batteries, and thermal/cooling devices documented in
   the taxonomy and examples only.
-- [ ] **T-SPEC-2** Add negative schema tests proving every specification-only
+- [x] **T-SPEC-2** Add negative schema tests proving every specification-only
   target and effect is rejected as unknown, plus source guards proving no
   placeholder runtime type or capability ID exists.
-- [ ] **T-SPEC-3** Document the rule for a later implementation: its RFC and PR
+- [x] **T-SPEC-3** Document the rule for a later implementation: its RFC and PR
   must add the entire domain adapter, all selected effects, live capabilities,
   state/replay/search support, exhaustive reference, and gates atomically.
 
 ## 7.9 Documentation and operability workstream
 
-- [ ] **T-DOC-1** Generate the user reference from closed registries for every
+- [x] **T-DOC-1** Generate the user reference from closed registries for every
   signal source/operator, mapping, selector, opportunity, network/storage/node
   effect, field, unit, default, composition rule, capability, and example.
-- [ ] **T-DOC-2** Add beginner and advanced examples for static faults, recorded
+- [x] **T-DOC-2** Add beginner and advanced examples for static faults, recorded
   traces, city mobility, shared interference, routed failure domains, satellite
   contact, storage durability, memory corruption, clock drift, and correlated
   rack power/vibration causes.
-- [ ] **T-DOC-3** Add CLI inspection for signal graphs, trace provenance,
+- [x] **T-DOC-3** Add CLI inspection for signal graphs, trace provenance,
   capabilities, fault-domain fan-out, opportunity/effect records, checkpoint
   dependencies, replay divergence, and sensitive export closure.
-- [ ] **T-DOC-4** Publish a breaking migration guide showing how to rewrite old
+- [x] **T-DOC-4** Publish a breaking migration guide showing how to rewrite old
   scenarios. It is documentation only; no runtime migration parser is retained.
 
 ## 7.10 Per-kind completeness matrix

@@ -18,6 +18,7 @@
     accelerator = "sim,thread=single";
     cadence = 65536;
     detIpiProbe = true;
+    requireRrSwitchEvents = false;
     requireGuestPass = false;
     stopAt = 4194304;
     memoryMib = 128;
@@ -131,6 +132,7 @@ in
             require_line "$s11_result" "rr_switch_quantum=4096"
             require_line "$s11_result" "run_horizon=plugin-stop_at-4194304"
             require_line "$s11_result" "det_ipi_probe=enabled"
+            require_line "$s11_result" "rr_cursor_assertion=valid_boot_prefix_snapshot"
             require_line "$s11_result" "extended_fingerprint_match=true"
             require_line "$s11_result" "aggregate_icount_stream_match=true"
             require_line "$s11_result" "rr_switch_trace_match=true"
@@ -212,6 +214,7 @@ in
             deterministic_ipi_event_count_match=true
             deterministic_ipi_delivery_icount_trace_match=true
             deterministic_ipi_source_target_distinct=true
+            rr_handoff_proof_scope=canonical-long-horizon-s11
             sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(accelerator=sim,thread=single,stop_at=4194304,det_ipi_probe=enabled)
             patched_fixture_exercised=true
             stock_negative_control=true

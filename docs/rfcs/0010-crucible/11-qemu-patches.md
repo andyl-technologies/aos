@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **69 patches**. This count is checked against
+The carried series contains **76 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -207,6 +207,11 @@ PLUGIN TIME CONTROL (API surface)                      class  enforces
   crucible-plugin-wake-fd ....... main-loop wake-fd          F    SHM-26, INV-8
   crucible-plugin-tcg-exec-cb ... TCG-exec callback          F    coverage, INV-7
   crucible-plugin-vmstop ........ exact boundary to native pause D  DET-1, INV-10, QEMU-43
+  crucible-serialize-rr-cursor .. authoritative RR cursor VMState D  DET-1, DET-18, INV-10
+  crucible-fingerprint-state-domains guest-only state domains D  DET-18, DET-19, INV-10
+  crucible-stopped-state-control-progress bounded native-stop wake D  DET-1, INV-10, QEMU-43
+  crucible-inactive-retention-clock-guard active-rule-before-clock D  DET-1, QFP-STATE-2, FAULT-ORDER
+  crucible-deferred-result-evidence-test typed deferred evidence coverage F  QEMU-44, FAULT-EVIDENCE
 
 DEVICE CO-SIM (shmem transport)                        class  enforces
   crucible-blk-shmem ............ virtio-blk over shmem      F    PATCH-26, DET-16, E19, SHM-13
@@ -1103,6 +1108,91 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   Crucible pending PDU, so the registered notifier observes no work and leaves
   upstream device behavior unchanged when sim forwarding is not installed.
 - **Risk:** D.
+
+### crucible-serialize-rr-cursor — restore the exact multi-vCPU continuation
+
+- **Patch:** `0077-crucible-serialize-rr-cursor.patch`.
+- **Enforces:** [DET-1], [DET-18], [INV-10].
+- **Mechanism:** maintains one authoritative record/replay cursor across normal
+  round-robin handoffs and host execution ceilings, serializes that cursor with
+  icount VMState, and restores the selected vCPU and intra-turn position before
+  any guest instruction can execute. The VMState section has one supported
+  version; there is no compatibility reader for the earlier incomplete layout.
+- **Micro-test:** checkpoints a nonzero intra-turn cursor in a multi-vCPU guest,
+  restores it in a fresh QEMU process, and requires the restored register, RAM,
+  device, icount, and cursor fingerprint plus the subsequent replay suffix to
+  match exactly. A control that changes only the serialized cursor must fail the
+  production restore-admission comparison.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — the state is consumed only by
+  precise-icount sim execution and migration/checkpoint operations.
+- **Risk:** D.
+
+### crucible-fingerprint-state-domains — hash guest-semantic state only
+
+- **Patch:** `0078-crucible-fingerprint-guest-state-domains.patch`.
+- **Enforces:** [DET-18], [DET-19], [INV-10].
+- **Mechanism:** samples live interrupt state under the BQL without mutating it,
+  includes guest-delivery-relevant interrupt bits and all declared architectural
+  CPU state, and excludes only target-declared transient scheduler-exit bits.
+  x86 canonicalizes `CPU_INTERRUPT_POLL`; the generic target layer canonicalizes
+  `CPU_INTERRUPT_EXITTB`. Every other interrupt bit remains fingerprinted.
+- **Micro-test:** proves repeated capture is side-effect-free, a fresh-process
+  restore produces the same fingerprint before guest execution, guest-visible
+  interrupt changes alter the digest, and transient host scheduling exits do
+  not. The changed-cursor negative control is recomputed through the same
+  canonical black-box fingerprint and rejected by the production runtime.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — the helpers are additive and run
+  only when the Crucible plugin requests an exact fingerprint boundary.
+- **Risk:** D.
+
+### crucible-stopped-state-control-progress — close native-stop wake races
+
+- **Patch:** `0079-crucible-stopped-state-control-progress.patch`.
+- **Enforces:** [DET-1], [INV-10], [QEMU-43].
+- **Mechanism:** after the serialized RR thread drains host work for every vCPU,
+  it rechecks both stop/unplug state and queued vCPU work under the BQL before
+  sleeping. It uses a one-millisecond bounded BQL-aware condition wait so a
+  non-BQL producer racing with the recheck cannot strand the native VM-stop
+  handshake if its condition signal arrived just before the sleep.
+- **Micro-test:** requires all three progress guards in the isolated patch,
+  proves pristine QEMU lacks them, and consumes the fresh-process exact-snapshot
+  gate where the plugin must publish state while the VM remains paused and QEMU
+  must finish the native stop/restore control handshake without executing guest
+  instructions.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — the loop is entered only while a
+  Crucible exact-boundary VM-stop request is pending in precise-icount sim mode.
+- **Risk:** D.
+
+### crucible-inactive-retention-clock-guard — admit work before reading time
+
+- **Patch:** `0080-crucible-inactive-retention-clock-guard.patch`.
+- **Enforces:** [DET-1], [QFP-STATE-2], [FAULT-ORDER].
+- **Mechanism:** `node_memory_retention_boundary()` rejects an inactive memory
+  fault domain before it samples QEMU virtual time. Active retention work keeps
+  the existing clock, deadline, counter, mutation, and event ordering.
+- **Micro-test:** checkpoints a pending node-boundary command, restores it into
+  a fresh paused QEMU process with no memory fault rule, and requires the command
+  to continue exactly once. Static assertions require the active-rule guard to
+  precede `node_virtual_now()`, and the live memory gates remain the positive
+  control for active retention timing.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — inactive domains now return before
+  a clock read; active-domain behavior is unchanged.
+- **Risk:** D.
+
+### crucible-deferred-result-evidence-test — validate typed deferred results
+
+- **Patch:** `0081-crucible-deferred-result-evidence-test.patch`.
+- **Enforces:** [QEMU-44], [FAULT-EVIDENCE].
+- **Mechanism:** updates the GPL-side live instruction plugin to validate the
+  canonical typed node-result evidence added to deferred completions by patch
+  0074. Composed commands select the payload bound to their exact command
+  sequence before checking the request and evidence digests.
+- **Micro-test:** runs the complete patched-QEMU instruction-fault matrix and
+  retains its stock-QEMU and non-sim negative controls. The patch-local check
+  requires the obsolete empty-evidence assertion to be removed by the diff.
+- **Inertness:** [PATCH-3](a) — this changes test code only and adds no runtime
+  path.
+- **Risk:** F.
 
 ### crucible-whitebox-guest-write — return synchronous doorbell replies
 

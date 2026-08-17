@@ -211,7 +211,7 @@
     failuresFor "pkgs/emulation/qemu.nix" qemuNix (
       map (name: {
         label = "QEMU patch wiring for ${name}";
-        needle = "patch -p1 < \${./qemu-patches/${name}}";
+        needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
       })
       tPatch12PatchNames
     )

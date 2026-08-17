@@ -887,19 +887,22 @@ impl SimulationBackend for QemuNodeSet {
             if observation.reached == ceiling {
                 return Ok(observation);
             }
-            if let crucible::AdvanceOutcome::Paused { .. } = observation.outcome {
-                let idle = backend.idle_state().map_err(BackendError::from)?;
-                if let Some(deadline) = idle.next_deadline {
-                    if deadline.retired > ceiling.ticks {
-                        observation.reached = ceiling;
-                        return Ok(observation);
-                    }
-                    // A delivery-capped quantum can stop exactly where an idle
-                    // timer is also due. Both causes are within the original
-                    // scheduler horizon, so resume through a fresh quantum.
-                    // The monotone-progress check below still rejects a plugin
-                    // that reports the same reachable deadline twice.
-                }
+            if let crucible::AdvanceOutcome::Paused { .. } = observation.outcome
+                && let Some(deadline) = backend
+                    .idle_state()
+                    .map_err(BackendError::from)?
+                    .next_deadline
+                && deadline.retired > ceiling.ticks
+            {
+                observation.reached = ceiling;
+                return Ok(observation);
+            }
+            if matches!(observation.outcome, crucible::AdvanceOutcome::Paused { .. }) {
+                // A delivery-capped quantum can stop exactly where an idle
+                // timer is also due. Both causes are within the original
+                // scheduler horizon, so resume through a fresh quantum.
+                // The monotone-progress check below still rejects a plugin
+                // that reports the same reachable deadline twice.
                 // An inbound frame already staged in the shared-memory ring can
                 // likewise cap a running (non-idle) quantum. The hot path drains
                 // it before returning; issue a fresh quantum for the remainder.

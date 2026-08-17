@@ -1583,16 +1583,17 @@ register.
   - **Result:** `target_guest=stock_linux_initramfs`,
     `qemu_accel=sim_tcg_thread_single`, `icount=shift0_sleep_off_align_off`,
     `workload_block_reads=32`, `workload_9p_reads=32`,
-    `block_outstanding_wait_source=qemu_block_read_throttle_iops_20`,
+    `block_completion_mode=bounded_inline_or_hlt_idle`,
     `ninep_outstanding_wait_source=qemu_9p_read_throttle_iops_20`,
-    `idle_threshold_ppm=900000`, `block_idle_fraction_requirement=ge_900000`,
-    `block_busy_poll_fraction_requirement=le_100000`,
-    `block_idled_operations=31..32`, `block_busy_polled_operations=0..1`,
-    `block_idle_fraction_ppm=968750..1000000`,
+    `idle_threshold_ppm=900000`, `block_inline_instruction_requirement=le_20000`,
+    `block_idled_operations+block_inline_operations=32`,
+    `block_busy_polled_operations=0`,
     `block_operations_with_io_events=32`, `block_operations_without_io_events=0`,
+    `block_inline_max_instructions<=20000`,
     `block_busy_poll_instruction_distribution=empty`,
-    `block_hlt_observed=true`, `block_io_events_observed_per_operation=true`,
-    `block_idle_threshold_met=true`,
+    `block_hlt_required=false_but_permitted`,
+    `block_io_events_observed_per_operation=true`,
+    `block_inline_completion_bounded=true`,
     `ninep_idle_fraction_requirement=ge_900000`,
     `ninep_busy_poll_fraction_requirement=le_100000`,
     `ninep_idled_operations=32`, `ninep_busy_polled_operations=0`,
@@ -1602,15 +1603,18 @@ register.
     `ninep_hlt_observed=true`, `ninep_io_events_observed_per_operation=true`,
     `ninep_idle_threshold_met=true`, `fallback_adopted=false`,
     `correctness_dependency=none_busy_poll_remains_bit_correct`,
-    `busy_poll_mitigation_decision=not_needed_for_measured_delayed_sync_read_path`,
+    `busy_poll_mitigation_decision=not_needed_for_measured_inline_block_and_delayed_9p_paths`,
     `s2_complete=true`.
   - **Scope:** validates the Phase-0 S2 measurement path for one stock Linux
-    kernel plus initramfs under TCG/icount with QEMU-throttled virtio-block and
-    QEMU-throttled virtio-9p reads. The throttles create an outstanding device
-    completion interval, the guest workload completes all 64 reads and prints
+    kernel plus initramfs under TCG/icount with deterministic-inline
+    virtio-block and QEMU-throttled virtio-9p reads. The 9p throttle creates an
+    outstanding device completion interval; the block path must complete within
+    a fixed 20,000-instruction bound or is classified as busy polling. The guest
+    workload completes all 64 reads and prints
     `TEST_RESULT:PASS`, and the plugin verifies every bracketed operation
     included device I/O events before the idle/busy classification is accepted.
-  - **Fallback:** none adopted for the measured delayed synchronous read path;
+  - **Fallback:** none adopted for the measured bounded-inline block and delayed
+    synchronous 9p paths;
     the exactness-preserving busy-poll fast-forward of [IO-30] remains the
     specified fallback if a future target path commonly busy-polls.
 
@@ -2140,7 +2144,7 @@ register.
     `rr_switch_quantum=4096`, `cadence=100000000`,
     `horizon_icount=4000000000`, `periodic_samples_expected=40`,
     `periodic_samples_observed=40`, `samples=41`,
-    `rr_switch_events=389751`, `workload_affinity_active=true`,
+    `rr_switch_events=731765`, `workload_affinity_active=true`,
     `workload_affinity_vcpus=0,1,2,3`, `sustained_workload_active=true`,
     `extended_fingerprint_match=true`, `aggregate_icount_stream_match=true`,
     `rr_switch_trace_match=true`, `per_vcpu_delta_trace_match=true`,

@@ -218,16 +218,14 @@ pub struct MaterializedState {
     /// The authoritative scheduler state (08), without which a resume could
     /// not reproduce cross-node ordering: per-node horizons, the pending
     /// shared-memory frame queues with their delivery icounts, the timer
-    /// registry, the set of active faults, and the active tag-to-fault binding
-    /// used by tag-based heal. This is the state that 05 [EXEC-13] insists
+    /// registry, and the complete signal/binding execution checkpoint. This is
+    /// the state that 05 [EXEC-13] insists
     /// lives *inside* the configuration, not in ephemeral process memory.
     pub scheduler: SchedulerState {
         horizons: BTreeMap<NodeId, VirtualTime>,
         pending_frames: BTreeMap<NodeId, Vec<PendingFrame>>, // delivery icount + payload ref (13)
         timers: TimerRegistry,                               // armed timers, fire icounts (08, 09)
-        active_faults: BTreeMap<FaultTag, FaultState>,       // in-effect faults + heal points (17)
-        active_fault_tags: BTreeMap<FaultTag, MembershipFault>, // heal tags + current binding (17)
-        active_fault_table: ActiveFaultTable,                // directed edge/node/device lookup table (17)
+        fault_runtime: FaultRuntimeCheckpoint, // evaluator, binding, adapter, replay, and effect state (17)
     },
 
     /// The harness decision-RNG state: the position of every seeded per-entity

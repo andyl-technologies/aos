@@ -41,19 +41,19 @@
     failuresFor "pkgs/emulation/qemu.nix" qemuNix [
       {
         label = "plugin time advance patch wiring";
-        needle = "patch -p1 < \${./qemu-patches/0010-crucible-plugin-time-advance.patch}";
+        needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
       }
       {
         label = "time advance commit barrier patch wiring";
-        needle = "patch -p1 < \${./qemu-patches/0043-crucible-time-advance-commit-barrier.patch}";
+        needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
       }
       {
         label = "time advance enqueue kick patch wiring";
-        needle = "patch -p1 < \${./qemu-patches/0044-crucible-time-advance-enqueue-kick.patch}";
+        needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
       }
       {
         label = "time advance vCPU-boundary arm patch wiring";
-        needle = "patch -p1 < \${./qemu-patches/0045-crucible-time-advance-arm-at-vcpu-boundary.patch}";
+        needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
       }
     ]
     ++ failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [

@@ -227,7 +227,7 @@
       }
       {
         label = "dense sequence assertion";
-        needle = "vec![0, 1, 2, 3, 4, 5]";
+        needle = "vec![0, 1, 2, 3]";
       }
       {
         label = "segment assertion";
