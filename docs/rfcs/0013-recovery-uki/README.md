@@ -7,8 +7,7 @@
   `pkgs/boot/aos-uki.nix`, the APM system-image lifecycle, and Secure
   Boot/measured-boot fleet tests.
 - **Relates to:** [RFC-0006](../0006-secure-boot/README.md),
-  [RFC-0011](../0011-on-host-config-eval/README.md), and the recovery/security
-  findings in [PR #133](https://github.com/andyl-technologies/aos/pull/133).
+  [RFC-0011](../0011-on-host-config-eval/README.md).
 - **Plan:** [`implementation.md`](implementation.md)
 
 ## Summary
@@ -33,8 +32,8 @@ encrypted persistent state or an unrestricted maintenance shell requires the
 off-machine LUKS recovery key. The recovery UKI carries no normal signed PCR-11
 authorization, does not start `aos-var-crypt`, and cannot auto-unseal `/var`.
 
-This RFC also carries forward three security fixes identified by PR #133 that
-remain applicable to the current A/B design:
+This RFC also includes three security fixes that remain applicable to the
+current A/B design:
 
 1. reject ambiguous boot-identity command-line fields before verity assembly,
    root mounting, or TPM unlock;
@@ -43,8 +42,8 @@ remain applicable to the current A/B design:
 3. replace the current no-op root-lock test with posture-aware assertions and
    negative fleet coverage.
 
-This RFC does **not** adopt PR #133's single-ESP installer, ESP-resident
-`rootfs.bin`, or first-boot `CopyBlocks=` design. Those ideas conflict with the
+This RFC does **not** adopt a single-ESP installer, ESP-resident `rootfs.bin`,
+or first-boot root `CopyBlocks=` design. Those ideas conflict with the
 implemented A/B image lifecycle and RFC-0011's authenticated, host-driven
 storage provisioning boundary.
 
@@ -84,13 +83,14 @@ Four gaps remain:
    root slots. Recovery from a failed candidate depends on automatic fallback,
    a still-bootable normal slot, or external rescue media.
 
-## PR #133 security accounting
+## Security work accounting
 
-PR #133 combined an obsolete installer layout with several independent
-hardening observations. This RFC accounts for each security-relevant item so
-closing the installer proposal does not lose valid work:
+An earlier single-ESP installer design combined its obsolete layout with
+several independent hardening observations. This RFC accounts for each
+security-relevant item so rejecting that installer layout does not lose valid
+work:
 
-| PR #133 item | Current disposition |
+| Security item | Current disposition |
 | --- | --- |
 | Root hash in the signed UKI command line | Already implemented by RFC-0011; retained unchanged |
 | Stable ESP partlabel | Already implemented as `/dev/disk/by-partlabel/ESP` |
@@ -214,11 +214,12 @@ inactive-slot update.
 
 ## Why separate UKIs instead of UKI profiles
 
-PR #133 proposed a recovery profile joined into the install UKI. Profiles save
-duplicated kernel bytes, but they couple recovery selection to the lifecycle of
-the normal boot file. In the current implementation normal UKIs are renamed by
-sd-boot boot counting. A recovery profile selected from a counted candidate can
-consume the candidate's attempts or disappear when that candidate is replaced.
+The earlier installer design proposed a recovery profile joined into the
+install UKI. Profiles save duplicated kernel bytes, but they couple recovery
+selection to the lifecycle of the normal boot file. In the current
+implementation normal UKIs are renamed by sd-boot boot counting. A recovery
+profile selected from a counted candidate can consume the candidate's attempts
+or disappear when that candidate is replaced.
 
 Separate recovery UKIs provide stronger and simpler invariants:
 
