@@ -28,5 +28,6 @@ topic files.
 | [0010](0010-crucible/README.md) | 2026-06-18 | Crucible — a hermetically deterministic multi-VM simulation harness | Proposed (design-only) |
 | [0011](0011-on-host-config-eval/README.md) | 2026-06-25 | On-host, eval-only configuration — generations from downloaded Nix modules | Accepted; phased implementation plan and locked decisions |
 | [0012](0012-hub-surface-topology/README.md) | 2026-08-03 | AOS Hub surface topology — multiple placements, simultaneous delivery routes, and principled registry/cache relationships | Proposed; signed system-image distribution implemented and native/Worker E2E-tested |
+| [0013](0013-recovery-uki/README.md) | 2026-08-17 | A/B-aware signed recovery UKIs and initrd fail-closed hardening | Proposed — phased plan in [`implementation.md`](0013-recovery-uki/implementation.md) |
 
 Numbering is chronological by the date the design entered the tree.
