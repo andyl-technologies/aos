@@ -387,6 +387,11 @@ in {
       # its inputs, bypassing the disabled-maintainer-tool arguments below.
       touch configure
     '';
+    # The generated builtins have an undeclared executable-permission
+    # dependency in this release and race under a parallel first build.
+    buildScript = ''
+      make -j1
+    '';
     postInstall = ''
       [ -f "$out/bin/bash" ] && [ ! -f "$out/bin/sh" ] && ln -sf bash "$out/bin/sh"
     '';
