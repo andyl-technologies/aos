@@ -184,6 +184,9 @@ in {
       TPM2_PCRREAD = "${pkgs.tpm2-tools}/bin/tpm2_pcrread"
       VAR_POLICY_MIGRATE = "${pkgs.aos-var-policy-migrate}/bin/aos-var-policy-migrate"
       VARDEV = "/dev/disk/by-partlabel/var"
+      MOUNT = "${pkgs.util-linux}/bin/mount"
+      UMOUNT = "${pkgs.util-linux}/bin/umount"
+      BOOTCTL = "${pkgs.systemd}/bin/bootctl"
 
       def read_pcr12():
           output = target.succeed(f"{TPM2_PCRREAD} sha256:12")
@@ -1185,8 +1188,8 @@ in {
           dd if=/dev/disk/by-partlabel/root-a of=/dev/disk/by-partlabel/root-b bs=4M conv=fsync status=none
           dd if=/dev/disk/by-partlabel/root-a-hash of=/dev/disk/by-partlabel/root-b-hash bs=4M conv=fsync status=none
           mkdir -p /run/aos-uki-b-media
-          mount -t ext4 -o ro /dev/disk/by-label/aos-uki-b /run/aos-uki-b-media
-          mount -o remount,rw /boot
+          {MOUNT} -t ext4 -o ro /dev/disk/by-label/aos-uki-b /run/aos-uki-b-media
+          {MOUNT} -o remount,rw /boot
           cp /run/aos-uki-b-media/uki-b.efi /boot/EFI/Linux/{candidate_name}
           {JQ} --arg candidate "EFI/Linux/{candidate_name}" '
             .running as $running
@@ -1200,9 +1203,9 @@ in {
           ' /var/lib/profiles/image/state.json > /var/lib/profiles/image/.state.json.phase3-b
           mv /var/lib/profiles/image/.state.json.phase3-b /var/lib/profiles/image/state.json
           sync /var/lib/profiles/image
-          bootctl set-oneshot {candidate_name}
-          mount -o remount,ro /boot
-          umount /run/aos-uki-b-media
+          {BOOTCTL} set-oneshot {candidate_name}
+          {MOUNT} -o remount,ro /boot
+          {UMOUNT} /run/aos-uki-b-media
       """, timeout=300)
       target.reboot(timeout=600)
       wait_multi_user("boot4 (counted slot-B candidate)")
@@ -1224,11 +1227,11 @@ in {
       target.fail("journalctl -b -u aos-seed-profiles.service --no-pager | grep -F 'Failed'")
 
       target.succeed(f"""
-          mount -o remount,rw /boot
+          {MOUNT} -o remount,rw /boot
           ${pkgs.systemd}/lib/systemd/systemd-bless-boot --path=/boot good
-          bootctl set-default {stable_name}
+          {BOOTCTL} set-default {stable_name}
           test -e /boot/EFI/Linux/{stable_name}
-          mount -o remount,ro /boot
+          {MOUNT} -o remount,ro /boot
       """)
       assert read_pcr12() == clean_pcr12, "committing candidate changed PCR 12"
 
@@ -1252,9 +1255,9 @@ in {
           printf '%s' {image_state_a_encoded} | base64 -d > /var/lib/profiles/image/.state.json.phase3-a
           mv /var/lib/profiles/image/.state.json.phase3-a /var/lib/profiles/image/state.json
           sync /var/lib/profiles/image
-          mount -o remount,rw /boot
-          bootctl set-default {stable_a_name}
-          mount -o remount,ro /boot
+          {MOUNT} -o remount,rw /boot
+          {BOOTCTL} set-default {stable_a_name}
+          {MOUNT} -o remount,ro /boot
       """)
       target.reboot(timeout=600)
       wait_multi_user("boot7 (coherent slot-A state restored)")
@@ -1362,13 +1365,13 @@ in {
 
       # The same transport becomes malicious. Recovery must reject its changed
       # manifest before confirmation, key prompting, or any destination write.
-      target.succeed("""
+      target.succeed(f"""
           mkdir -p /run/aos-recovery-media
-          mount -t ext4 -o rw /dev/disk/by-label/AOS-RECOVERY /run/aos-recovery-media
+          {MOUNT} -t ext4 -o rw /dev/disk/by-label/AOS-RECOVERY /run/aos-recovery-media
           printf '\n' >> /run/aos-recovery-media/aos/recovery/recovery-bundle.json
           sync /run/aos-recovery-media
-          umount /run/aos-recovery-media
-          bootctl set-oneshot recovery-a.conf
+          {UMOUNT} /run/aos-recovery-media
+          {BOOTCTL} set-oneshot recovery-a.conf
           sync
       """)
       transcript = target.relaunch_with_smbios_oem_strings(
@@ -1418,12 +1421,12 @@ in {
       # modified PE was not executed.
       for copy in ["a", "b"]:
           target.succeed(f"""
-              mount -o remount,rw /boot
+              {MOUNT} -o remount,rw /boot
               cp /boot/EFI/AOS/recovery-{copy}.efi /var/recovery-{copy}.efi.qualified
               printf X | dd of=/boot/EFI/AOS/recovery-{copy}.efi bs=1 seek=4096 conv=notrunc
               sync /boot
-              mount -o remount,ro /boot
-              bootctl set-oneshot recovery-{copy}.conf
+              {MOUNT} -o remount,ro /boot
+              {BOOTCTL} set-oneshot recovery-{copy}.conf
               sync
           """)
           transcript = target.relaunch_with_smbios_oem_strings([], timeout=600)
@@ -1431,10 +1434,10 @@ in {
           assert "AOS signed recovery environment" not in transcript, transcript[-12000:]
           assert var_source() == "/dev/mapper/var"
           target.succeed(f"""
-              mount -o remount,rw /boot
+              {MOUNT} -o remount,rw /boot
               cp /var/recovery-{copy}.efi.qualified /boot/EFI/AOS/recovery-{copy}.efi
               sync /boot
-              mount -o remount,ro /boot
+              {MOUNT} -o remount,ro /boot
               rm -f /var/recovery-{copy}.efi.qualified
           """)
 
@@ -1444,13 +1447,13 @@ in {
       ).strip()
       target.succeed(f"""
           set -eu
-          mount -o remount,rw /boot
+          {MOUNT} -o remount,rw /boot
           cp /boot/EFI/Linux/{stable_name} /boot/EFI/Linux/aos-corrupt-slot-b+1.efi
           sync /boot
-          mount -o remount,ro /boot
+          {MOUNT} -o remount,ro /boot
           printf X | dd of=/dev/disk/by-partlabel/root-b bs=1 seek=4096 conv=notrunc
           sync /dev/disk/by-partlabel/root-b
-          bootctl set-oneshot aos-corrupt-slot-b+1.efi
+          {BOOTCTL} set-oneshot aos-corrupt-slot-b+1.efi
           sync
       """)
       transcript = target.relaunch_with_smbios_oem_strings(
