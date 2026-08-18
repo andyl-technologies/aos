@@ -1244,6 +1244,31 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   VMState authoritative; active fault behavior is unchanged.
 - **Risk:** D.
 
+### crucible-exact-restore-network-announcement — keep restored traffic exact
+
+- **Patch:** `0084-crucible-exact-restore-network-announcement.patch`.
+- **Enforces:** [DET-1], [QFP-STATE-2], [FAULT-ORDER].
+- **Mechanism:** exposes whether the central VMState deserialization transaction
+  is inside a Crucible exact restore. During that transaction only,
+  `virtio_net_post_load_device` deletes and clears the migration announcement
+  timer instead of synthesizing guest-announcement traffic. A Crucible restore
+  returns to the same modeled link and peer population, so a migration-only
+  announcement would be an unrecorded frame absent from uninterrupted
+  execution. The ordinary QEMU migration branch retains the upstream timer
+  reset, immediate scheduling, and deletion behavior byte for byte.
+- **Micro-test:** the production two-node live-network world captures an exact
+  checkpoint after establishing its deterministic route, terminates both QEMU
+  processes, restores both nodes into fresh processes, and requires the first
+  restored quantum and the remaining packet exchange to match the uninterrupted
+  branch exactly. The per-patch catalog reconstructs the QEMU prefix before
+  0084 as the negative control, applies 0084 with zero fuzz, and binds the live
+  result to this patch entry.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — the new predicate is read only
+  during virtio-net post-load, and the changed branch is reachable only while
+  Crucible's central exact-load transaction is active. Ordinary migration and
+  non-restore execution retain upstream behavior.
+- **Risk:** D.
+
 ### crucible-whitebox-guest-write — return synchronous doorbell replies
 
 - **Enforces:** [PLUG-34], [PLUG-51], [GHC-32], [GHC-37].

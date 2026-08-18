@@ -580,6 +580,13 @@
       enforces = "DET-1,QFP-CLOCK-2,QFP-STATE-2";
       capability = "fresh-process restore retains QEMU-native timer state for inactive guest clocks while rearming only clocks with an effective Crucible transform";
     }
+    {
+      file = "0084-crucible-exact-restore-network-announcement.patch";
+      catalogName = "crucible-exact-restore-network-announcement";
+      class = "D";
+      enforces = "DET-1,QFP-STATE-2,FAULT-ORDER";
+      capability = "exact Crucible restore suppresses migration-only virtio-net guest announcements without changing ordinary migration behavior";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
