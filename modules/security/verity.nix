@@ -130,6 +130,11 @@ in {
       wants = ["systemd-udev-settle.service"];
       after = [
         "aos-boot-identity-guard.service"
+        # The first-boot storage transaction must finish its partition-table
+        # rescan before verity opens root-a. Holding a partition from the disk
+        # while systemd-repart applies the remaining layout can leave the
+        # rescan blocked after the on-disk update has completed.
+        "aos-repart.service"
         "systemd-udev-settle.service"
       ];
       postStart = ''
