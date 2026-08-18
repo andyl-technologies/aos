@@ -334,6 +334,7 @@ in {
           "rescue.target"
         ];
       validateBootIdentity = config.aos.security.verity.enable;
+      keepBinutils = config.aos.boot.recovery.enable;
     };
   };
 }

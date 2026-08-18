@@ -34,6 +34,8 @@
 ##!                   systemd-networkd `.network` files (from the typed
 ##!                   `boot.initrd.systemd.network` tree); copied into
 ##!                   /etc/systemd/network/. Null/absent ⇒ no networkd config.
+##!   keepBinutils — retain current binutils for signed UKI section inspection
+##!                  in recovery-enabled normal initrds.
 ##!
 ##! Output: $out/initrd.img (zstd-compressed newc cpio archive)
 {
@@ -46,6 +48,7 @@
   initrdNetworkDir ? null,
   maskedUnits ? [],
   validateBootIdentity ? false,
+  keepBinutils ? false,
 }: let
   inherit
     (pkgs)
@@ -738,13 +741,15 @@ in
                  root/nix/store/*-binutils-2.20* \
                  root/nix/store/*-binutils-2.25* \
                  root/nix/store/*-binutils-2.30* \
-                 root/nix/store/*-binutils-2.41* \
                  root/nix/store/*-glibc-2.12 \
                  root/nix/store/*-glibc-2.2.5 \
                  root/nix/store/*-coreutils-8.32 \
                  root/nix/store/*-bash-4.2 \
                  root/nix/store/*-linux-headers-2.6.* \
                  root/nix/store/*-source
+          ${lib.optionalString (!keepBinutils) ''
+            rm -rf root/nix/store/*-binutils-2.41*
+          ''}
 
           # util-linux: man pages, zsh completion, etc.
           find root/nix/store -maxdepth 2 -type d -name '*-util-linux-*' -print0 \
