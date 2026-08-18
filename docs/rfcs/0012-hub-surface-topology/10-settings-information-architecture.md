@@ -2,8 +2,8 @@
 
 This document defines one settings system for instance administration,
 organizations, registries, and binary caches. It preserves the current visual
-language—paper-like content, thin rules, compact chips, plain forms, dense
-legible tables, and no-JS operation—but replaces inconsistent navigation,
+language—paper-like content, thin rules, compact chips, plain forms, and dense
+legible tables—but replaces inconsistent navigation,
 overloaded panels, and hidden topology relationships.
 
 ## Problems in the current UI
@@ -44,7 +44,8 @@ scope header
   concise purpose or canonical URL
 
 settings workspace
-  sectioned left nav | page header + summary strip     | optional context rail
+  sectioned left nav | page heading
+                       optional topology disclosure
                        primary content
                        secondary/advanced sections
 ```
@@ -63,23 +64,45 @@ It contains:
 - a View surface / Exit settings link for registries and caches.
 
 The header does not repeat the selected navigation label. The page body begins
-with the selected page's `<h1>` and one sentence explaining its responsibility.
+with the selected page's `<h1>`. Secondary explanations belong on the shared
+attached-help `?` affordance beside the concept they explain, not in a repeated
+scope/workflow subtitle or introductory paragraph. Empty states, warnings,
+integrity guarantees, and destructive-action constraints remain visible
+because they affect the operator's immediate decision.
 
-### Three-column behavior
+### Shared visual primitives
 
-The default wide layout is:
+The management application does not define a second visual system. Its shell
+loads the same first-party stylesheet and progressive-enhancement script as the
+public browse, login, and account pages. It renders the existing `masthead`,
+`settings`, `settings-nav`, `settings-body`, `button`, form-control, table,
+badge, attached-help, statline footer, and optional legal-link primitives
+directly. Its content-addressed supplemental
+stylesheet may lay out workflow-specific structures, but it must not redefine
+theme tokens, typography, page chrome, controls, focus treatment, elevation, or
+responsive navigation.
+
+Canonical links between management pages are client-side history transitions.
+The application intercepts an unmodified primary click only when the target is
+recognized by the closed route registry, updates `history.pushState`, and
+rerenders the selected workflow without replacing the document. Modified
+clicks, external links, downloads, account/authentication ceremonies, and
+public browse links retain ordinary browser navigation. Back and Forward are
+driven by `popstate` and resolve through the same closed registry.
+
+The default wide layout is the established settings layout:
 
 ```text
-220px navigation | minmax(0, 1fr) primary content | 260px context rail
+12rem navigation | minmax(0, 1fr) primary content
 ```
 
-The context rail is optional. It holds topology context, health, documentation,
-or impact summaries—not essential form fields. Pages without rail content let
-the primary column use the available width.
+Topology context is an optional ruled disclosure in the primary content. It
+holds relationship links and impact summaries, never essential form fields.
+Keeping it in the established two-column settings grid preserves the same page
+measure and rhythm as existing Hub settings pages.
 
-At medium widths the rail moves below the primary content. At narrow widths the
-navigation becomes a horizontally scrollable section bar followed by the page
-content. Navigation order and labels do not change responsively.
+At narrow widths the existing settings disclosure places navigation above the
+page content. Navigation order and labels do not change responsively.
 
 Tables and topology diagrams may use a full-width breakout within the content
 column. Forms retain a readable measure rather than stretching every input to
@@ -259,6 +282,16 @@ writes blocked · authority or binding revision is not effectively writable
 default · used when no binding is selected
 ```
 
+## Global inventories
+
+`/-/orgs` is the organization directory and `/-/caches` is the global binary-
+cache directory. The cache directory lists every cache readable by the current
+caller by invoking `BinaryCacheService.ListBinaryCaches` without an owner-scope
+filter. Organization-owned rows link to `/-/org/<org>/caches/<cache>` and
+instance-owned standalone rows link to `/-/caches/<cache>`; both roots expose
+the same cache settings pages. These are canonical application routes, not
+compatibility aliases.
+
 ## Organization settings
 
 The organization is the ownership and infrastructure boundary. It owns
@@ -289,6 +322,7 @@ Access & trust
   Members
   SSO
   Signing keys
+  Access tokens
 
 Automation
   Webhooks
@@ -429,11 +463,27 @@ invitation gets a dedicated workflow rather than a large form below the member
 table. Signing-key usage shows which registries, caches, and channel purposes
 pin each immutable generation before rotation or retirement.
 
+SSO is itself split into two related resources. The organization owns one
+redacted OIDC identity-provider configuration and any number of globally unique
+email-domain claims. Provider credentials are sealed before immutable plan
+persistence. Domain verification resolves the exact reviewed TXT challenge;
+there is no operator-only database stamp or alternate verification path. Both
+resources use exact revision plan/apply mutations in the Web UI, CLI, and API.
+
 ### Operations and audit
 
 Operations is live/asynchronous work with progress and retry. Audit log is the
 immutable record of completed and attempted control-plane changes. They are
 adjacent but not combined.
+
+The Operations page is one uniform scope-closure view at instance,
+organization, registry, and cache levels. It resolves the page locator to an
+immutable authorization scope, lists all descendant-owned operations, and
+filters by the closed operation-state vocabulary. Expanded rows expose every
+typed target snapshot, generation/digest evidence, progress, terminal error,
+and exact resource version. Retry and cancellation are version-fenced explicit
+confirmations. Organization Audit remains the durable event history and is not
+folded into this live-work inventory.
 
 ## Registry settings
 
@@ -459,9 +509,11 @@ Topology
 Access & trust
   Identity & access
   Signing keys
-  Tokens
+  Access tokens
 
 Publishing
+  Images
+  Packages
   Upstream mirror
   Configuration
   Channels
@@ -568,10 +620,11 @@ Owns name/description where SQL-backed, visibility, crawl policy, and access
 impact. Signed registry metadata still changes through Configuration. The UI
 distinguishes the two and never offers competing edits for the same field.
 
-### Signing keys and tokens
+### Signing keys and access tokens
 
-Signing keys own consumer trust and provider-custodied operations. Tokens own Hub API
-and upload credentials. They remain separate pages with cross-links where a
+Signing keys own consumer trust and provider-custodied operations. Access
+tokens own Hub API and upload credentials on the registry's immutable
+authorization scope. They remain separate pages with cross-links where a
 publishing operation needs both.
 
 ### Configuration, channels, change requests, and publish history
@@ -579,7 +632,10 @@ publishing operation needs both.
 - Configuration edits signed registry content and creates/reviews changes.
 - Channels operates rollout targets and partitions.
 - Change requests shows pending/reviewed/applied configuration work.
-- Publish history shows release pipeline executions and their artifacts.
+- Publish history shows every durable release pipeline execution and its
+  artifacts newest first. Operators select an incomplete exact session from
+  this inventory to resume it; they do not need to preserve a publication id
+  outside the Hub.
 
 These pages share publication context but do not combine their forms or audit
 histories into one overloaded panel.
@@ -589,6 +645,9 @@ histories into one overloaded panel.
 Combines live operational status only where it is useful to correlate route,
 placement, coverage, and publication failures. It links to durable Audit at the
 organization scope instead of duplicating a second audit system.
+
+The page is backed by the registry's immutable authorization-scope closure,
+not a slug-derived filter or a list of only registry-primary operations.
 
 ## Binary-cache settings
 
@@ -610,7 +669,8 @@ Content
 
 Access & trust
   Identity & access
-  Signing key
+  Signing keys
+  Access tokens
 
 Policy
   Retention
@@ -690,18 +750,21 @@ work, and administratively leaked bytes.
 Before the first destructive sweep, the collection page offers a separate
 plan/acknowledge flow bound to one valid reviewed GC plan. It shows that the
 acknowledgement intentionally stales that plan and that a new plan is required
-to run collection. Ordinary run confirmation and no-JS `--yes` equivalents do
-not create this durable acknowledgement implicitly.
+to run collection. Ordinary run confirmation and CLI `--yes` do not create
+this durable acknowledgement implicitly.
 
 Placement eviction is linked from this page but edited under Storage &
 replicas. A local tier quota never appears as permission to collect a logically
 live object from the cache namespace.
 
-### Identity & access and Signing key
+### Identity & access, signing keys, and access tokens
 
 Identity & access owns display name, visibility, Nix priority, compression,
-mass-query behavior, and client-compatibility impact. Signing key owns narinfo
-signing trust, rotation, and setup-snippet consequences.
+mass-query behavior, and client-compatibility impact. Signing keys own narinfo
+signing trust, rotation, and setup-snippet consequences. Access tokens own Hub
+API credentials issued on the cache's immutable authorization scope. None of
+these pages duplicates client-facing HTTP authorization, which remains an
+independent property of every simultaneous delivery route.
 
 ## Instance settings
 
@@ -721,6 +784,7 @@ Infrastructure
 
 Access & trust
   Identity & signup
+  Access tokens
 
 Policy
   Resource defaults
@@ -734,11 +798,12 @@ Activity
 
 The instance root is an operational Overview, not the current Signup & identity
 form. Identity & signup owns signup policy, allowed domains, authentication
-methods, and session lifetime. Resource defaults owns new-surface crawl policy,
-upload limits, and anonymous cache discovery defaults. Branding remains its own
-page. Instance infrastructure pages use the same organization components and
-show which organization resources inherit each default, including boundary
-protection revisions, trusted-ingress verification, grants, and endpoint usage.
+methods, and session lifetime. Access tokens owns deployment-scoped Hub API
+credentials. Resource defaults owns new-surface crawl policy, upload limits,
+and anonymous cache discovery defaults. Branding remains its own page. Instance
+infrastructure pages use the same organization components and show which
+organization resources inherit each default, including boundary protection
+revisions, trusted-ingress verification, grants, and endpoint usage.
 The instance Storage
 bindings page represents the one deployment-provisioned default binding: it may
 support origin/credential maintenance, but it cannot create, delete, or swap
@@ -825,8 +890,15 @@ Forms use the existing visual style. Improve hierarchy through structure:
 - one primary submit button with a precise verb; and
 - impact review before high-consequence apply.
 
-JavaScript may update previews and conditional fields. The server renders the
-same valid defaults and validates the full state without JavaScript.
+Explanatory copy that is useful only when learning a concept uses the shared
+question-mark help card. Hover and keyboard focus open it temporarily; click
+pins it; Escape or click-away closes it. The interaction is delegated from the
+document so it remains available after client-side route transitions. Inline
+text is reserved for current state, validation, safety, and consequences.
+
+The Leptos client updates previews and conditional fields, then submits typed
+requests to the canonical API. The server remains the sole validator and
+authorization authority; no management form POST fallback is mounted.
 
 ## Empty, loading, and degraded states
 
@@ -881,7 +953,8 @@ visible and place remediation beside the failing row.
   “Frontend” do not appear in final canonical nav/help text.
 - Wide, medium, and narrow layout snapshots cover long domains, endpoints,
   nested registry slugs, warning banners, and empty states.
-- Every page works without JavaScript and exposes the same operations as the
-  CLI/API permission model.
+- Every management page exposes the same operations as the CLI/API permission
+  model. With JavaScript disabled it fails explicitly instead of silently
+  falling back to a second mutation implementation.
 - Page titles, breadcrumb labels, nav labels, CLI nouns, and API resources use
   the same terminology.

@@ -489,73 +489,95 @@ fn default_platform() -> String {
     }
 }
 
-/// Introspect a store path using `nix path-info --json --closure-size`.
-fn introspect_store_path(store_path: &str) -> Result<StorePathInfo> {
-    let output = nix_command("nix")
-        .args(["path-info", "--json", "--closure-size", store_path])
+/// Runs one stable `nix-store --query` operation for the supplied paths.
+fn nix_store_query(query: &str, store_paths: &[&str]) -> Result<Vec<String>> {
+    let output = nix_command("nix-store")
+        .args(["--query", query])
+        .args(store_paths)
         .output()
-        .with_context(|| format!("running nix path-info on {store_path}"))?;
+        .with_context(|| format!("running nix-store --query {query}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("nix path-info failed for {store_path}: {}", stderr.trim());
+        bail!(
+            "nix-store --query {query} failed for {}: {}",
+            store_paths.join(", "),
+            stderr.trim()
+        );
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: Value = serde_json::from_str(&stdout)
-        .with_context(|| format!("parsing nix path-info JSON for {store_path}"))?;
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect())
+}
 
-    // nix path-info --json returns an array with one element per path,
-    // or a map keyed by store path (depending on Nix version).
-    let info = if json.is_array() {
-        json.as_array()
-            .and_then(|arr| arr.first())
-            .cloned()
-            .unwrap_or(json.clone())
-    } else if json.is_object() {
-        // Newer Nix: { "/nix/store/...": { ... } }
-        json.as_object()
-            .and_then(|obj| obj.values().next())
-            .cloned()
-            .unwrap_or(json.clone())
-    } else {
-        json.clone()
-    };
+/// Runs a single-path `nix-store --query` operation that must return one value.
+fn single_nix_store_query(query: &str, store_path: &str) -> Result<String> {
+    let values = nix_store_query(query, &[store_path])?;
+    if let [value] = values.as_slice() {
+        return Ok(value.clone());
+    }
 
-    let nar_hash = info
-        .get("narHash")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let nar_size = info.get("narSize").and_then(|v| v.as_u64()).unwrap_or(0);
-    let path = info
-        .get("path")
-        .and_then(|v| v.as_str())
-        .unwrap_or(store_path)
-        .to_string();
-    let closure_size = info
-        .get("closureSize")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
+    bail!(
+        "nix-store --query {query} returned {} values for {store_path}; expected one",
+        values.len()
+    )
+}
 
-    let references: Vec<String> = info
-        .get("references")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str())
-                .filter(|r| *r != store_path)
-                .map(|r| {
-                    // Extract just the hash from the reference path.
-                    let basename = r.rsplit('/').next().unwrap_or(r);
-                    basename.split('-').next().unwrap_or(basename).to_string()
-                })
-                .collect()
+/// Parses ordered NAR sizes returned for an ordered set of store paths.
+fn parse_nar_sizes(store_paths: &[String]) -> Result<Vec<u64>> {
+    let paths: Vec<&str> = store_paths.iter().map(String::as_str).collect();
+    let values = nix_store_query("--size", &paths)?;
+    if values.len() != store_paths.len() {
+        bail!(
+            "nix-store --query --size returned {} values for {} paths",
+            values.len(),
+            store_paths.len()
+        );
+    }
+
+    values
+        .iter()
+        .zip(store_paths)
+        .map(|(value, path)| {
+            value
+                .parse::<u64>()
+                .with_context(|| format!("parsing NAR size {value:?} for {path}"))
         })
-        .unwrap_or_default();
+        .collect()
+}
+
+/// Introspects a store path using stable `nix-store --query` operations.
+fn introspect_store_path(store_path: &str) -> Result<StorePathInfo> {
+    let nar_hash = single_nix_store_query("--hash", store_path)?;
+    let nar_size = single_nix_store_query("--size", store_path)?
+        .parse::<u64>()
+        .with_context(|| format!("parsing NAR size for {store_path}"))?;
+
+    let references = nix_store_query("--references", &[store_path])?
+        .into_iter()
+        .filter(|reference| reference != store_path)
+        .map(|reference| extract_hash(&reference).to_string())
+        .collect();
+
+    let closure_paths = nix_store_query("--requisites", &[store_path])?;
+    if closure_paths.is_empty() {
+        bail!("nix-store --query --requisites returned no paths for {store_path}");
+    }
+    let closure_size =
+        parse_nar_sizes(&closure_paths)?
+            .into_iter()
+            .try_fold(0_u64, |total, size| {
+                total
+                    .checked_add(size)
+                    .ok_or_else(|| anyhow::anyhow!("closure size overflow for {store_path}"))
+            })?;
 
     Ok(StorePathInfo {
-        path,
+        path: store_path.to_string(),
         nar_hash,
         nar_size,
         references,
@@ -608,7 +630,7 @@ fn store_dir_from_store_path(path: &str) -> Option<&str> {
     }
 }
 
-/// Metadata returned by `nix path-info` for a single store path.
+/// Metadata returned by `nix-store --query` for a single store path.
 struct StorePathInfo {
     path: String,
     nar_hash: String,
@@ -851,68 +873,37 @@ struct ClosureMemberNar {
     nar_size: u64,
 }
 
-/// Introspect every member of a store path's runtime closure in one
-/// `nix path-info --json --recursive` invocation.
+/// Introspects every member of a store path's runtime closure.
 fn introspect_closure_nars(store_path: &str) -> Result<Vec<ClosureMemberNar>> {
-    let output = nix_command("nix")
-        .args(["path-info", "--json", "--recursive", store_path])
-        .output()
-        .with_context(|| format!("running nix path-info --recursive on {store_path}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    let paths = nix_store_query("--requisites", &[store_path])?;
+    if paths.is_empty() {
+        bail!("nix-store --query --requisites returned no closure members for {store_path}");
+    }
+
+    // nix-store emits one result for each input path in positional order.
+    // Validate the cardinality before associating metadata with paths so an
+    // incomplete query can never produce a plausible but incorrect manifest.
+    let path_refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+    let hashes = nix_store_query("--hash", &path_refs)?;
+    let sizes = parse_nar_sizes(&paths)?;
+    if hashes.len() != paths.len() {
         bail!(
-            "nix path-info --recursive failed for {store_path}: {}",
-            stderr.trim()
+            "nix-store --query --hash returned {} values for {} closure members",
+            hashes.len(),
+            paths.len()
         );
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: Value = serde_json::from_str(&stdout)
-        .with_context(|| format!("parsing nix path-info JSON for {store_path} closure"))?;
-
-    // nix path-info --json returns an array of entries or an object keyed
-    // by store path, depending on Nix version.
-    let mut members = Vec::new();
-    let mut push = |path_hint: Option<&str>, info: &Value| -> Result<()> {
-        let path = info
-            .get("path")
-            .and_then(Value::as_str)
-            .or(path_hint)
-            .ok_or_else(|| anyhow::anyhow!("nix path-info entry without a path"))?;
-        let nar_hash = info
-            .get("narHash")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow::anyhow!("nix path-info missing narHash for {path}"))?;
-        let nar_size = info
-            .get("narSize")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| anyhow::anyhow!("nix path-info missing narSize for {path}"))?;
-        members.push(ClosureMemberNar {
-            path: path.to_string(),
-            nar_hash: nar_hash.to_string(),
+    Ok(paths
+        .into_iter()
+        .zip(hashes)
+        .zip(sizes)
+        .map(|((path, nar_hash), nar_size)| ClosureMemberNar {
+            path,
+            nar_hash,
             nar_size,
-        });
-        Ok(())
-    };
-
-    match &json {
-        Value::Array(entries) => {
-            for info in entries {
-                push(None, info)?;
-            }
-        }
-        Value::Object(map) => {
-            for (path, info) in map {
-                push(Some(path.as_str()), info)?;
-            }
-        }
-        other => bail!("unexpected nix path-info JSON shape: {other}"),
-    }
-
-    if members.is_empty() {
-        bail!("nix path-info --recursive returned no closure members for {store_path}");
-    }
-    Ok(members)
+        })
+        .collect())
 }
 
 /// Run `nix store make-content-addressed --json` over a closure root and

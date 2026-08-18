@@ -42,7 +42,7 @@ Read the registry through the unary JSON API:
 curl -fsS \
   -H 'Content-Type: application/json' \
   -d '{"slug":"demo/cdn"}' \
-  http://127.0.0.1:8420/aos.registry.v1.RegistryService/GetRegistry
+  http://127.0.0.1:8420/aos.hub.v1.RegistryService/GetRegistry
 ```
 
 ## Stop and clean up

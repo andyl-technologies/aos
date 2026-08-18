@@ -1,6 +1,0 @@
-# aos-nix-fuzz-source
-let
-  x = builtins.appendContext "x" {
-    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-seed" = { path = true; };
-  };
-in builtins.getContext "${x}"

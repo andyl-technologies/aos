@@ -130,7 +130,10 @@ impl HttpBackend {
         // `oauth2/token` is a top-level route, NOT view-scoped — use
         // `self.origin`, not `self.base_url` (which already encodes the view).
         let url = format!("{}/oauth2/token", self.origin);
-        let mut req = TransferRequest::post(&url, b"grant_type=client_credentials".to_vec());
+        let mut req = TransferRequest::post(
+            &url,
+            b"grant_type=urn%3Aaos%3Aparams%3Aoauth%3Agrant-type%3Aprovisioning-token".to_vec(),
+        );
         req.headers.push((
             "Content-Type".to_string(),
             "application/x-www-form-urlencoded".to_string(),

@@ -8,10 +8,10 @@
 //!   16×16 partition grid and bucket calculator), releases, and the
 //!   per-registry health page.
 //!
-//! The authenticated producer console (login, account, org dashboards, token
-//! management, channel rollout, key roster, publishes) is served by the shared
-//! `aos_hub_core::web::console` router and dispatcher, so the native hub no
-//! longer carries its own copy.
+//! Authentication and account ceremonies are served by the shared
+//! `aos_hub_core::web::console` router. The authenticated management console is
+//! a Leptos client over the canonical Connect API, packaged identically for the
+//! native Hub and Worker.
 //!
 //! The stylesheet (`style.css`, served at `/_assets/style.css`) carries
 //! the "release-engineering paper" language: one monospace face, ink on

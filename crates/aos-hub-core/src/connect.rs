@@ -32,6 +32,7 @@
 
 use std::sync::Arc;
 
+use aos_proto_types::{CONNECT_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION_HEADER};
 use axum::body::Bytes;
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
@@ -103,9 +104,6 @@ const DELETE_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/DeletePlacement
 
 /// Maximum buffered body size for every unary Connect request on both shells.
 pub const CONNECT_REQUEST_BODY_LIMIT_BYTES: usize = 8 * 1024 * 1024;
-
-/// Connect unary protocol-version request header.
-const CONNECT_PROTOCOL_VERSION_HEADER: &str = "connect-protocol-version";
 
 #[cfg(target_arch = "wasm32")]
 use send_wrapper::SendWrapper;
@@ -230,7 +228,7 @@ fn validate_connect_headers(headers: &HeaderMap) -> Result<(), Response> {
     let version = versions
         .next()
         .ok_or_else(|| error_response(&RpcError::invalid("missing Connect-Protocol-Version: 1")))?;
-    if versions.next().is_some() || version.as_bytes() != b"1" {
+    if versions.next().is_some() || version.as_bytes() != CONNECT_PROTOCOL_VERSION.as_bytes() {
         return Err(error_response(&RpcError::invalid(
             "Connect-Protocol-Version must occur once with value 1",
         )));
@@ -264,7 +262,15 @@ where
         Err(err) => return error_response(&err),
     };
     match call(svc, auth, req).await {
-        Ok(resp) => Json(resp).into_response(),
+        Ok(resp) => (
+            [
+                (header::CACHE_CONTROL, "no-store"),
+                (header::PRAGMA, "no-cache"),
+                (header::REFERRER_POLICY, "no-referrer"),
+            ],
+            Json(resp),
+        )
+            .into_response(),
         Err(err) => error_response(&err),
     }
 }
@@ -1178,6 +1184,97 @@ async fn serve_resolved_delivery(
     }
 }
 
+/// Serves immutable signed-image bytes through the Hub control origin.
+///
+/// Private image resolutions use this same-origin path so browsers can present
+/// their host-only session cookie and CLI clients can present the bearer they
+/// used for discovery. Public resolutions remain free to select a CDN-backed
+/// canonical delivery route.
+async fn serve_control_image(
+    svc: Arc<RpcService>,
+    method: Method,
+    headers: HeaderMap,
+    registry_id: i64,
+    path: String,
+) -> Response {
+    if !path.starts_with("images/") {
+        return private_control_response(StatusCode::NOT_FOUND.into_response());
+    }
+    let registry = match svc.db.registry_by_id(registry_id).await {
+        Ok(Some(registry)) => registry,
+        Ok(None) => return private_control_response(StatusCode::NOT_FOUND.into_response()),
+        Err(_) => {
+            return private_control_response(StatusCode::SERVICE_UNAVAILABLE.into_response());
+        }
+    };
+    let private = registry.visibility != "public";
+    let now =
+        match crate::delivery_http::HttpTimestamp::from_unix_seconds(crate::clock::now_unix_secs())
+        {
+            Ok(now) => now,
+            Err(_) => {
+                let response = StatusCode::SERVICE_UNAVAILABLE.into_response();
+                return if private {
+                    private_control_response(response)
+                } else {
+                    response
+                };
+            }
+        };
+    let auth_header = auth_header(&headers);
+    let session_secret = crate::web::session::session_secret_from_headers(&headers);
+    let authorization = match (auth_header.as_deref(), session_secret.as_deref()) {
+        (Some(auth), _) => ReadAuthorization::AuthorizationHeader(Some(auth)),
+        (None, Some(secret)) => ReadAuthorization::SessionCookie(secret),
+        (None, None) => ReadAuthorization::AuthorizationHeader(None),
+    };
+    let request = crate::image_http::ImageHttpRequest {
+        method: if method == Method::HEAD {
+            crate::delivery_http::DeliveryMethod::Head
+        } else {
+            crate::delivery_http::DeliveryMethod::Get
+        },
+        range: headers.get(header::RANGE).map(HeaderValue::as_bytes),
+        if_match: headers.get(header::IF_MATCH).map(HeaderValue::as_bytes),
+        if_unmodified_since: headers
+            .get(header::IF_UNMODIFIED_SINCE)
+            .map(HeaderValue::as_bytes),
+        if_none_match: headers
+            .get(header::IF_NONE_MATCH)
+            .map(HeaderValue::as_bytes),
+        if_modified_since: headers
+            .get(header::IF_MODIFIED_SINCE)
+            .map(HeaderValue::as_bytes),
+        if_range: headers.get(header::IF_RANGE).map(HeaderValue::as_bytes),
+        now,
+    };
+    let response = match svc
+        .registry_serve(authorization, &registry, &path, request)
+        .await
+    {
+        Ok(RegistryServeOutcome::Response(response)) => response,
+        Ok(RegistryServeOutcome::NotFound) => StatusCode::NOT_FOUND.into_response(),
+        Err(error) => error_response(&error),
+    };
+    if private {
+        private_control_response(response)
+    } else {
+        response
+    }
+}
+
+fn private_control_response(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    response.headers_mut().insert(
+        header::VARY,
+        HeaderValue::from_static("Authorization, Cookie"),
+    );
+    response
+}
+
 async fn resolved_delivery_handler(
     State(state): State<SharedState>,
     headers: HeaderMap,
@@ -1260,106 +1357,32 @@ pub fn with_delivery_route_dispatch(
         }))
 }
 
-/// Builds the Worker router with browse and token exchange.
+/// Builds the Worker router with browse pages.
 pub fn router(service: Arc<RpcService>) -> Router {
-    // The Worker entry includes browse and its token exchange. Public bytes are
+    // The shared console router owns OAuth on both runtimes. Public bytes are
     // still admitted only by `with_delivery_route_dispatch`.
-    build(service, true, true)
+    build(service, true)
 }
 
-/// Builds the Connect-JSON router without browse pages or token exchange.
+/// Builds the Connect-JSON router without browse pages.
 #[must_use]
 pub fn rpc_router(service: Arc<RpcService>) -> Router {
-    build(service, false, false)
+    build(service, false)
 }
 
 /// Builds the Connect-JSON router with the shared session-aware browse surface.
 #[must_use]
 pub fn rpc_browse_router(service: Arc<RpcService>) -> Router {
-    build(service, true, false)
-}
-
-/// Lifetime, in seconds, of an access JWT minted at `POST /oauth2/token`
-/// (1 hour).
-///
-/// Matches the native hub's access-token TTL so the Worker and native
-/// deployments issue equivalently short-lived tokens. One hour gives bulk
-/// publish operations (a large `aos cache push`) comfortable headroom while
-/// keeping the bearer's leak window short; a client running longer than this
-/// re-exchanges its provisioning token for a fresh access JWT (the provisioning
-/// token is the durable credential — there is no separate OAuth refresh token).
-const ACCESS_TOKEN_TTL_SECS: i64 = 3600;
-
-/// OAuth2 token-exchange response: `access_token`, `token_type` (`"Bearer"`),
-/// and `expires_in` (seconds) — the same shape the native hub's
-/// `/oauth2/token` returns, so a client cannot tell the runtimes apart.
-#[derive(Serialize)]
-struct TokenExchangeResponse {
-    access_token: String,
-    token_type: &'static str,
-    expires_in: i64,
-    capabilities: [&'static str; 2],
-}
-
-/// Exchange a provisioning secret for a short-TTL access JWT (`POST
-/// /oauth2/token`).
-///
-/// The caller presents its `aos_`-prefixed provisioning secret as
-/// `Authorization: Bearer <secret>`; on success the `200` JSON grant is the
-/// `Authorization: Bearer <jwt>` the client then sends to the cache and publish
-/// surfaces. This is the Worker's counterpart to the native hub's
-/// `oauth2_token_handler`: that fragment (which also rate-limits per source IP)
-/// lives in the `aos-hub` binary and is unreachable from the Worker, so the
-/// exchange is mounted on the shared worker entry ([`router`]) instead.
-///
-/// Returns `401` when the header is missing/malformed or the secret is
-/// unknown, expired, or revoked, and `500` on a token-store or minting failure.
-async fn oauth2_token_exchange(svc: &RpcService, headers: &HeaderMap) -> Response {
-    let secret = match headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|h| h.strip_prefix("Bearer "))
-    {
-        Some(s) => s,
-        None => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                "missing or malformed Authorization header",
-            )
-                .into_response()
-        }
-    };
-    // RFC-0004 ch.14 Phase C: validate through the KV cache (with the revocation
-    // tombstone) when one is attached, off the relational read path.
-    let auth = match svc.validate_token_cached(secret).await {
-        Ok(Some(auth)) => auth,
-        Ok(None) => {
-            return (StatusCode::UNAUTHORIZED, "invalid provisioning secret").into_response()
-        }
-        Err(_) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, "token validation error").into_response()
-        }
-    };
-    match svc.jwt_keys.mint(&auth, ACCESS_TOKEN_TTL_SECS) {
-        Ok(access_token) => Json(TokenExchangeResponse {
-            access_token,
-            token_type: "Bearer",
-            expires_in: ACCESS_TOKEN_TTL_SECS,
-            capabilities: ["aos.hub.topology.v1", "aos.multipart.v1"],
-        })
-        .into_response(),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "token creation error").into_response(),
-    }
+    build(service, true)
 }
 
 /// Builds the shared router with optional browse and token-exchange surfaces.
 ///
 /// `mount_browse` adds the no-JS browse routes (the hub home `/`, the `/{slug}`
 /// redirect, the registry home `/{slug}/` and `/{slug}/-/`, the `/{slug}/-/…`
-/// pages, and the `/{slug}/-/api/…` JSON read API). `mount_oauth` adds the
-/// Worker-owned provisioning-token exchange; native mounts its hardened local
-/// exchange separately.
-fn build(service: Arc<RpcService>, mount_browse: bool, mount_oauth: bool) -> Router {
+/// pages, and the `/{slug}/-/api/…` JSON read API). The shared console router
+/// mounts OAuth independently of this machine-plane router.
+fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     // The route-dispatch middleware targets this typed-only handler. A direct
     // external request has no `ResolvedDeliveryRoute` extension and receives
     // 404, so the internal name is not an alternate public surface URL.
@@ -1469,6 +1492,11 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_oauth: bool) -> Rou
         r,
         "/aos.hub.v1.SigningKeyService/GetSigningKey",
         get_signing_key
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.SigningKeyService/GetSigningKeyUsage",
+        get_signing_key_usage
     );
     r = rpc_route!(
         r,
@@ -1659,11 +1687,6 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_oauth: bool) -> Rou
         r,
         "/aos.hub.v1.StorageBindingService/GetStorageBindingWriteRevision",
         get_storage_binding_write_revision
-    );
-    r = rpc_route!(
-        r,
-        "/aos.hub.v1.StorageBindingService/GetInstanceDefaultStorageBinding",
-        get_instance_default_storage_binding
     );
     r = rpc_route!(
         r,
@@ -2255,15 +2278,46 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_oauth: bool) -> Rou
     );
     // IdentityService — service-account / grant / token management (the machine API
     // behind the console's identity settings; RFC-0004 ch.14).
+    r = rpc_route!(r, "/aos.hub.v1.IdentityService/WhoAmI", who_am_i);
     r = rpc_route!(
         r,
-        "/aos.hub.v1.IdentityService/PlanCreateAutomationPrincipal",
-        plan_create_automation_principal
+        "/aos.hub.v1.IdentityService/ListServiceAccounts",
+        list_service_accounts
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.IdentityService/CreateAutomationPrincipal",
-        apply_create_automation_principal
+        "/aos.hub.v1.IdentityService/GetServiceAccount",
+        get_service_account
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanCreateServiceAccount",
+        plan_create_service_account
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/CreateServiceAccount",
+        apply_create_service_account
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanUpdateServiceAccount",
+        plan_update_service_account
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/UpdateServiceAccount",
+        apply_update_service_account
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanDeleteServiceAccount",
+        plan_delete_service_account
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/DeleteServiceAccount",
+        apply_delete_service_account
     );
     r = rpc_route!(
         r,
@@ -2282,25 +2336,129 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_oauth: bool) -> Rou
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.IdentityService/PlanIssueRegistryToken",
-        plan_issue_registry_token
+        "/aos.hub.v1.IdentityService/ListInvitations",
+        list_invitations
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.IdentityService/IssueRegistryToken",
-        apply_issue_registry_token
+        "/aos.hub.v1.IdentityService/GetInvitation",
+        get_invitation
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.IdentityService/PlanRetireRegistryToken",
-        plan_retire_registry_token
+        "/aos.hub.v1.IdentityService/PlanCreateInvitation",
+        plan_create_invitation
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.IdentityService/RetireRegistryToken",
-        apply_retire_registry_token
+        "/aos.hub.v1.IdentityService/CreateInvitation",
+        apply_create_invitation
     );
-    r = rpc_route!(r, "/aos.hub.v1.IdentityService/ListTokens", list_tokens);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanCancelInvitation",
+        plan_cancel_invitation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/CancelInvitation",
+        apply_cancel_invitation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/AcceptInvitation",
+        accept_invitation
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/GetIdentityProvider",
+        get_identity_provider
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanSetIdentityProvider",
+        plan_set_identity_provider
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/SetIdentityProvider",
+        apply_set_identity_provider
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanRemoveIdentityProvider",
+        plan_remove_identity_provider
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/RemoveIdentityProvider",
+        apply_remove_identity_provider
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/ListOrganizationDomains",
+        list_organization_domains
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/GetOrganizationDomain",
+        get_organization_domain
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanClaimOrganizationDomain",
+        plan_claim_organization_domain
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/ClaimOrganizationDomain",
+        apply_claim_organization_domain
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanVerifyOrganizationDomain",
+        plan_verify_organization_domain
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/VerifyOrganizationDomain",
+        apply_verify_organization_domain
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanReleaseOrganizationDomain",
+        plan_release_organization_domain
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/ReleaseOrganizationDomain",
+        apply_release_organization_domain
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanIssueAccessToken",
+        plan_issue_access_token
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/IssueAccessToken",
+        apply_issue_access_token
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/PlanRetireAccessToken",
+        plan_retire_access_token
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/RetireAccessToken",
+        apply_retire_access_token
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.IdentityService/ListAccessTokens",
+        list_access_tokens
+    );
     // WebhookService
     r = rpc_route!(r, "/aos.hub.v1.WebhookService/ListWebhooks", list_webhooks);
     r = rpc_route!(
@@ -2328,6 +2486,11 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_oauth: bool) -> Rou
         r,
         "/aos.hub.v1.PublishService/BeginRegistryPublication",
         begin_registry_publication
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/ListRegistryPublications",
+        list_registry_publications
     );
     r = rpc_route!(
         r,
@@ -2882,6 +3045,39 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_oauth: bool) -> Rou
         "/aos.hub.v1.OperationService/RetryOperation",
         retry_operation
     );
+    r = r.route(
+        "/-/images/{registry_id}/{*path}",
+        get(
+            |State(state): State<SharedState>,
+             method: Method,
+             headers: HeaderMap,
+             Path((registry_id, path)): Path<(i64, String)>| {
+                let service = from_state(state);
+                send_bridge(serve_control_image(
+                    service,
+                    method,
+                    headers,
+                    registry_id,
+                    path,
+                ))
+            },
+        )
+        .head(
+            |State(state): State<SharedState>,
+             method: Method,
+             headers: HeaderMap,
+             Path((registry_id, path)): Path<(i64, String)>| {
+                let service = from_state(state);
+                send_bridge(serve_control_image(
+                    service,
+                    method,
+                    headers,
+                    registry_id,
+                    path,
+                ))
+            },
+        ),
+    );
     // Browse and static control-plane routes are mounted only when requested.
     // Machine bytes are never selected by a slug wildcard; the outer typed
     // delivery dispatcher resolves an exact endpoint and route before
@@ -2894,6 +3090,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_oauth: bool) -> Rou
         r = r
             .route("/_assets/style.css", get(assets::stylesheet))
             .route("/_assets/app.js", get(assets::app_js))
+            .route("/_assets/{asset}", get(assets::console_asset))
             .route(
                 "/_assets/jetbrains-mono-regular.woff2",
                 get(assets::font_regular),
@@ -3123,17 +3320,6 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_oauth: bool) -> Rou
             },
         );
     }
-    // The native shell mounts its rate-limited exchange separately; Worker
-    // uses this shared route.
-    if mount_oauth {
-        r = r.route(
-            "/oauth2/token",
-            post(|State(state): State<SharedState>, headers: HeaderMap| {
-                let svc = from_state(state);
-                send_bridge(async move { oauth2_token_exchange(&svc, &headers).await })
-            }),
-        );
-    }
     // Apply the same unary request ceiling in both runtimes.
     r.layer(axum::extract::DefaultBodyLimit::max(
         CONNECT_REQUEST_BODY_LIMIT_BYTES,
@@ -3333,6 +3519,19 @@ mod tests {
         }
         assert_eq!(canonical_request_path("/caf%C3%A9").as_deref(), Ok("/café"));
         assert_eq!(canonical_request_path("/café").as_deref(), Ok("/café"));
+    }
+
+    #[test]
+    fn private_control_responses_are_never_shared_cached() {
+        let response = private_control_response(StatusCode::UNAUTHORIZED.into_response());
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL),
+            Some(&HeaderValue::from_static("private, no-store"))
+        );
+        assert_eq!(
+            response.headers().get(header::VARY),
+            Some(&HeaderValue::from_static("Authorization, Cookie"))
+        );
     }
 
     #[test]

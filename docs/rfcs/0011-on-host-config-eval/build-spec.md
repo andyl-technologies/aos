@@ -718,9 +718,7 @@ The fixpoint exists because stock Nix gives **no read-access instrumentation**
 (`module-system.md` §"What the existing module system already provides"). The
 set of providers a config needs cannot be statically closed; it is discovered
 by evaluating, observing what is missing, fetching the named provider, and
-re-evaluating until the eval succeeds or a terminal state is reached. P2
-aos-nix collapses the loop to one pass with structured errors (§7); the
-contract below is the seam both implementations sit behind.
+re-evaluating until the eval succeeds or a terminal state is reached.
 
 ## 1. The loop — inputs, state, termination
 
@@ -894,7 +892,7 @@ Rules for the parser:
   misclassify it as a missing option, or the loop will fetch a wrong provider
   and mask the real fault.
 - The parser is isolated behind one `fn classify(stderr, exit) -> EvalClass`
-  with an exhaustive test fixture, so P2 replaces exactly this function.
+  with an exhaustive test fixture.
 
 ## 3. Eval invocation (P1) and the kill channel
 
@@ -1071,30 +1069,12 @@ Properties the implementer must preserve:
   (`checks.config-eval`, `operability.md`) reproduces the same gate decision
   the box would make.
 
-## 7. The P1→P2 seam (what this contract guarantees stays stable)
-
-Everything above is the P1 stand-in for capabilities stock Nix lacks. P2
-aos-nix (RFC-0007) replaces the *internals* without touching the contract
-boundary:
-
-- **String parsing (`classify`, §2) → structured errors.** aos-nix returns a
-  typed `MissingOption{ path, kind: Read|Write, read_by }` directly, so Cases A
-  and B arrive pre-distinguished and the regex table is deleted. The driver's
-  `match` arms are unchanged.
-- **The fixpoint loop (§1) → one pass.** aos-nix's one-shot read-tracing and
-  the first-class option read/write graph let the resolver close the provider
-  set from a *single* eval, so K → 1 and `ITER_CAP` becomes a safety net rather
-  than the common path.
-- **Cgroup kill channel (§3) → in-engine bounding.** Timeouts/limits become
-  structured engine results, not OOM-kill inference.
+## 7. Evaluator boundary
 
 The seam is exactly `eval(working_set, host_nix, base_lib) → Result<Manifest,
-EvalClass>`. The resolver, the `SystemRoots` derivation and root dispatch (§4),
-the fetch order (§4), the `module_abi` gate (§6), and the manifest contract are
-**identical** on both evaluators;
-swapping P1↔P2 changes only how `EvalClass` is produced. None of this touches
-the registry format, the module contract, or the generations
-(`architecture.md` §"P2").
+EvalClass>`. The stock evaluator, resolver, `SystemRoots` derivation and root
+dispatch (§4), fetch order (§4), `module_abi` gate (§6), and manifest contract
+form the production boundary.
 
 ---
 

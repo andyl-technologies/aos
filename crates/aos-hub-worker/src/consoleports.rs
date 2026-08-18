@@ -1,10 +1,8 @@
 //! The Worker's adapters from Cloudflare bindings to the shared console ports.
 //!
-//! The producer console's request handlers live in `aos_hub_core::web::console`
-//! and run unchanged on both shells; each reaches its platform-specific
-//! capabilities through a *port* (RFC-0004 Phase 5, console-dedup stage C). The
-//! native hub satisfies those ports from its `coreports` module; this module is
-//! the Worker's mirror, satisfying the same ports from the Workers runtime:
+//! Retained browser identity handlers live in `aos_hub_core::web::console` and
+//! run unchanged on both runtimes. This module supplies the Worker's outbound
+//! capabilities:
 //!
 //! - [`WorkerMailer`] — the transactional [`Mailer`] (an `async` port). When the
 //!   Cloudflare Email Service binding (`EMAIL`) and a `HUB_EMAIL_FROM` address are

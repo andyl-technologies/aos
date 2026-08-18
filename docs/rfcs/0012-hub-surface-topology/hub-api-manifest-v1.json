@@ -19,7 +19,7 @@
       "image"
    ],
    "cli_nested_families" : {
-      "org" : [ "audit", "identity", "project", "webhook" ],
+      "org" : [ "audit", "domain", "identity", "identity-provider", "invitation", "member", "project", "service-account", "webhook" ],
       "registry" : [ "cache-stack", "channel", "configuration", "mirror", "package", "publish" ]
    },
    "cli_json_schema" : {
@@ -180,6 +180,13 @@
          "path" : "aos.hub.v1.SigningKeyService/GetSigningKey",
          "request" : "GetSigningKeyRequest",
          "response" : "SigningKeyResponse",
+         "service" : "SigningKeyService"
+      },
+      {
+         "method" : "GetSigningKeyUsage",
+         "path" : "aos.hub.v1.SigningKeyService/GetSigningKeyUsage",
+         "request" : "GetSigningKeyUsageRequest",
+         "response" : "SigningKeyUsageResponse",
          "service" : "SigningKeyService"
       },
       {
@@ -411,13 +418,6 @@
          "path" : "aos.hub.v1.StorageBindingService/DeleteStorageBinding",
          "request" : "ApplyDeleteTopologyResourceRequest",
          "response" : "DeleteTopologyResourceResponse",
-         "service" : "StorageBindingService"
-      },
-      {
-         "method" : "GetInstanceDefaultStorageBinding",
-         "path" : "aos.hub.v1.StorageBindingService/GetInstanceDefaultStorageBinding",
-         "request" : "GetInstanceTopologyDefaultsRequest",
-         "response" : "GetStorageBindingResponse",
          "service" : "StorageBindingService"
       },
       {
@@ -1492,6 +1492,13 @@
          "service" : "PublishService"
       },
       {
+         "method" : "ListRegistryPublications",
+         "path" : "aos.hub.v1.PublishService/ListRegistryPublications",
+         "request" : "ListRegistryPublicationsRequest",
+         "response" : "ListRegistryPublicationsResponse",
+         "service" : "PublishService"
+      },
+      {
          "method" : "GetRegistryPublication",
          "path" : "aos.hub.v1.PublishService/GetRegistryPublication",
          "request" : "GetRegistryPublicationRequest",
@@ -2150,17 +2157,66 @@
          "service" : "OperationService"
       },
       {
-         "method" : "PlanCreateAutomationPrincipal",
-         "path" : "aos.hub.v1.IdentityService/PlanCreateAutomationPrincipal",
-         "request" : "PlanCreateAutomationPrincipalRequest",
+         "method" : "WhoAmI",
+         "path" : "aos.hub.v1.IdentityService/WhoAmI",
+         "request" : "WhoAmIRequest",
+         "response" : "WhoAmIResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "ListServiceAccounts",
+         "path" : "aos.hub.v1.IdentityService/ListServiceAccounts",
+         "request" : "ListServiceAccountsRequest",
+         "response" : "ListServiceAccountsResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "GetServiceAccount",
+         "path" : "aos.hub.v1.IdentityService/GetServiceAccount",
+         "request" : "GetServiceAccountRequest",
+         "response" : "ServiceAccountResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "PlanCreateServiceAccount",
+         "path" : "aos.hub.v1.IdentityService/PlanCreateServiceAccount",
+         "request" : "PlanCreateServiceAccountRequest",
          "response" : "TopologyPlanResponse",
          "service" : "IdentityService"
       },
       {
-         "method" : "CreateAutomationPrincipal",
-         "path" : "aos.hub.v1.IdentityService/CreateAutomationPrincipal",
+         "method" : "CreateServiceAccount",
+         "path" : "aos.hub.v1.IdentityService/CreateServiceAccount",
          "request" : "ApplyTopologyPlanRequest",
-         "response" : "AutomationPrincipalResponse",
+         "response" : "ServiceAccountResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "PlanUpdateServiceAccount",
+         "path" : "aos.hub.v1.IdentityService/PlanUpdateServiceAccount",
+         "request" : "PlanUpdateServiceAccountRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "UpdateServiceAccount",
+         "path" : "aos.hub.v1.IdentityService/UpdateServiceAccount",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "ServiceAccountResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "PlanDeleteServiceAccount",
+         "path" : "aos.hub.v1.IdentityService/PlanDeleteServiceAccount",
+         "request" : "PlanDeleteServiceAccountRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "DeleteServiceAccount",
+         "path" : "aos.hub.v1.IdentityService/DeleteServiceAccount",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "DeleteTopologyResourceResponse",
          "service" : "IdentityService"
       },
       {
@@ -2185,38 +2241,178 @@
          "service" : "IdentityService"
       },
       {
-         "method" : "PlanIssueRegistryToken",
-         "path" : "aos.hub.v1.IdentityService/PlanIssueRegistryToken",
-         "request" : "PlanIssueRegistryTokenRequest",
+         "method" : "ListInvitations",
+         "path" : "aos.hub.v1.IdentityService/ListInvitations",
+         "request" : "ListInvitationsRequest",
+         "response" : "ListInvitationsResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "GetInvitation",
+         "path" : "aos.hub.v1.IdentityService/GetInvitation",
+         "request" : "GetInvitationRequest",
+         "response" : "InvitationResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "PlanCreateInvitation",
+         "path" : "aos.hub.v1.IdentityService/PlanCreateInvitation",
+         "request" : "PlanCreateInvitationRequest",
          "response" : "TopologyPlanResponse",
          "service" : "IdentityService"
       },
       {
-         "method" : "IssueRegistryToken",
-         "path" : "aos.hub.v1.IdentityService/IssueRegistryToken",
+         "method" : "CreateInvitation",
+         "path" : "aos.hub.v1.IdentityService/CreateInvitation",
          "request" : "ApplyTopologyPlanRequest",
-         "response" : "RegistryTokenResponse",
+         "response" : "InvitationResponse",
          "service" : "IdentityService"
       },
       {
-         "method" : "PlanRetireRegistryToken",
-         "path" : "aos.hub.v1.IdentityService/PlanRetireRegistryToken",
-         "request" : "PlanRetireRegistryTokenRequest",
+         "method" : "PlanCancelInvitation",
+         "path" : "aos.hub.v1.IdentityService/PlanCancelInvitation",
+         "request" : "PlanCancelInvitationRequest",
          "response" : "TopologyPlanResponse",
          "service" : "IdentityService"
       },
       {
-         "method" : "RetireRegistryToken",
-         "path" : "aos.hub.v1.IdentityService/RetireRegistryToken",
+         "method" : "CancelInvitation",
+         "path" : "aos.hub.v1.IdentityService/CancelInvitation",
          "request" : "ApplyTopologyPlanRequest",
-         "response" : "RegistryTokenRetirementResponse",
+         "response" : "InvitationResponse",
          "service" : "IdentityService"
       },
       {
-         "method" : "ListTokens",
-         "path" : "aos.hub.v1.IdentityService/ListTokens",
-         "request" : "ListTokensRequest",
-         "response" : "ListTokensResponse",
+         "method" : "AcceptInvitation",
+         "path" : "aos.hub.v1.IdentityService/AcceptInvitation",
+         "request" : "AcceptInvitationRequest",
+         "response" : "AcceptInvitationResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "GetIdentityProvider",
+         "path" : "aos.hub.v1.IdentityService/GetIdentityProvider",
+         "request" : "GetIdentityProviderRequest",
+         "response" : "IdentityProviderResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "PlanSetIdentityProvider",
+         "path" : "aos.hub.v1.IdentityService/PlanSetIdentityProvider",
+         "request" : "PlanSetIdentityProviderRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "SetIdentityProvider",
+         "path" : "aos.hub.v1.IdentityService/SetIdentityProvider",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "IdentityProviderResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "PlanRemoveIdentityProvider",
+         "path" : "aos.hub.v1.IdentityService/PlanRemoveIdentityProvider",
+         "request" : "PlanRemoveIdentityProviderRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "RemoveIdentityProvider",
+         "path" : "aos.hub.v1.IdentityService/RemoveIdentityProvider",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "DeleteTopologyResourceResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "ListOrganizationDomains",
+         "path" : "aos.hub.v1.IdentityService/ListOrganizationDomains",
+         "request" : "ListOrganizationDomainsRequest",
+         "response" : "ListOrganizationDomainsResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "GetOrganizationDomain",
+         "path" : "aos.hub.v1.IdentityService/GetOrganizationDomain",
+         "request" : "GetOrganizationDomainRequest",
+         "response" : "OrganizationDomainResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "PlanClaimOrganizationDomain",
+         "path" : "aos.hub.v1.IdentityService/PlanClaimOrganizationDomain",
+         "request" : "PlanClaimOrganizationDomainRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "ClaimOrganizationDomain",
+         "path" : "aos.hub.v1.IdentityService/ClaimOrganizationDomain",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "OrganizationDomainResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "PlanVerifyOrganizationDomain",
+         "path" : "aos.hub.v1.IdentityService/PlanVerifyOrganizationDomain",
+         "request" : "PlanVerifyOrganizationDomainRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "VerifyOrganizationDomain",
+         "path" : "aos.hub.v1.IdentityService/VerifyOrganizationDomain",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "OrganizationDomainResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "PlanReleaseOrganizationDomain",
+         "path" : "aos.hub.v1.IdentityService/PlanReleaseOrganizationDomain",
+         "request" : "PlanReleaseOrganizationDomainRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "ReleaseOrganizationDomain",
+         "path" : "aos.hub.v1.IdentityService/ReleaseOrganizationDomain",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "DeleteTopologyResourceResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "PlanIssueAccessToken",
+         "path" : "aos.hub.v1.IdentityService/PlanIssueAccessToken",
+         "request" : "PlanIssueAccessTokenRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "IssueAccessToken",
+         "path" : "aos.hub.v1.IdentityService/IssueAccessToken",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "AccessTokenResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "PlanRetireAccessToken",
+         "path" : "aos.hub.v1.IdentityService/PlanRetireAccessToken",
+         "request" : "PlanRetireAccessTokenRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "RetireAccessToken",
+         "path" : "aos.hub.v1.IdentityService/RetireAccessToken",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "AccessTokenRetirementResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "ListAccessTokens",
+         "path" : "aos.hub.v1.IdentityService/ListAccessTokens",
+         "request" : "ListAccessTokensRequest",
+         "response" : "ListAccessTokensResponse",
          "service" : "IdentityService"
       }
    ],
@@ -2241,7 +2437,7 @@
    },
    "protobuf_package" : "aos.hub.v1",
    "protobuf_source" : "crates/aos-proto/src/proto/aos/hub/v1/hub.proto",
-   "rpc_count" : 313,
+   "rpc_count" : 327,
    "services" : [
       "RegistryService",
       "OrganizationService",

@@ -518,7 +518,7 @@ mod mysql {
     //! reads `last_insert_id()` from the query result.
 
     use anyhow::{Context, Result};
-    use sqlx::{Column, MySql, MySqlPool, Row as _, TypeInfo, ValueRef};
+    use sqlx::{MySql, MySqlPool, Row as _, TypeInfo, ValueRef};
 
     use super::super::super::dialect::Dialect;
     use super::super::super::value::{Row, Value};

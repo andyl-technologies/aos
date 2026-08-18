@@ -87,14 +87,6 @@ impl StockNixEvaluator {
     /// in-image module library and is therefore builder-gated; this renderer
     /// only guarantees a syntactically valid, deterministic expression.
     pub fn render_entry_nix(&self, attempt: &EvalAttempt<'_>) -> String {
-        self.render_entry_nix_with_structured_errors(attempt, false)
-    }
-
-    fn render_entry_nix_with_structured_errors(
-        &self,
-        attempt: &EvalAttempt<'_>,
-        structured_errors: bool,
-    ) -> String {
         let package_modules = render_package_module_list(attempt.working_set);
         let facts_binding = attempt.facts_json.map_or_else(String::new, |_| {
             format!(
@@ -117,13 +109,11 @@ impl StockNixEvaluator {
             \x20   operatorModules = [ hostModule ];\n\
             \x20   packageModules = {modules};\n\
             \x20   factsModules = {facts_modules};\n\
-            \x20   structuredErrors = {structured_errors};\n\
             \x20 }};\n\
             \x20 baselineSystem = baseLib.evalHostConfig {{\n\
             \x20   operatorModules = [ ];\n\
             \x20   packageModules = [ ];\n\
             \x20   factsModules = [ ];\n\
-            \x20   structuredErrors = {structured_errors};\n\
             \x20 }};\n\
             \x20 candidate = system.config.system.build.configManifest;\n\
             \x20 baseline = baselineSystem.config.system.build.configManifest;\n\
@@ -178,7 +168,6 @@ impl StockNixEvaluator {
             \x20 mergedPresets = mergeImageDefaults imagePresets baselinePresets candidatePresets;\n\
             \x20 mergedStorePaths = imageStorePaths // candidateStorePaths;\n\
              in {{\n\
-            \x20 optionWrites = system._optionWrites;\n\
             \x20 manifest = candidate // {{\n\
             \x20   etc = mergedEtc;\n\
             \x20   units = mergedUnits;\n\
@@ -220,24 +209,11 @@ impl StockNixEvaluator {
             modules = package_modules,
             facts_binding = facts_binding,
             facts_modules = facts_modules,
-            structured_errors = if structured_errors { "true" } else { "false" },
         )
     }
 
     /// Writes `entry.nix` into the eval root.
     pub(super) fn write_entry(&self, attempt: &EvalAttempt<'_>) -> Result<PathBuf> {
-        self.write_entry_with_structured_errors(attempt, false)
-    }
-
-    pub(super) fn write_native_entry(&self, attempt: &EvalAttempt<'_>) -> Result<PathBuf> {
-        self.write_entry_with_structured_errors(attempt, true)
-    }
-
-    fn write_entry_with_structured_errors(
-        &self,
-        attempt: &EvalAttempt<'_>,
-        structured_errors: bool,
-    ) -> Result<PathBuf> {
         let entry = self.root.join("entry.nix");
         std::fs::create_dir_all(&self.root)
             .with_context(|| format!("creating eval root {}", self.root.display()))?;
@@ -250,11 +226,8 @@ impl StockNixEvaluator {
             std::fs::write(self.root.join("host-facts.nix"), rendered)
                 .context("writing rendered host facts module")?;
         }
-        std::fs::write(
-            &entry,
-            self.render_entry_nix_with_structured_errors(attempt, structured_errors),
-        )
-        .with_context(|| format!("writing {}", entry.display()))?;
+        std::fs::write(&entry, self.render_entry_nix(attempt))
+            .with_context(|| format!("writing {}", entry.display()))?;
         Ok(entry)
     }
 }

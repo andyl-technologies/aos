@@ -170,8 +170,9 @@ impl IdpConfig {
 
 /// Validates the complete persisted OIDC configuration contract.
 ///
-/// This is the single admission boundary used by API, CLI, Web, native, and
-/// Worker paths because every writer reaches [`Database::upsert_idp_config`].
+/// This is the shared admission boundary used by the reviewed service mutation
+/// and by test-fixture seeding, so native and Worker runtimes enforce the same
+/// persisted contract.
 ///
 /// # Errors
 ///
@@ -956,6 +957,9 @@ mod tests {
             allow_jit: true,
             enforce_sso: false,
             default_role: "viewer".into(),
+            resource_version: 1,
+            incarnation_id: None,
+            mutation_plan_id: None,
         }
     }
 

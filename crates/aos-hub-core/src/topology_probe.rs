@@ -2580,6 +2580,72 @@ async fn dns_answers(
         .collect()
 }
 
+/// Resolves organization-domain ownership challenges through a DNS JSON endpoint.
+pub struct DnsJsonIdentityDomainVerifier {
+    http: Arc<dyn HttpClient>,
+    endpoint: String,
+}
+
+impl DnsJsonIdentityDomainVerifier {
+    /// Constructs a verifier over the runtime's hardened outbound HTTP client.
+    #[must_use]
+    pub fn new(http: Arc<dyn HttpClient>, endpoint: String) -> Self {
+        Self { http, endpoint }
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl IdentityDomainVerifier for DnsJsonIdentityDomainVerifier {
+    async fn challenge_is_published(&self, domain: &str, challenge: &str) -> Result<bool> {
+        let mut url = url::Url::parse(&self.endpoint)?;
+        url.query_pairs_mut()
+            .append_pair("name", domain)
+            .append_pair("type", "TXT");
+        let body = self.http.get(url.as_str()).await?;
+        let response: DnsJsonResponse =
+            serde_json::from_slice(&body).context("decoding TXT DNS response")?;
+        if response.status != 0 && response.status != 3 {
+            anyhow::bail!("DNS TXT query returned status {}", response.status);
+        }
+        let canonical_domain = crate::db::canonical_delivery_hostname(domain)?;
+        for answer in response.answer {
+            if answer.record_type != 16 {
+                continue;
+            }
+            let owner = crate::db::canonical_delivery_hostname(answer.name.trim_end_matches('.'))?;
+            if owner == canonical_domain && dns_txt_value(&answer.data)? == challenge {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
+/// Verifies a reviewed organization-domain ownership challenge.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+pub trait IdentityDomainVerifier: crate::backend::BackendBounds {
+    /// Returns whether the exact TXT challenge is published at the exact domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when DNS cannot be queried or its response is malformed.
+    async fn challenge_is_published(&self, domain: &str, challenge: &str) -> Result<bool>;
+}
+
+fn dns_txt_value(encoded: &str) -> Result<String> {
+    let encoded = encoded.trim();
+    if !encoded.starts_with('"') {
+        return Ok(encoded.to_string());
+    }
+    let mut value = String::new();
+    for segment in serde_json::Deserializer::from_str(encoded).into_iter::<String>() {
+        value.push_str(&segment.context("decoding DNS TXT segment")?);
+    }
+    Ok(value)
+}
+
 fn dns_target_eq(observed: &str, desired: &str) -> bool {
     match (
         observed.trim().parse::<std::net::IpAddr>(),
@@ -2958,5 +3024,21 @@ mod tests {
                 100
             )
             .is_err());
+    }
+
+    #[test]
+    fn dns_txt_values_preserve_exact_content_and_join_segments() {
+        assert_eq!(
+            super::dns_txt_value(r#""aos-domain-verify=abc""#).unwrap(),
+            "aos-domain-verify=abc"
+        );
+        assert_eq!(
+            super::dns_txt_value(r#""aos-domain-" "verify=abc""#).unwrap(),
+            "aos-domain-verify=abc"
+        );
+        assert_eq!(
+            super::dns_txt_value("aos-domain-verify=abc").unwrap(),
+            "aos-domain-verify=abc"
+        );
     }
 }

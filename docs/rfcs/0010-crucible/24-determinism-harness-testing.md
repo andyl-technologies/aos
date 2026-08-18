@@ -75,7 +75,7 @@ invariants/requirements it enforces.
 | `gate:perf-bench` | Cross-layer (Phase ≥ L2), regression | G-9; PERF-1..PERF-34 | Cost-model metrics meet their baselines and no metric regresses beyond threshold. Unlike every other gate this is a *regression* gate (per-metric baselines), not a byte-identity check; it MUST never trade determinism for speed (defined in [`25-performance-targets.md`](25-performance-targets.md) §25.11). |
 | `gate:fleet-equivalence` | Cross-layer (Phase ≥ L3) | DCE-16, DCE-17, DCE-20; G-6 | Single-host and fleet search over the same `(family, seed, budget)` discover the same content-addressed finding-set with byte-identical artifacts; discovery order may differ. |
 | `gate:campaign-continuity` | Cross-layer (Phase ≥ L3) | DCE-11, DCE-12, DCE-26; PERF-28 | Seeding run N+1 from run N's campaign reproduces each corpus entry bit-identically, accumulated coverage is monotone non-decreasing across runs, and cross-provenance reuse is refused. |
-| `gate:signal-fault-system` | Cross-layer (Phase 7) | RFC-0013 executable contract | The closed signal-driven network, storage/9p, and node fault system has exhaustive per-kind evidence, live-boundary coverage, replay identity, documentation, and no retired or specification-only executable path. |
+| `gate:signal-fault-system` | Cross-layer (Phase 7) | RFC-0014 executable contract | The closed signal-driven network, storage/9p, and node fault system has exhaustive per-kind evidence, live-boundary coverage, replay identity, documentation, and no retired or specification-only executable path. |
 
 The first twelve names — `gate:layer0-determinism`, `gate:single-vm-fingerprint`,
 `gate:layer1-injection`, `gate:replay-oracle`, `gate:divergence-bisect`,
