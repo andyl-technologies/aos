@@ -424,7 +424,9 @@ semantics rather than guessing a keyslot number.
 
 The prompt process inherits the recovery service's fixed serial TTY. Use the
 packaged `systemd-ask-password` interface directly; do not depend on an
-unsupported `--tty` compatibility option.
+unsupported `--tty` compatibility option. Pipe its newline-delimited response
+to cryptsetup's stdin passphrase mode, not `--key-file=-`, so the line delimiter
+does not become part of the enrolled recovery key.
 
 On success, mount `/var` with the normal security flags and record that the
 session is authenticated. On failure, close any partial mapping, erase key
