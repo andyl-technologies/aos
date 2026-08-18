@@ -30,6 +30,16 @@ selectors, debug/break/run controls, unit injection, verity options, and their
 `rd.` aliases fail into a passive target with no shell. AOS does not ship the
 upstream debug or transient-command generators in its initrd.
 
+Before PID 1 starts, the AOS EFI stub keeps the UKI's embedded signed command
+line authoritative. Command-line fragments supplied by db-signed PE addons or
+SMBIOS are measured into PCR 12 but not appended, so an external `rdinit=` or
+target selector cannot preempt the initrd validator. Their changed PCR 12
+denies automatic `/var` unseal even though the discarded fragment never
+becomes part of `/proc/cmdline`. Under enforcing Secure Boot, EFI LoadOptions
+are discarded before command-line measurement when an embedded command line
+exists, and unsigned addons are rejected by the image loader. Those rejected
+inputs therefore leave the signed PCR 12 value unchanged.
+
 This early validation establishes an unambiguous tuple, but PCR 12 remains the
 authorization boundary for appended boot input. Until the documented PCR-12
 migration is complete, do not describe the tuple guard alone as preventing an

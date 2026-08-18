@@ -52,6 +52,17 @@ so their failure jobs cannot win the transaction before the passive target.
 success marker. This makes the guard a storage dependency instead of a
 diagnostic race.
 
+The AOS systemd-stub also treats an embedded UKI `.cmdline` as authoritative.
+Db-signed PE-addon and SMBIOS command-line fragments are measured into PCR 12
+but are not appended when an embedded command line exists. This boundary is
+earlier than PID 1: selectors such as `rd.systemd.unit=` and `rdinit=` must not
+be allowed to choose a process or target before a userspace validator can run.
+Under enforcing Secure Boot, EFI LoadOptions are discarded before command-line
+measurement when an embedded command line exists, while unsigned addons are
+rejected by the image loader. The initrd parser remains a defense-in-depth
+check for any forbidden control field that nevertheless reaches the effective
+command line.
+
 Phase 2 validates internal consistency but cannot by itself distinguish a
 complete valid slot-A tuple appended in place of slot B (or the reverse),
 because both UKIs currently share the same initrd. Phase 3 closes that
@@ -218,12 +229,20 @@ re-enable them.
 
 ### 2.3 Negative coverage
 
-Boot with firmware/SMBIOS-added duplicates for each identity field and assert:
+Parser vectors cover duplicates of every identity field and every forbidden
+systemd control alias. Executable tests cover every earlier transport boundary:
 
-- the verity mapper is not accepted as the root;
-- `/var` is not TPM-unlocked or mounted;
-- no normal initrd root shell is available; and
-- the failure is attributed to the guard in the journal/console.
+- EFI LoadOptions are discarded before measurement under enforcing Secure
+  Boot, leaving the embedded command line, clean PCR 12, and unattended unlock
+  intact;
+- a db-signed addon and SMBIOS fragments are measured but discarded, leaving
+  the embedded command line intact while the changed PCR 12 denies unattended
+  `/var` unlock;
+- an unsigned addon is rejected before measurement and the clean boot proceeds;
+- a signed addon attached to a recovery UKI cannot escape its bounded console;
+  and
+- after every changed-PCR negative, a clean relaunch restores the signed PCR
+  value and the exact retained recovery key still authorizes the volume.
 
 ## Phase 3: Bind `/var` to PCR 12
 
@@ -299,9 +318,11 @@ because it has no PCR-12 authorization field.
 
 ### 3.3 Injection tests
 
-Inject an appended command line that changes PCR 12 and prove automatic unlock
-fails. Exercise at least `SYSTEMD_SULOGIN_FORCE=1`, a duplicate `roothash=`, and
-an alternate `rd.systemd.unit=`. The recovery key must still unlock the volume.
+Inject an external command-line fragment that changes PCR 12 and prove the
+stub measures but does not append it and automatic unlock fails. Exercise at
+least `SYSTEMD_SULOGIN_FORCE=1`, a duplicate `roothash=`, and an alternate
+`rd.systemd.unit=`; also exercise `rdinit=/bin/sh` because it is consumed by
+the kernel before PID 1. The recovery key must still unlock the volume.
 The fleet test also extends PCR 12 directly after a valid boot to isolate the
 TPM-policy property: exact TPM-token use and local boot-commit verification
 must fail, while the exact retained recovery keyslot must still open.
