@@ -57,6 +57,12 @@ pub fn cache_control(path: &str) -> &'static str {
     }
 }
 
+/// Reports whether a machine-surface path is replaceable metadata.
+#[must_use]
+pub fn is_mutable_path(path: &str) -> bool {
+    is_machine_path(path) && cache_control(path) == MUTABLE_CACHE_CONTROL
+}
+
 /// Returns the HTTP media type for a machine path.
 #[must_use]
 pub fn content_type(path: &str) -> &'static str {
@@ -227,6 +233,7 @@ mod tests {
             "releases/1/0/0/objects/pack/pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.idx",
         ] {
             assert!(is_machine_path(path), "{path}");
+            assert!(is_mutable_path(path), "{path}");
             assert_eq!(cache_control(path), MUTABLE_CACHE_CONTROL, "{path}");
         }
         for path in [
@@ -238,7 +245,9 @@ mod tests {
             "images/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aos.qcow2",
         ] {
             assert!(is_machine_path(path), "{path}");
+            assert!(!is_mutable_path(path), "{path}");
             assert_eq!(cache_control(path), IMMUTABLE_CACHE_CONTROL, "{path}");
         }
+        assert!(!is_mutable_path("not/a/machine/path"));
     }
 }

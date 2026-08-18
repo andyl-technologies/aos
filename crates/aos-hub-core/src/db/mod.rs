@@ -9741,12 +9741,12 @@ impl Database {
             .context("created surface object disappeared")
     }
 
-    /// Converts one legacy immutable Git object into a replaceable pointer
+    /// Converts one legacy immutable registry object into a replaceable pointer
     /// while preserving its currently published identity.
     ///
-    /// This migration is reserved for loose-object paths whose URL binds the
-    /// decompressed object, replaceable pack indexes, and per-release
-    /// `objects/info/*` server metadata.
+    /// This migration is reserved for paths classified as replaceable by the
+    /// shared machine-surface policy. It lets deployments adopt stricter path
+    /// semantics without taking the currently published bytes offline.
     /// When a current publication exists, the converted row remains owned by
     /// it until the new publication completes, so reads stay available
     /// throughout migration.
@@ -9757,7 +9757,7 @@ impl Database {
     /// the same registry, the object is active and immutable (or was already
     /// converted by an equivalent concurrent admission), or the database
     /// operation fails.
-    pub async fn convert_registry_git_object_to_mutable(
+    pub async fn convert_registry_object_to_mutable(
         &self,
         registry_id: i64,
         surface_object_id: i64,
@@ -9766,11 +9766,8 @@ impl Database {
     ) -> Result<SurfaceObjectRecord> {
         validate_key_bytes(object_key, "surface object key", 512)?;
         validate_key_bytes(preparing_publication_id, "publication id", 64)?;
-        if !aos_registry_surface::keymap::is_loose_git_object_path(object_key)
-            && !aos_registry_surface::keymap::is_release_object_info_path(object_key)
-            && !aos_registry_surface::keymap::is_git_pack_index_path(object_key)
-        {
-            bail!("surface object is not replaceable Git object metadata");
+        if !aos_registry_surface::keymap::is_mutable_path(object_key) {
+            bail!("surface object path is not replaceable metadata");
         }
         let now = unix_now();
         self.backend
@@ -9802,7 +9799,7 @@ impl Database {
         let object = self
             .surface_object(surface_object_id)
             .await?
-            .context("converted loose object disappeared")?;
+            .context("converted registry object disappeared")?;
         if object.registry_id != Some(registry_id)
             || object.object_key != object_key
             || object.lifecycle_state != "active"
@@ -29655,7 +29652,7 @@ source_nar_hash = ""
     }
 
     #[tokio::test]
-    async fn legacy_git_object_conversion_preserves_identity_and_is_idempotent() {
+    async fn legacy_registry_object_conversion_follows_shared_mutability_policy() {
         let db = Database::open_in_memory().await.unwrap();
         let registry_id = db
             .register_registry("loose-migration", &[], false)
@@ -29717,7 +29714,7 @@ source_nar_hash = ""
 
         for _ in 0..2 {
             let converted = db
-                .convert_registry_git_object_to_mutable(
+                .convert_registry_object_to_mutable(
                     registry_id,
                     object.id,
                     object_key,
@@ -29747,7 +29744,7 @@ source_nar_hash = ""
             .await
             .unwrap();
         let converted = db
-            .convert_registry_git_object_to_mutable(
+            .convert_registry_object_to_mutable(
                 registry_id,
                 release_info.id,
                 release_info_key,
@@ -29778,7 +29775,7 @@ source_nar_hash = ""
                 .await
                 .unwrap();
             let converted = db
-                .convert_registry_git_object_to_mutable(
+                .convert_registry_object_to_mutable(
                     registry_id,
                     pack_index.id,
                     pack_index_key,
@@ -29793,6 +29790,56 @@ source_nar_hash = ""
                 Some(current_publication_id)
             );
         }
+
+        let narinfo_key = "00wvyrrlz4wggxnpkhl91im5ibh493m5.narinfo";
+        let narinfo = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry_id),
+                object_key: narinfo_key.into(),
+                content_hash: Some("1".repeat(64)),
+                size: Some(512),
+                object_kind: "immutable".into(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        let converted = db
+            .convert_registry_object_to_mutable(
+                registry_id,
+                narinfo.id,
+                narinfo_key,
+                publication_id,
+            )
+            .await
+            .unwrap();
+        assert_eq!(converted.object_kind, "mutable_pointer");
+        assert_eq!(
+            converted.mutable_publication_id.as_deref(),
+            Some(current_publication_id)
+        );
+
+        let nar_key = format!("nar/store-sha256-{}.nar.zst", "2".repeat(64));
+        let nar = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry_id),
+                object_key: nar_key.clone(),
+                content_hash: Some("2".repeat(64)),
+                size: Some(4096),
+                object_kind: "immutable".into(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        let error = db
+            .convert_registry_object_to_mutable(
+                registry_id,
+                nar.id,
+                &nar_key,
+                publication_id,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not replaceable metadata"));
     }
 
     #[tokio::test]

@@ -24032,13 +24032,11 @@ impl RpcService {
                     Some(existing)
                         if existing.object_kind == "immutable"
                             && object.kind == "mutable_pointer"
-                            && (keymap::is_loose_git_object_path(&object.path)
-                                || keymap::is_release_object_info_path(&object.path)
-                                || keymap::is_git_pack_index_path(&object.path)) =>
+                            && keymap::is_mutable_path(&object.path) =>
                     {
                         Some(
                             self.db
-                                .convert_registry_git_object_to_mutable(
+                                .convert_registry_object_to_mutable(
                                     registry.id,
                                     existing.id,
                                     &object.path,
