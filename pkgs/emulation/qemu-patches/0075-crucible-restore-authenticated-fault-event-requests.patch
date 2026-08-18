@@ -12,10 +12,10 @@ index bb261cab9..d605fed76 100644
      const QemuCrucibleFaultRule *rule);
  const uint8_t *qemu_crucible_fault_rule_target_hash(
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 224ae50ec..0db7a030a 100644
+index 1c39e5e95..55bf38fd1 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -2285,15 +2285,16 @@ int qemu_plugin_crucible_lifecycle_set_process_generation(
+@@ -2295,15 +2295,16 @@ int qemu_plugin_crucible_lifecycle_set_process_generation(
  /**
   * struct qemu_plugin_crucible_fault_event - one real rule occurrence
   *
@@ -35,7 +35,7 @@ index 224ae50ec..0db7a030a 100644
      uint64_t event_sequence;
      uint64_t rule_command_sequence;
      uint64_t observed_icount;
-@@ -2420,6 +2421,16 @@ QEMU_PLUGIN_API
+@@ -2430,6 +2431,16 @@ QEMU_PLUGIN_API
  int qemu_plugin_crucible_fault_event_peek(
      struct qemu_plugin_crucible_fault_event *event, size_t *payload_length);
  
@@ -935,7 +935,7 @@ index e1e096d68..cf8a9e759 100644
          effect = after + length;
          for (size_t i = 0; i < length; i++) {
 diff --git a/tests/tcg/plugins/crucible-register.c b/tests/tcg/plugins/crucible-register.c
-index 9def9ee38..b4bbfa658 100644
+index a50423054..062b5aa73 100644
 --- a/tests/tcg/plugins/crucible-register.c
 +++ b/tests/tcg/plugins/crucible-register.c
 @@ -14,6 +14,7 @@
@@ -977,7 +977,7 @@ index 9def9ee38..b4bbfa658 100644
  static bool test_mask_bit(const uint8_t *mask, uint32_t bit)
  {
      return (mask[bit / 8] & (1U << (bit % 8))) != 0;
-@@ -559,15 +584,17 @@ static void test_submit_commit(
+@@ -560,15 +585,17 @@ static void test_submit_commit(
  static void test_poll_events(void)
  {
      struct qemu_plugin_crucible_fault_event event;
@@ -998,7 +998,7 @@ index 9def9ee38..b4bbfa658 100644
          if (status < 0) {
              test_fail("register event polling failed");
          }
-@@ -576,23 +603,26 @@ static void test_poll_events(void)
+@@ -577,23 +604,26 @@ static void test_poll_events(void)
          }
          if (status == 1 && event.command_kind ==
                  CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM) {

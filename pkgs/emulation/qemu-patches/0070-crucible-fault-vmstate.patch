@@ -1,8 +1,8 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 1191bc4ed..2f9766c27 100644
+index d82b9e36c..3d4fa7c78 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -2023,6 +2023,31 @@ size_t qemu_plugin_crucible_fault_accelerator_manifest(
+@@ -2029,6 +2029,31 @@ size_t qemu_plugin_crucible_fault_accelerator_manifest(
      struct qemu_plugin_crucible_fault_accelerator_capability *out,
      size_t capacity);
  

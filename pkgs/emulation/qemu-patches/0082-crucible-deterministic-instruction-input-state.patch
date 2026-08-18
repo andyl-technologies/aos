@@ -1,8 +1,16 @@
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index d605fed76..472667fd1 100644
+index d605fed76..829ae3868 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
-@@ -301,6 +301,9 @@ int qemu_crucible_fault_register_result_validate(
+@@ -280,6 +280,7 @@ void qemu_crucible_fault_accelerator_device_register(
+ void qemu_crucible_fault_accelerator_device_unregister(void *opaque);
+ 
+ int qemu_crucible_fault_register_validate(const QemuCrucibleFaultRule *rule);
++int qemu_crucible_fault_register_state_fingerprint(uint8_t output[32]);
+ bool qemu_crucible_fault_register_ensure_registered(void);
+ bool qemu_crucible_fault_register_rules_active(void);
+ bool qemu_crucible_fault_register_boundaries_active(void);
+@@ -301,6 +302,9 @@ int qemu_crucible_fault_register_result_validate(
      const QObject *mutation, uint16_t model_phase);
  int qemu_crucible_fault_execution_fingerprint(
      uint64_t observed_icount, uint8_t fingerprint[32]);
@@ -215,11 +223,71 @@ index 061b6e087..1891f24fa 100644
                  error_report(
                      "Crucible could not fingerprint interrupted replay");
                  abort();
+diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
+index b84e544c7..ba3c8484a 100644
+--- a/plugins/crucible-fault-node.c
++++ b/plugins/crucible-fault-node.c
+@@ -3293,6 +3293,8 @@ static int node_prepare(
+     GByteArray *result_payload)
+ {
+     CrucibleNodeStaging *staging = state;
++    uint8_t register_state_before[32] = { 0 };
++    bool register_state_captured = false;
+     int status;
+ 
+     staging->prior = node_find_rule(staging->rule.command_kind,
+@@ -3322,8 +3324,26 @@ static int node_prepare(
+     }
+     if (staging->rule.command_kind ==
+             CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM) {
++        status = qemu_crucible_fault_register_state_fingerprint(
++            register_state_before);
++        if (status != 0) {
++            result->status = CRUCIBLE_FAULT_STATUS_INTERNAL_ERROR;
++            return status;
++        }
++        register_state_captured = true;
+         status = qemu_crucible_fault_register_validate(&staging->rule);
+         if (status != 0) {
++            uint8_t register_state_after[32];
++
++            if (qemu_crucible_fault_register_state_fingerprint(
++                    register_state_after) != 0 ||
++                memcmp(register_state_before, register_state_after,
++                       sizeof(register_state_before)) != 0) {
++                result->status = CRUCIBLE_FAULT_STATUS_INTERNAL_ERROR;
++                return -EIO;
++            }
++            memcpy(result->before_hash, register_state_before, 32);
++            memcpy(result->after_hash, register_state_after, 32);
+             result->status = status == -ENOTSUP ?
+                 CRUCIBLE_FAULT_STATUS_UNSUPPORTED_CAPABILITY :
+                 CRUCIBLE_FAULT_STATUS_INVALID_TARGET;
+@@ -3438,6 +3458,19 @@ static int node_prepare(
+     } else if (memcmp(command->expected_precondition_hash,
+                       staging->before_hash,
+                       sizeof(staging->before_hash)) != 0) {
++        if (register_state_captured) {
++            uint8_t register_state_after[32];
++
++            if (qemu_crucible_fault_register_state_fingerprint(
++                    register_state_after) != 0 ||
++                memcmp(register_state_before, register_state_after,
++                       sizeof(register_state_before)) != 0) {
++                result->status = CRUCIBLE_FAULT_STATUS_INTERNAL_ERROR;
++                return -EIO;
++            }
++            memcpy(result->before_hash, register_state_before, 32);
++            memcpy(result->after_hash, register_state_after, 32);
++        }
+         result->status = CRUCIBLE_FAULT_STATUS_PRECONDITION_MISMATCH;
+         return -ESTALE;
+     }
 diff --git a/plugins/crucible-fault-register.c b/plugins/crucible-fault-register.c
-index 893df8e71..5af7a7679 100644
+index 90258bee2..b6a4ed0cc 100644
 --- a/plugins/crucible-fault-register.c
 +++ b/plugins/crucible-fault-register.c
-@@ -614,33 +614,25 @@ static gint crucible_register_cpu_index_compare(gconstpointer left,
+@@ -703,33 +703,25 @@ static gint crucible_register_cpu_index_compare(gconstpointer left,
             (left_cpu->cpu_index < right_cpu->cpu_index);
  }
  
@@ -260,7 +328,7 @@ index 893df8e71..5af7a7679 100644
      g_ptr_array_sort(cpus, crucible_register_cpu_index_compare);
      for (guint cpu_index = 0; cpu_index < cpus->len; cpu_index++) {
          cpu = g_ptr_array_index(cpus, cpu_index);
-@@ -667,8 +659,36 @@ static int crucible_register_execution_fingerprint(
+@@ -757,8 +749,56 @@ static int crucible_register_execution_fingerprint(
              stq_le_p(framing + 8, bytes);
              g_checksum_update(checksum, framing, sizeof(framing));
              g_checksum_update(checksum, value, bytes);
@@ -271,6 +339,26 @@ index 893df8e71..5af7a7679 100644
          }
      }
 +    return 0;
++}
++
++int qemu_crucible_fault_register_state_fingerprint(uint8_t output[32])
++{
++    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    gsize digest_len = 32;
++
++    if (!output || !qemu_plugin_crucible_single_threaded_rr() ||
++        !current_cpu || !crucible_register_manifest_init()) {
++        return -EPERM;
++    }
++    g_checksum_update(
++        checksum,
++        (const uint8_t *)"crucible.register-state.v1\0",
++        strlen("crucible.register-state.v1") + 1);
++    if (crucible_register_state_update(checksum, NULL, NULL) != 0) {
++        return -EIO;
++    }
++    g_checksum_get_digest(checksum, output, &digest_len);
++    return digest_len == 32 ? 0 : -EIO;
 +}
 +
 +static int crucible_register_execution_fingerprint(
@@ -297,7 +385,7 @@ index 893df8e71..5af7a7679 100644
      g_checksum_get_digest(checksum, output, &digest_len);
      return digest_len == 32 ? 0 : -EIO;
  }
-@@ -685,6 +705,46 @@ int qemu_crucible_fault_execution_fingerprint(
+@@ -775,6 +815,46 @@ int qemu_crucible_fault_execution_fingerprint(
          observed_icount, &rr, fingerprint);
  }
  
@@ -561,3 +649,118 @@ index db8ef828b..5b0808556 100644
      }
      memset(&test_command, 0, sizeof(test_command));
      test_command.abi_major = CRUCIBLE_FAULT_COMMAND_ABI_MAJOR;
+diff --git a/tests/tcg/plugins/crucible-register.c b/tests/tcg/plugins/crucible-register.c
+index 160c386d6..407287a3f 100644
+--- a/tests/tcg/plugins/crucible-register.c
++++ b/tests/tcg/plugins/crucible-register.c
+@@ -570,8 +570,6 @@ static void test_submit_commit(
+     if (test_mode == TEST_MODE_REJECT_PRECONDITION) {
+         test_initial_target_len = test_read_fault_register(
+             test_initial_target);
+-        test_initial_registers = test_read_all_registers(
+-            &test_initial_register_len);
+         test_command.expected_precondition_hash[0] ^= 1;
+     }
+     if (qemu_plugin_crucible_fault_submit(
+@@ -669,7 +667,6 @@ static void test_tcg_exec(unsigned int cpu_index, uint64_t icount,
+     (void)icount;
+     (void)opaque;
+     if (test_mode_rejects() &&
+-        test_mode != TEST_MODE_REJECT_MISMATCHED_REGISTER_IDENTITY &&
+         !test_initial_command_submitted) {
+         uint8_t cr0[64];
+         uint64_t current_icount;
+@@ -690,8 +687,13 @@ static void test_tcg_exec(unsigned int cpu_index, uint64_t icount,
+         if (test_mode != TEST_MODE_REJECT_PRECONDITION) {
+             test_initial_target_len = test_read_fault_register(
+                 test_initial_target);
++        }
++        if (test_mode ==
++                TEST_MODE_REJECT_MISMATCHED_REGISTER_IDENTITY) {
+             test_initial_registers = test_read_all_registers(
+                 &test_initial_register_len);
++            /* A synchronous rejection may invoke completion reentrantly. */
++            test_submit_atomic_verified = true;
+         }
+         if (qemu_plugin_crucible_fault_submit(
+                 &test_command, test_payload, test_payload_len) != 0) {
+@@ -701,19 +703,6 @@ static void test_tcg_exec(unsigned int cpu_index, uint64_t icount,
+         qemu_plugin_force_vcpu_exit();
+         return;
+     }
+-    if (test_mode_rejects() &&
+-        test_mode != TEST_MODE_REJECT_MISMATCHED_REGISTER_IDENTITY &&
+-        test_mode != TEST_MODE_REJECT_PRECONDITION &&
+-        test_initial_target_len == 0) {
+-        uint64_t current_icount = qemu_plugin_crucible_icount();
+-
+-        if (current_icount == 0 ||
+-            current_icount >= test_command.target_icount) {
+-            test_fail("rejection target was not sampled before dispatch");
+-        }
+-        test_initial_target_len = test_read_fault_register(
+-            test_initial_target);
+-    }
+     if (test_mode == TEST_MODE_PERSISTENT && test_rule_installed) {
+         g_autoptr(GByteArray) observed = g_byte_array_new();
+ 
+@@ -763,9 +752,7 @@ static void test_completion(void *opaque)
+                  CRUCIBLE_FAULT_STATUS_MALFORMED_COMMAND :
+                  CRUCIBLE_FAULT_STATUS_INVALID_TARGET);
+ 
+-            if (delayed) {
+-                current_len = test_read_fault_register(current);
+-            }
++            current_len = test_read_fault_register(current);
+             if (result.status != expected_status ||
+                 result.applied_icount != 0 || evidence_len != 0 ||
+                 (delayed &&
+@@ -775,10 +762,13 @@ static void test_completion(void *opaque)
+                       CRUCIBLE_FAULT_COMMAND_SEMANTIC_VERSION ||
+                   result.capability_version != 1 ||
+                   result.observed_icount != test_command.target_icount)) ||
++                !test_rejection_target_unchanged(current, current_len) ||
+                 (delayed &&
+-                 !test_rejection_target_unchanged(current, current_len)) ||
+-                (delayed && !test_rejection_state_unchanged()) ||
+-                (!delayed && !test_submit_atomic_verified)) {
++                 (!test_bytes_nonzero(result.before_hash, 32) ||
++                  memcmp(result.before_hash, result.after_hash, 32) != 0)) ||
++                (!delayed &&
++                 (!test_submit_atomic_verified ||
++                  !test_rejection_state_unchanged()))) {
+                 g_printerr("rejection debug mode=%s status=%u expected=%u "
+                            "applied=%" G_GUINT64_FORMAT
+                            " evidence=%zu before-bytes=%zu after-bytes=%zu "
+@@ -1062,30 +1052,12 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
+     qemu_plugin_register_crucible_fault_completion_cb(test_completion, NULL);
+     qemu_plugin_register_tcg_exec_cb(test_tcg_exec, NULL);
+     qemu_plugin_register_atexit_cb(id, test_exit, NULL);
+-    if (test_mode_rejects() &&
+-        test_mode == TEST_MODE_REJECT_MISMATCHED_REGISTER_IDENTITY) {
+-        test_initial_registers = test_read_all_registers(
+-            &test_initial_register_len);
+-        /* A synchronous rejection may invoke completion reentrantly. */
+-        test_submit_atomic_verified = true;
+-    }
+-    if (!test_mode_rejects() ||
+-        test_mode == TEST_MODE_REJECT_MISMATCHED_REGISTER_IDENTITY) {
++    if (!test_mode_rejects()) {
+         if (qemu_plugin_crucible_fault_submit(
+                 &test_command, test_payload, test_payload_len) != 0) {
+             test_fail("QEMU rejected the register mutation preparation");
+         }
+         test_initial_command_submitted = true;
+     }
+-    if (test_initial_registers) {
+-        g_autofree uint8_t *after = NULL;
+-        size_t after_len;
+-
+-        after = test_read_all_registers(&after_len);
+-        if (after_len != test_initial_register_len ||
+-            memcmp(after, test_initial_registers, after_len) != 0) {
+-            test_fail("rejected submit changed canonical register state");
+-        }
+-    }
+     return 0;
+ }

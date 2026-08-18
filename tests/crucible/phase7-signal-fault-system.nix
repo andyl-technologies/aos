@@ -166,7 +166,7 @@ in
           fi
           if grep -R -n -E 'inject_[f]ault|heal_[f]ault|Inject[F]ault|Heal[F]ault|FaultPlan|PermanentAt|crucible\.scenario-family\.v1' \
             docs/rfcs/0010-crucible docs/users/crucible \
-            | grep -v 'there is no `Inject[F]ault`, `HealFault`, `FaultSpec`' \
+            | grep -v 'there is no `Inject[F]ault`, `Heal[F]ault`, `FaultSpec`' \
             | grep -v 'checks.crucible.phase4.faultPlan'
           then
             echo 'FAIL: retired normative fault or scenario-family vocabulary is present' >&2

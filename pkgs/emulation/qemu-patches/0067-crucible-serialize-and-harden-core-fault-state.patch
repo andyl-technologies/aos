@@ -3982,7 +3982,7 @@ index 5738b87ae..46504433f 100644
  
  type_init(crucible_memory_access_faults_register)
 diff --git a/plugins/crucible-fault-register.c b/plugins/crucible-fault-register.c
-index dbd64494e..893df8e71 100644
+index 4c19a52eb..90258bee2 100644
 --- a/plugins/crucible-fault-register.c
 +++ b/plugins/crucible-fault-register.c
 @@ -8,6 +8,7 @@
@@ -3993,7 +3993,7 @@ index dbd64494e..893df8e71 100644
  #include "qemu/crucible-fault.h"
  #include "qemu/error-report.h"
  #include "qemu/qemu-plugin.h"
-@@ -389,6 +390,46 @@ int qemu_crucible_fault_register_numeric_id(
+@@ -477,6 +478,46 @@ int qemu_crucible_fault_register_numeric_id(
      return 0;
  }
  

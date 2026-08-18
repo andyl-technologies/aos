@@ -414,7 +414,7 @@ index 1622d08db..4ff51630a 100644
  #define QEMU_CRUCIBLE_FAULT_MEMORY_RULES_ACTIVE_DECLARED
  bool qemu_crucible_fault_memory_rules_active(void);
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 74ce55d32..957b3413c 100644
+index 5b5103605..f8c286b3b 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -966,9 +966,9 @@ int qemu_plugin_icount_at_tb_entry(uint64_t tb_insns,
@@ -430,7 +430,7 @@ index 74ce55d32..957b3413c 100644
   */
  QEMU_PLUGIN_API
  void qemu_plugin_force_vcpu_exit(void);
-@@ -1732,6 +1732,22 @@ int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
+@@ -1738,6 +1738,22 @@ int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
                                               size_t out_value_capacity,
                                               size_t *out_value_len);
  
@@ -3848,7 +3848,7 @@ index 6c36ed529..76b092a32 100644
                              qdict_get_qdict(policy, "parameters"),
                              "exception"),
 diff --git a/plugins/crucible-fault-register.c b/plugins/crucible-fault-register.c
-index cd5f41619..dbd64494e 100644
+index ef2cf2f96..4c19a52eb 100644
 --- a/plugins/crucible-fault-register.c
 +++ b/plugins/crucible-fault-register.c
 @@ -11,6 +11,8 @@
@@ -3860,7 +3860,7 @@ index cd5f41619..dbd64494e 100644
  
  #define CRUCIBLE_REGISTER_CAP_IMPULSE (1U << 0)
  #define CRUCIBLE_REGISTER_CAP_PERSISTENT (1U << 1)
-@@ -369,6 +371,24 @@ static const CrucibleRegisterTarget *crucible_register_target(
+@@ -457,6 +459,24 @@ static const CrucibleRegisterTarget *crucible_register_target(
                            CrucibleRegisterTarget, numeric_id - 1);
  }
  
@@ -3885,7 +3885,7 @@ index cd5f41619..dbd64494e 100644
  static bool crucible_register_field(const QemuCrucibleFaultRule *rule,
                                      uint16_t tag, uint16_t type,
                                      const uint8_t **data, uint32_t *length)
-@@ -612,6 +632,18 @@ static int crucible_register_execution_fingerprint(
+@@ -702,6 +722,18 @@ static int crucible_register_execution_fingerprint(
      return digest_len == 32 ? 0 : -EIO;
  }
  
@@ -3904,7 +3904,7 @@ index cd5f41619..dbd64494e 100644
  static void crucible_register_transform(const CrucibleRegisterApply *apply,
                                          uint8_t *value)
  {
-@@ -764,13 +796,164 @@ rollback:
+@@ -854,13 +886,164 @@ rollback:
      return -EIO;
  }
  
@@ -4070,7 +4070,7 @@ index cd5f41619..dbd64494e 100644
      if (!crucible_register_decode(rule, &apply)) {
          return -EINVAL;
      }
-@@ -834,6 +1017,7 @@ bool qemu_crucible_fault_register_rules_active(void)
+@@ -924,6 +1107,7 @@ bool qemu_crucible_fault_register_rules_active(void)
  bool qemu_crucible_fault_register_boundaries_active(void)
  {
      return qemu_crucible_fault_register_rules_active() ||
@@ -4078,7 +4078,7 @@ index cd5f41619..dbd64494e 100644
          qemu_crucible_fault_next_icount(
              CRUCIBLE_FAULT_PHASE_BEFORE_INSTRUCTION) != UINT64_MAX ||
          qemu_crucible_fault_next_icount(
-@@ -857,6 +1041,8 @@ void qemu_crucible_fault_register_instruction_boundary(
+@@ -947,6 +1131,8 @@ void qemu_crucible_fault_register_instruction_boundary(
      qemu_crucible_fault_rule_foreach(
          CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM,
          crucible_register_persistent_visit, &visit);
