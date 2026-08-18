@@ -263,7 +263,9 @@ in
               "$store_systemd/bin/portablectl" \
               "$store_systemd/bin/resolvectl" \
               "$store_systemd/bin/systemd-creds" \
+              "$store_systemd/bin/systemd-cryptsetup" \
               "$store_systemd/bin/systemd-cryptenroll" \
+              "$store_systemd/bin/systemd-repart" \
               "$store_systemd/bin/systemd-run" \
               "$store_systemd/bin/systemd-sysext" \
               "$store_systemd/bin/systemd-sysupdate" \
@@ -291,11 +293,19 @@ in
               "$store_systemd/lib/systemd/system/systemd-cryptsetup@.service" \
               "$store_systemd/lib/systemd/system/systemd-networkd.service" \
               "$store_systemd/lib/systemd/system/systemd-networkd.socket" \
-              "$store_systemd/lib/systemd/system/systemd-networkd-wait-online.service"
+              "$store_systemd/lib/systemd/system/systemd-networkd-wait-online.service" \
+              "$store_systemd/lib/systemd/system/systemd-repart.service" \
+              "$store_systemd/lib/systemd/system/systemd-repart.socket" \
+              "$store_systemd/lib/systemd/system/initrd-root-fs.target.wants/systemd-repart.service" \
+              "$store_systemd/lib/systemd/system/sockets.target.wants/systemd-repart.socket" \
+              "$store_systemd/lib/systemd/system/sysinit.target.wants/systemd-repart.service"
           done
           for store_util_linux in root/nix/store/*-util-linux-*; do
             [ -d "$store_util_linux" ] || continue
-            rm -f "$store_util_linux/bin/agetty" "$store_util_linux/sbin/sulogin"
+            rm -f \
+              "$store_util_linux/bin/agetty" \
+              "$store_util_linux/sbin/agetty" \
+              "$store_util_linux/sbin/sulogin"
           done
 
           # Load-bearing archive audit: fail if a future change reintroduces a
