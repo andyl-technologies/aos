@@ -266,7 +266,7 @@ fn open_with_recovery_key(var_device: &std::path::Path) -> Result<(), Maintenanc
     fs::create_dir_all("/run/aos-recovery")?;
     let keyslot = recovery_keyslot(var_device)?;
     let mut ask = Command::new("/bin/systemd-ask-password")
-        .args(["--tty", "--timeout=0", "AOS /var recovery key:"])
+        .args(["--timeout=0", "AOS /var recovery key:"])
         .stdout(Stdio::piped())
         .spawn()?;
     let password = ask

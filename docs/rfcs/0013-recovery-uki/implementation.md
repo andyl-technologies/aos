@@ -422,6 +422,10 @@ Prompt through `systemd-ask-password` and invoke `cryptsetup` with token-based
 automatic unlock disabled. Select the LUKS recovery slot by its supported token
 semantics rather than guessing a keyslot number.
 
+The prompt process inherits the recovery service's fixed serial TTY. Use the
+packaged `systemd-ask-password` interface directly; do not depend on an
+unsupported `--tty` compatibility option.
+
 On success, mount `/var` with the normal security flags and record that the
 session is authenticated. On failure, close any partial mapping, erase key
 material from temporary storage, and return to the bounded menu.
