@@ -13,16 +13,17 @@ Live canonical or single-register observation is permitted only when all of the
 following are true:
 
 1. the `sim` accelerator is running deterministic single-thread TCG;
-2. the caller is inside an exact plugin callback or the internal exact
-   instruction-boundary dispatcher;
+2. the caller is inside an exact plugin callback or the internal deterministic
+   fault-boundary dispatcher;
 3. `current_cpu` exists; and
 4. `current_cpu->cpu_index` equals the serialized RR owner.
 
 A stale `current_cpu`, a scheduler handoff, an ordinary plugin callback, MTTCG,
-and an unowned main-loop context fail closed. The internal dispatcher brackets
-the complete prepare/commit/completion transaction with the same nestable exact
-boundary token, so node validation and reentrant completion cannot fall out of
-the admitted ownership context. The only other admitted context is a
+and an unowned main-loop context fail closed. For both node and instruction
+phases, the central internal dispatcher brackets the complete
+prepare/commit/completion transaction with the same nestable exact-boundary
+token, so validation and reentrant completion cannot fall out of the admitted
+ownership context. The only other admitted context is a
 non-running VM observed while the caller holds the BQL. This stopped path is for
 terminal-state export and may inspect every realized vCPU.
 
@@ -84,6 +85,8 @@ and an unchanged full selected-register value.
 
 - `plugins/api-system.c`, `plugins/api.c`, and public plugin headers expose and
   enforce exact-boundary RR ownership.
+- `plugins/crucible-fault.c` owns exact admission for the full internal boundary
+  transaction.
 - `plugins/crucible-fault-register.c` owns manifest-wide validation, canonical
   hashing, and effect counters.
 - `plugins/crucible-fault-node.c` owns fail-closed rejection transactions.
