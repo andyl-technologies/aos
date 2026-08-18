@@ -102,7 +102,7 @@ const HOT_PATH_OWNERS: &[HotPathOwner] = &[
         &[".signal_plugin_wake()"],
     ),
     owner(
-        "crucible-shmem/src/shmem/frame_node.rs",
+        "crucible-shmem/src/shmem/frame_node/runtime.rs",
         &["pub fn publish_scheduler_inbox_and_ceiling"],
         &[],
     ),
@@ -125,11 +125,13 @@ const HOT_PATH_OWNERS: &[HotPathOwner] = &[
         &[],
     ),
     owner(
-        "crucible-shmem/src/shmem/region.rs",
-        &[
-            "pub fn enqueue_directed_frame",
-            "pub fn dequeue_directed_frame",
-        ],
+        "crucible-shmem/src/shmem/region/allocation_io.rs",
+        &["pub fn enqueue_directed_frame"],
+        &[],
+    ),
+    owner(
+        "crucible-shmem/src/shmem/region/allocation_scheduler.rs",
+        &["pub fn dequeue_directed_frame"],
         &[],
     ),
     owner(
@@ -387,7 +389,7 @@ fn advance_and_delivery_owners_have_no_socket_or_control_io() -> Result<(), Box<
     );
     assert_eq!(
         inventoried_paths.len(),
-        28,
+        29,
         "the scoped concrete Rust hot-path owner inventory must remain explicit"
     );
 
