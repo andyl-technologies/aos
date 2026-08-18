@@ -1,0 +1,23 @@
+diff --git a/plugins/crucible-fault-clock.c b/plugins/crucible-fault-clock.c
+index 8cf6f5177..8c17bf25f 100644
+--- a/plugins/crucible-fault-clock.c
++++ b/plugins/crucible-fault-clock.c
+@@ -4284,7 +4284,17 @@ static void crucible_clock_vmstate_commit(void *opaque)
+         CrucibleClockSource *source = &g_array_index(
+             crucible_clock_sources, CrucibleClockSource, i);
+ 
+-        crucible_clock_rearm_source(source);
++        /*
++         * Native QEMU VMState has already restored timers for an inert source.
++         * Recomputing those deadlines is both unnecessary and incorrect: a
++         * device rearm callback can observe a transient restore coordinate
++         * which is meaningful only when a Crucible transform is active.
++         */
++        if (qemu_crucible_fault_clock_source_active(
++                source->capability.source_kind,
++                source->capability.instance)) {
++            crucible_clock_rearm_source(source);
++        }
+         crucible_clock_wander_timer_rearm(source);
+     }
+     crucible_clock_restoring = false;

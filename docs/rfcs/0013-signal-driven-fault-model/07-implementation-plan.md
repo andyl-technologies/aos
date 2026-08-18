@@ -366,6 +366,13 @@ produce live patched-QEMU architectural or device evidence.
   authenticated evidence and canonical host fingerprints; co-derive execution
   and input identities from one register sample, and prove a naturally
   faulting load is armed only after its exact-PC rule is installed.
+- [x] **T-QEMU-0083** Implement
+  [`crucible-inert-clock-restore`](14-qemu-fault-patches/34-inert-clock-restore.md):
+  retain the native QEMU timer state already loaded by device VMState when a
+  restored clock source has no effective Crucible transform, continue to rearm
+  active transformed clocks and clean up wander timers, and prove a real
+  two-node network world advances after fresh-process checkpoint restore with
+  an empty fault plan.
 - [x] **T-QEMU-0060** Implement
   [`crucible-block-typed-errors`](14-qemu-fault-patches/14-block-typed-errors.md):
   the closed block result ABI, exact Linux errno translation, malformed-result

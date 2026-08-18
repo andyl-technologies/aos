@@ -1,6 +1,6 @@
 # 14 — QEMU fault-mutation patch series
 
-The complete node adapter and its exact-checkpoint handoff require thirty-three new single-purpose patches after the
+The complete node adapter and its exact-checkpoint handoff require thirty-four new single-purpose patches after the
 currently carried `0046-crucible-translation-prefetch-helper.patch`. Each patch
 has its own specification in this directory and remains part of the one atomic
 RFC-0013 implementation PR.
@@ -49,6 +49,7 @@ and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-pa
 | [`0080-crucible-inactive-retention-clock-guard`](31-inactive-retention-clock-guard.md) | Active-rule admission before restore-sensitive memory-retention clock sampling | Determinism-critical restore ordering |
 | [`0081-crucible-deferred-result-evidence-test`](32-deferred-result-evidence-test.md) | Live validation of canonical typed evidence on deferred instruction completions | Feature-contract regression coverage |
 | [`0082-crucible-deterministic-instruction-input-state`](33-deterministic-instruction-input-state.md) | Cross-process-stable register preconditions with full device-state hashes retained | Determinism-critical selector identity |
+| [`0083-crucible-inert-clock-restore`](34-inert-clock-restore.md) | Preserve QEMU-native timers when restored guest-clock faults are inactive | Determinism-critical restore ordering |
 
 The numbers are reserved by this RFC. If the existing series grows before
 implementation, the PR may renumber the files while preserving this exact order
@@ -81,7 +82,10 @@ then makes the live instruction matrix validate the typed deferred-result
 evidence contract introduced by patch `0074`, including composed-command
 payload identity. Patch `0082` then removes raw device serialization from the
 QEMU-local instruction selector digest, while retaining device state in the
-authenticated occurrence evidence and canonical host fingerprint.
+authenticated occurrence evidence and canonical host fingerprint. Patch `0083`
+then prevents the clock VMState commit from rearming native device timers when
+the restored source has no effective Crucible transform; active clock faults
+still rearm and the dedicated wander-timer cleanup remains unconditional.
 
 ## 14.2 Process and license boundary
 
