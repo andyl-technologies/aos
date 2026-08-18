@@ -65,7 +65,11 @@ in {
         };
         script = ''
           set -uo pipefail
-          klog() { echo "aos-repart: $*" > /dev/kmsg 2>/dev/null || echo "aos-repart: $*" >&2; }
+          # The service already routes stderr to the journal and console.
+          # Writing command output synchronously through /dev/kmsg can keep a
+          # completed repart process stuck in the oneshot on some virtio block
+          # devices, so diagnostics must use the service output channel only.
+          klog() { echo "aos-repart: $*" >&2; }
 
           if [ -e /dev/disk/by-partlabel/aos-provisioning-pending-v1 ]; then
             klog "pending provisioning marker found; refusing automatic replay"
@@ -121,7 +125,7 @@ in {
                 --empty=allow \
                 --seed="$seed" \
                 --json=short \
-                "$target" 2>/dev/kmsg); then
+                "$target"); then
                 klog "unable to compare current storage intent for $target; continuing"
                 drift=1
                 continue
@@ -159,7 +163,7 @@ in {
               --dry-run=yes \
               --empty=allow \
               --seed="$seed" \
-              "$target" > /dev/kmsg 2>&1 || exit 1
+              "$target" >&2 || exit 1
           done < "$targets"
 
           while IFS="$(printf '\t')" read -r target definitions; do
@@ -174,7 +178,7 @@ in {
               --dry-run=no \
               --empty=allow \
               --seed="$seed" \
-              "$target" > /dev/kmsg 2>&1
+              "$target" >&2
             repart_status=$?
             if [ "$repart_status" -eq 124 ]; then
               # A kernel partition-table rescan can leave repart waiting on
@@ -188,7 +192,7 @@ in {
                 --empty=allow \
                 --seed="$seed" \
                 --json=short \
-                "$target" 2>/dev/kmsg) || {
+                "$target") || {
                   klog "cannot verify the layout after the timed-out repart operation"
                   exit 1
                 }
@@ -240,8 +244,7 @@ in {
             exit 1
           fi
           # The durable marker is the transaction boundary. Report completion
-          # through the service's journal/console stream so a synchronous
-          # /dev/kmsg write cannot keep this oneshot active after commit.
+          # through the service's journal/console stream.
           echo "aos-repart: committed $committed; future boots will not mutate disks" >&2
           exit 0
         '';
