@@ -22,7 +22,7 @@ index db2f5f2d4..fea949d6e 100644
      const char *gdb_core_xml_file;
      const gchar * (*gdb_arch_name)(CPUState *cpu);
 diff --git a/plugins/api.c b/plugins/api.c
-index e9b04e076..b01afb8d5 100644
+index 746476382..1e048e2cb 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
 @@ -50,6 +50,7 @@
@@ -33,7 +33,7 @@ index e9b04e076..b01afb8d5 100644
  #include "exec/gdbstub.h"
  #include "exec/memory.h"
  #include "exec/ramblock.h"
-@@ -800,7 +801,9 @@ int qemu_plugin_crucible_device_state_hash(uint64_t *hash_out,
+@@ -823,7 +824,9 @@ int qemu_plugin_crucible_device_state_hash(uint64_t *hash_out,
  
      buffer = qio_channel_buffer_new(4096);
      file = qemu_file_new_output(QIO_CHANNEL(buffer));
@@ -44,7 +44,7 @@ index e9b04e076..b01afb8d5 100644
      if (status == 0) {
          status = qemu_fflush(file);
      }
-@@ -939,6 +942,41 @@ int qemu_plugin_crucible_guest_ram_sha256(uint8_t digest_out[32],
+@@ -962,6 +965,41 @@ int qemu_plugin_crucible_guest_ram_sha256(uint8_t digest_out[32],
      return 0;
  }
  
@@ -86,7 +86,7 @@ index e9b04e076..b01afb8d5 100644
  int qemu_plugin_crucible_device_state_sha256(uint8_t digest_out[32],
                                               uint64_t *bytes_out)
  {
-@@ -956,7 +994,7 @@ int qemu_plugin_crucible_device_state_sha256(uint8_t digest_out[32],
+@@ -979,7 +1017,7 @@ int qemu_plugin_crucible_device_state_sha256(uint8_t digest_out[32],
      *bytes_out = 0;
      buffer = qio_channel_buffer_new(4096);
      file = qemu_file_new_output(QIO_CHANNEL(buffer));
@@ -95,7 +95,7 @@ index e9b04e076..b01afb8d5 100644
      if (status == 0) {
          status = qemu_fflush(file);
      }
-@@ -1442,7 +1480,7 @@ int qemu_plugin_crucible_fingerprint_capture(
+@@ -1465,7 +1503,7 @@ int qemu_plugin_crucible_fingerprint_capture(
  
      buffer = qio_channel_buffer_new(4096);
      file = qemu_file_new_output(QIO_CHANNEL(buffer));

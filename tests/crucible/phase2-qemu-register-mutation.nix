@@ -312,17 +312,17 @@ in
               -monitor none \
               -kernel fault-guest-x86.elf \
               -plugin "$PWD/crucible-register.so,architecture=2,mode=impulse,register=rdi,phase=before" \
-              > logs/patched-tcg-inert.log 2>&1
+              > logs/patched-tcg-unavailable.log 2>&1
             patched_tcg_status=$?
             set -e
-            cat logs/patched-tcg-inert.log
+            cat logs/patched-tcg-unavailable.log
             test "$patched_tcg_status" -ne 0
             test "$patched_tcg_status" -ne 124
-            grep -Eq \
-              'the complete fault registry is unavailable|QEMU rejected the register mutation preparation' \
-              logs/patched-tcg-inert.log
+            grep -Fq \
+              'the complete fault registry is unavailable' \
+              logs/patched-tcg-unavailable.log
             ! grep -q CRUCIBLE_REGISTER_MUTATION_LIVE_PASS \
-              logs/patched-tcg-inert.log
+              logs/patched-tcg-unavailable.log
 
             if ${referenceQemu}/bin/qemu-system-x86_64 \
               -machine pc -cpu max -accel tcg,thread=single -S \

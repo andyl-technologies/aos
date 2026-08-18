@@ -253,6 +253,16 @@ A commit whose prepared ruleset hash no longer matches is
 `PRECONDITION_MISMATCH`. Every case must prove zero mutation and zero emitted
 fault events; merely observing a non-applied status is insufficient.
 
+For a delayed rejection, QEMU hashes every realized vCPU's complete canonical
+register manifest immediately before validation and again on the rejection
+path. The command fails as `INTERNAL_ERROR` if either observation fails or the
+digests differ; the equal, nonzero digest is returned as both `before_hash` and
+`after_hash`. The live gate also compares the entire selected register byte for
+byte and requires `applied_icount = 0`, empty evidence, and no fault event. A
+synchronous malformed-envelope rejection is checked in the same active vCPU
+callback by comparing both the complete canonical GDB register export and the
+entire selected register before and after submission.
+
 ## Licensing checklist
 
 Architecture/QEMU CPU changes and plugin calls remain GPL-side. The host sees

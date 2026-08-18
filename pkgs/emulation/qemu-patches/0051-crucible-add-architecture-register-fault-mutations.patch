@@ -234,10 +234,22 @@ index a9b6bb375..1622d08db 100644
      QEMU_CRUCIBLE_MEMORY_FETCH = 0x01,
      QEMU_CRUCIBLE_MEMORY_CPU_LOAD = 0x02,
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 4f866e5aa..74ce55d32 100644
+index 4f866e5aa..5b5103605 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1688,6 +1688,64 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
+@@ -1680,14 +1680,78 @@ GArray *qemu_plugin_crucible_get_vcpu_registers(unsigned int vcpu_index);
+  * Returns the size of the read register. The content of @buf is in target byte
+  * order. On failure returns -1.
+  *
+- * This AOS Crucible extension is side-effect-free and available only in system
+- * emulation.
++ * The read is admitted either while a deterministic single-thread RR callback
++ * owns one active vCPU (all other vCPUs are quiescent), or while the VM is
++ * stopped and the caller holds the BQL. It is side-effect-free and available
++ * only in system emulation. Calls from every other context fail closed.
+  */
+ QEMU_PLUGIN_API
+ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
                                              struct qemu_plugin_register *handle,
                                              GByteArray *buf);
  
@@ -272,11 +284,15 @@ index 4f866e5aa..74ce55d32 100644
 + * @out_value_capacity: size of @out_value
 + * @out_value_len: output byte count, including when capacity is insufficient
 + *
-+ * Returns zero after a side-effect-free read. Returns a negative errno value
-+ * when the vCPU or manifest ID is invalid, the output buffer is too small, or
-+ * the architecture cannot read the register. A null output buffer with zero
-+ * capacity reports the required size through @out_value_len and returns
-+ * ``-ENOSPC``.
++ * A value read is permitted only for the active vCPU during deterministic
++ * single-thread round-robin execution. A null output buffer with zero capacity
++ * is a context-independent size query.
++ *
++ * Returns zero after a side-effect-free value read. Returns a negative errno
++ * value when the vCPU or manifest ID is invalid, the caller does not own the
++ * active deterministic vCPU, the output buffer is too small, or the
++ * architecture cannot read the register. A size query reports the required
++ * byte count through @out_value_len and returns ``-ENOSPC``.
 + */
 +QEMU_PLUGIN_API
 +int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
@@ -302,6 +318,62 @@ index 4f866e5aa..74ce55d32 100644
  /**
   * qemu_plugin_read_vcpu_regs() - read canonical register bytes for a vCPU
   * @vcpu_index: the vCPU index to inspect
+@@ -1698,7 +1762,11 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
+  *
+  * Returns 0 on success and nonzero on failure. The byte stream is a stable
+  * canonicalization of each named architectural register descriptor and value
+- * for @vcpu_index. The read is side-effect-free with respect to guest state.
++ * for @vcpu_index. The read is admitted either while a deterministic
++ * single-thread RR callback owns one active vCPU (all other vCPUs are
++ * quiescent), or while the VM is stopped and the caller holds the BQL. It is
++ * side-effect-free with respect to guest state and fails in every concurrent
++ * or unowned context.
+  */
+ QEMU_PLUGIN_API
+ int qemu_plugin_read_vcpu_regs(unsigned int vcpu_index,
+diff --git a/plugins/api.c b/plugins/api.c
+index 5fa29d640..a8d454964 100644
+--- a/plugins/api.c
++++ b/plugins/api.c
+@@ -505,6 +505,18 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
+ }
+ 
+ #ifndef CONFIG_USER_ONLY
++static bool qemu_plugin_crucible_vcpu_register_read_allowed(void)
++{
++    /*
++     * In deterministic single-thread RR, current_cpu proves that one vCPU is
++     * executing and every other realized vCPU is quiescent.  Terminal state
++     * capture instead stops the VM and holds the BQL while inspecting all
++     * vCPUs.  Refuse every concurrent or unowned observation context.
++     */
++    return (qemu_plugin_crucible_single_threaded_rr() && current_cpu) ||
++        (bql_locked() && !runstate_is_running());
++}
++
+ GArray *qemu_plugin_crucible_get_vcpu_registers(unsigned int vcpu_index)
+ {
+     CPUState *cpu = qemu_get_cpu(vcpu_index);
+@@ -523,7 +535,8 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
+ {
+     CPUState *cpu = qemu_get_cpu(vcpu_index);
+ 
+-    if (!cpu || !reg) {
++    if (!cpu || !reg || !buf ||
++        !qemu_plugin_crucible_vcpu_register_read_allowed()) {
+         return -1;
+     }
+ 
+@@ -596,7 +609,8 @@ int qemu_plugin_read_vcpu_regs(unsigned int vcpu_index,
+     bool ok = true;
+ 
+     if (!out_register_len || !out_retired_instruction_count ||
+-        (!out_register_bytes && out_register_capacity != 0) || !cpu) {
++        (!out_register_bytes && out_register_capacity != 0) || !cpu ||
++        !qemu_plugin_crucible_vcpu_register_read_allowed()) {
+         return -1;
+     }
+ 
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
 index 3d7d5024b..6c36ed529 100644
 --- a/plugins/crucible-fault-node.c
@@ -416,10 +488,10 @@ index 3d7d5024b..6c36ed529 100644
  {
 diff --git a/plugins/crucible-fault-register.c b/plugins/crucible-fault-register.c
 new file mode 100644
-index 000000000..cd5f41619
+index 000000000..ef2cf2f96
 --- /dev/null
 +++ b/plugins/crucible-fault-register.c
-@@ -0,0 +1,910 @@
+@@ -0,0 +1,1000 @@
 +/*
 + * Crucible architecture register fault targets
 + *
@@ -667,6 +739,87 @@ index 000000000..cd5f41619
 +    return crucible_register_manifest->len;
 +}
 +
++static void crucible_register_observed_capability_clear(
++    CrucibleCPURegisterCapability *capability)
++{
++    g_free(capability->name);
++    g_free(capability->writable_mask);
++    g_free(capability->reserved_mask);
++    g_free(capability->ignored_mask);
++    g_free(capability->read_only_mask);
++}
++
++static bool crucible_register_cpu_row_matches_manifest(
++    CPUState *cpu, size_t index)
++{
++    CPUClass *cc = CPU_GET_CLASS(cpu);
++    const CrucibleRegisterCapability *expected = &g_array_index(
++        crucible_register_manifest, CrucibleRegisterCapability, index);
++    CrucibleCPURegisterCapability observed = { 0 };
++    bool matches = false;
++
++    matches = cc->crucible_register_describe(
++            cpu, index, &observed) &&
++        crucible_register_capability_valid(&observed) &&
++        observed.numeric_id == expected->numeric_id &&
++        observed.width_bits == expected->width_bits &&
++        observed.group == expected->group &&
++        observed.model_phase_mask == expected->model_phase_mask &&
++        observed.side_effects == expected->side_effects &&
++        observed.capabilities == expected->capabilities &&
++        observed.mask_bytes == expected->mask_bytes && observed.name &&
++        strcmp(observed.name, expected->name) == 0 &&
++        memcmp(observed.writable_mask, expected->writable_mask,
++               expected->mask_bytes) == 0 &&
++        memcmp(observed.reserved_mask, expected->reserved_mask,
++               expected->mask_bytes) == 0 &&
++        memcmp(observed.ignored_mask, expected->ignored_mask,
++               expected->mask_bytes) == 0 &&
++        memcmp(observed.read_only_mask, expected->read_only_mask,
++               expected->mask_bytes) == 0;
++    crucible_register_observed_capability_clear(&observed);
++    return matches;
++}
++
++static bool crucible_register_cpu_matches_manifest(CPUState *cpu)
++{
++    CPUClass *cc;
++
++    if (!cpu || !crucible_register_manifest) {
++        return false;
++    }
++    cc = CPU_GET_CLASS(cpu);
++    if (cc->crucible_register_scope != crucible_register_scope ||
++        !cc->crucible_register_count || !cc->crucible_register_describe ||
++        !cc->crucible_register_read ||
++        !cc->crucible_register_validate_write ||
++        !cc->crucible_register_write ||
++        cc->crucible_register_count(cpu) != crucible_register_manifest->len ||
++        strcmp(object_get_typename(OBJECT(cpu)), crucible_cpu_model) != 0) {
++        return false;
++    }
++    for (guint index = 0; index < crucible_register_manifest->len; index++) {
++        if (!crucible_register_cpu_row_matches_manifest(cpu, index)) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static bool crucible_register_all_cpus_match_manifest(void)
++{
++    CPUState *cpu;
++    bool found = false;
++
++    CPU_FOREACH(cpu) {
++        found = true;
++        if (!crucible_register_cpu_matches_manifest(cpu)) {
++            return false;
++        }
++    }
++    return found;
++}
++
 +int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
 +                                             uint32_t numeric_id,
 +                                             uint8_t *out_value,
@@ -686,13 +839,18 @@ index 000000000..cd5f41619
 +    capability = &g_array_index(crucible_register_manifest,
 +                                CrucibleRegisterCapability,
 +                                numeric_id - 1);
-+    if (capability->numeric_id != numeric_id) {
++    if (capability->numeric_id != numeric_id ||
++        !crucible_register_cpu_matches_manifest(cpu)) {
 +        return -EINVAL;
 +    }
 +    bytes = DIV_ROUND_UP(capability->width_bits, 8);
 +    *out_value_len = bytes;
 +    if (!out_value || out_value_capacity < bytes) {
 +        return -ENOSPC;
++    }
++    if (!qemu_plugin_crucible_single_threaded_rr() || !current_cpu ||
++        current_cpu != cpu) {
++        return -EPERM;
 +    }
 +
 +    cc = CPU_GET_CLASS(cpu);
@@ -754,6 +912,8 @@ index 000000000..cd5f41619
 +int qemu_plugin_crucible_fault_register_bindings_seal(void)
 +{
 +    if (crucible_register_bindings_sealed ||
++        !crucible_register_manifest_init() ||
++        !crucible_register_all_cpus_match_manifest() ||
 +        !crucible_register_architecture_bound ||
 +        !crucible_register_bindings || !crucible_register_numeric_bindings ||
 +        g_hash_table_size(crucible_register_bindings) !=
@@ -872,6 +1032,7 @@ index 000000000..cd5f41619
 +    apply->cpu = qemu_get_cpu(vcpu);
 +    apply->target = crucible_register_target(identity, &apply->capability);
 +    if (!apply->cpu || !apply->target ||
++        !crucible_register_cpu_matches_manifest(apply->cpu) ||
 +        memcmp(architecture_identity,
 +               crucible_register_architecture_identity, 32) != 0 ||
 +        memcmp(action_identity, identity, 32) != 0 ||
@@ -1007,7 +1168,8 @@ index 000000000..cd5f41619
 +        cpu = g_ptr_array_index(cpus, cpu_index);
 +        CPUClass *cc = CPU_GET_CLASS(cpu);
 +
-+        if ((guint)cpu->cpu_index != cpu_index) {
++        if ((guint)cpu->cpu_index != cpu_index ||
++            !crucible_register_cpu_matches_manifest(cpu)) {
 +            return -EIO;
 +        }
 +        for (guint index = 0; index < crucible_register_manifest->len;
@@ -2021,7 +2183,7 @@ index f593c0ee4..9375caf99 100644
  
  #ifndef CONFIG_USER_ONLY
 diff --git a/target/i386/cpu.h b/target/i386/cpu.h
-index 1ada85b2e..840519b99 100644
+index 1ada85b2e..04a4e5efe 100644
 --- a/target/i386/cpu.h
 +++ b/target/i386/cpu.h
 @@ -2365,6 +2365,20 @@ void x86_cpu_dump_state(CPUState *cs, FILE *f, int flags);
@@ -2045,12 +2207,20 @@ index 1ada85b2e..840519b99 100644
  void x86_cpu_gdb_init(CPUState *cs);
  
  void x86_cpu_list(void);
+@@ -2711,6 +2725,7 @@ int get_pg_mode(CPUX86State *env);
+ void cpu_init_fp_statuses(CPUX86State *env);
+ void update_fp_status(CPUX86State *env);
+ void update_mxcsr_status(CPUX86State *env);
++uint32_t cpu_get_mxcsr(CPUX86State *env);
+ void update_mxcsr_from_sse_status(CPUX86State *env);
+ 
+ static inline void cpu_set_mxcsr(CPUX86State *env, uint32_t mxcsr)
 diff --git a/target/i386/crucible-register.c b/target/i386/crucible-register.c
 new file mode 100644
-index 000000000..c5ca60dd8
+index 000000000..b2c0c6814
 --- /dev/null
 +++ b/target/i386/crucible-register.c
-@@ -0,0 +1,996 @@
+@@ -0,0 +1,995 @@
 +/*
 + * Crucible x86-64 architecture register fault targets
 + *
@@ -2704,8 +2874,7 @@ index 000000000..c5ca60dd8
 +        stq_le_p(value + 8, reg->ZMM_Q(1));
 +        return expected;
 +    } else if (id == X86_CRUCIBLE_MXCSR) {
-+        update_mxcsr_from_sse_status(env);
-+        result = env->mxcsr;
++        result = cpu_get_mxcsr(env);
 +    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_SYSENTER_CS) {
 +        result = env->sysenter_cs;
 +    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_SYSENTER_ESP) {
@@ -3047,6 +3216,20 @@ index 000000000..c5ca60dd8
 +    *performed_side_effects = effects;
 +    return expected;
 +}
+diff --git a/target/i386/gdbstub.c b/target/i386/gdbstub.c
+index 04c49e802..3805f4967 100644
+--- a/target/i386/gdbstub.c
++++ b/target/i386/gdbstub.c
+@@ -202,8 +202,7 @@ int x86_cpu_gdb_read_register(CPUState *cs, GByteArray *mem_buf, int n)
+             return gdb_get_reg32(mem_buf, 0); /* fop */
+ 
+         case IDX_MXCSR_REG:
+-            update_mxcsr_from_sse_status(env);
+-            return gdb_get_reg32(mem_buf, env->mxcsr);
++            return gdb_get_reg32(mem_buf, cpu_get_mxcsr(env));
+ 
+         case IDX_CTL_CR0_REG:
+             return gdb_read_reg_cs64(env->hflags, mem_buf, env->cr[0]);
 diff --git a/target/i386/meson.build b/target/i386/meson.build
 index 2e9c472f4..1257e5425 100644
 --- a/target/i386/meson.build
@@ -3059,12 +3242,67 @@ index 2e9c472f4..1257e5425 100644
    'machine.c',
    'monitor.c',
    'cpu-apic.c',
+diff --git a/target/i386/tcg/fpu_helper.c b/target/i386/tcg/fpu_helper.c
+index c1184ca21..ce5a1c7e2 100644
+--- a/target/i386/tcg/fpu_helper.c
++++ b/target/i386/tcg/fpu_helper.c
+@@ -3267,7 +3267,7 @@ void update_mxcsr_status(CPUX86State *env)
+     set_flush_to_zero((mxcsr & SSE_FZ) ? 1 : 0, &env->sse_status);
+ }
+ 
+-void update_mxcsr_from_sse_status(CPUX86State *env)
++uint32_t cpu_get_mxcsr(CPUX86State *env)
+ {
+     uint8_t flags = get_float_exception_flags(&env->sse_status);
+     /*
+@@ -3277,13 +3277,18 @@ void update_mxcsr_from_sse_status(CPUX86State *env)
+      * only when not flushing them to zero), so is not converted
+      * here.
+      */
+-    env->mxcsr |= ((flags & float_flag_invalid ? FPUS_IE : 0) |
+-                   (flags & float_flag_divbyzero ? FPUS_ZE : 0) |
+-                   (flags & float_flag_overflow ? FPUS_OE : 0) |
+-                   (flags & float_flag_underflow ? FPUS_UE : 0) |
+-                   (flags & float_flag_inexact ? FPUS_PE : 0) |
+-                   (flags & float_flag_output_denormal_flushed ? FPUS_UE | FPUS_PE :
+-                    0));
++    return env->mxcsr |
++        (flags & float_flag_invalid ? FPUS_IE : 0) |
++        (flags & float_flag_divbyzero ? FPUS_ZE : 0) |
++        (flags & float_flag_overflow ? FPUS_OE : 0) |
++        (flags & float_flag_underflow ? FPUS_UE : 0) |
++        (flags & float_flag_inexact ? FPUS_PE : 0) |
++        (flags & float_flag_output_denormal_flushed ? FPUS_UE | FPUS_PE : 0);
++}
++
++void update_mxcsr_from_sse_status(CPUX86State *env)
++{
++    env->mxcsr = cpu_get_mxcsr(env);
+ }
+ 
+ void helper_update_mxcsr(CPUX86State *env)
+diff --git a/target/i386/tcg/tcg-stub.c b/target/i386/tcg/tcg-stub.c
+index 8d45579ad..7d74404d9 100644
+--- a/target/i386/tcg/tcg-stub.c
++++ b/target/i386/tcg/tcg-stub.c
+@@ -20,6 +20,11 @@
+ #include "qemu/osdep.h"
+ #include "cpu.h"
+ 
++uint32_t cpu_get_mxcsr(CPUX86State *env)
++{
++    return env->mxcsr;
++}
++
+ void update_mxcsr_from_sse_status(CPUX86State *env)
+ {
+ }
 diff --git a/tests/tcg/plugins/crucible-register.c b/tests/tcg/plugins/crucible-register.c
 new file mode 100644
-index 000000000..ed0d3994c
+index 000000000..ba75ccccb
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-register.c
-@@ -0,0 +1,989 @@
+@@ -0,0 +1,997 @@
 +/*
 + * Live Crucible architecture-register mutation test plugin
 + *
@@ -3202,27 +3440,13 @@ index 000000000..ed0d3994c
 +    return (mask[bit / 8] & (1U << (bit % 8))) != 0;
 +}
 +
-+/*
-+ * Delayed rejection tests sample the target register before dispatch and
-+ * observe it again at the exact target.  The guest may legitimately change
-+ * unrelated bits during that interval (for example, CR0 mode transitions
-+ * during early boot), so compare the one bit selected by this fault command.
-+ * An out-of-range request has no selectable bit and retains the stronger
-+ * whole-register comparison.
-+ */
++/* Proves that a rejected request leaves the complete target register intact. */
 +static bool test_rejection_target_unchanged(const uint8_t *current,
 +                                            size_t current_len)
 +{
-+    if (test_initial_target_len == 0 ||
-+        current_len != test_initial_target_len) {
-+        return false;
-+    }
-+    if (test_first_bit >= current_len * 8) {
-+        return memcmp(current, test_initial_target, current_len) == 0;
-+    }
-+
-+    return test_mask_bit(current, test_first_bit) ==
-+           test_mask_bit(test_initial_target, test_first_bit);
++    return test_initial_target_len != 0 &&
++        current_len == test_initial_target_len &&
++        memcmp(current, test_initial_target, current_len) == 0;
 +}
 +
 +static bool test_bytes_nonzero(const uint8_t *bytes, size_t length)
@@ -3282,6 +3506,19 @@ index 000000000..ed0d3994c
 +        test_fail("canonical register export could not be captured");
 +    }
 +    return registers;
++}
++
++static bool test_rejection_state_unchanged(void)
++{
++    g_autofree uint8_t *current = NULL;
++    size_t current_len = 0;
++
++    if (!test_initial_registers || test_initial_register_len == 0) {
++        return false;
++    }
++    current = test_read_all_registers(&current_len);
++    return current_len == test_initial_register_len &&
++        memcmp(current, test_initial_registers, current_len) == 0;
 +}
 +
 +static void test_identity(uint8_t output[32], uint8_t domain, uint32_t value)
@@ -3554,6 +3791,8 @@ index 000000000..ed0d3994c
 +    if (test_mode == TEST_MODE_REJECT_PRECONDITION) {
 +        test_initial_target_len = test_read_fault_register(
 +            test_initial_target);
++        test_initial_registers = test_read_all_registers(
++            &test_initial_register_len);
 +        test_command.expected_precondition_hash[0] ^= 1;
 +    }
 +    if (qemu_plugin_crucible_fault_submit(
@@ -3645,7 +3884,8 @@ index 000000000..ed0d3994c
 +    (void)cpu_index;
 +    (void)icount;
 +    (void)opaque;
-+    if (test_mode == TEST_MODE_REJECT_INVALID &&
++    if (test_mode_rejects() &&
++        test_mode != TEST_MODE_REJECT_MISMATCHED_REGISTER_IDENTITY &&
 +        !test_initial_command_submitted) {
 +        uint8_t cr0[64];
 +        uint64_t current_icount;
@@ -3654,20 +3894,24 @@ index 000000000..ed0d3994c
 +            test_read_fault_register_id(test_cr0_numeric_id, cr0) != 8) {
 +            test_fail("CR0 observation is unavailable");
 +        }
-+        if (!test_mask_bit(cr0, 31)) {
++        if (!test_mask_bit(cr0, 31) || !test_mask_bit(cr0, 16)) {
 +            return;
 +        }
 +        current_icount = qemu_plugin_crucible_icount();
 +        if (current_icount == 0 || current_icount > UINT64_MAX - 16) {
-+            test_fail("invalid-state rejection target cannot be scheduled");
++            test_fail("stable rejection target cannot be scheduled");
 +        }
 +        test_command.target_icount = current_icount + 16;
 +        test_command.authorization_ceiling_icount = test_command.target_icount;
-+        test_initial_target_len = test_read_fault_register(
-+            test_initial_target);
++        if (test_mode != TEST_MODE_REJECT_PRECONDITION) {
++            test_initial_target_len = test_read_fault_register(
++                test_initial_target);
++            test_initial_registers = test_read_all_registers(
++                &test_initial_register_len);
++        }
 +        if (qemu_plugin_crucible_fault_submit(
 +                &test_command, test_payload, test_payload_len) != 0) {
-+            test_fail("QEMU rejected the invalid-state preparation");
++            test_fail("QEMU rejected the stable-state preparation");
 +        }
 +        test_initial_command_submitted = true;
 +        qemu_plugin_force_vcpu_exit();
@@ -3749,6 +3993,7 @@ index 000000000..ed0d3994c
 +                  result.observed_icount != test_command.target_icount)) ||
 +                (delayed &&
 +                 !test_rejection_target_unchanged(current, current_len)) ||
++                (delayed && !test_rejection_state_unchanged()) ||
 +                (!delayed && !test_submit_atomic_verified)) {
 +                g_printerr("rejection debug mode=%s status=%u expected=%u "
 +                           "applied=%" G_GUINT64_FORMAT
@@ -3952,7 +4197,7 @@ index 000000000..ed0d3994c
 +        size_t required_len = 0;
 +
 +        if (qemu_plugin_crucible_fault_register_read(
-+                0, test_numeric_id, NULL, 0, &required_len) >= 0 ||
++                0, test_numeric_id, NULL, 0, &required_len) != -ENOSPC ||
 +            required_len != selected->mask_bytes) {
 +            test_fail("fault register size query returned the wrong contract");
 +        }
@@ -4035,7 +4280,8 @@ index 000000000..ed0d3994c
 +        /* A synchronous rejection may invoke completion reentrantly. */
 +        test_submit_atomic_verified = true;
 +    }
-+    if (test_mode != TEST_MODE_REJECT_INVALID) {
++    if (!test_mode_rejects() ||
++        test_mode == TEST_MODE_REJECT_MISMATCHED_REGISTER_IDENTITY) {
 +        if (qemu_plugin_crucible_fault_submit(
 +                &test_command, test_payload, test_payload_len) != 0) {
 +            test_fail("QEMU rejected the register mutation preparation");

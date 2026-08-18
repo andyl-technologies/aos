@@ -24,7 +24,7 @@ index d2c7d9d04..8cd248a98 100644
                      result->evidence_hash);
          memcpy(result->before_hash, staging->before_hash, 32);
 diff --git a/tests/tcg/plugins/crucible-register.c b/tests/tcg/plugins/crucible-register.c
-index ed0d3994c..9def9ee38 100644
+index ba75ccccb..a50423054 100644
 --- a/tests/tcg/plugins/crucible-register.c
 +++ b/tests/tcg/plugins/crucible-register.c
 @@ -55,6 +55,7 @@ static struct qemu_plugin_crucible_fault_command test_command;
@@ -35,7 +35,7 @@ index ed0d3994c..9def9ee38 100644
  static bool test_validated;
  static bool test_finished;
  static uint8_t *test_initial_registers;
-@@ -447,6 +448,64 @@ static bool test_validate_register_evidence(const uint8_t *evidence,
+@@ -446,6 +447,64 @@ static bool test_validate_register_evidence(const uint8_t *evidence,
      return before_bit != after_bit;
  }
  
@@ -100,7 +100,7 @@ index ed0d3994c..9def9ee38 100644
  static void test_submit_commit(
      const struct qemu_plugin_crucible_fault_result *prepared)
  {
-@@ -543,8 +602,8 @@ static void test_poll_events(void)
+@@ -544,8 +603,8 @@ static void test_poll_events(void)
                  evidence, evidence_len, test_mode == TEST_MODE_IMPULSE,
                  event.observed_icount, event.before_hash, event.after_hash,
                  event.opportunity_hash);
@@ -111,7 +111,7 @@ index ed0d3994c..9def9ee38 100644
                  test_validated = true;
              }
          }
-@@ -713,13 +772,10 @@ static void test_completion(void *opaque)
+@@ -720,13 +779,10 @@ static void test_completion(void *opaque)
                  result.applied_icount != result.observed_icount) {
                  test_fail("register commit was not applied");
              }

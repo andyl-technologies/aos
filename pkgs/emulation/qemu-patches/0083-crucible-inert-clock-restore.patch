@@ -26,10 +26,10 @@ index f9cd4f110..0be31c515 100644
  typedef enum MigrationEventType {
      MIG_EVENT_PRECOPY_SETUP,
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 472667fd1..7ce54c71c 100644
+index 829ae3868..74cfebebf 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
-@@ -437,6 +437,8 @@ bool qemu_crucible_fault_clock_project_ns(
+@@ -438,6 +438,8 @@ bool qemu_crucible_fault_clock_project_ns(
      uint64_t *value_ns, bool *read_error);
  bool qemu_crucible_fault_clock_source_active(
      uint16_t source_kind, uint32_t instance);
@@ -38,7 +38,7 @@ index 472667fd1..7ce54c71c 100644
  bool qemu_crucible_fault_clock_source_rebase(
      uint16_t source_kind, uint32_t instance, uint64_t raw_ns);
  bool qemu_crucible_fault_clock_source_discontinuity(
-@@ -470,7 +472,10 @@ bool qemu_crucible_fault_clock_timer_fire(
+@@ -471,7 +473,10 @@ bool qemu_crucible_fault_clock_timer_fire(
      uint32_t timer_index, uint64_t timer_arm_sequence,
      uint64_t guest_deadline_ns,
      uint64_t scheduler_deadline_ns, uint64_t transform_generation);
