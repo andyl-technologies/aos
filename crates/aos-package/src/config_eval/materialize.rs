@@ -383,7 +383,7 @@ impl ConfigManifest {
             }) {
                 bail!("removedEtc paths {existing:?} and {path:?} conflict structurally");
             }
-            if !removed_etc.insert(path) {
+            if !removed_etc.insert(path.clone()) {
                 bail!("removedEtc contains duplicate path {path:?}");
             }
         }
