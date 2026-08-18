@@ -993,7 +993,7 @@ pub(super) fn cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inp
     assert!(matches!(error, CliError::Artifact(_)));
     assert!(error.to_string().contains("did not match handle frontier"));
 
-    let legacy_text = v3_text
+    let retired_v2_text = v3_text
         .lines()
         .filter(|line| {
             !line.starts_with("selector\t")
@@ -1002,7 +1002,7 @@ pub(super) fn cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inp
         })
         .map(|line| {
             if line == format!("schema\t{SAVEPOINT_HANDLE_SCHEMA}") {
-                format!("schema\t{SAVEPOINT_HANDLE_SCHEMA_V2}")
+                String::from("schema\tcrucible.savepoint-handle.v2")
             } else {
                 line.to_string()
             }
@@ -1010,10 +1010,13 @@ pub(super) fn cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inp
         .collect::<Vec<_>>()
         .join("\n")
         + "\n";
-    let legacy_handle = decode_savepoint_handle(legacy_text.as_bytes())?;
-    assert_eq!(legacy_handle.selector, None);
-    assert_eq!(legacy_handle.boundary_proof, None);
-    assert_eq!(legacy_handle.boundary_predicate, None);
+    let retired_v2_error = decode_savepoint_handle(retired_v2_text.as_bytes())
+        .expect_err("retired v2 savepoint handles must fail closed");
+    assert!(
+        retired_v2_error
+            .to_string()
+            .contains("unsupported savepoint handle schema")
+    );
 
     let reference = format_content_hash_ref(checkpoint);
     let hash_cli = Cli::parse_from([

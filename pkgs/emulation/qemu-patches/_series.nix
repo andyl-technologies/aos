@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "248a056b934bc9baff53b356b4b67c70ad02478d676c23fe87c11a83e720db7c";
+  patchBranchBundleSha256 = "7ec5bcfc9a8cc84f08a5349354483be5ab42b988a5b7ef9e9e690bd4673fefa4";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "8a1683560d403dbce949af5e1d0e99811e5908cf";
+  patchBranchHeadCommit = "6cf95487251c02e8d20b2bdade73c0d250a934b1";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -759,7 +759,7 @@ let
     {
       file = "0083-crucible-inert-clock-restore.patch";
       branchSubject = "crucible: preserve clocks across VMState restore";
-      branchCommit = "5424603c85346a95227c6955393533002a220c2d";
+      branchCommit = "d29d31b8e42eb2bc04ee6ea9f990c3c3129d4189";
       branchTree = "2d10b71fcdca655d69dfa7be8c8143309060d269";
       catalogName = "crucible-inert-clock-restore";
       class = "D";
@@ -769,7 +769,7 @@ let
     {
       file = "0084-crucible-exact-restore-network-announcement.patch";
       branchSubject = "crucible: suppress migration announcements on exact restore";
-      branchCommit = "8a1683560d403dbce949af5e1d0e99811e5908cf";
+      branchCommit = "6cf95487251c02e8d20b2bdade73c0d250a934b1";
       branchTree = "f10c61cb5ab7935887b42042ee24dc6b00ae8098";
       catalogName = "crucible-exact-restore-network-announcement";
       class = "D";

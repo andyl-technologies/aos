@@ -255,8 +255,7 @@ pub(crate) fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, C
     }
 
     let schema = schema.ok_or_else(|| missing_line("schema"))?;
-    let legacy_v2 = schema == SAVEPOINT_HANDLE_SCHEMA_V2;
-    if schema != SAVEPOINT_HANDLE_SCHEMA && !legacy_v2 {
+    if schema != SAVEPOINT_HANDLE_SCHEMA {
         return Err(artifact_error(format!(
             "unsupported savepoint handle schema `{schema}`"
         )));
@@ -266,28 +265,18 @@ pub(crate) fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, C
     let at = at.ok_or_else(|| missing_line("at"))?;
     let terminal_condition =
         terminal_condition.ok_or_else(|| missing_line("terminal-condition"))?;
-    let (selector, boundary_proof, boundary_predicate) = if legacy_v2 {
-        if selector.is_some() || boundary_proof.is_some() || boundary_predicate.is_some() {
-            return Err(artifact_error(
-                "v2 savepoint handles must not contain v3 selector or boundary proof lines",
-            ));
-        }
-        (None, None, None)
-    } else {
-        let selector = selector.ok_or_else(|| missing_line("selector"))?;
-        let boundary_proof = boundary_proof.ok_or_else(|| missing_line("boundary-proof"))?;
-        let boundary_predicate =
-            boundary_predicate.ok_or_else(|| missing_line("boundary-predicate"))?;
-        validate_savepoint_boundary_proof(
-            at,
-            selector.as_ref(),
-            &boundary_proof,
-            boundary_predicate.as_ref(),
-            frontier_ticks,
-            terminal_condition,
-        )?;
-        (selector, Some(boundary_proof), boundary_predicate)
-    };
+    let selector = selector.ok_or_else(|| missing_line("selector"))?;
+    let boundary_proof = boundary_proof.ok_or_else(|| missing_line("boundary-proof"))?;
+    let boundary_predicate =
+        boundary_predicate.ok_or_else(|| missing_line("boundary-predicate"))?;
+    validate_savepoint_boundary_proof(
+        at,
+        selector.as_ref(),
+        &boundary_proof,
+        boundary_predicate.as_ref(),
+        frontier_ticks,
+        terminal_condition,
+    )?;
     Ok(SavepointHandle {
         label: label.ok_or_else(|| missing_line("label"))?,
         checkpoint: checkpoint.ok_or_else(|| missing_line("checkpoint"))?,
@@ -298,7 +287,7 @@ pub(crate) fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, C
         frontier_ticks,
         at,
         selector,
-        boundary_proof,
+        boundary_proof: Some(boundary_proof),
         boundary_predicate,
         terminal_condition,
         materialization: materialization.ok_or_else(|| missing_line("materialization"))?,

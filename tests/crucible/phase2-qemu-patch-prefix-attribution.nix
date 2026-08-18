@@ -407,6 +407,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0084-crucible-exact-restore-network-announcement.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
