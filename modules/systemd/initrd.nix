@@ -226,22 +226,27 @@ in {
           };
           script = ''
             set -eu
-            generated_verity_unit=
-            for generator_dir in \
-              /run/systemd/generator.early \
-              /run/systemd/generator \
-              /run/systemd/generator.late; do
-              if test -s "$generator_dir/systemd-veritysetup@root.service"; then
-                generated_verity_unit="$generator_dir/systemd-veritysetup@root.service"
-                break
-              fi
-            done
-            if test -z "$generated_verity_unit"; then
+            ${pkgs.aos-boot-identity}/bin/aos-boot-identity /proc/cmdline
+
+            ${pkgs.coreutils}/bin/mkdir -p /run/aos
+            staging=/run/aos/verity-generator.$$
+            trap '${pkgs.coreutils}/bin/rm -rf "$staging"' EXIT
+            ${pkgs.coreutils}/bin/mkdir -p \
+              "$staging/normal" "$staging/early" "$staging/late"
+            /lib/systemd/aos-systemd-veritysetup-generator \
+              "$staging/normal" "$staging/early" "$staging/late"
+
+            generated_verity_unit="$staging/normal/systemd-veritysetup@root.service"
+            if test ! -s "$generated_verity_unit"; then
               echo "AOS boot identity: upstream verity generator produced no root unit" >&2
               exit 1
             fi
-            ${pkgs.aos-boot-identity}/bin/aos-boot-identity /proc/cmdline
-            ${pkgs.coreutils}/bin/mkdir -p /run/aos
+
+            ${pkgs.coreutils}/bin/mkdir -p /run/systemd/generator
+            ${pkgs.coreutils}/bin/cp "$generated_verity_unit" \
+              /run/systemd/generator/systemd-veritysetup@root.service
+            ${pkgs.systemd}/bin/systemctl daemon-reload
+            ${pkgs.systemd}/bin/systemctl start --no-block systemd-veritysetup@root.service
             ${pkgs.coreutils}/bin/touch /run/aos/boot-identity-valid
           '';
         };
@@ -320,7 +325,12 @@ in {
       initrdUnits = config.system.build.systemdInitrdUnits;
       initrdExtraPackages = config.aos.boot.initrd.extraPackages;
       inherit initrdNetworkDir;
-      maskedUnits = cfg.maskedUnits;
+      maskedUnits =
+        cfg.maskedUnits
+        ++ lib.optionals config.aos.security.verity.enable [
+          "emergency.target"
+          "rescue.target"
+        ];
       validateBootIdentity = config.aos.security.verity.enable;
     };
   };

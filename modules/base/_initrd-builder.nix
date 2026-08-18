@@ -539,14 +539,13 @@ in
           ${generatorSymlinks}
 
           ${lib.optionalString validateBootIdentity ''
-            # Keep exactly one verity generator. Its generated unit cannot run
-            # until the runtime boot-identity service validates the command line
-            # and publishes the guard marker. The initrd omits debug/run
-            # generators, so no other command-line surface can create an
-            # interactive unit or outrank the passive failure target.
+            # Keep the upstream verity implementation under a private,
+            # non-generator name. A runtime service invokes it only after
+            # procfs and /run are authoritative, validates its exact root-unit
+            # output, and makes that unit actionable behind the identity guard.
             cp ${systemd}/lib/systemd/system-generators/systemd-veritysetup-generator \
-              root/lib/systemd/system-generators/systemd-veritysetup-generator
-            chmod 0755 root/lib/systemd/system-generators/systemd-veritysetup-generator
+              root/lib/systemd/aos-systemd-veritysetup-generator
+            chmod 0755 root/lib/systemd/aos-systemd-veritysetup-generator
           ''}
 
           # ── 7. Rendered initrd units from boot.initrd.systemd.* ────────
@@ -691,7 +690,8 @@ in
           test ! -e root/nix/store/*-systemd-*/lib/systemd/system-generators/systemd-run-generator
           test ! -e root/nix/store/*-systemd-*/lib/systemd/system-generators/systemd-veritysetup-generator
           ${lib.optionalString validateBootIdentity ''
-            test -x root/lib/systemd/system-generators/systemd-veritysetup-generator
+            test ! -e root/lib/systemd/system-generators/systemd-veritysetup-generator
+            test -x root/lib/systemd/aos-systemd-veritysetup-generator
           ''}
 
           # openssl: static archives (libcrypto.a / libssl.a) are dev-only,
