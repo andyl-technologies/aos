@@ -545,6 +545,12 @@ in
             # systemd-debug-generator and systemd-run-generator, so no independent
             # generator can turn appended boot-control input into a shell or
             # outrank the passive failure target.
+            # Keep the upstream implementation under a private, non-generator
+            # name before its compiled-in discoverable copy is removed below.
+            cp ${systemd}/lib/systemd/system-generators/systemd-veritysetup-generator \
+              root/lib/systemd/aos-systemd-veritysetup-generator
+            chmod 0755 root/lib/systemd/aos-systemd-veritysetup-generator
+
             cat > root/lib/systemd/system-generators/systemd-veritysetup-generator <<'GENERATOR'
             #!${bash}/bin/bash
             set -eu
@@ -555,7 +561,7 @@ in
             mkdir "$staging" "$staging/normal" "$staging/early" "$staging/late"
 
             if diagnostic=$(${pkgs.aos-boot-identity}/bin/aos-boot-identity /proc/cmdline 2>&1) \
-              && ${systemd}/lib/systemd/system-generators/systemd-veritysetup-generator \
+              && /lib/systemd/aos-systemd-veritysetup-generator \
                 "$staging/normal" "$staging/early" "$staging/late"; then
               cp -a "$staging/normal/." "$1/"
               cp -a "$staging/early/." "$2/"
@@ -714,6 +720,9 @@ in
           test ! -e root/nix/store/*-systemd-*/lib/systemd/system-generators/systemd-debug-generator
           test ! -e root/nix/store/*-systemd-*/lib/systemd/system-generators/systemd-run-generator
           test ! -e root/nix/store/*-systemd-*/lib/systemd/system-generators/systemd-veritysetup-generator
+          ${lib.optionalString validateBootIdentity ''
+            test -x root/lib/systemd/aos-systemd-veritysetup-generator
+          ''}
 
           # openssl: static archives (libcrypto.a / libssl.a) are dev-only,
           # c_rehash is a perl script, cmake/pkgconfig are dev metadata.

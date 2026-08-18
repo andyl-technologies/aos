@@ -34,11 +34,14 @@ initrd boundary from Phase 1.
 The guarded initrd removes `systemd-debug-generator`,
 `systemd-run-generator`, and the unwrapped verity generator from both the
 public generator directory and systemd's compiled-in immutable-store
-directory. Debug images continue to use their explicit gettys, not
-kernel-command-line generator controls. The verity wrapper runs the
-upstream generator against private output directories and publishes its unit
-output and success marker only after both validation stages succeed. Rejection
-selects the passive failure target through the early generator directory.
+directory. A private copy of the upstream verity implementation is retained
+under a name outside every generator search directory and is callable only by
+the validating wrapper. Debug images continue to use their explicit gettys,
+not kernel-command-line generator controls. The verity wrapper runs that
+private implementation against private output directories and publishes its
+unit output and success marker only after both validation stages succeed.
+Rejection selects the passive failure target through the early generator
+directory.
 `systemd-veritysetup@root`, `/var` unlock, and `/var` mounting all require the
 success marker. This makes the guard a storage dependency instead of a
 diagnostic race.
