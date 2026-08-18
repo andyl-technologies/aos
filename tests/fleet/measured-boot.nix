@@ -1210,7 +1210,7 @@ in {
                  | .slot = "B"
                  | .recovery.copy = "B"
                  | .recovery.uki_path = "EFI/AOS/recovery-b.efi"
-                 | .recovery.entry_path = "loader/entries/aos-recovery-b.conf"
+                 | .recovery.entry_path = "loader/entries/recovery-b.conf"
                  | .recovery.source_path = "recovery-b.efi"
                  | .recovery.sha256 = $recovery_digest
                  | .recovery.byte_size = $recovery_size
