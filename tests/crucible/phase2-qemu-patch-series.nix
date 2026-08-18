@@ -587,6 +587,13 @@
       enforces = "DET-1,QFP-STATE-2,FAULT-ORDER";
       capability = "exact Crucible restore suppresses migration-only virtio-net guest announcements without changing ordinary migration behavior";
     }
+    {
+      file = "0085-crucible-register-rejection-atomicity.patch";
+      catalogName = "crucible-register-rejection-atomicity";
+      class = "D";
+      enforces = "DET-1,QFP-REG-1,QFP-REG-2,FAULT-EVIDENCE";
+      capability = "exact RR ownership gates canonical register observation; every realized CPU manifest is validated; rejected register commands preserve every canonical GDB register byte and all six mutation side-effect counters";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
