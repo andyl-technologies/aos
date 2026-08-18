@@ -1275,8 +1275,8 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 - **Enforces:** [DET-1], [QFP-REG-1], [QFP-REG-2], [FAULT-EVIDENCE].
 - **Mechanism:** live register observation requires exact-boundary depth and an
   exact match between `current_cpu` and the serialized RR owner. Both plugin
-  callbacks and the complete internal instruction-boundary transaction own the
-  nestable exact-boundary token. Register read
+  callbacks and every complete internal node/instruction boundary transaction
+  own the nestable exact-boundary token. Register read
   and decode revalidate every manifest row for every realized vCPU. Rejection
   transactions hash every vCPU's canonical GDB register export and compare
   counters wired to the production TLB, TB, flags, interrupt, timer, and
