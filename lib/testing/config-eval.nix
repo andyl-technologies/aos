@@ -2,7 +2,7 @@
 #
 # operability.md §Off-host CI preflight: a pure-eval derivation that exercises
 # the production config-eval path the host consumes, with the same determinism
-# discipline as the aos-nix `.drv` parity gate:
+# same deterministic evaluation discipline as the production path:
 #
 #   1. the module set EVALUATES (else fail with the module-system error);
 #   2. the rendered config inputs are SCHEMA-VALID; and

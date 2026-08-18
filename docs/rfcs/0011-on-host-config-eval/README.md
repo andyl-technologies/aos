@@ -10,11 +10,10 @@
   resolved as **dm-verity on the erofs root with the roothash baked into the
   measured UKI `.cmdline`** (so PCR-11 transitively covers the evaluator +
   base-lib), reusing the existing `package-root-image.nix` verity recipe.
-  The completed **P2** path runs `aos-nix`
-  ([RFC-0007](../0007-nix-evaluator/)) as the in-process on-host evaluator
-  behind the `eval → manifest` seam. The hermetic AOS-built C++ Nix evaluator
-  remains only as the P1 byte-parity oracle; production has no stock-Nix
-  fallback. The completed checklist lives in
+  The production path runs the hermetic AOS-built C++ Nix evaluator behind the
+  `eval → manifest` seam. The experimental RFC-0007 evaluator was not accepted
+  for production and remains recoverable from closed PR #104. The completed
+  checklist lives in
   [`implementation-plan.md`](implementation-plan.md).
 - **Date:** 2026-06-25
 - **Audience:** anyone working on `lib/modules.nix`, `lib/types.nix`,
@@ -28,8 +27,7 @@ the invariants, and the resolved decisions; the topic files hold the detail:
 
 - [`architecture.md`](architecture.md) — the two-stage evaluation model, the
   render/assemble split that keeps "no build on host" honest, the `config`
-  output, the manifest data contract, the native evaluator and stock parity
-  oracle, and
+  output, the manifest data contract, the stock evaluator, and
   the boot / first-boot bootstrap ordering.
 - [`module-system.md`](module-system.md) — namespacing (per-package roots plus
   "system extension" packages that own shared roots, ownership adjudicated
@@ -211,7 +209,7 @@ pkgs/*.nix (mkDerivation)                 base lib (in measured image) ─┐
 | D18 | Provision-once vs reconciliation | Disk topology is a one-time commit recorded by a reserved GPT provenance marker. A pending marker fails closed for explicit partial-commit recovery; only a committed operator/fallback label freezes automatic mutation. Metadata acquisition and full runtime evaluation still run every boot, with a hash-checked last-known-good fallback; a restricted dry-run reports storage drift without changing disks. Normal files, units, packages, networking, tmpfiles, sysusers, and unlock operations remain reconciled. |
 | D19 | Provisioning as a systemd unit graph | The eval emits `manifest.json` + `graph.json`; a compiler writes **per-package templated instance units** (`aos-pkg-fetch@<p>`/`aos-pkg-install@<p>`) + edge dropins into `/run/systemd/system`, `daemon-reload`s, and starts `aos-config.target`. APM fetch/render are units; the config DAG becomes systemd ordering. **`Wants=`** (not `Requires=`) pulls packages so a failure **degrades** (`is-system-running=degraded`, box reachable) rather than fails the boot; `Requires=`/`BindsTo=` reserved for true substrate edges (→ rescue/emergency). The single `activate.sh.in` `mount --move --beneath` stays the lone atomic commit. See [`orchestration.md`](orchestration.md). |
 | D20 | Literal-Nix user-data; `aos metadata` agent | Cloud user-data is literal `host.nix`. A minimal URL/SHA-256/signature pointer is permitted only as transport metadata for provider size limits. The **`aos metadata`** initrd agent owns cross-cloud acquisition and authenticates the exact Nix bytes under `platform` or `signed` policy before early evaluation. The same bytes survive switch-root for full stage-2 evaluation. Instance facts enter separately as recorded `host.facts.*`, not imperative writes. |
-| D12 | Evaluator | **Stock C++ Nix for P1** (already packaged), invoked as `nix-instantiate --store dummy:// --eval --strict --json` with `restrict-eval` and `allow-import-from-derivation=false`, then bounded by a hardened systemd unit (`MemoryMax`/`TimeoutStartSec`). **aos-nix for P2** behind the same seam. |
+| D12 | Evaluator | **Stock C++ Nix** (already packaged), invoked as `nix-instantiate --store dummy:// --eval --strict --json` with `restrict-eval` and `allow-import-from-derivation=false`, then bounded by a hardened systemd unit (`MemoryMax`/`TimeoutStartSec`). |
 | D13 | Manifest trust | The locally-computed manifest needs **no signature**: it is a deterministic function of authenticated inputs and is fully re-derivable. Measure the *producer* (UKI), seal-protect the *product* (`/var`), attest the *input set*. |
 | D14 | host.nix authenticity | Trust is policy-selected. The default **`platform`** mode trusts the cloud/deployment control plane that delivered user-data. The opt-in **`signed`** mode requires an SSHSIG over the exact `host.nix` bytes against a measured vendor/fleet root or a key delegated by that root. `host.nix` cannot select its own trust policy or trust anchor. |
 | D21 | Golden-image boundary | Consumers configure hosts through `host.nix`, not by rebuilding the release image. The image contains boot capabilities, evaluator/runtime mechanisms, bootstrap networking/storage, and initial trust roots. Roles, desired packages, identity, networking, users, services, runtime security and observability policy live in `host.nix`. Mixed profiles are split accordingly. |
@@ -249,6 +247,5 @@ The five former open questions are locked in
 - **[RFC-0006](../0006-secure-boot/)** — measured/secure boot; RFC-0011 is
   congruent with it (measured = image-gen, derived/unmeasured = config-gen) and
   extends its attestation to the config-eval input set.
-- **[RFC-0007](../0007-nix-evaluator/)** — `aos-nix`, the P2 evaluator and the
-  source of richer graph intrinsics (exact read-tracing, in-engine bounding,
-  incremental cache).
+- **[PR #104](https://github.com/andyl-technologies/aos/pull/104)** — closed,
+  unmerged experimental evaluator work retained for possible future recovery.
