@@ -77,5 +77,8 @@ in
       declares = [];
     };
 
-    meta.description = "AOS exposed package for the VM test guest agent";
+    meta = {
+      description = "AOS exposed package for the VM test guest agent";
+      license = "Apache-2.0";
+    };
   }

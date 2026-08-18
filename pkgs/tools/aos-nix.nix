@@ -43,4 +43,8 @@ in
     # the package-level check focused on the persistent import cache primitive
     # so feature-gated fallback-policy tests do not become package build gates.
     cargoTestFlags = "-p aos-nix --features candidate_c_value native::tests::warm_import";
+    meta = {
+      description = "Native evaluator parity-check driver for AOS Nix expressions";
+      license = "Apache-2.0";
+    };
   }
