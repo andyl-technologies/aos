@@ -258,3 +258,4 @@ unwrap_used = "deny"
 # and backtraces while omitting linked DWARF from the executable under test.
 [profile.test]
 debug = 0
+opt-level = "s"

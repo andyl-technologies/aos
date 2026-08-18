@@ -42,6 +42,28 @@
     ];
   };
   measuredImage = measuredSystem.config.system.build.image.raw;
+  ukiBMedia = pkgs.mkDerivation {
+    pname = "aos-measured-boot-uki-b-media";
+    version = "1";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.e2fsprogs];
+    runtimeDeps = [];
+    propagatedDeps = [];
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p media $out
+          cp ${measuredImage}/uki-b.efi media/uki-b.efi
+          uki_bytes=$(${pkgs.coreutils}/bin/stat -c %s media/uki-b.efi)
+          media_bytes=$(( (uki_bytes + 64 * 1024 * 1024 + 1048575) / 1048576 * 1048576 ))
+          ${pkgs.coreutils}/bin/truncate -s "$media_bytes" uki-b-media.img
+          ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -q -L aos-uki-b -d media uki-b-media.img
+          mv uki-b-media.img $out/uki-b-media.img
+        '';
+      }
+    ];
+  };
 in {
   name = "measured-boot";
   # Image boot + enrollment/migration + the A/B counted-candidate lifecycle.
@@ -61,6 +83,18 @@ in {
       bootMode = "image";
       imageDiskMiB = 16384;
       tpm = true;
+      extraDisks = [
+        {
+          interface = "scsi";
+          # The source filesystem sizes itself from the UKI. This declared
+          # capacity leaves bounded growth room and the driver rejects any
+          # future artifact that exceeds it before launching QEMU.
+          sizeMiB = 256;
+          serial = "uki-b-media";
+          source = "${ukiBMedia}/uki-b-media.img";
+          readOnly = true;
+        }
+      ];
       # Keep the control-plane unit in every evaluated /etc generation. The
       # package payload is image-bundled test infrastructure, not a runtime
       # package selection, so verified-boot assertions do not depend on a
@@ -110,7 +144,6 @@ in {
       TPM2_PCREXTEND = "${pkgs.tpm2-tools}/bin/tpm2_pcrextend"
       TPM2_PCRREAD = "${pkgs.tpm2-tools}/bin/tpm2_pcrread"
       VAR_POLICY_MIGRATE = "${pkgs.aos-var-policy-migrate}/bin/aos-var-policy-migrate"
-      UKI_B = "${measuredImage}/uki-b.efi"
       VARDEV = "/dev/disk/by-partlabel/var"
 
       def read_pcr12():
@@ -959,6 +992,28 @@ in {
       metadata_digest = hashlib.sha256(json.dumps(
           migrated_metadata, sort_keys=True, separators=(",", ":")
       ).encode()).hexdigest()
+      invalid_evidence_mutations = [
+          ".planned_old_tpm_keyslots = [-1]",
+          ".old_token_ids = [0.5]",
+          '.verified_tpm_token_id = "0"',
+          '.verified_tpm_keyslot = "0"',
+      ]
+      for mutation in invalid_evidence_mutations:
+          target.succeed(f"cp {migration_evidence} /run/var-policy-migration.valid.json")
+          target.succeed(f"""
+              {JQ} '{mutation}' {migration_evidence} \
+                > /run/var-policy-migration.invalid.json
+              mv /run/var-policy-migration.invalid.json {migration_evidence}
+          """)
+          target.fail(f"""
+              {VAR_POLICY_MIGRATE} \
+                {VARDEV} \
+                /run/aos-var-recovery.key \
+                /etc/aos/pcr-sign.pem \
+                /run/systemd/tpm2-pcr-signature.json \
+                {migration_evidence}
+          """, timeout=180)
+          target.succeed(f"mv /run/var-policy-migration.valid.json {migration_evidence}")
       target.succeed(f"""
           {VAR_POLICY_MIGRATE} \
             {VARDEV} \
@@ -1052,19 +1107,60 @@ in {
       # reset value while PCR 11 selects the slot-specific signed policy.
       candidate_name = "aos-phase3-slot-b+3.efi"
       stable_name = "aos-phase3-slot-b.efi"
+      image_state_a_text = target.succeed("cat /var/lib/profiles/image/state.json")
+      image_state_a = json.loads(image_state_a_text)
+      running_a = image_state_a["running"]
+      generation_a = next(
+          generation for generation in image_state_a["generations"]
+          if generation["number"] == running_a
+      )
+      stable_a_name = re.sub(
+          r"\+[0-9]+(?:-[0-9]+)?(?=\.efi$)",
+          "",
+          generation_a["uki_path"].split("/")[-1],
+      )
+      image_state_a_encoded = base64.b64encode(image_state_a_text.encode()).decode()
       target.succeed(f"""
           dd if=/dev/disk/by-partlabel/root-a of=/dev/disk/by-partlabel/root-b bs=4M conv=fsync status=none
           dd if=/dev/disk/by-partlabel/root-a-hash of=/dev/disk/by-partlabel/root-b-hash bs=4M conv=fsync status=none
+          mkdir -p /run/aos-uki-b-media
+          mount -t ext4 -o ro /dev/disk/by-label/aos-uki-b /run/aos-uki-b-media
           mount -o remount,rw /boot
-          cp {UKI_B} /boot/EFI/Linux/{candidate_name}
+          cp /run/aos-uki-b-media/uki-b.efi /boot/EFI/Linux/{candidate_name}
+          {JQ} --arg candidate "EFI/Linux/{candidate_name}" '
+            .running as $running
+            | (.generations[] | select(.number == $running)) |=
+                (.uki_source_path = (.uki_source_path // .uki_path)
+                 | .uki_path = $candidate
+                 | .slot = "B"
+                 | del(.initrd_pcr11, .expected_pcr11))
+            | .default = $running
+            | .pending = null
+          ' /var/lib/profiles/image/state.json > /var/lib/profiles/image/.state.json.phase3-b
+          mv /var/lib/profiles/image/.state.json.phase3-b /var/lib/profiles/image/state.json
+          sync /var/lib/profiles/image
           bootctl set-oneshot {candidate_name}
           mount -o remount,ro /boot
+          umount /run/aos-uki-b-media
       """, timeout=300)
       target.reboot(timeout=600)
       wait_multi_user("boot4 (counted slot-B candidate)")
       assert read_pcr12() == clean_pcr12, "counted slot-B boot changed PCR 12"
       assert "/dev/disk/by-partlabel/root-b" in target.succeed("cat /proc/cmdline")
       assert var_source() == "/dev/mapper/var"
+      target.succeed("test -e /boot/EFI/Linux/aos-phase3-slot-b+2-1.efi")
+      image_state_b = json.loads(target.succeed("cat /var/lib/profiles/image/state.json"))
+      generation_b = next(
+          generation for generation in image_state_b["generations"]
+          if generation["number"] == image_state_b["running"]
+      )
+      assert generation_b["slot"] == "B"
+      assert generation_b["uki_path"] == f"EFI/Linux/{candidate_name}"
+      assert generation_b["uki_source_path"] == (
+          generation_a.get("uki_source_path") or generation_a["uki_path"]
+      )
+      assert re.fullmatch(r"[0-9a-f]{64}", generation_b["initrd_pcr11"])
+      target.fail("journalctl -b -u aos-seed-profiles.service --no-pager | grep -F 'Failed'")
 
       target.succeed(f"""
           mount -o remount,rw /boot
@@ -1086,6 +1182,25 @@ in {
       assert read_pcr12() == clean_pcr12, "post-commit reboot changed PCR 12"
       assert "/dev/disk/by-partlabel/root-b" in target.succeed("cat /proc/cmdline")
       assert var_source() == "/dev/mapper/var"
+
+      # This is deliberately a bootloader/PCR qualification using identical
+      # immutable payload bytes, not an APM image-generation transition.
+      # Restore the exact coherent AOS image index and durable A entry before
+      # later tests exercise the production evaluation/commit services.
+      target.succeed(f"""
+          printf '%s' {image_state_a_encoded} | base64 -d > /var/lib/profiles/image/.state.json.phase3-a
+          mv /var/lib/profiles/image/.state.json.phase3-a /var/lib/profiles/image/state.json
+          sync /var/lib/profiles/image
+          mount -o remount,rw /boot
+          bootctl set-default {stable_a_name}
+          mount -o remount,ro /boot
+      """)
+      target.reboot(timeout=600)
+      wait_multi_user("boot7 (coherent slot-A state restored)")
+      assert read_pcr12() == clean_pcr12
+      assert "/dev/disk/by-partlabel/root-a" in target.succeed("cat /proc/cmdline")
+      assert var_source() == "/dev/mapper/var"
+      assert json.loads(target.succeed("cat /var/lib/profiles/image/state.json")) == image_state_a
 
       # ════ 6. Firmware-appended boot input fails before storage ══════
       appended_inputs = [

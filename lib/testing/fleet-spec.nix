@@ -40,7 +40,20 @@
       };
       sizeMiB = mkOption {
         type = positiveInt;
-        description = "Capacity of the empty additional disk in MiB.";
+        description = "Capacity of the additional disk in MiB.";
+      };
+      source = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = ''
+          Optional raw disk image copied into the per-run writable disk.
+          When absent, the driver creates an empty sparse disk.
+        '';
+      };
+      readOnly = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Attach the additional disk read-only to the guest.";
       };
       interface = mkOption {
         type = types.enum ["virtio" "scsi"];
@@ -140,7 +153,8 @@
         type = types.listOf extraDiskType;
         default = [];
         description = ''
-          Empty block devices attached in addition to the root disk. Virtio
+          Block devices attached in addition to the root disk. They are empty
+          by default or may be initialized from a raw source image. Virtio
           devices expose /dev/disk/by-id/virtio-<serial>; SCSI devices are
           available for tests that must preserve root-disk enumeration.
         '';

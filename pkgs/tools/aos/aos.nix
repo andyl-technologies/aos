@@ -116,12 +116,12 @@ in
     runtimeDeps = [openssl zlib aos-landlock aos-selinux-run aos-verity-root-guard aos-ebpf-net-policy aos-ebpf-lsm-policy checkpolicy policycoreutils semodule-utils tpm2-tools] ++ runtimeTools;
 
     preBuild = ''
-      # Keep the debug-profile integration-test executable below the bounded
-      # verifier-capture limit. Full DWARF made current_exe() exceed the
-      # production bundle's 192 MiB per-file ceiling even though the shipped
-      # release binary remains smaller; line tables retain useful backtraces
-      # without weakening that external-input bound.
-      export CARGO_PROFILE_DEV_DEBUG=1
+      # Keep the integration-test executable below the bounded verifier-
+      # capture limit. Cargo's test profile is separate from dev; strip any
+      # linked dependency DWARF in addition to the workspace's size-optimized
+      # test profile. The shipped release artifact is built independently
+      # above and is unaffected.
+      export CARGO_PROFILE_TEST_STRIP=debuginfo
       export OPENSSL_DIR="${openssl}"
       export OPENSSL_LIB_DIR="${openssl}/lib"
       export OPENSSL_INCLUDE_DIR="${openssl}/include"

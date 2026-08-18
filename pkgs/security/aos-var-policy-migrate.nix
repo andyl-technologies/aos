@@ -183,7 +183,9 @@ mkDerivation {
               and .recovery_authorized == true
               and (.old_metadata_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
               and (.old_token_ids | type == "array" and . == (unique | sort))
+              and all(.old_token_ids[]; type == "number" and floor == . and . >= 0)
               and (.old_keyslot_ids | type == "array" and . == (unique | sort))
+              and all(.old_keyslot_ids[]; type == "number" and floor == . and . >= 0)
               and if .state == "prepared" then
                 (keys | sort) == ([
                   "schema", "state", "luks_uuid", "old_metadata_sha256",
@@ -201,9 +203,10 @@ mkDerivation {
                   "verified_tpm_keyslot", "planned_old_tpm_keyslots"
                 ] | sort)
                 and (.enrolled_metadata_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
-                and (.verified_tpm_token_id | type == "number")
-                and (.verified_tpm_keyslot | type == "number")
+                and (.verified_tpm_token_id | type == "number" and floor == . and . >= 0)
+                and (.verified_tpm_keyslot | type == "number" and floor == . and . >= 0)
                 and (.planned_old_tpm_keyslots | type == "array" and . == (unique | sort))
+                and all(.planned_old_tpm_keyslots[]; type == "number" and floor == . and . >= 0)
               elif .state == "complete" then
                 (keys | sort) == ([
                   "schema", "state", "luks_uuid", "old_metadata_sha256",
@@ -216,9 +219,10 @@ mkDerivation {
                 ] | sort)
                 and (.enrolled_metadata_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
                 and (.new_metadata_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
-                and (.verified_tpm_token_id | type == "number")
-                and (.verified_tpm_keyslot | type == "number")
+                and (.verified_tpm_token_id | type == "number" and floor == . and . >= 0)
+                and (.verified_tpm_keyslot | type == "number" and floor == . and . >= 0)
                 and (.planned_old_tpm_keyslots | type == "array" and . == (unique | sort))
+                and all(.planned_old_tpm_keyslots[]; type == "number" and floor == . and . >= 0)
               else false
               end
             ' "$evidence" >/dev/null

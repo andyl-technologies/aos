@@ -159,11 +159,15 @@ Prove that supported clean boots share the policy's expected PCR-12 state. Any
 current feature that intentionally extends PCR 12 must be modeled before the
 default changes.
 
-The measured-boot fleet path populates the inactive slot from the verified A
-bytes, boots the slot-B UKI under a counted Type-2 filename, commits it with
-`systemd-bless-boot`, and observes the subsequent stable reboot. It requires
-the reset PCR-12 value for clean A, counted B, committed B, and the ordinary
-post-commit B reboot. The test driver can relaunch the same writable disk,
+The measured-boot fleet path performs a bootloader/PCR qualification by
+populating the inactive slot from the verified A bytes, booting the slot-B UKI
+under a counted Type-2 filename, committing it with `systemd-bless-boot`, and
+observing the subsequent stable reboot. Because the immutable payload is
+intentionally identical, this does not claim to exercise APM's distinct-image
+generation transition; the fixture restores the exact coherent slot-A image
+index before later production-service tests. It requires the reset PCR-12
+value for clean A, counted B, committed B, and the ordinary post-commit B
+reboot. The test driver can relaunch the same writable disk,
 firmware-variable store, and vTPM state with an exact SMBIOS Type-11 string set
 so firmware-provided boot inputs are tested rather than simulated in the
 guest.
