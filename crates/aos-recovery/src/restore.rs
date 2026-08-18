@@ -1184,4 +1184,39 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn changed_media_is_rejected_before_esp_publication() {
+        let root = temporary_root("changed-media");
+        let source = root.join("source");
+        let esp = root.join("esp");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&esp).unwrap();
+        let mut components = BTreeMap::new();
+        components.insert(
+            "recovery-uki-a".into(),
+            component(&source, "recovery.efi", b"authenticated recovery"),
+        );
+        components.insert(
+            "recovery-entry-a".into(),
+            component(&source, "recovery.conf", b"authenticated entry"),
+        );
+        components.insert(
+            "normal-uki-a".into(),
+            component(&source, "normal.efi", b"authenticated normal"),
+        );
+        let recovery_source = components.get("recovery-uki-a").unwrap().path.clone();
+        fs::write(recovery_source, b"changed after authorization").unwrap();
+
+        let result =
+            publish_boot_artifacts_with(BootSlot::A, "test-release", &components, &esp, |_| Ok(()));
+        assert!(result.is_err());
+        assert!(!esp.join("EFI/AOS/recovery-a.efi").exists());
+        assert!(!esp.join("loader/entries/recovery-a.conf").exists());
+        assert!(
+            !esp.join("EFI/Linux/aos-restored-test-release-slot-a+3.efi")
+                .exists()
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
 }
