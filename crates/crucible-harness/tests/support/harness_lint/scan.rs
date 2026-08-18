@@ -91,7 +91,7 @@ pub(super) fn scan_content(path: &Path, content: &str) -> Vec<String> {
                 "getrandom",
                 "host-rng",
             ),
-            "HashMap" | "HashSet" => push_finding(
+            "HashMap" | "HashSet" if token_is_hash_container_type(&tokens, index) => push_finding(
                 &mut findings,
                 path,
                 content,
@@ -393,18 +393,56 @@ pub(super) fn token_starts_hash_container_type_annotation(tokens: &[Token], inde
                 TokenKind::Punct(',') | TokenKind::Punct(')') | TokenKind::Punct(';')
             )
         })
-        .any(token_is_hash_container)
+        .enumerate()
+        .any(|(offset, _)| token_is_hash_container_type(tokens, index + 2 + offset))
 }
 
 pub(super) fn statement_contains_hash_container(tokens: &[Token], index: usize) -> bool {
     tokens[index..]
         .iter()
         .take_while(|token| !matches!(token.kind, TokenKind::Punct(';')))
-        .any(token_is_hash_container)
+        .enumerate()
+        .any(|(offset, _)| token_is_hash_container_type(tokens, index + offset))
 }
 
-pub(super) fn token_is_hash_container(token: &Token) -> bool {
-    matches!(token.kind.as_ident(), Some("HashMap" | "HashSet"))
+pub(super) fn token_is_hash_container_type(tokens: &[Token], index: usize) -> bool {
+    if !matches!(
+        tokens.get(index).and_then(|token| token.kind.as_ident()),
+        Some("HashMap" | "HashSet")
+    ) {
+        return false;
+    }
+
+    matches!(
+        tokens.get(index + 1).map(|token| &token.kind),
+        Some(TokenKind::Punct('<'))
+    ) || matches!(
+        (tokens.get(index + 1), tokens.get(index + 2)),
+        (
+            Some(Token {
+                kind: TokenKind::Punct(':'),
+                ..
+            }),
+            Some(Token {
+                kind: TokenKind::Punct(':'),
+                ..
+            })
+        )
+    ) || previous_path_identifier(tokens, index) == Some("collections")
+        || token_is_collections_import_member(tokens, index)
+}
+
+fn token_is_collections_import_member(tokens: &[Token], index: usize) -> bool {
+    tokens[..index]
+        .iter()
+        .rev()
+        .take_while(|token| !matches!(token.kind, TokenKind::Punct(';')))
+        .any(|token| token.kind.as_ident() == Some("collections"))
+        && tokens[..index]
+            .iter()
+            .rev()
+            .take_while(|token| !matches!(token.kind, TokenKind::Punct(';')))
+            .any(|token| token.kind.as_ident() == Some("use"))
 }
 
 pub(super) fn hash_container_iteration_failures(

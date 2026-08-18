@@ -108,6 +108,7 @@ pub(super) fn initial_states(
     Ok(states)
 }
 
+// crucible-lint: allow rust-allow -- cadence integration requires the complete prior, pending, time, and overflow policy state.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn integrate_to_cadence(
     accumulator: &mut SignalValue,
@@ -434,6 +435,7 @@ pub(in crate::model::fault_signal) fn evaluate_boundary(
     }
 }
 
+// crucible-lint: allow rust-allow -- ramp evaluation retains both endpoints, the query coordinate, and explicit rounding policy.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn evaluate_ramp(
     start: &SignalCoordinate,
@@ -462,6 +464,7 @@ pub(super) fn evaluate_ramp(
     )?))
 }
 
+// crucible-lint: allow rust-allow -- triangle evaluation retains its complete waveform and arithmetic policy.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn evaluate_triangle(
     epoch: &SignalCoordinate,
@@ -501,6 +504,7 @@ pub(super) fn evaluate_triangle(
     }
 }
 
+// crucible-lint: allow rust-allow -- sawtooth evaluation retains its complete waveform and arithmetic policy.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn evaluate_sawtooth(
     epoch: &SignalCoordinate,
@@ -1389,6 +1393,7 @@ pub(super) fn history_at(
         .ok_or(SignalEvaluationError::HistoryUnavailable)
 }
 
+// crucible-lint: allow rust-allow -- window evaluation keeps the operator, bounds, samples, coordinate, and arithmetic policy explicit.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn evaluate_window(
     operator: PureSignalOperator,

@@ -501,6 +501,7 @@ impl PluginBlockIo {
         )
     }
 
+    // crucible-lint: allow rust-allow -- the helper receives the complete fixed block request and shared-memory publication boundary.
     #[allow(clippy::too_many_arguments)]
     fn submit_request_as(
         &self,

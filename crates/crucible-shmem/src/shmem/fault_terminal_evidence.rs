@@ -266,6 +266,7 @@ fn u64_at(bytes: &[u8], offset: usize) -> Result<u64, FaultAbiError> {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;

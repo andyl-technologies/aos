@@ -486,6 +486,7 @@ fn put_u64(bytes: &mut [u8], offset: usize, value: u64) {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #[allow(clippy::expect_used)]
 #[path = "fault_instruction_evidence_test.rs"]
 mod tests;

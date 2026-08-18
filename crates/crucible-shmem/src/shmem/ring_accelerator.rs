@@ -50,6 +50,7 @@ pub enum AcceleratorClass {
 ///
 /// Returns [`AcceleratorEntryError`] when a job kind or service demand is zero,
 /// an output capacity exceeds the transport limit, or the input is oversized.
+// crucible-lint: allow rust-allow -- canonical material includes every independently validated accelerator envelope field.
 #[allow(clippy::too_many_arguments)]
 pub fn canonical_accelerator_job_material(
     class: AcceleratorClass,
@@ -214,6 +215,7 @@ impl AcceleratorEntry {
     /// Returns [`AcceleratorEntryError`] for zero identity fields, unsupported
     /// classes, an oversized payload, invalid flags, or a nonzero completion
     /// status on a request.
+    // crucible-lint: allow rust-allow -- the constructor mirrors the fixed shared-memory accelerator envelope.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         sequence: u64,
@@ -278,6 +280,7 @@ impl AcceleratorEntry {
     ///
     /// Returns [`AcceleratorEntryError`] when an identity or job field is not
     /// canonical for the accelerator transport.
+    // crucible-lint: allow rust-allow -- cancellation mirrors the fixed shared-memory accelerator identity fields.
     #[allow(clippy::too_many_arguments)]
     pub fn cancellation(
         sequence: u64,

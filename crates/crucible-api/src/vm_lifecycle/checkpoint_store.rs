@@ -1229,6 +1229,7 @@ fn encode_manifest(manifest: &ClosureManifest) -> Result<Vec<u8>, SchedulerError
     Ok(bytes)
 }
 
+// crucible-lint: allow stringly-error -- the private canonical decoder returns bounded diagnostics that the store boundary immediately wraps in CheckpointStoreError.
 fn decode_manifest(bytes: &[u8]) -> Result<ClosureManifest, String> {
     let payload = bytes
         .strip_prefix(MANIFEST_MAGIC)
@@ -1246,6 +1247,7 @@ fn decode_manifest(bytes: &[u8]) -> Result<ClosureManifest, String> {
     Ok(manifest)
 }
 
+// crucible-lint: allow stringly-error -- the private shape validator returns bounded diagnostics that the store boundary immediately wraps in CheckpointStoreError.
 fn validate_manifest_shape(manifest: &ClosureManifest) -> Result<(), String> {
     if !manifest
         .signal_artifacts
@@ -1899,6 +1901,7 @@ fn hex_bytes(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
     #![allow(clippy::expect_used)]
 
     use super::*;

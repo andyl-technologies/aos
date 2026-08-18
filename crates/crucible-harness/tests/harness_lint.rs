@@ -547,6 +547,26 @@ fn harness_lint_rejects_error_and_logging_drift() {
         cfg_all_test_findings.is_empty(),
         "{cfg_all_test_findings:?}"
     );
+
+    let standard_error_source = error_logging_failures(
+        Path::new("crucible-sim/src/error.rs"),
+        r#"
+            impl Error for TypedError {
+                fn source(&self) -> Option<&(dyn Error + 'static)> {
+                    Some(&self.source)
+                }
+            }
+
+            fn tuple_success() -> Result<(String, BTreeMap<String, u64>), TypedError> {
+                todo!()
+            }
+        "#,
+        false,
+    );
+    assert!(
+        standard_error_source.is_empty(),
+        "{standard_error_source:?}"
+    );
 }
 
 #[test]

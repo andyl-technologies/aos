@@ -3,6 +3,7 @@
 use super::*;
 
 impl<'a> FaultBindingRuntime<'a> {
+    // crucible-lint: allow rust-allow -- one atomic evaluation carries coordinate, opportunity, sink, replay, recording, and verification state.
     #[allow(
         clippy::too_many_arguments,
         reason = "one atomic binding evaluation carries coordinate, opportunity, sink, replay, recording, and verification state"

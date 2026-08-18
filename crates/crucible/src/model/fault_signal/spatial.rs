@@ -1387,6 +1387,7 @@ fn gcd_u128(mut left: u128, mut right: u128) -> u128 {
     left
 }
 
+// crucible-lint: allow rust-allow -- regular-grid sampling needs the full geometry, value field, position, and interpolation contract.
 #[allow(clippy::too_many_arguments)]
 fn sample_regular_grid(
     origin: [i64; 3],

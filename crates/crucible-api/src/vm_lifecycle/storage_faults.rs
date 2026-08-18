@@ -382,6 +382,7 @@ pub(super) struct ProductionBlockFaultCoordinator {
 
 impl ProductionBlockFaultCoordinator {
     /// Binds a World block target to the shared production continuation.
+    // crucible-lint: allow rust-allow -- the coordinator binds independently owned runtime, observation, world, target, plan, seed, and clock inputs.
     #[allow(
         clippy::too_many_arguments,
         reason = "the coordinator binds independently owned runtime, observation, world, target, plan, seed, and clock inputs"
@@ -1148,6 +1149,7 @@ impl ProductionBlockFaultCoordinator {
         request_sequence: u64,
         opportunity: &crucible::model::FaultOpportunity,
         actions: &[ResolvedBindingAction],
+        // crucible-lint: allow stringly-error -- the coordinator trait's private adapter diagnostic is immediately wrapped by the lifecycle boundary.
     ) -> Result<crucible_device::block::ResolvedBlockFaultDirective, String> {
         let devices = Arc::clone(&self.devices);
         let mut read_source = move |device: ContentHash, offset: u64, count: u32| {

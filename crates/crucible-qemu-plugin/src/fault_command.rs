@@ -376,6 +376,7 @@ type QemuFaultSystemManifestFn = extern "C" fn(*mut QemuFaultSystemManifest) -> 
 pub(crate) struct QemuFaultCommandApis {
     capabilities: QemuFaultCapabilitiesFn,
     submit: QemuFaultSubmitFn,
+    // crucible-lint: allow rust-allow -- cancellation is retained for exact restore rollback wiring.
     #[allow(dead_code, reason = "cancellation is used by restore rollback wiring")]
     cancel: QemuFaultCancelFn,
     peek: QemuFaultPeekFn,

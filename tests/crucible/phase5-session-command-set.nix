@@ -147,11 +147,11 @@
     ++ forbiddenFor "crates/crucible-session/src/lib.rs" sessionLib [
       {
         label = "retired imperative fault injection command";
-        needle = "InjectFault";
+        needle = "Inject" + "Fault";
       }
       {
         label = "retired imperative fault healing command";
-        needle = "HealFault";
+        needle = "Heal" + "Fault";
       }
       {
         label = "retired session fault payload";
@@ -159,7 +159,7 @@
       }
       {
         label = "retired session fault tag";
-        needle = "FaultTag";
+        needle = "Fault" + "Tag";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
