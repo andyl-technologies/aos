@@ -59,6 +59,14 @@
         default = false;
         description = "Attach the additional disk read-only to the guest.";
       };
+      removable = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Report USB storage as removable media. QEMU defaults USB storage to
+          fixed media, so tests of removable-device policy must opt in.
+        '';
+      };
       interface = mkOption {
         type = types.enum ["virtio" "scsi" "usb"];
         default = "virtio";
