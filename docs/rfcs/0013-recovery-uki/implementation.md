@@ -57,11 +57,11 @@ Db-signed PE-addon and SMBIOS command-line fragments are measured into PCR 12
 but are not appended when an embedded command line exists. This boundary is
 earlier than PID 1: selectors such as `rd.systemd.unit=` and `rdinit=` must not
 be allowed to choose a process or target before a userspace validator can run.
-Under enforcing Secure Boot, EFI LoadOptions are discarded before command-line
-measurement when an embedded command line exists, while unsigned addons are
-rejected by the image loader. The initrd parser remains a defense-in-depth
-check for any forbidden control field that nevertheless reaches the effective
-command line.
+Under enforcing Secure Boot, systemd-boot measures Type #1 entry options into
+PCR 12 and the stub discards them when an embedded command line exists, while
+unsigned addons are rejected by the image loader before command-line
+measurement. The initrd parser remains a defense-in-depth check for any
+forbidden control field that nevertheless reaches the effective command line.
 
 Phase 2 validates internal consistency but cannot by itself distinguish a
 complete valid slot-A tuple appended in place of slot B (or the reverse),
@@ -232,9 +232,9 @@ re-enable them.
 Parser vectors cover duplicates of every identity field and every forbidden
 systemd control alias. Executable tests cover every earlier transport boundary:
 
-- EFI LoadOptions are discarded before measurement under enforcing Secure
-  Boot, leaving the embedded command line, clean PCR 12, and unattended unlock
-  intact;
+- EFI LoadOptions from a Type #1 entry are measured by systemd-boot, then
+  discarded by the stub under enforcing Secure Boot; the embedded command line
+  remains intact while the changed PCR 12 denies unattended `/var` unlock;
 - a db-signed addon and SMBIOS fragments are measured but discarded, leaving
   the embedded command line intact while the changed PCR 12 denies unattended
   `/var` unlock;

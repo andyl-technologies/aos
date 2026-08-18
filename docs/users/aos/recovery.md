@@ -17,14 +17,16 @@ password that grants an initrd shell.
 On dm-verity images, the signed embedded kernel command line is authoritative.
 External db-signed PE-addon and SMBIOS command-line fragments are measured into
 PCR 12 but not appended, so they cannot select an alternate init or target
-before recovery validation. Under enforcing Secure Boot, EFI LoadOptions are
-discarded before command-line measurement and unsigned addons are rejected by
-the image loader. A malformed, duplicated, or control-bearing field that does
-reach the effective command line is rejected before the verity mapper, `/var`
-unlock, or `/var` mount can start. The host stops in a passive boot-identity
-failure target; it does not honor command-line requests for emergency, debug,
-breakpoint, or transient-command units. Treat the console diagnostic as
-evidence to preserve, not as a prompt that can be authenticated locally.
+before recovery validation. Under enforcing Secure Boot, systemd-boot measures
+Type #1 entry options into PCR 12 and the stub discards them when an embedded
+command line exists. Unsigned addons are rejected by the image loader before
+command-line measurement. A malformed, duplicated, or control-bearing field
+that does reach the effective command line is rejected before the verity
+mapper, `/var` unlock, or `/var` mount can start. The host stops in a passive
+boot-identity failure target; it does not honor command-line requests for
+emergency, debug, breakpoint, or transient-command units. Treat the console
+diagnostic as evidence to preserve, not as a prompt that can be authenticated
+locally.
 
 The development debug profile can add direct autologin gettys, but enabling it
 is an explicit security waiver and it must not be used for production images.

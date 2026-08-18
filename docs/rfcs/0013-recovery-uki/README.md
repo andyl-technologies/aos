@@ -553,11 +553,12 @@ denial of service is out of scope.
 For a db-signed addon or SMBIOS source, the AOS EFI stub measures the external
 fragment into PCR 12 but does not append it when the UKI has an embedded signed
 command line. The kernel therefore sees the single signed root identity, while
-the changed PCR 12 denies `/var` TPM unlock. EFI LoadOptions are discarded
-before measurement under enforcing Secure Boot, and unsigned addons are
-rejected by the image loader; neither source changes the signed command line or
-PCR 12. If a duplicate or invalid tuple reaches the effective command line by
-another path, the initrd guard rejects it before verity/root activation.
+the changed PCR 12 denies `/var` TPM unlock. Under enforcing Secure Boot,
+systemd-boot measures Type #1 entry options into PCR 12 and the stub discards
+them when an embedded command line exists. Unsigned addons are rejected by the
+image loader before command-line measurement and leave PCR 12 unchanged. If a
+duplicate or invalid tuple reaches the effective command line by another path,
+the initrd guard rejects it before verity/root activation.
 
 ### Appended `SYSTEMD_SULOGIN_FORCE=1`
 
@@ -565,7 +566,7 @@ When supplied by a db-signed addon or SMBIOS, the AOS EFI stub measures but
 does not append the token, so it cannot select an init process or force a
 prompt before userspace validation. PCR 12 denies `/var` auto-unseal, and the
 base initrd contains no interactive `sulogin` unit. EFI LoadOptions and unsigned
-addons are rejected earlier as described above. If the token reaches the
+addons follow the separate handling described above. If the token reaches the
 effective command line by another path, the normal-mode guard rejects it into
 the noninteractive fail-closed target rather than `emergency.target`. No
 persistent state or shell is exposed.

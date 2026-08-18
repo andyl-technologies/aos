@@ -1320,9 +1320,10 @@ in {
       assert json.loads(target.succeed("cat /var/lib/profiles/image/state.json")) == image_state_a
 
       # ════ 6. External command-line transports cannot override UKIs ════
-      # Under enforcing Secure Boot, EFI LoadOptions are discarded before
-      # measurement when an embedded .cmdline exists. The signed command line
-      # and clean PCR 12 therefore remain authoritative and /var may unseal.
+      # Under enforcing Secure Boot, systemd-boot measures Type #1 entry
+      # options into PCR 12 and the stub then discards them when an embedded
+      # .cmdline exists. The signed command line remains authoritative while
+      # the changed PCR denies unattended /var unlock.
       target.succeed(f"""
           {MOUNT} -o remount,rw /boot
           printf '%s\n' \
@@ -1334,11 +1335,15 @@ in {
           sync /boot
           {MOUNT} -o remount,ro /boot
       """)
-      offset = serial_offset()
-      target.relaunch_with_smbios_oem_strings([], timeout=600)
-      wait_multi_user("EFI LoadOptions rejection")
-      transcript = serial_since(offset)
+      transcript = target.relaunch_with_smbios_oem_strings(
+          [], expect_agent=False, settle=45
+      )
       assert_external_cmdline_absent(transcript, "rdinit=/bin/sh")
+      assert "aos-var-crypt: TPM2 unlock failed" in transcript, transcript[-12000:]
+      assert "AOS recovery>" not in transcript, transcript[-12000:]
+
+      target.relaunch_with_smbios_oem_strings([], timeout=600)
+      wait_multi_user("clean recovery after EFI LoadOptions rejection")
       assert read_pcr12() == clean_pcr12
       assert var_source() == "/dev/mapper/var"
       target.succeed(f"""
