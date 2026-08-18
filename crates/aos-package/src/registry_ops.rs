@@ -1647,9 +1647,10 @@ description = ""
 ///
 /// # Errors
 ///
-/// Fails when the registry has no writable authoring clone, when the
-/// package name is not safe for registry package paths, when the platform
-/// name is not safe for package metadata, when the image arguments are not
+/// Fails when required package distribution metadata is missing, empty, or a
+/// legacy placeholder; when the registry has no writable authoring clone;
+/// when the package name is not safe for registry package paths; when the
+/// platform name is not safe for package metadata; when the image arguments are not
 /// given in triples or their files/metadata disagree, when the `nix path-info` /
 /// `nix-store` queries fail for the store path, when `--expose-manifest`
 /// cannot be parsed or validated, when the config output references a
@@ -1689,6 +1690,10 @@ pub async fn publish(
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
+    let description = required_publish_metadata(description, "--description", "No description")?;
+    let license = required_publish_metadata(license, "--license", "unknown")?;
+    let maintainer = required_publish_metadata(maintainer, "--maintainer", "unknown")?;
+
     let name = resolve_registry_name(config, registry)?;
     let dir = config.scope.registries_path().join(&name);
     ensure_writable_registry_clone(&name, &dir)?;
@@ -1841,10 +1846,10 @@ pub async fn publish(
         pkg_version,
         &platform,
         &info,
-        description,
+        Some(description),
         homepage,
-        license,
-        maintainer,
+        Some(license),
+        Some(maintainer),
         sysroot,
         previous,
         &image_infos,
@@ -2117,6 +2122,25 @@ pub async fn publish(
     Ok(())
 }
 
+/// Returns required package distribution metadata after rejecting historical
+/// placeholders that do not describe a package.
+fn required_publish_metadata<'a>(
+    value: Option<&'a str>,
+    flag: &str,
+    legacy_placeholder: &str,
+) -> Result<&'a str> {
+    let value = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .with_context(|| format!("{flag} is required and must not be empty"))?;
+    if value.eq_ignore_ascii_case(legacy_placeholder) {
+        bail!(
+            "{flag} must describe the package, not use the legacy placeholder '{legacy_placeholder}'"
+        );
+    }
+    Ok(value)
+}
+
 fn apply_publish_sb_policy(
     images: &mut [PublishedImage],
     catalog: Option<&SbCertsToml>,
@@ -2203,9 +2227,9 @@ fn build_package_toml(
     config_module: Option<&ConfigModuleMeta>,
     config_attestation: Option<&AttestationMeta>,
 ) -> Result<String> {
-    let desc = description.unwrap_or("No description");
-    let lic = license.unwrap_or("unknown");
-    let maint = maintainer.unwrap_or("unknown");
+    let desc = description.context("package description is required")?;
+    let lic = license.context("package license is required")?;
+    let maint = maintainer.context("package maintainer is required")?;
     let source_drv = source_info
         .map(|source| source.path.as_str())
         .unwrap_or_default();
@@ -15734,10 +15758,10 @@ mod tests {
             "1",
             "x86_64-linux",
             &info,
+            Some("Firewall configuration"),
             None,
-            None,
-            None,
-            None,
+            Some("Apache-2.0"),
+            Some("Andyl, Inc."),
             false,
             None,
             &[],
@@ -17376,6 +17400,17 @@ mod tests {
         assert!(!content.contains("nar_size"));
         assert!(content.contains("source_drv = \"\""));
         assert!(content.contains("source_nar_hash = \"\""));
+    }
+
+    #[test]
+    fn publish_distribution_metadata_rejects_missing_empty_and_legacy_values() {
+        assert!(required_publish_metadata(None, "--description", "No description").is_err());
+        assert!(required_publish_metadata(Some("  "), "--license", "unknown").is_err());
+        assert!(required_publish_metadata(Some("UNKNOWN"), "--maintainer", "unknown").is_err());
+        assert_eq!(
+            required_publish_metadata(Some("  Andyl, Inc.  "), "--maintainer", "unknown").unwrap(),
+            "Andyl, Inc."
+        );
     }
 
     #[test]
@@ -19958,10 +19993,10 @@ references = []
             "8.5.0",
             "aarch64-linux",
             &info,
+            Some("URL transfer tool"),
             None,
-            None,
-            None,
-            None,
+            Some("MIT"),
+            Some("aos-team"),
             false,
             None,
             &[],
