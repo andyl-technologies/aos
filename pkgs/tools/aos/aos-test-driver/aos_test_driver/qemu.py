@@ -103,6 +103,7 @@ class QemuMachine(Machine):
     drain_proc: subprocess.Popen[bytes] | None
     swtpm_proc: subprocess.Popen[bytes] | None
     smbios_oem_strings: list[str]
+    _smbios_tpm_snapshot: Path
 
     def __init__(
         self,
@@ -160,6 +161,7 @@ class QemuMachine(Machine):
         self.tpm_state_dir = str(self.tmpdir / f"{name}-tpm-state") if tpm else None
         self.swtpm_log = str(self.tmpdir / f"{name}-swtpm.log")
         self.smbios_oem_strings = []
+        self._smbios_tpm_snapshot = self.tmpdir / f"{name}-tpm-smbios-snapshot"
 
         self.qemu_proc = None
         self.drain_proc = None
@@ -215,8 +217,24 @@ class QemuMachine(Machine):
                     f"[{self.name}] extra disk {index} has invalid sizeMiB"
                 )
             path = str(self.tmpdir / f"{self.name}-extra-{index}.img")
-            with open(path, "wb") as extra:
-                extra.truncate(size_mib * 1024 * 1024)
+            source = disk.get("source")
+            if source is None:
+                with open(path, "wb") as extra:
+                    extra.truncate(size_mib * 1024 * 1024)
+            elif isinstance(source, str) and source:
+                clone_or_copy(source, path)
+                expected_size = size_mib * 1024 * 1024
+                actual_size = os.path.getsize(path)
+                if actual_size > expected_size:
+                    raise RuntimeError(
+                        f"[{self.name}] extra disk {index} source exceeds sizeMiB"
+                    )
+                if actual_size < expected_size:
+                    os.truncate(path, expected_size)
+            else:
+                raise RuntimeError(
+                    f"[{self.name}] extra disk {index} has invalid source"
+                )
             self.extra_disk_copies.append(path)
         copy_method = "reflink" if reflinked else "copy"
         if self.metadata_src is not None:
@@ -476,6 +494,8 @@ class QemuMachine(Machine):
             drive_id = f"extra{index}"
             interface = disk.get("interface", "virtio")
             argv += ["-drive", f"id={drive_id},file={path},format=raw,if=none"]
+            if disk.get("readOnly", False):
+                argv[-1] += ",readonly=on"
             if interface == "virtio":
                 argv += [
                     "-device",
@@ -509,9 +529,14 @@ class QemuMachine(Machine):
 
         # vTPM device — connects QEMU's emulated tpm-tis to the swtpm
         # control socket launched in start(). Present on every (re)launch
-        # so the guest keeps its TPM across the reboot leg.
+        # so the guest keeps its TPM across the reboot leg. Give TPM guests a
+        # virtio entropy source as well: first-boot filesystem/key generation
+        # must not monopolize the slow software TPM's 64-byte GetRandom path.
+        # Real machines obtain entropy from their platform hardware; this
+        # keeps the emulator faithful without making swtpm a boot scheduler.
         if self.tpm:
             argv += [
+                "-device", "virtio-rng-pci",
                 "-chardev", f"socket,id=chrtpm,path={self.tpm_socket}",
                 "-tpmdev", "emulator,id=tpm0,chardev=chrtpm",
                 "-device", "tpm-tis,tpmdev=tpm0",
@@ -654,7 +679,25 @@ class QemuMachine(Machine):
             )
 
         self._stop_runtime_for_relaunch(timeout)
+        if self.tpm:
+            assert self.tpm_state_dir is not None
+            state_dir = Path(self.tpm_state_dir)
+            if expect_agent and self._smbios_tpm_snapshot.exists():
+                shutil.rmtree(state_dir)
+                shutil.copytree(self._smbios_tpm_snapshot, state_dir)
+                shutil.rmtree(self._smbios_tpm_snapshot)
+            elif not expect_agent:
+                if self._smbios_tpm_snapshot.exists():
+                    raise RuntimeError(
+                        f"[{self.name}] an earlier rejected-input TPM snapshot is unresolved"
+                    )
+                shutil.copytree(state_dir, self._smbios_tpm_snapshot)
+
         self.smbios_oem_strings = list(values)
+        try:
+            serial_offset = os.path.getsize(self.serial_log_path)
+        except OSError:
+            serial_offset = 0
         self._launch()
 
         if expect_agent:
@@ -666,7 +709,8 @@ class QemuMachine(Machine):
         except RuntimeError:
             try:
                 with open(self.serial_log_path, "r", errors="replace") as serial:
-                    return serial.read()[-12000:]
+                    serial.seek(serial_offset)
+                    return serial.read()
             except OSError:
                 return ""
         raise RuntimeError(
