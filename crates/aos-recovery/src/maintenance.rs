@@ -280,8 +280,6 @@ fn open_with_recovery_key(var_device: &std::path::Path) -> Result<(), Maintenanc
             "luks",
             "--key-slot",
             &keyslot,
-            "--key-file",
-            "-",
         ])
         .arg(var_device)
         .arg("var")
