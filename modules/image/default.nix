@@ -105,6 +105,17 @@ in {
       '';
     };
 
+    espExtraFreeMiB = lib.mkOption {
+      type = lib.types.int;
+      default = 0;
+      internal = true;
+      description = ''
+        Additional free space reserved on the ESP for tests that exercise
+        temporary boot artifacts outside the production publication
+        transaction.
+      '';
+    };
+
     hostConfigClosures = lib.mkOption {
       type = lib.types.listOf lib.types.package;
       default = [];
@@ -165,6 +176,13 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = cfg.espExtraFreeMiB >= 0;
+        message = "aos.image.espExtraFreeMiB must not be negative";
+      }
+    ];
+
     system.build.image = {
       raw = rawImage;
       qcow2 = convertImage {

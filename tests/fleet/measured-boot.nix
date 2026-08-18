@@ -36,6 +36,9 @@
         # Exercise the deployed-host transition rather than only fresh
         # enrollment under the new default.
         aos.boot.secureBoot.measuredBoot.pinnedPcrs = lib.mkForce "7";
+        # Boundary tests temporarily duplicate a complete normal UKI so a
+        # failed addon boot cannot affect the clean default entry.
+        aos.image.espExtraFreeMiB = 192;
         # Keep the serial console last so /dev/console and journald expose
         # initrd transaction failures in the fleet-test transcript.
         aos.boot.kernelParams = lib.mkAfter ["console=ttyS0,115200"];
@@ -244,6 +247,13 @@ in {
                   return serial.read()
           except OSError:
               return ""
+
+      def relaunch_recovery_console(smbios_values=None):
+          offset = serial_offset()
+          target.relaunch_with_smbios_oem_strings(
+              smbios_values or [], expect_agent=False, settle=45
+          )
+          return wait_serial("AOS recovery>", offset)
 
       def assert_external_cmdline_absent(transcript, fragment):
           kernel_cmdlines = [
@@ -1356,6 +1366,7 @@ in {
       # command-line fragment is discarded. The changed PCR denies unattended
       # /var unlock, proving measurement happened even though rdinit did not.
       target.succeed(f"""
+          set -eu
           mkdir -p /run/aos-uki-b-media
           {MOUNT} -t ext4 -o ro /dev/disk/by-label/aos-uki-b /run/aos-uki-b-media
           {MOUNT} -o remount,rw /boot
@@ -1390,6 +1401,7 @@ in {
       # An unsigned addon is rejected by the Secure Boot image loader before
       # its .cmdline is measured. The copied UKI still boots with clean PCR 12.
       target.succeed(f"""
+          set -eu
           mkdir -p /run/aos-uki-b-media
           {MOUNT} -t ext4 -o ro /dev/disk/by-label/aos-uki-b /run/aos-uki-b-media
           {MOUNT} -o remount,rw /boot
@@ -1417,37 +1429,27 @@ in {
           {MOUNT} -o remount,ro /boot
       """)
 
-      # The same signed-addon boundary applies to recovery UKIs. Recovery A
-      # must reach only the bounded console, never the injected rdinit shell.
+      # Recovery has no TPM-authorized degraded mode to preserve. After
+      # measuring an external fragment, the stub refuses the launch rather
+      # than entering even the bounded recovery console.
       target.succeed(f"""
-          mkdir -p /run/aos-uki-b-media
-          {MOUNT} -t ext4 -o ro /dev/disk/by-label/aos-uki-b /run/aos-uki-b-media
-          {MOUNT} -o remount,rw /boot
-          mkdir -p /boot/EFI/AOS/recovery-a.efi.extra.d
-          cp /run/aos-uki-b-media/signed.addon.efi \
-            /boot/EFI/AOS/recovery-a.efi.extra.d/injected.addon.efi
           {BOOTCTL} set-oneshot recovery-a.conf
-          sync /boot
-          {MOUNT} -o remount,ro /boot
-          {UMOUNT} /run/aos-uki-b-media
+          sync
       """)
       transcript = target.relaunch_with_smbios_oem_strings(
-          [], expect_agent=False, settle=45
+          ["io.systemd.stub.kernel-cmdline-extra=rdinit=/bin/sh"],
+          expect_agent=False,
+          settle=45,
       )
       assert "Ignoring externally supplied command line because the UKI embeds one." in transcript, transcript[-12000:]
-      assert_external_cmdline_absent(transcript, "rdinit=/bin/sh")
-      assert "AOS signed recovery environment" in transcript, transcript[-12000:]
-      assert "AOS recovery>" in transcript, transcript[-12000:]
+      assert "Refusing recovery boot with an external command line." in transcript, transcript[-12000:]
+      assert "Linux version" not in transcript, transcript[-12000:]
+      assert "AOS recovery>" not in transcript, transcript[-12000:]
       assert "aos-var-crypt: unlocking /var via TPM2" not in transcript, transcript[-12000:]
 
       target.relaunch_with_smbios_oem_strings([], timeout=600)
-      wait_multi_user("normal boot after recovery signed-addon rejection")
+      wait_multi_user("normal boot after refused recovery SMBIOS launch")
       assert read_pcr12() == clean_pcr12
-      target.succeed(f"""
-          {MOUNT} -o remount,rw /boot
-          rm -rf /boot/EFI/AOS/recovery-a.efi.extra.d
-          {MOUNT} -o remount,ro /boot
-      """)
 
       # SMBIOS Type-11 fragments are accepted and measured before being
       # discarded, so every case must deny the PCR-12-bound TPM token.
@@ -1503,9 +1505,7 @@ in {
       # shell exit. Exercise a valid authenticated restore while recovery A is
       # running; it may replace only B.
       target.succeed(f"{BOOTCTL} set-oneshot recovery-a.conf && sync")
-      transcript = target.relaunch_with_smbios_oem_strings(
-          [], expect_agent=False, settle=45
-      )
+      transcript = relaunch_recovery_console()
       assert "AOS signed recovery environment" in transcript, transcript[-12000:]
 
       offset = serial_offset()
@@ -1573,9 +1573,7 @@ in {
           {BOOTCTL} set-oneshot recovery-a.conf
           sync
       """)
-      transcript = target.relaunch_with_smbios_oem_strings(
-          [], expect_agent=False, settle=45
-      )
+      transcript = relaunch_recovery_console()
       assert "AOS signed recovery environment" in transcript, transcript[-12000:]
       offset = serial_offset()
       target.send_serial("6\n")
@@ -1595,9 +1593,7 @@ in {
       )
       for copy in ["a", "b"]:
           target.succeed(f"{BOOTCTL} set-oneshot recovery-{copy}.conf && sync")
-          transcript = target.relaunch_with_smbios_oem_strings(
-              [], expect_agent=False, settle=45
-          )
+          transcript = relaunch_recovery_console()
           assert "AOS signed recovery environment" in transcript, transcript[-12000:]
           assert "Persistent state is locked. Networking is disabled." in transcript, transcript[-12000:]
           assert "unlocking /var via TPM2" not in transcript, transcript[-12000:]

@@ -226,7 +226,7 @@
   ukiAStoreFilename = "aos-${name}-slot-a-${version}.efi";
   ukiBStoreFilename = "aos-${name}-slot-b-${version}.efi";
 
-  recoveryCmdline = "rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0";
+  recoveryCmdline = "console=ttyS0,115200 rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0";
   recoverySlotManifest =
     if recoveryEnabled
     then
@@ -581,7 +581,7 @@
               transaction_bytes=$(( transaction_bytes + $(stat -c %s "$RECOVERY_B_PATH") ))
               transaction_bytes=$(( transaction_bytes + $(stat -c %s esp/loader/entries/recovery-b.conf) ))
             ''}
-            esp_required_bytes=$(( esp_content_bytes + transaction_bytes + 33554432 ))
+            esp_required_bytes=$(( esp_content_bytes + transaction_bytes + 33554432 + ${toString system.config.aos.image.espExtraFreeMiB} * 1048576 ))
             echo "$esp_content_bytes" > esp-content-bytes
             echo "$transaction_bytes" > esp-transaction-bytes
             echo "$esp_required_bytes" > esp-required-bytes

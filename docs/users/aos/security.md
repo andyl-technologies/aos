@@ -40,6 +40,10 @@ measures Type #1 entry options into PCR 12 and the stub discards them when an
 embedded command line exists. Unsigned addons are rejected by the image loader
 before command-line measurement and therefore leave PCR 12 unchanged.
 
+Recovery UKIs additionally refuse the launch after measuring a db-signed addon
+or SMBIOS command-line fragment. No recovery kernel or console starts until the
+external input is removed.
+
 This early validation establishes an unambiguous tuple, but PCR 12 remains the
 authorization boundary for appended boot input. Until the documented PCR-12
 migration is complete, do not describe the tuple guard alone as preventing an

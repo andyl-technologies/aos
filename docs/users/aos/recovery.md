@@ -28,6 +28,10 @@ emergency, debug, breakpoint, or transient-command units. Treat the console
 diagnostic as evidence to preserve, not as a prompt that can be authenticated
 locally.
 
+Recovery UKIs are stricter: after measuring a db-signed addon or SMBIOS
+command-line fragment, the stub refuses that launch before the kernel starts.
+Boot the clean recovery entry again after removing the external input.
+
 The development debug profile can add direct autologin gettys, but enabling it
 is an explicit security waiver and it must not be used for production images.
 
@@ -40,7 +44,8 @@ copy, leaving the opposite copy intact.
 ## Use the signed recovery console
 
 Select either recovery entry from the firmware menu. The signed command line
-starts a dedicated initrd that has no normal-root mount, switch-root, TPM
+selects the first serial console at 115200 baud and starts a dedicated initrd
+that has no normal-root mount, switch-root, TPM
 automatic unlock, provisioning, package activation, debug login, or automatic
 networking path. Its fixed menu provides:
 
