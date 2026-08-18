@@ -561,17 +561,30 @@ in
             trap 'rm -rf "$staging"' EXIT
             mkdir "$staging" "$staging/normal" "$staging/early" "$staging/late"
 
-            if diagnostic=$(${pkgs.aos-boot-identity}/bin/aos-boot-identity /proc/cmdline 2>&1) \
-              && /lib/systemd/aos-systemd-veritysetup-generator \
+            if /lib/systemd/aos-systemd-veritysetup-generator \
                 "$staging/normal" "$staging/early" "$staging/late"; then
               cp -a "$staging/normal/." "$1/"
               cp -a "$staging/early/." "$2/"
               cp -a "$staging/late/." "$3/"
-              : > /run/aos/boot-identity-valid
+              # Publish the handshake as a generated unit. Generators run
+              # before PID 1 establishes the final /run mount, so a marker
+              # written here could be hidden before the guard observes it.
+              # The generated unit runs after that mount is authoritative.
+              cat > "$2/aos-boot-identity-success.service" <<'SUCCESS'
+            [Unit]
+            DefaultDependencies=no
+
+            [Service]
+            Type=oneshot
+            RemainAfterExit=yes
+            ExecStart=${pkgs.aos-boot-identity}/bin/aos-boot-identity /proc/cmdline
+            ExecStartPre=${pkgs.coreutils}/bin/mkdir -p /run/aos
+            ExecStartPost=${pkgs.coreutils}/bin/touch /run/aos/boot-identity-valid
+            SUCCESS
               exit 0
             fi
 
-            diagnostic="''${diagnostic:-upstream verity generator rejected validated identity}"
+            diagnostic="upstream verity generator rejected normal boot identity"
             printf '<3>%s\n' "$diagnostic" > /dev/kmsg 2>/dev/null \
               || printf '%s\n' "$diagnostic" >&2
             mkdir -p "$2"
