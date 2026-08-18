@@ -77,9 +77,11 @@ remote policy decisions.
 Secure Boot plus verity images now build two separately signed, uncounted
 recovery UKIs. Each contains a copy-specific dedicated initrd, the exact
 recovery command line, an embedded db-signed slot manifest, and no normal
-`.pcrsig`. The recovery unit graph has no normal root, switch-root, TPM unlock,
-provisioning, activation, package management, debug getty, or automatic
-network path. The console application accepts only fixed menu operations.
+`.pcrsig`. The recovery unit graph starts kernel-module loading before the UI
+so required storage targets such as dm-crypt are registered. It has no normal
+root, switch-root, TPM unlock, provisioning, activation, package management,
+debug getty, or automatic network path. The console application accepts only
+fixed menu operations.
 
 Normal slot verification shares the Phase-2 command-line parser. It verifies
 the UKI's Authenticode signature, copy/slot/release identity, root hash, and
@@ -345,9 +347,11 @@ unit set and a closure check over forbidden executables/services.
 
 ### 4.2 Recovery target
 
-Add `aos-recovery.target` with `DefaultDependencies=no`. It requires only the
-console, minimal udev/device discovery, read-only EFI variable access, and the
-recovery UI service.
+Add `aos-recovery.target` with `DefaultDependencies=no`. It requires only
+kernel-module loading, the console, minimal udev/device discovery, read-only
+EFI variable access, and the recovery UI service. Module loading is a hard
+ordering dependency of the target so storage targets needed by explicit
+authenticated operations are registered before the UI starts.
 
 The UI is a dedicated Rust subcommand or binary using structured operations.
 Do not construct a shell script that interpolates user-selected devices,
