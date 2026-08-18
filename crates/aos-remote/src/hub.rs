@@ -35,18 +35,12 @@ use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
 
-use aos_proto_types::SurfaceRef;
+use aos_proto_types::{CONNECT_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION_HEADER, SurfaceRef};
 
 use crate::client::validate_base_url;
 
 /// Default per-request timeout for hub RPC calls.
 const HUB_TIMEOUT_SECS: u64 = 30;
-
-/// Connect unary protocol-version request header.
-const CONNECT_PROTOCOL_VERSION_HEADER: &str = "Connect-Protocol-Version";
-
-/// Required Connect unary protocol version.
-const CONNECT_PROTOCOL_VERSION: &str = "1";
 
 /// A Connect-JSON client for an `aos-hub`'s services.
 ///
@@ -531,6 +525,8 @@ enum HubTopologyMethod {
     ListSigningKeys,
     /// Selects the normalized `GetSigningKey` Connect operation.
     GetSigningKey,
+    /// Selects the normalized `GetSigningKeyUsage` Connect operation.
+    GetSigningKeyUsage,
     /// Selects the normalized `PlanEnrollSigningKey` Connect operation.
     PlanEnrollSigningKey,
     /// Selects the normalized `EnrollSigningKey` Connect operation.
@@ -559,8 +555,6 @@ enum HubTopologyMethod {
     PlanDeleteProject,
     /// Selects the normalized `DeleteProject` Connect operation.
     DeleteProject,
-    /// Selects the normalized `GetInstanceDefaultStorageBinding` Connect operation.
-    GetInstanceDefaultStorageBinding,
     /// Selects the normalized `GetWriteAuthority` Connect operation.
     GetWriteAuthority,
     /// Selects the fenced write-authority controller observation.
@@ -597,6 +591,8 @@ enum HubTopologyMethod {
     ResolveImage,
     /// Selects placement-aware publication admission.
     BeginRegistryPublication,
+    /// Selects paginated registry publication history.
+    ListRegistryPublications,
     /// Selects publication status inspection.
     GetRegistryPublication,
     /// Selects exact publication promotion.
@@ -619,17 +615,58 @@ enum HubTopologyMethod {
     PlanDeleteWebhook,
     /// Selects the normalized `DeleteWebhook` Connect operation.
     DeleteWebhook,
-    PlanCreateAutomationPrincipal,
-    CreateAutomationPrincipal,
+    /// Selects the normalized `WhoAmI` Connect operation.
+    WhoAmI,
+    ListServiceAccounts,
+    GetServiceAccount,
+    PlanCreateServiceAccount,
+    CreateServiceAccount,
+    PlanUpdateServiceAccount,
+    UpdateServiceAccount,
+    PlanDeleteServiceAccount,
+    DeleteServiceAccount,
     GetMembership,
     PlanSetMembership,
     SetMembership,
-    PlanIssueRegistryToken,
-    IssueRegistryToken,
-    PlanRetireRegistryToken,
-    RetireRegistryToken,
-    /// Selects the normalized `ListTokens` Connect operation.
-    ListTokens,
+    ListInvitations,
+    GetInvitation,
+    PlanCreateInvitation,
+    CreateInvitation,
+    PlanCancelInvitation,
+    CancelInvitation,
+    AcceptInvitation,
+    /// Selects redacted organization identity-provider inspection.
+    GetIdentityProvider,
+    /// Selects identity-provider replacement planning.
+    PlanSetIdentityProvider,
+    /// Selects identity-provider replacement apply.
+    SetIdentityProvider,
+    /// Selects identity-provider removal planning.
+    PlanRemoveIdentityProvider,
+    /// Selects identity-provider removal apply.
+    RemoveIdentityProvider,
+    /// Selects organization-domain listing.
+    ListOrganizationDomains,
+    /// Selects exact organization-domain inspection.
+    GetOrganizationDomain,
+    /// Selects organization-domain claim planning.
+    PlanClaimOrganizationDomain,
+    /// Selects organization-domain claim apply.
+    ClaimOrganizationDomain,
+    /// Selects organization-domain DNS verification planning.
+    PlanVerifyOrganizationDomain,
+    /// Selects organization-domain DNS verification apply.
+    VerifyOrganizationDomain,
+    /// Selects organization-domain release planning.
+    PlanReleaseOrganizationDomain,
+    /// Selects organization-domain release apply.
+    ReleaseOrganizationDomain,
+    PlanIssueAccessToken,
+    IssueAccessToken,
+    PlanRetireAccessToken,
+    RetireAccessToken,
+    /// Selects the normalized `ListAccessTokens` Connect operation.
+    ListAccessTokens,
 }
 
 impl HubTopologyMethod {
@@ -1042,6 +1079,7 @@ impl HubTopologyMethod {
             DeleteOrganization => "aos.hub.v1.OrganizationService/DeleteOrganization",
             ListSigningKeys => "aos.hub.v1.SigningKeyService/ListSigningKeys",
             GetSigningKey => "aos.hub.v1.SigningKeyService/GetSigningKey",
+            GetSigningKeyUsage => "aos.hub.v1.SigningKeyService/GetSigningKeyUsage",
             PlanEnrollSigningKey => "aos.hub.v1.SigningKeyService/PlanEnrollSigningKey",
             EnrollSigningKey => "aos.hub.v1.SigningKeyService/EnrollSigningKey",
             PlanRotateSigningKey => "aos.hub.v1.SigningKeyService/PlanRotateSigningKey",
@@ -1056,9 +1094,6 @@ impl HubTopologyMethod {
             CreateProject => "aos.hub.v1.ProjectService/CreateProject",
             PlanDeleteProject => "aos.hub.v1.ProjectService/PlanDeleteProject",
             DeleteProject => "aos.hub.v1.ProjectService/DeleteProject",
-            GetInstanceDefaultStorageBinding => {
-                "aos.hub.v1.StorageBindingService/GetInstanceDefaultStorageBinding"
-            }
             GetWriteAuthority => "aos.hub.v1.TopologyService/GetWriteAuthority",
             ReportWriteAuthority => "aos.hub.v1.TopologyControllerService/ReportWriteAuthority",
             PlanRemoveWriteAuthority => "aos.hub.v1.TopologyService/PlanRemoveWriteAuthority",
@@ -1077,6 +1112,7 @@ impl HubTopologyMethod {
             GetImage => "aos.hub.v1.ImageService/GetImage",
             ResolveImage => "aos.hub.v1.ImageService/ResolveImage",
             BeginRegistryPublication => "aos.hub.v1.PublishService/BeginRegistryPublication",
+            ListRegistryPublications => "aos.hub.v1.PublishService/ListRegistryPublications",
             GetRegistryPublication => "aos.hub.v1.PublishService/GetRegistryPublication",
             CommitRegistryPublication => "aos.hub.v1.PublishService/CommitRegistryPublication",
             AbortRegistryPublication => "aos.hub.v1.PublishService/AbortRegistryPublication",
@@ -1088,18 +1124,47 @@ impl HubTopologyMethod {
             CreateWebhook => "aos.hub.v1.WebhookService/CreateWebhook",
             PlanDeleteWebhook => "aos.hub.v1.WebhookService/PlanDeleteWebhook",
             DeleteWebhook => "aos.hub.v1.WebhookService/DeleteWebhook",
-            PlanCreateAutomationPrincipal => {
-                "aos.hub.v1.IdentityService/PlanCreateAutomationPrincipal"
-            }
-            CreateAutomationPrincipal => "aos.hub.v1.IdentityService/CreateAutomationPrincipal",
+            WhoAmI => "aos.hub.v1.IdentityService/WhoAmI",
+            ListServiceAccounts => "aos.hub.v1.IdentityService/ListServiceAccounts",
+            GetServiceAccount => "aos.hub.v1.IdentityService/GetServiceAccount",
+            PlanCreateServiceAccount => "aos.hub.v1.IdentityService/PlanCreateServiceAccount",
+            CreateServiceAccount => "aos.hub.v1.IdentityService/CreateServiceAccount",
+            PlanUpdateServiceAccount => "aos.hub.v1.IdentityService/PlanUpdateServiceAccount",
+            UpdateServiceAccount => "aos.hub.v1.IdentityService/UpdateServiceAccount",
+            PlanDeleteServiceAccount => "aos.hub.v1.IdentityService/PlanDeleteServiceAccount",
+            DeleteServiceAccount => "aos.hub.v1.IdentityService/DeleteServiceAccount",
             GetMembership => "aos.hub.v1.IdentityService/GetMembership",
             PlanSetMembership => "aos.hub.v1.IdentityService/PlanSetMembership",
             SetMembership => "aos.hub.v1.IdentityService/SetMembership",
-            PlanIssueRegistryToken => "aos.hub.v1.IdentityService/PlanIssueRegistryToken",
-            IssueRegistryToken => "aos.hub.v1.IdentityService/IssueRegistryToken",
-            PlanRetireRegistryToken => "aos.hub.v1.IdentityService/PlanRetireRegistryToken",
-            RetireRegistryToken => "aos.hub.v1.IdentityService/RetireRegistryToken",
-            ListTokens => "aos.hub.v1.IdentityService/ListTokens",
+            ListInvitations => "aos.hub.v1.IdentityService/ListInvitations",
+            GetInvitation => "aos.hub.v1.IdentityService/GetInvitation",
+            PlanCreateInvitation => "aos.hub.v1.IdentityService/PlanCreateInvitation",
+            CreateInvitation => "aos.hub.v1.IdentityService/CreateInvitation",
+            PlanCancelInvitation => "aos.hub.v1.IdentityService/PlanCancelInvitation",
+            CancelInvitation => "aos.hub.v1.IdentityService/CancelInvitation",
+            AcceptInvitation => "aos.hub.v1.IdentityService/AcceptInvitation",
+            GetIdentityProvider => "aos.hub.v1.IdentityService/GetIdentityProvider",
+            PlanSetIdentityProvider => "aos.hub.v1.IdentityService/PlanSetIdentityProvider",
+            SetIdentityProvider => "aos.hub.v1.IdentityService/SetIdentityProvider",
+            PlanRemoveIdentityProvider => "aos.hub.v1.IdentityService/PlanRemoveIdentityProvider",
+            RemoveIdentityProvider => "aos.hub.v1.IdentityService/RemoveIdentityProvider",
+            ListOrganizationDomains => "aos.hub.v1.IdentityService/ListOrganizationDomains",
+            GetOrganizationDomain => "aos.hub.v1.IdentityService/GetOrganizationDomain",
+            PlanClaimOrganizationDomain => "aos.hub.v1.IdentityService/PlanClaimOrganizationDomain",
+            ClaimOrganizationDomain => "aos.hub.v1.IdentityService/ClaimOrganizationDomain",
+            PlanVerifyOrganizationDomain => {
+                "aos.hub.v1.IdentityService/PlanVerifyOrganizationDomain"
+            }
+            VerifyOrganizationDomain => "aos.hub.v1.IdentityService/VerifyOrganizationDomain",
+            PlanReleaseOrganizationDomain => {
+                "aos.hub.v1.IdentityService/PlanReleaseOrganizationDomain"
+            }
+            ReleaseOrganizationDomain => "aos.hub.v1.IdentityService/ReleaseOrganizationDomain",
+            PlanIssueAccessToken => "aos.hub.v1.IdentityService/PlanIssueAccessToken",
+            IssueAccessToken => "aos.hub.v1.IdentityService/IssueAccessToken",
+            PlanRetireAccessToken => "aos.hub.v1.IdentityService/PlanRetireAccessToken",
+            RetireAccessToken => "aos.hub.v1.IdentityService/RetireAccessToken",
+            ListAccessTokens => "aos.hub.v1.IdentityService/ListAccessTokens",
         }
     }
 }
@@ -1392,6 +1457,7 @@ pub mod hub_rpc {
         DeleteOrganization: ApplyOrganizationMutationRequest => DeleteTopologyResourceResponse;
         ListSigningKeys: ListSigningKeysRequest => ListSigningKeysResponse;
         GetSigningKey: GetSigningKeyRequest => SigningKeyResponse;
+        GetSigningKeyUsage: GetSigningKeyUsageRequest => SigningKeyUsageResponse;
         PlanEnrollSigningKey: PlanSigningKeyMutationRequest => TopologyPlanResponse;
         EnrollSigningKey: ApplyTopologyPlanRequest => SigningKeyResponse;
         PlanRotateSigningKey: PlanSigningKeyMutationRequest => TopologyPlanResponse;
@@ -1406,7 +1472,6 @@ pub mod hub_rpc {
         CreateProject: ApplyProjectMutationRequest => ProjectResponse;
         PlanDeleteProject: PlanDeleteProjectRequest => TopologyPlanResponse;
         DeleteProject: ApplyProjectMutationRequest => DeleteTopologyResourceResponse;
-        GetInstanceDefaultStorageBinding: GetInstanceTopologyDefaultsRequest => GetStorageBindingResponse;
         GetWriteAuthority: GetWriteAuthorityRequest => GetWriteAuthorityResponse;
         ReportWriteAuthority: ReportWriteAuthorityRequest => WriteAuthorityObservationResponse;
         PlanRemoveWriteAuthority: SurfaceMutationRequest => TopologyPlanResponse;
@@ -1425,6 +1490,7 @@ pub mod hub_rpc {
         GetImage: GetImageRequest => GetImageResponse;
         ResolveImage: ResolveImageRequest => GetImageResponse;
         BeginRegistryPublication: BeginRegistryPublicationRequest => RegistryPublication;
+        ListRegistryPublications: ListRegistryPublicationsRequest => ListRegistryPublicationsResponse;
         GetRegistryPublication: GetRegistryPublicationRequest => RegistryPublication;
         CommitRegistryPublication: CommitRegistryPublicationRequest => RegistryPublication;
         AbortRegistryPublication: AbortRegistryPublicationRequest => RegistryPublication;
@@ -1436,6 +1502,7 @@ pub mod hub_rpc {
         CreateWebhook: ApplyWebhookMutationRequest => CreateWebhookResponse;
         PlanDeleteWebhook: PlanDeleteWebhookRequest => TopologyPlanResponse;
         DeleteWebhook: ApplyWebhookMutationRequest => DeleteTopologyResourceResponse;
+        WhoAmI: WhoAmIRequest => WhoAmIResponse;
         SearchCache: SearchCacheRequest => SearchCacheResponse;
         GetCacheObject: GetCacheObjectRequest => GetCacheObjectResponse;
         GetRetentionRoot: GetRetentionRootRequest => RetentionRootResponse;
@@ -1449,16 +1516,42 @@ pub mod hub_rpc {
         ReportCacheNarinfos: ReportCacheNarinfosRequest => CacheNarinfoRegistrationResponse;
         GetRetentionSubscription: GetRetentionSubscriptionRequest => RetentionSubscriptionResponse;
         GetPopulationTarget: GetPopulationTargetRequest => PopulationTargetResponse;
-        PlanCreateAutomationPrincipal: PlanCreateAutomationPrincipalRequest => TopologyPlanResponse;
-        CreateAutomationPrincipal: ApplyTopologyPlanRequest => AutomationPrincipalResponse;
+        ListServiceAccounts: ListServiceAccountsRequest => ListServiceAccountsResponse;
+        GetServiceAccount: GetServiceAccountRequest => ServiceAccountResponse;
+        PlanCreateServiceAccount: PlanCreateServiceAccountRequest => TopologyPlanResponse;
+        CreateServiceAccount: ApplyTopologyPlanRequest => ServiceAccountResponse;
+        PlanUpdateServiceAccount: PlanUpdateServiceAccountRequest => TopologyPlanResponse;
+        UpdateServiceAccount: ApplyTopologyPlanRequest => ServiceAccountResponse;
+        PlanDeleteServiceAccount: PlanDeleteServiceAccountRequest => TopologyPlanResponse;
+        DeleteServiceAccount: ApplyTopologyPlanRequest => DeleteTopologyResourceResponse;
         GetMembership: GetMembershipRequest => MembershipResponse;
         PlanSetMembership: PlanSetMembershipRequest => TopologyPlanResponse;
         SetMembership: ApplyTopologyPlanRequest => MembershipResponse;
-        PlanIssueRegistryToken: PlanIssueRegistryTokenRequest => TopologyPlanResponse;
-        IssueRegistryToken: ApplyTopologyPlanRequest => RegistryTokenResponse;
-        PlanRetireRegistryToken: PlanRetireRegistryTokenRequest => TopologyPlanResponse;
-        RetireRegistryToken: ApplyTopologyPlanRequest => RegistryTokenRetirementResponse;
-        ListTokens: ListTokensRequest => ListTokensResponse;
+        ListInvitations: ListInvitationsRequest => ListInvitationsResponse;
+        GetInvitation: GetInvitationRequest => InvitationResponse;
+        PlanCreateInvitation: PlanCreateInvitationRequest => TopologyPlanResponse;
+        CreateInvitation: ApplyTopologyPlanRequest => InvitationResponse;
+        PlanCancelInvitation: PlanCancelInvitationRequest => TopologyPlanResponse;
+        CancelInvitation: ApplyTopologyPlanRequest => InvitationResponse;
+        AcceptInvitation: AcceptInvitationRequest => AcceptInvitationResponse;
+        GetIdentityProvider: GetIdentityProviderRequest => IdentityProviderResponse;
+        PlanSetIdentityProvider: PlanSetIdentityProviderRequest => TopologyPlanResponse;
+        SetIdentityProvider: ApplyTopologyPlanRequest => IdentityProviderResponse;
+        PlanRemoveIdentityProvider: PlanRemoveIdentityProviderRequest => TopologyPlanResponse;
+        RemoveIdentityProvider: ApplyTopologyPlanRequest => DeleteTopologyResourceResponse;
+        ListOrganizationDomains: ListOrganizationDomainsRequest => ListOrganizationDomainsResponse;
+        GetOrganizationDomain: GetOrganizationDomainRequest => OrganizationDomainResponse;
+        PlanClaimOrganizationDomain: PlanClaimOrganizationDomainRequest => TopologyPlanResponse;
+        ClaimOrganizationDomain: ApplyTopologyPlanRequest => OrganizationDomainResponse;
+        PlanVerifyOrganizationDomain: PlanVerifyOrganizationDomainRequest => TopologyPlanResponse;
+        VerifyOrganizationDomain: ApplyTopologyPlanRequest => OrganizationDomainResponse;
+        PlanReleaseOrganizationDomain: PlanReleaseOrganizationDomainRequest => TopologyPlanResponse;
+        ReleaseOrganizationDomain: ApplyTopologyPlanRequest => DeleteTopologyResourceResponse;
+        PlanIssueAccessToken: PlanIssueAccessTokenRequest => TopologyPlanResponse;
+        IssueAccessToken: ApplyTopologyPlanRequest => AccessTokenResponse;
+        PlanRetireAccessToken: PlanRetireAccessTokenRequest => TopologyPlanResponse;
+        RetireAccessToken: ApplyTopologyPlanRequest => AccessTokenRetirementResponse;
+        ListAccessTokens: ListAccessTokensRequest => ListAccessTokensResponse;
     }
 }
 
@@ -1757,9 +1850,11 @@ fn ensure_trailing_slash(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{CONNECT_PROTOCOL_VERSION_HEADER, HubClient, HubSurfaceRef, HubTopologyMethod};
+    use super::{HubClient, HubSurfaceRef, HubTopologyMethod};
     use aos_proto_types::surface_ref::Target;
-    use aos_proto_types::{PlanCreatePlacementRequest, PlanUpdatePlacementRequest};
+    use aos_proto_types::{
+        CONNECT_PROTOCOL_VERSION_HEADER, PlanCreatePlacementRequest, PlanUpdatePlacementRequest,
+    };
     use std::str::FromStr as _;
 
     #[test]

@@ -99,10 +99,10 @@ pub enum HubSigningKeyCmd {
         #[command(subcommand)]
         command: HubSigningKeyRetireCmd,
     },
-    /// Attach or detach one typed signing usage through immutable review.
-    SetUsage {
+    /// Inspect, attach, or detach one typed signing usage.
+    Usage {
         #[command(subcommand)]
-        command: HubSigningKeySetUsageCmd,
+        command: HubSigningKeyUsageCmd,
     },
 }
 
@@ -184,9 +184,21 @@ pub enum HubSigningKeyRetireCmd {
     Apply(HubReviewedApplyArgs),
 }
 
-/// Explicit plan/apply flow for one signing-key usage association.
+/// Inspection and explicit plan/apply flow for one signing-key usage.
 #[derive(Subcommand)]
-pub enum HubSigningKeySetUsageCmd {
+pub enum HubSigningKeyUsageCmd {
+    /// Show one typed consumer usage and its exact pinned generation.
+    Show {
+        /// Hub connection and authentication.
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Stable typed consumer identity.
+        #[arg(long)]
+        consumer: String,
+        /// Typed signing purpose.
+        #[arg(long, value_parser = ["registry-publication", "nar-info", "channel-frontier"])]
+        purpose: String,
+    },
     /// Create and print an immutable signing-usage plan.
     Plan {
         /// Plan request identity and Hub access.
@@ -237,17 +249,72 @@ pub enum HubInstanceSettingsMutationCmd {
     Apply(HubReviewedApplyArgs),
 }
 
-/// Organization-owned service-account commands.
 #[derive(Subcommand)]
 pub enum HubServiceAccountCmd {
+    /// List an organization's service accounts.
+    List {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        org: String,
+        #[command(flatten)]
+        pagination: HubPaginationArgs,
+    },
+    /// Show one service account.
+    Show {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        org: String,
+        name: String,
+    },
     /// Create a service account through immutable review.
     Create {
         #[command(subcommand)]
         command: HubServiceAccountCreateCmd,
     },
+    /// Rename a service account through immutable review.
+    Update {
+        #[command(subcommand)]
+        command: HubServiceAccountUpdateCmd,
+    },
+    /// Delete a service account through immutable review.
+    Delete {
+        #[command(subcommand)]
+        command: HubServiceAccountDeleteCmd,
+    },
 }
 
-/// Explicit plan/apply flow for service-account creation.
+#[derive(Subcommand)]
+pub enum HubServiceAccountUpdateCmd {
+    /// Create and print an immutable rename plan.
+    Plan {
+        #[command(flatten)]
+        request: HubReviewedPlanArgs,
+        org: String,
+        name: String,
+        #[arg(long)]
+        new_name: String,
+        #[arg(long, value_name = "VERSION")]
+        if_version: String,
+    },
+    /// Apply an exact previously reviewed rename plan.
+    Apply(HubReviewedApplyArgs),
+}
+
+#[derive(Subcommand)]
+pub enum HubServiceAccountDeleteCmd {
+    /// Create and print an immutable deletion plan.
+    Plan {
+        #[command(flatten)]
+        request: HubReviewedPlanArgs,
+        org: String,
+        name: String,
+        #[arg(long, value_name = "VERSION")]
+        if_version: String,
+    },
+    /// Apply an exact previously reviewed deletion plan.
+    Apply(HubReviewedApplyArgs),
+}
+
 #[derive(Subcommand)]
 pub enum HubServiceAccountCreateCmd {
     /// Create and print an immutable service-account plan.
@@ -264,6 +331,230 @@ pub enum HubServiceAccountCreateCmd {
         if_version: Option<String>,
     },
     /// Apply an exact previously reviewed service-account plan.
+    Apply(HubReviewedApplyArgs),
+}
+
+#[derive(Subcommand)]
+pub enum HubInvitationCmd {
+    /// List invitation history for an organization.
+    List {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        org: String,
+        #[command(flatten)]
+        pagination: HubPaginationArgs,
+    },
+    /// Show one invitation without its acceptance secret.
+    Show {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        org: String,
+        invitation_id: i64,
+    },
+    /// Create a pending invitation through immutable review.
+    Create {
+        #[command(subcommand)]
+        command: HubInvitationCreateCmd,
+    },
+    /// Cancel a pending invitation through immutable review.
+    Cancel {
+        #[command(subcommand)]
+        command: HubInvitationCancelCmd,
+    },
+    /// Accept an invitation as the signed-in user.
+    Accept {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        org: String,
+        #[arg(long, env = "AOS_INVITATION_SECRET", hide_env_values = true)]
+        secret: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HubIdentityProviderCmd {
+    /// Show the redacted identity-provider configuration.
+    Show {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        org: String,
+    },
+    /// Create or replace the identity-provider configuration.
+    Set {
+        #[command(subcommand)]
+        command: HubIdentityProviderSetCmd,
+    },
+    /// Remove the identity-provider configuration.
+    Remove {
+        #[command(subcommand)]
+        command: HubIdentityProviderRemoveCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HubIdentityProviderSetCmd {
+    /// Create and print an immutable replacement plan.
+    Plan {
+        #[command(flatten)]
+        request: HubReviewedPlanArgs,
+        org: String,
+        #[arg(long)]
+        issuer: String,
+        #[arg(long)]
+        authorization_endpoint: String,
+        #[arg(long)]
+        token_endpoint: String,
+        #[arg(long)]
+        jwks_uri: String,
+        #[arg(long)]
+        client_id: String,
+        #[arg(long, env = "AOS_OIDC_CLIENT_SECRET", hide_env_values = true)]
+        client_secret: Option<String>,
+        #[arg(long, conflicts_with = "client_secret")]
+        clear_client_secret: bool,
+        #[arg(long, default_value = "openid email profile")]
+        scopes: String,
+        #[arg(long)]
+        groups_claim: Option<String>,
+        #[arg(long, default_value = "{}")]
+        role_map_json: String,
+        #[arg(long)]
+        allow_jit: bool,
+        #[arg(long)]
+        enforce_sso: bool,
+        #[arg(long, default_value = "viewer")]
+        default_role: String,
+        #[arg(long, value_name = "VERSION_OR_ABSENT")]
+        if_version: String,
+    },
+    /// Apply an exact previously reviewed replacement plan.
+    Apply(HubReviewedApplyArgs),
+}
+
+#[derive(Subcommand)]
+pub enum HubIdentityProviderRemoveCmd {
+    /// Create and print an immutable removal plan.
+    Plan {
+        #[command(flatten)]
+        request: HubReviewedPlanArgs,
+        org: String,
+        #[arg(long, value_name = "VERSION")]
+        if_version: String,
+    },
+    /// Apply an exact previously reviewed removal plan.
+    Apply(HubReviewedApplyArgs),
+}
+
+#[derive(Subcommand)]
+pub enum HubOrganizationDomainCmd {
+    /// List claimed domains for an organization.
+    List {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        org: String,
+        #[command(flatten)]
+        pagination: HubPaginationArgs,
+    },
+    /// Show one claimed domain and its TXT challenge.
+    Show {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        org: String,
+        domain: String,
+    },
+    /// Claim a domain or rotate its challenge.
+    Claim {
+        #[command(subcommand)]
+        command: HubOrganizationDomainClaimCmd,
+    },
+    /// Verify a domain's reviewed TXT challenge.
+    Verify {
+        #[command(subcommand)]
+        command: HubOrganizationDomainVerifyCmd,
+    },
+    /// Release a claimed domain.
+    Release {
+        #[command(subcommand)]
+        command: HubOrganizationDomainReleaseCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HubOrganizationDomainClaimCmd {
+    /// Create and print an immutable claim plan.
+    Plan {
+        #[command(flatten)]
+        request: HubReviewedPlanArgs,
+        org: String,
+        domain: String,
+        #[arg(long, value_name = "VERSION_OR_ABSENT")]
+        if_version: String,
+    },
+    /// Apply an exact previously reviewed claim plan.
+    Apply(HubReviewedApplyArgs),
+}
+
+#[derive(Subcommand)]
+pub enum HubOrganizationDomainVerifyCmd {
+    /// Create and print an immutable DNS verification plan.
+    Plan {
+        #[command(flatten)]
+        request: HubReviewedPlanArgs,
+        org: String,
+        domain: String,
+        #[arg(long, value_name = "VERSION")]
+        if_version: String,
+    },
+    /// Resolve DNS and apply an exact reviewed verification plan.
+    Apply(HubReviewedApplyArgs),
+}
+
+#[derive(Subcommand)]
+pub enum HubOrganizationDomainReleaseCmd {
+    /// Create and print an immutable release plan.
+    Plan {
+        #[command(flatten)]
+        request: HubReviewedPlanArgs,
+        org: String,
+        domain: String,
+        #[arg(long, value_name = "VERSION")]
+        if_version: String,
+    },
+    /// Apply an exact previously reviewed release plan.
+    Apply(HubReviewedApplyArgs),
+}
+
+#[derive(Subcommand)]
+pub enum HubInvitationCreateCmd {
+    /// Create and print an immutable invitation plan.
+    Plan {
+        #[command(flatten)]
+        request: HubReviewedPlanArgs,
+        org: String,
+        email: String,
+        #[arg(long, value_name = "STABLE_SCOPE")]
+        scope: String,
+        #[arg(long)]
+        role: String,
+        #[arg(long, value_name = "SECONDS")]
+        ttl: Option<i64>,
+    },
+    /// Apply an exact previously reviewed invitation plan.
+    Apply(HubReviewedApplyArgs),
+}
+
+#[derive(Subcommand)]
+pub enum HubInvitationCancelCmd {
+    /// Create and print an immutable cancellation plan.
+    Plan {
+        #[command(flatten)]
+        request: HubReviewedPlanArgs,
+        org: String,
+        invitation_id: i64,
+        #[arg(long, value_name = "VERSION")]
+        if_version: String,
+    },
+    /// Apply an exact previously reviewed cancellation plan.
     Apply(HubReviewedApplyArgs),
 }
 
@@ -350,16 +641,15 @@ pub enum HubMembershipRemoveCmd {
     Apply(HubReviewedApplyArgs),
 }
 
-/// Registry-scoped token inventory and lifecycle commands.
 #[derive(Subcommand)]
-pub enum HubRegistryTokenCmd {
+pub enum HubAccessTokenCmd {
     /// List token metadata without secret material.
     List {
         /// Hub connection and authentication.
         #[command(flatten)]
         access: HubAccessArgs,
-        /// Canonical live registry scope.
-        registry: String,
+        /// Canonical live authorization scope.
+        scope: String,
         /// Result pagination.
         #[command(flatten)]
         pagination: HubPaginationArgs,
@@ -367,34 +657,36 @@ pub enum HubRegistryTokenCmd {
     /// Issue a token through immutable review.
     Issue {
         #[command(subcommand)]
-        command: HubRegistryTokenIssueCmd,
+        command: HubAccessTokenIssueCmd,
     },
     /// Retire one token generation through immutable review.
     Retire {
         #[command(subcommand)]
-        command: HubRegistryTokenRetireCmd,
+        command: HubAccessTokenRetireCmd,
     },
 }
 
-/// Explicit plan/apply flow for registry-token issuance.
 #[derive(Subcommand)]
-pub enum HubRegistryTokenIssueCmd {
+pub enum HubAccessTokenIssueCmd {
     /// Create and print an immutable token-issuance plan.
     Plan {
         /// Plan request identity and Hub access.
         #[command(flatten)]
         request: HubReviewedPlanArgs,
-        /// Canonical live registry scope.
-        registry: String,
+        /// Canonical live authorization scope.
+        scope: String,
         /// Token owner (`user:EMAIL` or `service_account:ORG/NAME`).
         #[arg(long)]
         owner: String,
-        /// Grant one registry permission; repeat for multiple permissions.
+        /// Grant one native permission verb; repeat for multiple permissions.
         #[arg(long = "permission", required = true)]
         permissions: Vec<String>,
         /// Optional token lifetime in seconds.
         #[arg(long)]
         ttl_secs: Option<i64>,
+        /// Record a non-secret purpose for this token.
+        #[arg(long)]
+        comment: Option<String>,
         /// Require this token-owner grant revision when supplied.
         #[arg(long, value_name = "VERSION")]
         if_version: Option<String>,
@@ -403,9 +695,8 @@ pub enum HubRegistryTokenIssueCmd {
     Apply(HubReviewedApplyArgs),
 }
 
-/// Explicit plan/apply flow for registry-token retirement.
 #[derive(Subcommand)]
-pub enum HubRegistryTokenRetireCmd {
+pub enum HubAccessTokenRetireCmd {
     /// Create and print an immutable token-retirement plan.
     Plan {
         /// Plan request identity and Hub access.

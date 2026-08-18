@@ -1,13 +1,9 @@
-//! The shared producer console (RFC-0004 Phase 5, console-dedup stage B/C).
+//! Shared authentication routes and browser-console shell.
 //!
-//! The console's request handlers are transport- and runtime-neutral `axum`
-//! handlers that run on the shared [`Database`](crate::db::Database) and reach
-//! every platform-specific capability through a *port* (see [`ports`]), so the
-//! native hub and the Cloudflare Worker mount the same console router. This
-//! module owns the [`ports::ConsoleDeps`] bundle and the wasm-clean handlers
-//! ([`handlers`]) mounted by [`console_router`]. Registry configuration and
-//! change-request reads and writes use storage-neutral ports as well, so every
-//! management route has the same implementation on the native hub and Worker.
+//! Native Hub and Cloudflare Worker deployments mount the same login/account
+//! ceremonies and the same authenticated application shell. Management data
+//! and mutations do not have a second Web-only server implementation: the
+//! browser application invokes the generated Connect API used by the CLI.
 //!
 //! The pre-auth `/login`, `/login/password` (stage D), `/auth/passkey/begin`,
 //! and `/activate` (stage E) paths are shared: they meter on the
@@ -17,7 +13,6 @@
 //! fetch go through the [`HttpClient`](ports::HttpClient) port.
 
 pub mod handlers;
-pub mod ia;
 pub mod manifest;
 pub mod nested;
 pub mod ports;
@@ -26,5 +21,5 @@ pub mod router;
 pub use handlers::CLIENT_IP_HEADER;
 pub use manifest::{route_manifest, ConsoleRouteMatched, RouteMethods, RouteSpec};
 pub use nested::dispatch_nested;
-pub use ports::{ConsoleDeps, HttpClient, TopologyConsole};
+pub use ports::{ConsoleDeps, HttpClient};
 pub use router::console_router;

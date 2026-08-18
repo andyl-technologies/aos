@@ -236,6 +236,53 @@ impl Permission {
             Permission::IamAdmin => "iam.admin",
         }
     }
+
+    /// Parses a permission from its canonical wire name.
+    ///
+    /// Returns `None` for aliases, unknown names, and non-canonical spellings.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "read" => Some(Self::Read),
+            "publish" => Some(Self::Publish),
+            "channel.advance" => Some(Self::ChannelAdvance),
+            "keys.manage" => Some(Self::KeysManage),
+            "tokens.self" => Some(Self::TokensSelf),
+            "tokens.manage" => Some(Self::TokensManage),
+            "members.manage" => Some(Self::MembersManage),
+            "registry.configure" => Some(Self::RegistryConfigure),
+            "storage.manage" => Some(Self::StorageManage),
+            "storage_binding.read" => Some(Self::StorageBindingRead),
+            "storage_binding.manage" => Some(Self::StorageBindingManage),
+            "storage_binding.grant" => Some(Self::StorageBindingGrant),
+            "placement.read" => Some(Self::PlacementRead),
+            "placement.manage" => Some(Self::PlacementManage),
+            "placement_policy.read" => Some(Self::PlacementPolicyRead),
+            "placement_policy.manage" => Some(Self::PlacementPolicyManage),
+            "domain.read" => Some(Self::DomainRead),
+            "domain.manage" => Some(Self::DomainManage),
+            "network_boundary.read" => Some(Self::NetworkBoundaryRead),
+            "network_boundary.manage" => Some(Self::NetworkBoundaryManage),
+            "network_boundary.grant" => Some(Self::NetworkBoundaryGrant),
+            "delivery_endpoint.read" => Some(Self::DeliveryEndpointRead),
+            "delivery_endpoint.manage" => Some(Self::DeliveryEndpointManage),
+            "delivery_endpoint.grant" => Some(Self::DeliveryEndpointGrant),
+            "storage_gateway.read" => Some(Self::StorageGatewayRead),
+            "storage_gateway.manage" => Some(Self::StorageGatewayManage),
+            "storage_gateway.grant" => Some(Self::StorageGatewayGrant),
+            "route.read" => Some(Self::RouteRead),
+            "route.manage" => Some(Self::RouteManage),
+            "topology.reconcile" => Some(Self::TopologyReconcile),
+            "cache.retention.manage" => Some(Self::CacheRetentionManage),
+            "cache.gc.plan" => Some(Self::CacheGcPlan),
+            "cache.gc.execute" => Some(Self::CacheGcExecute),
+            "cache.lease.self" => Some(Self::CacheLeaseSelf),
+            "validation.repair" => Some(Self::ValidationRepair),
+            "audit.read" => Some(Self::AuditRead),
+            "iam.admin" => Some(Self::IamAdmin),
+            _ => None,
+        }
+    }
 }
 
 /// Returns the exact set of permission verbs a [`Role`] confers.
@@ -707,6 +754,15 @@ mod tests {
         assert!(Role::Admin.rank() > Role::Maintainer.rank());
         assert!(Role::Maintainer.rank() > Role::Developer.rank());
         assert!(Role::Developer.rank() > Role::Viewer.rank());
+    }
+
+    #[test]
+    fn permission_wire_names_round_trip_without_aliases() {
+        for permission in role_grants(Role::Owner) {
+            assert_eq!(Permission::parse(permission.as_str()), Some(*permission));
+        }
+        assert_eq!(Permission::parse("registry.read"), None);
+        assert_eq!(Permission::parse("READ"), None);
     }
 
     fn grant_set(role: Role) -> std::collections::BTreeSet<Permission> {

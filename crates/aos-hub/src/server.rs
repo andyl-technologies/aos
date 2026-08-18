@@ -89,6 +89,9 @@ pub struct AppState {
     /// Runtime-owned signer material for the domain-probe well-known route.
     pub domain_probe_terminator:
         Option<Arc<dyn aos_hub_core::topology_probe::DomainProbeTerminatorProvider>>,
+    /// DNS resolver used to verify organization email-domain TXT challenges.
+    pub identity_domain_verifier:
+        Option<Arc<dyn aos_hub_core::topology_probe::IdentityDomainVerifier>>,
     /// Active and retained privacy keys for permanent route URL reservations.
     pub route_reservation_keyring: Option<Arc<dyn aos_hub_core::service::RouteReservationKeyring>>,
 }
@@ -128,6 +131,7 @@ impl AppState {
             trusted_proxy: false,
             delivery_attestation_verifier: None,
             domain_probe_terminator: None,
+            identity_domain_verifier: None,
             route_reservation_keyring: None,
         }
     }
@@ -264,40 +268,28 @@ pub async fn router(state: Arc<AppState>) -> Router {
     if let Some(provider) = &state.domain_probe_terminator {
         rpc_service = rpc_service.with_domain_probe_terminator(Arc::clone(provider));
     }
+    if let Some(verifier) = &state.identity_domain_verifier {
+        rpc_service = rpc_service.with_identity_domain_verifier(Arc::clone(verifier));
+    }
     let rpc_service = Arc::new(rpc_service);
     // The shared router owns `/aos.hub.v1.*` and browse routes and carries its
     // own `Arc<RpcService>` state. It has no resource-slug delivery wildcard.
     // Kept for the outermost domain-routing layer below (it captures the service
     // directly, independent of the AppState-typed router's state).
     let dispatch_service = Arc::clone(&rpc_service);
+    let console_deps = console_deps(&state, Some(Arc::clone(&rpc_service)));
     let rpc_router = aos_hub_core::connect::rpc_browse_router(rpc_service);
-
-    // The `/oauth2/token` exchange fragment runs on Arc<AuthState>; bind its
-    // state up front so it merges into the AppState-typed router below.
-    let oauth2 = crate::auth::extract::oauth2_router().with_state(Arc::clone(&state.auth));
 
     // Public bytes never resolve from a resource slug. The outer delivery-route
     // dispatcher rewrites a matched endpoint to the typed internal delivery
     // handler; this router owns only control-plane routes and console pages.
     let router = Router::new()
         .route("/healthz", get(healthz))
-        .route("/metrics", get(metrics))
-        .route(
-            "/oauth2/device_authorization",
-            axum::routing::post(device_authorization),
-        );
-    // The shared producer-console router (RFC-0004 Phase 5, console-dedup stage
-    // B): the wasm-clean management handlers, built over the hub's database,
-    // JWT keys, rate limiter, mailer, sealer, the hardened reqwest `HttpClient`
-    // port, and the native surface read/write and reindex ports (over which the
-    // shared retained-control services coordinate reviewed topology changes).
-    // It carries its own `ConsoleDeps` state, so — like `rpc_router` — it is
-    // merged after `with_state` below. Nested-canonical registry console pages
-    // (slugs with slashes, which the flat `/{slug}/-/…` routes can't capture)
-    // are served by the same shared dispatcher from the catch-all — see
-    // [`console_deps`] and `dispatch_nested` — so there is a single console
-    // routing table for both flat and nested slugs.
-    let console_deps = console_deps(&state);
+        .route("/metrics", get(metrics));
+    // The shared browser boundary owns identity ceremonies and the management
+    // application shell. Resource reads and mutations leave the shell through
+    // the same canonical Connect API as the CLI. Nested registry deep links are
+    // served by the shared dispatcher below.
     let nested_console_deps = console_deps.clone();
     // Seed the editable site chrome (title/banner/footer) from the database at
     // startup so the masthead reflects persisted branding; a branding save
@@ -317,7 +309,6 @@ pub async fn router(state: Arc<AppState>) -> Router {
     // Kept for the outermost client-IP injection layer below.
     let ip_state = Arc::clone(&state);
     let app = router
-        .merge(oauth2)
         // Resolve the request's session once and put the user's email in a
         // task-local, so every page's masthead reflects the login + shows
         // navigation without threading the identity through each handler.
@@ -329,9 +320,8 @@ pub async fn router(state: Arc<AppState>) -> Router {
         // The shared Connect-JSON router carries its own `Arc<RpcService>`
         // state, so it is merged after `with_state`.
         .merge(rpc_router)
-        // The shared producer-console router carries its own `ConsoleDeps`
-        // state, so — like `rpc_router` — it is merged after `with_state`. Its
-        // static console paths are wrapped by the same security layers.
+        // The shared browser router carries its own `ConsoleDeps` state and is
+        // merged after `with_state`; the outer security layers wrap it too.
         .merge(console_router)
         // Dispatch nested registry settings before the shared browse wildcard
         // can claim `/{org}/{registry}/-/{*rest}`. The middleware passes every
@@ -452,51 +442,6 @@ pub(crate) fn internal(err: anyhow::Error) -> Response {
     (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
 }
 
-/// Current Unix time in seconds.
-pub(crate) fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-/// A `429 Too Many Requests` response carrying a `Retry-After` header.
-pub(crate) fn too_many_requests(retry_after: i64) -> Response {
-    (
-        StatusCode::TOO_MANY_REQUESTS,
-        [(header::RETRY_AFTER, retry_after.max(1).to_string())],
-        "rate limit exceeded",
-    )
-        .into_response()
-}
-
-/// The connecting client's TCP peer address, when the serving stack provides
-/// it via [`ConnectInfo`].
-///
-/// An infallible [`FromRequestParts`](axum::extract::FromRequestParts)
-/// extractor: it reads the [`ConnectInfo<SocketAddr>`] extension injected by
-/// `into_make_service_with_connect_info` in production, and is simply `None`
-/// when no connect-info is present (e.g. `Router::oneshot` in tests). Used as
-/// the safe rate-limit key when the deployment does not trust a proxy.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct PeerAddr(pub Option<SocketAddr>);
-
-impl<S: Send + Sync> axum::extract::FromRequestParts<S> for PeerAddr {
-    type Rejection = std::convert::Infallible;
-
-    async fn from_request_parts(
-        parts: &mut axum::http::request::Parts,
-        _state: &S,
-    ) -> Result<Self, Self::Rejection> {
-        Ok(PeerAddr(
-            parts
-                .extensions
-                .get::<ConnectInfo<SocketAddr>>()
-                .map(|ci| ci.0),
-        ))
-    }
-}
-
 /// Resolve the request's client IP for rate-limiting from the TCP `peer`
 /// address and, only when the deployment trusts its proxy, `X-Forwarded-For`.
 ///
@@ -565,68 +510,6 @@ async fn inject_client_ip(
 async fn healthz(State(state): State<Arc<AppState>>) -> Response {
     match state.db.list_registries().await {
         Ok(regs) => (StatusCode::OK, format!("ok ({} registries)\n", regs.len())).into_response(),
-        Err(err) => internal(err),
-    }
-}
-
-/// `POST /oauth2/device_authorization` form (RFC 8628).
-#[derive(Debug, Default, serde::Deserialize)]
-struct DeviceAuthForm {
-    /// Requested stable scope identity (defaults to the instance root when omitted).
-    scope: Option<String>,
-    /// Requested permission verb (repeatable via the form encoding; defaults
-    /// to `read`).
-    #[serde(default)]
-    permission: Vec<String>,
-}
-
-/// `POST /oauth2/device_authorization` — start an RFC 8628 device grant.
-///
-/// Anonymous and **rate-limited per source IP** (the abuse surface the RFC
-/// calls out): a flood from one IP is `429`d with `Retry-After`. On success it
-/// returns the RFC 8628 JSON (`device_code`, `user_code`,
-/// `verification_uri`, `expires_in`, `interval`). The requested scope and
-/// permissions are recorded but not authorized here — the approving user's
-/// grants clamp them at `/activate`.
-async fn device_authorization(
-    State(state): State<Arc<AppState>>,
-    PeerAddr(peer): PeerAddr,
-    headers: HeaderMap,
-    axum::extract::Form(form): axum::extract::Form<DeviceAuthForm>,
-) -> Response {
-    let ip = client_ip_for(&headers, peer, state.trusted_proxy);
-    if let crate::ratelimit::RateDecision::Limited { retry_after } = state.ratelimit.check(
-        crate::ratelimit::RateClass::DeviceAuthorization,
-        &ip,
-        now_secs(),
-    ) {
-        return too_many_requests(retry_after);
-    }
-    let scope = form
-        .scope
-        .unwrap_or_else(|| crate::domain::Scope::root().as_str().to_string());
-    let perms: Vec<Permission> = if form.permission.is_empty() {
-        vec![Permission::Read]
-    } else {
-        form.permission
-            .iter()
-            .filter_map(|p| crate::auth::permission_from_str(p))
-            .collect()
-    };
-    match state.db.start_device_authorization(&scope, &perms).await {
-        Ok((device_code, user_code, expires_in)) => {
-            let verification_uri = format!("{}/activate", state.external_url.trim_end_matches('/'));
-            let verification_uri_complete = format!("{verification_uri}?user_code={user_code}");
-            axum::Json(serde_json::json!({
-                "device_code": device_code,
-                "user_code": user_code,
-                "verification_uri": verification_uri,
-                "verification_uri_complete": verification_uri_complete,
-                "expires_in": expires_in,
-                "interval": 5,
-            }))
-            .into_response()
-        }
         Err(err) => internal(err),
     }
 }
@@ -756,50 +639,10 @@ async fn render_metrics(state: &AppState) -> Result<String, anyhow::Error> {
 /// `default_storage_location` is `None` here: the nested dispatcher only serves
 /// registry console pages, which never read it (it backs the instance-settings
 /// page, served by the flat console router, where [`serve`] sets it explicitly).
-fn console_deps(state: &Arc<AppState>) -> aos_hub_core::web::console::ConsoleDeps {
-    let surface: Arc<dyn aos_hub_core::fetch::SurfaceProvider> = Arc::new(
-        crate::coreports::HubSurfaceProvider::new(
-            Arc::clone(&state.db),
-            state.http.clone(),
-            state.image_snapshots.clone(),
-        )
-        .with_credentials(Arc::clone(&state.secret_versions)),
-    );
-    let surface_write: Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider> = Arc::new(
-        crate::coreports::HubSurfaceWriteProvider::new(Arc::clone(&state.db), state.http.clone())
-            .with_credentials(Arc::clone(&state.secret_versions)),
-    );
-    let reindexer: Arc<dyn aos_hub_core::reindex::Reindexer> = Arc::new(
-        crate::coreports::HubReindexer::new(Arc::clone(&state.db), state.image_snapshots.clone())
-            .with_surface_provider(Arc::new(
-                crate::coreports::HubSurfaceProvider::new(
-                    Arc::clone(&state.db),
-                    state.http.clone(),
-                    state.image_snapshots.clone(),
-                )
-                .with_credentials(Arc::clone(&state.secret_versions))
-                .for_image_indexing(),
-            )),
-    );
-    let topology: Arc<dyn aos_hub_core::web::console::TopologyConsole> = Arc::new(
-        aos_hub_core::service::RpcService::new(
-            Arc::clone(&state.db),
-            state.auth.jwt_keys.clone(),
-            state.external_url.clone(),
-            Arc::clone(&state.ratelimit) as Arc<dyn aos_hub_core::ratelimit::RateLimiter>,
-            Arc::clone(&surface),
-            Arc::clone(&surface_write),
-            Arc::clone(&state.leases) as Arc<dyn aos_hub_core::lease::PublishLease>,
-            Arc::clone(&reindexer),
-            Arc::new(
-                aos_hub_core::topology_probe::DatabaseTopologyProbeScheduler::new(Arc::clone(
-                    &state.db,
-                )),
-            ),
-            Some(Arc::clone(&state.sealer)),
-        )
-        .with_secret_versions(Arc::clone(&state.secret_versions)),
-    );
+fn console_deps(
+    state: &Arc<AppState>,
+    control: Option<Arc<aos_hub_core::service::RpcService>>,
+) -> aos_hub_core::web::console::ConsoleDeps {
     aos_hub_core::web::console::ConsoleDeps {
         db: Arc::clone(&state.db),
         jwt_keys: state.auth.jwt_keys.clone(),
@@ -809,14 +652,7 @@ fn console_deps(state: &Arc<AppState>) -> aos_hub_core::web::console::ConsoleDep
         mailer: Arc::clone(&state.mailer),
         sealer: Arc::clone(&state.sealer),
         http: Arc::new(crate::coreports::HubHttpClient::new(state.http.clone())),
-        surface,
-        surface_write,
-        reindexer,
-        default_storage_location: None,
-        // The native hub's in-process database is already colocated and fast, so
-        // it runs without a KV cache; token-revocation is immediate via the DB.
-        kv: None,
-        topology,
+        control,
     }
 }
 
@@ -830,5 +666,5 @@ fn console_deps(state: &Arc<AppState>) -> aos_hub_core::web::console::ConsoleDep
 pub fn console_deps_for_worker_test(
     state: &Arc<AppState>,
 ) -> aos_hub_core::web::console::ConsoleDeps {
-    console_deps(state)
+    console_deps(state, None)
 }

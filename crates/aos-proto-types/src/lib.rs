@@ -16,6 +16,12 @@
 
 include!(concat!(env!("OUT_DIR"), "/connect_paths.rs"));
 
+/// Canonical header identifying the Connect unary protocol version.
+pub const CONNECT_PROTOCOL_VERSION_HEADER: &str = "connect-protocol-version";
+
+/// Connect unary protocol version required by every Hub JSON request.
+pub const CONNECT_PROTOCOL_VERSION: &str = "1";
+
 /// Exact integer decoder for ProtoJSON's quoted or unquoted number forms.
 ///
 /// ProtoJSON permits exponent notation even for integer fields. Parsing via
@@ -192,6 +198,21 @@ pub mod hub_v1 {
 
 pub use hub_v1::*;
 
+#[cfg(test)]
+mod connect_path_tests {
+    use super::*;
+
+    #[test]
+    fn generated_method_constants_match_the_descriptor_inventory() {
+        assert_eq!(
+            IDENTITY_SERVICE_WHO_AM_I_PATH,
+            "/aos.hub.v1.IdentityService/WhoAmI"
+        );
+        assert!(EXPECTED_CONNECT_PATHS.contains(&IDENTITY_SERVICE_WHO_AM_I_PATH));
+        assert_eq!(EXPECTED_CONNECT_METHODS.len(), EXPECTED_CONNECT_PATHS.len());
+    }
+}
+
 macro_rules! impl_open_proto_enum {
     ($($enum:ty),+ $(,)?) => {
         $(
@@ -217,9 +238,11 @@ impl_open_proto_enum!(
 #[cfg(test)]
 mod tests {
     use super::{
-        endpoint_host, surface_ref, DeliveryEndpointRevisionSpec, EndpointHost,
-        EndpointIngressKind, GetRegistryResponse, PlanSetInstanceSettingsRequest, Platform,
-        PolicyFailureContract, PolicyRetryCondition, SurfaceRef,
+        endpoint_host, surface_ref, BrowserSessionGrant, BrowserSessionPrincipal,
+        BrowserSessionTokenResponse, DeliveryEndpointRevisionSpec, EndpointHost,
+        EndpointIngressKind, GetRegistryResponse, PlanRunPlacementEvictionRequest,
+        PlanSetInstanceSettingsRequest, Platform, PolicyFailureContract, PolicyRetryCondition,
+        SurfaceRef,
     };
 
     #[test]
@@ -409,6 +432,56 @@ mod tests {
         assert!(
             serde_json::from_value::<DeliveryEndpointRevisionSpec>(serde_json::json!({
                 "futureField": true
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn browser_session_bridge_uses_protojson_and_omits_no_security_context() {
+        let response = BrowserSessionTokenResponse {
+            access_token: "memory-only".into(),
+            token_type: "Bearer".into(),
+            expires_in: 300,
+            principal: Some(BrowserSessionPrincipal {
+                kind: "user".into(),
+                id: 42,
+                email: "owner@example.test".into(),
+            }),
+            grants: vec![BrowserSessionGrant {
+                scope: "instance".into(),
+                role: "owner".into(),
+            }],
+            route_permissions: vec!["read".into(), "iam.admin".into()],
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["accessToken"], "memory-only");
+        assert_eq!(json["expiresIn"], "300");
+        assert_eq!(json["principal"]["id"], "42");
+        assert_eq!(json["grants"][0]["scope"], "instance");
+        assert_eq!(json["routePermissions"][1], "iam.admin");
+
+        let decoded: BrowserSessionTokenResponse = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn placement_eviction_uses_the_public_placement_name() {
+        let request = PlanRunPlacementEvictionRequest {
+            surface: Some(SurfaceRef {
+                target: Some(surface_ref::Target::CacheSlug("acme/builds".into())),
+            }),
+            placement_name: "primary".into(),
+            expected_resource_version: Some("7".into()),
+            idempotency_key: "evict-primary".into(),
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["placementName"], "primary");
+        assert!(json.get("placementId").is_none());
+        assert!(
+            serde_json::from_value::<PlanRunPlacementEvictionRequest>(serde_json::json!({
+                "cacheSlug": "acme/builds",
+                "placementId": "42"
             }))
             .is_err()
         );

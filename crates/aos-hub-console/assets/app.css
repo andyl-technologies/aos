@@ -1,0 +1,492 @@
+/* Management-console additions to the shared AOS Hub paper design.
+ *
+ * `/_assets/style.css` owns the visual language: theme tokens, typography,
+ * masthead, settings navigation, controls, forms, tables, focus, and responsive
+ * behavior. This file only lays out structures unique to typed workflows.
+ */
+
+.app-shell,
+.settings-body {
+  min-width: 0;
+}
+
+.management-context {
+  margin: -0.35rem 0 1.4rem;
+  color: var(--dim);
+  font-size: 0.85rem;
+}
+
+.management-context strong {
+  color: var(--ink);
+  font-weight: 400;
+}
+
+.workflow-stack,
+.binding-list,
+.subworkflow-stack {
+  display: grid;
+  gap: 1.4rem;
+}
+
+.panel {
+  min-width: 0;
+  margin: 0 0 1.8rem;
+}
+
+.panel > :first-child,
+.editor-panel > :first-child {
+  margin-top: 0;
+}
+
+.panel > :last-child,
+.editor-panel > :last-child {
+  margin-bottom: 0;
+}
+
+.section-heading,
+.review-heading,
+.review-actions,
+.compact-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.section-heading {
+  border-bottom: 2px solid var(--rule-strong);
+  padding-bottom: 0.4rem;
+  margin: 2.4rem 0 1rem;
+}
+
+.section-heading h2 {
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.section-heading p {
+  margin: 0;
+  color: var(--dim);
+  font-size: 0.85rem;
+}
+
+.section-heading .button,
+.review-actions .button {
+  margin: 0;
+}
+
+.section-kicker,
+.resource-kind,
+.resource-identity span {
+  color: var(--dim);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.resource-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0.8rem;
+  margin: 1rem 0 1.4rem;
+}
+
+.resource-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  min-width: 0;
+  min-height: 7rem;
+  padding: 0.8rem;
+  border: 1px solid var(--rule);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.resource-card:hover {
+  border-color: var(--accent);
+  text-decoration: none;
+}
+
+.resource-card h3 {
+  margin: 0.35rem 0;
+  overflow-wrap: anywhere;
+}
+
+.resource-card code {
+  overflow-wrap: anywhere;
+}
+
+.card-arrow {
+  color: var(--accent);
+}
+
+.resource-metric,
+.muted,
+.loading-row,
+.binding-summary-state,
+.stacked-form label,
+.compact-list-row span,
+.compact-list-row small {
+  color: var(--dim);
+}
+
+.empty-state {
+  padding: 1rem;
+  border: 1px dashed var(--rule-strong);
+}
+
+.resource-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.resource-table th,
+.resource-table td {
+  padding: 0.45rem 0.6rem;
+  border-bottom: 1px solid var(--rule-faint);
+  text-align: left;
+  vertical-align: top;
+}
+
+.resource-table th {
+  border-bottom-color: var(--rule);
+  color: var(--dim);
+  font-size: 0.8rem;
+}
+
+.secondary-button,
+.danger-button,
+.table-action {
+  font: inherit;
+}
+
+.secondary-button {
+  border-color: var(--rule-strong);
+  color: var(--dim);
+}
+
+.danger-button,
+.table-action:hover {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 0 0.4rem;
+  border: 1px solid currentColor;
+  color: var(--dim);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.status-badge.positive {
+  color: var(--ok);
+}
+
+.inline-error {
+  margin: 1rem 0;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--bad);
+}
+
+.inline-error strong {
+  color: var(--bad);
+}
+
+.review-columns,
+.topology-context-grid,
+.subworkflow-grid,
+.checkbox-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 1rem;
+}
+
+.review-columns > div,
+.subworkflow {
+  padding: 0.8rem;
+  border: 1px solid var(--rule);
+}
+
+.warning-list {
+  border-color: var(--warn) !important;
+}
+
+.review-heading code {
+  color: var(--dim);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.review-actions {
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+
+.fatal-page {
+  max-width: 44rem;
+  margin: 4rem auto;
+}
+
+.topology-context {
+  margin: 0.8rem 0 1.5rem;
+  padding: 0.6rem 0;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+
+.topology-context > summary,
+.binding-card > summary {
+  color: var(--ink);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.topology-context-grid {
+  margin-top: 0.8rem;
+}
+
+.context-edges h2 {
+  margin: 0 0 0.45rem;
+  padding: 0;
+  border: 0;
+  color: var(--dim);
+  font-size: 0.72rem;
+}
+
+.context-edges ul {
+  margin: 0;
+  padding-left: 1.3rem;
+}
+
+.context-edges p {
+  margin: 0;
+  color: var(--dim);
+}
+
+.editor-form,
+.stacked-form,
+.compact-form {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0.9rem 0 1.8rem;
+}
+
+.editor-form label,
+.stacked-form label,
+.compact-form label {
+  display: grid;
+  grid-template-columns: var(--form-label-col) minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: var(--form-col-gap);
+  row-gap: 0.2rem;
+  max-width: 42rem;
+}
+
+.editor-form input:not([type="checkbox"]):not([type="radio"]),
+.editor-form select,
+.editor-form textarea,
+.stacked-form input:not([type="checkbox"]):not([type="radio"]),
+.stacked-form select,
+.compact-form input:not([type="checkbox"]):not([type="radio"]),
+.compact-form select {
+  width: 100%;
+  min-width: 0;
+}
+
+.editor-form small {
+  grid-column: 2;
+  color: var(--dim);
+}
+
+.checkbox-field,
+.checkbox-row,
+.inline-check {
+  display: flex !important;
+  align-items: center;
+  gap: 0.5rem !important;
+}
+
+.checkbox-field input,
+.checkbox-row input,
+.inline-check input {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  justify-self: start;
+  width: auto;
+  min-width: 2.3rem;
+  height: 1.25rem;
+  margin: 0;
+  border: 1px solid var(--rule-strong);
+  border-radius: 1rem;
+  background: var(--paper);
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.checkbox-field input::after,
+.checkbox-row input::after,
+.inline-check input::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0.18rem;
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 50%;
+  background: var(--dim);
+  transform: translateY(-50%);
+  transition: left 0.15s ease, background-color 0.15s ease;
+}
+
+.checkbox-field input:checked,
+.checkbox-row input:checked,
+.inline-check input:checked {
+  border-color: var(--ok);
+  background: var(--ok);
+}
+
+.checkbox-field input:checked::after,
+.checkbox-row input:checked::after,
+.inline-check input:checked::after {
+  left: calc(100% - 1.03rem);
+  background: var(--paper);
+}
+
+.checkbox-field input:disabled,
+.checkbox-row input:disabled,
+.inline-check input:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-start;
+  gap: 0.7rem;
+  margin: 1rem 0 0 calc(var(--form-label-col) + var(--form-col-gap));
+}
+
+.resource-identity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 2rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.resource-identity > div {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.danger-panel,
+.danger-subworkflow {
+  border-color: var(--bad);
+}
+
+.binding-card {
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+
+.binding-card > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.6rem 0;
+}
+
+.binding-card > summary h3 {
+  display: inline;
+  margin: 0 0.5rem;
+}
+
+.binding-details {
+  display: grid;
+  gap: 1rem;
+  padding: 0.8rem 0;
+  border-top: 1px solid var(--rule-faint);
+}
+
+.subworkflow h4 {
+  margin-top: 0;
+}
+
+.compact-list {
+  display: grid;
+  gap: 0;
+  margin: 0.6rem 0;
+  padding: 0;
+  border-top: 1px solid var(--rule-faint);
+}
+
+.compact-list-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.7rem;
+  padding: 0.45rem 0;
+  border-bottom: 1px solid var(--rule-faint);
+}
+
+.compact-list-row > div,
+.revision-card {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.inline-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--rule-faint);
+  border-bottom: 1px solid var(--rule-faint);
+}
+
+.credential-reveal,
+.diff-view {
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 0.8rem;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: var(--ink);
+}
+
+@media (max-width: 48rem) {
+  .section-heading,
+  .review-heading,
+  .resource-identity,
+  .binding-card > summary {
+    display: grid;
+  }
+
+  .editor-form label,
+  .stacked-form label,
+  .compact-form label {
+    grid-template-columns: 1fr;
+  }
+
+  .editor-form small {
+    grid-column: 1;
+  }
+
+  .form-actions {
+    margin-left: 0;
+  }
+
+  .resource-table {
+    display: block;
+    overflow-x: auto;
+  }
+}

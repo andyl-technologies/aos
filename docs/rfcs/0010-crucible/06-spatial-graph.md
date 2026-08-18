@@ -461,7 +461,7 @@ complete and its layering is explicit.
 The `Plan` carries declarative event choreography and the signal-driven fault
 program. It is the scenario's *what changes modeled behavior and when* layer.
 The executable fault taxonomy and binding semantics are defined by
-[`RFC-0013`](../0013-signal-driven-fault-model/README.md); the trigger/condition vocabulary
+[`RFC-0014`](../0014-signal-driven-fault-model/README.md); the trigger/condition vocabulary
 (timer-fired, event-fired, assertion-satisfied/violated, compound all-of/any-of)
 and the event-graph model the `Plan` is an instance of are defined in
 [`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md) — the real home
@@ -488,7 +488,7 @@ pub struct Plan {
 
 - **[SPAT-19]** The `Plan` MUST carry the event graph defined in
   [`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md) and the sole
-  `FaultSignalPlan` defined by RFC-0013. It MUST be carried as an independently
+  `FaultSignalPlan` defined by RFC-0014. It MUST be carried as an independently
   content-addressed component of the `ScenarioDef` (§2), MUST be orthogonal to the
   `World` (faults are not topology) and reusable across worlds, and all node/link
   references in it MUST be validated against the `World` at build time (§9).

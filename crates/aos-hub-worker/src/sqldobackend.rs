@@ -176,20 +176,32 @@ pub(crate) async fn ensure_migrated(backend: &SqlDoBackend) -> Result<()> {
     if applied != 0 {
         require_schema_identity(backend).await?;
     }
-    if applied >= MIGRATIONS.len() {
+    if applied > MIGRATIONS.len() {
+        anyhow::bail!(
+            "HubDb schema {applied} is newer than this Worker supports ({})",
+            MIGRATIONS.len()
+        );
+    }
+    if applied == MIGRATIONS.len() {
         return Ok(());
     }
-    for migration in &MIGRATIONS[applied..] {
-        backend.execute_batch(migration).await?;
-    }
-    require_schema_identity(backend).await?;
-    backend
-        .execute(
+    for (offset, migration) in MIGRATIONS[applied..].iter().enumerate() {
+        let next = applied + offset + 1;
+        let mut statements = split_statements(migration)
+            .into_iter()
+            .map(|sql| Statement::new(sql, Vec::new()))
+            .collect::<Vec<_>>();
+        statements.push(Statement::new(
             "INSERT INTO _do_migrations (id, applied) VALUES (0, ?1) \
              ON CONFLICT(id) DO UPDATE SET applied = ?1",
-            &[Value::Int(MIGRATIONS.len() as i64)],
-        )
-        .await?;
+            vec![Value::Int(next as i64)],
+        ));
+        // Durable Object eviction cannot split schema DDL from its ledger
+        // advancement: the storage transaction either commits both or rolls
+        // every statement back, leaving the migration safe to retry.
+        backend.batch(&statements).await?;
+    }
+    require_schema_identity(backend).await?;
     Ok(())
 }
 

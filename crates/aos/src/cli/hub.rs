@@ -2,9 +2,9 @@
 //!
 //! These subcommands interact with a running `aos-hub` purely through
 //! its public ConnectRPC API (RFC-0004), never by touching the hub's database
-//! directly. `login` exchanges a provisioning secret for that JWT. Public
-//! topology reads run anonymously; private inventory and all desired-state
-//! writes take a `--token` Hub access JWT. Mutations use typed resource
+//! directly. `login` uses browser-approved device authorization by default.
+//! Public topology reads run anonymously; private inventory and all desired-state
+//! writes use an explicit bearer or the active stored Hub profile. Mutations use typed resource
 //! references, optimistic concurrency, and the shared immutable plan/apply
 //! contract.
 //!
@@ -15,16 +15,16 @@ use clap::{Args, Subcommand};
 use std::path::PathBuf;
 
 use super::{
-    HubInstanceSettingsSectionCmd, HubOrgMemberCmd, HubRegistryTokenCmd, HubServiceAccountCmd,
-    HubSigningKeyCmd,
+    HubAccessTokenCmd, HubIdentityProviderCmd, HubInstanceSettingsSectionCmd, HubInvitationCmd,
+    HubOrgMemberCmd, HubOrganizationDomainCmd, HubServiceAccountCmd, HubSigningKeyCmd,
 };
 
 #[derive(Args, Debug, Clone)]
 pub struct HubAccessArgs {
-    /// Hub base URL (http:// or https://)
+    /// Hub base URL; defaults to the active profile
     #[arg(long, env = "AOS_HUB")]
-    pub hub: String,
-    /// Hub access JWT for authenticated access
+    pub hub: Option<String>,
+    /// Hub access JWT; defaults to AOS_TOKEN or the matching active profile
     #[arg(long, env = "AOS_TOKEN")]
     pub token: Option<String>,
 }
@@ -127,14 +127,33 @@ pub struct HubAccessPolicyArgs {
 
 #[derive(Subcommand)]
 pub enum HubCmd {
-    /// Exchange a provisioning secret for a hub access JWT
+    /// Sign in through browser-approved device authorization
     Login {
         /// Hub base URL (http:// or https://)
         #[arg(long)]
         hub: String,
-        /// The `aos_`-prefixed provisioning secret to exchange
+        /// Bootstrap with an administrator-issued provisioning secret
         #[arg(long)]
-        provisioning_token: String,
+        provisioning_token: Option<String>,
+        /// Request authority at this canonical stable scope
+        #[arg(long)]
+        scope: Option<String>,
+    },
+    /// Revoke and remove a stored Hub profile
+    Logout {
+        /// Hub base URL; defaults to the active profile
+        #[arg(long, env = "AOS_HUB")]
+        hub: Option<String>,
+    },
+    /// Show the authenticated principal, live grants, and token authority
+    Whoami {
+        #[command(flatten)]
+        access: HubAccessArgs,
+    },
+    /// Manage scoped access-token generations
+    AccessToken {
+        #[command(subcommand)]
+        command: HubAccessTokenCmd,
     },
     /// Generate or verify topology cutover artifacts offline
     Topology {
@@ -430,6 +449,17 @@ pub enum HubChannelCmd {
 
 #[derive(Subcommand)]
 pub enum HubPublishCmd {
+    /// List publication sessions newest first
+    List {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        registry: String,
+        /// Filter by an exact publication lifecycle state
+        #[arg(long, value_parser = ["preparing", "writing_pointers", "ready", "failed", "retired"])]
+        state: Option<String>,
+        #[command(flatten)]
+        pagination: HubPaginationArgs,
+    },
     Upload {
         #[command(flatten)]
         access: HubAccessArgs,
@@ -514,12 +544,26 @@ pub enum HubOperationCmd {
         access: HubAccessArgs,
         operation_id: String,
     },
-    /// List operations for one typed target
+    /// List operations for one target or authorization scope
     List {
         #[command(flatten)]
         access: HubAccessArgs,
         /// Qualified target, for example registry:andyl/main or cache:andyl/shared
-        target: String,
+        #[arg(
+            long,
+            value_name = "KIND:ID",
+            conflicts_with = "scope",
+            required_unless_present = "scope"
+        )]
+        target: Option<String>,
+        /// Immutable scope, including all descendant-owned operations
+        #[arg(
+            long,
+            value_name = "SCOPE",
+            conflicts_with = "target",
+            required_unless_present = "target"
+        )]
+        scope: Option<String>,
         #[arg(long)]
         state: Option<String>,
         #[command(flatten)]
@@ -688,6 +732,21 @@ pub enum HubOrgCmd {
         #[command(subcommand)]
         command: HubServiceAccountCmd,
     },
+    /// Manage organization invitations
+    Invitation {
+        #[command(subcommand)]
+        command: HubInvitationCmd,
+    },
+    /// Manage the organization OIDC identity provider
+    IdentityProvider {
+        #[command(subcommand)]
+        command: HubIdentityProviderCmd,
+    },
+    /// Manage organization email-domain claims
+    Domain {
+        #[command(subcommand)]
+        command: HubOrganizationDomainCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -736,11 +795,11 @@ pub enum HubOrgTopologyDefaultsCmd {
 pub enum HubStorageBindingCmd {
     /// List the storage bindings under an org
     List {
-        /// Hub base URL (http:// or https://)
-        #[arg(long)]
-        hub: String,
-        /// Hub access JWT for authenticated access
-        #[arg(long)]
+        /// Hub base URL; defaults to the active profile
+        #[arg(long, env = "AOS_HUB")]
+        hub: Option<String>,
+        /// Hub access JWT; defaults to AOS_TOKEN or the matching active profile
+        #[arg(long, env = "AOS_TOKEN")]
         token: Option<String>,
         /// Limit results to one organization
         #[arg(long)]
@@ -750,11 +809,11 @@ pub enum HubStorageBindingCmd {
     },
     /// Create a storage binding under an org (needs registry.configure)
     Create {
-        /// Hub base URL (http:// or https://)
-        #[arg(long)]
-        hub: String,
-        /// Hub access JWT for authenticated access
-        #[arg(long)]
+        /// Hub base URL; defaults to the active profile
+        #[arg(long, env = "AOS_HUB")]
+        hub: Option<String>,
+        /// Hub access JWT; defaults to AOS_TOKEN or the matching active profile
+        #[arg(long, env = "AOS_TOKEN")]
         token: Option<String>,
         /// Org slug
         #[arg(long)]
@@ -762,8 +821,8 @@ pub enum HubStorageBindingCmd {
         /// Binding name
         #[arg(long)]
         name: String,
-        /// Backend kind: local-fs, s3, or r2
-        #[arg(long, value_parser = ["local-fs", "s3", "r2"])]
+        /// Backend kind: local-fs, s3, r2, or deployment-r2
+        #[arg(long, value_parser = ["local-fs", "s3", "r2", "deployment-r2"])]
         kind: Option<String>,
         /// Absolute local-filesystem root
         #[arg(long)]
@@ -783,6 +842,9 @@ pub enum HubStorageBindingCmd {
         /// Access mode for s3/r2: private (default) or public
         #[arg(long, value_parser = ["public", "private"])]
         access: Option<String>,
+        /// Cloudflare Worker R2 binding name for deployment-r2
+        #[arg(long)]
+        bucket_binding: Option<String>,
         #[command(flatten)]
         mutation: HubMutationArgs,
     },
@@ -926,6 +988,9 @@ pub enum HubSurfaceCmd {
         url: String,
         #[arg(long)]
         path: Option<String>,
+        /// Select the route capability to explain
+        #[arg(long, value_parser = ["web", "git", "nix_cache"], default_value = "web")]
+        access_class: String,
     },
 }
 
@@ -2582,11 +2647,6 @@ pub enum HubRegistryCmd {
         #[command(subcommand)]
         command: HubChannelCmd,
     },
-    /// Manage registry-scoped bearer-token generations
-    Token {
-        #[command(subcommand)]
-        command: HubRegistryTokenCmd,
-    },
     /// Manage registry publication credentials
     Publish {
         #[command(subcommand)]
@@ -2702,9 +2762,12 @@ mod tests {
     use clap::Parser as _;
 
     use crate::cli::{
-        Cli, Commands, HubCacheCmd, HubCacheRetentionCmd, HubCmd, HubNetworkBoundaryCmd,
-        HubPlacementCmd, HubPlacementDrainCmd, HubRegistryCacheStackCmd, HubRegistryCmd,
-        HubRouteCmd, HubStorageBindingCmd,
+        Cli, Commands, HubAccessTokenCmd, HubAccessTokenIssueCmd, HubCacheCmd,
+        HubCacheRetentionCmd, HubCmd, HubIdentityProviderCmd, HubIdentityProviderSetCmd,
+        HubInvitationCmd, HubInvitationCreateCmd, HubNetworkBoundaryCmd, HubOperationCmd,
+        HubOrgCmd, HubOrganizationDomainCmd, HubOrganizationDomainVerifyCmd, HubPlacementCmd,
+        HubPlacementDrainCmd, HubRegistryCacheStackCmd, HubRegistryCmd, HubRouteCmd,
+        HubServiceAccountCmd, HubServiceAccountUpdateCmd, HubStorageBindingCmd, HubSurfaceCmd,
     };
 
     fn parse_cli<I, T>(args: I) -> Result<Cli, clap::Error>
@@ -2744,7 +2807,7 @@ mod tests {
                             },
                     },
             } => {
-                assert_eq!(access.hub, "https://aos.example");
+                assert_eq!(access.hub.as_deref(), Some("https://aos.example"));
                 assert!(access.token.is_none());
                 assert_eq!(surface, "registry:andyl/main");
             }
@@ -2851,6 +2914,46 @@ mod tests {
             } => assert!(mutation.plan_id.is_none()),
             _ => panic!("unexpected command shape"),
         }
+    }
+
+    #[test]
+    fn surface_explain_requires_a_supported_access_class() {
+        let cli = parse_cli([
+            "aos",
+            "hub",
+            "surface",
+            "explain",
+            "cache:andyl/nix",
+            "--url",
+            "https://cache.example/nar/object.nar.zst",
+            "--access-class",
+            "nix_cache",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Hub {
+                command:
+                    HubCmd::Surface {
+                        command: HubSurfaceCmd::Explain { access_class, .. },
+                    },
+            } => assert_eq!(access_class, "nix_cache"),
+            _ => panic!("unexpected command shape"),
+        }
+
+        assert!(
+            parse_cli([
+                "aos",
+                "hub",
+                "surface",
+                "explain",
+                "cache:andyl/nix",
+                "--url",
+                "https://cache.example",
+                "--access-class",
+                "smtp",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -2980,6 +3083,38 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn storage_binding_accepts_worker_native_r2_bindings() {
+        let cli = parse_cli([
+            "aos",
+            "hub",
+            "storage-binding",
+            "create",
+            "--hub",
+            "https://aos.example",
+            "--org",
+            "andyl",
+            "--name",
+            "worker-objects",
+            "--kind",
+            "deployment-r2",
+            "--bucket-binding",
+            "STORAGE",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Hub {
+                command: HubCmd::StorageBinding {
+                    command: HubStorageBindingCmd::Create {
+                        bucket_binding: Some(ref binding),
+                        ..
+                    }
+                }
+            } if binding == "STORAGE"
+        ));
     }
 
     #[test]
@@ -3186,6 +3321,253 @@ mod tests {
                 "legacy cache command unexpectedly parsed: {removed}"
             );
         }
+    }
+
+    #[test]
+    fn access_tokens_are_scope_owned_and_registry_token_nesting_is_removed() {
+        let parsed = parse_cli([
+            "aos",
+            "hub",
+            "access-token",
+            "issue",
+            "plan",
+            "registry:0123456789abcdef0123456789abcdef",
+            "--hub",
+            "https://aos.example",
+            "--owner",
+            "service_account:andyl/publisher",
+            "--permission",
+            "publish",
+            "--comment",
+            "release publisher",
+            "--idempotency-key",
+            "plan-release-publisher",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.command,
+            Commands::Hub {
+                command: HubCmd::AccessToken {
+                    command: HubAccessTokenCmd::Issue {
+                        command: HubAccessTokenIssueCmd::Plan { .. }
+                    }
+                }
+            }
+        ));
+        assert!(parse_cli(["aos", "hub", "registry", "token"]).is_err());
+    }
+
+    #[test]
+    fn service_accounts_expose_inventory_and_reviewed_lifecycle_commands() {
+        let parsed = parse_cli([
+            "aos",
+            "hub",
+            "org",
+            "service-account",
+            "update",
+            "plan",
+            "andyl",
+            "publisher",
+            "--new-name",
+            "release-publisher",
+            "--if-version",
+            "sha256:0123456789abcdef",
+            "--hub",
+            "https://aos.example",
+            "--idempotency-key",
+            "rename-release-publisher",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.command,
+            Commands::Hub {
+                command: HubCmd::Org {
+                    command: HubOrgCmd::ServiceAccount {
+                        command: HubServiceAccountCmd::Update {
+                            command: HubServiceAccountUpdateCmd::Plan { .. }
+                        }
+                    },
+                    ..
+                }
+            }
+        ));
+
+        for command in ["list", "show", "create", "update", "delete"] {
+            assert!(
+                parse_cli(["aos", "hub", "service-account", command]).is_err(),
+                "top-level service-account command unexpectedly parsed: {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn invitations_are_organization_scoped_and_reviewed() {
+        let parsed = parse_cli([
+            "aos",
+            "hub",
+            "org",
+            "invitation",
+            "create",
+            "plan",
+            "andyl",
+            "new.member@example.test",
+            "--scope",
+            "org:0123456789abcdef0123456789abcdef",
+            "--role",
+            "developer",
+            "--hub",
+            "https://aos.example",
+            "--idempotency-key",
+            "invite-new-member",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.command,
+            Commands::Hub {
+                command: HubCmd::Org {
+                    command: HubOrgCmd::Invitation {
+                        command: HubInvitationCmd::Create {
+                            command: HubInvitationCreateCmd::Plan { .. }
+                        }
+                    },
+                    ..
+                }
+            }
+        ));
+        assert!(parse_cli(["aos", "hub", "invitation", "list"]).is_err());
+    }
+
+    #[test]
+    fn organization_sso_has_separate_provider_and_domain_resources() {
+        let provider = parse_cli([
+            "aos",
+            "hub",
+            "org",
+            "identity-provider",
+            "set",
+            "plan",
+            "andyl",
+            "--issuer",
+            "https://idp.example.test",
+            "--authorization-endpoint",
+            "https://idp.example.test/authorize",
+            "--token-endpoint",
+            "https://idp.example.test/token",
+            "--jwks-uri",
+            "https://idp.example.test/jwks",
+            "--client-id",
+            "hub",
+            "--if-version",
+            "absent",
+            "--idempotency-key",
+            "plan-idp",
+        ])
+        .unwrap();
+        assert!(matches!(
+            provider.command,
+            Commands::Hub {
+                command: HubCmd::Org {
+                    command: HubOrgCmd::IdentityProvider {
+                        command: HubIdentityProviderCmd::Set {
+                            command: HubIdentityProviderSetCmd::Plan { .. }
+                        }
+                    },
+                    ..
+                }
+            }
+        ));
+
+        let domain = parse_cli([
+            "aos",
+            "hub",
+            "org",
+            "domain",
+            "verify",
+            "plan",
+            "andyl",
+            "login.example.test",
+            "--if-version",
+            "1",
+            "--idempotency-key",
+            "plan-domain-verify",
+        ])
+        .unwrap();
+        assert!(matches!(
+            domain.command,
+            Commands::Hub {
+                command: HubCmd::Org {
+                    command: HubOrgCmd::Domain {
+                        command: HubOrganizationDomainCmd::Verify {
+                            command: HubOrganizationDomainVerifyCmd::Plan { .. }
+                        }
+                    },
+                    ..
+                }
+            }
+        ));
+        assert!(parse_cli(["aos", "hub", "org", "sso"]).is_err());
+    }
+
+    #[test]
+    fn operation_inventory_requires_one_explicit_selector() {
+        let target = parse_cli([
+            "aos",
+            "hub",
+            "operation",
+            "list",
+            "--target",
+            "registry:andyl/main",
+        ])
+        .unwrap();
+        assert!(matches!(
+            target.command,
+            Commands::Hub {
+                command: HubCmd::Operation {
+                    command: HubOperationCmd::List {
+                        target: Some(_),
+                        scope: None,
+                        ..
+                    }
+                }
+            }
+        ));
+
+        let scope = parse_cli([
+            "aos",
+            "hub",
+            "operation",
+            "list",
+            "--scope",
+            "org:0123456789abcdef0123456789abcdef",
+        ])
+        .unwrap();
+        assert!(matches!(
+            scope.command,
+            Commands::Hub {
+                command: HubCmd::Operation {
+                    command: HubOperationCmd::List {
+                        target: None,
+                        scope: Some(_),
+                        ..
+                    }
+                }
+            }
+        ));
+
+        assert!(parse_cli(["aos", "hub", "operation", "list", "registry:andyl/main"]).is_err());
+        assert!(
+            parse_cli([
+                "aos",
+                "hub",
+                "operation",
+                "list",
+                "--target",
+                "registry:andyl/main",
+                "--scope",
+                "instance",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

@@ -201,6 +201,67 @@ The public realm is the deployment-provisioned, instance-owned,
 non-revisable `instance:public@1` singleton with eagerly materialized exact
 organization grants; public endpoint creation still references it explicitly.
 
+### D26: the API is the only management authority
+
+The `aos.hub.v1` Connect API owns every remote end-user control-plane read and
+mutation. The settings Web application and `aos hub` CLI are clients of that
+same API; neither calls a private database adapter or implements a second
+mutation path. Durable desired-state changes use the same immutable plan/apply
+pair in all three interfaces.
+
+Trusted deployment, schema recovery, controller reporting, and offline cutover
+tools are operator interfaces outside end-user parity. Their exclusion is
+explicit in the checked capability manifest rather than inferred from missing
+Web pages.
+
+### D27: authenticated settings are a Rust client application
+
+Authenticated instance, organization, registry, and binary-cache management
+routes serve one Leptos client application. Existing canonical GET paths remain
+stable deep links, but management form POST routes and server-rendered
+management handlers are removed in the final cutover. Login, account security,
+device approval, and public registry browsing remain server-rendered because
+they establish authentication or serve anonymous content.
+
+The application is built hermetically from the workspace Rust sources and is
+shipped as the same content-addressed JavaScript, WebAssembly, and CSS bundle in
+native and Cloudflare Worker deployments. It does not introduce npm, Trunk, a
+host build tool, or a second API schema.
+
+### D28: browser API credentials are ephemeral
+
+A logged-in browser exchanges its HttpOnly session plus a CSRF proof for a
+five-minute bearer JWT. The Web application holds that bearer only in memory.
+It never writes the bearer to Web Storage, IndexedDB, URLs, rendered HTML, or
+logs. A single failed API request may trigger one fresh session exchange and
+retry; failure returns the browser to login with the current deep link as the
+post-login destination.
+
+### D29: human CLI authentication uses the device grant
+
+`aos hub login` uses the OAuth 2.0 device authorization grant. A successful
+authorization produces a one-hour access JWT and a rotating opaque refresh
+credential with a 30-day idle and 90-day absolute lifetime. Refresh reuse
+revokes the credential family. The CLI stores per-Hub credentials in a private
+user configuration file and continues to accept explicit `AOS_HUB` and
+`AOS_TOKEN` automation overrides.
+
+Automation uses scoped, expiring access tokens owned by a user or service
+account. Token permissions are always intersected with the owner's current
+grants, secrets are returned once and hashed at rest, and the default and
+maximum lifetimes are 30 and 90 days respectively. Registry-specific token
+types and RPC names are removed in favor of this general resource-scoped
+contract.
+
+### D30: parity is checked data, not an aspiration
+
+A versioned capability manifest classifies every `aos.hub.v1` method and maps
+each remote end-user capability to its permission, CLI command, Web workflow,
+and native/Worker availability. Repository checks fail on an unclassified API
+method, a durable mutation without a plan/apply pair, an end-user CLI command
+without an API owner, an end-user capability without a Web workflow, or an
+operator-only method exposed as ordinary settings porcelain.
+
 ## Rejected conflations
 
 - Storage binding endpoint as consumer URL.
