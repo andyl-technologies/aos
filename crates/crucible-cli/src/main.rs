@@ -11,6 +11,9 @@
 #[macro_use]
 #[cfg(any(test, feature = "test-double"))]
 mod quantum_loop_method;
+mod portable_artifact_constants;
+
+use portable_artifact_constants::*;
 
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use std::error::Error;
@@ -87,14 +90,6 @@ const SEARCH_SCHEDULE_NAMED_TRUTHS_MEDIA_TYPE: &str =
 const SEARCH_RETAINED_EVIDENCE_SCHEMA: &str = "crucible.search-retained-evidence.v1";
 const SEARCH_RETAINED_EVIDENCE_MEDIA_TYPE: &str =
     "application/vnd.crucible.search-retained-evidence+toml";
-const SAVEPOINT_HANDLE_SCHEMA: &str = "crucible.savepoint-handle.v3";
-const SAVEPOINT_HANDLE_SCHEMA_V2: &str = "crucible.savepoint-handle.v2";
-const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V1: &str = "crucible.failure-triage.findings-ledger.v1";
-const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V2: &str = "crucible.failure-triage.findings-ledger.v2";
-const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V3: &str = "crucible.failure-triage.findings-ledger.v3";
-const RECORDED_DECISION_PAYLOAD_MEDIA_TYPE: &str =
-    "application/vnd.crucible.recorded-decision-payload+text";
-const CONTENT_ADDRESS_PREFIX: &str = "crucible-hash:";
 const CRUCIBLE_SEED_ENV: &str = "CRUCIBLE_SEED";
 const CRUCIBLE_QEMU_ENV: &str = "CRUCIBLE_QEMU";
 const CRUCIBLE_PLUGIN_ENV: &str = "CRUCIBLE_PLUGIN";
@@ -117,6 +112,31 @@ const REAL_QEMU_SELFTEST_GATES: &[&str] = &[
     "gate:single-vm-fingerprint",
     "gate:any-guest",
     "gate:qemu-inert",
+];
+const CANONICAL_GATE_NAMES: &[&str] = &[
+    "gate:harness-lint",
+    "gate:license-boundary",
+    "gate:layer0-determinism",
+    "gate:single-vm-fingerprint",
+    "gate:layer1-injection",
+    "gate:content-address",
+    "gate:replay-oracle",
+    "gate:divergence-bisect",
+    "gate:scheduler-liveness",
+    "gate:control-responsive",
+    "gate:any-guest",
+    "gate:qemu-inert",
+    "gate:abi-conformance",
+    "gate:patch-microtests",
+    "gate:adversarial-determinism",
+    "gate:e2e-determinism",
+    "gate:basic-block-coverage",
+    "gate:checkpoint-materialization",
+    "gate:state-space-search",
+    "gate:perf-bench",
+    "gate:fleet-equivalence",
+    "gate:campaign-continuity",
+    "gate:signal-fault-system",
 ];
 
 #[derive(Parser, Debug, PartialEq, Eq)]
