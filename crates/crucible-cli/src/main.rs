@@ -118,29 +118,6 @@ const REAL_QEMU_SELFTEST_GATES: &[&str] = &[
     "gate:any-guest",
     "gate:qemu-inert",
 ];
-const CANONICAL_GATE_NAMES: &[&str] = &[
-    "gate:harness-lint",
-    "gate:license-boundary",
-    "gate:layer0-determinism",
-    "gate:single-vm-fingerprint",
-    "gate:layer1-injection",
-    "gate:content-address",
-    "gate:replay-oracle",
-    "gate:divergence-bisect",
-    "gate:scheduler-liveness",
-    "gate:control-responsive",
-    "gate:any-guest",
-    "gate:qemu-inert",
-    "gate:abi-conformance",
-    "gate:patch-microtests",
-    "gate:adversarial-determinism",
-    "gate:e2e-determinism",
-    "gate:basic-block-coverage",
-    "gate:perf-bench",
-    "gate:fleet-equivalence",
-    "gate:campaign-continuity",
-    "gate:signal-fault-system",
-];
 
 #[derive(Parser, Debug, PartialEq, Eq)]
 #[command(

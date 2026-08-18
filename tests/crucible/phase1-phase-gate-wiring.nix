@@ -141,6 +141,18 @@
       gate = "gate:basic-block-coverage";
     }
     {
+      phase = "phase6";
+      attr = "checkpointMaterialization";
+      attrPath = "checks.crucible.phase6.checkpointMaterialization";
+      gate = "gate:checkpoint-materialization";
+    }
+    {
+      phase = "phase6";
+      attr = "stateSpaceSearch";
+      attrPath = "checks.crucible.phase6.stateSpaceSearch";
+      gate = "gate:state-space-search";
+    }
+    {
       phase = "phase7";
       attr = "perfBench";
       gate = "gate:perf-bench";

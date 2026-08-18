@@ -122,6 +122,14 @@ fn canonical_gate_statuses_are_current() {
         Some(GateStatus::Implemented)
     ));
     assert!(matches!(
+        find_gate("gate:checkpoint-materialization").map(|spec| spec.status),
+        Some(GateStatus::Implemented)
+    ));
+    assert!(matches!(
+        find_gate("gate:state-space-search").map(|spec| spec.status),
+        Some(GateStatus::Implemented)
+    ));
+    assert!(matches!(
         find_gate("gate:signal-fault-system").map(|spec| spec.status),
         Some(GateStatus::Implemented)
     ));
@@ -144,6 +152,8 @@ fn canonical_gate_statuses_are_current() {
         ("gate:adversarial-determinism", GatePhase::Phase3),
         ("gate:e2e-determinism", GatePhase::Phase4),
         ("gate:basic-block-coverage", GatePhase::Phase6),
+        ("gate:checkpoint-materialization", GatePhase::Phase6),
+        ("gate:state-space-search", GatePhase::Phase6),
         ("gate:perf-bench", GatePhase::Phase7),
         ("gate:fleet-equivalence", GatePhase::Phase7),
         ("gate:campaign-continuity", GatePhase::Phase7),
