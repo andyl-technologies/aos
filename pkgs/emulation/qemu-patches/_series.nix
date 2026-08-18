@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "4e6e2954cb980edf4259295f495961348b89d7f0658722a129323c25f11e80ba";
+  patchBranchBundleSha256 = "21507255bec37135e4dca0ab328456ba727ed288ea635431aa52cb721ce5a6f1";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "5ab8c82a9ee626e022e40e79d54c495b0b6acb74";
+  patchBranchHeadCommit = "818b31006a065b88069e93a22a5b8c75f5811c97";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -775,6 +775,16 @@ let
       class = "D";
       enforces = "DET-1,QFP-STATE-2,FAULT-ORDER";
       capability = "exact Crucible VMState restore suppresses migration-only virtio-net guest announcements while ordinary QEMU migration retains its upstream announcement behavior";
+    }
+    {
+      file = "0085-crucible-register-rejection-atomicity.patch";
+      branchSubject = "crucible: prove register rejection atomicity";
+      branchCommit = "818b31006a065b88069e93a22a5b8c75f5811c97";
+      branchTree = "41ea30836a0a5cb39d9acfde35a3ba1c83f5f584";
+      catalogName = "crucible-register-rejection-atomicity";
+      class = "D";
+      enforces = "DET-1,QFP-REG-1,QFP-REG-2,FAULT-EVIDENCE";
+      capability = "exact RR ownership gates canonical register observation; every realized CPU manifest is validated; rejected register commands preserve every canonical GDB register byte and all six mutation side-effect counters";
     }
   ];
   catalogOnlyCapabilities = [
