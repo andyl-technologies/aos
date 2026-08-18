@@ -5124,16 +5124,12 @@ fn pe_section<'a>(pe: &'a [u8], section: &str) -> Result<Option<&'a [u8]>> {
             read_u32(header + 8).context("reading PE section virtual size")? as usize;
         let raw_size = read_u32(header + 16).context("reading PE section size")? as usize;
         let raw_offset = read_u32(header + 20).context("reading PE section offset")? as usize;
-        let section_size = if virtual_size == 0 {
-            raw_size
-        } else {
-            virtual_size
-        };
+        // systemd-stub measures only bytes materialized in the PE file. Its
+        // loader and ukify both define that range as the smaller of the
+        // section's virtual and raw sizes.
+        let section_size = virtual_size.min(raw_size);
         if section_size == 0 {
             continue;
-        }
-        if section_size > raw_size {
-            bail!("PE {section} virtual size exceeds its raw data");
         }
         let raw_end = raw_offset
             .checked_add(section_size)
@@ -16040,21 +16036,31 @@ mod tests {
         let pe = synthetic_pe_section(b".cmdline", 5, b"root\0padding");
         assert_eq!(pe_section(&pe, ".cmdline").unwrap(), Some(&b"root\0"[..]));
         assert!(pe_section(&pe, ".sbat").unwrap().is_none());
+
+        let zero_virtual = synthetic_pe_section(b".cmdline", 0, b"ignored");
+        assert!(pe_section(&zero_virtual, ".cmdline").unwrap().is_none());
+
+        let larger_virtual = synthetic_pe_section(b".cmdline", 32, b"materialized");
+        assert_eq!(
+            pe_section(&larger_virtual, ".cmdline").unwrap(),
+            Some(&b"materialized"[..])
+        );
     }
 
     #[test]
     fn pe_section_rejects_malformed_and_duplicate_ranges() {
-        let mut oversized = synthetic_pe_section(b".sbat", 9, b"short");
-        assert!(pe_section(&oversized, ".sbat").is_err());
-
+        let mut malformed = synthetic_pe_section(b".sbat", 5, b"short");
         let pe_offset = 0x40_usize;
         let coff = pe_offset + 4;
         let section_table = coff + 20 + 112;
-        oversized[section_table + 8..section_table + 12].copy_from_slice(&5_u32.to_le_bytes());
-        oversized[coff + 2..coff + 4].copy_from_slice(&2_u16.to_le_bytes());
-        let duplicate = oversized[section_table..section_table + 40].to_vec();
-        oversized.splice(section_table + 40..section_table + 40, duplicate);
-        assert!(pe_section(&oversized, ".sbat").is_err());
+        malformed[section_table + 20..section_table + 24].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(pe_section(&malformed, ".sbat").is_err());
+
+        let mut duplicate_pe = synthetic_pe_section(b".sbat", 5, b"short");
+        duplicate_pe[coff + 2..coff + 4].copy_from_slice(&2_u16.to_le_bytes());
+        let duplicate = duplicate_pe[section_table..section_table + 40].to_vec();
+        duplicate_pe.splice(section_table + 40..section_table + 40, duplicate);
+        assert!(pe_section(&duplicate_pe, ".sbat").is_err());
     }
 
     #[test]
