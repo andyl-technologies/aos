@@ -32,20 +32,17 @@ images do not install this strict production guard; they retain the locked
 initrd boundary from Phase 1.
 
 The guarded initrd removes `systemd-debug-generator`,
-`systemd-run-generator`, and the unwrapped verity generator from both the
-public generator directory and systemd's compiled-in immutable-store
-directory. A private copy of the upstream verity implementation is retained
-under a name outside every generator search directory and is callable only by
-the validating wrapper. Debug images continue to use their explicit gettys,
-not kernel-command-line generator controls. The verity wrapper runs that
-private implementation against private output directories and publishes no
-partial output if upstream parsing fails. Success output includes a generated
-oneshot ordered before the guard; after PID 1 has established procfs and the
-final `/run` mount, that unit validates the command line and publishes the
-marker. The static guard prevents the already parsed verity unit and all `/var`
-consumers from running until this second stage succeeds. Validation deliberately
-does not depend on generator-time `/proc`, and the generator itself must not
-write the marker because an early runtime mount could hide it from the guard.
+`systemd-run-generator`, and duplicate discoverable copies of the verity
+generator from systemd's compiled-in immutable-store directory. One explicit
+verity generator remains in `/lib`; debug images continue to use their
+explicit gettys, not kernel-command-line generator controls. That verity
+implementation is the only remaining generator allowed to consume verity
+fields. After PID 1 has established procfs and the final `/run` mount, a
+dedicated oneshot validates the command line, requires the complete generated
+root unit to exist, and publishes the success marker. The generated verity unit
+and all `/var` consumers require the static guard, so parsing untrusted input
+does not authorize any storage effect. Validation deliberately does not depend
+on generator-time `/proc`, and the generator itself never publishes success.
 Rejection selects the passive failure target through the early generator
 directory. The wrapper pins `PATH` to the immutable AOS coreutils output because
 systemd's generator environment does not provide shell utility lookup.

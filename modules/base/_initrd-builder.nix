@@ -539,57 +539,13 @@ in
           ${generatorSymlinks}
 
           ${lib.optionalString validateBootIdentity ''
-            # The normal boot-identity validator owns the only verity generator
-            # path. It validates before upstream parsing, stages upstream output
-            # privately, and publishes the success marker last. The initrd omits
-            # systemd-debug-generator and systemd-run-generator, so no independent
-            # generator can turn appended boot-control input into a shell or
-            # outrank the passive failure target.
-            # Keep the upstream implementation under a private, non-generator
-            # name before its compiled-in discoverable copy is removed below.
+            # Keep exactly one verity generator. Its generated unit cannot run
+            # until the runtime boot-identity service validates the command line
+            # and publishes the guard marker. The initrd omits debug/run
+            # generators, so no other command-line surface can create an
+            # interactive unit or outrank the passive failure target.
             cp ${systemd}/lib/systemd/system-generators/systemd-veritysetup-generator \
-              root/lib/systemd/aos-systemd-veritysetup-generator
-            chmod 0755 root/lib/systemd/aos-systemd-veritysetup-generator
-
-            cat > root/lib/systemd/system-generators/systemd-veritysetup-generator <<'GENERATOR'
-            #!${bash}/bin/bash
-            set -eu
-            export PATH=${pkgs.coreutils}/bin
-
-            mkdir -p /run/aos
-            staging=/run/aos/verity-generator.$$
-            trap 'rm -rf "$staging"' EXIT
-            mkdir "$staging" "$staging/normal" "$staging/early" "$staging/late"
-
-            if /lib/systemd/aos-systemd-veritysetup-generator \
-                "$staging/normal" "$staging/early" "$staging/late"; then
-              cp -a "$staging/normal/." "$1/"
-              cp -a "$staging/early/." "$2/"
-              cp -a "$staging/late/." "$3/"
-              # Publish the handshake as a generated unit. Generators run
-              # before PID 1 establishes the final /run mount, so a marker
-              # written here could be hidden before the guard observes it.
-              # The generated unit runs after that mount is authoritative.
-              cat > "$2/aos-boot-identity-success.service" <<'SUCCESS'
-            [Unit]
-            DefaultDependencies=no
-
-            [Service]
-            Type=oneshot
-            RemainAfterExit=yes
-            ExecStart=${pkgs.aos-boot-identity}/bin/aos-boot-identity /proc/cmdline
-            ExecStartPre=${pkgs.coreutils}/bin/mkdir -p /run/aos
-            ExecStartPost=${pkgs.coreutils}/bin/touch /run/aos/boot-identity-valid
-            SUCCESS
-              exit 0
-            fi
-
-            diagnostic="upstream verity generator rejected normal boot identity"
-            printf '<3>%s\n' "$diagnostic" > /dev/kmsg 2>/dev/null \
-              || printf '%s\n' "$diagnostic" >&2
-            mkdir -p "$2"
-            ln -sfn /etc/systemd/system/aos-boot-identity-failure.target "$2/default.target"
-            GENERATOR
+              root/lib/systemd/system-generators/systemd-veritysetup-generator
             chmod 0755 root/lib/systemd/system-generators/systemd-veritysetup-generator
           ''}
 
@@ -724,8 +680,8 @@ in
                 done
                 # PID 1 also searches its compiled-in store directory. Merely
                 # omitting these names from /lib would therefore leave an
-                # attacker-controlled generator path active. The guarded
-                # wrapper in /lib is the sole verity generator authority.
+                # attacker-controlled duplicate path active. The retained
+                # /lib copy is the sole verity generator authority.
                 rm -f "{}/lib/systemd/system-generators/systemd-debug-generator" \
                       "{}/lib/systemd/system-generators/systemd-run-generator" \
                       "{}/lib/systemd/system-generators/systemd-veritysetup-generator"
@@ -735,7 +691,7 @@ in
           test ! -e root/nix/store/*-systemd-*/lib/systemd/system-generators/systemd-run-generator
           test ! -e root/nix/store/*-systemd-*/lib/systemd/system-generators/systemd-veritysetup-generator
           ${lib.optionalString validateBootIdentity ''
-            test -x root/lib/systemd/aos-systemd-veritysetup-generator
+            test -x root/lib/systemd/system-generators/systemd-veritysetup-generator
           ''}
 
           # openssl: static archives (libcrypto.a / libssl.a) are dev-only,
