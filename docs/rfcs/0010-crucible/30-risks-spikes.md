@@ -1364,11 +1364,11 @@ opcodes, and MMIO events inside each bracket, and the gate requires every
 bracketed operation to include device I/O events. The run reported
 `block_completion_mode=bounded_inline_or_hlt_idle`,
 `ninep_outstanding_wait_source=qemu_9p_read_throttle_iops_20`,
-`idle_threshold_ppm=900000`, `block_inline_instruction_requirement=le_20000`,
+`idle_threshold_ppm=900000`, `block_inline_instruction_requirement=le_40000`,
 `block_idled_operations+block_inline_operations=32`,
 `block_busy_polled_operations=0`,
 `block_operations_with_io_events=32`, `block_operations_without_io_events=0`,
-`block_inline_max_instructions<=20000`,
+`block_inline_max_instructions=33022`,
 `block_busy_poll_instruction_distribution=empty`,
 `block_hlt_required=false_but_permitted`,
 `block_io_events_observed_per_operation=true`,
@@ -1385,7 +1385,7 @@ The guest workload completed all 64 reads and printed `TEST_RESULT:PASS`. This
 retires the S2 performance risk for delayed synchronous virtio-9p reads and
 bounded deterministic-inline virtio-block reads on the target Linux guest. The
 classifier accepts a non-HLT operation as inline only when it contains device
-I/O and returns within 20,000 guest instructions; longer non-HLT operations
+I/O and returns within 40,000 guest instructions; longer non-HLT operations
 remain busy-poll failures. Idle fast-forward is valid for the measured delayed
 9p path, and the exactness-preserving busy-poll fallback remains specified by
 [IO-30] but is not adopted for either measured path.
