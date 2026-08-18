@@ -1493,11 +1493,17 @@ impl ProductionVmLifecycleLoop {
             });
         }
         let checkpoint_virtual_time = self.inner.loop_impl().frontier();
+        let network_committed_frontier = self.inner.committed_frontier();
         let fault_checkpoint = {
             let (scheduler, backend, interceptor, pending_outputs) =
                 self.inner.network_transaction_parts_mut();
             interceptor
-                .checkpoint(scheduler, pending_outputs, backend)
+                .checkpoint(
+                    scheduler,
+                    network_committed_frontier,
+                    pending_outputs,
+                    backend,
+                )
                 .map_err(|error| SchedulerError::BoundaryViolation {
                     message: format!(
                         "capture signal, network, and device continuation at exact checkpoint boundary: {error}"

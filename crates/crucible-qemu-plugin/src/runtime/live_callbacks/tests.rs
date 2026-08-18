@@ -406,7 +406,9 @@ fn duplicate_checkpoint_vmstop_admission_is_idempotent() {
 
     state
         .request_checkpoint_vmstop("block-wait")
-        .expect("an already-admitted exact stop satisfies the handoff");
+        .unwrap_or_else(|error| {
+            panic!("an already-admitted exact stop satisfies the handoff: {error}")
+        });
     TEST_REQUEST_VMSTOP_STATUS.set(0);
 }
 

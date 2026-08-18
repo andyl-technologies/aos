@@ -79,7 +79,7 @@ fn accelerator_adapter_round_trips_a_real_shared_memory_request() {
     assert_eq!(slot.snapshot().device_io_active, 1);
     let request = storage
         .accelerator_request_header
-        .dequeue_accelerator(&mut storage.accelerator_request_entries)
+        .dequeue_accelerator(&storage.accelerator_request_entries)
         .unwrap_or_else(|error| panic!("host should dequeue request: {error}"))
         .unwrap_or_else(|| panic!("request should be present"));
     assert_eq!(request.sequence(), 41);
@@ -128,14 +128,14 @@ fn accelerator_cancellation_is_published_and_acknowledged() {
         .unwrap_or_else(|error| panic!("request should submit: {error}"));
     storage
         .accelerator_request_header
-        .dequeue_accelerator(&mut storage.accelerator_request_entries)
+        .dequeue_accelerator(&storage.accelerator_request_entries)
         .unwrap_or_else(|error| panic!("host dequeue should work: {error}"));
     devices
         .cancel_accelerator(&slot, 41)
         .unwrap_or_else(|error| panic!("request should cancel: {error}"));
     let cancellation = storage
         .accelerator_request_header
-        .dequeue_accelerator(&mut storage.accelerator_request_entries)
+        .dequeue_accelerator(&storage.accelerator_request_entries)
         .unwrap_or_else(|error| panic!("host dequeue should work: {error}"))
         .unwrap_or_else(|| panic!("cancellation should be published"));
     assert!(cancellation.is_cancellation());

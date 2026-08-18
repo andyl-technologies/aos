@@ -536,6 +536,12 @@
         inherit pkgs lib;
       };
     }
+    {
+      patch = "0084-crucible-exact-restore-network-announcement.patch";
+      check = import ./phase2-qemu-live-network-io.nix {
+        inherit pkgs lib;
+      };
+    }
   ];
 
   microtestPatchNames =

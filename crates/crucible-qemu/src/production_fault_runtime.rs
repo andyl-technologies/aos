@@ -68,6 +68,7 @@ pub struct ProductionFaultRuntimeCheckpoint {
 pub struct ProductionNetworkStateCheckpoint {
     identity: ContentHash,
     scheduler: SchedulerNetworkCheckpoint,
+    committed_frontier: crucible::VirtualTime,
     pending_outputs: Vec<BackendNetworkOutput>,
     adapter_state: Vec<u8>,
 }
@@ -78,12 +79,14 @@ impl ProductionNetworkStateCheckpoint {
     pub fn new(
         identity: ContentHash,
         scheduler: SchedulerNetworkCheckpoint,
+        committed_frontier: crucible::VirtualTime,
         pending_outputs: Vec<BackendNetworkOutput>,
         adapter_state: Vec<u8>,
     ) -> Self {
         Self {
             identity,
             scheduler,
+            committed_frontier,
             pending_outputs,
             adapter_state,
         }
@@ -101,12 +104,14 @@ impl ProductionNetworkStateCheckpoint {
         self,
     ) -> (
         SchedulerNetworkCheckpoint,
+        crucible::VirtualTime,
         Vec<BackendNetworkOutput>,
         Vec<u8>,
         ContentHash,
     ) {
         (
             self.scheduler,
+            self.committed_frontier,
             self.pending_outputs,
             self.adapter_state,
             self.identity,

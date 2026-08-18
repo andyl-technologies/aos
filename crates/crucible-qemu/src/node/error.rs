@@ -150,6 +150,14 @@ pub enum QemuNodeError {
         /// Deterministic capture, binding, or cleanup failure detail.
         message: String,
     },
+    /// A plugin-emitted network frame broke the per-node sequence contract.
+    #[error("QEMU network output sequence mismatch: expected {expected}, observed {observed}")]
+    NetworkOutputSequence {
+        /// Next sequence required by the host continuation.
+        expected: u64,
+        /// Sequence carried by the emitted frame.
+        observed: u64,
+    },
     /// A live QEMU fault command violated its admitted boundary contract.
     #[error("QEMU fault command failed closed: {message}")]
     FaultCommand {

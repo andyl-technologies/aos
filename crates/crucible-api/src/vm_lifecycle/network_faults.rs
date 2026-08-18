@@ -919,6 +919,7 @@ struct NetworkAdapterCheckpoint {
 
 struct StagedNetworkRestore {
     scheduler: SingleScheduler,
+    committed_frontier: VirtualTime,
     pending_outputs: Vec<crucible::BackendNetworkOutput>,
     adapter: NetworkAdapterCheckpoint,
     identity: ContentHash,
@@ -937,7 +938,8 @@ fn stage_network_restore(
                     "restored production fault runtime omitted its network continuation",
                 ),
             })?;
-    let (scheduler_state, pending_outputs, adapter_bytes, identity) = network.into_parts();
+    let (scheduler_state, committed_frontier, pending_outputs, adapter_bytes, identity) =
+        network.into_parts();
     validate_pending_network_outputs(&pending_outputs)?;
     if scheduler.network_checkpoint() != scheduler_state {
         return Err(SchedulerError::BoundaryViolation {
@@ -953,15 +955,16 @@ fn stage_network_restore(
     validate_network_adapter_checkpoint(&adapter)?;
     validate_medium_pending_links(&adapter.effect_state, &pending_outputs)?;
     let staged_scheduler = scheduler.clone();
-    let actual = network_state_digest_from_parts(
-        &staged_scheduler,
-        &pending_outputs,
-        adapter.coordinate,
-        adapter.coordinate_sequence,
-        adapter.journal_sequence,
-        &adapter.observations,
-        &adapter.effect_state,
-    )?;
+    let actual = network_state_digest_from_parts(NetworkStateDigestView {
+        scheduler: &staged_scheduler,
+        committed_frontier,
+        pending_outputs: &pending_outputs,
+        coordinate: adapter.coordinate,
+        coordinate_sequence: adapter.coordinate_sequence,
+        journal_sequence: adapter.journal_sequence,
+        observations: &adapter.observations,
+        effect_state: &adapter.effect_state,
+    })?;
     if actual != identity {
         return Err(SchedulerError::BoundaryViolation {
             message: format!(
@@ -973,6 +976,7 @@ fn stage_network_restore(
     }
     Ok(StagedNetworkRestore {
         scheduler: staged_scheduler,
+        committed_frontier,
         pending_outputs,
         adapter,
         identity,
@@ -1331,35 +1335,42 @@ fn checkpoint_network_effect_state(
     checkpoint
 }
 
-fn network_state_digest_from_parts(
-    scheduler: &SingleScheduler,
-    pending_outputs: &[crucible::BackendNetworkOutput],
+struct NetworkStateDigestView<'a> {
+    scheduler: &'a SingleScheduler,
+    committed_frontier: VirtualTime,
+    pending_outputs: &'a [crucible::BackendNetworkOutput],
     coordinate: Option<u64>,
     coordinate_sequence: u64,
     journal_sequence: u64,
-    observations: &super::storage_faults::ProductionFaultObservationJournal,
-    effect_state: &NetworkEffectRuntimeState,
+    observations: &'a super::storage_faults::ProductionFaultObservationJournal,
+    effect_state: &'a NetworkEffectRuntimeState,
+}
+
+fn network_state_digest_from_parts(
+    state: NetworkStateDigestView<'_>,
 ) -> Result<ContentHash, SchedulerError> {
     let mut material = Vec::new();
-    material.extend_from_slice(&scheduler.network_continuation_digest()?.bytes);
-    material.extend_from_slice(&coordinate.unwrap_or(u64::MAX).to_be_bytes());
-    material.extend_from_slice(&coordinate_sequence.to_be_bytes());
-    material.extend_from_slice(&journal_sequence.to_be_bytes());
-    let encoded_observations =
-        serde_json::to_vec(observations).map_err(|error| SchedulerError::BoundaryViolation {
+    material.extend_from_slice(&state.scheduler.network_continuation_digest()?.bytes);
+    material.extend_from_slice(&state.committed_frontier.ticks.to_be_bytes());
+    material.extend_from_slice(&state.coordinate.unwrap_or(u64::MAX).to_be_bytes());
+    material.extend_from_slice(&state.coordinate_sequence.to_be_bytes());
+    material.extend_from_slice(&state.journal_sequence.to_be_bytes());
+    let encoded_observations = serde_json::to_vec(state.observations).map_err(|error| {
+        SchedulerError::BoundaryViolation {
             message: format!("encode pending production fault observations: {error}"),
-        })?;
+        }
+    })?;
     material.extend_from_slice(&encoded_observations);
-    let pending_count = u64::try_from(pending_outputs.len()).map_err(|_error| {
+    let pending_count = u64::try_from(state.pending_outputs.len()).map_err(|_error| {
         SchedulerError::BoundaryViolation {
             message: String::from("pending network output count exceeds the checkpoint width"),
         }
     })?;
     material.extend_from_slice(&pending_count.to_be_bytes());
-    for output in pending_outputs {
+    for output in state.pending_outputs {
         append_backend_output_evidence(&mut material, output)?;
     }
-    append_network_effect_state(&mut material, effect_state)?;
+    append_network_effect_state(&mut material, state.effect_state)?;
     Ok(ContentHash::from_bytes(&material))
 }
 
@@ -1526,7 +1537,7 @@ impl ProductionFaultNetworkInterceptor {
         scheduler: &mut SingleScheduler,
         pending_outputs: &mut Vec<crucible::BackendNetworkOutput>,
         observations: super::storage_faults::ProductionStorageObservations,
-    ) -> Result<Self, SchedulerError> {
+    ) -> Result<(Self, VirtualTime), SchedulerError> {
         let staged = stage_network_restore(&checkpoint, scheduler)?;
         staged
             .adapter
@@ -1583,7 +1594,7 @@ impl ProductionFaultNetworkInterceptor {
         };
         *scheduler = staged.scheduler;
         *pending_outputs = staged.pending_outputs;
-        Ok(restored)
+        Ok((restored, staged.committed_frontier))
     }
 
     /// Captures the fault runtime together with all network adapter state.
@@ -1595,6 +1606,7 @@ impl ProductionFaultNetworkInterceptor {
     pub(super) fn checkpoint(
         &self,
         scheduler: &SingleScheduler,
+        committed_frontier: VirtualTime,
         pending_outputs: &[crucible::BackendNetworkOutput],
         backend: &mut ProductionNodeSet,
     ) -> Result<ProductionFaultRuntimeCheckpoint, SchedulerError> {
@@ -1627,15 +1639,16 @@ impl ProductionFaultNetworkInterceptor {
             pending_outputs,
             cursor.coordinate.unwrap_or(0),
         );
-        let network_state = network_state_digest_from_parts(
+        let network_state = network_state_digest_from_parts(NetworkStateDigestView {
             scheduler,
+            committed_frontier,
             pending_outputs,
-            cursor.coordinate,
-            cursor.coordinate_sequence,
-            cursor.journal_sequence,
-            &observations,
-            &effect_state,
-        )?;
+            coordinate: cursor.coordinate,
+            coordinate_sequence: cursor.coordinate_sequence,
+            journal_sequence: cursor.journal_sequence,
+            observations: &observations,
+            effect_state: &effect_state,
+        })?;
         let adapter_state = serde_json::to_vec(&NetworkAdapterCheckpoint {
             semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
             coordinate: cursor.coordinate,
@@ -1650,6 +1663,7 @@ impl ProductionFaultNetworkInterceptor {
         let network_checkpoint = ProductionNetworkStateCheckpoint::new(
             network_state,
             scheduler.network_checkpoint(),
+            committed_frontier,
             pending_outputs.to_vec(),
             adapter_state,
         );

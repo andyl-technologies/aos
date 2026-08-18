@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
-    QMP_CAPABILITIES_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUIT_COMMAND_NAME,
+    QMP_CAPABILITIES_COMMAND, QMP_CONT_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUIT_COMMAND_NAME,
     QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND, QemuExactSnapshotPolicy,
     QemuQmpVmStateControlChannel, QmpCommandKind, QmpSnapshotTag, QmpTimeoutStream,
 };
@@ -19,6 +19,30 @@ use serde_json::Value;
 
 const HASH_AB_TAG: &str =
     "crucible-abababababababababababababababababababababababababababababababab";
+
+#[test]
+fn exact_restore_resume_does_not_probe_status_before_the_next_ceiling() -> Result<(), Box<dyn Error>>
+{
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{}}"#,
+    ]);
+    let written = Arc::clone(&stream.written);
+    let mut control = QemuQmpVmStateControlChannel::connect(stream)?;
+
+    control.resume_after_checkpoint()?;
+    drop(control);
+
+    let lines = written_json_lines(
+        &written
+            .lock()
+            .expect("scripted QMP write audit should remain available"),
+    )?;
+    assert_eq!(lines.len(), 2);
+    assert_eq!(execute_name(json_line(&lines, 1)), Some(QMP_CONT_COMMAND));
+    Ok(())
+}
 
 #[test]
 fn vmstate_control_saves_and_restores_checkpoint_tags() -> Result<(), Box<dyn Error>> {

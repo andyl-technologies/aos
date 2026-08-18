@@ -217,6 +217,7 @@ pub struct QemuLiveNodeStepGateConfig {
     rr_switch_quantum: u64,
     scenario_seed: u64,
     process_generation: u64,
+    network_tx_next_sequence: u32,
     whitebox: QemuLaunchPluginSwitch,
     app_random: Option<QemuLaunchAppRandomConfig>,
     coverage: QemuLaunchPluginSwitch,
@@ -293,6 +294,7 @@ impl QemuLiveNodeStepGateConfig {
             rr_switch_quantum: GATE_RR_SWITCH_QUANTUM,
             scenario_seed: 0,
             process_generation: 1,
+            network_tx_next_sequence: 0,
             whitebox: QemuLaunchPluginSwitch::Off,
             app_random: None,
             coverage: QemuLaunchPluginSwitch::Off,
@@ -344,6 +346,7 @@ impl QemuLiveNodeStepGateConfig {
             rr_switch_quantum: GATE_RR_SWITCH_QUANTUM,
             scenario_seed: 0,
             process_generation: 1,
+            network_tx_next_sequence: 0,
             whitebox: QemuLaunchPluginSwitch::Off,
             app_random: None,
             coverage: QemuLaunchPluginSwitch::Off,
@@ -443,6 +446,13 @@ impl QemuLiveNodeStepGateConfig {
     #[must_use]
     pub const fn with_process_generation(mut self, process_generation: u64) -> Self {
         self.process_generation = process_generation;
+        self
+    }
+
+    /// Returns this configuration with the restored plugin network TX cursor.
+    #[must_use]
+    pub const fn with_network_tx_next_sequence(mut self, next_sequence: u32) -> Self {
+        self.network_tx_next_sequence = next_sequence;
         self
     }
 
@@ -2405,7 +2415,10 @@ pub(super) fn build_live_node(
         node = node.with_console_observation(node_id(identity.node), console_spool);
     }
     if !restoring_checkpoint {
-        node.retain_priming_network_outputs(priming_network_outputs);
+        node.retain_priming_network_outputs(priming_network_outputs)
+            .map_err(|source| {
+                QemuLiveNodeStepGateError::node_op("retain priming network outputs", source)
+            })?;
     }
     node.synchronize_observed_time().map_err(|source| {
         QemuLiveNodeStepGateError::node_op("synchronize primed icount", source)

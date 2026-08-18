@@ -436,49 +436,27 @@ fn register_evidence_binds_vcpu_and_terminal_cursor_phase() {
     raw[HEADER..HEADER + before.len()].copy_from_slice(&before);
     raw[HEADER + before.len()..HEADER + before.len() + after.len()].copy_from_slice(&after);
     raw[HEADER + before.len() + after.len()] = 1;
+    let observation = |expected_model_phase| RegisterEvidenceObservation {
+        identity: &identity,
+        logical_icount_offset: 0,
+        expected_raw_icount: 256,
+        expected_model_phase,
+        expected_before,
+        expected_after,
+    };
 
-    assert!(
-        translate_register_evidence(
-            &raw,
-            &identity,
-            0,
-            256,
-            Some(12),
-            expected_before,
-            expected_after,
-            &expectation,
-        )
-        .is_ok()
-    );
+    assert!(translate_register_evidence(&raw, observation(Some(12)), &expectation).is_ok());
 
     raw[120..152].fill(3);
     assert!(matches!(
-        translate_register_evidence(
-            &raw,
-            &identity,
-            0,
-            256,
-            Some(12),
-            expected_before,
-            expected_after,
-            &expectation,
-        ),
+        translate_register_evidence(&raw, observation(Some(12)), &expectation,),
         Err(FaultCommandBridgeError::RegisterEvidence)
     ));
     raw[120..152].fill(4);
 
     raw[88..120].fill(0);
     assert!(matches!(
-        translate_register_evidence(
-            &raw,
-            &identity,
-            0,
-            256,
-            Some(12),
-            expected_before,
-            expected_after,
-            &expectation,
-        ),
+        translate_register_evidence(&raw, observation(Some(12)), &expectation,),
         Err(FaultCommandBridgeError::RegisterEvidence)
     ));
     raw[88..120].fill(3);
@@ -486,16 +464,7 @@ fn register_evidence_binds_vcpu_and_terminal_cursor_phase() {
     raw[16..20].copy_from_slice(&1_u32.to_le_bytes());
     raw[64..72].copy_from_slice(&1_u64.to_le_bytes());
     assert!(matches!(
-        translate_register_evidence(
-            &raw,
-            &identity,
-            0,
-            256,
-            Some(12),
-            expected_before,
-            expected_after,
-            &expectation,
-        ),
+        translate_register_evidence(&raw, observation(Some(12)), &expectation,),
         Err(FaultCommandBridgeError::RegisterEvidence)
     ));
 
@@ -504,16 +473,7 @@ fn register_evidence_binds_vcpu_and_terminal_cursor_phase() {
     raw[12..14].copy_from_slice(&11_u16.to_le_bytes());
     expectation.model_phase = 11;
     assert!(matches!(
-        translate_register_evidence(
-            &raw,
-            &identity,
-            0,
-            256,
-            Some(11),
-            expected_before,
-            expected_after,
-            &expectation,
-        ),
+        translate_register_evidence(&raw, observation(Some(11)), &expectation,),
         Err(FaultCommandBridgeError::RegisterEvidence)
     ));
 
@@ -521,16 +481,7 @@ fn register_evidence_binds_vcpu_and_terminal_cursor_phase() {
     raw[72..80].copy_from_slice(&257_u64.to_le_bytes());
     expectation.model_phase = 12;
     assert!(matches!(
-        translate_register_evidence(
-            &raw,
-            &identity,
-            0,
-            256,
-            Some(12),
-            expected_before,
-            expected_after,
-            &expectation,
-        ),
+        translate_register_evidence(&raw, observation(Some(12)), &expectation,),
         Err(FaultCommandBridgeError::RegisterEvidence)
     ));
 }
@@ -670,7 +621,7 @@ fn instruction_resource_terminal_translates_and_releases_correlation() {
 
     assert_eq!(
         translate_terminal_instruction_evidence(&terminal, &event, &expectation)
-            .expect("correlated terminal evidence"),
+            .unwrap_or_else(|error| panic!("correlated terminal evidence: {error}")),
         terminal
     );
     let mut commands = BTreeMap::from([(event.rule_command_sequence, expectation)]);
@@ -680,7 +631,7 @@ fn instruction_resource_terminal_translates_and_releases_correlation() {
         &mut active_bindings,
         event.rule_command_sequence,
     )
-    .expect("terminal event correlation");
+    .unwrap_or_else(|error| panic!("terminal event correlation: {error}"));
     assert!(commands.is_empty());
 
     let mut wrong_hash = event;
@@ -811,7 +762,7 @@ fn instruction_bridge_requires_actual_device_io_for_device_replay() {
         }],
     }
     .encode()
-    .expect("valid device-I/O transcript");
+    .unwrap_or_else(|error| panic!("valid device-I/O transcript: {error}"));
     raw[12..16].copy_from_slice(&(FaultInstructionMutationKindV1::Replay as u32).to_le_bytes());
     raw[20..24].copy_from_slice(&1_u32.to_le_bytes());
     raw[24..28].copy_from_slice(&0x0100_0008_u32.to_le_bytes());
@@ -834,12 +785,12 @@ fn instruction_bridge_requires_actual_device_io_for_device_replay() {
         &event,
         &expectation,
     )
-    .expect("device replay with an authenticated transaction");
-    let decoded =
-        FaultInstructionEvidenceV1::decode(&canonical).expect("canonical device-replay evidence");
+    .unwrap_or_else(|error| panic!("device replay with an authenticated transaction: {error}"));
+    let decoded = FaultInstructionEvidenceV1::decode(&canonical)
+        .unwrap_or_else(|error| panic!("canonical device-replay evidence: {error}"));
     assert_eq!(
         FaultInstructionPortIoEvidenceV1::decode(&decoded.detail)
-            .expect("canonical nested transcript")
+            .unwrap_or_else(|error| panic!("canonical nested transcript: {error}"))
             .entries[0]
             .port,
         0xe9
@@ -979,7 +930,7 @@ fn hardware_exception_bridge_requires_manifest_identity_and_real_state_transitio
     };
     let manifest = complete_x86_hardware_manifest(row.clone())
         .encode()
-        .expect("valid x86 hardware manifest");
+        .unwrap_or_else(|error| panic!("valid x86 hardware manifest: {error}"));
     let expectation = ExceptionCommandExpectation {
         binding_hash: [12; 32],
         generation: 4,
@@ -1105,7 +1056,7 @@ fn hardware_ecc_bridge_requires_exact_ghes_record_transition() {
     };
     let manifest = complete_aarch64_hardware_manifest(row.clone())
         .encode()
-        .expect("valid GHES manifest");
+        .unwrap_or_else(|error| panic!("valid GHES manifest: {error}"));
     let mut raw = vec![0_u8; 1376];
     raw[..8].copy_from_slice(b"CRUCHWE1");
     raw[8..10].copy_from_slice(&1_u16.to_le_bytes());

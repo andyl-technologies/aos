@@ -386,6 +386,7 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
     assert_eq!(pending_outputs[0].source, destination);
     assert_eq!(pending_outputs[0].destination, source);
     assert!(pending_outputs[0].route.is_some());
+    let committed_frontier = VirtualTime { ticks: 73 };
     interceptor
         .observations
         .lock()
@@ -407,7 +408,7 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
         )
         .unwrap_or_else(|error| panic!("test observation should append: {error}"));
     let inconsistent_journal_error = interceptor
-        .checkpoint(&scheduler, &pending_outputs, &mut nodes)
+        .checkpoint(&scheduler, committed_frontier, &pending_outputs, &mut nodes)
         .err()
         .unwrap_or_else(|| panic!("checkpoint should reject an inconsistent journal"));
     assert!(
@@ -424,7 +425,7 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
     assert_eq!(drained.len(), 1);
     drop(journal);
     let checkpoint = interceptor
-        .checkpoint(&scheduler, &pending_outputs, &mut nodes)
+        .checkpoint(&scheduler, committed_frontier, &pending_outputs, &mut nodes)
         .unwrap_or_else(|error| panic!("network checkpoint should encode: {error}"));
     let restored_scenario = SchedulerLivenessScenario::from_runnable_world(
         "production-availability-drop",
@@ -450,6 +451,7 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
             ProductionNetworkStateCheckpoint::new(
                 ContentHash::from_bytes(b"unauthenticated-network-state"),
                 scheduler.network_checkpoint(),
+                committed_frontier,
                 pending_outputs.clone(),
                 b"{}".to_vec(),
             ),
@@ -521,33 +523,56 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
     );
     assert!(rejected_pending.is_empty());
     let mut restored_pending = Vec::new();
-    let restored_interceptor = ProductionFaultNetworkInterceptor::restore(
-        down_plan(segment),
-        Some(Arc::new(NoArtifacts)),
-        ContentHash::from_bytes(b"production-availability-drop"),
-        checkpoint.clone(),
-        super::super::fault_implementation::test_host_manifests(),
-        &mut nodes,
-        world.fault_topology().clone(),
-        world.links().to_vec(),
-        &mut restored_scheduler,
-        &mut restored_pending,
-        Arc::new(Mutex::new(
-            super::storage_faults::ProductionFaultObservationJournal::default(),
-        )),
-    )
-    .unwrap_or_else(|error| panic!("network continuation should restore: {error}"));
+    let (restored_interceptor, restored_committed_frontier) =
+        ProductionFaultNetworkInterceptor::restore(
+            down_plan(segment),
+            Some(Arc::new(NoArtifacts)),
+            ContentHash::from_bytes(b"production-availability-drop"),
+            checkpoint.clone(),
+            super::super::fault_implementation::test_host_manifests(),
+            &mut nodes,
+            world.fault_topology().clone(),
+            world.links().to_vec(),
+            &mut restored_scheduler,
+            &mut restored_pending,
+            Arc::new(Mutex::new(
+                super::storage_faults::ProductionFaultObservationJournal::default(),
+            )),
+        )
+        .unwrap_or_else(|error| panic!("network continuation should restore: {error}"));
+    assert_eq!(restored_committed_frontier, committed_frontier);
     let restored_checkpoint = restored_interceptor
-        .checkpoint(&restored_scheduler, &restored_pending, &mut nodes)
+        .checkpoint(
+            &restored_scheduler,
+            restored_committed_frontier,
+            &restored_pending,
+            &mut nodes,
+        )
         .unwrap_or_else(|error| panic!("restored checkpoint should encode: {error}"));
     assert_eq!(restored_checkpoint.id(), checkpoint.id());
     assert_eq!(restored_pending, pending_outputs);
     let mut divergent_pending = pending_outputs.clone();
     divergent_pending[0].payload.push(0xff);
     let divergent = interceptor
-        .checkpoint(&scheduler, &divergent_pending, &mut nodes)
+        .checkpoint(
+            &scheduler,
+            committed_frontier,
+            &divergent_pending,
+            &mut nodes,
+        )
         .unwrap_or_else(|error| panic!("divergent checkpoint should encode: {error}"));
     assert_ne!(checkpoint.id(), divergent.id());
+    let divergent_frontier = interceptor
+        .checkpoint(
+            &scheduler,
+            VirtualTime {
+                ticks: committed_frontier.ticks + 1,
+            },
+            &pending_outputs,
+            &mut nodes,
+        )
+        .unwrap_or_else(|error| panic!("divergent frontier should encode: {error}"));
+    assert_ne!(checkpoint.id(), divergent_frontier.id());
     let after = scheduler
         .drop_network_inflight_for_route(&source, &destination)
         .unwrap_or_else(|error| panic!("test route should remain valid: {error}"));

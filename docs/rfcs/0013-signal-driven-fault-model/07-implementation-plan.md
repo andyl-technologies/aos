@@ -176,7 +176,13 @@ executable merely because a generic loss or latency approximation exists.
   including exact packet/frame alignment modes and fail-loud ambiguity.
 - [x] **T-NET-10** Provide isolated, overlap, shared-cause, mobility revisit,
   queue conservation, checkpoint, search, and both replay tests for every
-  executable network effect and every supported network structure.
+  executable network effect and every supported network structure. Exact
+  fresh-process checkpoint tests also preserve both shared-memory rings and the
+  router, host-consumer, and plugin-producer sequence cursors; no plugin-local
+  transport counter may restart during restore. Exact restore accepts QEMU's
+  acknowledged `cont` transition without issuing a status query that can be
+  trapped behind the restored plugin barrier; the first scheduler-authorized
+  bounded step supplies the execution proof.
 
 ## 7.6 Complete storage and 9p adapter workstream
 
@@ -373,6 +379,12 @@ produce live patched-QEMU architectural or device evidence.
   active transformed clocks and clean up wander timers, and prove a real
   two-node network world advances after fresh-process checkpoint restore with
   an empty fault plan.
+- [x] **T-QEMU-0084** Implement
+  [`crucible-exact-restore-network-announcement`](14-qemu-fault-patches/35-exact-restore-network-announcement.md):
+  suppress virtio-net's migration-only guest-announcement timer during an exact
+  Crucible VMState load, leave ordinary QEMU migration unchanged, and prove the
+  fresh-process two-node world produces the same packet and fault-decision
+  continuation as uninterrupted execution.
 - [x] **T-QEMU-0060** Implement
   [`crucible-block-typed-errors`](14-qemu-fault-patches/14-block-typed-errors.md):
   the closed block result ABI, exact Linux errno translation, malformed-result

@@ -350,6 +350,23 @@ where
         Ok(complete)
     }
 
+    /// Resumes guest execution and returns after QEMU acknowledges `cont`.
+    ///
+    /// This narrower operation is for an exact restore whose simulator may
+    /// immediately park on the plugin barrier. A follow-up QMP query would then
+    /// create an ordering cycle: the query cannot run until the scheduler
+    /// receives the restored node and publishes its next ceiling. The `cont`
+    /// reply itself is emitted only after QEMU accepts the run-state change;
+    /// the first bounded node step provides the subsequent execution proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the command cannot be written, its response
+    /// cannot be decoded, or QEMU rejects the run-state transition.
+    pub(crate) fn cont_acknowledged(&mut self) -> Result<QmpCommandComplete, QmpError> {
+        self.send_command(QmpCommand::Cont)
+    }
+
     /// Completes an authenticated terminal lifecycle transition.
     ///
     /// This dedicated command never resumes guest execution. Patched QEMU

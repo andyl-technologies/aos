@@ -836,6 +836,72 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
 }
 
 impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
+    fn checkpoint_network_transport(
+        &mut self,
+    ) -> Result<crate::QemuNetworkTransportCheckpoint, QemuNodeChannelError> {
+        let inbound = self
+            .view
+            .inbound_ring
+            .snapshot(self.view.inbound_entries)
+            .map_err(|error| {
+                QemuNodeChannelError::new("checkpoint network inbound ring", error.to_string())
+            })?;
+        let outbound = self
+            .view
+            .outbound_ring
+            .snapshot(self.view.outbound_entries)
+            .map_err(|error| {
+                QemuNodeChannelError::new("checkpoint network outbound ring", error.to_string())
+            })?;
+        Ok(crate::QemuNetworkTransportCheckpoint {
+            inbound,
+            outbound,
+            next_router_inbound_sequence: self.next_router_inbound_sequence,
+            next_host_outbound_sequence: 0,
+            next_plugin_outbound_sequence: 0,
+        })
+    }
+
+    fn restore_network_transport(
+        &mut self,
+        checkpoint: &crate::QemuNetworkTransportCheckpoint,
+    ) -> Result<(), QemuNodeChannelError> {
+        let prior_inbound = self
+            .view
+            .inbound_ring
+            .snapshot(self.view.inbound_entries)
+            .map_err(|error| {
+                QemuNodeChannelError::new("snapshot prior network inbound ring", error.to_string())
+            })?;
+        self.view
+            .inbound_ring
+            .restore(self.view.inbound_entries, &checkpoint.inbound)
+            .map_err(|error| {
+                QemuNodeChannelError::new("restore network inbound ring", error.to_string())
+            })?;
+        if let Err(error) = self
+            .view
+            .outbound_ring
+            .restore(self.view.outbound_entries, &checkpoint.outbound)
+        {
+            self.view
+                .inbound_ring
+                .restore(self.view.inbound_entries, &prior_inbound)
+                .map_err(|rollback| {
+                    QemuNodeChannelError::new(
+                        "roll back network inbound ring",
+                        rollback.to_string(),
+                    )
+                })?;
+            return Err(QemuNodeChannelError::new(
+                "restore network outbound ring",
+                error.to_string(),
+            ));
+        }
+        self.next_router_inbound_sequence = checkpoint.next_router_inbound_sequence;
+        Ok(())
+    }
+
     fn current_icount(&mut self) -> Result<Icount, QemuNodeChannelError> {
         self.record(QemuQuantumOperation::ReadNodeReport);
         Ok(self.current_icount_from_slot())

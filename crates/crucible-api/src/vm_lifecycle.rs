@@ -1057,6 +1057,21 @@ pub fn build_production_vm_lifecycle_loop(
         if !source.world().links().is_empty() {
             launch = launch.with_shmem_network_mac(crucible::deterministic_node_mac_string(&vm.id));
         }
+        if let Some(target) = restore_target {
+            let next_sequence = u32::try_from(
+                target
+                    .snapshot
+                    .node_continuation()
+                    .next_plugin_network_output_sequence(),
+            )
+            .map_err(|_error| {
+                loop_factory_error(format!(
+                    "restored network TX sequence for `{}` exceeds the plugin ABI",
+                    vm.id.name
+                ))
+            })?;
+            launch = launch.with_network_tx_next_sequence(next_sequence);
+        }
         if restored_service_state != Some(ProductionNodeServiceState::PermanentlyFailed) {
             if let Some(block) =
                 block_binding_for_vm(source.world(), &vm.id, config.world_artifacts.as_ref())?
@@ -1326,85 +1341,97 @@ pub fn build_production_vm_lifecycle_loop(
     let storage_fault_observations = Arc::new(std::sync::Mutex::new(
         storage_faults::ProductionFaultObservationJournal::default(),
     ));
-    let (fault_runtime, fault_evaluation_cursor, network_interceptor, pending_network_outputs) =
-        if let Some(checkpoint) = &restore_checkpoint {
-            if checkpoint
-                .targets
-                .values()
-                .any(|target| target.fault_checkpoint.id() != checkpoint.fault_checkpoint.id())
-            {
-                return Err(loop_factory_error(
-                    "production exact checkpoint targets disagree on the fault continuation",
-                ));
-            }
-            for (node, target) in &checkpoint.targets {
-                let scheduler_time = scheduler.scheduler_time_for_node(node).map_err(|error| {
-                    loop_factory_error(format!(
-                        "read restored scheduler boundary for `{}`: {error}",
-                        node.name
-                    ))
-                })?;
-                if scheduler_time != target.scheduler_time {
-                    return Err(loop_factory_error(format!(
-                        "production exact checkpoint scheduler boundary differs for `{}`",
-                        node.name
-                    )));
-                }
-            }
-            let mut pending_outputs = Vec::new();
-            let interceptor = ProductionFaultNetworkInterceptor::restore(
-                signal_plan,
-                signal_artifacts,
-                scenario.id(),
-                checkpoint.fault_checkpoint.clone(),
-                host_fault_manifests.clone(),
-                &mut backends,
-                source.world().fault_topology().clone(),
-                source.world().links().to_vec(),
-                &mut scheduler,
-                &mut pending_outputs,
-                Arc::clone(&storage_fault_observations),
-            )
-            .map_err(|error| {
+    let (
+        fault_runtime,
+        fault_evaluation_cursor,
+        network_interceptor,
+        pending_network_outputs,
+        restored_committed_frontier,
+    ) = if let Some(checkpoint) = &restore_checkpoint {
+        if checkpoint
+            .targets
+            .values()
+            .any(|target| target.fault_checkpoint.id() != checkpoint.fault_checkpoint.id())
+        {
+            return Err(loop_factory_error(
+                "production exact checkpoint targets disagree on the fault continuation",
+            ));
+        }
+        for (node, target) in &checkpoint.targets {
+            let scheduler_time = scheduler.scheduler_time_for_node(node).map_err(|error| {
                 loop_factory_error(format!(
-                    "restore signal, network, and device continuation: {error}"
+                    "read restored scheduler boundary for `{}`: {error}",
+                    node.name
                 ))
             })?;
-            (
-                interceptor.shared_runtime(),
-                interceptor.shared_cursor(),
-                interceptor,
-                pending_outputs,
-            )
-        } else {
-            let mut runtime = ProductionFaultRuntime::new_with_search_overrides(
-                signal_plan,
-                signal_artifacts,
-                SignalBoundarySnapshot::default(),
-                scenario.id(),
-                host_fault_manifests,
-                &backends,
-                fault_search_overrides.clone(),
-            )
-            .map_err(|error| loop_factory_error(format!("admit signal fault runtime: {error}")))?;
-            if let Some(trace) = config.fault_replay.clone() {
-                runtime.install_replay(trace).map_err(|error| {
-                    loop_factory_error(format!("install signal fault replay: {error}"))
-                })?;
+            if scheduler_time != target.scheduler_time {
+                return Err(loop_factory_error(format!(
+                    "production exact checkpoint scheduler boundary differs for `{}`",
+                    node.name
+                )));
             }
-            let runtime = Arc::new(std::sync::Mutex::new(runtime));
-            let cursor: SharedProductionFaultEvaluationCursor = Arc::new(std::sync::Mutex::new(
-                ProductionFaultEvaluationCursor::default(),
-            ));
-            let interceptor = ProductionFaultNetworkInterceptor::with_shared_runtime(
-                Arc::clone(&runtime),
-                Arc::clone(&cursor),
-                Arc::clone(&storage_fault_observations),
-                source.world().fault_topology().clone(),
-                source.world().links().to_vec(),
-            );
-            (runtime, cursor, interceptor, Vec::new())
-        };
+        }
+        let mut pending_outputs = Vec::new();
+        let (interceptor, committed_frontier) = ProductionFaultNetworkInterceptor::restore(
+            signal_plan,
+            signal_artifacts,
+            scenario.id(),
+            checkpoint.fault_checkpoint.clone(),
+            host_fault_manifests.clone(),
+            &mut backends,
+            source.world().fault_topology().clone(),
+            source.world().links().to_vec(),
+            &mut scheduler,
+            &mut pending_outputs,
+            Arc::clone(&storage_fault_observations),
+        )
+        .map_err(|error| {
+            loop_factory_error(format!(
+                "restore signal, network, and device continuation: {error}"
+            ))
+        })?;
+        (
+            interceptor.shared_runtime(),
+            interceptor.shared_cursor(),
+            interceptor,
+            pending_outputs,
+            committed_frontier,
+        )
+    } else {
+        let mut runtime = ProductionFaultRuntime::new_with_search_overrides(
+            signal_plan,
+            signal_artifacts,
+            SignalBoundarySnapshot::default(),
+            scenario.id(),
+            host_fault_manifests,
+            &backends,
+            fault_search_overrides.clone(),
+        )
+        .map_err(|error| loop_factory_error(format!("admit signal fault runtime: {error}")))?;
+        if let Some(trace) = config.fault_replay.clone() {
+            runtime.install_replay(trace).map_err(|error| {
+                loop_factory_error(format!("install signal fault replay: {error}"))
+            })?;
+        }
+        let runtime = Arc::new(std::sync::Mutex::new(runtime));
+        let cursor: SharedProductionFaultEvaluationCursor = Arc::new(std::sync::Mutex::new(
+            ProductionFaultEvaluationCursor::default(),
+        ));
+        let interceptor = ProductionFaultNetworkInterceptor::with_shared_runtime(
+            Arc::clone(&runtime),
+            Arc::clone(&cursor),
+            Arc::clone(&storage_fault_observations),
+            source.world().fault_topology().clone(),
+            source.world().links().to_vec(),
+        );
+        (
+            runtime,
+            cursor,
+            interceptor,
+            Vec::new(),
+            VirtualTime::default(),
+        )
+    };
     let fault_replay_installed = config.fault_replay.is_some();
     let fault_search_overrides_installed = fault_runtime
         .lock()
@@ -1473,7 +1500,6 @@ pub fn build_production_vm_lifecycle_loop(
             })?;
     }
 
-    let committed_frontier = scheduler.frontier();
     let active_branch = restore_checkpoint.as_ref().map_or_else(
         || config.branch.clone(),
         |checkpoint| checkpoint.branch.clone(),
@@ -1484,7 +1510,7 @@ pub fn build_production_vm_lifecycle_loop(
             backends,
             network_interceptor,
             pending_network_outputs,
-            committed_frontier,
+            restored_committed_frontier,
         )
     } else {
         BackendQuantumLoop::with_network_output_interceptor(

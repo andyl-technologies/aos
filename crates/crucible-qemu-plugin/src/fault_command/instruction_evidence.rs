@@ -20,10 +20,9 @@ pub(super) fn track_instruction_result(
         match command.operation {
             NodeFaultOperationV1::Upsert => {
                 if let Some(prior) = active_bindings.insert(command.binding_hash, command_sequence)
+                    && prior != command_sequence
                 {
-                    if prior != command_sequence {
-                        commands.remove(&prior);
-                    }
+                    commands.remove(&prior);
                 }
             }
             NodeFaultOperationV1::Remove => {
@@ -711,7 +710,7 @@ pub(super) fn result_register_expectation(
         "replace" => {
             let value = hex_json(parameters.get("value"))?;
             let mut mask = vec![u8::MAX; width_bytes];
-            if row.width_bits % 8 != 0 {
+            if !row.width_bits.is_multiple_of(8) {
                 mask[width_bytes - 1] = (1_u8 << (row.width_bits % 8)) - 1;
             }
             (FaultRegisterMutationKindV1::Replace, mask, value)
@@ -766,7 +765,7 @@ pub(super) fn hex_json(
 }
 
 pub(super) fn hex_bytes(value: &str) -> Result<Vec<u8>, FaultCommandBridgeError> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err(FaultCommandBridgeError::InstructionEvidence);
     }
     value
@@ -787,14 +786,18 @@ pub(super) fn hex_bytes(value: &str) -> Result<Vec<u8>, FaultCommandBridgeError>
         .collect()
 }
 
+pub(super) struct RegisterEvidenceObservation<'a> {
+    pub(super) identity: &'a RegisterEvidenceIdentity,
+    pub(super) logical_icount_offset: u64,
+    pub(super) expected_raw_icount: u64,
+    pub(super) expected_model_phase: Option<u16>,
+    pub(super) expected_before: [u8; 32],
+    pub(super) expected_after: [u8; 32],
+}
+
 pub(super) fn translate_register_evidence(
     raw: &[u8],
-    identity: &RegisterEvidenceIdentity,
-    logical_icount_offset: u64,
-    expected_raw_icount: u64,
-    expected_model_phase: Option<u16>,
-    expected_before: [u8; 32],
-    expected_after: [u8; 32],
+    observation: RegisterEvidenceObservation<'_>,
     expectation: &RegisterMutationExpectation,
 ) -> Result<Vec<u8>, FaultCommandBridgeError> {
     const HEADER: usize = 160;
@@ -808,13 +811,15 @@ pub(super) fn translate_register_evidence(
     }
     let architecture = FaultCapabilityScope::from_u16(raw_u16(raw, 10)?)
         .map_err(|_source| FaultCommandBridgeError::RegisterEvidence)?;
-    if architecture != identity.architecture {
+    if architecture != observation.identity.architecture {
         return Err(FaultCommandBridgeError::RegisterEvidence);
     }
     let model_phase = raw_u16(raw, 12)?;
-    if expected_model_phase.is_some_and(|expected| expected != model_phase)
+    if observation
+        .expected_model_phase
+        .is_some_and(|expected| expected != model_phase)
         || model_phase != expectation.model_phase
-        || raw_u64(raw, 56)? != expected_raw_icount
+        || raw_u64(raw, 56)? != observation.expected_raw_icount
     {
         return Err(FaultCommandBridgeError::RegisterEvidence);
     }
@@ -846,7 +851,7 @@ pub(super) fn translate_register_evidence(
         return Err(FaultCommandBridgeError::RegisterEvidence);
     }
     let observed_icount = raw_u64(raw, 56)?
-        .checked_add(logical_icount_offset)
+        .checked_add(observation.logical_icount_offset)
         .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
     let before_start = HEADER;
     let after_start = before_start + before_len;
@@ -859,7 +864,8 @@ pub(super) fn translate_register_evidence(
         .try_into()
         .map_err(|_source| FaultCommandBridgeError::RegisterEvidence)?;
     let numeric_id = raw_u32(raw, 20)?;
-    let row = identity
+    let row = observation
+        .identity
         .rows
         .iter()
         .find(|row| row.numeric_id == numeric_id)
@@ -890,7 +896,7 @@ pub(super) fn translate_register_evidence(
         || model_phase == 0
         || model_phase > 64
         || row.model_phase_mask & (1_u64 << (model_phase - 1)) == 0
-        || (expected_model_phase.is_none()
+        || (observation.expected_model_phase.is_none()
             && row.capabilities & FAULT_REGISTER_CAPABILITY_IMPULSE == 0)
         || first_bit
             .checked_add(bit_count)
@@ -909,7 +915,8 @@ pub(super) fn translate_register_evidence(
         || baseline_fingerprint == [0; 32]
         || ((baseline_fingerprint != execution_fingerprint)
             != (raw[before_start..after_start] != raw[after_start..mask_start]))
-        || (expected_model_phase.is_none() && baseline_fingerprint == execution_fingerprint)
+        || (observation.expected_model_phase.is_none()
+            && baseline_fingerprint == execution_fingerprint)
     {
         return Err(FaultCommandBridgeError::RegisterEvidence);
     }
@@ -936,10 +943,10 @@ pub(super) fn translate_register_evidence(
         rr_current_vcpu: raw_u64(raw, 64)?,
         rr_cursor_position: raw_u64(raw, 72)?,
         rr_switch_quantum: raw_u64(raw, 80)?,
-        manifest_digest: identity.manifest_digest,
-        cpu_model_digest: identity.cpu_model_digest,
-        before_sha256: expected_before,
-        after_sha256: expected_after,
+        manifest_digest: observation.identity.manifest_digest,
+        cpu_model_digest: observation.identity.cpu_model_digest,
+        before_sha256: observation.expected_before,
+        after_sha256: observation.expected_after,
         execution_fingerprint_sha256: execution_fingerprint,
         before: raw[before_start..after_start].to_vec(),
         after: raw[after_start..mask_start].to_vec(),
@@ -1122,12 +1129,14 @@ pub(super) fn translate_instruction_evidence(
         ) => {
             let translated = translate_register_evidence(
                 raw_detail,
-                register_identity,
-                logical_icount_offset,
-                event.observed_icount,
-                Some(12),
-                event.before_hash,
-                event.after_hash,
+                RegisterEvidenceObservation {
+                    identity: register_identity,
+                    logical_icount_offset,
+                    expected_raw_icount: event.observed_icount,
+                    expected_model_phase: Some(12),
+                    expected_before: event.before_hash,
+                    expected_after: event.after_hash,
+                },
                 register,
             )?;
             if !(0..destination_count)

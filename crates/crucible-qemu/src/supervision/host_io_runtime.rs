@@ -225,8 +225,9 @@ impl QemuLiveHostIoRuntime {
     ///
     /// # Errors
     ///
-    /// Returns [`QemuLiveBlockIoServicerError`] when the device's remote-mutation
-    /// notification channel is poisoned or was already attached to a runtime.
+    /// Returns [`crate::QemuLiveBlockIoServicerError`] when the device's
+    /// remote-mutation notification channel is poisoned or was already attached
+    /// to a runtime.
     pub fn with_block_servicer(
         mut self,
         servicer: QemuLiveBlockIoServicer,
@@ -500,7 +501,7 @@ impl QemuLiveHostIoRuntime {
             )
         })?;
         let attempts = bounded_poll_attempts(remaining, self.poll_interval);
-        let mut last_observed_ack = None;
+        let mut last_observed_state = None;
         let mut boundary_acknowledged = false;
         let expected_idle_wake_icount = if snapshot.status == STATUS_IDLE {
             snapshot.idle_wake_icount
@@ -514,11 +515,19 @@ impl QemuLiveHostIoRuntime {
                 .node_slot(self.vm_slot)
                 .map_err(map_slot_error)?
                 .snapshot();
-            last_observed_ack = Some(observed.control_boundary_ack);
             let block_progress = self.service_block_io(&observed)?;
             let ninep_progress = self.service_ninep_io(&observed)?;
             let accelerator_progress = self.service_accelerator_io(&observed)?;
-            if block_progress || ninep_progress || accelerator_progress {
+            let device_progress = block_progress || ninep_progress || accelerator_progress;
+            last_observed_state = Some((
+                observed.control_boundary_ack,
+                observed.current_icount,
+                observed.idle_wake_icount,
+                observed.status,
+                observed.device_io_active,
+                device_progress,
+            ));
+            if device_progress {
                 self.publish_device_completion_deadline()?;
             }
             if control_boundary_request_is_acknowledged(request, &observed) {
@@ -534,7 +543,7 @@ impl QemuLiveHostIoRuntime {
                 boundary_acknowledged,
                 snapshot.current_icount,
                 expected_idle_wake_icount,
-                block_progress || ninep_progress || accelerator_progress,
+                device_progress,
                 &observed,
             ) {
                 return Ok(());
@@ -553,8 +562,14 @@ impl QemuLiveHostIoRuntime {
         Err(QemuAsyncDriverRuntimeError::new(
             "acknowledge completed-quantum clamp",
             format!(
-                "QEMU did not publish the post-device control boundary within {remaining:?}: requested token {request}, last observed token {}",
-                last_observed_ack.map_or_else(|| String::from("none"), |ack| ack.to_string())
+                "QEMU did not publish the post-device control boundary within {remaining:?}: requested token {request}, expected current icount {}, expected idle wake icount {expected_idle_wake_icount}, last observation {}",
+                snapshot.current_icount,
+                last_observed_state.map_or_else(
+                    || String::from("none"),
+                    |(ack, current, idle_wake, status, device_active, device_progress)| format!(
+                        "token {ack}, current icount {current}, idle wake icount {idle_wake}, status {status}, device I/O active {device_active}, device progress {device_progress}"
+                    ),
+                )
             ),
         ))
     }

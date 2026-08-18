@@ -177,6 +177,25 @@ impl QemuPluginIpcControlChannel for ScriptedPluginControl {
 }
 
 impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
+    fn checkpoint_network_transport(
+        &mut self,
+    ) -> Result<crate::QemuNetworkTransportCheckpoint, QemuNodeChannelError> {
+        Ok(crate::QemuNetworkTransportCheckpoint {
+            inbound: crucible_shmem::SpscRingSnapshot { frames: Vec::new() },
+            outbound: crucible_shmem::SpscRingSnapshot { frames: Vec::new() },
+            next_router_inbound_sequence: 0,
+            next_host_outbound_sequence: 0,
+            next_plugin_outbound_sequence: 0,
+        })
+    }
+
+    fn restore_network_transport(
+        &mut self,
+        _checkpoint: &crate::QemuNetworkTransportCheckpoint,
+    ) -> Result<(), QemuNodeChannelError> {
+        Ok(())
+    }
+
     fn coverage_enabled(&self) -> bool {
         self.coverage_enabled
     }

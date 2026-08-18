@@ -146,6 +146,7 @@ impl QemuVmSnapshot {
             console_observation_boundary: checkpoint.virtual_time,
             pending_preemption: None,
             pending_network_outputs: Vec::new(),
+            network_transport: crate::QemuNetworkTransportCheckpoint::empty(),
             next_fault_command_sequence: 2,
             next_fault_event_sequence: 1,
         };

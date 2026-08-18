@@ -4,7 +4,7 @@
 //! `-plugin` shared-object path:
 //!
 //! ```text
-//! -plugin /nix/store/.../crucible-qemu-plugin.so,simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,whitebox=off,coverage=off
+//! -plugin /nix/store/.../crucible-qemu-plugin.so,simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,whitebox=off,coverage=off
 //! ```
 //!
 //! This module owns only the safe, typed parsing contract. The FFI registration
@@ -33,6 +33,8 @@ pub const PLUGIN_ARG_SLOT: &str = "slot";
 pub const PLUGIN_ARG_FAULT_NODE_HASH: &str = "fault_node_hash";
 /// The required nonzero host-supervised process generation.
 pub const PLUGIN_ARG_PROCESS_GENERATION: &str = "process_generation";
+/// The required next sequence for the plugin-owned network TX ring.
+pub const PLUGIN_ARG_NETWORK_TX_NEXT_SEQ: &str = "network_tx_next_seq";
 /// The optional pre-inherited shared-memory fd argument key.
 pub const PLUGIN_ARG_SHMEMFD: &str = "shmemfd";
 /// The optional pre-inherited wake fd argument key.
@@ -80,6 +82,7 @@ pub struct PluginArgs {
     slot: u32,
     fault_node_hash: [u8; 32],
     process_generation: u64,
+    network_tx_next_seq: u32,
     inherited_fds: Option<PluginInheritedFds>,
     whitebox: PluginSwitch,
     whitebox_setup: Option<WhiteboxSetupAttestation>,
@@ -106,6 +109,7 @@ impl PluginArgs {
         let slot = parse_required_u32(&parsed, PLUGIN_ARG_SLOT)?;
         let fault_node_hash = parse_required_hash(&parsed, PLUGIN_ARG_FAULT_NODE_HASH)?;
         let process_generation = parse_required_process_generation(&parsed)?;
+        let network_tx_next_seq = parse_required_u32(&parsed, PLUGIN_ARG_NETWORK_TX_NEXT_SEQ)?;
         let whitebox = parse_optional_switch(&parsed, PLUGIN_ARG_WHITEBOX)?;
         let whitebox_setup = whitebox::parse(&parsed, whitebox)?;
         let app_random = app_random::parse(&parsed, whitebox)?;
@@ -123,6 +127,7 @@ impl PluginArgs {
             slot,
             fault_node_hash,
             process_generation,
+            network_tx_next_seq,
             inherited_fds,
             whitebox,
             whitebox_setup,
@@ -144,6 +149,12 @@ impl PluginArgs {
     #[must_use]
     pub const fn slot(&self) -> u32 {
         self.slot
+    }
+
+    /// Returns the authenticated next network TX sequence for this process.
+    #[must_use]
+    pub const fn network_tx_next_seq(&self) -> u32 {
+        self.network_tx_next_seq
     }
 
     /// Returns the exact fault target identity authenticated for this process.
@@ -600,6 +611,7 @@ fn is_known_key(key: &str) -> bool {
             | PLUGIN_ARG_SLOT
             | PLUGIN_ARG_FAULT_NODE_HASH
             | PLUGIN_ARG_PROCESS_GENERATION
+            | PLUGIN_ARG_NETWORK_TX_NEXT_SEQ
             | PLUGIN_ARG_SHMEMFD
             | PLUGIN_ARG_WAKEFD
             | PLUGIN_ARG_WHITEBOX

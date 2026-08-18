@@ -531,8 +531,31 @@ in schema order and arrays in canonical or semantic order as appropriate.
 
 ## 9.10 Network adapter checkpoint encoding
 
-Network adapter checkpoint semantic version 2 encodes every map with a
-non-string key as an array of key/value entry pairs in strict key order. Nested
-connection tables apply the same rule at both levels. Restore rejects duplicate
-or noncanonical entry order; version 1 checkpoints are not accepted through a
-compatibility or legacy decoding path.
+Network adapter checkpoint semantic version 7 encodes the evaluation
+coordinate, per-coordinate and journal sequences, observation journal, token
+buckets, queues, burst state, state machines, connection tables, shared-medium
+ledgers, backpressure, custody queues, contact-service reservations, and all
+boundary state. Every map with a non-string key is an array of key/value entry
+pairs in strict key order. Nested connection tables apply the same rule at both
+levels. Restore rejects duplicate or noncanonical entry order, inconsistent
+sequence joins, broken reservation references, and every exceeded bound. No
+earlier checkpoint version is accepted through a compatibility or legacy
+decoding path.
+
+The enclosing production fault-runtime checkpoint is version 3 and binds the
+network adapter bytes to the scheduler network checkpoint, committed scheduler
+frontier, pending routed frames, live QEMU node snapshots, and the canonical
+network-state digest. The QEMU node-continuation checkpoint is independently
+version 3. For each node it captures both shared-memory network rings, the next
+router-to-plugin producer sequence, the next host-consumer sequence for the
+plugin-to-router ring, and the next plugin-producer sequence after all live
+outbound frames. Restore requires the live outbound frames to form the exact
+contiguous sequence interval between those two cursors. A fresh plugin process
+receives the authenticated producer cursor as a required launch argument before
+registering its TX callback; it cannot reset plugin-local sequence state to
+zero. Neither codec accepts an older version or synthesizes an omitted cursor.
+After restoring these cursors, the host accepts QEMU's acknowledged `cont`
+transition and publishes the next scheduler ceiling before requiring further
+QMP progress. An idle restored simulator may park on the plugin barrier
+immediately after `cont`, so a pre-ceiling `query-status` would form a control
+ordering cycle. The first bounded node step is the required execution proof.

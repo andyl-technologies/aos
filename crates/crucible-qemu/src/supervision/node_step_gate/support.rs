@@ -341,6 +341,7 @@ pub(super) fn live_node_plugin_config(
 fn live_node_plugin_base(config: &QemuLiveNodeStepGateConfig) -> QemuLaunchPluginConfig {
     QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
         .with_process_generation(config.process_generation)
+        .with_network_tx_next_sequence(config.network_tx_next_sequence)
         .with_coverage(config.coverage)
         .with_fingerprint(config.fingerprint)
 }

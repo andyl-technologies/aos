@@ -311,6 +311,7 @@ pub(super) fn production_checkpoint_identity(
                     }
                 })?,
             )?;
+            material.extend_from_slice(&network_state.committed_frontier.ticks.to_be_bytes());
             let pending_output_count =
                 u64::try_from(network_state.pending_outputs.len()).map_err(|_| {
                     FaultResourceLimitError::Representation {

@@ -133,7 +133,7 @@ async fn interactive_and_scripted_same_schedule_reproduce_equivalently() {
 
 async fn drive_pause_with_control(seed: Seed) -> Vec<ReproductionCommandRecord> {
     let mut control_plane = lifecycle_control_plane();
-    let session = create_paused_session(&mut control_plane, seed).await;
+    let session = create_running_session(&mut control_plane, seed).await;
     let control = control_plane
         .streaming_session(session)
         .unwrap_or_else(|error| panic!("streaming session should exist: {error}"))
@@ -154,7 +154,7 @@ async fn drive_pause_with_control(seed: Seed) -> Vec<ReproductionCommandRecord> 
 
 async fn drive_pause_with_send(seed: Seed) -> Vec<ReproductionCommandRecord> {
     let mut control_plane = lifecycle_control_plane();
-    let session = create_paused_session(&mut control_plane, seed).await;
+    let session = create_running_session(&mut control_plane, seed).await;
     let paused = control_plane
         .send_streaming_command(SendRequest::new(session, 1, SessionCommand::Pause))
         .await
@@ -168,18 +168,18 @@ async fn drive_pause_with_send(seed: Seed) -> Vec<ReproductionCommandRecord> {
     commands
 }
 
-async fn create_paused_session(
+async fn create_running_session(
     control_plane: &mut LifecycleControlPlane<BoundaryLoop, LifecycleLoopFactory<BoundaryLoop>>,
     seed: Seed,
 ) -> SessionRef {
     let created = control_plane
-        .create_session(CreateSessionRequest::scenario_ref(
-            "api-reproduction-context-scenario",
-            seed,
-        ))
+        .create_session(
+            CreateSessionRequest::scenario_ref("api-reproduction-context-scenario", seed)
+                .with_start_paused(false),
+        )
         .await
-        .unwrap_or_else(|error| panic!("create paused session should start actor: {error}"));
-    assert_eq!(created.state, LiveStateKind::Paused);
+        .unwrap_or_else(|error| panic!("create running session should start actor: {error}"));
+    assert_eq!(created.state, LiveStateKind::Running);
     created.session
 }
 

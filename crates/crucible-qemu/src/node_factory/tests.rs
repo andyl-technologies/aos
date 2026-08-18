@@ -185,7 +185,6 @@ fn factory_restores_vmstate_before_exposing_exact_snapshot_control() -> Result<(
         r#"{"return":{}}"#,
         r#"{"return":{"running":false,"status":"paused"}}"#,
         r#"{"return":{}}"#,
-        r#"{"return":{"running":true,"status":"running"}}"#,
         r#"{"return":{}}"#,
     ]);
     let qmp = QemuQmpVmStateControlChannel::connect(qmp_stream)?;
@@ -200,6 +199,7 @@ fn factory_restores_vmstate_before_exposing_exact_snapshot_control() -> Result<(
         console_observation_boundary: VirtualTime { ticks: 37 },
         pending_preemption: None,
         pending_network_outputs: Vec::new(),
+        network_transport: crate::QemuNetworkTransportCheckpoint::empty(),
         next_fault_command_sequence: 11,
         next_fault_event_sequence: 7,
     };
@@ -272,10 +272,6 @@ fn factory_restores_vmstate_before_exposing_exact_snapshot_control() -> Result<(
     assert_eq!(execute_name(json_line(&lines, 8)), Some(QMP_CONT_COMMAND));
     assert_eq!(
         execute_name(json_line(&lines, 9)),
-        Some(QMP_QUERY_STATUS_COMMAND)
-    );
-    assert_eq!(
-        execute_name(json_line(&lines, 10)),
         Some(QMP_QUIT_COMMAND_NAME)
     );
 
@@ -450,7 +446,6 @@ fn factory_restores_baked_genesis_without_oracle_admission() -> Result<(), Box<d
         r#"{"return":{}}"#,
         r#"{"return":{"running":false,"status":"paused"}}"#,
         r#"{"return":{}}"#,
-        r#"{"return":{"running":true,"status":"running"}}"#,
         r#"{"return":{}}"#,
     ]);
     let qmp = QemuQmpVmStateControlChannel::connect(qmp_stream)?;
@@ -512,10 +507,6 @@ fn factory_restores_baked_genesis_without_oracle_admission() -> Result<(), Box<d
     assert_eq!(execute_name(json_line(&lines, 8)), Some(QMP_CONT_COMMAND));
     assert_eq!(
         execute_name(json_line(&lines, 9)),
-        Some(QMP_QUERY_STATUS_COMMAND)
-    );
-    assert_eq!(
-        execute_name(json_line(&lines, 10)),
         Some(QMP_QUIT_COMMAND_NAME)
     );
 

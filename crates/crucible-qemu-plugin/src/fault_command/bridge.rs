@@ -722,12 +722,14 @@ impl FaultCommandBridge {
                     .ok_or(FaultCommandBridgeError::RegisterEvidence)?;
                 translated_register = translate_register_evidence(
                     &payload,
-                    identity,
-                    logical_icount_offset,
-                    result.applied_icount,
-                    None,
-                    result.before_hash,
-                    result.after_hash,
+                    RegisterEvidenceObservation {
+                        identity,
+                        logical_icount_offset,
+                        expected_raw_icount: result.applied_icount,
+                        expected_model_phase: None,
+                        expected_before: result.before_hash,
+                        expected_after: result.after_hash,
+                    },
                     register_command
                         .as_ref()
                         .and_then(|command| command.mutation.as_ref())
@@ -796,10 +798,9 @@ impl FaultCommandBridge {
                             if let Some(prior) = self
                                 .active_register_bindings
                                 .insert(command.binding_hash, result.command_sequence)
+                                && prior != result.command_sequence
                             {
-                                if prior != result.command_sequence {
-                                    self.register_commands.remove(&prior);
-                                }
+                                self.register_commands.remove(&prior);
                             }
                         }
                         NodeFaultOperationV1::Remove => {
@@ -1063,13 +1064,15 @@ impl FaultCommandBridge {
                         .as_ref()
                         .ok_or(FaultCommandBridgeError::RegisterEvidence)?;
                     translate_register_evidence(
-                        &payload,
-                        identity,
-                        logical_icount_offset,
-                        event.observed_icount,
-                        Some(event.model_phase),
-                        event.before_hash,
-                        event.after_hash,
+                        payload,
+                        RegisterEvidenceObservation {
+                            identity,
+                            logical_icount_offset,
+                            expected_raw_icount: event.observed_icount,
+                            expected_model_phase: Some(event.model_phase),
+                            expected_before: event.before_hash,
+                            expected_after: event.after_hash,
+                        },
                         register_command
                             .as_ref()
                             .and_then(|command| command.mutation.as_ref())
@@ -1080,10 +1083,10 @@ impl FaultCommandBridge {
                         .as_ref()
                         .ok_or(FaultCommandBridgeError::InstructionEvidence)?;
                     if instruction_terminal {
-                        translate_terminal_instruction_evidence(&payload, &event, command)?
+                        translate_terminal_instruction_evidence(payload, &event, command)?
                     } else {
                         translate_instruction_evidence(
-                            &payload,
+                            payload,
                             self.instruction_evidence_identity
                                 .as_ref()
                                 .ok_or(FaultCommandBridgeError::InstructionEvidence)?,
@@ -1101,7 +1104,7 @@ impl FaultCommandBridge {
                         .ok_or(FaultCommandBridgeError::ExceptionEvidence)?;
                     if payload.len() == 648 {
                         translate_hardware_exception_evidence(
-                            &payload,
+                            payload,
                             self.hardware_error_manifest_payload
                                 .as_deref()
                                 .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?,
@@ -1110,7 +1113,7 @@ impl FaultCommandBridge {
                         )?
                     } else {
                         translate_exception_evidence(
-                            &payload,
+                            payload,
                             self.instruction_evidence_identity
                                 .as_ref()
                                 .ok_or(FaultCommandBridgeError::ExceptionEvidence)?,
@@ -1121,7 +1124,7 @@ impl FaultCommandBridge {
                     }
                 } else if event.command_kind == FaultCommandKind::MemoryEccEvent as u16 {
                     translate_hardware_ecc_evidence(
-                        &payload,
+                        payload,
                         self.hardware_error_manifest_payload
                             .as_deref()
                             .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?,
@@ -1134,7 +1137,7 @@ impl FaultCommandBridge {
                     || event.command_kind == FaultCommandKind::ClockSourceState as u16
                 {
                     translate_clock_evidence(
-                        &payload,
+                        payload,
                         self.clock_manifest_payload
                             .as_deref()
                             .ok_or(FaultCommandBridgeError::ClockEvidence)?,
@@ -1152,7 +1155,7 @@ impl FaultCommandBridge {
                         || value == FaultCommandKind::AcceleratorService as u16
                 ) {
                     translate_accelerator_evidence(
-                        &payload,
+                        payload,
                         &event,
                         self.accelerator_manifest_payload
                             .as_deref()
@@ -1200,10 +1203,10 @@ impl FaultCommandBridge {
                 payload_length: 0,
             };
             self.events.enqueue(header, &published_payload)?;
-            if let Some(command) = register_command {
-                if command.operation == NodeFaultOperationV1::Apply {
-                    self.register_commands.remove(&event.rule_command_sequence);
-                }
+            if let Some(command) = register_command
+                && command.operation == NodeFaultOperationV1::Apply
+            {
+                self.register_commands.remove(&event.rule_command_sequence);
             }
             if event.command_kind == FaultCommandKind::CpuException as u16 {
                 self.exception_commands.remove(&event.rule_command_sequence);

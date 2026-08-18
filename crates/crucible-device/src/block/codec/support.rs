@@ -81,7 +81,7 @@ pub enum BlockCodecError {
     /// The version byte does not match the supported ABI version.
     #[error("block ABI version mismatch: expected {expected}, found {found}")]
     VersionMismatch {
-        /// The supported [`BLOCK_ABI_VERSION`].
+        /// The supported [`crate::block::codec::BLOCK_ABI_VERSION`].
         expected: u8,
         /// The version byte found on the wire.
         found: u8,
