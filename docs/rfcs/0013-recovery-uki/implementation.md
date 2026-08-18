@@ -43,9 +43,11 @@ root unit to exist, and publishes the success marker. The generated verity unit
 and all `/var` consumers require the static guard, so parsing untrusted input
 does not authorize any storage effect. Validation deliberately does not depend
 on generator-time `/proc`, and the generator itself never publishes success.
-Rejection selects the passive failure target through the early generator
-directory. The wrapper pins `PATH` to the immutable AOS coreutils output because
-systemd's generator environment does not provide shell utility lookup.
+The validator accepts the exact root unit from any of systemd's three standard
+generator output priorities, since that placement is an upstream implementation
+detail, but it never accepts a different unit name. Rejection isolates to the
+passive failure target; that target explicitly permits isolation and conflicts
+with initrd root, switch-root, emergency, and rescue targets.
 `systemd-veritysetup@root`, `/var` unlock, and `/var` mounting all require the
 success marker. This makes the guard a storage dependency instead of a
 diagnostic race.
@@ -179,16 +181,22 @@ is widened.
 ### 2.2 Generator integration
 
 Run validation before upstream verity generator output becomes actionable.
-Preferred implementation order:
+Supported implementation shapes are:
 
 1. a small AOS wrapper installed at the normal generator path that validates
    then invokes the renamed upstream `systemd-veritysetup-generator`; or
 2. a focused downstream systemd patch that performs the same uniqueness and
-   tuple checks in the upstream parser.
+   tuple checks in the upstream parser; or
+3. an unmodified, sole upstream verity generator whose generated root unit is
+   statically ordered after and requires an AOS runtime guard. The guard runs
+   only after procfs and `/run` are authoritative, verifies that the exact root
+   unit was generated, validates the live command line, and publishes the
+   success marker last.
 
 A separate generator that merely races the upstream generator is not
-acceptable. A later oneshot remains useful for image-state reconciliation but
-is not the security boundary.
+acceptable. In the third shape, generated output is inert until the guard
+succeeds: the verity unit and every `/var` path carry hard dependencies on the
+guard rather than relying on generator order.
 
 Make `aos-var-crypt.service` require a successful normal-mode guard and add an
 explicit negative condition for `aos.recovery=1`.

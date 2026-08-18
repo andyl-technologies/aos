@@ -221,10 +221,25 @@ in {
           serviceConfig = {
             Type = "oneshot";
             RemainAfterExit = true;
+            StandardOutput = "journal+console";
+            StandardError = "journal+console";
           };
           script = ''
             set -eu
-            test -s /run/systemd/generator/systemd-veritysetup@root.service
+            generated_verity_unit=
+            for generator_dir in \
+              /run/systemd/generator.early \
+              /run/systemd/generator \
+              /run/systemd/generator.late; do
+              if test -s "$generator_dir/systemd-veritysetup@root.service"; then
+                generated_verity_unit="$generator_dir/systemd-veritysetup@root.service"
+                break
+              fi
+            done
+            if test -z "$generated_verity_unit"; then
+              echo "AOS boot identity: upstream verity generator produced no root unit" >&2
+              exit 1
+            fi
             ${pkgs.aos-boot-identity}/bin/aos-boot-identity /proc/cmdline
             ${pkgs.coreutils}/bin/mkdir -p /run/aos
             ${pkgs.coreutils}/bin/touch /run/aos/boot-identity-valid
@@ -287,6 +302,7 @@ in {
       description = "AOS boot identity rejected";
       unitConfig = {
         DefaultDependencies = "no";
+        AllowIsolate = true;
         Conflicts = "initrd-fs.target initrd-root-fs.target initrd-switch-root.target emergency.target rescue.target";
       };
     };
