@@ -367,8 +367,10 @@ uses the normal Secure Boot key/certificate but omits `pcrPrivateKey` and
 Produce `recovery-a.efi` and `recovery-b.efi` with release/recovery-ABI metadata
 and the signed recovery command line. The command line pins
 `console=ttyS0,115200` so the bounded interface works on headless systems
-without accepting a mutable console selector. Verify their PE signatures
-during the build.
+without accepting a mutable console selector. The recovery UI service binds
+directly to `/dev/ttyS0`; it does not depend on the synthetic `/dev/console`
+device unit, which is not guaranteed to appear in the recovery initrd. Verify
+their PE signatures during the build.
 
 ### 4.4 Image assembly
 
