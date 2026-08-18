@@ -135,10 +135,10 @@ pub struct FaultSystemCapabilityManifestV1 {
     pub vmstate_section_count: u32,
     /// SHA-256 of ordered NUL-terminated section names and big-endian versions.
     pub vmstate_sections_sha256: [u8; 32],
-    /// Immutable QEMU package build identity.
-    pub qemu_build_id: [u8; 32],
-    /// SHA-256 identity of the ordered carried QEMU patch bytes.
-    pub qemu_patch_series_hash: [u8; 32],
+    /// Immutable emulator package build identity.
+    pub emulator_build_id: [u8; 32],
+    /// SHA-256 identity of the ordered carried emulator patch bytes.
+    pub emulator_patch_series_hash: [u8; 32],
     /// SHA-256 identity of the generated shared-memory ABI header.
     pub shmem_header_hash: [u8; 32],
 }
@@ -155,8 +155,8 @@ impl FaultSystemCapabilityManifestV1 {
             || !(9..=10).contains(&self.vmstate_section_count)
             || [
                 self.vmstate_sections_sha256,
-                self.qemu_build_id,
-                self.qemu_patch_series_hash,
+                self.emulator_build_id,
+                self.emulator_patch_series_hash,
                 self.shmem_header_hash,
             ]
             .contains(&[0; 32])
@@ -171,8 +171,8 @@ impl FaultSystemCapabilityManifestV1 {
         output[20..24].copy_from_slice(&self.vmstate_format_version.to_le_bytes());
         output[24..28].copy_from_slice(&self.vmstate_section_count.to_le_bytes());
         output[32..64].copy_from_slice(&self.vmstate_sections_sha256);
-        output[64..96].copy_from_slice(&self.qemu_build_id);
-        output[96..128].copy_from_slice(&self.qemu_patch_series_hash);
+        output[64..96].copy_from_slice(&self.emulator_build_id);
+        output[96..128].copy_from_slice(&self.emulator_patch_series_hash);
         output[128..160].copy_from_slice(&self.shmem_header_hash);
         Ok(output)
     }
@@ -197,8 +197,8 @@ impl FaultSystemCapabilityManifestV1 {
             vmstate_format_version: u32_at(bytes, 20)?,
             vmstate_section_count: u32_at(bytes, 24)?,
             vmstate_sections_sha256: array_32(bytes, 32)?,
-            qemu_build_id: array_32(bytes, 64)?,
-            qemu_patch_series_hash: array_32(bytes, 96)?,
+            emulator_build_id: array_32(bytes, 64)?,
+            emulator_patch_series_hash: array_32(bytes, 96)?,
             shmem_header_hash: array_32(bytes, 128)?,
         };
         manifest.encode()?;

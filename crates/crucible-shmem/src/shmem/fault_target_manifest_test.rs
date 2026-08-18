@@ -440,8 +440,8 @@ fn fault_system_manifest_is_fixed_authenticated_and_fail_closed() {
         vmstate_format_version: 1,
         vmstate_section_count: 10,
         vmstate_sections_sha256: [1; 32],
-        qemu_build_id: [2; 32],
-        qemu_patch_series_hash: [3; 32],
+        emulator_build_id: [2; 32],
+        emulator_patch_series_hash: [3; 32],
         shmem_header_hash: [4; 32],
     };
     let encoded = manifest
@@ -458,7 +458,7 @@ fn fault_system_manifest_is_fixed_authenticated_and_fail_closed() {
         Err(FaultAbiError::HeaderLength)
     );
     let mut missing_identity = manifest;
-    missing_identity.qemu_build_id = [0; 32];
+    missing_identity.emulator_build_id = [0; 32];
     assert_eq!(
         missing_identity.encode(),
         Err(FaultAbiError::CapabilityInvariant)

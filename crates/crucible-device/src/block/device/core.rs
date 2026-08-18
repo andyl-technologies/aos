@@ -365,12 +365,12 @@ impl BlockDevice {
         transition: &ResolvedBlockControllerTransition,
         boundary_nanos: u64,
     ) -> Result<(), DeviceError> {
-        let qemu_virtual_limit = i64::MAX as u64;
-        if boundary_nanos > qemu_virtual_limit
-            || transition.recovery_nanos > qemu_virtual_limit
+        let emulator_virtual_limit = i64::MAX as u64;
+        if boundary_nanos > emulator_virtual_limit
+            || transition.recovery_nanos > emulator_virtual_limit
             || boundary_nanos
                 .checked_add(transition.recovery_nanos)
-                .is_none_or(|deadline| deadline > qemu_virtual_limit)
+                .is_none_or(|deadline| deadline > emulator_virtual_limit)
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "block transport recovery exceeds QEMU virtual-clock range",

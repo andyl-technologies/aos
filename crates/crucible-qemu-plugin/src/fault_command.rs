@@ -989,8 +989,11 @@ impl QemuFaultCommandApis {
             vmstate_format_version: raw.vmstate_format_version,
             vmstate_section_count: raw.vmstate_section_count,
             vmstate_sections_sha256: raw.vmstate_sections_sha256,
-            qemu_build_id: text_digest(qemu_build_id, "qemu_build_id")?,
-            qemu_patch_series_hash: text_digest(qemu_patch_series_hash, "qemu_patch_series_hash")?,
+            emulator_build_id: text_digest(qemu_build_id, "qemu_build_id")?,
+            emulator_patch_series_hash: text_digest(
+                qemu_patch_series_hash,
+                "qemu_patch_series_hash",
+            )?,
             shmem_header_hash: text_digest(shmem_header_hash, "shmem_header_hash")?,
         };
         FaultSystemCapabilityManifestV1::decode(
