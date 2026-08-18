@@ -4,7 +4,6 @@
   mkCargoPackage,
   fetchCargoVendor,
   bash,
-  binutils,
   git-minimal,
   nix,
   openssh,
@@ -50,7 +49,6 @@
   #   systemd       systemctl and systemd-measure; systemctl also captures
   #                 failed-unit diagnostics after activation reconciliation
   #   sbsigntools   sbverify for image signature verification
-  #   binutils      objcopy for UKI section extraction
   #   zstd          pack-delta compression and store decompression
   #   util-linux    mount: scoped EFI System Partition remount transactions
   #   which         check_command_exists() preflight in the drain/sysroot path
@@ -59,7 +57,7 @@
   # scrubPhase keeps their store-path references in the wrappers and pulls them
   # into the runtime closure; without that, nuke-refs would rewrite these paths
   # to placeholders and the wrappers would point at nonexistent stores.
-  runtimeTools = [bash binutils nix sbsigntools systemd mtools qemu-img util-linux zstd which];
+  runtimeTools = [bash nix sbsigntools systemd mtools qemu-img util-linux zstd which];
   runtimeBinPath = lib.concatStringsSep ":" [
     (lib.makeBinPath runtimeTools)
     "${systemd}/lib/systemd"

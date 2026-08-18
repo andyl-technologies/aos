@@ -4643,7 +4643,7 @@ fn sha256_open_file(file: &mut fs::File, path: &Path) -> Result<String> {
 /// Builds a Secure Boot helper command resolved only through the wrapper's
 /// hermetic AOS runtime `PATH`.
 ///
-/// `pkgs.aos` includes AOS-built `sbsigntools`, `binutils`, and `systemd` in
+/// `pkgs.aos` includes AOS-built `sbsigntools` and `systemd` in
 /// that path. Internal verification must never consult `AOS_HOST_PATH`.
 fn sb_tool_command(program: &str) -> Command {
     Command::new(program)
@@ -5008,46 +5008,22 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 /// Read the SBAT component/generation table from a UKI's `.sbat` PE section.
 ///
-/// Dumps the section with `objcopy -O binary --only-section=.sbat` and
-/// parses the CSV: each non-empty, non-comment line is `component,generation`
+/// Reads the section from the PE section table and parses the CSV: each
+/// non-empty, non-comment line is `component,generation`
 /// (extra columns describing the upstream are ignored). Returns an empty
 /// vector when the binary carries no `.sbat` section.
 ///
 /// # Errors
 ///
-/// Returns an error if `objcopy` cannot be spawned or fails for a reason
-/// other than the section being absent, the dumped section is not valid
-/// UTF-8, or a generation field is not a non-negative integer.
+/// Returns an error if the PE section table is malformed, the section is not
+/// valid UTF-8, or a generation field is not a non-negative integer.
 fn extract_sbat_entries(uki: &Path) -> Result<Vec<SbatEntry>> {
-    let tmp = tempfile::Builder::new()
-        .prefix("aos-sbat-")
-        .tempfile()
-        .context("creating temp file for .sbat dump")?;
-    let output = sb_tool_command("objcopy")
-        .arg("-O")
-        .arg("binary")
-        .arg("--only-section=.sbat")
-        .arg(uki)
-        .arg(tmp.path())
-        .output()
-        .with_context(|| format!("running objcopy on {}", uki.display()))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // A missing section is not an error for our purposes.
-        if stderr.contains("can't dump section")
-            || stderr.contains("section '.sbat'")
-            || stderr.contains("no symbols")
-        {
-            return Ok(Vec::new());
-        }
-        bail!("objcopy on {} failed: {}", uki.display(), stderr.trim());
-    }
-    let raw = fs::read(tmp.path()).context("reading dumped .sbat section")?;
-    if raw.is_empty() {
+    let pe = fs::read(uki).with_context(|| format!("reading UKI {}", uki.display()))?;
+    let Some(raw) = pe_section(&pe, ".sbat")? else {
         return Ok(Vec::new());
-    }
-    let text = String::from_utf8(raw).context("decoding .sbat section as UTF-8")?;
-    parse_sbat_csv(&text)
+    };
+    let text = std::str::from_utf8(raw).context("decoding .sbat section as UTF-8")?;
+    parse_sbat_csv(text)
 }
 
 /// Parse the CSV body of a `.sbat` section into [`SbatEntry`] records.
@@ -5084,55 +5060,104 @@ fn parse_sbat_csv(text: &str) -> Result<Vec<SbatEntry>> {
     Ok(entries)
 }
 
-/// Dump a single PE section of `uki` to a fresh temp file with `objcopy`.
+/// Returns a named PE section's exact on-disk bytes.
 ///
-/// Returns the temp file holding the section bytes, or `Ok(None)` when the
-/// section is absent (or empty). The returned handle keeps the file alive;
-/// drop it to remove the temp file.
+/// PE section names are fixed-width eight-byte fields. UKI section names fit
+/// directly in that field, so string-table indirection is deliberately not
+/// accepted. Empty sections are treated as absent.
 ///
 /// # Errors
 ///
-/// Returns an error if `objcopy` cannot be spawned, or fails for a reason
-/// other than the section being absent.
-fn dump_pe_section(uki: &Path, section: &str) -> Result<Option<tempfile::NamedTempFile>> {
-    let tmp = tempfile::Builder::new()
+/// Returns an error if the PE/COFF headers, section table, or selected raw-data
+/// range is malformed, or if the image contains duplicate selected sections.
+fn pe_section<'a>(pe: &'a [u8], section: &str) -> Result<Option<&'a [u8]>> {
+    if section.is_empty() || section.len() > 8 || !section.is_ascii() {
+        bail!("PE section name must contain one to eight ASCII bytes");
+    }
+    let read_u16 = |off: usize| -> Option<u16> {
+        pe.get(off..off + 2)
+            .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+    };
+    let read_u32 = |off: usize| -> Option<u32> {
+        pe.get(off..off + 4)
+            .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    };
+
+    if read_u16(0) != Some(0x5a4d) {
+        bail!("not a PE image (missing MZ signature)");
+    }
+    let pe_off = read_u32(0x3c).context("reading e_lfanew")? as usize;
+    if read_u32(pe_off) != Some(0x0000_4550) {
+        bail!("missing PE signature");
+    }
+    let coff_off = pe_off
+        .checked_add(4)
+        .context("PE header offset overflowed")?;
+    let section_count = read_u16(coff_off + 2).context("reading PE section count")? as usize;
+    let optional_size = read_u16(coff_off + 16).context("reading optional-header size")? as usize;
+    let section_table = coff_off
+        .checked_add(20)
+        .and_then(|offset| offset.checked_add(optional_size))
+        .context("PE section-table offset overflowed")?;
+    let section_table_end = section_count
+        .checked_mul(40)
+        .and_then(|size| section_table.checked_add(size))
+        .context("PE section-table size overflowed")?;
+    if section_table_end > pe.len() {
+        bail!("PE section table extends past end of image");
+    }
+
+    let mut matched = false;
+    let mut selected = None;
+    for index in 0..section_count {
+        let header = section_table + index * 40;
+        let raw_name = &pe[header..header + 8];
+        let name_len = raw_name.iter().position(|byte| *byte == 0).unwrap_or(8);
+        if &raw_name[..name_len] != section.as_bytes() {
+            continue;
+        }
+        if matched {
+            bail!("PE image contains duplicate {section} sections");
+        }
+        matched = true;
+        let virtual_size =
+            read_u32(header + 8).context("reading PE section virtual size")? as usize;
+        let raw_size = read_u32(header + 16).context("reading PE section size")? as usize;
+        let raw_offset = read_u32(header + 20).context("reading PE section offset")? as usize;
+        let section_size = if virtual_size == 0 {
+            raw_size
+        } else {
+            virtual_size
+        };
+        if section_size == 0 {
+            continue;
+        }
+        if section_size > raw_size {
+            bail!("PE {section} virtual size exceeds its raw data");
+        }
+        let raw_end = raw_offset
+            .checked_add(section_size)
+            .context("PE section range overflowed")?;
+        selected = Some(
+            pe.get(raw_offset..raw_end)
+                .with_context(|| format!("PE {section} section extends past end of image"))?,
+        );
+    }
+    Ok(selected)
+}
+
+/// Copies a selected PE section to a temporary file for `systemd-measure`.
+fn dump_pe_section(pe: &[u8], section: &str) -> Result<Option<tempfile::NamedTempFile>> {
+    let Some(bytes) = pe_section(pe, section)? else {
+        return Ok(None);
+    };
+    let mut tmp = tempfile::Builder::new()
         .prefix("aos-uki-section-")
         .tempfile()
         .with_context(|| format!("creating temp file for {section} dump"))?;
-    let output = sb_tool_command("objcopy")
-        .arg("-O")
-        .arg("binary")
-        .arg(format!("--only-section={section}"))
-        .arg(uki)
-        .arg(tmp.path())
-        .output()
-        .with_context(|| {
-            format!(
-                "running objcopy --only-section={section} on {}",
-                uki.display()
-            )
-        })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("can't dump section")
-            || stderr.contains(section)
-            || stderr.contains("no symbols")
-        {
-            return Ok(None);
-        }
-        bail!(
-            "objcopy --only-section={section} on {} failed: {}",
-            uki.display(),
-            stderr.trim()
-        );
-    }
-    // objcopy emits an empty file for an absent section rather than failing.
-    let len = fs::metadata(tmp.path())
-        .with_context(|| format!("stat-ing dumped {section} section"))?
-        .len();
-    if len == 0 {
-        return Ok(None);
-    }
+    tmp.as_file_mut()
+        .write_all(bytes)
+        .with_context(|| format!("writing temporary {section} section"))?;
     Ok(Some(tmp))
 }
 
@@ -5168,8 +5193,8 @@ fn dump_pe_section(uki: &Path, section: &str) -> Result<Option<tempfile::NamedTe
 ///
 /// # Errors
 ///
-/// Returns an error if `objcopy` or `systemd-measure` is found but exits
-/// non-zero, or its output cannot be parsed into a PCR-11 digest.
+/// Returns an error if the UKI section table is malformed, `systemd-measure`
+/// exits non-zero, or its output cannot be parsed into a PCR-11 digest.
 pub(crate) fn extract_expected_pcr11(uki: &Path) -> Result<Option<String>> {
     // Section name -> systemd-measure flag, in sd-stub measurement order.
     // (systemd-measure applies its own canonical order internally, so the
@@ -5192,8 +5217,9 @@ pub(crate) fn extract_expected_pcr11(uki: &Path) -> Result<Option<String>> {
     // Hold the section temp files alive until systemd-measure has run.
     let mut held = Vec::new();
     let mut any = false;
+    let pe = fs::read(uki).with_context(|| format!("reading UKI {}", uki.display()))?;
     for (section, flag) in SECTIONS {
-        if let Some(tmp) = dump_pe_section(uki, section)? {
+        if let Some(tmp) = dump_pe_section(&pe, section)? {
             cmd.arg(format!("{flag}={}", tmp.path().display()));
             held.push(tmp);
             any = true;
@@ -5389,10 +5415,10 @@ fn find_ukis_in_store_path(store_path: &str) -> Result<Vec<(Option<UkiSlot>, Pat
 }
 
 fn validate_uki_slot_cmdline(uki: &Path, slot: UkiSlot) -> Result<()> {
-    let section = dump_pe_section(uki, ".cmdline")?
+    let pe = fs::read(uki).with_context(|| format!("reading UKI {}", uki.display()))?;
+    let section = pe_section(&pe, ".cmdline")?
         .with_context(|| format!("A/B UKI {} has no measured .cmdline section", uki.display()))?;
-    let bytes = std::fs::read(section.path())?;
-    let cmdline = String::from_utf8(bytes)
+    let cmdline = std::str::from_utf8(section)
         .with_context(|| format!("UKI {} .cmdline is not UTF-8", uki.display()))?;
     let cmdline = cmdline.trim_end_matches('\0');
     let suffix = match slot {
@@ -15983,6 +16009,52 @@ mod tests {
     #[test]
     fn parse_sbat_csv_rejects_non_numeric_generation() {
         assert!(parse_sbat_csv("aos,notanumber,AOS\n").is_err());
+    }
+
+    fn synthetic_pe_section(name: &[u8], virtual_size: u32, raw: &[u8]) -> Vec<u8> {
+        assert!(name.len() <= 8);
+        let pe_offset = 0x40_usize;
+        let optional_size = 112_usize;
+        let section_table = pe_offset + 4 + 20 + optional_size;
+        let raw_offset = section_table + 40;
+        let mut pe = vec![0_u8; raw_offset + raw.len()];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(pe_offset as u32).to_le_bytes());
+        pe[pe_offset..pe_offset + 4].copy_from_slice(&0x0000_4550_u32.to_le_bytes());
+        let coff = pe_offset + 4;
+        pe[coff + 2..coff + 4].copy_from_slice(&1_u16.to_le_bytes());
+        pe[coff + 16..coff + 18].copy_from_slice(&(optional_size as u16).to_le_bytes());
+        pe[coff + 20..coff + 22].copy_from_slice(&0x020b_u16.to_le_bytes());
+        pe[section_table..section_table + name.len()].copy_from_slice(name);
+        pe[section_table + 8..section_table + 12].copy_from_slice(&virtual_size.to_le_bytes());
+        pe[section_table + 16..section_table + 20]
+            .copy_from_slice(&(raw.len() as u32).to_le_bytes());
+        pe[section_table + 20..section_table + 24]
+            .copy_from_slice(&(raw_offset as u32).to_le_bytes());
+        pe[raw_offset..].copy_from_slice(raw);
+        pe
+    }
+
+    #[test]
+    fn pe_section_returns_virtual_bytes_without_file_padding() {
+        let pe = synthetic_pe_section(b".cmdline", 5, b"root\0padding");
+        assert_eq!(pe_section(&pe, ".cmdline").unwrap(), Some(&b"root\0"[..]));
+        assert!(pe_section(&pe, ".sbat").unwrap().is_none());
+    }
+
+    #[test]
+    fn pe_section_rejects_malformed_and_duplicate_ranges() {
+        let mut oversized = synthetic_pe_section(b".sbat", 9, b"short");
+        assert!(pe_section(&oversized, ".sbat").is_err());
+
+        let pe_offset = 0x40_usize;
+        let coff = pe_offset + 4;
+        let section_table = coff + 20 + 112;
+        oversized[section_table + 8..section_table + 12].copy_from_slice(&5_u32.to_le_bytes());
+        oversized[coff + 2..coff + 4].copy_from_slice(&2_u16.to_le_bytes());
+        let duplicate = oversized[section_table..section_table + 40].to_vec();
+        oversized.splice(section_table + 40..section_table + 40, duplicate);
+        assert!(pe_section(&oversized, ".sbat").is_err());
     }
 
     #[test]
