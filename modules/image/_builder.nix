@@ -126,7 +126,8 @@
     (registry: registry.sbDbCerts)
     (builtins.attrValues system.config.aos.apm.registries)
   );
-  activeRegistryDbCertFiles = lib.imap
+  activeRegistryDbCertFiles =
+    lib.imap
     (index: certificate:
       pkgs.writeTextFile {
         name = "aos-recovery-active-db-${toString index}";
@@ -154,7 +155,8 @@
               ${lib.concatMapStringsSep "\n" (certificate: ''
                   printf '\n' >> $out/active-db-certs.pem
                   cat ${certificate}/certificate.pem >> $out/active-db-certs.pem
-                '') activeRegistryDbCertFiles}
+                '')
+                activeRegistryDbCertFiles}
             '';
           }
         ];
