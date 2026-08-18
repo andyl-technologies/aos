@@ -268,7 +268,7 @@ in {
           # they run on every boot, while destructive formatting is guarded by
           # observed state inside the implementing tool/service.
           repart_log = target.succeed(
-              "journalctl -b -k --no-pager 2>&1"
+              "journalctl -b -u aos-repart.service --no-pager 2>&1"
           )
           assert "durable operator provisioning marker present" in repart_log, (
               f"{label}: repart did not perform its committed-layout pass:\n{repart_log}"
