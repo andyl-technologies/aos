@@ -915,7 +915,7 @@ determinism contract (04).
   production Rust runner performs fresh exact-input launches, applies
   adversarial host load to the second run, and compares a content-addressed
   five-boundary stream containing periodic, real frame-delivery, and real
-  fault-activation samples. Its negative control proves the complete diagnostic
+  signal-effect-boundary samples. Its negative control proves the complete diagnostic
   path: ordinal-aware fresh-run probes localize a real launch divergence to one
   instruction, and the plugin's terminal paused callback exports complete
   per-vCPU registers, writable RAM, and serialized non-RAM VMState from both

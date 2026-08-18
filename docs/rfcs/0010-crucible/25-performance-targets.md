@@ -1086,7 +1086,7 @@ resubmit the boundary. The production live-QEMU corpus runs with the synchronous
 oracle disabled under adversarial host load. A separate acceptance-only run
 enables the former synchronous component digests at every boundary and fails
 unless all five offloaded samples are byte-identical. The corpus retains the
-periodic, frame-delivery, fault-activation, and terminal coordinates at
+periodic, frame-delivery, signal-effect-boundary, and terminal coordinates at
 `4000000, 4000001, 8000000, 8000001, 12000000`. The perf-bench result imports
 the Class-A admission, exact-capture, corpus-identity, cadence, coordinate, and
 forced-boundary evidence from this real-backend gate.
