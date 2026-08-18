@@ -489,7 +489,7 @@
           [ -f "$recovery_mount/$recovery_uki" ] \
             || fail_image_identity "paired recovery UKI is missing"
           ${pkgs.sbsigntools}/bin/sbverify --cert \
-            "/sysroot$toplevel/etc-basedir/aos/trust/secure-boot-db.crt" \
+            ${lib.escapeShellArg config.aos.boot.secureBoot.dbCert} \
             "$recovery_mount/$recovery_uki" >/dev/null \
             || fail_image_identity "paired recovery UKI is not authorized by Secure Boot db"
           recovery_audit=/run/aos-seed-recovery-audit

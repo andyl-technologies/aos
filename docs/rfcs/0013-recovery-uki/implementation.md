@@ -84,14 +84,16 @@ last. Injected cuts at every publication boundary in both A-to-B and B-to-A
 directions must leave the opposite recovery copy unchanged.
 
 Neither the state record nor an ESP digest is retention authority. Initial
-seeding and every later inactive-slot update re-verify the retained recovery
-UKI against the deployment db snapshot stored in the immutable running
-toplevel, then require its signed command line, release, copy, and ABI to match
-the canonical record. The updater likewise authenticates every discoverable
-normal UKI and derives its slot from the signed command line; mutable
-generation state must agree. A retry after candidate publication first
-disarms that exact candidate again and replays the transaction, while any
-other mixed discoverable/disabled state fails closed.
+seeding re-verifies the paired recovery UKI against the deployment db
+certificate retained directly in the initrd's immutable closure. Every later
+inactive-slot update re-verifies the retained recovery UKI against the
+build-configured certificate snapshot in the immutable running toplevel. Both
+paths require its signed command line, release, copy, and ABI to match the
+canonical record. The updater likewise authenticates every discoverable normal
+UKI and derives its slot from the signed command line; mutable generation state
+must agree. A retry after candidate publication first disarms that exact
+candidate again and replays the transaction, while any other mixed
+discoverable/disabled state fails closed.
 
 The image build also emits a fixed-layout removable-media bundle. Its strict
 ten-component manifest is authenticated by the deployment db key and repeated
@@ -415,9 +417,10 @@ Extend image-generation state with recovery copy metadata sufficient to prove:
 - whether an inactive-copy publication transaction is pending.
 
 The state is evidence, not authority for Secure Boot or component digest
-verification. At seed and immediately before the inactive slot is touched,
-authenticate the retained recovery copy against the immutable running
-toplevel's configured db-certificate snapshot and its signed
+verification. At seed, authenticate the paired copy against the immutable db
+certificate embedded by reference in the initrd closure. Immediately before an
+inactive slot is touched, authenticate the retained recovery copy against the
+immutable running toplevel's configured db-certificate snapshot and its signed
 command-line/os-release identity. The snapshot includes the current image
 signer and every build-configured rotation-overlap certificate, so an old-slot
 UKI remains usable during an intentional overlap. It is not the mutable

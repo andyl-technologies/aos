@@ -259,10 +259,10 @@ in {
 
       environment.systemPackages = [pkgs.efitools enrollScript];
 
-      # Keep the public firmware db authority reachable through the immutable
-      # toplevel as well as /etc. Recovery retention deliberately reads the
-      # former path: mutable image-state and the ESP are evidence, never the
-      # authority for deciding that one recovery copy is safe to retain.
+      # Keep the public firmware db authority available to stage 2 through
+      # /etc. The initrd recovery-retention check references cfg.dbCert
+      # directly, which retains that immutable store object in the initrd
+      # closure without creating a toplevel/initrd dependency cycle.
       environment.etc."aos/trust/secure-boot-db.crt".source = cfg.dbCert;
 
       # First-boot recovery seeding authenticates the ESP copy before it
