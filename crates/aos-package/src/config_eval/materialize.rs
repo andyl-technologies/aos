@@ -371,9 +371,7 @@ impl ConfigManifest {
                         .strip_prefix(rendered.as_str())
                         .is_some_and(|suffix| suffix.starts_with('/'))
             }) {
-                bail!(
-                    "removedEtc path {path:?} conflicts structurally with etc path {rendered:?}"
-                );
+                bail!("removedEtc path {path:?} conflicts structurally with etc path {rendered:?}");
             }
             if let Some(existing) = removed_etc.iter().find(|existing| {
                 existing
@@ -383,9 +381,7 @@ impl ConfigManifest {
                         .strip_prefix(existing.as_str())
                         .is_some_and(|suffix| suffix.starts_with('/'))
             }) {
-                bail!(
-                    "removedEtc paths {existing:?} and {path:?} conflict structurally"
-                );
+                bail!("removedEtc paths {existing:?} and {path:?} conflict structurally");
             }
             if !removed_etc.insert(path) {
                 bail!("removedEtc contains duplicate path {path:?}");
