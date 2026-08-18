@@ -57,8 +57,16 @@
       needle = ".post_load = crucible_rr_cursor_state_post_load,";
     }
     {
-      label = "stopped-boundary cursor export";
-      needle = "return icount_crucible_rr_current_vcpu();";
+      label = "serialized owner lookup";
+      needle = "uint64_t owner = icount_crucible_rr_current_vcpu();";
+    }
+    {
+      label = "serialized owner matches current CPU";
+      needle = "cpu->cpu_index != owner";
+    }
+    {
+      label = "validated serialized owner export";
+      needle = "return owner;";
     }
   ];
 in

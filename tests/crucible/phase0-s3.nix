@@ -4,6 +4,7 @@
 }: let
   snapshotIcount = 100000000;
   segmentIcount = 50000000;
+  rrSwitchQuantum = 4096;
   pluginSource = builtins.readFile ./phase0-s3-segment-plugin.c;
   ownedStateSource = builtins.readFile ./phase0-s3-owned-state.c;
   s2WorkloadSource = builtins.readFile ./phase0-s2-workload.c;
@@ -319,6 +320,7 @@ in
     QEMU_IMG = "${pkgs.qemu-crucible}/bin/qemu-img";
     SNAPSHOT_ICOUNT = builtins.toString snapshotIcount;
     SEGMENT_ICOUNT = builtins.toString segmentIcount;
+    RR_SWITCH_QUANTUM = builtins.toString rrSwitchQuantum;
 
     phases = [
       {
@@ -601,7 +603,7 @@ in
               -monitor none \
               -machine q35 \
               -accel sim,thread=single \
-              -icount shift=0,sleep=off,align=off \
+              -icount shift=0,sleep=off,align=off,rr_switch_quantum="$RR_SWITCH_QUANTUM" \
               -cpu qemu64 \
               -m 1024 \
               -smp 1 \
@@ -716,7 +718,9 @@ in
           assert_segment_sample() {
             label="$1"
             logical_base="$2"
-            jq --argjson segment "$SEGMENT_ICOUNT" --argjson logical "$((logical_base + SEGMENT_ICOUNT))" -e '
+            jq --argjson segment "$SEGMENT_ICOUNT" \
+              --argjson logical "$((logical_base + SEGMENT_ICOUNT))" \
+              --argjson rr_switch_quantum "$RR_SWITCH_QUANTUM" -e '
               .pause_sample == true
               and .segment_started == true
               and .stop_requested == true
@@ -727,6 +731,9 @@ in
               and .register_read_failures == 0
               and .marker_errors == 0
               and .ram_bytes > 0
+              and .rr_current_vcpu == 0
+              and .rr_switch_quantum == $rr_switch_quantum
+              and .rr_cursor_position < .rr_switch_quantum
               and (.register_counts | type == "array")
               and (.register_counts | length) == 1
               and .register_counts[0] > 0
@@ -919,6 +926,7 @@ in
             echo mid_io_guest_block_direct="$mid_io_guest_block_direct"
             echo suffix_segment_icount="$SEGMENT_ICOUNT"
             echo suffix_logical_horizon="$((boot_window_icount + SEGMENT_ICOUNT))"
+            echo rr_switch_quantum="$RR_SWITCH_QUANTUM"
             echo all_suffix_fingerprints_match=false
             echo boot_window_suffix_fingerprint_match="$boot_window_suffix_match"
             echo cpu_timer_suffix_fingerprint_match="$cpu_timer_suffix_match"
