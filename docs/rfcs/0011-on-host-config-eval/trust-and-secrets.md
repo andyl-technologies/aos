@@ -252,8 +252,8 @@ no builders), but the interpreter must be sandboxed:
   unprivileged, capped, fs-restricted process whose only output is a manifest
   still gated by downstream content-addressing + apm verify.
 
-aos-nix (P2) improves this from a blunt OOM-kill to an in-engine timeout, and
-opens a path to totality analysis that rejects divergent configs before running.
+The systemd timeout and memory limit terminate divergent stock evaluations
+without allowing a failed configuration to advance.
 
 ## Secrets — interface, not implementation
 

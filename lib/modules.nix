@@ -557,11 +557,13 @@
         };
 
     result =
-      if builtins.isAttrs evaluated
-      && (
-        evaluated ? _provenance
-        || (evaluated ? config && builtins.isAttrs evaluated.config && evaluated.config ? _provenance)
-      )
+      if
+        builtins.isAttrs evaluated
+        && (
+          evaluated
+          ? _provenance
+          || (evaluated ? config && builtins.isAttrs evaluated.config && evaluated.config ? _provenance)
+        )
       then throw "Module ${file} sets reserved attribute `_provenance`; provenance is resolver-controlled"
       else {
         options = evaluated.options or {};
@@ -641,7 +643,6 @@
       else lib;
 
     result = let
-      structuredErrors = specialArgs.aosStructuredErrors or false;
       # Synthetic internal module that declares the three `_module.*`
       # options used by the engine itself. Without these declarations
       # strict-mode evaluation (see configWithFreeform below) would flag
@@ -711,7 +712,8 @@
             [package]
             ++ authorization.owns
             ++ builtins.attrNames authorization.contributes;
-          foreignPackageRoots = builtins.filter
+          foreignPackageRoots =
+            builtins.filter
             (root: !builtins.elem root allowedRoots)
             packageOwnedRoots;
         in
@@ -738,9 +740,10 @@
               then
                 throw
                 "evalModules: ${provenance} import is not a path literal; package imports must retain a path identity beneath its authenticated config root"
-              else if builtins.any
-              (component: component == "." || component == "..")
-              (strings.splitString "/" (builtins.toString imported))
+              else if
+                builtins.any
+                (component: component == "." || component == "..")
+                (strings.splitString "/" (builtins.toString imported))
               then throw "evalModules: ${provenance} import contains a traversal component"
               else if !builtins.pathExists imported
               then throw "evalModules: ${provenance} import path '${builtins.toString imported}' does not exist"
@@ -785,15 +788,30 @@
                 then "@host-import"
                 else "@base"
               )
-              (if propagateToImports then authorization else null)
-              (if propagateToImports then importRoot else null)
-              (if propagateToImports then moduleOutputs else null)
+              (
+                if propagateToImports
+                then authorization
+                else null
+              )
+              (
+                if propagateToImports
+                then importRoot
+                else null
+              )
+              (
+                if propagateToImports
+                then moduleOutputs
+                else null
+              )
               propagateToImports
               (confinedPackageImports provenance importRoot evaled.imports)
-              ++ [(evaled // {
-                _provenance = provenance;
-                _authorization = authorization;
-              })]
+              ++ [
+                (evaled
+                  // {
+                    _provenance = provenance;
+                    _authorization = authorization;
+                  })
+              ]
           )
           mods
         );
@@ -830,25 +848,31 @@
           else [];
         configRoot = record.configRoot or null;
       in
-        if !builtins.isAttrs record
-          || !(keys == ["authorization" "module" "name"]
+        if
+          !builtins.isAttrs record
+          || !(keys
+            == ["authorization" "module" "name"]
             || keys == ["authorization" "configRoot" "module" "name" "outputs"])
         then throw "evalModules: packageModules entries must contain authorization/module/name or the resolver-authenticated configRoot/outputs form"
         else if !builtins.isString record.name || builtins.match "[a-z0-9][a-z0-9._+-]*" record.name == null
         then throw "evalModules: invalid resolver-supplied package provenance name"
         else if !validAuthorization record.authorization
         then throw "evalModules: invalid resolver-supplied authorization for package '${record.name}'"
-        else if configRoot != null
+        else if
+          configRoot
+          != null
           && (!builtins.isPath configRoot
             || !builtins.isPath record.module
             || builtins.toString record.module != "${builtins.toString configRoot}/module.nix")
         then throw "evalModules: package '${record.name}' module is not module.nix beneath its authenticated configRoot"
         else if configRoot != null && !validPackageOutputs record.outputs
         then throw "evalModules: package '${record.name}' has invalid resolver-supplied outputs"
-        else record // {
-          inherit configRoot;
-          outputs = record.outputs or null;
-        })
+        else
+          record
+          // {
+            inherit configRoot;
+            outputs = record.outputs or null;
+          })
       packageModules;
 
       packageOwnedRoots = lists.unique (builtins.concatLists (builtins.map
@@ -883,13 +907,15 @@
         else if isOverride value || isOrder value
         then configLeafPaths path value._value
         else if builtins.isAttrs value
-        then builtins.concatLists (builtins.map
-          (name: configLeafPaths (path ++ [name]) value.${name})
-          (builtins.attrNames value))
+        then
+          builtins.concatLists (builtins.map
+            (name: configLeafPaths (path ++ [name]) value.${name})
+            (builtins.attrNames value))
         else [path];
 
       pathHasPrefix = prefix: path:
-        builtins.length prefix <= builtins.length path
+        builtins.length prefix
+        <= builtins.length path
         && builtins.all
         (i: builtins.elemAt prefix i == builtins.elemAt path i)
         (builtins.genList (i: i) (builtins.length prefix));
@@ -908,16 +934,19 @@
         relative =
           if builtins.length path <= 1
           then []
-          else builtins.genList
+          else
+            builtins.genList
             (i: builtins.elemAt path (i + 1))
             (builtins.length path - 1);
         owns = [package] ++ module._authorization.owns;
         contributed = module._authorization.contributes.${root} or [];
-        allowedContribution = builtins.any
+        allowedContribution =
+          builtins.any
           (declared: pathHasPrefix (strings.splitString "." declared) relative)
           contributed;
         foreignEnable =
-          relative != []
+          relative
+          != []
           && builtins.elemAt relative (builtins.length relative - 1) == "enable";
         pathStr = builtins.concatStringsSep "." path;
       in
@@ -934,16 +963,18 @@
       packageAuthorizationCheck =
         if !enforcePackageAuthorization
         then true
-        else builtins.foldl'
-        (checked: module:
-          if !strings.hasPrefix "package:" (module._provenance or "")
-          then checked
-          else builtins.foldl'
-            (inner: path: builtins.seq inner (authorizePackagePath module path))
-            checked
-            (configLeafPaths [] module.config))
-        true
-        evaluatedModules;
+        else
+          builtins.foldl'
+          (checked: module:
+            if !strings.hasPrefix "package:" (module._provenance or "")
+            then checked
+            else
+              builtins.foldl'
+              (inner: path: builtins.seq inner (authorizePackagePath module path))
+              checked
+              (configLeafPaths [] module.config))
+          true
+          evaluatedModules;
 
       authorizePackageDeclaration = decl: let
         package = strings.removePrefix "package:" decl.provenance;
@@ -957,7 +988,8 @@
         then true
         else throw "evalModules: package '${package}' declares unauthorized foreign option '${builtins.concatStringsSep "." decl.path}'";
 
-      packageDeclarationCheck = builtins.foldl'
+      packageDeclarationCheck =
+        builtins.foldl'
         (checked: decl:
           if strings.hasPrefix "package:" (decl.provenance or "")
           then builtins.seq checked (authorizePackageDeclaration decl)
@@ -978,7 +1010,8 @@
         (decl: ownerForProvenance decl.provenance)
         (builtins.filter
           (decl:
-            (decl.provenance or "@base") != "@base"
+            (decl.provenance or "@base")
+            != "@base"
             && !(isNoDefault decl.option.default))
           allOptionDecls));
       # Nix does not expose general config-read tracing. Preserve the one
@@ -989,13 +1022,14 @@
       # an artifact. Ownership queries peel the marker back into its
       # authenticated declaration owner.
       defaultDependencyMarkers = builtins.listToAttrs (builtins.map (owner: let
-        marker = builtins.toFile
+        marker =
+          builtins.toFile
           "aos-option-default-${builtins.substring 0 16 (builtins.hashString "sha256" owner)}"
           owner;
       in
         attrsets.nameValuePair
-          (builtins.unsafeDiscardStringContext (builtins.toString marker))
-          owner)
+        (builtins.unsafeDiscardStringContext (builtins.toString marker))
+        owner)
       defaultDependencyOwners);
       tagDefaultDependency = provenance: value: let
         owner = ownerForProvenance provenance;
@@ -1011,18 +1045,20 @@
           else if builtins.isList current
           then builtins.map tag current
           else if builtins.isAttrs current && !((current.type or null) == "derivation")
-          then builtins.mapAttrs (name: child:
-            if name == "_module"
-            then child
-            else tag child)
-          current
+          then
+            builtins.mapAttrs (name: child:
+              if name == "_module"
+              then child
+              else tag child)
+            current
           else current;
       in
         tag value;
       dependencyOwnersForValue = value: let
         collect = current:
           if builtins.isString current
-          then builtins.map
+          then
+            builtins.map
             (marker: defaultDependencyMarkers.${marker})
             (builtins.filter
               (marker: builtins.hasAttr marker defaultDependencyMarkers)
@@ -1030,12 +1066,13 @@
           else if builtins.isList current
           then builtins.concatLists (builtins.map collect current)
           else if builtins.isAttrs current && !((current.type or null) == "derivation")
-          then builtins.concatLists (builtins.map
-            (name:
-              if name == "_module"
-              then []
-              else collect current.${name})
-            (builtins.attrNames current))
+          then
+            builtins.concatLists (builtins.map
+              (name:
+                if name == "_module"
+                then []
+                else collect current.${name})
+              (builtins.attrNames current))
           else [];
       in
         lists.unique (collect value);
@@ -1046,17 +1083,22 @@
         else if isMkIf value
         then peelOwnedDef file provenance (condition && value._condition) priority value._value
         else if isMkMerge value
-        then builtins.concatLists (builtins.map
-          (v: peelOwnedDef file provenance condition priority v)
-          value._values)
+        then
+          builtins.concatLists (builtins.map
+            (v: peelOwnedDef file provenance condition priority v)
+            value._values)
         else if isOrder value
         then peelOwnedDef file provenance condition priority value._value
         else [{inherit file provenance condition priority value;}];
 
       chooseOwner = description: defs: let
         active = builtins.filter (d: d.condition) defs;
-        minPriority = builtins.foldl'
-          (acc: d: if d.priority < acc then d.priority else acc)
+        minPriority =
+          builtins.foldl'
+          (acc: d:
+            if d.priority < acc
+            then d.priority
+            else acc)
           9999
           active;
         winners = builtins.filter (d: d.priority == minPriority) active;
@@ -1164,7 +1206,9 @@
           defs = builtins.concatLists (builtins.map (d:
             builtins.map (value: value // {value = wanted;})
             (builtins.filter
-              (value: builtins.isList value.value && builtins.any
+              (value:
+                builtins.isList value.value
+                && builtins.any
                 (item: builtins.toString (peelOrderValue item) == wanted)
                 value.value)
               (peelOwnedDef d.file (d.provenance or "@base") true (defBasePriority d) d.value)))
@@ -1176,8 +1220,12 @@
           defs = builtins.concatLists (builtins.map (d:
             builtins.map (value: value // {value = wanted;})
             (builtins.filter
-              (value: builtins.isList value.value && builtins.any
-                (item: let normalized = peelOrderValue item; in
+              (value:
+                builtins.isList value.value
+                && builtins.any
+                (item: let
+                  normalized = peelOrderValue item;
+                in
                   builtins.isAttrs normalized
                   && normalized ? ${field}
                   && normalized.${field} == wanted)
@@ -1291,54 +1339,17 @@
             _readOnlyCheck =
               if (decl.option.readOnly or false) && builtins.length priorityFilteredDefs > 1
               then
-                if structuredErrors
-                then throw (builtins.toJSON {
-                  __aosEvalError = {
-                    kind = "conflict";
-                    path = pathStr;
-                    defs = builtins.map (d: {
-                      value = builtins.toJSON d.value;
-                      file = d.file or null;
-                    }) priorityFilteredDefs;
-                  };
-                })
-                else
-                  throw ''
-                    The option '${pathStr}' is read-only, but it has ${builtins.toString (builtins.length priorityFilteredDefs)} definitions:
-                    ${builtins.concatStringsSep "\n" (
-                      builtins.map (d: "  - in ${d.file or "<unknown>"}: ${builtins.toJSON d.value}") priorityFilteredDefs
-                    )}
-                  ''
-              else null;
-
-            # Conflict-rejecting scalar types expose an engine marker so
-            # structured mode can report typed definitions instead of asking
-            # the native evaluator to reverse-engineer a human throw string.
-            _uniqueConflictCheck = let
-              first =
-                if priorityFilteredDefs == []
-                then null
-                else (builtins.head priorityFilteredDefs).value;
-              disagree =
-                first != null
-                && !(builtins.all (d: d.value == first) priorityFilteredDefs);
-            in
-              if structuredErrors && (optType.conflictOnDisagreement or false) && disagree
-              then throw (builtins.toJSON {
-                __aosEvalError = {
-                  kind = "conflict";
-                  path = pathStr;
-                  defs = builtins.map (d: {
-                    value = builtins.toJSON d.value;
-                    file = d.file or null;
-                  }) priorityFilteredDefs;
-                };
-              })
+                throw ''
+                  The option '${pathStr}' is read-only, but it has ${builtins.toString (builtins.length priorityFilteredDefs)} definitions:
+                  ${builtins.concatStringsSep "\n" (
+                    builtins.map (d: "  - in ${d.file or "<unknown>"}: ${builtins.toJSON d.value}") priorityFilteredDefs
+                  )}
+                ''
               else null;
 
             # Determine the merged value. `_readOnlyCheck` is forced
             # via `seq` so the throw above fires before the merge runs.
-            mergedValue = builtins.seq _readOnlyCheck (builtins.seq _uniqueConflictCheck (
+            mergedValue = builtins.seq _readOnlyCheck (
               if priorityFilteredDefs == []
               then
                 if !(isNoDefault decl.option.default)
@@ -1350,25 +1361,18 @@
                       file = "<option-default:${pathStr}>";
                       provenance = decl.provenance or "@base";
                       authorization = decl.authorization or null;
-                      value = tagDefaultDependency
+                      value =
+                        tagDefaultDependency
                         (decl.provenance or "@base")
                         decl.option.default;
                     }
                   ]
-                else if structuredErrors
-                then throw (builtins.toJSON {
-                  __aosEvalError = {
-                    kind = "undefined_option";
-                    path = pathStr;
-                    file = decl.file or null;
-                  };
-                })
                 else throw "The option '${pathStr}' is used but has no definition and no default value."
               else let
                 rawMerged = optType.merge decl.path priorityFilteredDefs;
               in
                 rawMerged
-            ));
+            );
 
             # Apply the apply function if present
             finalValue =
@@ -1543,17 +1547,7 @@
               undeclaredDefs
             );
           in
-            if structuredErrors
-            then throw (builtins.toJSON {
-              __aosEvalError = {
-                kind = "undeclared_write";
-                missing = builtins.map (d: {
-                  path = builtins.concatStringsSep "." d.path;
-                  file = d.file or null;
-                }) undeclaredDefs;
-              };
-            })
-            else throw ''
+            throw ''
               The following option(s) are not declared:
               ${formatted}
 
@@ -1562,16 +1556,6 @@
       ));
     in {
       config = configWithFreeform;
-      # Concrete package writes whose conditions were evaluated in this run.
-      # This is evaluator output, not registry-declared interface metadata.
-      _optionWrites = builtins.concatLists (builtins.map (module:
-        if !strings.hasPrefix "package:" (module._provenance or "")
-        then []
-        else builtins.map (path: {
-          package = strings.removePrefix "package:" module._provenance;
-          option = builtins.concatStringsSep "." path;
-        }) (configLeafPaths [] module.config))
-      evaluatedModules);
       # Exposed as the nested options tree (matching nixpkgs'
       # `result.options` shape) so external consumers can introspect
       # with the same `options.path.to.foo.isDefined` pattern that

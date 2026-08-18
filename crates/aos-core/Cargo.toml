@@ -4,10 +4,6 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
-[features]
-default = []
-native-eval = ["dep:aos-nix", "aos-nix/candidate_c_value"]
-
 [dependencies]
 anyhow = { workspace = true }
 thiserror = { workspace = true }
@@ -26,7 +22,6 @@ humantime = { workspace = true }
 alejandra = { workspace = true }
 tokio = { workspace = true }
 atty = { workspace = true }
-aos-nix = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
