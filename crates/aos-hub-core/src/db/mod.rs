@@ -332,6 +332,7 @@ mod egress_nonce;
 mod gc_topology;
 pub use gc_topology::*;
 mod placement_policy;
+mod registry_delete;
 mod signing_keys;
 mod topology;
 pub use placement_policy::*;
@@ -10711,7 +10712,41 @@ impl Database {
             bail!("an operation cannot repeat the same target identity");
         }
         let now = unix_now();
-        let mut statements = vec![Statement::new(
+        let mut statements = Vec::with_capacity(resolved.len() + 1);
+        for ((target, _, _, _), requested) in resolved.iter().zip(&input.targets) {
+            let guard = match target {
+                NewTopologyOperationTargetRef::Registry(id) => Some(Statement::new(
+                    "UPDATE registries SET updated_at = updated_at WHERE id = ?1",
+                    vals![id],
+                )),
+                NewTopologyOperationTargetRef::Placement(id) => Some(Statement::new(
+                    "UPDATE surface_placements SET updated_at = updated_at
+                     WHERE id = ?1 AND resource_version = ?2",
+                    vals![id, requested.generation_key],
+                )),
+                NewTopologyOperationTargetRef::DeliveryRoute(id) => Some(Statement::new(
+                    "UPDATE delivery_routes SET updated_at = updated_at
+                     WHERE id = ?1 AND EXISTS (
+                       SELECT 1 FROM delivery_route_heads
+                       WHERE delivery_route_id = ?1
+                         AND configuration_generation = ?2
+                         AND configuration_digest = ?3)",
+                    vals![
+                        id,
+                        requested.generation_key,
+                        requested.configuration_digest
+                    ],
+                )),
+                _ => None,
+            };
+            if let Some(guard) = guard {
+                // Registry deletion locks the same owned rows before it
+                // cancels operations. This makes admission and teardown
+                // mutually exclusive on every supported SQL backend.
+                statements.push(guard.expecting(1));
+            }
+        }
+        statements.push(Statement::new(
             "INSERT INTO topology_operations (operation_id, operation_kind,
                 authorization_scope_key, control_permission, primary_target_kind,
                 primary_target_stable_id, primary_target_generation_key,
@@ -10732,7 +10767,7 @@ impl Database {
                 now
             ],
         )
-        .expecting(1)];
+        .expecting(1));
         for ((target, target_kind, stable_id, target_scope), requested) in
             resolved.into_iter().zip(&input.targets)
         {
@@ -21694,133 +21729,6 @@ impl Database {
         .await
     }
 
-    /// Deletes an unused registry identity and records the transition atomically.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the registry still owns write authority, history
-    /// serialization fails, or the checked transaction cannot commit. Returns
-    /// `Ok(false)` when the registry no longer matches `expected_version`.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn delete_registry_at_version(
-        &self,
-        registry_id: i64,
-        expected_version: i64,
-        change_id: &str,
-        actor_kind: &str,
-        actor_id: Option<i64>,
-        actor_label: &str,
-    ) -> Result<bool> {
-        let Some(current) = self.registry_by_id(registry_id).await? else {
-            return Ok(false);
-        };
-        if current.resource_version != expected_version {
-            return Ok(false);
-        }
-        let now = unix_now();
-        let old_json = serde_json::to_string(&serde_json::json!({
-            "stableId": &current.stable_id,
-            "slug": &current.slug,
-            "visibility": &current.visibility,
-            "crawlPolicy": &current.crawl_policy,
-            "llmsTxtBody": &current.llms_txt_body,
-            "trustKeys": &current.trust_keys,
-            "resourceVersion": expected_version,
-        }))?;
-        let event_id = uuid::Uuid::new_v4().simple().to_string();
-        let payload_json = serde_json::to_string(&serde_json::json!({
-            "changeId": change_id,
-            "registryId": &current.stable_id,
-            "slug": &current.slug,
-            "resourceVersion": expected_version,
-        }))?;
-        let event = NewTopologyEvent {
-            event_id: &event_id,
-            event_name: "registry.deleted",
-            owner_scope_key: &current.scope_key,
-            resource_kind: "registry",
-            resource_stable_id: &current.stable_id,
-            resource_generation_key: expected_version,
-            actor_kind,
-            actor_id,
-            actor_label,
-            payload_json: &payload_json,
-            occurred_at: now,
-        };
-        let summary = format!("delete registry identity '{}'", current.slug);
-        let result = self
-            .backend
-            .checked_batch(&[
-                Statement::new(
-                    "INSERT INTO change_requests
-                     (change_id, actor_kind, actor_id, actor_label, scope, status,
-                      summary, created_at, applied_at)
-                     SELECT ?1, ?2, ?3, ?4, scope_key, 'applied', ?6, ?7, ?7
-                       FROM registries WHERE id = ?5 AND resource_version = ?8",
-                    vals![
-                        change_id,
-                        actor_kind,
-                        actor_id,
-                        sanitize_log_text(actor_label),
-                        registry_id,
-                        summary,
-                        now,
-                        expected_version
-                    ],
-                )
-                .expecting(1),
-                Statement::new(
-                    "INSERT INTO change_request_revisions
-                     (change_id, object_type, object_id, op, old_json, new_json, seq)
-                     VALUES (?1, 'registry', ?2, 'delete', ?3, NULL, 0)",
-                    vals![change_id, current.stable_id, old_json],
-                )
-                .expecting(1),
-                Statement::new(
-                    "INSERT INTO audit_log
-                     (outbox_event_id, change_id, actor_kind, actor_id, actor_label,
-                      action, scope, detail, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, 'registry.deleted', ?6, ?7, ?8)",
-                    vals![
-                        event_id,
-                        change_id,
-                        actor_kind,
-                        actor_id,
-                        sanitize_log_text(actor_label),
-                        current.scope_key,
-                        payload_json,
-                        now
-                    ],
-                )
-                .expecting(1),
-                Self::topology_event_statement(&event),
-                Statement::new(
-                    "DELETE FROM registries WHERE id = ?1 AND scope_key = ?2
-                       AND resource_version = ?3",
-                    vals![registry_id, current.scope_key, expected_version],
-                )
-                .expecting(1),
-                Statement::new(
-                    "UPDATE authorization_scopes SET retired_at = ?2
-                      WHERE scope_key = ?1 AND kind = 'registry' AND retired_at IS NULL",
-                    vals![current.scope_key, now],
-                )
-                .expecting(1),
-            ])
-            .await;
-        if let Err(error) = result {
-            if self
-                .registry_by_id(registry_id)
-                .await?
-                .map_or(true, |record| record.resource_version != expected_version)
-            {
-                return Ok(false);
-            }
-            return Err(error);
-        }
-        Ok(true)
-    }
-
     /// The instance-root crawl policy (defaulting to allow-all when unset).
     ///
     /// Reads the `root_crawl_policy` instance-config key and parses it leniently
@@ -28078,8 +27986,192 @@ source_nar_hash = ""
     #[tokio::test]
     async fn registry_delete_cas_commits_history_audit_and_outbox_once() {
         let db = Database::open_in_memory().await.unwrap();
-        let id = db.register_registry("retired", &[], false).await.unwrap();
+        let org_id = db.create_org("retired", "Retired").await.unwrap();
+        let id = db
+            .create_managed_registry(org_id, "", "registry", "private", &[], false)
+            .await
+            .unwrap();
         let registry = db.registry_by_id(id).await.unwrap().unwrap();
+        let binding_id = create_test_binding(&db, org_id, "retired", "/tmp/retired").await;
+        let mut placement =
+            topology_placement(SurfaceTarget::Registry(id), "primary", "retired", 0);
+        placement.storage_binding_id = binding_id;
+        let placement = db.create_surface_placement(&placement).await.unwrap();
+        let placement = db
+            .observe_surface_placement(placement.id, "ready", "complete", 1)
+            .await
+            .unwrap();
+        let write_generation =
+            create_valid_write_credential(&db, binding_id, "secret://binding/retired/v1").await;
+        let write_revision = db
+            .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
+                storage_binding_id: binding_id,
+                write_credential_generation: write_generation,
+                writes_supported: true,
+                conditional_writes_supported: false,
+                revision_fingerprint: "retired-write-v1".into(),
+                capability_fingerprint: "retired-writes".into(),
+            })
+            .await
+            .unwrap();
+        db.observe_storage_binding_write_revision(
+            binding_id,
+            write_revision.revision,
+            "valid",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        db.bind_surface_placement_write_capability(placement.id, write_revision.revision)
+            .await
+            .unwrap();
+        db.create_surface_write_authority(
+            SurfaceTarget::Registry(id),
+            "retired-authority-v1",
+            placement.id,
+            placement.resource_version,
+            placement.write_spec_version,
+            write_revision.revision,
+        )
+        .await
+        .unwrap();
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: "retired-publication".into(),
+            registry_id: id,
+            generation: "retired-generation".into(),
+            manifest_digest: "a".repeat(64),
+            refs_digest: "b".repeat(64),
+            default_commit: None,
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        db.fail_registry_publication("retired-publication", unix_now())
+            .await
+            .unwrap();
+        db.backend
+            .execute(
+                "INSERT INTO registry_publications
+                 (publication_id, registry_id, ordinal, generation,
+                  manifest_digest, refs_digest, parent_publication_id, state,
+                  created_at, completed_at)
+                 VALUES ('retired-publication-child', ?1, 2,
+                   'retired-generation-child', ?2, ?3,
+                   'retired-publication', 'failed', ?4, ?4)",
+                &vals![id, "5".repeat(64), "6".repeat(64), unix_now()],
+            )
+            .await
+            .unwrap();
+        let cache_id = db
+            .create_binary_cache(
+                Some(org_id),
+                "retired-cache",
+                "Retired cache",
+                "private",
+                10,
+                "zstd",
+                true,
+            )
+            .await
+            .unwrap();
+        db.backend
+            .batch(&[
+                Statement::new(
+                    "INSERT INTO releases
+                     (id, registry_id, semver, tag_oid, commit_oid, pack_present)
+                     VALUES (9001, ?1, '1.0.0', ?2, ?3, 1)",
+                    vals![id, "e".repeat(64), "f".repeat(64)],
+                ),
+                Statement::new(
+                    "INSERT INTO release_artifact_snapshots
+                     (snapshot_id, release_id, registry_id, source_commit,
+                      verified_tag_oid, verification_record_id, manifest_digest,
+                      state, complete_slot, expected_artifact_count,
+                      actual_artifact_count, started_at, completed_at)
+                     VALUES ('retired-snapshot', 9001, ?1, ?2, ?3,
+                       'retired-verification', ?4, 'complete', 1, 1, 1, ?5, ?5)",
+                    vals![id, "f".repeat(64), "e".repeat(64), "1".repeat(64), unix_now()],
+                ),
+                Statement::new(
+                    "INSERT INTO release_artifacts
+                     (snapshot_id, release_id, registry_id, package_name,
+                      package_version, platform, artifact_kind, store_path,
+                      store_hash, metadata_digest)
+                     VALUES ('retired-snapshot', 9001, ?1, 'demo', '1.0.0',
+                       'x86_64-linux', 'output', '/nix/store/demo', 'demo', ?2)",
+                    vals![id, "2".repeat(64)],
+                ),
+                Statement::new(
+                    "INSERT INTO release_artifact_snapshot_heads
+                     (release_id, registry_id, complete_artifact_snapshot_id,
+                      updated_at)
+                     VALUES (9001, ?1, 'retired-snapshot', ?2)",
+                    vals![id, unix_now()],
+                ),
+                Statement::new(
+                    "INSERT INTO cache_retention_subscriptions
+                     (id, cache_id, registry_id, selector_json, selector_digest,
+                      created_at, updated_at)
+                     VALUES (9001, ?1, ?2, '{}', ?3, ?4, ?4)",
+                    vals![cache_id, id, "3".repeat(64), unix_now()],
+                ),
+                Statement::new(
+                    "INSERT INTO cache_retention_refreshes
+                     (refresh_id, subscription_id, cache_id, registry_id,
+                      expected_subscription_version, expected_cache_epoch,
+                      selector_digest, registry_source_revision,
+                      registry_index_generation, registry_index_digest, state,
+                      started_at, activated_at, parent_grace_until, finished_at,
+                      expected_reason_count, actual_reason_count)
+                     VALUES ('retired-refresh', 9001, ?1, ?2, 1, 0, ?3, ?4,
+                       1, ?5, 'complete', ?6, ?6, ?6, ?6, 0, 0)",
+                    vals![
+                        cache_id,
+                        id,
+                        "3".repeat(64),
+                        "retired-source",
+                        "4".repeat(64),
+                        unix_now()
+                    ],
+                ),
+            ])
+            .await
+            .unwrap();
+        db.backend
+            .batch(&[
+                Statement::new(
+                    "INSERT INTO cache_retention_refreshes
+                     (refresh_id, subscription_id, cache_id, registry_id,
+                      parent_refresh_id, expected_parent_refresh_id,
+                      expected_subscription_version, expected_cache_epoch,
+                      selector_digest, registry_source_revision,
+                      registry_index_generation, registry_index_digest, state,
+                      started_at, activated_at, parent_grace_until, finished_at,
+                      expected_reason_count, actual_reason_count)
+                     VALUES ('retired-refresh-child', 9001, ?1, ?2,
+                       'retired-refresh', 'retired-refresh', 1, 0, ?3, ?4,
+                       2, ?5, 'complete', ?6, ?6, ?6, ?6, 0, 0)",
+                    vals![
+                        cache_id,
+                        id,
+                        "3".repeat(64),
+                        "retired-source-child",
+                        "7".repeat(64),
+                        unix_now()
+                    ],
+                ),
+                Statement::new(
+                    "INSERT INTO cache_retention_refresh_heads
+                     (subscription_id, cache_id, registry_id, current_refresh_id,
+                      updated_at)
+                     VALUES (9001, ?1, ?2, 'retired-refresh-child', ?3)",
+                    vals![cache_id, id, unix_now()],
+                ),
+            ])
+            .await
+            .unwrap();
+        db.materialize_topology_events().await.unwrap();
         let change_id = uuid::Uuid::new_v4().to_string();
 
         assert!(db
@@ -28107,6 +28199,41 @@ source_nar_hash = ""
         assert_eq!(audit.len(), 1);
         assert_eq!(audit[0].action, "registry.deleted");
         assert_eq!(audit[0].change_id.as_deref(), Some(change_id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn registry_delete_rejects_active_publication_without_partial_history() {
+        let db = Database::open_in_memory().await.unwrap();
+        let id = db.register_registry("publishing", &[], false).await.unwrap();
+        let registry = db.registry_by_id(id).await.unwrap().unwrap();
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: "active-publication".into(),
+            registry_id: id,
+            generation: "active-generation".into(),
+            manifest_digest: "c".repeat(64),
+            refs_digest: "d".repeat(64),
+            default_commit: None,
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+
+        let change_id = uuid::Uuid::new_v4().to_string();
+        let error = db
+            .delete_registry_at_version(
+                id,
+                registry.resource_version,
+                &change_id,
+                "user",
+                Some(7),
+                "operator@example.test",
+            )
+            .await
+            .unwrap_err();
+
+        assert!(format!("{error:#}").contains("active publication or upload"));
+        assert!(db.registry_by_id(id).await.unwrap().is_some());
+        assert!(db.changeset(&change_id).await.unwrap().is_none());
     }
 
     #[tokio::test]

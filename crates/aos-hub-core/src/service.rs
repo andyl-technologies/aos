@@ -21988,14 +21988,20 @@ impl RpcService {
             &registry.scope_key,
             &input,
             &idempotency_key,
-            vec![format!("delete registry identity '{}'", registry.slug)],
-            vec!["physical placement objects are not deleted".to_string()],
+            vec![
+                format!("delete registry identity '{}'", registry.slug),
+                "retire its routes, placements, and terminal publication metadata".to_string(),
+            ],
+            vec![
+                "physical placement objects are not deleted".to_string(),
+                "active publication work or retained cache roots prevent deletion".to_string(),
+            ],
             Some(confirmation_hash),
         )
         .await
     }
 
-    /// Applies an unused registry deletion plan exactly once.
+    /// Applies a quiescent registry deletion plan exactly once.
     pub async fn apply_delete_registry(
         &self,
         auth: Option<&str>,
