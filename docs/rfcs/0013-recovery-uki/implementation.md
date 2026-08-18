@@ -351,7 +351,8 @@ recovery UI service.
 
 The UI is a dedicated Rust subcommand or binary using structured operations.
 Do not construct a shell script that interpolates user-selected devices,
-paths, or commands.
+paths, or commands. Its fixed `AOS recovery>` prompt gives the executable
+tests an unambiguous marker for entry into the bounded interface.
 
 Systemd owns the efivarfs API mount. Before starting the UI, recovery remounts
 that existing filesystem read-only and fails closed if the remount fails; a
