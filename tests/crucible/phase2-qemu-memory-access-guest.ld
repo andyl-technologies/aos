@@ -19,8 +19,11 @@ SECTIONS
   .page_tables : { *(.page_tables) }
   . = 0x0010e000;
   .gdt : { *(.gdt) }
-  . = 0x0010f000;
+  /* The IDT is 4 KiB plus its 10-byte descriptor. Keep both below the
+     fixed nested-virtualization region at 0x00110000. */
+  . = 0x0010e100;
   .idt : { *(.idt) }
+  ASSERT(. <= 0x00110000, "IDT overlaps nested-virtualization state")
   . = 0x00110000;
   .nested_vm : { *(.nested_vm) }
 }
