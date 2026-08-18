@@ -381,6 +381,27 @@ pub trait QemuPluginIpcControlChannel: Send {
 
 /// Shared-memory hot-path channel for per-quantum data.
 pub trait QemuShmemHotPathChannel: Send {
+    /// Captures both directed network rings and the host injection cursor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when either quiesced ring cannot be
+    /// snapshotted exactly.
+    fn checkpoint_network_transport(
+        &mut self,
+    ) -> Result<crate::QemuNetworkTransportCheckpoint, QemuNodeChannelError>;
+
+    /// Restores both directed network rings and the host injection cursor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the checkpoint is malformed or
+    /// cannot be restored atomically into the mapped rings.
+    fn restore_network_transport(
+        &mut self,
+        checkpoint: &crate::QemuNetworkTransportCheckpoint,
+    ) -> Result<(), QemuNodeChannelError>;
+
     /// Enqueues one guest-agent request through the public shared-memory ABI.
     ///
     /// # Errors
@@ -673,7 +694,8 @@ pub trait QemuQmpMachineControlChannel: Send {
     ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeChannelError`] when QEMU cannot confirm the running state.
+    /// Returns [`QemuNodeChannelError`] when QEMU does not acknowledge the
+    /// running-state transition. The next bounded step proves execution.
     fn resume_after_checkpoint(&mut self) -> Result<(), QemuNodeChannelError>;
 
     /// Completes an authenticated terminal lifecycle transition without
@@ -784,6 +806,7 @@ pub struct QemuNode {
     active_gdbstub: Option<QemuGdbstubProxyServer>,
     pending_preemption: Option<crucible::PreemptionDecision>,
     pending_network_outputs: Vec<QemuNodeEmittedFrame>,
+    next_network_output_sequence: u64,
     console_observation: Option<QemuConsoleObservation>,
     fault_capabilities: Vec<FaultCapabilityRowV1>,
     ready_markers: std::collections::BTreeSet<crucible::model::FaultObjectId>,
@@ -961,6 +984,7 @@ impl QemuNode {
             active_gdbstub: None,
             pending_preemption: None,
             pending_network_outputs: Vec::new(),
+            next_network_output_sequence: 0,
             console_observation: None,
             fault_capabilities: Vec::new(),
             ready_markers: std::collections::BTreeSet::new(),
@@ -1471,8 +1495,56 @@ impl QemuNode {
     /// here so the authoritative scheduler observes it at the first boundary.
     /// Restore factories intentionally omit the transfer because the restored
     /// checkpoint supersedes the primed machine state.
-    pub(crate) fn retain_priming_network_outputs(&mut self, outputs: Vec<QemuNodeEmittedFrame>) {
+    pub(crate) fn retain_priming_network_outputs(
+        &mut self,
+        outputs: Vec<QemuNodeEmittedFrame>,
+    ) -> Result<(), QemuNodeError> {
+        self.observe_network_output_batch(&outputs)?;
         self.pending_network_outputs.extend(outputs);
+        Ok(())
+    }
+
+    fn observe_network_output_batch(
+        &mut self,
+        outputs: &[QemuNodeEmittedFrame],
+    ) -> Result<(), QemuNodeError> {
+        let mut next_sequence = self.next_network_output_sequence;
+        for output in outputs {
+            if output.sequence != next_sequence {
+                return Err(QemuNodeError::NetworkOutputSequence {
+                    expected: next_sequence,
+                    observed: output.sequence,
+                });
+            }
+            next_sequence = next_sequence.checked_add(1).ok_or({
+                QemuNodeError::NetworkOutputSequence {
+                    expected: next_sequence,
+                    observed: output.sequence,
+                }
+            })?;
+        }
+        self.next_network_output_sequence = next_sequence;
+        Ok(())
+    }
+
+    fn observe_network_output_sequence(
+        &mut self,
+        output: &QemuNodeEmittedFrame,
+    ) -> Result<(), QemuNodeError> {
+        if output.sequence != self.next_network_output_sequence {
+            return Err(QemuNodeError::NetworkOutputSequence {
+                expected: self.next_network_output_sequence,
+                observed: output.sequence,
+            });
+        }
+        self.next_network_output_sequence = self
+            .next_network_output_sequence
+            .checked_add(1)
+            .ok_or(QemuNodeError::NetworkOutputSequence {
+                expected: self.next_network_output_sequence,
+                observed: output.sequence,
+            })?;
+        Ok(())
     }
 
     /// Advances the child to an instruction-count ceiling through shared memory.
@@ -1558,6 +1630,7 @@ impl QemuNode {
         ceiling: Icount,
         report: crate::QemuAsyncNodeStepReport,
     ) -> Result<AdvanceOutcome, QemuNodeError> {
+        self.observe_network_output_batch(&report.emitted_frames)?;
         self.pending_network_outputs.extend(report.emitted_frames);
         let advance = match report.outcome {
             QemuAsyncNodeStepOutcome::Completed { advance } => Ok(advance),
@@ -1885,6 +1958,16 @@ impl QemuNode {
             let _logical_time_offset = logical_time_calibration.offset().map_err(|source| {
                 QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
             })?;
+            let mut network_transport = self
+                .channels
+                .shmem_hot_path
+                .checkpoint_network_transport()
+                .map_err(|source| {
+                    QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+                })?;
+            network_transport
+                .bind_outbound_sequence(self.next_network_output_sequence)
+                .map_err(|error| QemuNodeError::checkpoint(error.to_string()))?;
             let node = crate::QemuNodeContinuationCheckpoint {
                 execution_binding: checkpoint.id,
                 last_observed_time: self.last_observed_time,
@@ -1892,6 +1975,7 @@ impl QemuNode {
                 console_observation_boundary: self.console_observation_boundary,
                 pending_preemption: self.pending_preemption.clone(),
                 pending_network_outputs: self.pending_network_outputs.clone(),
+                network_transport,
                 next_fault_command_sequence: self.next_fault_command_sequence,
                 next_fault_event_sequence: self.next_fault_event_sequence,
             };
@@ -1988,7 +2072,15 @@ impl QemuNode {
         self.last_observed_time = checkpoint.last_observed_time;
         self.console_observation_boundary = checkpoint.console_observation_boundary;
         self.pending_preemption = checkpoint.pending_preemption.clone();
+        self.channels
+            .shmem_hot_path
+            .restore_network_transport(&checkpoint.network_transport)
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+            })?;
         self.pending_network_outputs = checkpoint.pending_network_outputs.clone();
+        self.next_network_output_sequence =
+            checkpoint.network_transport.next_host_outbound_sequence;
         self.next_fault_command_sequence = checkpoint.next_fault_command_sequence;
         self.next_fault_event_sequence = checkpoint.next_fault_event_sequence;
         self.fault_event_terminal_failure = None;
@@ -1999,7 +2091,8 @@ impl QemuNode {
     ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeError`] when QMP cannot confirm the running state.
+    /// Returns [`QemuNodeError`] when QMP does not acknowledge the running-state
+    /// transition. The next bounded step proves execution.
     pub(crate) fn resume_after_restore(&mut self) -> Result<(), QemuNodeError> {
         self.channels
             .qmp_machine_control
@@ -2297,6 +2390,8 @@ impl SimulationBackend for QemuNode {
             });
         }
         while let Some(frame) = self.emit_frame().map_err(BackendError::from)? {
+            self.observe_network_output_sequence(&frame)
+                .map_err(BackendError::from)?;
             outputs.push(BackendNetworkOutput {
                 source: frame.source,
                 destination: frame.destination,

@@ -74,6 +74,20 @@ impl PluginNetworkTx {
     /// Returns [`NetworkTxError::WrongOutboundRing`] when `ring` is not the
     /// outbound network-router ring for `src_slot`.
     pub fn from_directed_ring(src_slot: u32, ring: DirectedRing) -> Result<Self, NetworkTxError> {
+        Self::from_directed_ring_with_sequence(src_slot, ring, 0)
+    }
+
+    /// Builds TX state at an authenticated continuation sequence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkTxError::WrongOutboundRing`] under the same conditions
+    /// as [`Self::from_directed_ring`].
+    pub fn from_directed_ring_with_sequence(
+        src_slot: u32,
+        ring: DirectedRing,
+        next_seq: u32,
+    ) -> Result<Self, NetworkTxError> {
         if ring.src_slot != src_slot || ring.dst_slot != NET_ROUTER_SLOT_U32 {
             return Err(NetworkTxError::WrongOutboundRing {
                 expected_src_slot: src_slot,
@@ -85,17 +99,23 @@ impl PluginNetworkTx {
             });
         }
 
-        Ok(Self::new(src_slot, ring.index))
+        Ok(Self::new_with_sequence(src_slot, ring.index, next_seq))
     }
 
     /// Builds a TX state object for the outbound network-router ring.
     #[must_use]
     pub const fn new(src_slot: u32, ring_index: u32) -> Self {
+        Self::new_with_sequence(src_slot, ring_index, 0)
+    }
+
+    /// Builds TX state at an authenticated continuation sequence.
+    #[must_use]
+    pub const fn new_with_sequence(src_slot: u32, ring_index: u32, next_seq: u32) -> Self {
         Self {
             src_slot,
             dst_slot: NET_ROUTER_SLOT_U32,
             ring_index,
-            next_seq: Cell::new(0),
+            next_seq: Cell::new(next_seq),
         }
     }
 
@@ -578,6 +598,21 @@ mod tests {
         assert_eq!(header.write_index(), 2);
         assert_frame(&ring.entries[0], 77, 2, 0, b"alpha");
         assert_frame(&ring.entries[1], 78, 2, 1, b"beta");
+    }
+
+    #[test]
+    fn network_tx_authenticated_continuation_starts_at_the_restored_sequence() {
+        let header = RingHeader::new();
+        let mut entries = empty_entries(4);
+        let tx = PluginNetworkTx::new_with_sequence(2, 12, 41);
+        let mut ring = ring_view(12, 2, &header, &mut entries);
+
+        let restored = enqueue(&tx, &mut ring, 79, b"restored");
+
+        assert_eq!(restored.seq(), 41);
+        assert_eq!(restored.next_seq(), 42);
+        assert_eq!(tx.next_seq(), 42);
+        assert_frame(&ring.entries[0], 79, 2, 41, b"restored");
     }
 
     #[test]

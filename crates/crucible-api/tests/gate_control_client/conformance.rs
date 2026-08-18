@@ -581,15 +581,16 @@ where
     let final_observation =
         read_api_determinism_observation(client, session, "after commands").await;
     assert_eq!(final_observation.final_state, LiveStateKind::Paused);
-    assert_eq!(
-        final_observation.reproduction.len(),
-        mutating_results.len(),
-        "only boundary-mutating commands should enter reproduction"
+    assert!(
+        final_observation.reproduction.is_empty(),
+        "paused observation and savepoint-cache commands must not enter the running-boundary reproduction schedule"
     );
     for excluded in [
         SessionCommandKind::Query,
         SessionCommandKind::Start,
         SessionCommandKind::Continue,
+        SessionCommandKind::SetBreakpoint,
+        SessionCommandKind::CreateSavepoint,
     ] {
         assert!(
             !final_observation
@@ -844,7 +845,10 @@ pub(super) async fn drive_rpc_arrival_permutation_projection(
         .unwrap_or_else(|error| {
             panic!("arrival-order mutate-before-read GetReproduction should succeed: {error}")
         });
-    assert_eq!(read_after.commands.len(), 2);
+    assert!(
+        read_after.commands.is_empty(),
+        "paused observation and savepoint-cache commands must stay out of reproduction"
+    );
     assert_eq!(
         server.take_arrivals().await,
         vec!["send", "get-reproduction"],

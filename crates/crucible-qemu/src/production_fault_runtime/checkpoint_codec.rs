@@ -17,7 +17,7 @@ use crucible::model::{
 use crucible::{BackendNetworkOutput, NodeId, SchedulerNetworkCheckpoint};
 use crucible_shmem::DequeuedFaultEvent;
 
-const MAGIC: &[u8] = b"crucible.production-fault-runtime.v2\0";
+const MAGIC: &[u8] = b"crucible.production-fault-runtime.v3\0";
 const MAX_BYTES: usize = 1_610_612_736;
 
 #[derive(Serialize, Deserialize)]
@@ -74,6 +74,7 @@ impl From<QemuActionCommitWire> for CommittedQemuActionEvidence {
 struct NetworkWire {
     identity: ContentHash,
     scheduler: Vec<u8>,
+    committed_frontier_ticks: u64,
     pending_outputs: Vec<Vec<u8>>,
     adapter_state: Vec<u8>,
 }
@@ -263,6 +264,7 @@ fn encode_network(
             .scheduler
             .canonical_bytes()
             .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Network)?,
+        committed_frontier_ticks: checkpoint.committed_frontier.ticks,
         pending_outputs: checkpoint
             .pending_outputs
             .iter()
@@ -280,6 +282,9 @@ fn decode_network(
         identity: wire.identity,
         scheduler: SchedulerNetworkCheckpoint::from_canonical_bytes(&wire.scheduler)
             .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Network)?,
+        committed_frontier: crucible::VirtualTime {
+            ticks: wire.committed_frontier_ticks,
+        },
         pending_outputs: wire
             .pending_outputs
             .into_iter()
@@ -397,6 +402,7 @@ mod tests {
                 rng_positions: BTreeMap::new(),
                 signal_fault_wakeup_nanos: None,
             },
+            crucible::VirtualTime { ticks: 17 },
             Vec::new(),
             adapter_state,
         )

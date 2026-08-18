@@ -105,11 +105,13 @@ where
     ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeChannelError`] when QEMU cannot enter and confirm the
-    /// running state.
+    /// Returns [`QemuNodeChannelError`] when QEMU does not acknowledge the
+    /// running-state transition. The first scheduler-authorized node step is
+    /// the execution proof because an idle restored simulator can park before
+    /// servicing a follow-up QMP status query.
     pub fn resume_after_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
         self.client
-            .cont()
+            .cont_acknowledged()
             .map(|_complete| ())
             .map_err(QemuNodeChannelError::from)
     }

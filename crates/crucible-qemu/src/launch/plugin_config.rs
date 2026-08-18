@@ -143,6 +143,7 @@ pub struct QemuLaunchPluginConfig {
     slot: u32,
     fault_node_hash: [u8; 32],
     process_generation: u64,
+    network_tx_next_seq: u32,
     whitebox: QemuLaunchPluginSwitch,
     whitebox_setup: Option<QemuWhiteboxSetupValidation>,
     app_random: Option<QemuLaunchAppRandomConfig>,
@@ -162,6 +163,7 @@ impl QemuLaunchPluginConfig {
             slot,
             fault_node_hash: qemu_fault_target_hash(&standalone_identity),
             process_generation: 1,
+            network_tx_next_seq: 0,
             whitebox: QemuLaunchPluginSwitch::Off,
             whitebox_setup: None,
             app_random: None,
@@ -196,6 +198,19 @@ impl QemuLaunchPluginConfig {
     #[must_use]
     pub const fn process_generation(&self) -> u64 {
         self.process_generation
+    }
+
+    /// Returns a config continuing the plugin-owned network TX sequence.
+    #[must_use]
+    pub const fn with_network_tx_next_sequence(mut self, next_sequence: u32) -> Self {
+        self.network_tx_next_seq = next_sequence;
+        self
+    }
+
+    /// Returns the next plugin-owned network TX sequence.
+    #[must_use]
+    pub const fn network_tx_next_sequence(&self) -> u32 {
+        self.network_tx_next_seq
     }
 
     /// Returns a config with the white-box hook switch set.
@@ -322,6 +337,10 @@ impl QemuLaunchPluginConfig {
             format!(
                 "{PLUGIN_ARG_PROCESS_GENERATION}={}",
                 self.process_generation
+            ),
+            format!(
+                "{PLUGIN_ARG_NETWORK_TX_NEXT_SEQ}={}",
+                self.network_tx_next_seq
             ),
             format!("{PLUGIN_ARG_SHMEMFD}={FIXED_PLUGIN_SHMEM_FD}"),
             format!("{PLUGIN_ARG_WAKEFD}={FIXED_PLUGIN_WAKE_FD}"),

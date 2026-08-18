@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "85f9a9264b4a8df829152487496812960438fd76942a5d9c3b29a9f55a6208f6";
+  patchBranchBundleSha256 = "248a056b934bc9baff53b356b4b67c70ad02478d676c23fe87c11a83e720db7c";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "51802a7940923ecf3ef6e733dd07c2f17aea1fe2";
+  patchBranchHeadCommit = "8a1683560d403dbce949af5e1d0e99811e5908cf";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -758,13 +758,23 @@ let
     }
     {
       file = "0083-crucible-inert-clock-restore.patch";
-      branchSubject = "crucible: preserve inert clocks across restore";
-      branchCommit = "51802a7940923ecf3ef6e733dd07c2f17aea1fe2";
-      branchTree = "a746e0b13955070d3b58194754067970abebc6df";
+      branchSubject = "crucible: preserve clocks across VMState restore";
+      branchCommit = "5424603c85346a95227c6955393533002a220c2d";
+      branchTree = "2d10b71fcdca655d69dfa7be8c8143309060d269";
       catalogName = "crucible-inert-clock-restore";
       class = "D";
       enforces = "DET-1,QFP-CLOCK-2,QFP-STATE-2";
-      capability = "fresh-process restore retains QEMU-native timer state for inactive guest clocks while rearming only clocks with an effective Crucible transform";
+      capability = "the complete VMState load transaction suppresses transient guest-clock transforms, then a successful outermost restore retains native timers, including HPET timers without a fault-managed generation, and rearms effective Crucible transforms";
+    }
+    {
+      file = "0084-crucible-exact-restore-network-announcement.patch";
+      branchSubject = "crucible: suppress migration announcements on exact restore";
+      branchCommit = "8a1683560d403dbce949af5e1d0e99811e5908cf";
+      branchTree = "f10c61cb5ab7935887b42042ee24dc6b00ae8098";
+      catalogName = "crucible-exact-restore-network-announcement";
+      class = "D";
+      enforces = "DET-1,QFP-STATE-2,FAULT-ORDER";
+      capability = "exact Crucible VMState restore suppresses migration-only virtio-net guest announcements while ordinary QEMU migration retains its upstream announcement behavior";
     }
   ];
   catalogOnlyCapabilities = [

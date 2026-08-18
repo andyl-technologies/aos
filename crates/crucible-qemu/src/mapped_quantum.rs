@@ -17,7 +17,7 @@ use crucible_protocol::{
 };
 use crucible_shmem::{
     FingerprintSample, GuestIntrospectionEntry, MappedDirectedRingMut, MappedNodeRingPairMut,
-    MappedSetupRegion, STATUS_DONE,
+    MappedSetupRegion, SLOT_NET_ROUTER, STATUS_DONE,
 };
 
 use crate::{
@@ -527,6 +527,98 @@ impl QemuMappedQuantumShmemHotPath {
 }
 
 impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
+    fn checkpoint_network_transport(
+        &mut self,
+    ) -> Result<crate::QemuNetworkTransportCheckpoint, QemuNodeChannelError> {
+        let router_slot = SLOT_NET_ROUTER as u32;
+        let pair = self
+            .region
+            .node_directed_ring_pair_mut(
+                self.config.vm_slot,
+                self.config.vm_slot,
+                router_slot,
+                router_slot,
+                self.config.vm_slot,
+            )
+            .map_err(|error| {
+                QemuNodeChannelError::new("checkpoint network transport", error.to_string())
+            })?;
+        let outbound = pair
+            .first
+            .header
+            .snapshot(pair.first.entries)
+            .map_err(|error| {
+                QemuNodeChannelError::new("checkpoint network outbound ring", error.to_string())
+            })?;
+        let inbound = pair
+            .second
+            .header
+            .snapshot(pair.second.entries)
+            .map_err(|error| {
+                QemuNodeChannelError::new("checkpoint network inbound ring", error.to_string())
+            })?;
+        Ok(crate::QemuNetworkTransportCheckpoint {
+            inbound,
+            outbound,
+            next_router_inbound_sequence: self.next_router_inbound_sequence,
+            next_host_outbound_sequence: 0,
+            next_plugin_outbound_sequence: 0,
+        })
+    }
+
+    fn restore_network_transport(
+        &mut self,
+        checkpoint: &crate::QemuNetworkTransportCheckpoint,
+    ) -> Result<(), QemuNodeChannelError> {
+        let router_slot = SLOT_NET_ROUTER as u32;
+        let pair = self
+            .region
+            .node_directed_ring_pair_mut(
+                self.config.vm_slot,
+                self.config.vm_slot,
+                router_slot,
+                router_slot,
+                self.config.vm_slot,
+            )
+            .map_err(|error| {
+                QemuNodeChannelError::new("restore network transport", error.to_string())
+            })?;
+        let prior_outbound = pair
+            .first
+            .header
+            .snapshot(pair.first.entries)
+            .map_err(|error| {
+                QemuNodeChannelError::new("snapshot prior network outbound ring", error.to_string())
+            })?;
+        pair.first
+            .header
+            .restore(pair.first.entries, &checkpoint.outbound)
+            .map_err(|error| {
+                QemuNodeChannelError::new("restore network outbound ring", error.to_string())
+            })?;
+        if let Err(error) = pair
+            .second
+            .header
+            .restore(pair.second.entries, &checkpoint.inbound)
+        {
+            pair.first
+                .header
+                .restore(pair.first.entries, &prior_outbound)
+                .map_err(|rollback| {
+                    QemuNodeChannelError::new(
+                        "roll back network outbound ring",
+                        rollback.to_string(),
+                    )
+                })?;
+            return Err(QemuNodeChannelError::new(
+                "restore network inbound ring",
+                error.to_string(),
+            ));
+        }
+        self.next_router_inbound_sequence = checkpoint.next_router_inbound_sequence;
+        Ok(())
+    }
+
     fn send_guest_introspection(
         &mut self,
         record: GuestIntrospectionRecord,

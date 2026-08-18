@@ -253,6 +253,7 @@ impl OwnedCallbackRuntimeState {
         exact_deadline: crate::ExactDeadlineReader,
         queued_idle_advance: crate::QueuedIdleAdvance,
         network_rx: crate::QemuLosslessNetworkRxQueue,
+        network_tx_next_seq: u32,
         process_generation: u64,
         fault_command_apis: crate::fault_command::QemuFaultCommandApis,
         fingerprint: Option<crate::PluginFingerprintSampling>,
@@ -316,7 +317,13 @@ impl OwnedCallbackRuntimeState {
             Arc::clone(&state.quiescence),
             state.teardown_sender.clone(),
         )?
-        .attach_network(slot_index, mapped.first, mapped.second, network_rx)?;
+        .attach_network(
+            slot_index,
+            mapped.first,
+            mapped.second,
+            network_rx,
+            network_tx_next_seq,
+        )?;
         let block_slot = crucible_shmem::SLOT_BLK_IO as u32;
         let mapped = state
             .setup

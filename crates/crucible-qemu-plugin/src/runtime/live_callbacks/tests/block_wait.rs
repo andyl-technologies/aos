@@ -179,7 +179,7 @@ fn live_completion_joins_buffered_tx_inbound_ring_rx_and_clock_commit() {
             .unwrap_or_else(|error| panic!("test RX queue should build: {error}"));
     let state = Box::new(
         test_live_state(49, 1, 0, 0, &slot)
-            .and_then(|state| state.attach_network(0, outbound, inbound, rx_queue))
+            .and_then(|state| state.attach_network(0, outbound, inbound, rx_queue, 0))
             .unwrap_or_else(|error| panic!("live network callback state should build: {error}")),
     );
     TEST_REENTRANT_RX_STATE.store(

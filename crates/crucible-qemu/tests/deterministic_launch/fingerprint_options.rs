@@ -20,7 +20,7 @@ fn fingerprint_plugin_switch_is_emitted_only_when_enabled() {
     assert_eq!(
         base.plugin_args_raw(),
         format!(
-            "simfd=3,slot=0,fault_node_hash={fault_hash},process_generation=1,shmemfd=4,wakefd=5,whitebox=off,coverage=off"
+            "simfd=3,slot=0,fault_node_hash={fault_hash},process_generation=1,network_tx_next_seq=0,shmemfd=4,wakefd=5,whitebox=off,coverage=off"
         )
     );
     assert_eq!(
@@ -35,7 +35,7 @@ fn fingerprint_plugin_switch_is_emitted_only_when_enabled() {
             .with_fingerprint(QemuLaunchPluginSwitch::On)
             .plugin_args_raw(),
         format!(
-            "simfd=3,slot=0,fault_node_hash={fault_hash},process_generation=1,shmemfd=4,wakefd=5,whitebox=off,coverage=off,fingerprint=on"
+            "simfd=3,slot=0,fault_node_hash={fault_hash},process_generation=1,network_tx_next_seq=0,shmemfd=4,wakefd=5,whitebox=off,coverage=off,fingerprint=on"
         )
     );
     assert_eq!(
@@ -43,7 +43,7 @@ fn fingerprint_plugin_switch_is_emitted_only_when_enabled() {
             .with_fingerprint_oracle(QemuLaunchPluginSwitch::On)
             .plugin_args_raw(),
         format!(
-            "simfd=3,slot=0,fault_node_hash={fault_hash},process_generation=1,shmemfd=4,wakefd=5,whitebox=off,coverage=off,fingerprint=on,fingerprint_oracle=on"
+            "simfd=3,slot=0,fault_node_hash={fault_hash},process_generation=1,network_tx_next_seq=0,shmemfd=4,wakefd=5,whitebox=off,coverage=off,fingerprint=on,fingerprint_oracle=on"
         )
     );
 }

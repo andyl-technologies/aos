@@ -264,6 +264,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                 capabilities.exact_deadline,
                 capabilities.queued_idle_advance,
                 capabilities.network_rx,
+                args.network_tx_next_seq(),
                 args.process_generation(),
                 capabilities.fault_commands,
                 fingerprint,
@@ -700,9 +701,14 @@ impl LiveNetworkCallbackState {
         outbound: MappedDirectedRingMut<'_>,
         inbound: MappedDirectedRingMut<'_>,
         rx_queue: QemuLosslessNetworkRxQueue,
+        next_tx_sequence: u32,
     ) -> Result<Self, LiveVcpuTimeCallbackError> {
-        let tx = PluginNetworkTx::from_directed_ring(vm_slot, outbound.descriptor)
-            .map_err(|source| LiveVcpuTimeCallbackError::NetworkTx { source })?;
+        let tx = PluginNetworkTx::from_directed_ring_with_sequence(
+            vm_slot,
+            outbound.descriptor,
+            next_tx_sequence,
+        )
+        .map_err(|source| LiveVcpuTimeCallbackError::NetworkTx { source })?;
         if inbound.descriptor.src_slot != SLOT_NET_ROUTER as u32
             || inbound.descriptor.dst_slot != vm_slot
         {
@@ -927,9 +933,14 @@ impl LiveVcpuTimeCallbackState {
         outbound: MappedDirectedRingMut<'_>,
         inbound: MappedDirectedRingMut<'_>,
         rx_queue: QemuLosslessNetworkRxQueue,
+        next_tx_sequence: u32,
     ) -> Result<Self, LiveVcpuTimeCallbackError> {
         self.network = Some(LiveNetworkCallbackState::new(
-            vm_slot, outbound, inbound, rx_queue,
+            vm_slot,
+            outbound,
+            inbound,
+            rx_queue,
+            next_tx_sequence,
         )?);
         Ok(self)
     }

@@ -219,7 +219,67 @@ fn main() -> Result<(), Box<dyn Error>> {
     })?;
     restored.shutdown()?;
     if restored_outcome != uninterrupted {
-        return Err("durable exact restore diverged on the next live-QEMU quantum".into());
+        let decision_divergence = uninterrupted
+            .decisions
+            .iter()
+            .zip(&restored_outcome.decisions)
+            .position(|(left, right)| left != right);
+        let decision_pair = decision_divergence.map(|index| {
+            (
+                index,
+                uninterrupted.decisions.get(index),
+                restored_outcome.decisions.get(index),
+            )
+        });
+        let entry_divergence = uninterrupted
+            .event_log_entries
+            .iter()
+            .zip(&restored_outcome.event_log_entries)
+            .position(|(left, right)| left != right);
+        let entry_pair = entry_divergence.map(|index| {
+            (
+                index,
+                uninterrupted.event_log_entries.get(index),
+                restored_outcome.event_log_entries.get(index),
+            )
+        });
+        let uninterrupted_decision_tail = uninterrupted
+            .decisions
+            .iter()
+            .rev()
+            .take(2)
+            .collect::<Vec<_>>();
+        let restored_decision_tail = restored_outcome
+            .decisions
+            .iter()
+            .rev()
+            .take(2)
+            .collect::<Vec<_>>();
+        return Err(format!(
+            "durable exact restore diverged on the next live-QEMU quantum: \
+             frontier={:?}/{:?}, advanced_node={:?}/{:?}, decisions={}/{}, \
+             resolved_events={}/{}, event_entries={}/{}, offsets={:?}/{:?}, \
+             configuration_equal={}, segment_equal={}, quiescence_equal={}, \
+             first_decision_divergence={decision_pair:?}, \
+             first_event_divergence={entry_pair:?}, \
+             decision_tails={uninterrupted_decision_tail:?}/{restored_decision_tail:?}",
+            uninterrupted.frontier,
+            restored_outcome.frontier,
+            uninterrupted.advanced_node,
+            restored_outcome.advanced_node,
+            uninterrupted.decisions.len(),
+            restored_outcome.decisions.len(),
+            uninterrupted.resolved_events.len(),
+            restored_outcome.resolved_events.len(),
+            uninterrupted.event_log_entries.len(),
+            restored_outcome.event_log_entries.len(),
+            uninterrupted.event_log_offset,
+            restored_outcome.event_log_offset,
+            uninterrupted.configuration == restored_outcome.configuration,
+            uninterrupted.event_log_segment_bytes == restored_outcome.event_log_segment_bytes,
+            uninterrupted.scheduler_quiescence == restored_outcome.scheduler_quiescence,
+        )
+        .into());
     }
 
     // ---------------------------------------------------------------------

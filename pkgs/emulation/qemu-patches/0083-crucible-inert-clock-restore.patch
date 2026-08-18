@@ -1,23 +1,388 @@
+diff --git a/hw/timer/hpet.c b/hw/timer/hpet.c
+index c4d7aa2a9..8e0c01d22 100644
+--- a/hw/timer/hpet.c
++++ b/hw/timer/hpet.c
+@@ -532,7 +532,8 @@ static void hpet_timer(void *opaque)
+     uint64_t period = t->period;
+     uint64_t cur_tick = hpet_get_ticks(t->state, false);
+ 
+-    if (!t->crucible_timer_armed ||
++    if ((t->crucible_transform_generation != 0 &&
++         !t->crucible_timer_armed) ||
+         !qemu_crucible_fault_clock_timer_fire(
+             QEMU_CRUCIBLE_CLOCK_X86_HPET, t->state->hpet_id,
+             QEMU_CRUCIBLE_CLOCK_TIMER_PRIMARY, t->tn,
+diff --git a/include/migration/misc.h b/include/migration/misc.h
+index f9cd4f110..0be31c515 100644
+--- a/include/migration/misc.h
++++ b/include/migration/misc.h
+@@ -68,7 +68,7 @@ bool migration_crucible_raw_state_export_sealed(void);
+ 
+ /* Track every entry into the central VMState deserialization loop. */
+ int migration_crucible_load_begin(void);
+-void migration_crucible_load_end(void);
++void migration_crucible_load_end(bool successful);
+ 
+ typedef enum MigrationEventType {
+     MIG_EVENT_PRECOPY_SETUP,
+diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
+index 472667fd1..7ce54c71c 100644
+--- a/include/qemu/crucible-fault.h
++++ b/include/qemu/crucible-fault.h
+@@ -437,6 +437,8 @@ bool qemu_crucible_fault_clock_project_ns(
+     uint64_t *value_ns, bool *read_error);
+ bool qemu_crucible_fault_clock_source_active(
+     uint16_t source_kind, uint32_t instance);
++void qemu_crucible_fault_clock_vmstate_load_begin(void);
++void qemu_crucible_fault_clock_vmstate_load_end(bool successful);
+ bool qemu_crucible_fault_clock_source_rebase(
+     uint16_t source_kind, uint32_t instance, uint64_t raw_ns);
+ bool qemu_crucible_fault_clock_source_discontinuity(
+@@ -470,7 +472,10 @@ bool qemu_crucible_fault_clock_timer_fire(
+     uint32_t timer_index, uint64_t timer_arm_sequence,
+     uint64_t guest_deadline_ns,
+     uint64_t scheduler_deadline_ns, uint64_t transform_generation);
+-void qemu_crucible_fault_clock_event_terminal(void);
++void qemu_crucible_fault_clock_event_terminal_at(
++    const char *source_file, unsigned int source_line);
++#define qemu_crucible_fault_clock_event_terminal() \
++    qemu_crucible_fault_clock_event_terminal_at(__FILE__, __LINE__)
+ 
+ /* Deterministic vCPU service and fixed-topology eligibility control. */
+ int qemu_crucible_fault_vcpu_service_validate(
+diff --git a/migration/migration.c b/migration/migration.c
+index bc5689ab4..ed3c8db45 100644
+--- a/migration/migration.c
++++ b/migration/migration.c
+@@ -18,6 +18,7 @@
+ #include "qemu/cutils.h"
+ #include "qemu/error-report.h"
+ #include "qemu/main-loop.h"
++#include "qemu/crucible-fault.h"
+ #include "migration/blocker.h"
+ #include "exec.h"
+ #include "fd.h"
+@@ -1268,17 +1269,19 @@ int migration_crucible_load_begin(void)
+         status = -EOVERFLOW;
+     } else {
+         crucible_active_loaders++;
++        qemu_crucible_fault_clock_vmstate_load_begin();
+     }
+     qemu_mutex_unlock(&crucible_raw_state_mutex);
+     return status;
+ }
+ 
+-void migration_crucible_load_end(void)
++void migration_crucible_load_end(bool successful)
+ {
+     qemu_mutex_lock(&crucible_raw_state_mutex);
+     assert(crucible_active_loaders != 0);
+     crucible_active_loaders--;
+     qemu_mutex_unlock(&crucible_raw_state_mutex);
++    qemu_crucible_fault_clock_vmstate_load_end(successful);
+ }
+ 
+ static bool migration_is_active(void)
+diff --git a/migration/savevm.c b/migration/savevm.c
+index dc27b9190..08ff0832a 100644
+--- a/migration/savevm.c
++++ b/migration/savevm.c
+@@ -3171,7 +3171,7 @@ int qemu_loadvm_state_main(QEMUFile *f, MigrationIncomingState *mis)
+     if (qemu_crucible_terminal_vmstate_exported()) {
+         error_report(
+             "VMState load rejected after terminal Crucible VMState export");
+-        migration_crucible_load_end();
++        migration_crucible_load_end(false);
+         return -EPERM;
+     }
+ retry:
+@@ -3241,7 +3241,7 @@ out:
+             goto retry;
+         }
+     }
+-    migration_crucible_load_end();
++    migration_crucible_load_end(ret == 0);
+     return ret;
+ }
+ 
 diff --git a/plugins/crucible-fault-clock.c b/plugins/crucible-fault-clock.c
-index 8cf6f5177..8c17bf25f 100644
+index e3bbc543c..e05638d1f 100644
 --- a/plugins/crucible-fault-clock.c
 +++ b/plugins/crucible-fault-clock.c
-@@ -4284,7 +4284,17 @@ static void crucible_clock_vmstate_commit(void *opaque)
+@@ -126,6 +126,8 @@ static bool crucible_clock_registered;
+ static bool crucible_clock_terminal;
+ static bool crucible_clock_restoring;
+ static bool crucible_clock_rearming_timers;
++static unsigned int crucible_clock_vmstate_load_depth;
++static bool crucible_clock_vmstate_load_failed;
+ static uint8_t crucible_clock_manifest_digest[32];
+ 
+ static void crucible_clock_source_digest(
+@@ -1082,6 +1084,31 @@ static bool crucible_clock_source_value(
+         value_out, read_error);
+ }
+ 
++static void crucible_clock_report_read_failure(
++    const CrucibleClockSource *source, uint16_t source_kind,
++    uint32_t instance, uint64_t raw_ns, const char *stage)
++{
++    error_report(
++        "Crucible clock source kind=%u instance=%u read failed at %s: "
++        "raw=%" PRIu64 " anchor_raw=%" PRIu64
++        " anchor_value=%" PRIu64 " last_value=%" PRIu64
++        " has_last=%u rules=%u source_rule=%u additive=%" PRId64
++        " drift=%" PRIu64 "/%" PRIu64 " frozen=%u state=%u "
++        "synchronizing=%u monotonicity=%u terminal=%u",
++        source_kind, instance, stage, raw_ns,
++        source ? source->anchor_raw_ns : 0,
++        source ? source->anchor_value_ns : 0,
++        source ? source->last_value_ns : 0,
++        source ? source->has_last_value : 0,
++        source && source->rules ? source->rules->len : 0,
++        source && source->source_rule, source ? source->additive_nanos : 0,
++        source ? source->drift_numerator : 0,
++        source ? source->drift_denominator : 0,
++        source ? source->frozen : 0, source ? source->source_state : 0,
++        source ? source->synchronizing : 0,
++        source ? source->monotonicity : 0, crucible_clock_terminal);
++}
++
+ static bool crucible_clock_wander_advance_one(
+     CrucibleClockSource *source, CrucibleClockRuleState *state,
+     uint64_t raw_ns)
+@@ -1940,10 +1967,16 @@ static bool crucible_clock_read(
+         return true;
+     }
+     if (crucible_clock_terminal) {
++        error_report("Crucible clock source kind=%u instance=%u read after "
++                     "terminal state (VMState load depth=%u)",
++                     source_kind, instance,
++                     crucible_clock_vmstate_load_depth);
+         return false;
+     }
+     source = crucible_clock_source_by_kind(source_kind, instance);
+     if (!source || !crucible_clock_bindings_sealed) {
++        crucible_clock_report_read_failure(
++            source, source_kind, instance, raw_ns, "source lookup");
+         return false;
+     }
+     event_count = source->source_rule ? 1 : 0;
+@@ -1957,6 +1990,9 @@ static bool crucible_clock_read(
+     if (event_count != 0) {
+         reservation = qemu_crucible_fault_event_reserve(event_count);
+         if (!reservation) {
++            crucible_clock_report_read_failure(
++                source, source_kind, instance, raw_ns,
++                "event reservation");
+             qemu_crucible_fault_clock_event_terminal();
+             return false;
+         }
+@@ -1977,17 +2013,26 @@ static bool crucible_clock_read(
+         if (!crucible_clock_u32(state->rule,
+                                 CRUCIBLE_NODE_FAULT_FIELD_P2, &kind)) {
+             crucible_clock_release_events(reservation);
++            crucible_clock_report_read_failure(
++                source, source_kind, instance, raw_ns,
++                "rule decoding");
+             return false;
+         }
+         if (kind == 6 && state->wander_next_ns != UINT64_MAX &&
+             raw_ns >= state->wander_next_ns) {
+             crucible_clock_release_events(reservation);
++            crucible_clock_report_read_failure(
++                source, source_kind, instance, raw_ns,
++                "overdue wander transition");
+             qemu_crucible_fault_clock_event_terminal();
+             return false;
+         }
+     }
+     if (source->read_sequence == UINT64_MAX) {
+         crucible_clock_release_events(reservation);
++        crucible_clock_report_read_failure(
++            source, source_kind, instance, raw_ns,
++            "read sequence exhaustion");
+         return false;
+     }
+     selected_opportunity = source->read_sequence + 1;
+@@ -1995,6 +2040,9 @@ static bool crucible_clock_read(
+             source, raw_ns, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+             selected_opportunity, true, value_ns, read_error)) {
+         crucible_clock_release_events(reservation);
++        crucible_clock_report_read_failure(
++            source, source_kind, instance, raw_ns,
++            "source projection");
+         return false;
+     }
+     if (tick_domain && !*read_error) {
+@@ -2005,6 +2053,9 @@ static bool crucible_clock_read(
+             source->capability.frequency_denominator;
+         if (transformed_ticks > UINT64_MAX) {
+             crucible_clock_release_events(reservation);
++            crucible_clock_report_read_failure(
++                source, source_kind, instance, raw_ns,
++                "architectural tick conversion");
+             return false;
+         }
+         *value_architectural = transformed_ticks;
+@@ -2016,6 +2067,9 @@ static bool crucible_clock_read(
+                   QEMU_CRUCIBLE_CLOCK_SOURCE_WRAPS) &&
+                 (*value_architectural & ~mask) != 0) {
+                 crucible_clock_release_events(reservation);
++                crucible_clock_report_read_failure(
++                    source, source_kind, instance, raw_ns,
++                    "architectural tick width");
+                 return false;
+             }
+             wrap_action = (*value_architectural & ~mask) != 0;
+@@ -2038,6 +2092,9 @@ static bool crucible_clock_read(
+             before_hash,
+             reservation)) {
+         crucible_clock_release_events(reservation);
++        crucible_clock_report_read_failure(
++            source, source_kind, instance, raw_ns,
++            "read evidence emission");
+         qemu_crucible_fault_clock_event_terminal();
+         return false;
+     }
+@@ -2056,20 +2113,27 @@ bool qemu_crucible_fault_clock_read_ns(
+         value_ns, &architectural, read_error);
+ }
+ 
++static bool crucible_clock_source_has_effective_transform(
++    const CrucibleClockSource *source)
++{
++    return (source->rules && source->rules->len != 0) ||
++           source->source_rule || source->additive_nanos != 0 ||
++           source->drift_numerator != source->drift_denominator ||
++           source->frozen || source->source_state != CRUCIBLE_CLOCK_HEALTHY ||
++           source->synchronizing;
++}
++
+ bool qemu_crucible_fault_clock_source_active(
+     uint16_t source_kind, uint32_t instance)
+ {
+     CrucibleClockSource *source = crucible_clock_source_by_kind(
+         source_kind, instance);
+ 
+-    return crucible_clock_mode() && source &&
++    return crucible_clock_vmstate_load_depth == 0 &&
++           crucible_clock_mode() && source &&
+            crucible_clock_bindings_sealed &&
+            (crucible_clock_terminal ||
+-           ((source->rules && source->rules->len != 0) ||
+-            source->source_rule || source->additive_nanos != 0 ||
+-            source->drift_numerator != source->drift_denominator ||
+-            source->frozen || source->source_state != CRUCIBLE_CLOCK_HEALTHY ||
+-            source->synchronizing));
++            crucible_clock_source_has_effective_transform(source));
+ }
+ 
+ bool qemu_crucible_fault_clock_source_rebase(
+@@ -2139,15 +2203,24 @@ bool qemu_crucible_fault_clock_project_ns(
+     *value_ns = raw_ns;
+     *read_error = false;
+     if (crucible_clock_terminal) {
++        crucible_clock_report_read_failure(
++            NULL, source_kind, instance, raw_ns,
++            "projection after terminal state");
+         return false;
+     }
+     if (!qemu_crucible_fault_clock_source_active(source_kind, instance)) {
+         return true;
+     }
+     source = crucible_clock_source_by_kind(source_kind, instance);
+-    return crucible_clock_source_value(
+-        source, raw_ns, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+-        0, false, value_ns, read_error);
++    if (!crucible_clock_source_value(
++            source, raw_ns, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
++            0, false, value_ns, read_error)) {
++        crucible_clock_report_read_failure(
++            source, source_kind, instance, raw_ns,
++            "non-observing projection");
++        return false;
++    }
++    return true;
+ }
+ 
+ static bool crucible_clock_transform_ticks(
+@@ -3578,13 +3651,16 @@ int qemu_crucible_fault_clock_impulse(
+     return 0;
+ }
+ 
+-void qemu_crucible_fault_clock_event_terminal(void)
++void qemu_crucible_fault_clock_event_terminal_at(
++    const char *source_file, unsigned int source_line)
+ {
+     const QemuCrucibleFaultRule *terminal_rule = NULL;
+ 
+     if (crucible_clock_terminal) {
+         return;
+     }
++    error_report("Crucible clock entered terminal state at %s:%u",
++                 source_file, source_line);
+     crucible_clock_terminal = true;
+     for (guint i = 0; crucible_clock_sources &&
+          i < crucible_clock_sources->len; i++) {
+@@ -4281,16 +4357,58 @@ static void crucible_clock_vmstate_commit(void *opaque)
+         live->source_rule = source_rule;
+     }
+     crucible_clock_terminal = state->terminal;
++    crucible_clock_vmstate_free(state);
++}
++
++void qemu_crucible_fault_clock_vmstate_load_begin(void)
++{
++    g_assert(crucible_clock_vmstate_load_depth != UINT_MAX);
++    if (crucible_clock_vmstate_load_depth == 0) {
++        crucible_clock_vmstate_load_failed = false;
++    }
++    crucible_clock_vmstate_load_depth++;
++}
++
++void qemu_crucible_fault_clock_vmstate_load_end(bool successful)
++{
++    g_assert(crucible_clock_vmstate_load_depth != 0);
++    if (!successful) {
++        crucible_clock_vmstate_load_failed = true;
++    }
++    crucible_clock_vmstate_load_depth--;
++    if (crucible_clock_vmstate_load_depth != 0 ||
++        crucible_clock_vmstate_load_failed || !crucible_clock_sources) {
++        return;
++    }
++
++    if (crucible_clock_terminal) {
++        error_report("Crucible clock VMState restored terminal state");
++    }
++
+     crucible_clock_restoring = true;
+     for (guint i = 0; i < crucible_clock_sources->len; i++) {
          CrucibleClockSource *source = &g_array_index(
              crucible_clock_sources, CrucibleClockSource, i);
- 
+-
 -        crucible_clock_rearm_source(source);
-+        /*
-+         * Native QEMU VMState has already restored timers for an inert source.
-+         * Recomputing those deadlines is both unnecessary and incorrect: a
-+         * device rearm callback can observe a transient restore coordinate
-+         * which is meaningful only when a Crucible transform is active.
-+         */
-+        if (qemu_crucible_fault_clock_source_active(
-+                source->capability.source_kind,
-+                source->capability.instance)) {
++        bool terminal_before = crucible_clock_terminal;
++
++        if (crucible_clock_source_has_effective_transform(source)) {
 +            crucible_clock_rearm_source(source);
++            if (!terminal_before && crucible_clock_terminal) {
++                error_report("Crucible clock source kind=%u instance=%u "
++                             "became terminal while rearming device timers",
++                             source->capability.source_kind,
++                             source->instance);
++            }
 +        }
++        terminal_before = crucible_clock_terminal;
          crucible_clock_wander_timer_rearm(source);
++        if (!terminal_before && crucible_clock_terminal) {
++            error_report("Crucible clock source kind=%u instance=%u became "
++                         "terminal while rearming wander timer",
++                         source->capability.source_kind, source->instance);
++        }
      }
      crucible_clock_restoring = false;
+-    crucible_clock_vmstate_free(state);
+ }
+ 
+ static const QemuCrucibleFaultVmstateSection

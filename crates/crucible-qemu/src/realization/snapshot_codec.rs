@@ -87,7 +87,10 @@ impl QemuVmSnapshot {
                 .host_io
                 .to_canonical_bytes()
                 .map_err(|_| QemuVmSnapshotCodecError::Nested)?,
-            node: self.node.to_compact_binary(),
+            node: self
+                .node
+                .to_compact_binary()
+                .map_err(|_| QemuVmSnapshotCodecError::Nested)?,
             replay_oracle: self.replay_oracle_validation.into(),
             live_capture: self.live_capture,
             identity: self.identity.bytes,
@@ -210,7 +213,9 @@ pub(super) fn canonical_snapshot_identity(
     let host_io = host_io
         .to_canonical_bytes()
         .map_err(|_| QemuVmSnapshotCodecError::HostIo)?;
-    let node = node.to_compact_binary();
+    let node = node
+        .to_compact_binary()
+        .map_err(|_| QemuVmSnapshotCodecError::Nested)?;
     let mut material = Vec::new();
     material.extend_from_slice(b"crucible.qemu.exact-snapshot.v4\0");
     append_blob(&mut material, &checkpoint)?;

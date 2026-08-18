@@ -217,6 +217,12 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
         )
     }
 
+    /// Returns the scheduler frontier through which backend output is committed.
+    #[must_use]
+    pub const fn committed_frontier(&self) -> VirtualTime {
+        self.committed_frontier
+    }
+
     /// Consumes the adapter and returns its parts.
     #[must_use]
     pub fn into_parts(self) -> (L, B) {
