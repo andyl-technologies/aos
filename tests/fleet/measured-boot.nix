@@ -1527,8 +1527,9 @@ in {
       wait_serial("AOS authenticated maintenance shell", offset)
       offset = serial_offset()
       target.send_serial(
-          "test -e /dev/mapper/var && grep -q ' /var ' /proc/mounts "
-          "&& echo AOS_RECOVERY_SHELL_OK\nexit\n"
+          "test -e /dev/mapper/var && while read -r device mountpoint rest; do "
+          "if test \"$mountpoint\" = /var; then echo AOS_RECOVERY_SHELL_OK; break; fi; "
+          "done < /proc/mounts\nexit\n"
       )
       shell_transcript = wait_serial(
           "maintenance session ended; persistent state is locked", offset
