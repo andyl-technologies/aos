@@ -42,8 +42,14 @@ in
           export CARGO_HOME="$TMPDIR/cargo"
           export CRUCIBLE_GATE_SOURCE="$PWD"
           mkdir -p "$CARGO_HOME" .cargo
-          printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-            > .cargo/config.toml
+          if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
+            sed 's|@vendor@|${cargoDeps}|g' \
+              "${cargoDeps}/.cargo/config.toml" \
+              > .cargo/config.toml
+          else
+            printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
+              > .cargo/config.toml
+          fi
         '';
       }
       {
@@ -160,10 +166,13 @@ in
               "$source_root/plugin/cargo-vendor" \
               > "$archived_workspace/.cargo/config.toml"
           fi
-          CARGO_HOME="$archived_cargo_home" cargo check --frozen --offline \
-            --manifest-path "$archived_workspace/Cargo.toml" \
-            --target-dir "$archived_target" \
-            -p crucible-qemu-plugin
+          (
+            cd "$archived_workspace"
+            CARGO_HOME="$archived_cargo_home" cargo check --frozen --offline \
+              --manifest-path Cargo.toml \
+              --target-dir "$archived_target" \
+              -p crucible-qemu-plugin
+          )
           actual_patch_count=$(find "$source_root/patches" -name '[0-9][0-9][0-9][0-9]-*.patch' | wc -l)
           test "$actual_patch_count" -eq "$patch_count"
           cmp "$source_root/interfaces/crucible_shmem_abi.h" \
@@ -184,7 +193,7 @@ in
 
           suite_nix="$CRUCIBLE_GATE_SOURCE/pkgs/tools/crucible/crucible.nix"
           release_nix="$CRUCIBLE_GATE_SOURCE/pkgs/tools/crucible/_release-manifest.nix"
-          grep -Fq 'runtimeDeps = [controller qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures];' "$suite_nix"
+          grep -Fq 'runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux];' "$suite_nix"
           grep -Fq 'license = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later" "BSD-2-Clause" "BSD-3-Clause"];' "$suite_nix"
           grep -Fq 'correspondingSource = qemu-crucible-source;' "$suite_nix"
           grep -Fq 'standalone_release=false' "$CRUCIBLE_GATE_SOURCE/pkgs/emulation/qemu.nix"
