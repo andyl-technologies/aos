@@ -1,8 +1,8 @@
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index 7a657fff1..f48339e73 100644
+index 7a657fff1..263674246 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
-@@ -89,20 +89,109 @@ uint64_t icount_crucible_rr_switch_quantum(void)
+@@ -89,20 +89,143 @@ uint64_t icount_crucible_rr_switch_quantum(void)
      return crucible_rr_switch_quantum;
  }
  
@@ -10,25 +10,56 @@ index 7a657fff1..f48339e73 100644
 +uint64_t icount_crucible_rr_current_vcpu(void)
  {
 -    uint64_t rr_switch_quantum = icount_crucible_rr_switch_quantum();
--    int64_t executed;
 +    if (!timers_state.crucible_rr_cursor_valid) {
 +        return UINT64_MAX;
 +    }
 +    return timers_state.crucible_rr_current_vcpu;
 +}
- 
--    if (!cpu || rr_switch_quantum == 0) {
++
 +uint64_t icount_crucible_rr_cursor_position(void)
 +{
 +    if (!timers_state.crucible_rr_cursor_valid) {
-         return 0;
-     }
++        return 0;
++    }
 +    return timers_state.crucible_rr_cursor_position;
 +}
++
++uint64_t icount_crucible_rr_cursor_position_observed(CPUState *cpu)
++{
++    uint64_t quantum = icount_crucible_rr_switch_quantum();
++    uint64_t position;
+     int64_t executed;
  
--    executed = icount_get_executed(cpu);
--    if (executed < 0) {
--        return 0;
+-    if (!cpu || rr_switch_quantum == 0) {
++    if (!cpu || quantum == 0 ||
++        !timers_state.crucible_rr_cursor_valid ||
++        timers_state.crucible_rr_current_vcpu != cpu->cpu_index) {
+         return 0;
+     }
+ 
++    position = timers_state.crucible_rr_cursor_position;
++    if (position >= quantum) {
++        return quantum;
++    }
++
++    /*
++     * The serialized cursor advances when a translation block returns to the
++     * scheduler. Plugin callbacks run inside that block, so include its
++     * retired prefix when reporting the live instruction coordinate. The
++     * terminal value is observable until the scheduler commits the handoff;
++     * only the serialized checkpoint state remains strictly below quantum.
++     */
+     executed = icount_get_executed(cpu);
+     if (executed < 0) {
+         return 0;
+     }
+-    return MIN((uint64_t)executed, rr_switch_quantum);
++    if ((uint64_t)executed >= quantum - position) {
++        return quantum;
++    }
++    return position + (uint64_t)executed;
++}
++
 +static CPUState *icount_crucible_rr_next_runnable(CPUState *selected)
 +{
 +    CPUState *candidate = CPU_NEXT(selected);
@@ -106,8 +137,7 @@ index 7a657fff1..f48339e73 100644
 +    timers_state.crucible_rr_cursor_position += executed;
 +    if (timers_state.crucible_rr_cursor_position != quantum) {
 +        return;
-     }
--    return MIN((uint64_t)executed, rr_switch_quantum);
++    }
 +
 +    next = CPU_NEXT(cpu);
 +    if (!next) {
@@ -120,7 +150,7 @@ index 7a657fff1..f48339e73 100644
  }
  
  /*
-@@ -115,6 +204,9 @@ static void icount_update_locked(CPUState *cpu)
+@@ -115,6 +238,9 @@ static void icount_update_locked(CPUState *cpu)
      int64_t executed = icount_get_executed(cpu);
      cpu->icount_budget -= executed;
  
@@ -170,6 +200,21 @@ index a47e73e93..acd85e050 100644
          if (rr_crucible_sim_mode() && cpu && cpu->exit_request &&
              cpu_work_list_empty(cpu) && !cpu->stop && !cpu->unplug &&
              cpu_can_run(cpu) &&
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index 0db7a030a..ff12e6d1c 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -2166,7 +2166,9 @@ uint64_t qemu_plugin_crucible_rr_current_vcpu(void);
+  * qemu_plugin_crucible_rr_cursor_position() - return position in RR quantum
+  *
+  * Returns the retired-instruction offset within the current pinned
+- * rr_switch_quantum budget, or 0 when the quantum is not pinned.
++ * rr_switch_quantum budget, or 0 when the quantum is not pinned. An
++ * after-instruction callback for the final instruction in a slice observes
++ * the terminal position equal to rr_switch_quantum before scheduler handoff.
+  *
+  * This AOS Crucible extension is available only in system emulation.
+  */
 diff --git a/include/system/cpu-timers-internal.h b/include/system/cpu-timers-internal.h
 index 94bb7394c..2f5f47f5a 100644
 --- a/include/system/cpu-timers-internal.h
@@ -188,22 +233,23 @@ index 94bb7394c..2f5f47f5a 100644
      QEMUTimer *icount_rt_timer;
      QEMUTimer *icount_vm_timer;
 diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
-index fe2bc7c3c..b22edda43 100644
+index fe2bc7c3c..3cbfd5c37 100644
 --- a/include/system/cpu-timers.h
 +++ b/include/system/cpu-timers.h
-@@ -79,7 +79,9 @@ bool icount_configure(QemuOpts *opts, Error **errp);
+@@ -79,7 +79,10 @@ bool icount_configure(QemuOpts *opts, Error **errp);
  int64_t icount_round(int64_t count);
  
  uint64_t icount_crucible_rr_switch_quantum(void);
 -uint64_t icount_crucible_rr_cursor_position(CPUState *cpu);
 +uint64_t icount_crucible_rr_current_vcpu(void);
 +uint64_t icount_crucible_rr_cursor_position(void);
++uint64_t icount_crucible_rr_cursor_position_observed(CPUState *cpu);
 +CPUState *icount_crucible_rr_select_cpu(CPUState *suggested);
  
  /* if the CPUs are idle, start accounting real time to virtual clock. */
  void icount_start_warp_timer(void);
 diff --git a/plugins/api.c b/plugins/api.c
-index 5fa29d640..57a11d764 100644
+index 5fa29d640..e9b04e076 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
 @@ -689,16 +689,12 @@ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
@@ -221,7 +267,7 @@ index 5fa29d640..57a11d764 100644
  uint64_t qemu_plugin_crucible_rr_cursor_position(void)
  {
 -    return icount_crucible_rr_cursor_position(current_cpu);
-+    return icount_crucible_rr_cursor_position();
++    return icount_crucible_rr_cursor_position_observed(current_cpu);
  }
  
  uint64_t qemu_plugin_crucible_rr_switch_quantum(void)

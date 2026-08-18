@@ -216,10 +216,10 @@ index 061b6e087..1891f24fa 100644
                      "Crucible could not fingerprint interrupted replay");
                  abort();
 diff --git a/plugins/crucible-fault-register.c b/plugins/crucible-fault-register.c
-index ac0fb4ee4..fb9041d92 100644
+index 893df8e71..5af7a7679 100644
 --- a/plugins/crucible-fault-register.c
 +++ b/plugins/crucible-fault-register.c
-@@ -577,33 +577,25 @@ static gint crucible_register_cpu_index_compare(gconstpointer left,
+@@ -614,33 +614,25 @@ static gint crucible_register_cpu_index_compare(gconstpointer left,
             (left_cpu->cpu_index < right_cpu->cpu_index);
  }
  
@@ -260,7 +260,7 @@ index ac0fb4ee4..fb9041d92 100644
      g_ptr_array_sort(cpus, crucible_register_cpu_index_compare);
      for (guint cpu_index = 0; cpu_index < cpus->len; cpu_index++) {
          cpu = g_ptr_array_index(cpus, cpu_index);
-@@ -630,8 +622,36 @@ static int crucible_register_execution_fingerprint(
+@@ -667,8 +659,36 @@ static int crucible_register_execution_fingerprint(
              stq_le_p(framing + 8, bytes);
              g_checksum_update(checksum, framing, sizeof(framing));
              g_checksum_update(checksum, value, bytes);
@@ -297,7 +297,7 @@ index ac0fb4ee4..fb9041d92 100644
      g_checksum_get_digest(checksum, output, &digest_len);
      return digest_len == 32 ? 0 : -EIO;
  }
-@@ -648,6 +668,46 @@ int qemu_crucible_fault_execution_fingerprint(
+@@ -685,6 +705,46 @@ int qemu_crucible_fault_execution_fingerprint(
          observed_icount, &rr, fingerprint);
  }
  

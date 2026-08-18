@@ -805,7 +805,7 @@ index 0f0fee953..ef4ece29e 100644
  bool qemu_crucible_fault_register_ensure_registered(void);
  bool qemu_crucible_fault_register_rules_active(void);
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 3584c8d89..c3a4ee710 100644
+index 6e8c9745e..1191bc4ed 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -324,6 +324,43 @@ typedef int (*qemu_plugin_blk_transport_restore_cb_t)(
@@ -880,7 +880,7 @@ index 3584c8d89..c3a4ee710 100644
  /**
   * qemu_plugin_register_9p_cb() - register shmem 9p callbacks
   * @burst_start_cb: burst-start callback, or NULL to disable shmem forwarding
-@@ -1920,6 +1978,30 @@ size_t qemu_plugin_crucible_fault_clock_manifest(
+@@ -1941,6 +1999,30 @@ size_t qemu_plugin_crucible_fault_clock_manifest(
      struct qemu_plugin_crucible_fault_clock_capability *out,
      size_t capacity, uint16_t *architecture);
  

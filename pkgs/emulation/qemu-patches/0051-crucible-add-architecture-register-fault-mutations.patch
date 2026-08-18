@@ -234,10 +234,10 @@ index a9b6bb375..1622d08db 100644
      QEMU_CRUCIBLE_MEMORY_FETCH = 0x01,
      QEMU_CRUCIBLE_MEMORY_CPU_LOAD = 0x02,
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 4f866e5aa..63c6619c3 100644
+index 4f866e5aa..74ce55d32 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1688,6 +1688,43 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
+@@ -1688,6 +1688,64 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
                                              struct qemu_plugin_register *handle,
                                              GByteArray *buf);
  
@@ -263,6 +263,27 @@ index 4f866e5aa..63c6619c3 100644
 +size_t qemu_plugin_crucible_fault_register_manifest(
 +    struct qemu_plugin_crucible_fault_register_capability *out,
 +    size_t capacity, uint16_t *architecture, const char **cpu_model);
++
++/**
++ * qemu_plugin_crucible_fault_register_read() - read one fault-capable register
++ * @vcpu_index: the vCPU index to inspect
++ * @numeric_id: a numeric ID from the realized register manifest
++ * @out_value: optional plugin-owned output buffer
++ * @out_value_capacity: size of @out_value
++ * @out_value_len: output byte count, including when capacity is insufficient
++ *
++ * Returns zero after a side-effect-free read. Returns a negative errno value
++ * when the vCPU or manifest ID is invalid, the output buffer is too small, or
++ * the architecture cannot read the register. A null output buffer with zero
++ * capacity reports the required size through @out_value_len and returns
++ * ``-ENOSPC``.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
++                                             uint32_t numeric_id,
++                                             uint8_t *out_value,
++                                             size_t out_value_capacity,
++                                             size_t *out_value_len);
 +
 +/** Bind the public architecture identity used by every register target. */
 +QEMU_PLUGIN_API
@@ -395,10 +416,10 @@ index 3d7d5024b..6c36ed529 100644
  {
 diff --git a/plugins/crucible-fault-register.c b/plugins/crucible-fault-register.c
 new file mode 100644
-index 000000000..1f83b6e43
+index 000000000..cd5f41619
 --- /dev/null
 +++ b/plugins/crucible-fault-register.c
-@@ -0,0 +1,873 @@
+@@ -0,0 +1,910 @@
 +/*
 + * Crucible architecture register fault targets
 + *
@@ -644,6 +665,43 @@ index 000000000..1f83b6e43
 +               crucible_register_manifest->len * sizeof(*out));
 +    }
 +    return crucible_register_manifest->len;
++}
++
++int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
++                                             uint32_t numeric_id,
++                                             uint8_t *out_value,
++                                             size_t out_value_capacity,
++                                             size_t *out_value_len)
++{
++    const CrucibleRegisterCapability *capability;
++    CPUState *cpu = qemu_get_cpu(vcpu_index);
++    CPUClass *cc;
++    size_t bytes;
++
++    if (!out_value_len || (!out_value && out_value_capacity != 0) || !cpu ||
++        numeric_id == 0 || !crucible_register_manifest_init() ||
++        numeric_id > crucible_register_manifest->len) {
++        return -EINVAL;
++    }
++    capability = &g_array_index(crucible_register_manifest,
++                                CrucibleRegisterCapability,
++                                numeric_id - 1);
++    if (capability->numeric_id != numeric_id) {
++        return -EINVAL;
++    }
++    bytes = DIV_ROUND_UP(capability->width_bits, 8);
++    *out_value_len = bytes;
++    if (!out_value || out_value_capacity < bytes) {
++        return -ENOSPC;
++    }
++
++    cc = CPU_GET_CLASS(cpu);
++    if (!cc->crucible_register_read ||
++        cc->crucible_register_read(cpu, numeric_id, out_value, bytes) !=
++            bytes) {
++        return -EIO;
++    }
++    return 0;
 +}
 +
 +int qemu_plugin_crucible_fault_register_bind(const uint8_t identity[32],
@@ -3003,10 +3061,10 @@ index 2e9c472f4..1257e5425 100644
    'cpu-apic.c',
 diff --git a/tests/tcg/plugins/crucible-register.c b/tests/tcg/plugins/crucible-register.c
 new file mode 100644
-index 000000000..301d2eded
+index 000000000..ed0d3994c
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-register.c
-@@ -0,0 +1,988 @@
+@@ -0,0 +1,989 @@
 +/*
 + * Live Crucible architecture-register mutation test plugin
 + *
@@ -3045,6 +3103,7 @@ index 000000000..301d2eded
 +static uint16_t test_model_phase;
 +static uint16_t test_command_phase;
 +static uint32_t test_numeric_id;
++static uint32_t test_cr0_numeric_id;
 +static uint16_t test_group;
 +static uint32_t test_first_bit;
 +static uint32_t test_side_effects;
@@ -3061,6 +3120,7 @@ index 000000000..301d2eded
 +static size_t test_payload_len;
 +static struct qemu_plugin_crucible_fault_command test_command;
 +static bool test_commit_submitted;
++static bool test_initial_command_submitted;
 +static bool test_rule_installed;
 +static bool test_validated;
 +static bool test_finished;
@@ -3111,34 +3171,6 @@ index 000000000..301d2eded
 +    return test_get_u32(bytes) | (uint64_t)test_get_u32(bytes + 4) << 32;
 +}
 +
-+static bool test_read_u64(const uint8_t *bytes, size_t length,
-+                          size_t *offset, uint64_t *value)
-+{
-+    if (*offset > length || length - *offset < sizeof(*value)) {
-+        return false;
-+    }
-+    *value = test_get_u64(bytes + *offset);
-+    *offset += sizeof(*value);
-+    return true;
-+}
-+
-+static bool test_read_cstr(const uint8_t *bytes, size_t length,
-+                           size_t *offset, const uint8_t **text,
-+                           size_t *text_len)
-+{
-+    uint64_t encoded_len;
-+
-+    if (!test_read_u64(bytes, length, offset, &encoded_len) ||
-+        encoded_len > SIZE_MAX || *offset > length ||
-+        encoded_len > length - *offset) {
-+        return false;
-+    }
-+    *text = bytes + *offset;
-+    *text_len = encoded_len;
-+    *offset += encoded_len;
-+    return true;
-+}
-+
 +static void test_put_u16(uint8_t *bytes, uint16_t value)
 +{
 +    bytes[0] = value;
@@ -3170,6 +3202,29 @@ index 000000000..301d2eded
 +    return (mask[bit / 8] & (1U << (bit % 8))) != 0;
 +}
 +
++/*
++ * Delayed rejection tests sample the target register before dispatch and
++ * observe it again at the exact target.  The guest may legitimately change
++ * unrelated bits during that interval (for example, CR0 mode transitions
++ * during early boot), so compare the one bit selected by this fault command.
++ * An out-of-range request has no selectable bit and retains the stronger
++ * whole-register comparison.
++ */
++static bool test_rejection_target_unchanged(const uint8_t *current,
++                                            size_t current_len)
++{
++    if (test_initial_target_len == 0 ||
++        current_len != test_initial_target_len) {
++        return false;
++    }
++    if (test_first_bit >= current_len * 8) {
++        return memcmp(current, test_initial_target, current_len) == 0;
++    }
++
++    return test_mask_bit(current, test_first_bit) ==
++           test_mask_bit(test_initial_target, test_first_bit);
++}
++
 +static bool test_bytes_nonzero(const uint8_t *bytes, size_t length)
 +{
 +    for (size_t i = 0; i < length; i++) {
@@ -3193,70 +3248,22 @@ index 000000000..301d2eded
 +    }
 +}
 +
-+static size_t test_read_named_register(const char *wanted,
-+                                       uint8_t output[64])
++static size_t test_read_fault_register_id(uint32_t numeric_id,
++                                          uint8_t output[64])
 +{
-+    static const char format[] = "aos-qemu-vcpu-regs-v1";
-+    g_autofree uint8_t *aggregate = NULL;
-+    size_t aggregate_len = 0;
-+    uint64_t ignored_icount;
-+    size_t offset = 0;
-+    const uint8_t *text;
-+    size_t text_len;
-+    uint64_t vcpu;
-+    uint64_t count;
++    size_t output_len = 0;
 +
-+    if (qemu_plugin_read_vcpu_regs(0, NULL, 0, &aggregate_len,
-+                                   &ignored_icount) == 0 ||
-+        aggregate_len == 0) {
-+        test_fail("canonical register export did not report its size");
++    if (qemu_plugin_crucible_fault_register_read(
++            0, numeric_id, output, 64, &output_len) != 0 ||
++        output_len == 0 || output_len > 64) {
++        test_fail("fault register observation failed");
 +    }
-+    aggregate = g_try_malloc(aggregate_len);
-+    if (!aggregate || qemu_plugin_read_vcpu_regs(
-+            0, aggregate, aggregate_len, &aggregate_len,
-+            &ignored_icount) != 0 ||
-+        !test_read_cstr(aggregate, aggregate_len, &offset, &text, &text_len) ||
-+        text_len != strlen(format) || memcmp(text, format, text_len) != 0 ||
-+        !test_read_u64(aggregate, aggregate_len, &offset, &vcpu) || vcpu != 0 ||
-+        !test_read_u64(aggregate, aggregate_len, &offset, &count)) {
-+        test_fail("canonical register export framing is invalid");
-+    }
-+    for (uint64_t i = 0; i < count; i++) {
-+        const uint8_t *name;
-+        const uint8_t *feature;
-+        size_t name_len;
-+        size_t feature_len;
-+        uint64_t value_len;
-+
-+        if (!test_read_cstr(aggregate, aggregate_len, &offset,
-+                            &name, &name_len) ||
-+            !test_read_cstr(aggregate, aggregate_len, &offset,
-+                            &feature, &feature_len) ||
-+            !test_read_u64(aggregate, aggregate_len, &offset, &value_len) ||
-+            value_len > 64 || offset > aggregate_len ||
-+            value_len > aggregate_len - offset) {
-+            test_fail("canonical register row framing is invalid");
-+        }
-+        (void)feature;
-+        (void)feature_len;
-+        if (name_len == strlen(wanted) &&
-+            memcmp(name, wanted, name_len) == 0) {
-+            memcpy(output, aggregate + offset, value_len);
-+            return value_len;
-+        }
-+        offset += value_len;
-+    }
-+    test_fail("canonical register export omitted the rejection target");
-+    return 0;
++    return output_len;
 +}
 +
-+static const char *test_export_register_name(void)
++static size_t test_read_fault_register(uint8_t output[64])
 +{
-+    if (test_architecture == QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64 &&
-+        strcmp(test_register_name, "rflags") == 0) {
-+        return "eflags";
-+    }
-+    return test_register_name;
++    return test_read_fault_register_id(test_numeric_id, output);
 +}
 +
 +static uint8_t *test_read_all_registers(size_t *length)
@@ -3525,15 +3532,19 @@ index 000000000..301d2eded
 +    test_command.command_sequence = 2;
 +    if (test_terminal_cursor_required) {
 +        uint64_t quantum = qemu_plugin_crucible_rr_switch_quantum();
++        uint64_t cursor = qemu_plugin_crucible_rr_cursor_position();
 +        uint64_t current_icount = qemu_plugin_crucible_icount();
++        uint64_t remaining;
 +
-+        if (quantum == 0 || current_icount < prepared->observed_icount) {
-+            test_fail("terminal-cursor test has no valid RR quantum");
++        if (quantum == 0 || cursor >= quantum ||
++            current_icount < prepared->observed_icount) {
++            test_fail("terminal-cursor test has no valid RR coordinate");
 +        }
-+        if (current_icount > UINT64_MAX - quantum) {
++        remaining = quantum - cursor;
++        if (current_icount > UINT64_MAX - remaining) {
 +            test_fail("terminal-cursor target overflows node icount");
 +        }
-+        test_command.target_icount = current_icount + quantum;
++        test_command.target_icount = current_icount + remaining;
 +    } else {
 +        test_command.target_icount = prepared->observed_icount + 16;
 +    }
@@ -3541,8 +3552,8 @@ index 000000000..301d2eded
 +    memcpy(test_command.expected_precondition_hash,
 +           prepared->before_hash, 32);
 +    if (test_mode == TEST_MODE_REJECT_PRECONDITION) {
-+        test_initial_target_len = test_read_named_register(
-+            test_export_register_name(), test_initial_target);
++        test_initial_target_len = test_read_fault_register(
++            test_initial_target);
 +        test_command.expected_precondition_hash[0] ^= 1;
 +    }
 +    if (qemu_plugin_crucible_fault_submit(
@@ -3634,6 +3645,34 @@ index 000000000..301d2eded
 +    (void)cpu_index;
 +    (void)icount;
 +    (void)opaque;
++    if (test_mode == TEST_MODE_REJECT_INVALID &&
++        !test_initial_command_submitted) {
++        uint8_t cr0[64];
++        uint64_t current_icount;
++
++        if (test_cr0_numeric_id == 0 ||
++            test_read_fault_register_id(test_cr0_numeric_id, cr0) != 8) {
++            test_fail("CR0 observation is unavailable");
++        }
++        if (!test_mask_bit(cr0, 31)) {
++            return;
++        }
++        current_icount = qemu_plugin_crucible_icount();
++        if (current_icount == 0 || current_icount > UINT64_MAX - 16) {
++            test_fail("invalid-state rejection target cannot be scheduled");
++        }
++        test_command.target_icount = current_icount + 16;
++        test_command.authorization_ceiling_icount = test_command.target_icount;
++        test_initial_target_len = test_read_fault_register(
++            test_initial_target);
++        if (qemu_plugin_crucible_fault_submit(
++                &test_command, test_payload, test_payload_len) != 0) {
++            test_fail("QEMU rejected the invalid-state preparation");
++        }
++        test_initial_command_submitted = true;
++        qemu_plugin_force_vcpu_exit();
++        return;
++    }
 +    if (test_mode_rejects() &&
 +        test_mode != TEST_MODE_REJECT_MISMATCHED_REGISTER_IDENTITY &&
 +        test_mode != TEST_MODE_REJECT_PRECONDITION &&
@@ -3644,8 +3683,8 @@ index 000000000..301d2eded
 +            current_icount >= test_command.target_icount) {
 +            test_fail("rejection target was not sampled before dispatch");
 +        }
-+        test_initial_target_len = test_read_named_register(
-+            test_export_register_name(), test_initial_target);
++        test_initial_target_len = test_read_fault_register(
++            test_initial_target);
 +    }
 +    if (test_mode == TEST_MODE_PERSISTENT && test_rule_installed) {
 +        g_autoptr(GByteArray) observed = g_byte_array_new();
@@ -3697,8 +3736,7 @@ index 000000000..301d2eded
 +                 CRUCIBLE_FAULT_STATUS_INVALID_TARGET);
 +
 +            if (delayed) {
-+                current_len = test_read_named_register(
-+                    test_export_register_name(), current);
++                current_len = test_read_fault_register(current);
 +            }
 +            if (result.status != expected_status ||
 +                result.applied_icount != 0 || evidence_len != 0 ||
@@ -3710,9 +3748,7 @@ index 000000000..301d2eded
 +                  result.capability_version != 1 ||
 +                  result.observed_icount != test_command.target_icount)) ||
 +                (delayed &&
-+                 (test_initial_target_len == 0 ||
-+                  current_len != test_initial_target_len ||
-+                  memcmp(current, test_initial_target, current_len) != 0)) ||
++                 !test_rejection_target_unchanged(current, current_len)) ||
 +                (!delayed && !test_submit_atomic_verified)) {
 +                g_printerr("rejection debug mode=%s status=%u expected=%u "
 +                           "applied=%" G_GUINT64_FORMAT
@@ -3893,6 +3929,9 @@ index 000000000..301d2eded
 +    for (size_t i = 0; i < count; i++) {
 +        uint8_t identity[32];
 +
++        if (strcmp(rows[i].name, "cr0") == 0) {
++            test_cr0_numeric_id = rows[i].numeric_id;
++        }
 +        test_identity(identity, 0xb2, rows[i].numeric_id);
 +        if (qemu_plugin_crucible_fault_register_bind(
 +                identity, rows[i].numeric_id) != 0) {
@@ -3909,13 +3948,30 @@ index 000000000..301d2eded
 +    test_numeric_id = selected->numeric_id;
 +    test_group = selected->group;
 +    test_side_effects = selected->side_effects;
++    {
++        size_t required_len = 0;
++
++        if (qemu_plugin_crucible_fault_register_read(
++                0, test_numeric_id, NULL, 0, &required_len) >= 0 ||
++            required_len != selected->mask_bytes) {
++            test_fail("fault register size query returned the wrong contract");
++        }
++    }
 +    if (test_mode_rejects()) {
 +        if (test_architecture != QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64) {
 +            test_fail("register rejection modes require x86_64");
 +        }
 +    }
 +    test_identity(test_register_identity, 0xb2, test_numeric_id);
-+    if (test_mode == TEST_MODE_REJECT_OUT_OF_RANGE) {
++    if (test_mode == TEST_MODE_REJECT_INVALID) {
++        /* Clearing EFER.LME while paging is active is architecturally invalid. */
++        test_first_bit = 8;
++        if (strcmp(test_register_name, "efer") != 0 ||
++            test_first_bit >= selected->width_bits ||
++            !test_mask_bit(selected->writable_mask, test_first_bit)) {
++            test_fail("the invalid-state target is not EFER.LME");
++        }
++    } else if (test_mode == TEST_MODE_REJECT_OUT_OF_RANGE) {
 +        test_first_bit = selected->width_bits;
 +    } else {
 +        const uint8_t *wanted_mask =
@@ -3979,9 +4035,12 @@ index 000000000..301d2eded
 +        /* A synchronous rejection may invoke completion reentrantly. */
 +        test_submit_atomic_verified = true;
 +    }
-+    if (qemu_plugin_crucible_fault_submit(
-+            &test_command, test_payload, test_payload_len) != 0) {
-+        test_fail("QEMU rejected the register mutation preparation");
++    if (test_mode != TEST_MODE_REJECT_INVALID) {
++        if (qemu_plugin_crucible_fault_submit(
++                &test_command, test_payload, test_payload_len) != 0) {
++            test_fail("QEMU rejected the register mutation preparation");
++        }
++        test_initial_command_submitted = true;
 +    }
 +    if (test_initial_registers) {
 +        g_autofree uint8_t *after = NULL;
