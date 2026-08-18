@@ -631,6 +631,9 @@ where
     copy_regular(recovery, &recovery_temp)?;
     copy_regular(recovery_entry, &entry_temp)?;
     copy_regular(normal, &normal_temp)?;
+    verify_installed(recovery, &recovery_temp)?;
+    verify_installed(recovery_entry, &entry_temp)?;
+    verify_installed(normal, &normal_temp)?;
     sync_path(&staging)?;
     checkpoint(PublicationBoundary::Staged)?;
 
