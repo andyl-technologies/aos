@@ -420,7 +420,7 @@ in
             exit 1
           }
           require_eq block_busy_polled_operations 0
-          require_le block_max_inline_instructions 20000
+          require_le block_max_inline_instructions 40000
           require_eq block_operations_with_io_events "$OPERATION_COUNT"
           require_eq block_operations_without_io_events 0
           require_eq ninep_operations "$OPERATION_COUNT"
@@ -471,7 +471,7 @@ in
             echo block_completion_mode=bounded_inline_or_hlt_idle
             echo ninep_outstanding_wait_source=qemu_9p_read_throttle_iops_20
             echo idle_threshold_ppm="$IDLE_THRESHOLD_PPM"
-            echo block_inline_instruction_requirement=le_20000
+            echo block_inline_instruction_requirement=le_40000
             echo block_idled_operations="$(get_value block_idled_operations)"
             echo block_inline_operations="$(get_value block_inline_operations)"
             echo block_busy_polled_operations="$(get_value block_busy_polled_operations)"

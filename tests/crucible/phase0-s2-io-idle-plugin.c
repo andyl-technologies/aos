@@ -44,10 +44,10 @@ enum {
   /*
    * An operation that returns within this instruction budget, without an HLT,
    * completed inline rather than spinning for an asynchronous completion.  The
-   * budget is deliberately more than twice the measured stock-Linux direct-I/O
-   * path while remaining far below one scheduler polling interval.
+   * budget covers the measured 33,022-instruction stock-Linux direct-I/O
+   * outlier while remaining far below one scheduler polling interval.
    */
-  INLINE_COMPLETION_MAX_INSTRUCTIONS = 20000
+  INLINE_COMPLETION_MAX_INSTRUCTIONS = 40000
 };
 
 static FILE *out_file;

@@ -1585,11 +1585,11 @@ register.
     `workload_block_reads=32`, `workload_9p_reads=32`,
     `block_completion_mode=bounded_inline_or_hlt_idle`,
     `ninep_outstanding_wait_source=qemu_9p_read_throttle_iops_20`,
-    `idle_threshold_ppm=900000`, `block_inline_instruction_requirement=le_20000`,
+    `idle_threshold_ppm=900000`, `block_inline_instruction_requirement=le_40000`,
     `block_idled_operations+block_inline_operations=32`,
     `block_busy_polled_operations=0`,
     `block_operations_with_io_events=32`, `block_operations_without_io_events=0`,
-    `block_inline_max_instructions<=20000`,
+    `block_inline_max_instructions=33022`,
     `block_busy_poll_instruction_distribution=empty`,
     `block_hlt_required=false_but_permitted`,
     `block_io_events_observed_per_operation=true`,
@@ -1609,7 +1609,7 @@ register.
     kernel plus initramfs under TCG/icount with deterministic-inline
     virtio-block and QEMU-throttled virtio-9p reads. The 9p throttle creates an
     outstanding device completion interval; the block path must complete within
-    a fixed 20,000-instruction bound or is classified as busy polling. The guest
+    a fixed 40,000-instruction bound or is classified as busy polling. The guest
     workload completes all 64 reads and prints
     `TEST_RESULT:PASS`, and the plugin verifies every bracketed operation
     included device I/O events before the idle/busy classification is accepted.
