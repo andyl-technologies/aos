@@ -353,6 +353,11 @@ The UI is a dedicated Rust subcommand or binary using structured operations.
 Do not construct a shell script that interpolates user-selected devices,
 paths, or commands.
 
+Systemd owns the efivarfs API mount. Before starting the UI, recovery remounts
+that existing filesystem read-only and fails closed if the remount fails; a
+same-session verified one-shot operation alone may temporarily remount it
+read-write and must restore it read-only before rebooting.
+
 ### 4.3 UKI builder
 
 Extend `pkgs/boot/aos-uki.nix` or add a typed wrapper for recovery UKIs. Recovery

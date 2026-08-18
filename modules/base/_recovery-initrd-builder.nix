@@ -204,24 +204,11 @@ in
           [Unit]
           Description=AOS signed recovery environment
           DefaultDependencies=no
-          Requires=systemd-journald.socket systemd-udevd.service systemd-udev-trigger.service sys-firmware-efi-efivars.mount aos-recovery-ui.service
-          After=systemd-journald.socket systemd-udevd.service systemd-udev-trigger.service sys-firmware-efi-efivars.mount
+          Requires=systemd-journald.socket systemd-udevd.service systemd-udev-trigger.service aos-recovery-ui.service
+          After=systemd-journald.socket systemd-udevd.service systemd-udev-trigger.service
           Conflicts=shutdown.target
           AllowIsolate=yes
           TARGET
-
-          cat > root/etc/systemd/system/sys-firmware-efi-efivars.mount <<'MOUNT'
-          [Unit]
-          Description=Read-only EFI variable filesystem
-          DefaultDependencies=no
-          Before=aos-recovery-ui.service
-
-          [Mount]
-          What=efivarfs
-          Where=/sys/firmware/efi/efivars
-          Type=efivarfs
-          Options=ro,nosuid,nodev,noexec
-          MOUNT
 
           cat > root/etc/systemd/system/aos-recovery-ui.service <<'SERVICE'
           [Unit]
@@ -232,6 +219,7 @@ in
 
           [Service]
           Type=simple
+          ExecStartPre=/bin/mount -o remount,ro,nosuid,nodev,noexec /sys/firmware/efi/efivars
           ExecStartPre=-/bin/umount /var
           ExecStartPre=-/bin/cryptsetup close var
           ExecStart=/bin/aos-recovery
