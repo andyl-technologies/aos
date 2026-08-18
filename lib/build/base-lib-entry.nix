@@ -61,6 +61,7 @@ let
   imageManifest =
     builtins.fromJSON
     (builtins.unsafeDiscardStringContext (builtins.readFile ./image-manifest.json));
+  mergeImageManifestImpl = import ./lib/build/merge-image-manifest.nix {inherit lib;};
 
   # The bundled base module set + the image's system-variant modules. These are
   # exactly the modules the image was built from (minus the registry config
@@ -69,6 +70,13 @@ let
   systemModules = import ./system-modules.nix;
 in {
   inherit lib imageManifest;
+
+  ## Merge an evaluated runtime candidate with the immutable image baseline.
+  mergeImageManifest = {
+    baseline,
+    candidate,
+  }:
+    mergeImageManifestImpl {inherit imageManifest baseline candidate;};
 
   ## Evaluate the closed one-time provisioning projection.
   ##
