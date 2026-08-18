@@ -35,6 +35,10 @@
         needle = "qemu_crucible_fault_register_side_effect_observed";
       }
       {
+        label = "mutation-only side-effect audit scope";
+        needle = "qemu_crucible_fault_register_side_effect_scope_enter";
+      }
+      {
         label = "live rejection side-effect assertion";
         needle = "test_rejection_side_effects_unchanged";
       }

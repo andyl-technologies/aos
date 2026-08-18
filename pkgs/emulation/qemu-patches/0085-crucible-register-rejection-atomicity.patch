@@ -1,3 +1,26 @@
+From e9e92b2f4adfb7a8db0da0d48fec941652a635e3 Mon Sep 17 00:00:00 2001
+From: Dylan Plecki <dylan@andyl.com>
+Date: Mon, 1 Jan 2001 00:00:01 +0000
+Subject: [PATCH] crucible: prove register rejection atomicity
+
+Signed-off-by: Dylan Plecki <dylan@andyl.com>
+---
+ accel/tcg/cputlb.c                    |  2 +
+ accel/tcg/tb-maint.c                  |  2 +
+ hw/core/cpu-common.c                  |  4 ++
+ include/qemu/crucible-fault.h         | 17 ++++++
+ include/qemu/plugin.h                 |  1 +
+ include/qemu/qemu-plugin.h            | 31 ++++++++++
+ plugins/api-system.c                  |  5 ++
+ plugins/api.c                         | 14 +++--
+ plugins/crucible-fault-node.c         | 88 ++++++++++++++++++++-------
+ plugins/crucible-fault-register.c     | 88 ++++++++++++++++++++++++++-
+ system/cpus.c                         |  2 +
+ target/arm/crucible-register.c        | 12 +++-
+ target/i386/crucible-register.c       | 22 +++++--
+ tests/tcg/plugins/crucible-register.c | 62 ++++++++++---------
+ 14 files changed, 283 insertions(+), 67 deletions(-)
+
 diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
 index 40c17f020..af804870a 100644
 --- a/accel/tcg/cputlb.c
@@ -68,20 +91,28 @@ index 9ceb7859f..e23f19bd7 100644
      /* Ensure cpu_exec will see the exit request after TCG has exited.  */
      smp_wmb();
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 74cfebebf..e17d0cd28 100644
+index 74cfebebf..501478891 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
-@@ -281,6 +281,15 @@ void qemu_crucible_fault_accelerator_device_unregister(void *opaque);
+@@ -281,6 +281,23 @@ void qemu_crucible_fault_accelerator_device_unregister(void *opaque);
  
  int qemu_crucible_fault_register_validate(const QemuCrucibleFaultRule *rule);
  int qemu_crucible_fault_register_state_fingerprint(uint8_t output[32]);
 +#ifdef CONFIG_USER_ONLY
++static inline void qemu_crucible_fault_register_side_effect_scope_enter(void)
++{
++}
++static inline void qemu_crucible_fault_register_side_effect_scope_leave(void)
++{
++}
 +static inline void qemu_crucible_fault_register_side_effect_observed(
 +    uint32_t effects)
 +{
 +    (void)effects;
 +}
 +#else
++void qemu_crucible_fault_register_side_effect_scope_enter(void);
++void qemu_crucible_fault_register_side_effect_scope_leave(void);
 +void qemu_crucible_fault_register_side_effect_observed(uint32_t effects);
 +#endif
  bool qemu_crucible_fault_register_ensure_registered(void);
@@ -340,18 +371,33 @@ index ba3c8484a..b5e8c8b5f 100644
          result->status = CRUCIBLE_FAULT_STATUS_PRECONDITION_MISMATCH;
          return -ESTALE;
 diff --git a/plugins/crucible-fault-register.c b/plugins/crucible-fault-register.c
-index b6a4ed0cc..27ab991e5 100644
+index b6a4ed0cc..994c1957e 100644
 --- a/plugins/crucible-fault-register.c
 +++ b/plugins/crucible-fault-register.c
-@@ -58,6 +58,18 @@ static uint8_t crucible_register_architecture_identity[32];
+@@ -58,6 +58,33 @@ static uint8_t crucible_register_architecture_identity[32];
  static bool crucible_register_architecture_bound;
  static bool crucible_register_bindings_sealed;
  static bool crucible_register_handler_registered;
 +static uint64_t crucible_register_side_effect_counts[
 +    QEMU_PLUGIN_CRUCIBLE_REGISTER_SIDE_EFFECT_COUNT];
++static __thread unsigned int crucible_register_side_effect_scope_depth;
++
++void qemu_crucible_fault_register_side_effect_scope_enter(void)
++{
++    crucible_register_side_effect_scope_depth++;
++}
++
++void qemu_crucible_fault_register_side_effect_scope_leave(void)
++{
++    g_assert(crucible_register_side_effect_scope_depth != 0);
++    crucible_register_side_effect_scope_depth--;
++}
 +
 +void qemu_crucible_fault_register_side_effect_observed(uint32_t effects)
 +{
++    if (crucible_register_side_effect_scope_depth == 0) {
++        return;
++    }
 +    for (size_t bit = 0;
 +         bit < QEMU_PLUGIN_CRUCIBLE_REGISTER_SIDE_EFFECT_COUNT; bit++) {
 +        if (effects & (1U << bit)) {
@@ -362,7 +408,7 @@ index b6a4ed0cc..27ab991e5 100644
  
  static bool crucible_register_mask_test(const uint8_t *mask, uint32_t bit)
  {
-@@ -349,7 +361,7 @@ int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
+@@ -349,7 +376,7 @@ int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
                                  CrucibleRegisterCapability,
                                  numeric_id - 1);
      if (capability->numeric_id != numeric_id ||
@@ -371,7 +417,7 @@ index b6a4ed0cc..27ab991e5 100644
          return -EINVAL;
      }
      bytes = DIV_ROUND_UP(capability->width_bits, 8);
-@@ -358,7 +370,8 @@ int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
+@@ -358,7 +385,8 @@ int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
          return -ENOSPC;
      }
      if (!qemu_plugin_crucible_single_threaded_rr() || !current_cpu ||
@@ -381,7 +427,7 @@ index b6a4ed0cc..27ab991e5 100644
          return -EPERM;
      }
  
-@@ -778,6 +791,59 @@ int qemu_crucible_fault_register_state_fingerprint(uint8_t output[32])
+@@ -778,6 +806,59 @@ int qemu_crucible_fault_register_state_fingerprint(uint8_t output[32])
      return digest_len == 32 ? 0 : -EIO;
  }
  
@@ -441,7 +487,7 @@ index b6a4ed0cc..27ab991e5 100644
  static int crucible_register_execution_fingerprint(
      uint64_t icount, const struct qemu_plugin_rr_cursor *rr,
      uint8_t output[32])
-@@ -1048,7 +1114,8 @@ static int crucible_register_result_decode(
+@@ -1048,7 +1129,8 @@ static int crucible_register_result_decode(
      bool mask_nonzero = false;
  
      if (!cpu || !register_identity || !root || !apply || !mask_out ||
@@ -472,7 +518,7 @@ index b6a796ec6..c038e3d39 100644
          cpus_accel->handle_interrupt(cpu, mask);
      } else {
 diff --git a/target/arm/crucible-register.c b/target/arm/crucible-register.c
-index 6e1a76766..a53ae6443 100644
+index 6e1a76766..a6d49cd08 100644
 --- a/target/arm/crucible-register.c
 +++ b/target/arm/crucible-register.c
 @@ -11,6 +11,7 @@
@@ -483,18 +529,40 @@ index 6e1a76766..a53ae6443 100644
  
  #define CRUCIBLE_REG_GROUP_GPR 1
  #define CRUCIBLE_REG_GROUP_CONTROL_FLOW 2
-@@ -538,6 +539,9 @@ int aarch64_crucible_register_write(
+@@ -465,6 +466,7 @@ int aarch64_crucible_register_write(
+         return -EINVAL;
+     }
+     scalar = expected == 4 ? ldl_le_p(value) : ldq_le_p(value);
++    qemu_crucible_fault_register_side_effect_scope_enter();
+     if (id >= A64_CRUCIBLE_X_FIRST && id <= A64_CRUCIBLE_X_LAST) {
+         env->xregs[id - 1] = scalar;
+     } else if (id == A64_CRUCIBLE_SP) {
+@@ -530,7 +532,7 @@ int aarch64_crucible_register_write(
+             }
+         }
+     } else {
+-        return -EINVAL;
++        goto invalid;
+     }
+     if (effects & CRUCIBLE_REG_SIDE_TB) {
+         tb_flush(cs);
+@@ -538,6 +540,14 @@ int aarch64_crucible_register_write(
      if (effects & CRUCIBLE_REG_SIDE_CONTROL_FLOW) {
          cpu_exit(cs);
      }
 +    qemu_crucible_fault_register_side_effect_observed(
 +        effects & (CRUCIBLE_REG_SIDE_FLAGS |
 +                   CRUCIBLE_REG_SIDE_INTERRUPT));
++    qemu_crucible_fault_register_side_effect_scope_leave();
      *performed_side_effects = effects;
      return expected;
++
++invalid:
++    qemu_crucible_fault_register_side_effect_scope_leave();
++    return -EINVAL;
  }
 diff --git a/target/i386/crucible-register.c b/target/i386/crucible-register.c
-index b2c0c6814..b393e631f 100644
+index b2c0c6814..7ea233a0b 100644
 --- a/target/i386/crucible-register.c
 +++ b/target/i386/crucible-register.c
 @@ -12,6 +12,7 @@
@@ -505,15 +573,81 @@ index b2c0c6814..b393e631f 100644
  #include "tcg/helper-tcg.h"
  
  #define CRUCIBLE_REG_GROUP_GPR 1
-@@ -990,6 +991,9 @@ int x86_crucible_register_write(
+@@ -789,6 +790,7 @@ int x86_crucible_register_write(
+     input = expected == 1 ? value[0] :
+         (expected == 2 ? lduw_le_p(value) :
+          (expected == 4 ? ldl_le_p(value) : ldq_le_p(value)));
++    qemu_crucible_fault_register_side_effect_scope_enter();
+     if (id >= X86_CRUCIBLE_GPR_FIRST && id <= X86_CRUCIBLE_GPR_LAST) {
+         env->regs[x86_crucible_gpr_map[id - 1]] = input;
+     } else if (id == X86_CRUCIBLE_RIP) {
+@@ -822,7 +824,7 @@ int x86_crucible_register_write(
+             (!(env->cr[0] & CR0_PG_MASK) && (input & CR0_PG_MASK) &&
+              (env->efer & MSR_EFER_LME) &&
+              !(env->cr[4] & CR4_PAE_MASK))) {
+-            return -EINVAL;
++            goto invalid;
+         }
+         cpu_x86_update_cr0(env, input);
+         effects = CRUCIBLE_REG_SIDE_TLB | CRUCIBLE_REG_SIDE_TB |
+@@ -835,14 +837,14 @@ int x86_crucible_register_write(
+             (!(env->efer & MSR_EFER_LMA) && input > UINT32_MAX) ||
+             (!(env->cr[4] & CR4_PCIDE_MASK) &&
+              (input & UINT64_C(0xfe7)) != 0)) {
+-            return -EINVAL;
++            goto invalid;
+         }
+         cpu_x86_update_cr3(env, input);
+         effects = CRUCIBLE_REG_SIDE_TLB;
+     } else if (id == X86_CRUCIBLE_CR4) {
+         if (((input ^ env->cr[4]) & CR4_LA57_MASK) &&
+             (env->hflags & HF_CS64_MASK)) {
+-            return -EINVAL;
++            goto invalid;
+         }
+         cpu_x86_update_cr4(env, input);
+         effects = CRUCIBLE_REG_SIDE_TLB | CRUCIBLE_REG_SIDE_TB |
+@@ -863,7 +865,7 @@ int x86_crucible_register_write(
+     } else if (id == X86_CRUCIBLE_EFER) {
+         if (((input ^ env->efer) & MSR_EFER_LME) &&
+             (env->cr[0] & CR0_PG_MASK)) {
+-            return -EINVAL;
++            goto invalid;
+         }
+         cpu_load_efer(env, input);
+         effects = CRUCIBLE_REG_SIDE_TLB | CRUCIBLE_REG_SIDE_TB |
+@@ -952,7 +954,7 @@ int x86_crucible_register_write(
+             uint8_t memory_type = input >> (entry * 8);
+ 
+             if (memory_type > 7 || memory_type == 2 || memory_type == 3) {
+-                return -EINVAL;
++                goto invalid;
+             }
+         }
+         env->pat = input;
+@@ -979,7 +981,7 @@ int x86_crucible_register_write(
+         env->pkru = input;
+         effects = CRUCIBLE_REG_SIDE_TLB;
+     } else {
+-        return -EINVAL;
++        goto invalid;
+     }
+     if (effects & CRUCIBLE_REG_SIDE_TLB) {
+         tlb_flush(cs);
+@@ -990,6 +992,14 @@ int x86_crucible_register_write(
      if (effects & CRUCIBLE_REG_SIDE_CONTROL_FLOW) {
          cpu_exit(cs);
      }
 +    qemu_crucible_fault_register_side_effect_observed(
 +        effects & (CRUCIBLE_REG_SIDE_FLAGS |
 +                   CRUCIBLE_REG_SIDE_INTERRUPT));
++    qemu_crucible_fault_register_side_effect_scope_leave();
      *performed_side_effects = effects;
      return expected;
++
++invalid:
++    qemu_crucible_fault_register_side_effect_scope_leave();
++    return -EINVAL;
  }
 diff --git a/tests/tcg/plugins/crucible-register.c b/tests/tcg/plugins/crucible-register.c
 index 407287a3f..fc54a8924 100644
@@ -638,3 +772,6 @@ index 407287a3f..fc54a8924 100644
      g_free(test_payload);
  }
  
+-- 
+2.54.0
+

@@ -1278,7 +1278,11 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   and decode revalidate every manifest row for every realized vCPU. Rejection
   transactions hash every vCPU's canonical GDB register export and compare
   counters wired to the production TLB, TB, flags, interrupt, timer, and
-  control-flow side-effect paths before reporting a non-applied result.
+  control-flow side-effect paths before reporting a non-applied result. Those
+  counters are admitted only inside the thread-local architecture-register
+  write scope, preventing unrelated emulator activity from being attributed to
+  the mutation under audit; the timer class remains zero because no supported
+  register advertises that side effect.
 - **Micro-test:** the full x86-64 and AArch64 register matrix proves equal,
   nonzero canonical hashes, unchanged side-effect counters, zero applied
   icount, empty evidence, no emitted event, and unchanged selected-register
