@@ -300,6 +300,11 @@ in {
         "--without-bash-malloc"
         "--disable-nls"
       ];
+    # This release does not declare the generated helper executables as
+    # prerequisites of every consumer that invokes them.
+    buildScript = ''
+      make -j1
+    '';
     postInstall = ''
       [ -f "$out/bin/bash" ] && [ ! -f "$out/bin/sh" ] && ln -sf bash "$out/bin/sh"
     '';
