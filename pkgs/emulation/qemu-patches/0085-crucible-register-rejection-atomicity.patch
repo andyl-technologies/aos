@@ -1,27 +1,3 @@
-From cc036798cf068282fb2821b9bf4a0e533a4543e2 Mon Sep 17 00:00:00 2001
-From: Dylan Plecki <dylan@andyl.com>
-Date: Mon, 1 Jan 2001 00:00:01 +0000
-Subject: [PATCH] crucible: prove register rejection atomicity
-
-Signed-off-by: Dylan Plecki <dylan@andyl.com>
----
- accel/tcg/cputlb.c                    |  2 +
- accel/tcg/tb-maint.c                  |  2 +
- hw/core/cpu-common.c                  |  4 ++
- include/qemu/crucible-fault.h         | 17 ++++++
- include/qemu/plugin.h                 |  1 +
- include/qemu/qemu-plugin.h            | 31 ++++++++++
- plugins/api-system.c                  |  5 ++
- plugins/api.c                         | 14 +++--
- plugins/crucible-fault-node.c         | 88 ++++++++++++++++++++-------
- plugins/crucible-fault-register.c     | 88 ++++++++++++++++++++++++++-
- plugins/crucible-fault.c              |  5 +-
- system/cpus.c                         |  2 +
- target/arm/crucible-register.c        | 12 +++-
- target/i386/crucible-register.c       | 22 +++++--
- tests/tcg/plugins/crucible-register.c | 62 ++++++++++---------
- 15 files changed, 287 insertions(+), 68 deletions(-)
-
 diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
 index 40c17f020..af804870a 100644
 --- a/accel/tcg/cputlb.c
@@ -810,6 +786,3 @@ index 407287a3f..fc54a8924 100644
      g_free(test_payload);
  }
  
--- 
-2.54.0
-
