@@ -35,10 +35,10 @@ line authoritative. Command-line fragments supplied by db-signed PE addons or
 SMBIOS are measured into PCR 12 but not appended, so an external `rdinit=` or
 target selector cannot preempt the initrd validator. Their changed PCR 12
 denies automatic `/var` unseal even though the discarded fragment never
-becomes part of `/proc/cmdline`. Under enforcing Secure Boot, EFI LoadOptions
-are discarded before command-line measurement when an embedded command line
-exists, and unsigned addons are rejected by the image loader. Those rejected
-inputs therefore leave the signed PCR 12 value unchanged.
+becomes part of `/proc/cmdline`. Under enforcing Secure Boot, systemd-boot
+measures Type #1 entry options into PCR 12 and the stub discards them when an
+embedded command line exists. Unsigned addons are rejected by the image loader
+before command-line measurement and therefore leave PCR 12 unchanged.
 
 This early validation establishes an unambiguous tuple, but PCR 12 remains the
 authorization boundary for appended boot input. Until the documented PCR-12
