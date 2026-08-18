@@ -1026,7 +1026,6 @@ in {
         config-provenance
         config-materialize
         config-parity
-        config-parity-p2
       ];
       phases = [
         {
@@ -1085,7 +1084,6 @@ in {
     config-source-gc = import ./lib/testing/config-source-gc.nix {inherit pkgs lib;};
     config-materialize = import ./lib/testing/config-materialize.nix {inherit pkgs lib;};
     config-parity = import ./lib/testing/config-parity.nix {inherit pkgs lib;};
-    config-parity-p2 = import ./lib/testing/config-parity-p2.nix {inherit pkgs lib;};
     # Complete non-KVM on-host configuration gate. The image lifecycle and
     # degraded-network contracts are exercised by the fleet aggregate below.
     runtime-config-all = pkgs.mkDerivation {
@@ -1095,12 +1093,10 @@ in {
       buildDeps =
         [
           pkgs.aos
-          pkgs.aos-evaluator-tests
           config-eval
           config-manifest
           config-materialize
           config-parity
-          config-parity-p2
           eval
           module-args
           module-enforcement

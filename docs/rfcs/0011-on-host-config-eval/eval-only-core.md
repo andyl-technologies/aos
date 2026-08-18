@@ -1,7 +1,7 @@
 # RFC-0011 — the eval-only core
 
 The on-host evaluator consumes authenticated configuration inputs without
-realizing derivations. It produces a canonical manifest and option-access graph;
+realizing derivations. It produces a canonical manifest;
 the activation path assembles already-authenticated bytes into a configuration
 generation and switches it atomically.
 
@@ -22,21 +22,19 @@ Every image carries an ABI-pinned `base-lib` containing:
 
 The frozen package records expose no builders. A stage-2 evaluation therefore
 cannot enter the source build graph, use import-from-derivation, or consult an
-ambient package set. The base library and native evaluator are part of the
+ambient package set. The base library and stock evaluator are part of the
 verified image root and are recorded in each configuration manifest.
 
 ## Pure producer
 
-`apm __eval` invokes the in-process `aos-nix` evaluator with explicit path
-allowlisting, no ambient Nix search path, persistent content-addressed caches,
-and in-engine call-depth, step, time, and heap limits. Stock Nix is retained as
-the parity oracle, not as a production fallback.
+`apm __eval` invokes the AOS-built `nix-instantiate` with explicit path
+allowlisting, no ambient Nix search path, no import-from-derivation, and the
+service's time and memory limits.
 
 Evaluation returns:
 
 - `aos.config-manifest/v1`, containing `/etc`, units, job-script text, users,
-  desired packages, credential references, and authenticated input pins; and
-- a first-class option-access graph used by the resolver and graph compiler.
+  desired packages, credential references, and authenticated input pins.
 
 Missing providers, undefined options, conflicting unique values, failed
 assertions, resource exhaustion, and opaque evaluator failures are distinct
@@ -98,7 +96,7 @@ retained configuration intent against the new image before blessing it.
 ## Executable gates
 
 The core is covered by the pure config-eval, materialization, provenance,
-stock/native parity, native P2, retained-input GC, and two-axis generation
+stock evaluation, retained-input GC, and two-axis generation
 checks. Fleet gates exercise literal metadata `host.nix` activation, no-metadata
 image defaults, conflict no-op behavior, rollback and reboot retention, durable
 A/B fallback, measured/verified boot, and lifecycle idempotency.

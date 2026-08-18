@@ -93,7 +93,7 @@ rule either too strict or vacuous.
 | M-static-ip | DHCP-less metadata-network clouds deadlock | The initrd `aos metadata` agent parses platform network config and seeds **static `networkd`** into the gen-0 `/var/etc` lower, so stage-2 has a route without DHCP. | provisioning.md |
 | M-partial-commit | Degraded partial /etc ≠ hash(manifest) | The degraded generation is content-addressed over the **re-projected** manifest (full manifest minus un-fetched packages), re-hashed; the gen records the dropped set. Reproducible from (inputs + recorded drop-set). | orchestration.md, generations.md |
 | M-forgeable-file | Priority-75/conscription key on forgeable `_file` | Provenance is assigned by the **resolver from the authenticated fetch source** (signed package identity / policy-accepted host.nix store path); module-supplied `_file` is **ignored** for priority and conscription. | module-system.md |
-| M-read-absent | Fixpoint throw doesn't name a read of an absent root | Two discovery mechanisms separated: writes-to-undeclared (strict throw) vs reads-of-absent-root (resolver detects the raw missing-attr and dispatches on its root segment — `SystemRoots` for shared roots, else structural by-name lookup); throw-string parsing flagged P1-fragile, structured in P2 (aos-nix). | module-system.md |
+| M-read-absent | Fixpoint throw doesn't name a read of an absent root | Two discovery mechanisms separated: writes-to-undeclared (strict throw) vs reads-of-absent-root (resolver detects the raw missing-attr and dispatches on its root segment — `SystemRoots` for shared roots, else structural by-name lookup); throw-string parsing remains isolated and fixture-tested. | module-system.md |
 | M-gc-inputs | cfg/ roots outputs, but cross-ABI re-eval needs inputs | Added a per-gen **`cfgsrc/` root** pinning the config-module **source** closure + the host.nix store path, so `apm gc` cannot break cross-ABI re-eval. | operability.md, generations.md |
 | M-rollback-glob | `default aos-*.efi` glob picks the suspect UKI | Image rollback uses `bootctl set-default` / sd-boot boot-counting (`+tries` assessment), not the lexically-highest glob. | generations.md |
 
@@ -101,9 +101,8 @@ rule either too strict or vacuous.
 
 - README/problem framing: "fed by / driven by Ignition" → cloud user-data
   (Ignition removed). Reworded.
-- Evaluator identity: gen-0 ships **aos-nix** as the measured production
-  evaluator. The AOS-built C++ Nix remains only in differential parity checks;
-  it is never a runtime fallback.
+- Evaluator identity: gen-0 ships the AOS-built C++ Nix evaluator as the
+  measured production evaluator.
 - Runtime re-eval: every boot reacquires/authorizes `host.nix` and performs
   full evaluation; only storage mutation is first-boot-only.
 - `activate.sh.in` now prepares through the native `aos metadata` agent; no
@@ -117,14 +116,14 @@ rule either too strict or vacuous.
   refs in config modules), not author convention alone.
 - Perf budget annotated: the figure is per *cold subprocess* eval, and the
   error-driven fixpoint adds K× (one missing option discovered per eval) — see
-  operability.md; P2 aos-nix collapses K to 1 with structured errors + cache.
+  operability.md.
 - Citation precision: options-only laziness lives in `mkOptionsTree` (not
   `:924-930`), and `isDefined`/`definitions` may force a merge — softened.
 
 ## Accepted as known (deferred, low severity)
 
-- Throw-string parsing as a P1 resolver dependency is fragile by nature; it is the
-  deliberate stock-Nix stopgap, retired by aos-nix structured errors (P2).
+- Throw-string parsing as a resolver dependency is fragile by nature; it is
+  isolated behind a fixture-tested classifier.
 - The `uniq` conflict throw does not list every def/file (less legible than the
   readonly-conflict throw); acceptable for P1, improvable.
 - Provider/capability disambiguation when one option-path maps to many packages

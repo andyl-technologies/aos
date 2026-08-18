@@ -1,2 +1,0 @@
-# aos-nix-fuzz-source
-if true then { left = "yes"; } else { right = "no"; }
