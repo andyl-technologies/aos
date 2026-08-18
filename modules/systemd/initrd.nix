@@ -242,9 +242,11 @@ in {
               exit 1
             fi
 
-            ${pkgs.coreutils}/bin/mkdir -p /run/systemd/generator
+            # daemon-reload recreates /run/systemd/generator, so publish the
+            # validated runtime unit in /run/systemd/system instead.
+            ${pkgs.coreutils}/bin/mkdir -p /run/systemd/system
             ${pkgs.coreutils}/bin/cp "$generated_verity_unit" \
-              /run/systemd/generator/systemd-veritysetup@root.service
+              /run/systemd/system/systemd-veritysetup@root.service
             ${pkgs.systemd}/bin/systemctl daemon-reload
             ${pkgs.systemd}/bin/systemctl start --no-block systemd-veritysetup@root.service
             ${pkgs.coreutils}/bin/touch /run/aos/boot-identity-valid
