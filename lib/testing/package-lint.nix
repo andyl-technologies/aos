@@ -50,7 +50,7 @@
         (lib.throwIfNot hasDescription
           "package lint: pkgs.${name} must define a non-empty meta.description"
           (lib.throwIfNot hasLicense
-            "package lint: pkgs.${name} must define a non-empty SPDX meta.license string or list"
+            "package lint: pkgs.${name} must define a non-empty meta.license string or list"
             (lib.throwIfNot hasMaintainers
               "package lint: pkgs.${name} must define non-empty string meta.maintainers"
               true))));

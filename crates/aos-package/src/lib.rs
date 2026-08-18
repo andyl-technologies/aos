@@ -1091,16 +1091,16 @@ pub enum RegistryCommand {
         #[arg(long)]
         platform: Option<String>,
         /// Package description
-        #[arg(long)]
+        #[arg(long, required = true)]
         description: Option<String>,
         /// Package homepage
         #[arg(long)]
         homepage: Option<String>,
         /// Package license
-        #[arg(long)]
+        #[arg(long, required = true)]
         license: Option<String>,
         /// Package maintainer
-        #[arg(long)]
+        #[arg(long, required = true)]
         maintainer: Option<String>,
         /// Mark this package as a system toplevel (sysroot)
         #[arg(long)]
