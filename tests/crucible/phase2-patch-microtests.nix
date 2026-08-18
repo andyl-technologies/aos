@@ -546,6 +546,10 @@
       patch = "0085-crucible-register-rejection-atomicity.patch";
       check = import ./phase2-qemu-register-mutation.nix {
         inherit pkgs lib qemuPackage;
+        patchName = "0085-crucible-register-rejection-atomicity.patch";
+        attrPath = "checks.crucible.phase2.qemuRegisterRejectionAtomicity";
+        taskIds = ["T-QEMU-0085"];
+        rejectionAtomicity = true;
       };
     }
   ];
