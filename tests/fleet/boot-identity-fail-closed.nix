@@ -2,8 +2,8 @@
 #
 # The signed image tuple already contains root=. Appending an alternate initrd
 # target is therefore unambiguously outside the supported normal posture. The
-# verity-generator wrapper must reject it before producing mapper units, select
-# the passive failure target, and leave the normal root and /var untouched.
+# runtime identity guard must reject it before the generated mapper unit can
+# execute, select the passive failure target, and leave root and /var untouched.
 {
   mkSystem,
   pkgs,

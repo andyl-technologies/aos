@@ -213,6 +213,24 @@ in {
         serviceConfig.RemainAfterExit = false;
       })
       // lib.optionalAttrs config.aos.security.verity.enable {
+        "aos-boot-identity-success" = {
+          description = "Validate normal boot identity and generated verity unit";
+          before = ["aos-boot-identity-guard.service"];
+          after = ["aos-repart.service" "systemd-udev-settle.service"];
+          unitConfig.DefaultDependencies = "no";
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+          };
+          script = ''
+            set -eu
+            test -s /run/systemd/generator/systemd-veritysetup@root.service
+            ${pkgs.aos-boot-identity}/bin/aos-boot-identity /proc/cmdline
+            ${pkgs.coreutils}/bin/mkdir -p /run/aos
+            ${pkgs.coreutils}/bin/touch /run/aos/boot-identity-valid
+          '';
+        };
+
         "aos-boot-identity-guard" = {
           description = "Require a validated normal boot identity";
           requiredBy = ["initrd-fs.target"];
@@ -220,6 +238,7 @@ in {
           unitConfig = {
             DefaultDependencies = "no";
             OnFailure = "aos-boot-identity-failure.target";
+            OnFailureJobMode = "isolate";
           };
           wants = ["aos-boot-identity-success.service"];
           after = ["aos-boot-identity-success.service"];
@@ -268,7 +287,7 @@ in {
       description = "AOS boot identity rejected";
       unitConfig = {
         DefaultDependencies = "no";
-        Conflicts = "initrd-switch-root.target";
+        Conflicts = "initrd-fs.target initrd-root-fs.target initrd-switch-root.target emergency.target rescue.target";
       };
     };
 
