@@ -1203,7 +1203,7 @@ in {
           ' /var/lib/profiles/image/state.json > /var/lib/profiles/image/.state.json.phase3-b
           mv /var/lib/profiles/image/.state.json.phase3-b /var/lib/profiles/image/state.json
           sync /var/lib/profiles/image
-          {BOOTCTL} set-oneshot {candidate_name}
+          {BOOTCTL} set-oneshot {stable_name}
           {MOUNT} -o remount,ro /boot
           {UMOUNT} /run/aos-uki-b-media
       """, timeout=300)
