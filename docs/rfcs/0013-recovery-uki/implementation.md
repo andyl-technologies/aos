@@ -23,15 +23,19 @@ serial transcript. The rendered initrd unit topology supplies the complementary
 proof that both interactive upstream services resolve to `/dev/null`.
 
 Verity images now install a single generator-path boot-identity guard. It
-requires the complete canonical normal tuple, rejects duplicate scalars,
+requires the complete canonical normal tuple, including exactly one
+`rd.luks=0` so automatic LUKS discovery cannot race the AOS `/var` unlocker,
+and rejects duplicate scalars,
 uppercase hashes, recovery selectors, verity options, rd/non-rd systemd
 control aliases, and generator-provided unit or drop-in controls. Non-verity
 images do not install this strict production guard; they retain the locked
 initrd boundary from Phase 1.
 
-The guarded initrd deliberately omits `systemd-debug-generator` and
-`systemd-run-generator`. Debug images continue to use their explicit gettys,
-not kernel-command-line generator controls. The verity wrapper runs the
+The guarded initrd removes `systemd-debug-generator`,
+`systemd-run-generator`, and the unwrapped verity generator from both the
+public generator directory and systemd's compiled-in immutable-store
+directory. Debug images continue to use their explicit gettys, not
+kernel-command-line generator controls. The verity wrapper runs the
 upstream generator against private output directories and publishes its unit
 output and success marker only after both validation stages succeed. Rejection
 selects the passive failure target through the early generator directory.

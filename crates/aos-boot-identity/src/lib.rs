@@ -93,6 +93,7 @@ struct Fields<'a> {
     verity_data: Option<&'a str>,
     verity_hash: Option<&'a str>,
     verity_enabled: Option<&'a str>,
+    luks_enabled: Option<&'a str>,
 }
 
 /// Parses and validates a normal-boot command line.
@@ -100,8 +101,10 @@ struct Fields<'a> {
 /// Scalar identity fields must be unique even when repeated with the same
 /// value. A normal boot must use `/dev/mapper/root`, a canonical lowercase
 /// 256-bit hexadecimal root hash, and a matching A/A-hash or B/B-hash
-/// partition pair. Recovery and systemd's command-line control surfaces are
-/// never accepted in normal mode.
+/// partition pair. Automatic initrd LUKS discovery must be disabled with the
+/// unique canonical `rd.luks=0` field so it cannot race the AOS `/var`
+/// unlocker. Recovery and systemd's command-line control surfaces are never
+/// accepted in normal mode.
 ///
 /// # Errors
 ///
@@ -130,6 +133,7 @@ pub fn parse_normal(cmdline: &str) -> Result<NormalBootIdentity, ParseError> {
                 set_once(&mut fields.verity_hash, value, "systemd.verity_root_hash")?
             }
             "systemd.verity" => set_once(&mut fields.verity_enabled, value, "systemd.verity")?,
+            "rd.luks" => set_once(&mut fields.luks_enabled, value, "rd.luks")?,
             _ => {}
         }
     }
@@ -143,6 +147,9 @@ pub fn parse_normal(cmdline: &str) -> Result<NormalBootIdentity, ParseError> {
             "systemd.verity",
             fields.verity_enabled.unwrap_or_default(),
         ));
+    }
+    if required_nonempty(fields.luks_enabled, "rd.luks")? != "0" {
+        return Err(invalid("rd.luks", fields.luks_enabled.unwrap_or_default()));
     }
 
     let root_hash = required_nonempty(fields.root_hash, "roothash")?;
@@ -221,7 +228,7 @@ fn is_forbidden_normal_key(key: &str) -> bool {
     matches!(
         key,
         "aos.recovery"
-            | "rd.luks"
+            | "luks"
             | "rd.systemd.verity"
             | "SYSTEMD_SULOGIN_FORCE"
             | "systemd.unit"
@@ -246,7 +253,7 @@ fn is_forbidden_normal_key(key: &str) -> bool {
 fn forbidden_name(key: &str) -> &'static str {
     match key {
         "aos.recovery" => "aos.recovery",
-        "rd.luks" => "rd.luks",
+        "luks" => "luks",
         "rd.systemd.verity" => "rd.systemd.verity",
         "SYSTEMD_SULOGIN_FORCE" => "SYSTEMD_SULOGIN_FORCE",
         "systemd.verity_root_options" => "systemd.verity_root_options",
@@ -312,7 +319,7 @@ mod tests {
             "console=ttyS0 root=/dev/mapper/root ro systemd.verity=yes \
              systemd.verity_root_data=/dev/disk/by-partlabel/root-{slot} \
              systemd.verity_root_hash=/dev/disk/by-partlabel/root-{slot}-hash \
-             roothash={HASH}"
+             roothash={HASH} rd.luks=0"
         )
     }
 
@@ -341,6 +348,7 @@ mod tests {
             "systemd.verity=yes systemd.verity=yes",
             "systemd.verity_root_data=a systemd.verity_root_data=a",
             "systemd.verity_root_hash=a systemd.verity_root_hash=a",
+            "rd.luks=0 rd.luks=0",
         ];
         for case in cases {
             assert!(matches!(
@@ -388,7 +396,7 @@ mod tests {
             "rd.systemd.wants=debug-shell.service",
             "systemd.wants=debug-shell.service",
             "aos.recovery=1",
-            "rd.luks=1",
+            "luks=0",
             "rd.systemd.verity=no",
             "SYSTEMD_SULOGIN_FORCE=1",
             "systemd.debug_shell=1",
@@ -405,6 +413,21 @@ mod tests {
             assert!(matches!(
                 parse_normal(&format!("{} {selector}", verity("a"))),
                 Err(ParseError::ForbiddenField(_))
+            ));
+        }
+
+        for value in ["1", "yes", "<bare>"] {
+            let field = if value == "<bare>" {
+                "rd.luks".to_owned()
+            } else {
+                format!("rd.luks={value}")
+            };
+            assert!(matches!(
+                parse_normal(&verity("a").replace("rd.luks=0", &field)),
+                Err(ParseError::InvalidField {
+                    field: "rd.luks",
+                    ..
+                })
             ));
         }
     }

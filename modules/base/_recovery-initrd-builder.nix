@@ -81,7 +81,8 @@
     "systemd-udevd.service"
   ];
 
-  unitSymlinks = lib.concatMapStringsSep "\n" (unit: ''
+  unitSymlinks =
+    lib.concatMapStringsSep "\n" (unit: ''
       test -e ${systemd}/lib/systemd/system/${unit} || {
         echo "recovery-initrd: missing upstream unit ${unit}" >&2
         exit 1

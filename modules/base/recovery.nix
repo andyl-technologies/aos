@@ -60,6 +60,5 @@ in {
         message = "aos.boot.recovery.enable requires dm-verity root images.";
       }
     ];
-
   };
 }

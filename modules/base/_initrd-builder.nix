@@ -702,7 +702,18 @@ in
                   rm -f "{}/bin/$tool" "{}/lib/systemd/$tool" \
                         "{}/lib/systemd/system-generators/$tool"
                 done
+                # PID 1 also searches its compiled-in store directory. Merely
+                # omitting these names from /lib would therefore leave an
+                # attacker-controlled generator path active. The guarded
+                # wrapper in /lib is the sole verity generator authority.
+                rm -f "{}/lib/systemd/system-generators/systemd-debug-generator" \
+                      "{}/lib/systemd/system-generators/systemd-run-generator" \
+                      "{}/lib/systemd/system-generators/systemd-veritysetup-generator"
               ' _
+
+          test ! -e root/nix/store/*-systemd-*/lib/systemd/system-generators/systemd-debug-generator
+          test ! -e root/nix/store/*-systemd-*/lib/systemd/system-generators/systemd-run-generator
+          test ! -e root/nix/store/*-systemd-*/lib/systemd/system-generators/systemd-veritysetup-generator
 
           # openssl: static archives (libcrypto.a / libssl.a) are dev-only,
           # c_rehash is a perl script, cmake/pkgconfig are dev metadata.
