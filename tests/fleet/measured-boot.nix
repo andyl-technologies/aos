@@ -146,6 +146,10 @@ in {
         }
         {
           interface = "usb";
+          # QEMU's usb-storage device defaults to fixed media. Model an
+          # operator-provided removable drive so recovery's sysfs topology
+          # check exercises the production transport boundary.
+          removable = true;
           sizeMiB = 8192;
           serial = "aos-recovery-media";
           source = effectiveSystem: "${recoveryMedia effectiveSystem}/recovery-media.img";
