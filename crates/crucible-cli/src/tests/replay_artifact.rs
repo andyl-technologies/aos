@@ -478,7 +478,12 @@ quiescent = false
     assert!(fuzz_plan.delegates_policy_to_advanced_engine);
     assert!(fuzz_plan.pins_one_scenario_def_per_iteration);
     assert!(fuzz_plan.counterexamples_are_self_contained);
-    assert_eq!(load_fuzz_family(&fuzz_plan)?.space().cardinality()?, 8);
+    let family = load_fuzz_family(&fuzz_plan)?;
+    assert_eq!(family.space().seeds().len(), 2);
+    assert_eq!(family.space().topology_shapes().len(), 1);
+    assert_eq!(family.space().topology_size().min(), 1);
+    assert_eq!(family.space().topology_size().max(), 2);
+    assert_eq!(family.space().cardinality()?, 4);
 
     let reference = format_content_hash_ref(crucible::ContentHash::from_bytes(b"family-ref"));
     let hash_cli = Cli::parse_from(["crucible", "fuzz", "--family", &reference]);
@@ -2069,7 +2074,7 @@ pub(super) async fn cli_run_workflow_acknowledges_interactive_reader_commands()
     let mut command_id = 1;
     let mut acknowledged = Vec::new();
     let mut output = Vec::new();
-    let terminal_snapshot = drive_interactive_command_reader(
+    let terminal_evidence = drive_interactive_command_reader(
         &control,
         &mut command_id,
         &mut acknowledged,
@@ -2083,14 +2088,22 @@ pub(super) async fn cli_run_workflow_acknowledges_interactive_reader_commands()
         vec![
             SessionCommandKind::Query,
             SessionCommandKind::Query,
+            SessionCommandKind::Query,
             SessionCommandKind::Stop,
         ]
     );
-    assert_eq!(command_id, 4);
+    assert_eq!(command_id, 5);
     assert!(matches!(
-        terminal_snapshot.as_deref().map(|snapshot| &snapshot.state),
+        terminal_evidence
+            .as_ref()
+            .map(|evidence| &evidence.snapshot.state),
         Some(EngineState::Stopped { .. })
     ));
+    assert!(
+        terminal_evidence
+            .as_ref()
+            .is_some_and(|evidence| evidence.resolved_effect_trace.is_none())
+    );
     assert_eq!(
         String::from_utf8(output)?,
         concat!(

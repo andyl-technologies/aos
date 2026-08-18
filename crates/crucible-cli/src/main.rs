@@ -139,6 +139,7 @@ const CANONICAL_GATE_NAMES: &[&str] = &[
     "gate:perf-bench",
     "gate:fleet-equivalence",
     "gate:campaign-continuity",
+    "gate:signal-fault-system",
 ];
 
 #[derive(Parser, Debug, PartialEq, Eq)]
