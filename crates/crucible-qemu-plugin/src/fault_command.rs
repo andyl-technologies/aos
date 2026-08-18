@@ -1524,9 +1524,9 @@ fn interrupt_capability_row(
     {
         return Err(FaultCommandBridgeError::InterruptManifestRow);
     }
-    // SAFETY: the sealed QEMU manifest owns a process-lifetime target array;
-    // its non-null pointer and hard-bounded element count were checked above.
     let target_vcpus =
+        // SAFETY: the sealed QEMU manifest owns a process-lifetime target array;
+        // its non-null pointer and hard-bounded element count were checked above.
         unsafe { std::slice::from_raw_parts(raw.target_vcpus, raw.target_vcpu_count) }.to_vec();
     Ok(FaultInterruptCapabilityRowV1 {
         id: capability_text(raw.id, "interrupt_id")?.to_owned(),

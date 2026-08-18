@@ -104,8 +104,8 @@ impl MappedPluginAcceleratorRingsMut<'_> {
     pub unsafe fn detach_for_mapping_lifetime(self) -> DetachedPluginAcceleratorRings {
         // SAFETY: validated accelerator rings have fixed nonzero capacity.
         let request_entries = unsafe { NonNull::new_unchecked(self.requests.entries.as_mut_ptr()) };
-        // SAFETY: the same invariant holds for the completion ring.
         let completion_entries =
+            // SAFETY: the same invariant holds for the completion ring.
             unsafe { NonNull::new_unchecked(self.completions.entries.as_mut_ptr()) };
         DetachedPluginAcceleratorRings {
             request_header: NonNull::from(self.requests.header),

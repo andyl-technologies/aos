@@ -130,9 +130,29 @@ impl MappedSetupRegion {
         })?;
 
         let base = self.base_ptr();
-        // SAFETY: all offsets and byte lengths were checked against the owned
-        // mapping, alignment was validated for each typed segment, and duplicate
-        // ring indices were rejected so the returned mutable slices are disjoint.
+        let mapped_parts = {
+            // SAFETY: all offsets and byte lengths were checked against the owned
+            // mapping, alignment was validated for each typed segment, and duplicate
+            // ring indices were rejected so the returned mutable slices are disjoint.
+            unsafe {
+                (
+                    &*base.add(node_slot_offset).cast::<NodeSlot>(),
+                    &*base
+                        .add(fingerprint_sample_offset)
+                        .cast::<FingerprintSampleSlot>(),
+                    &*base.add(first_header_offset).cast::<RingHeader>(),
+                    &*base.add(second_header_offset).cast::<RingHeader>(),
+                    core::slice::from_raw_parts_mut(
+                        base.add(first_entries_offset).cast::<FrameEntry>(),
+                        first_entry_count,
+                    ),
+                    core::slice::from_raw_parts_mut(
+                        base.add(second_entries_offset).cast::<FrameEntry>(),
+                        second_entry_count,
+                    ),
+                )
+            }
+        };
         let (
             node_slot_ref,
             fingerprint_sample,
@@ -140,24 +160,7 @@ impl MappedSetupRegion {
             second_header,
             first_entries,
             second_entries,
-        ) = unsafe {
-            (
-                &*base.add(node_slot_offset).cast::<NodeSlot>(),
-                &*base
-                    .add(fingerprint_sample_offset)
-                    .cast::<FingerprintSampleSlot>(),
-                &*base.add(first_header_offset).cast::<RingHeader>(),
-                &*base.add(second_header_offset).cast::<RingHeader>(),
-                core::slice::from_raw_parts_mut(
-                    base.add(first_entries_offset).cast::<FrameEntry>(),
-                    first_entry_count,
-                ),
-                core::slice::from_raw_parts_mut(
-                    base.add(second_entries_offset).cast::<FrameEntry>(),
-                    second_entry_count,
-                ),
-            )
-        };
+        ) = mapped_parts;
         Ok(MappedNodeRingPairMut {
             node_slot: node_slot_ref,
             fingerprint_sample,

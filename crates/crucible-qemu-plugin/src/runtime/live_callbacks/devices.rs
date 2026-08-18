@@ -1370,8 +1370,8 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_accelerator_poll_cb(
     let Some(mut status) = std::ptr::NonNull::new(status) else {
         return -1;
     };
-    // SAFETY: QEMU grants exclusive output access for this callback.
     let output =
+        // SAFETY: QEMU grants exclusive output access for this callback.
         unsafe { output_buffer(output, capacity, "accelerator") }.unwrap_or_else(|source| {
             abort_live_callback(LiveVcpuTimeCallbackError::live_device(source))
         });
@@ -1467,9 +1467,9 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_block_event_poll_cb(
     let Some(_in_flight) = state.callback_guard() else {
         return -1;
     };
-    // SAFETY: QEMU grants this callback exclusive access to the output buffer
-    // for `capacity` bytes until this callback returns.
     let output =
+        // SAFETY: QEMU grants this callback exclusive access to the output buffer
+        // for `capacity` bytes until this callback returns.
         unsafe { output_buffer(output, capacity, "block event") }.unwrap_or_else(|source| {
             abort_live_callback(LiveVcpuTimeCallbackError::live_device(source))
         });
