@@ -284,7 +284,7 @@ impl Delivery {
 
 /// The policy for a reorder/jitter shift that lands in the consumer's past.
 ///
-/// RFC §15.4.2 / [IO-34] forbids ever silently delivering late. A modeled shift
+/// RFC section 15.4.2 / [IO-34] forbids ever silently delivering late. A modeled shift
 /// that would land at or before the consumer's frontier is therefore either
 /// **clamped** up to the next deliverable future icount or it **fails loudly**
 /// via the divergence path; the link never delivers late.
@@ -350,8 +350,8 @@ pub struct FrameDraws {
 impl FrameDraws {
     /// Draws one frame's fault draws from the seeded per-device RNG ([IO-21]).
     ///
-    /// Consumes draws from `rng` in the fixed model order — jitter, reorder,
-    /// loss, duplicate, corrupt, then `bit_flips` corruption-bit selectors — so
+    /// Consumes draws from `rng` in the fixed model order -- jitter, reorder,
+    /// loss, duplicate, corrupt, then `bit_flips` corruption-bit selectors -- so
     /// two runs with the same seed and the same frames produce byte-identical
     /// deliveries ([IO-22]). `selector_draws` is the number of selectors needed
     /// by the link's concrete corruption strategies; supplying it here keeps

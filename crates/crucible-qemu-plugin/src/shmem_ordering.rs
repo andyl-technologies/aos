@@ -122,6 +122,11 @@ impl PluginShmemOrdering {
     }
 
     /// Publishes the exact boundary, classifying a scheduler ceiling as idle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError`] when virtual-time conversion fails under
+    /// `shift_bits`.
     pub fn publish_control_boundary(
         slot: &NodeSlot,
         reached_icount: u64,

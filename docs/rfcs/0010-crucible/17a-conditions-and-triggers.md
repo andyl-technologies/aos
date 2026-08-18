@@ -1121,12 +1121,61 @@ a run is as pure a function of `(ScenarioDef, Seed, Schedule)` as the run it ste
 — which is what unifies it with 17's fault Plan, lets it share 18's predicate
 vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
 
-## Implementation status
+## Implementation checklist
 
-The former fault-action lowering checklist has been retired with that execution
-model. Event actions retain the closed taxonomy in §17a.4; signal-driven fault
-bindings consume referenced event occurrences as specified by
-[`RFC-0013`](../0013-signal-driven-fault-model/README.md).
+> The checklist task text below is authoritative for this topic; phase ordering lives in
+> [`32-implementation-plan.md`](32-implementation-plan.md). Event occurrences
+> are signal inputs; the action taxonomy contains no fault-mutation action.
+
+- [x] **T-TRIG-1** Implement scenario control flow as a canonical event graph. —
+  satisfies [TRIG-1]; spec §17a.1.
+- [x] **T-TRIG-2** Keep the required condition path black-box observable and
+  guest markers strictly optional. — satisfies [TRIG-2], [TRIG-3]; spec §17a.1.
+- [x] **T-TRIG-3** Share one closed `Condition` vocabulary between assertions
+  and triggers. — satisfies [TRIG-4]; spec §17a.2.
+- [x] **T-TRIG-4** Implement exact absolute, relative, and timer-based virtual
+  time leaves. — satisfies [TRIG-5]; spec §17a.2.1.
+- [x] **T-TRIG-5** Implement deterministic network and console observation
+  leaves. — satisfies [TRIG-6], [TRIG-7]; spec §17a.2.2, §17a.2.3.
+- [x] **T-TRIG-6** Implement zero-instrumentation coverage and deterministic
+  memory/register predicate leaves. — satisfies [TRIG-8], [TRIG-9]; spec
+  §17a.2.4, §17a.2.5.
+- [x] **T-TRIG-7** Implement I/O-pattern and node-lifecycle leaves over recorded
+  production observations. — satisfies [TRIG-10], [TRIG-11]; spec §17a.2.6,
+  §17a.2.7.
+- [x] **T-TRIG-8** Implement assertion-state and scheduler-quiescence leaves. —
+  satisfies [TRIG-12], [TRIG-13]; spec §17a.2.8, §17a.2.9.
+- [x] **T-TRIG-9** Implement optional guest-marker leaves and the closed compound
+  combinator set with persistent `Once` state. — satisfies [TRIG-14], [TRIG-15];
+  spec §17a.2.10, §17a.2.11.
+- [x] **T-TRIG-10** Evaluate conditions only at deterministic event/quantum
+  boundaries with canonical sampling cadence. — satisfies [TRIG-16], [TRIG-17],
+  [TRIG-18]; spec §17a.3.
+- [x] **T-TRIG-11** Treat trigger firing as computed engine behavior and reserve
+  decisions for genuinely probabilistic action outcomes. — satisfies [TRIG-19],
+  [TRIG-20]; spec §17a.3.
+- [x] **T-TRIG-12** Implement each event as a content-addressed
+  `(id, trigger, action, policy)` tuple. — satisfies [TRIG-21]; spec §17a.4.
+- [x] **T-TRIG-13** Implement the closed non-fault action taxonomy. — satisfies
+  [TRIG-22]; spec §17a.4.
+- [x] **T-TRIG-14** Apply actions atomically at their firing boundary and limit
+  node lifecycle actions to baked nodes. — satisfies [TRIG-23], [TRIG-24]; spec
+  §17a.4.
+- [x] **T-TRIG-15** Implement relative timing anchored to recorded event
+  occurrences. — satisfies [TRIG-25]; spec §17a.5.
+- [x] **T-TRIG-16** Validate references, shape, reachability, and cycles at build
+  time with deterministic DFS. — satisfies [TRIG-26], [TRIG-27]; spec §17a.6.
+- [x] **T-TRIG-17** Feed referenced event occurrences to event-domain signals and
+  express known-time faults through time-domain signals. — satisfies [TRIG-28],
+  [TRIG-29]; spec §17a.7.
+- [x] **T-TRIG-18** Compose explicit pass/fail actions with assertion verdicts as
+  a pure function of the event log. — satisfies [TRIG-30]; spec §17a.8.
+- [x] **T-TRIG-19** Prove complete scenarios remain authorable without any guest
+  component. — satisfies [TRIG-31]; spec §17a.9.
+- [x] **T-TRIG-20** Provide equivalent validated code-first and canonical
+  serialized event-graph authoring forms. — satisfies [TRIG-32]; spec §17a.10.
+
+## Historical gate aliases
 
 Historical gate aliases retained for the executable event-graph checks:
 

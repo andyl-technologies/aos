@@ -60,7 +60,7 @@ fn attach_returns_root_qid_path_hashed() {
 #[test]
 fn qid_is_path_hashed_and_stable_across_trees() {
     // Two independently constructed trees yield identical QIDs for the same
-    // path — proving QIDs depend on path text, not host inode allocation.
+    // path -- proving QIDs depend on path text, not host inode allocation.
     let a = sample_tree();
     let b = sample_tree();
     let path = vec!["bin".to_string(), "tool".to_string()];
@@ -138,7 +138,7 @@ fn readdir_returns_sorted_entries_with_dot_first() {
     let (_, reply) = round_trip(&mut dev, 3, &treaddir(4, 1, 0, MAX_MSIZE));
     assert_eq!(reply_type(&reply), codec::RREADDIR);
     let names = readdir_names(&reply);
-    // "." and ".." first, then children lexicographically — NOT insert order.
+    // "." and ".." first, then children lexicographically -- NOT insert order.
     assert_eq!(
         names,
         vec![".", "..", "alpha", "bin", "link", "zeta"]

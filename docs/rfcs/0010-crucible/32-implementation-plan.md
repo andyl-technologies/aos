@@ -43,7 +43,7 @@ IO 16  QEMU 16  API 14  DBG 14  OBS 14  SESS 14  STD 14  PROTO 11  TEMP 11
 DCE 10  PAT 9  TIME 9  TRI 8  WL 6  ARCH 5  EX 5  BOUND 4  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:319543a1c050f25d`
+Checklist sync digest: `rfc0010-checklist-v1:6e4702cb600e3a52`
 
 ### Adversarial completion audit (2026-07-09)
 
@@ -204,7 +204,9 @@ guest↔host channel (black-box default + optional white-box).
 - Spatial graph (ScenarioDef): `T-SPAT-1 … T-SPAT-21` ([`06`](06-spatial-graph.md)).
 - Temporal graph (CoW, thin/fat, GC, search-reduction): remaining `T-TEMP-*` beyond Phase 1.
 - Conditions, triggers, and the event graph (the shared observable-condition predicate vocabulary + trigger graph + validator): `T-TRIG-1 … T-TRIG-20` ([`17a`](17a-conditions-and-triggers.md)).
-- Faults (as trigger actions; the time-scheduled Plan lowers to `At`-triggered events): `T-FAULT-1 … T-FAULT-16` ([`17`](17-fault-injection.md)).
+- Signal-driven faults (canonical signal programs, typed bindings, production
+  network/storage/node adapters, checkpointing, and replay): `T-FAULT-1 … T-FAULT-16`
+  ([`17`](17-fault-injection.md)).
 - Assertions / properties (incl. offline checker and assertion-proximity `T-ASRT-18`): `T-ASRT-1 … T-ASRT-18` ([`18`](18-assertions-properties.md)).
 - Unified event log (incl. the proximity projection `T-OBS-14`): `T-OBS-1 … T-OBS-14` ([`19`](19-observability-event-log.md)).
 - Guest↔host channel + optional agent (incl. the app-controlled randomness

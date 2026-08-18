@@ -671,7 +671,7 @@ pub enum SessionCommandKind {
 impl SessionCommandKind {
     /// The lifecycle command-kind set.
     ///
-    /// This covers the complete RFC §4 command surface.
+    /// This covers the complete RFC section 4 command surface.
     pub const ALL: [Self; 21] = [
         Self::Start,
         Self::Continue,

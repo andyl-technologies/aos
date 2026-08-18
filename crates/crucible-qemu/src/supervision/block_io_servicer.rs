@@ -804,6 +804,11 @@ impl QemuLiveBlockIoServicer {
     /// This is the production activation seam for a model that must take effect
     /// after fault-free firmware discovery. Any response already in flight keeps
     /// its previously computed delivery coordinate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::DeviceLockPoisoned`] when another
+    /// thread panicked while holding the authoritative device lock.
     pub fn set_latency_model(
         &mut self,
         latency: BlockLatency,
@@ -1388,6 +1393,11 @@ impl QemuLiveBlockIoServicer {
     }
 
     /// Returns the first request ready for resolve/persist evaluation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::DeviceLockPoisoned`] when another
+    /// thread panicked while holding the authoritative device lock.
     pub fn next_storage_execution_opportunity(
         &self,
         now_nanos: u64,
@@ -1415,6 +1425,11 @@ impl QemuLiveBlockIoServicer {
     }
 
     /// Returns the next resolved request awaiting persist-phase evaluation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::DeviceLockPoisoned`] when another
+    /// thread panicked while holding the authoritative device lock.
     pub fn next_storage_request_persistence_opportunity(
         &self,
         now_nanos: u64,
@@ -1442,6 +1457,11 @@ impl QemuLiveBlockIoServicer {
     }
 
     /// Returns the next computed completion ready for deliver-phase evaluation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::DeviceLockPoisoned`] when another
+    /// thread panicked while holding the authoritative device lock.
     pub fn next_storage_delivery_opportunity(
         &self,
         now_nanos: u64,
@@ -1469,6 +1489,11 @@ impl QemuLiveBlockIoServicer {
     }
 
     /// Returns the complete deterministic storage-fault continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::DeviceLockPoisoned`] when another
+    /// thread panicked while holding the authoritative device lock.
     pub fn storage_fault_state(&self) -> Result<BlockFaultState, QemuLiveBlockIoServicerError> {
         Ok(self.device.lock()?.storage_fault_state().clone())
     }
@@ -1483,6 +1508,11 @@ impl QemuLiveBlockIoServicer {
     }
 
     /// Returns the next physical persistence opportunity ready at `now_nanos`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::DeviceLockPoisoned`] when another
+    /// thread panicked while holding the authoritative device lock.
     pub fn next_storage_persistence_opportunity(
         &self,
         now_nanos: u64,
@@ -1510,6 +1540,11 @@ impl QemuLiveBlockIoServicer {
     }
 
     /// Drains completed physical-media outcomes for durable event recording.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::DeviceLockPoisoned`] when another
+    /// thread panicked while holding the authoritative device lock.
     pub fn drain_storage_persistence_media_outcomes(
         &mut self,
     ) -> Result<Vec<BlockPersistenceMediaOutcome>, QemuLiveBlockIoServicerError> {
@@ -1520,6 +1555,11 @@ impl QemuLiveBlockIoServicer {
     }
 
     /// Borrows completed physical-media outcomes without acknowledging them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::DeviceLockPoisoned`] when another
+    /// thread panicked while holding the authoritative device lock.
     pub fn storage_persistence_media_outcomes(
         &self,
     ) -> Result<Vec<BlockPersistenceMediaOutcome>, QemuLiveBlockIoServicerError> {
@@ -1531,6 +1571,11 @@ impl QemuLiveBlockIoServicer {
     }
 
     /// Drains integrated storage-service evidence for durable event recording.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::DeviceLockPoisoned`] when another
+    /// thread panicked while holding the authoritative device lock.
     pub fn drain_storage_service_outcomes(
         &mut self,
     ) -> Result<Vec<BlockServiceCompletion>, QemuLiveBlockIoServicerError> {
@@ -1538,6 +1583,11 @@ impl QemuLiveBlockIoServicer {
     }
 
     /// Borrows integrated storage-service evidence without acknowledging it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::DeviceLockPoisoned`] when another
+    /// thread panicked while holding the authoritative device lock.
     pub fn storage_service_outcomes(
         &self,
     ) -> Result<Vec<BlockServiceCompletion>, QemuLiveBlockIoServicerError> {
@@ -1749,6 +1799,11 @@ impl QemuLiveBlockIoServicer {
     /// This is the exact device horizon: a blocked guest cannot complete its
     /// request until virtual time reaches this icount, so a time-owning plugin
     /// must advance to it before the response can be delivered.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::DeviceLockPoisoned`] when another
+    /// thread panicked while holding the authoritative device lock.
     pub fn next_completion_icount(&self) -> Result<Option<u64>, QemuLiveBlockIoServicerError> {
         Ok(self.device.lock()?.next_exact_local_event())
     }

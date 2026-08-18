@@ -224,6 +224,12 @@ impl NodeFaultFieldV1 {
     }
 
     /// Builds a canonical identity-set field.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeFaultPayloadError::FieldValue`] when `values` is empty,
+    /// exceeds the schema bound, or is not in strictly increasing canonical
+    /// order.
     pub fn hash_set(tag: u16, values: &[[u8; 32]]) -> Result<Self, NodeFaultPayloadError> {
         if values.is_empty()
             || values.len() > NODE_FAULT_MAX_HASH_SET_V1

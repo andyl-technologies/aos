@@ -829,10 +829,59 @@ basis points, then a fault-injected run is a pure function of `(ScenarioDef,
 Seed, Schedule)` exactly like a fault-free run — which is what
 `gate:layer1-injection` and `gate:e2e-determinism` enforce.
 
-## Implementation status
+## Implementation checklist
 
-The former activation-row implementation checklist has been retired with its
-execution model. The authoritative signal-system implementation requirements,
-per-effect evidence, and terminal acceptance gate are in
-[`RFC-0013`](../0013-signal-driven-fault-model/README.md) and its
-[`implementation plan`](../0013-signal-driven-fault-model/07-implementation-plan.md).
+> The checklist task text below is authoritative for this topic; phase ordering lives in
+> [`32-implementation-plan.md`](32-implementation-plan.md). Every task exercises
+> the signal/binding model and production adapters; there is no imperative fault
+> mutation path or test-double acceptance substitute.
+
+- [x] **T-FAULT-1** Confine every fault to modeled state and make every
+  probabilistic outcome a seeded, recorded decision. — satisfies [FAULT-1],
+  [FAULT-2]; spec §17.1, §17.3.
+- [x] **T-FAULT-2** Implement the complete network effect taxonomy, including
+  directional availability and typed corruption. — satisfies [FAULT-3],
+  [FAULT-7], [FAULT-8]; spec §17.2, §17.4.1.
+- [x] **T-FAULT-3** Apply duplication, bandwidth, latency, partition, and other
+  network effects in deterministic production frame resolution. — satisfies
+  [FAULT-9], [FAULT-10], [FAULT-16], [FAULT-17]; spec §17.2, §17.4.1.
+- [x] **T-FAULT-4** Apply crash, slowdown, memory/register/CPU, interrupt, and
+  clock effects at the production VM boundary with exact lifecycle semantics.
+  — satisfies [FAULT-4], [FAULT-18], [FAULT-19], [FAULT-20], [FAULT-21]; spec
+  §17.2, §17.4.2.
+- [x] **T-FAULT-5** Apply block availability, latency, ordering, persistence,
+  corruption, geometry, and array effects through production storage paths. —
+  satisfies [FAULT-5], [FAULT-22]; spec §17.2, §17.4.3.
+- [x] **T-FAULT-6** Apply 9p availability, latency, ordering, visibility, and
+  data/metadata effects through the production 9p path. — satisfies [FAULT-6],
+  [FAULT-23]; spec §17.2, §17.4.3.
+- [x] **T-FAULT-7** Draw probabilistic outcomes from canonical decision streams,
+  replay them without rerolling, and encode all rates and bounds as exact
+  integers. — satisfies [FAULT-11], [FAULT-12], [FAULT-13], [FAULT-14]; spec
+  §17.3.
+- [x] **T-FAULT-8** Combine overlapping contributions by closed,
+  order-independent rules and record their provenance. — satisfies [FAULT-15];
+  spec §17.3.3.
+- [x] **T-FAULT-9** Make `Plan::fault_signals` the sole fault representation and
+  resolve every transition through the shared signal evaluator and typed
+  binding runtime. — satisfies [FAULT-24], [FAULT-25]; spec §17.6.1.
+- [x] **T-FAULT-10** Keep session control free of out-of-band fault mutation and
+  make search branch only through authenticated typed overrides. — satisfies
+  [FAULT-26]; spec §17.6.2.
+- [x] **T-FAULT-11** Authenticate binding contribution, hysteresis, evaluator,
+  adapter, and same-boundary ordering state in exact checkpoints and replay. —
+  satisfies [FAULT-27], [FAULT-28]; spec §17.6.3, §17.6.4.
+- [x] **T-FAULT-12** Drive observation-anchored faults from referenced event
+  signals and known-time faults from canonical time-domain signal nodes. —
+  satisfies [FAULT-33], [FAULT-34]; spec §17.6.5.
+- [x] **T-FAULT-13** Generate weighted signal/binding plans as a pure function of
+  a bounded `RandomFaultConfig` and seed. — satisfies [FAULT-29]; spec §17.7.
+- [x] **T-FAULT-14** Canonicalize generated plans and retain the concrete plan in
+  reproduction artifacts without depending on generator state. — satisfies
+  [FAULT-30]; spec §17.7.
+- [x] **T-FAULT-15** Prove run-twice and replay determinism for activation sites,
+  effects, decisions, and first-divergence localization. — satisfies [FAULT-31];
+  spec §17.8.
+- [x] **T-FAULT-16** Exercise every effect through its production
+  network/storage/node adapter and corresponding live-QEMU acceptance gate. —
+  satisfies [FAULT-32]; spec §17.8.

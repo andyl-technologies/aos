@@ -273,6 +273,11 @@ pub trait QemuHostIoRuntime: Send {
     }
 
     /// Captures the block state needed to roll back one scheduler boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when a runtime with an attached
+    /// block device cannot capture its complete fault continuation.
     #[cfg(target_os = "linux")]
     fn checkpoint_block_boundary_state(
         &self,

@@ -134,7 +134,7 @@ fn decode_never_panics_on_arbitrary_bytes() {
         // The decoder never panics.
         let _ = Message::decode(&bytes);
         // The server never panics and always yields a valid 9p reply frame
-        // (size prefix matches length) — even for hostile bytes.
+        // (size prefix matches length) -- even for hostile bytes.
         if let Ok(reply) = dev.server().clone().handle(&bytes) {
             assert!(reply.len() >= codec::HEADER_LEN);
             let size = u32::from_le_bytes([reply[0], reply[1], reply[2], reply[3]]) as usize;

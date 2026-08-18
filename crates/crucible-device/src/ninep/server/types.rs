@@ -30,8 +30,8 @@ pub(super) const RGETATTR_LEN: usize = HEADER_LEN + 8 + QID_LEN + (4 * 3 + 8 * 4
 
 /// The minimum `msize` the server will negotiate ([IO-16], [IO-18]).
 ///
-/// Derived as the largest single reply the server can emit — the maximum
-/// `Rreaddir` entry, the 16-QID `Rwalk`, and the fixed `Rgetattr` — plus the
+/// Derived as the largest single reply the server can emit -- the maximum
+/// `Rreaddir` entry, the 16-QID `Rwalk`, and the fixed `Rgetattr` -- plus the
 /// `Rreaddir` `header[7] count[4]` prefix. Pinning the floor here guarantees
 /// every fixed-shape reply and at least one whole directory entry of any legal
 /// name fit the negotiated `msize`, so a reply is never silently truncated and
@@ -62,7 +62,7 @@ pub(super) const IOUNIT_ANY: u32 = 0;
 /// The open state of a fid: closed (walk target) or opened for reading.
 ///
 /// A read-only export only ever opens for reading; the cached, sorted directory
-/// enumeration of an opened directory is *not* stored here — it is recomputed
+/// enumeration of an opened directory is *not* stored here -- it is recomputed
 /// deterministically from the tree on each `readdir`, so it survives
 /// snapshot/restore for free ([IO-19]).
 #[derive(

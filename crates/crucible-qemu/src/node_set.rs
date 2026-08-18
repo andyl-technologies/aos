@@ -252,6 +252,11 @@ impl QemuNodeSet {
     ///
     /// This operation has no fallible step. It returns the retired generations
     /// so the caller can verify that terminal-exit supervision reaped them.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics when `replacements` does not name exactly the
+    /// nodes validated by `plan`.
     #[must_use]
     pub fn commit_terminal_replacements(
         &mut self,
