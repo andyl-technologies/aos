@@ -1,15 +1,17 @@
 """QemuMachine — virtio-serial transport (fleet/multi-VM mode).
 
 argv is a 1:1 port of the bash driver this replaces; the load-bearing
-workarounds (mcast localaddr pin, SCSI CD-ROM for the metadata ISO,
-serial drain via socat) survive verbatim — see comments in start().
+workarounds (mcast localaddr pin and SCSI CD-ROM for the metadata ISO)
+survive verbatim — see comments in start().
 """
 
 import glob
 import logging
 import os
 import shutil
+import socket
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import IO, ClassVar, override
@@ -165,6 +167,11 @@ class QemuMachine(Machine):
 
         self.qemu_proc = None
         self.drain_proc = None
+        self._serial_listener: socket.socket | None = None
+        self._serial_connection: socket.socket | None = None
+        self._serial_thread: threading.Thread | None = None
+        self._serial_stop: threading.Event | None = None
+        self._serial_lock = threading.Lock()
         self.swtpm_proc = None
         self._qemu_log_fd: IO[bytes] | None = None
 
@@ -308,27 +315,10 @@ class QemuMachine(Machine):
             if self.metadata_src is not None:
                 log.info("  Metadata: %s", self.metadata_copy)
 
-        # Serial drain — unidirectional listener appending to
-        # <name>-serial.log. Must be up before QEMU connects; the wait
-        # loop guards against early-boot output being lost. -u +
-        # OPEN-with-creat,append matches the bash driver this replaces.
-        self.drain_proc = subprocess.Popen(
-            [
-                "socat",
-                "-u",
-                f"UNIX-LISTEN:{self.serial_socket},reuseaddr,fork",
-                f"OPEN:{self.serial_log_path},creat,append",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        deadline = time.monotonic() + 5.0
-        while not os.path.exists(self.serial_socket):
-            if time.monotonic() > deadline:
-                raise RuntimeError(
-                    f"[{self.name}] serial drain socket did not appear within 5s"
-                )
-            time.sleep(0.05)
+        # Own the serial socket in-process so tests can drive a bounded
+        # pre-agent console (notably the signed recovery UI) while preserving
+        # the append-only transcript used by boot diagnostics.
+        self._start_serial_bridge()
 
         # The metadata ISO rides on a SCSI CD-ROM so the guest sees
         # /dev/sr0 with ISO9660 volume label `aos-metadata` — exactly
@@ -512,6 +502,14 @@ class QemuMachine(Machine):
                     "-device",
                     scsi_device,
                 ]
+            elif interface == "usb":
+                controller_id = f"extra_usb{index}"
+                argv += [
+                    "-device",
+                    f"qemu-xhci,id={controller_id}",
+                    "-device",
+                    f"usb-storage,drive={drive_id},bus={controller_id}.0,serial={serial}",
+                ]
             else:
                 raise RuntimeError(
                     f"[{self.name}] extra disk {index} has invalid interface"
@@ -579,6 +577,96 @@ class QemuMachine(Machine):
                 f"[{self.name}] QEMU exited immediately"
                 f" (code {self.qemu_proc.returncode})"
             )
+
+    def _start_serial_bridge(self) -> None:
+        """Starts one bidirectional serial bridge and append-only drain."""
+        self._stop_serial_bridge()
+        try:
+            os.unlink(self.serial_socket)
+        except FileNotFoundError:
+            pass
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(self.serial_socket)
+        listener.listen(1)
+        listener.settimeout(0.2)
+        self._serial_listener = listener
+        stop = threading.Event()
+        self._serial_stop = stop
+
+        def drain() -> None:
+            try:
+                while True:
+                    try:
+                        connection, _ = listener.accept()
+                        break
+                    except TimeoutError:
+                        if stop.is_set():
+                            return
+                connection.settimeout(0.2)
+                with self._serial_lock:
+                    self._serial_connection = connection
+                with connection, open(self.serial_log_path, "ab") as serial_log:
+                    while not stop.is_set():
+                        try:
+                            data = connection.recv(64 * 1024)
+                        except TimeoutError:
+                            continue
+                        if not data:
+                            break
+                        serial_log.write(data)
+                        serial_log.flush()
+            except OSError:
+                pass
+            finally:
+                with self._serial_lock:
+                    self._serial_connection = None
+
+        self._serial_thread = threading.Thread(
+            target=drain,
+            name=f"{self.name}-serial-drain",
+            daemon=True,
+        )
+        self._serial_thread.start()
+
+    def _stop_serial_bridge(self) -> None:
+        """Stops the current serial bridge, if any."""
+        with self._serial_lock:
+            connection = self._serial_connection
+            self._serial_connection = None
+        if connection is not None:
+            connection.close()
+        if self._serial_stop is not None:
+            self._serial_stop.set()
+            self._serial_stop = None
+        if self._serial_listener is not None:
+            self._serial_listener.close()
+            self._serial_listener = None
+        if self._serial_thread is not None:
+            self._serial_thread.join(timeout=2)
+            self._serial_thread = None
+
+    def send_serial(self, text: str, timeout: float = 30.0) -> None:
+        """Writes UTF-8 input to the guest's serial console.
+
+        Raises:
+            RuntimeError: If QEMU has not connected its serial port before the
+                deadline or the connection closes while sending.
+        """
+        payload = text.encode()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._serial_lock:
+                connection = self._serial_connection
+            if connection is not None:
+                try:
+                    connection.sendall(payload)
+                    return
+                except OSError as error:
+                    raise RuntimeError(
+                        f"[{self.name}] serial console write failed: {error}"
+                    ) from error
+            time.sleep(0.05)
+        raise RuntimeError(f"[{self.name}] serial console did not connect")
 
     # ------------------------------------------------------------------
     def reboot(self, timeout: float = 600.0) -> None:
@@ -835,6 +923,7 @@ class QemuMachine(Machine):
             except subprocess.TimeoutExpired:
                 self.qemu_proc.kill()
                 self.qemu_proc.wait()
+        self._stop_serial_bridge()
         if self.drain_proc is not None and self.drain_proc.poll() is None:
             self.drain_proc.terminate()
             try:

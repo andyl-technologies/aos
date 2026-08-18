@@ -2762,6 +2762,8 @@ mod tests {
                         sbat: Vec::new(),
                         expected_pcr11: None,
                         ukis: Vec::new(),
+                        recovery_ukis: Vec::new(),
+                        recovery_bundle: None,
                         root_image: Some("root.img".into()),
                         root_verity: Some("root.verity".into()),
                         root_hash: Some(

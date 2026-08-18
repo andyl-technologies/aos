@@ -22,6 +22,8 @@ The system registry must contain one package with the same name as the running
 sysroot, normally `aos`, with `sysroot = true`. Its signed metadata must publish
 the raw OTA payload, both slot-specific UKIs, module ABI, and the root-hash,
 expected-measurement, and Secure Boot facts required by the target policy.
+Recovery-enabled images additionally publish both recovery UKIs, their fixed
+loader entries, recovery ABI, and the exact authenticated bundle manifest.
 
 Registry and channel policy establishes rollout direction. The upgrade
 resolver selects the first enabled same-name sysroot whose version differs
@@ -59,9 +61,17 @@ apm upgrade --system
 APM verifies the registry graph and Secure Boot policy, imports the
 authenticated OTA payload, copies the currently needed evaluator closure to
 the persistent store overlay, writes the inactive root and, for a verity image,
-its hash slot, publishes its UKI last, and makes the counted UKI the durable
-next-boot default. The running image and active configuration are unchanged
-until reboot.
+its hash slot, and stages the inactive normal UKI. A recovery-enabled update
+then publishes and read-back-verifies only the matching recovery UKI and its
+uncounted loader entry before making the counted normal UKI discoverable last.
+The recovery copy paired with the running known-good slot is not touched. The
+running image and active configuration are unchanged until reboot.
+
+Before any inactive root write, APM re-authenticates the retained recovery UKI
+and every installed normal UKI against the Secure Boot db certificate in the
+immutable running image. Signed UKI identity, rather than editable image-state
+slot fields, determines each normal UKI's slot. Digest and generation records
+are supporting evidence and must agree; they are not signature authority.
 
 Activation modes are:
 

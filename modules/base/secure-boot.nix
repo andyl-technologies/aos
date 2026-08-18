@@ -258,6 +258,20 @@ in {
       ];
 
       environment.systemPackages = [pkgs.efitools enrollScript];
+
+      # Keep the public firmware db authority reachable through the immutable
+      # toplevel as well as /etc. Recovery retention deliberately reads the
+      # former path: mutable image-state and the ESP are evidence, never the
+      # authority for deciding that one recovery copy is safe to retain.
+      environment.etc."aos/trust/secure-boot-db.crt".source = cfg.dbCert;
+
+      # First-boot recovery seeding authenticates the ESP copy before it
+      # records any retention evidence. The initrd copies an explicit package
+      # closure, so both PE verification tools must be named here.
+      aos.boot.initrd.extraPackages = lib.mkIf config.aos.boot.recovery.enable [
+        pkgs.binutils
+        pkgs.sbsigntools
+      ];
     })
 
     (lib.mkIf cfg.lockdown.enable {

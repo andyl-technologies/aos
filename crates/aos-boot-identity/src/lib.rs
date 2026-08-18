@@ -34,6 +34,10 @@ pub struct NormalBootIdentity {
     pub root_hash: String,
 }
 
+/// Confirms that the command line selects the dedicated recovery environment.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RecoveryBootIdentity;
+
 /// Reports why a security-relevant command line is not an AOS normal boot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ParseError {
@@ -52,6 +56,8 @@ pub enum ParseError {
     SlotMismatch,
     /// Normal boot included a recovery or interactive-initrd selector.
     ForbiddenField(&'static str),
+    /// Recovery included a token outside its exact signed allowlist.
+    UnexpectedField(String),
 }
 
 impl fmt::Display for ParseError {
@@ -70,6 +76,9 @@ impl fmt::Display for ParseError {
                     formatter,
                     "normal boot forbids command-line field `{field}`"
                 )
+            }
+            Self::UnexpectedField(field) => {
+                write!(formatter, "recovery forbids command-line field `{field}`")
             }
         }
     }
@@ -160,6 +169,54 @@ pub fn parse_normal(cmdline: &str) -> Result<NormalBootIdentity, ParseError> {
     })
 }
 
+/// Parses and validates the dedicated recovery command line.
+///
+/// Recovery runs entirely from its initrd, so its signed command line is an
+/// exact three-field allowlist. Rejecting every additional token prevents a
+/// firmware-appended command line from selecting a normal root, an alternate
+/// target, a debug shell, or another systemd command-line control surface.
+///
+/// # Errors
+///
+/// Returns [`ParseError`] unless each required recovery field appears exactly
+/// once with its canonical value and no other token is present.
+pub fn parse_recovery(cmdline: &str) -> Result<RecoveryBootIdentity, ParseError> {
+    let mut recovery = None;
+    let mut target = None;
+    let mut luks = None;
+
+    for token in cmdline.split_ascii_whitespace() {
+        let (key, value) = match token.split_once('=') {
+            Some((key, value)) => (key, value),
+            None => (token, "<bare>"),
+        };
+
+        match key {
+            "aos.recovery" => set_once(&mut recovery, value, "aos.recovery")?,
+            "rd.systemd.unit" => set_once(&mut target, value, "rd.systemd.unit")?,
+            "rd.luks" => set_once(&mut luks, value, "rd.luks")?,
+            _ => return Err(ParseError::UnexpectedField(key.to_owned())),
+        }
+    }
+
+    let recovery = required_nonempty(recovery, "aos.recovery")?;
+    if recovery != "1" {
+        return Err(invalid("aos.recovery", recovery));
+    }
+
+    let target = required_nonempty(target, "rd.systemd.unit")?;
+    if target != "aos-recovery.target" {
+        return Err(invalid("rd.systemd.unit", target));
+    }
+
+    let luks = required_nonempty(luks, "rd.luks")?;
+    if luks != "0" {
+        return Err(invalid("rd.luks", luks));
+    }
+
+    Ok(RecoveryBootIdentity)
+}
+
 fn is_forbidden_normal_key(key: &str) -> bool {
     matches!(
         key,
@@ -246,7 +303,7 @@ fn slot_for_hash(device: &str) -> Option<BootSlot> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BootSlot, ParseError, parse_normal};
+    use super::{BootSlot, ParseError, RecoveryBootIdentity, parse_normal, parse_recovery};
 
     const HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -348,6 +405,47 @@ mod tests {
             assert!(matches!(
                 parse_normal(&format!("{} {selector}", verity("a"))),
                 Err(ParseError::ForbiddenField(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn accepts_only_the_canonical_recovery_identity() {
+        assert_eq!(
+            parse_recovery("rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0"),
+            Ok(RecoveryBootIdentity)
+        );
+    }
+
+    #[test]
+    fn rejects_missing_duplicate_and_noncanonical_recovery_fields() {
+        for cmdline in [
+            "aos.recovery=1 rd.luks=0",
+            "rd.systemd.unit=aos-recovery.target aos.recovery=1 aos.recovery=1 rd.luks=0",
+            "rd.systemd.unit=emergency.target aos.recovery=1 rd.luks=0",
+            "rd.systemd.unit=aos-recovery.target aos.recovery=0 rd.luks=0",
+            "rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=1",
+        ] {
+            assert!(parse_recovery(cmdline).is_err(), "accepted `{cmdline}`");
+        }
+    }
+
+    #[test]
+    fn rejects_every_additional_recovery_token() {
+        for appended in [
+            "root=/dev/mapper/root",
+            "roothash=aa",
+            "systemd.verity=yes",
+            "systemd.unit=emergency.target",
+            "rd.systemd.wants=debug-shell.service",
+            "SYSTEMD_SULOGIN_FORCE=1",
+            "console=ttyS0",
+        ] {
+            let cmdline =
+                format!("rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0 {appended}");
+            assert!(matches!(
+                parse_recovery(&cmdline),
+                Err(ParseError::UnexpectedField(_))
             ));
         }
     }

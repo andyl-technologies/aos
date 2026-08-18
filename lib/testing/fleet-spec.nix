@@ -56,12 +56,13 @@
         description = "Attach the additional disk read-only to the guest.";
       };
       interface = mkOption {
-        type = types.enum ["virtio" "scsi"];
+        type = types.enum ["virtio" "scsi" "usb"];
         default = "virtio";
         description = ''
           QEMU interface used for the additional disk. Virtio preserves the
           existing stable-path contract; SCSI keeps auxiliary disks outside
-          the root virtio block-device namespace.
+          the root virtio block-device namespace; USB models a removable
+          transport such as authenticated recovery media.
         '';
       };
     };

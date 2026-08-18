@@ -1629,6 +1629,7 @@ mod tests {
             root_verity_roothash: Some("22".repeat(32)),
             expected_pcr11: None,
             initrd_pcr11: None,
+            recovery: None,
             created_at: "2026-01-01T00:00:00Z".to_string(),
         };
         assert!(!image_requires_generation_quote(&image));

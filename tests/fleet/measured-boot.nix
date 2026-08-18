@@ -42,6 +42,7 @@
     ];
   };
   measuredImage = measuredSystem.config.system.build.image.raw;
+  recoveryBundle = measuredSystem.config.system.build.recoveryBundle;
   ukiBMedia = pkgs.mkDerivation {
     pname = "aos-measured-boot-uki-b-media";
     version = "1";
@@ -60,6 +61,29 @@
           ${pkgs.coreutils}/bin/truncate -s "$media_bytes" uki-b-media.img
           ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -q -L aos-uki-b -d media uki-b-media.img
           mv uki-b-media.img $out/uki-b-media.img
+        '';
+      }
+    ];
+  };
+  recoveryMedia = pkgs.mkDerivation {
+    pname = "aos-measured-boot-recovery-media";
+    version = "1";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.e2fsprogs];
+    runtimeDeps = [];
+    propagatedDeps = [];
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p media/aos/recovery $out
+          cp -a ${recoveryBundle}/aos/recovery/. media/aos/recovery/
+          bundle_bytes=$(${pkgs.coreutils}/bin/du -sb ${recoveryBundle}/aos/recovery | ${pkgs.coreutils}/bin/cut -f1)
+          media_bytes=$(( (bundle_bytes + 256 * 1024 * 1024 + 1048575) / 1048576 * 1048576 ))
+          ${pkgs.coreutils}/bin/truncate -s "$media_bytes" recovery-media.img
+          ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -q -L AOS-RECOVERY \
+            -d media recovery-media.img
+          mv recovery-media.img $out/recovery-media.img
         '';
       }
     ];
@@ -93,6 +117,16 @@ in {
           serial = "uki-b-media";
           source = "${ukiBMedia}/uki-b-media.img";
           readOnly = true;
+        }
+        {
+          interface = "usb";
+          sizeMiB = 8192;
+          serial = "aos-recovery-media";
+          source = "${recoveryMedia}/recovery-media.img";
+          # The recovery environment always mounts this untrusted transport
+          # read-only. Keeping the harness copy writable lets the normal test
+          # boot corrupt its manifest and prove signature rejection.
+          readOnly = false;
         }
       ];
       # Keep the control-plane unit in every evaluated /etc generation. The
@@ -130,7 +164,9 @@ in {
       import hashlib
       import base64
       import json
+      import os
       import re
+      import time
 
       SB_GUID = "8be4df61-93ca-11d2-aa0d-00e098032b8c"
       CS = "${pkgs.cryptsetup}/sbin/cryptsetup"
@@ -153,6 +189,27 @@ in {
           value = match.group(1).lower()
           assert len(value) == 64, output
           return value
+
+      def serial_offset():
+          try:
+              return os.path.getsize(target.serial_log_path)
+          except OSError:
+              return 0
+
+      def wait_serial(marker, offset, timeout=300):
+          deadline = time.monotonic() + timeout
+          transcript = ""
+          while time.monotonic() < deadline:
+              try:
+                  with open(target.serial_log_path, "r", errors="replace") as serial:
+                      serial.seek(offset)
+                      transcript = serial.read()
+              except OSError:
+                  transcript = ""
+              if marker in transcript:
+                  return transcript
+              time.sleep(0.25)
+          raise AssertionError(f"serial marker {marker!r} not observed:\n{transcript[-12000:]}")
 
       def canonical_json(value):
           """Encode canonical attestation JSON independently of the AOS CLI."""
@@ -927,6 +984,7 @@ in {
       recovery_key_encoded = base64.b64encode(
           target.succeed("cat /run/aos-var-recovery.key").encode()
       ).decode()
+      recovery_key = base64.b64decode(recovery_key_encoded).decode().strip()
 
       clean_pcr12 = read_pcr12()
       assert clean_pcr12 == "0" * 64, (
@@ -1230,7 +1288,184 @@ in {
                 --key-file /run/aos-var-recovery.key {VARDEV}
           """)
 
-      # ════ 7. Fault injection — failed ready phase must not bless ═══
+      # ════ 7. Paired recovery UKIs boot without normal storage ═════
+      recovery_state = target.succeed(
+          "base64 -w0 /var/lib/profiles/image/state.json"
+      ).strip()
+
+      # The bounded console rejects a wrong key, accepts the per-machine key,
+      # contains a maintenance shell, and closes both /var and its mapper on
+      # shell exit. Exercise a valid authenticated restore while recovery A is
+      # running; it may replace only B.
+      target.succeed("bootctl set-oneshot recovery-a.conf && sync")
+      transcript = target.relaunch_with_smbios_oem_strings(
+          [], expect_agent=False, settle=45
+      )
+      assert "AOS signed recovery environment" in transcript, transcript[-12000:]
+
+      offset = serial_offset()
+      target.send_serial("7\n")
+      wait_serial("AOS /var recovery key:", offset)
+      offset = serial_offset()
+      target.send_serial("definitely-wrong-recovery-key\n")
+      wait_serial("persistent state remains locked", offset)
+
+      offset = serial_offset()
+      target.send_serial("7\n")
+      wait_serial("AOS /var recovery key:", offset)
+      offset = serial_offset()
+      target.send_serial(recovery_key + "\n")
+      wait_serial("persistent state authenticated and mounted at /var", offset)
+
+      offset = serial_offset()
+      target.send_serial("8\n")
+      wait_serial("AOS authenticated maintenance shell", offset)
+      offset = serial_offset()
+      target.send_serial(
+          "test -e /dev/mapper/var && grep -q ' /var ' /proc/mounts "
+          "&& echo AOS_RECOVERY_SHELL_OK\nexit\n"
+      )
+      shell_transcript = wait_serial(
+          "maintenance session ended; persistent state is locked", offset
+      )
+      assert "AOS_RECOVERY_SHELL_OK" in shell_transcript, shell_transcript[-12000:]
+      offset = serial_offset()
+      target.send_serial("1\n")
+      status_transcript = wait_serial("persistent-state: locked", offset)
+      assert "cleanup-required-mapper-open" not in status_transcript, status_transcript[-12000:]
+
+      offset = serial_offset()
+      target.send_serial("6\n")
+      wait_serial("type RESTORE SLOT B to continue:", offset, timeout=600)
+      offset = serial_offset()
+      target.send_serial("RESTORE SLOT B\n")
+      wait_serial("AOS /var recovery key:", offset)
+      offset = serial_offset()
+      target.send_serial(recovery_key + "\n")
+      wait_serial("slot B restored", offset, timeout=900)
+      offset = serial_offset()
+      target.send_serial("3\n")
+      wait_serial("slot B: verified", offset, timeout=600)
+      offset = serial_offset()
+      target.send_serial("2\n")
+      wait_serial("slot A: verified", offset, timeout=600)
+      target.send_serial("p\n")
+      target.relaunch_with_smbios_oem_strings([], timeout=600)
+      wait_multi_user("normal boot after authenticated recovery restore")
+      assert target.succeed(
+          "base64 -w0 /var/lib/profiles/image/state.json"
+      ).strip() == recovery_state
+      assert var_source() == "/dev/mapper/var"
+
+      # The same transport becomes malicious. Recovery must reject its changed
+      # manifest before confirmation, key prompting, or any destination write.
+      target.succeed("""
+          mkdir -p /run/aos-recovery-media
+          mount -t ext4 -o rw /dev/disk/by-label/AOS-RECOVERY /run/aos-recovery-media
+          printf '\n' >> /run/aos-recovery-media/aos/recovery/recovery-bundle.json
+          sync /run/aos-recovery-media
+          umount /run/aos-recovery-media
+          bootctl set-oneshot recovery-a.conf
+          sync
+      """)
+      transcript = target.relaunch_with_smbios_oem_strings(
+          [], expect_agent=False, settle=45
+      )
+      assert "AOS signed recovery environment" in transcript, transcript[-12000:]
+      offset = serial_offset()
+      target.send_serial("6\n")
+      rejected = wait_serial("restore refused:", offset)
+      assert "type RESTORE SLOT" not in rejected, rejected[-12000:]
+      assert "AOS /var recovery key:" not in rejected, rejected[-12000:]
+      target.send_serial("p\n")
+      target.relaunch_with_smbios_oem_strings([], timeout=600)
+      wait_multi_user("normal boot after tampered recovery bundle rejection")
+      assert target.succeed(
+          "base64 -w0 /var/lib/profiles/image/state.json"
+      ).strip() == recovery_state
+      assert var_source() == "/dev/mapper/var"
+
+      recovery_entries = target.succeed(
+          "find /boot/EFI/Linux -maxdepth 1 -type f -name '*.efi' -printf '%f\\n' | sort"
+      )
+      for copy in ["a", "b"]:
+          target.succeed(f"bootctl set-oneshot recovery-{copy}.conf && sync")
+          transcript = target.relaunch_with_smbios_oem_strings(
+              [], expect_agent=False, settle=45
+          )
+          assert "AOS signed recovery environment" in transcript, transcript[-12000:]
+          assert "Persistent state is locked. Networking is disabled." in transcript, transcript[-12000:]
+          assert "unlocking /var via TPM2" not in transcript, transcript[-12000:]
+          assert "Switching root" not in transcript, transcript[-12000:]
+          assert "Reached target Network" not in transcript, transcript[-12000:]
+          assert "Give root password for maintenance" not in transcript, transcript[-12000:]
+
+          target.relaunch_with_smbios_oem_strings([], timeout=600)
+          wait_multi_user(f"normal boot after recovery {copy.upper()}")
+          assert target.succeed(
+              "base64 -w0 /var/lib/profiles/image/state.json"
+          ).strip() == recovery_state
+          assert target.succeed(
+              "find /boot/EFI/Linux -maxdepth 1 -type f -name '*.efi' -printf '%f\\n' | sort"
+          ) == recovery_entries
+          assert var_source() == "/dev/mapper/var"
+
+      # Firmware may skip a rejected entry and continue to the normal default;
+      # absence of the recovery banner plus a healthy enforcing boot proves the
+      # modified PE was not executed.
+      for copy in ["a", "b"]:
+          target.succeed(f"""
+              mount -o remount,rw /boot
+              cp /boot/EFI/AOS/recovery-{copy}.efi /var/recovery-{copy}.efi.qualified
+              printf X | dd of=/boot/EFI/AOS/recovery-{copy}.efi bs=1 seek=4096 conv=notrunc
+              sync /boot
+              mount -o remount,ro /boot
+              bootctl set-oneshot recovery-{copy}.conf
+              sync
+          """)
+          transcript = target.relaunch_with_smbios_oem_strings([], timeout=600)
+          wait_multi_user(f"normal fallback after tampered recovery {copy.upper()}")
+          assert "AOS signed recovery environment" not in transcript, transcript[-12000:]
+          assert var_source() == "/dev/mapper/var"
+          target.succeed(f"""
+              mount -o remount,rw /boot
+              cp /var/recovery-{copy}.efi.qualified /boot/EFI/AOS/recovery-{copy}.efi
+              sync /boot
+              mount -o remount,ro /boot
+              rm -f /var/recovery-{copy}.efi.qualified
+          """)
+
+      # ════ 8. A real corrupt counted root fails and falls back ════
+      recovery_a_before = target.succeed(
+          "sha256sum /boot/EFI/AOS/recovery-a.efi | cut -d ' ' -f1"
+      ).strip()
+      target.succeed(f"""
+          set -eu
+          mount -o remount,rw /boot
+          cp /boot/EFI/Linux/{stable_name} /boot/EFI/Linux/aos-corrupt-slot-b+1.efi
+          sync /boot
+          mount -o remount,ro /boot
+          printf X | dd of=/dev/disk/by-partlabel/root-b bs=1 seek=4096 conv=notrunc
+          sync /dev/disk/by-partlabel/root-b
+          bootctl set-oneshot aos-corrupt-slot-b+1.efi
+          sync
+      """)
+      transcript = target.relaunch_with_smbios_oem_strings(
+          [], expect_agent=False, settle=45
+      )
+      assert "Switching root" not in transcript, transcript[-12000:]
+      assert "unlocking /var via TPM2" not in transcript, transcript[-12000:]
+      assert "Give root password for maintenance" not in transcript, transcript[-12000:]
+
+      target.relaunch_with_smbios_oem_strings([], timeout=600)
+      wait_multi_user("known-good slot-A fallback after corrupt slot B")
+      assert "/dev/disk/by-partlabel/root-a" in target.succeed("cat /proc/cmdline")
+      assert var_source() == "/dev/mapper/var"
+      assert target.succeed(
+          "sha256sum /boot/EFI/AOS/recovery-a.efi | cut -d ' ' -f1"
+      ).strip() == recovery_a_before
+
+      # ════ 9. Fault injection — failed ready phase must not bless ═══
       target.succeed(f"""
           set -eu
           mkdir -p /var/etc/systemd/system/systemd-pcrphase.service.d

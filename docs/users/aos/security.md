@@ -17,8 +17,10 @@ Normal initrds fail closed without an interactive root login: the initrd root
 password is locked and the upstream emergency and rescue login services are
 masked. Do not introduce a shared installer or image password as a recovery
 mechanism; a credential present in every public image provides no
-authentication. Production recovery must use a separately signed recovery
-environment and per-machine authorization material.
+authentication. Secure Boot plus dm-verity images instead carry two separately
+signed recovery environments. Their unauthenticated interface is bounded;
+access to persistent state, a maintenance shell, or restore writes requires
+the per-machine off-host LUKS recovery key.
 
 On dm-verity images, the initrd also validates the complete root identity
 before systemd can generate the verity mapper or touch `/var`. The data and
@@ -32,6 +34,14 @@ This early validation establishes an unambiguous tuple, but PCR 12 remains the
 authorization boundary for appended boot input. Until the documented PCR-12
 migration is complete, do not describe the tuple guard alone as preventing an
 attacker from substituting one otherwise valid A/B tuple for the other.
+
+Recovery UKIs use the deployment db signature but deliberately omit the
+normal signed PCR-11 authorization section, so entering recovery cannot
+automatically unseal `/var`. The same db trust hierarchy authenticates the
+copy-specific recovery UKIs, embedded slot manifest, signed release catalog,
+and removable-media bundle manifest; it does not authenticate the person at
+the console. The per-machine recovery key is the operator authorization
+boundary. Its escrow and exercise remain deployment responsibilities.
 
 ## Start with a production baseline
 
