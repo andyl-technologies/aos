@@ -2270,9 +2270,29 @@ fn build_package_toml(
         let mut toml_val: toml::Value =
             toml::from_str(existing).context("parsing existing package TOML")?;
 
-        // Set sysroot flag on the [package] section if requested.
-        if sysroot {
-            if let Some(pkg) = toml_val.get_mut("package").and_then(|v| v.as_table_mut()) {
+        // Metadata describes the package across versions. Explicit values on
+        // a later publication replace stale catalog values as well as the
+        // historical placeholders emitted by older clients.
+        if let Some(pkg) = toml_val.get_mut("package").and_then(|v| v.as_table_mut()) {
+            if let Some(description) = description {
+                pkg.insert(
+                    "description".into(),
+                    toml::Value::String(description.to_string()),
+                );
+            }
+            if let Some(homepage) = homepage {
+                pkg.insert("homepage".into(), toml::Value::String(homepage.to_string()));
+            }
+            if let Some(license) = license {
+                pkg.insert("license".into(), toml::Value::String(license.to_string()));
+            }
+            if let Some(maintainer) = maintainer {
+                pkg.insert(
+                    "maintainer".into(),
+                    toml::Value::String(maintainer.to_string()),
+                );
+            }
+            if sysroot {
                 pkg.insert("sysroot".into(), toml::Value::Boolean(true));
             }
         }
@@ -17356,6 +17376,63 @@ mod tests {
         assert!(!content.contains("nar_size"));
         assert!(content.contains("source_drv = \"\""));
         assert!(content.contains("source_nar_hash = \"\""));
+    }
+
+    #[test]
+    fn build_package_toml_refreshes_package_metadata() {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-curl-8.5.0".into(),
+            nar_hash: "sha256:deadbeef".into(),
+            nar_size: 1048576,
+            references: vec![],
+            closure_size: 5242880,
+        };
+        let existing = r#"
+[package]
+name = "curl"
+description = "No description"
+license = "unknown"
+maintainer = "unknown"
+
+[[versions]]
+version = "8.5.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/old-curl-8.5.0"
+source_drv = ""
+source_nar_hash = ""
+"#;
+
+        let content = build_package_toml(
+            existing,
+            "curl",
+            "8.5.0",
+            "x86_64-linux",
+            &info,
+            Some("Command line tool and library for transferring data with URLs"),
+            Some("https://curl.se"),
+            Some("curl"),
+            Some("Andyl, Inc."),
+            false,
+            None,
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(content.contains(
+            "description = \"Command line tool and library for transferring data with URLs\""
+        ));
+        assert!(content.contains("homepage = \"https://curl.se\""));
+        assert!(content.contains("license = \"curl\""));
+        assert!(content.contains("maintainer = \"Andyl, Inc.\""));
+        assert!(!content.contains("No description"));
+        assert!(!content.contains("unknown"));
     }
 
     #[test]

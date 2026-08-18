@@ -257,4 +257,8 @@ in
         '';
       }
     ];
+    meta = {
+      description = "End-to-end system image publication fixture";
+      license = "Apache-2.0";
+    };
   }
