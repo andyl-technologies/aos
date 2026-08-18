@@ -33,21 +33,21 @@ initrd boundary from Phase 1.
 
 The guarded initrd removes `systemd-debug-generator`,
 `systemd-run-generator`, and duplicate discoverable copies of the verity
-generator from systemd's compiled-in immutable-store directory. One explicit
-verity generator remains in `/lib`; debug images continue to use their
-explicit gettys, not kernel-command-line generator controls. That verity
-implementation is the only remaining generator allowed to consume verity
-fields. After PID 1 has established procfs and the final `/run` mount, a
-dedicated oneshot validates the command line, requires the complete generated
-root unit to exist, and publishes the success marker. The generated verity unit
-and all `/var` consumers require the static guard, so parsing untrusted input
-does not authorize any storage effect. Validation deliberately does not depend
-on generator-time `/proc`, and the generator itself never publishes success.
-The validator accepts the exact root unit from any of systemd's three standard
-generator output priorities, since that placement is an upstream implementation
-detail, but it never accepts a different unit name. Rejection isolates to the
-passive failure target; that target explicitly permits isolation and conflicts
-with initrd root, switch-root, emergency, and rescue targets.
+generator from systemd's compiled-in immutable-store directory. The upstream
+verity implementation remains only under a private, non-generator path; debug
+images continue to use their explicit gettys, not kernel-command-line generator
+controls. After PID 1 has established procfs and the final `/run` mount, a
+dedicated oneshot validates the command line and invokes that private
+implementation against private staging directories. It accepts only the exact
+generated root unit, publishes that unit, reloads PID 1, queues it behind the
+static guard, and publishes the success marker last. The generated verity unit
+and all `/var` consumers require the guard, so parsing untrusted input does not
+authorize any storage effect. Validation and verity parsing deliberately do not
+depend on generator-time `/proc`, and the private generator cannot publish
+output itself. Rejection isolates to the passive failure target; that target
+explicitly permits isolation and conflicts with initrd root and switch-root.
+Verity initrds additionally mask the emergency and rescue targets themselves,
+so their failure jobs cannot win the transaction before the passive target.
 `systemd-veritysetup@root`, `/var` unlock, and `/var` mounting all require the
 success marker. This makes the guard a storage dependency instead of a
 diagnostic race.
@@ -187,16 +187,18 @@ Supported implementation shapes are:
    then invokes the renamed upstream `systemd-veritysetup-generator`; or
 2. a focused downstream systemd patch that performs the same uniqueness and
    tuple checks in the upstream parser; or
-3. an unmodified, sole upstream verity generator whose generated root unit is
-   statically ordered after and requires an AOS runtime guard. The guard runs
-   only after procfs and `/run` are authoritative, verifies that the exact root
-   unit was generated, validates the live command line, and publishes the
-   success marker last.
+3. an unmodified upstream verity implementation kept under a private,
+   non-generator path and invoked by an AOS runtime guard. The guard runs only
+   after procfs and `/run` are authoritative, validates the live command line,
+   invokes upstream against private directories, publishes only the exact root
+   unit, reloads PID 1, queues the unit behind itself, and publishes the success
+   marker last.
 
 A separate generator that merely races the upstream generator is not
-acceptable. In the third shape, generated output is inert until the guard
-succeeds: the verity unit and every `/var` path carry hard dependencies on the
-guard rather than relying on generator order.
+acceptable. In the third shape, the private implementation is not discoverable
+by PID 1 and its staged output is inert until the guard has validated it. The
+verity unit and every `/var` path carry hard dependencies on the guard rather
+than relying on generator order.
 
 Make `aos-var-crypt.service` require a successful normal-mode guard and add an
 explicit negative condition for `aos.recovery=1`.
