@@ -214,8 +214,8 @@ in
           [Unit]
           Description=AOS bounded recovery console
           DefaultDependencies=no
-          Requires=dev-console.device
-          After=dev-console.device systemd-udev-trigger.service
+          Requires=dev-ttyS0.device
+          After=dev-ttyS0.device systemd-udev-trigger.service
 
           [Service]
           Type=simple
@@ -230,7 +230,7 @@ in
           StandardInput=tty
           StandardOutput=tty
           StandardError=tty
-          TTYPath=/dev/console
+          TTYPath=/dev/ttyS0
           TTYReset=yes
           TTYVHangup=yes
           SERVICE

@@ -44,7 +44,7 @@ copy, leaving the opposite copy intact.
 ## Use the signed recovery console
 
 Select either recovery entry from the firmware menu. The signed command line
-selects the first serial console at 115200 baud and starts a dedicated initrd
+selects `/dev/ttyS0` at 115200 baud and starts a dedicated initrd
 that has no normal-root mount, switch-root, TPM
 automatic unlock, provisioning, package activation, debug login, or automatic
 networking path. Its fixed menu provides:
