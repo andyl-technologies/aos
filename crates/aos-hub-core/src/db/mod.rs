@@ -1140,7 +1140,7 @@ pub struct PackageRow {
     pub name: String,
     /// One-line description.
     pub description: String,
-    /// SPDX license identifier.
+    /// Published license metadata.
     pub license: String,
     /// Latest indexed version string.
     pub latest_version: Option<String>,
@@ -1161,7 +1161,7 @@ pub struct PackageDetail {
     pub description: String,
     /// Optional homepage URL.
     pub homepage: Option<String>,
-    /// SPDX license identifier.
+    /// Published license metadata.
     pub license: String,
     /// Maintainer handle.
     pub maintainer: String,

@@ -2141,6 +2141,21 @@ fn required_publish_metadata<'a>(
     Ok(value)
 }
 
+/// Validates metadata for the optional package attached to a release plan.
+fn validate_release_publish_metadata(
+    store_path: Option<&str>,
+    description: Option<&str>,
+    license: Option<&str>,
+    maintainer: Option<&str>,
+) -> Result<()> {
+    if store_path.is_some() {
+        required_publish_metadata(description, "--description", "No description")?;
+        required_publish_metadata(license, "--license", "unknown")?;
+        required_publish_metadata(maintainer, "--maintainer", "unknown")?;
+    }
+    Ok(())
+}
+
 fn apply_publish_sb_policy(
     images: &mut [PublishedImage],
     catalog: Option<&SbCertsToml>,
@@ -13328,6 +13343,8 @@ pub async fn release(
     jobs: Option<usize>,
     printer: &Printer,
 ) -> Result<()> {
+    validate_release_publish_metadata(store_path, description, license, maintainer)?;
+
     let version = semver::Version::parse(semver)
         .with_context(|| format!("parsing release semver '{semver}'"))?;
     if let Some(store_path) = store_path {
@@ -17410,6 +17427,24 @@ mod tests {
         assert_eq!(
             required_publish_metadata(Some("  Andyl, Inc.  "), "--maintainer", "unknown").unwrap(),
             "Andyl, Inc."
+        );
+    }
+
+    #[test]
+    fn release_store_path_metadata_is_validated_for_dry_run_plans() {
+        assert!(validate_release_publish_metadata(None, None, None, None).is_ok());
+        assert!(
+            validate_release_publish_metadata(Some("/nix/store/example"), None, None, None)
+                .is_err()
+        );
+        assert!(
+            validate_release_publish_metadata(
+                Some("/nix/store/example"),
+                Some("Example package"),
+                Some("MIT"),
+                Some("Andyl, Inc."),
+            )
+            .is_ok()
         );
     }
 

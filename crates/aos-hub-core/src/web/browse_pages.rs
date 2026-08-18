@@ -556,7 +556,7 @@ pub enum SortColumn {
     Name,
     /// Latest version (semver-aware).
     Version,
-    /// SPDX license identifier.
+    /// Published license metadata.
     License,
     /// Latest version's closure size.
     Closure,
