@@ -41,7 +41,8 @@ not kernel-command-line generator controls. The verity wrapper runs that
 private implementation against private output directories and publishes its
 unit output and success marker only after both validation stages succeed.
 Rejection selects the passive failure target through the early generator
-directory.
+directory. The wrapper pins `PATH` to the immutable AOS coreutils output because
+systemd's generator environment does not provide shell utility lookup.
 `systemd-veritysetup@root`, `/var` unlock, and `/var` mounting all require the
 success marker. This makes the guard a storage dependency instead of a
 diagnostic race.
