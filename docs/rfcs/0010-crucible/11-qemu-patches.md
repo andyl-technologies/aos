@@ -213,6 +213,7 @@ PLUGIN TIME CONTROL (API surface)                      class  enforces
   crucible-inactive-retention-clock-guard active-rule-before-clock D  DET-1, QFP-STATE-2, FAULT-ORDER
   crucible-deferred-result-evidence-test typed deferred evidence coverage F  QEMU-44, FAULT-EVIDENCE
   crucible-deterministic-instruction-input-state stable instruction selector identity D  DET-1, QEMU-44, FAULT-EVIDENCE
+  crucible-inert-clock-restore preserve native timers for inactive restored clocks D DET-1, QFP-CLOCK-2, QFP-STATE-2
 
 DEVICE CO-SIM (shmem transport)                        class  enforces
   crucible-blk-shmem ............ virtio-blk over shmem      F    PATCH-26, DET-16, E19, SHM-13
@@ -269,6 +270,7 @@ SIGNAL-DRIVEN FAULT EXECUTION                          class  enforces
   crucible-device-wait-vmstop nonblocking exact control/device-completion pause D QFP-STATE-2, DET-1, INV-10
   crucible-accelerator-result-opportunity exact one-shot accelerator result arming F QFP-ACCEL-3, QFP-RESULT-1, QFP-EVENT-1, FAULT-ORDER
   crucible-authenticated-event-request-envelope restored authenticated occurrence requests F QFP-STATE-2, QFP-ACCEL-3, QFP-EVENT-1, FAULT-ORDER
+  crucible-inert-clock-restore inactive clock VMState commits retain native device timers D DET-1, QFP-CLOCK-2, QFP-STATE-2
 
 GUEST↔HOST CHANNEL (coordinate with 16)                class  enforces
   (no new patch required — see §11.7)                   —     GHC reuse
@@ -1218,6 +1220,28 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   exhausts all 4,096 event slots without reducing production capacity.
 - **Inertness:** [PATCH-3](a), [PATCH-3](c) — the digest is computed only for an
   admitted instruction rule at its exact safe boundary.
+- **Risk:** D.
+
+### crucible-inert-clock-restore — preserve native timers for inert clocks
+
+- **Patch:** `0083-crucible-inert-clock-restore.patch`.
+- **Enforces:** [DET-1], [QFP-CLOCK-2], [QFP-STATE-2].
+- **Mechanism:** aggregate clock VMState restores each source before deciding
+  whether its device timers need Crucible reprojection. If the restored source
+  has no rule, source-state fault, accumulated transform, freeze, or
+  synchronization, native QEMU device VMState is authoritative and its timers
+  are left untouched. Sources with an effective Crucible transform still run
+  their device rearm callback. Wander-timer rearm remains unconditional so a
+  same-process rollback cannot retain a timer from state newer than the loaded
+  checkpoint.
+- **Micro-test:** the production two-node live-network world captures an exact
+  checkpoint under an empty fault plan, shuts both QEMU processes down, restores
+  both nodes into fresh processes, and must complete the first restored quantum
+  and the remaining deterministic packet exchange. The existing active-clock
+  gates remain the positive control that transformed sources still rearm.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — with no effective clock mutation,
+  the patch removes a Crucible callback from restore and leaves upstream device
+  VMState authoritative; active fault behavior is unchanged.
 - **Risk:** D.
 
 ### crucible-whitebox-guest-write — return synchronous doorbell replies

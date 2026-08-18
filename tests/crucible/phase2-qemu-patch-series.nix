@@ -573,6 +573,13 @@
       enforces = "DET-1,QEMU-44,FAULT-EVIDENCE";
       capability = "instruction input selectors use a cross-process-stable architectural-register digest while retaining full RAM and device state in canonical evidence";
     }
+    {
+      file = "0083-crucible-inert-clock-restore.patch";
+      catalogName = "crucible-inert-clock-restore";
+      class = "D";
+      enforces = "DET-1,QFP-CLOCK-2,QFP-STATE-2";
+      capability = "fresh-process restore retains QEMU-native timer state for inactive guest clocks while rearming only clocks with an effective Crucible transform";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

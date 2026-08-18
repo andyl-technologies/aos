@@ -96,6 +96,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0080-crucible-inactive-retention-clock-guard.patch",
     "0081-crucible-deferred-result-evidence-test.patch",
     "0082-crucible-deterministic-instruction-input-state.patch",
+    "0083-crucible-inert-clock-restore.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

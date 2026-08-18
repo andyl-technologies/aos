@@ -530,6 +530,12 @@
         inherit pkgs lib qemuPackage;
       };
     }
+    {
+      patch = "0083-crucible-inert-clock-restore.patch";
+      check = import ./phase2-qemu-live-network-io.nix {
+        inherit pkgs lib;
+      };
+    }
   ];
 
   microtestPatchNames =
