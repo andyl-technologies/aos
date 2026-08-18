@@ -154,6 +154,7 @@ pub(super) fn memory_access_mutation(
     })
 }
 
+// crucible-lint: allow rust-allow -- the tuple is the closed scalar/payload representation consumed by the clock command encoder.
 #[allow(
     clippy::type_complexity,
     reason = "the tuple is the closed scalar/payload representation consumed immediately by the clock command encoder"

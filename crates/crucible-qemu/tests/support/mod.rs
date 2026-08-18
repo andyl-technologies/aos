@@ -1,5 +1,6 @@
 //! Shared exact fault-capability fixtures for launch integration tests.
 
+// crucible-lint: allow rust-allow -- integration tests import different subsets of the shared exact-capability fixtures.
 #![allow(dead_code)]
 
 use crucible::model::{

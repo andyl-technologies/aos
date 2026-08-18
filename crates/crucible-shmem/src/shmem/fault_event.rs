@@ -566,6 +566,7 @@ pub use support::FaultEventError;
 pub(crate) use support::emit_fault_event_c_header;
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #[allow(clippy::expect_used)]
 #[path = "fault_event_test.rs"]
 mod tests;

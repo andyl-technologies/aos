@@ -55,6 +55,8 @@ pub use support::NodeFaultPayloadError;
 pub(crate) use support::emit_fault_node_c_header;
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+// crucible-lint: allow rust-allow -- the test case table keeps the wire payload and expected projection together.
 #[allow(clippy::expect_used, clippy::type_complexity)]
 #[path = "fault_node_test.rs"]
 mod tests;

@@ -640,6 +640,7 @@ fn validate_network_adapter_checkpoint(
 }
 
 #[derive(Clone, Debug)]
+// crucible-lint: allow rust-allow -- the complete transition record is retained for deterministic fault diagnostics.
 #[allow(
     dead_code,
     reason = "the complete transition record is retained for deterministic fault diagnostics"
@@ -1521,6 +1522,7 @@ impl ProductionFaultNetworkInterceptor {
     /// Returns [`SchedulerError`] when the runtime has no paired network state,
     /// its schema/bounds are invalid, scheduler restoration fails, or the
     /// independently recomputed continuation identity differs.
+    // crucible-lint: allow rust-allow -- restore authenticates and atomically stages each independent runtime owner.
     #[allow(
         clippy::too_many_arguments,
         reason = "restore authenticates and atomically stages each independent runtime owner"

@@ -342,6 +342,7 @@ impl SignalTraceManifest {
     ///
     /// Returns [`TraceError`] for an unsupported version, malformed provenance,
     /// duplicate/empty/oversized channels, or invalid chunk index.
+    // crucible-lint: allow rust-allow -- trace construction validates each independent provenance, mapping, redaction, and channel field.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         semantic_version: u16,

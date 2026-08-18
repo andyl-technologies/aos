@@ -66,22 +66,27 @@ pub use tree::{
 mod golden;
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #[allow(clippy::expect_used)]
 #[path = "ninep_fault_policy_test.rs"]
 mod fault_policy_tests;
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #[allow(clippy::expect_used)]
 #[path = "ninep_lifecycle_test.rs"]
 mod lifecycle_tests;
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #[allow(clippy::expect_used)]
 #[path = "ninep_protocol_limits_test.rs"]
 mod protocol_limits_tests;
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #[allow(clippy::expect_used)]
 #[path = "ninep_protocol_test.rs"]
 mod protocol_tests;
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #[allow(clippy::expect_used)]
 #[path = "ninep_test_support.rs"]
 mod test_support;

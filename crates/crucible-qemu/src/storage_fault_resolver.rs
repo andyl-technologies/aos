@@ -1155,6 +1155,7 @@ fn select_volatile_cache_loss(
 /// device, is a removal action, carries a non-storage effect, references a
 /// missing or wrong-shaped World artifact, overflows a checked sum, or selects
 /// storage semantics that have no complete live implementation.
+// crucible-lint: allow rust-allow -- storage resolution authenticates independent world, request, phase, coordinate, sequence, and action inputs.
 #[allow(
     clippy::too_many_arguments,
     reason = "storage resolution authenticates independent world, request, phase, coordinate, sequence, and action inputs"
@@ -1166,6 +1167,7 @@ pub fn resolve_block_fault_directive<'a>(
     request_sequence: u64,
     opportunity: &FaultOpportunity,
     context: StorageFaultResolutionContext,
+    // crucible-lint: allow stringly-error -- device-specific read diagnostics are folded immediately into typed storage-resolution errors.
     read_source: &mut dyn FnMut(ContentHash, u64, u32) -> Result<Vec<u8>, String>,
     actions: impl IntoIterator<Item = &'a ResolvedBindingAction>,
 ) -> Result<ResolvedBlockFaultDirective, StorageFaultResolutionError> {
@@ -1308,6 +1310,7 @@ pub fn merge_block_fault_phase_directive(
     Ok(())
 }
 
+// crucible-lint: allow rust-allow -- exact storage resolution keeps independently typed world, target, request, time, and evidence inputs explicit.
 #[allow(
     clippy::too_many_arguments,
     reason = "exact storage resolution keeps independently typed world, target, request, time, and evidence inputs explicit"
@@ -1320,6 +1323,7 @@ fn resolve_block_fault_directive_with_capacity<'a>(
     opportunity: &FaultOpportunity,
     capacity: u64,
     context: StorageFaultResolutionContext,
+    // crucible-lint: allow stringly-error -- device-specific read diagnostics are folded immediately into typed storage-resolution errors.
     read_source: &mut dyn FnMut(ContentHash, u64, u32) -> Result<Vec<u8>, String>,
     actions: impl IntoIterator<Item = &'a ResolvedBindingAction>,
 ) -> Result<ResolvedBlockFaultDirective, StorageFaultResolutionError> {
@@ -1379,6 +1383,7 @@ fn apply_effect(
     world: &World,
     request: &BlockRequest,
     context: StorageFaultResolutionContext,
+    // crucible-lint: allow stringly-error -- device-specific read diagnostics are folded immediately into typed storage-resolution errors.
     read_source: &mut dyn FnMut(ContentHash, u64, u32) -> Result<Vec<u8>, String>,
     action: &ResolvedBindingAction,
     effect: &StorageEffectSpecification,

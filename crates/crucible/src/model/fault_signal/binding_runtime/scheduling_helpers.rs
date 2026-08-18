@@ -107,6 +107,7 @@ pub(super) fn recorded_effect_count(
     })
 }
 
+// crucible-lint: allow rust-allow -- membership scheduling preserves every binding, target, phase, effect, and mapping input.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn append_membership_actions(
     binding: &FaultBinding,

@@ -77,6 +77,7 @@ pub(in super::super) fn apply_network_forwarding_mutation(
     Ok(())
 }
 
+// crucible-lint: allow rust-allow -- firewall evaluation joins payload, effects, state, topology, action, and opportunity atomically.
 #[allow(clippy::too_many_arguments)]
 pub(in super::super) fn apply_network_firewall(
     payload: &[u8],
@@ -127,6 +128,7 @@ pub(in super::super) fn apply_network_firewall(
     Ok(release)
 }
 
+// crucible-lint: allow rust-allow -- connection-state evaluation preserves the complete authenticated frame context.
 #[allow(clippy::too_many_arguments)]
 pub(in super::super) fn apply_network_connection_state(
     payload: &[u8],
@@ -272,6 +274,7 @@ pub(in super::super) fn network_packet_key_bytes(
     Ok(material)
 }
 
+// crucible-lint: allow rust-allow -- shared-medium mutation needs the current payload, reservations, topology, action, and opportunity together.
 #[allow(clippy::too_many_arguments)]
 pub(in super::super) fn apply_network_shared_medium(
     payload: &mut [u8],
@@ -733,6 +736,7 @@ pub(in super::super) fn xor_repeated(payload: &mut [u8], transform: &[u8]) {
     }
 }
 
+// crucible-lint: allow rust-allow -- capture resolution compares the complete current reservation and overlapping medium state.
 #[allow(clippy::too_many_arguments)]
 pub(in super::super) fn apply_medium_capture(
     current_effects: &mut crucible::ResolvedNetworkFrameEffects,
@@ -870,6 +874,7 @@ pub(in super::super) fn advance_network_state_machine(
     }
 }
 
+// crucible-lint: allow rust-allow -- typed response staging retains scheduler, route, rejection, topology, and response identity.
 #[allow(clippy::too_many_arguments)]
 pub(in super::super) fn stage_typed_network_response(
     scheduler: &SingleScheduler,
@@ -1233,6 +1238,7 @@ pub(in super::super) fn apply_network_backpressure_transitions(
     Ok(next_network_pause_wakeup(&state.backpressure, now))
 }
 
+// crucible-lint: allow rust-allow -- queue policy mutation keeps state, outputs, effects, action, opportunity, seed, and policy explicit.
 #[allow(clippy::too_many_arguments)]
 pub(in super::super) fn apply_network_queue_policy(
     state: &mut NetworkEffectRuntimeState,
@@ -1593,6 +1599,7 @@ pub(in super::super) fn retire_network_queue(
     Ok(())
 }
 
+// crucible-lint: allow rust-allow -- queue rescheduling preserves the queue, pending outputs, action, discipline, parameters, and time.
 #[allow(clippy::too_many_arguments)]
 pub(in super::super) fn reschedule_network_queue(
     queue: &mut NetworkQueueState,
@@ -2004,6 +2011,7 @@ pub(in super::super) fn latest_wakeup(current: Option<u64>, candidate: Option<u6
     }
 }
 
+// crucible-lint: allow rust-allow -- token-bucket mutation authenticates state, action, opportunity, payload size, rate, and burst capacity.
 #[allow(clippy::too_many_arguments)]
 pub(in super::super) fn apply_network_token_bucket(
     state: &mut NetworkEffectRuntimeState,
@@ -2083,6 +2091,7 @@ pub(in super::super) fn ceil_ratio_u128(numerator: u128, denominator: u128) -> O
         .map(|value| value / denominator)
 }
 
+// crucible-lint: allow rust-allow -- burst-error mutation joins payload, effects, state, action, opportunity, seed, and burst policy.
 #[allow(clippy::too_many_arguments)]
 pub(in super::super) fn apply_network_burst_error(
     payload: &mut [u8],

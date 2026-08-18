@@ -1526,6 +1526,7 @@ pub(super) fn validate_condition_references(
     }
 }
 
+// crucible-lint: allow rust-allow -- condition validation receives the complete set of independently typed symbol tables.
 #[allow(
     clippy::too_many_arguments,
     reason = "the condition validator receives the complete set of independently typed symbol tables"

@@ -753,6 +753,7 @@ pub(super) fn availability_allows(
     }
 }
 
+// crucible-lint: allow rust-allow -- frame mutation joins independently authenticated opportunity, topology, state, and output owners.
 #[allow(
     clippy::too_many_arguments,
     reason = "frame mutation joins the independently authenticated opportunity, topology, state, and output owners"

@@ -9,6 +9,7 @@ mod accelerator_io_servicer;
 mod block_io_gate;
 mod block_io_servicer;
 mod block_node_gate;
+mod deadline;
 mod device_host_work;
 mod host_io_runtime;
 mod host_parallel_gate;
@@ -17,6 +18,21 @@ mod network_io_servicer;
 mod ninep_io_gate;
 mod ninep_io_servicer;
 mod node_step_gate;
+
+/// Keeps a host-only QEMU liveness deadline inside the supervision boundary.
+pub(super) struct HostSupervisionDeadline(deadline::HostSupervisionDeadline);
+
+impl HostSupervisionDeadline {
+    /// Starts a host-only supervision deadline.
+    pub(super) fn start(timeout: std::time::Duration) -> Self {
+        Self(deadline::HostSupervisionDeadline::start(timeout))
+    }
+
+    /// Reports whether the host-only supervision budget remains available.
+    pub(super) fn has_time_remaining(&self) -> bool {
+        self.0.has_time_remaining()
+    }
+}
 
 pub use accelerator_io_servicer::{
     QemuLiveAcceleratorCheckpoint, QemuLiveAcceleratorServiceStep, QemuLiveAcceleratorServicer,

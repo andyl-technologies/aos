@@ -3,6 +3,7 @@
 use super::*;
 
 impl FaultBindingRuntime<'_> {
+    // crucible-lint: allow rust-allow -- locked replay authenticates model, state, coordinate, opportunity, derivation, and trace inputs.
     #[allow(
         clippy::too_many_arguments,
         reason = "locked replay authenticates independent model, state, coordinate, opportunity, derivation, and trace inputs"

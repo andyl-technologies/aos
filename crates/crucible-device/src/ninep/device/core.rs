@@ -316,6 +316,7 @@ impl NinepDevice {
     /// # Errors
     ///
     /// Propagates any [`DeviceError`] from [`IoCore::process_inbox`].
+    // crucible-lint: allow rust-allow -- the detached 9p node borrows each independently owned device-state field.
     #[allow(
         clippy::too_many_arguments,
         reason = "the detached 9p server node borrows each independently owned device state field"

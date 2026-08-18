@@ -533,6 +533,7 @@ mod runtime;
 mod search;
 mod storage_faults;
 
+// crucible-lint: allow stringly-error -- private run-directory persistence diagnostics are immediately wrapped in LifecycleApiError.
 fn persist_atomic_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let next = path.with_extension("json.next");
     let bytes = serde_json::to_vec_pretty(value)
@@ -551,6 +552,7 @@ fn persist_atomic_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<()
         .map_err(|error| format!("flush directory {}: {error}", parent.display()))
 }
 
+// crucible-lint: allow stringly-error -- private run-directory decoding diagnostics are immediately wrapped in LifecycleApiError.
 fn decode_run_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
     let bytes = fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?;
     serde_json::from_slice(&bytes).map_err(|error| format!("decode {}: {error}", path.display()))

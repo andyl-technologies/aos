@@ -123,6 +123,7 @@ impl LiveDeviceCallbackState {
         })
     }
 
+    // crucible-lint: allow rust-allow -- the accelerator request preserves every fixed public envelope field.
     #[allow(
         clippy::too_many_arguments,
         reason = "the public accelerator envelope has fixed fields"
@@ -341,6 +342,7 @@ impl LiveDeviceCallbackState {
         Ok(())
     }
 
+    // crucible-lint: allow rust-allow -- restore preserves every fixed accelerator continuation field.
     #[allow(
         clippy::too_many_arguments,
         reason = "the public accelerator envelope has fixed fields"
@@ -1164,6 +1166,7 @@ impl LiveVcpuTimeCallbackState {
         self.publish_device_completion_pause_if_quiesced("ninep-burst-done")
     }
 
+    // crucible-lint: allow rust-allow -- the callback mirrors every fixed field in QEMU's accelerator ABI.
     #[allow(
         clippy::too_many_arguments,
         reason = "the QEMU accelerator ABI has fixed fields"
@@ -1215,6 +1218,7 @@ impl LiveVcpuTimeCallbackState {
     }
 }
 
+// crucible-lint: allow rust-allow -- the callback mirrors every fixed field in QEMU's accelerator ABI.
 #[allow(
     clippy::too_many_arguments,
     reason = "the QEMU accelerator ABI has fixed fields"
@@ -1557,6 +1561,7 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_block_transport_restore_cb(
     match state.block_transport_restore(input, qemu_epoch, qemu_next_request_id) {
         Ok(()) => 0,
         Err(error) => {
+            // crucible-lint: allow direct-diagnostic -- this C callback cannot return structured diagnostics; stderr preserves the restore rejection before returning failure.
             eprintln!("crucible-qemu-plugin: rejected block transport restore: {error}");
             -1
         }

@@ -875,6 +875,7 @@ pub(crate) fn validate_typed_node_result(
     Ok(evidence)
 }
 
+// crucible-lint: allow rust-allow -- the command header authenticates each independent memory action field.
 #[allow(clippy::too_many_arguments)]
 fn memory_command_header(
     prepared: &PreparedMemoryAction,

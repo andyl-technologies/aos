@@ -229,6 +229,7 @@ pub(super) fn ninep_result_evidence(
     )
 }
 
+// crucible-lint: allow rust-allow -- visibility evidence commits every independent action, version, policy, and release field.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn ninep_visibility_evidence(
     action: &ResolvedBindingAction,

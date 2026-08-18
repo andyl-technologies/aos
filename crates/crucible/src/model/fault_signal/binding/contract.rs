@@ -31,6 +31,7 @@ impl FaultBinding {
     /// Returns [`BindingError`] under the same conditions as
     /// [`Self::new_with_registry`]. Named mappings fail closed because the
     /// implicit registry is empty.
+    // crucible-lint: allow rust-allow -- the constructor keeps each binding contract field explicit for validation.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: FaultObjectId,
@@ -67,6 +68,7 @@ impl FaultBinding {
     ///
     /// Returns [`BindingError`] for an unexported input, incompatible shape,
     /// illegal target, missing filter, or unbounded search policy.
+    // crucible-lint: allow rust-allow -- registry validation needs the complete binding contract and resource limits together.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_registry(
         id: FaultObjectId,

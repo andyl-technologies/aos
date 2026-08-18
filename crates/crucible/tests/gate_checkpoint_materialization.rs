@@ -1,6 +1,7 @@
 //! Gates exact fat-checkpoint persistence and advisory thin caching.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- integration-test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::error::Error;

@@ -207,6 +207,7 @@ pub trait SignalArtifactProvider: Send + Sync {
     /// Returns [`SignalEvaluationError`] when the artifact is absent, corrupt,
     /// incompatible with the source declaration, or has no value under the
     /// declaration's explicit boundary policy.
+    // crucible-lint: allow rust-allow -- artifact evaluation requires the complete typed node, coordinate, choice, input, and resource context.
     #[allow(
         clippy::too_many_arguments,
         reason = "artifact evaluation requires the complete typed node, coordinate, keyed choice, input, and resource context"
@@ -384,6 +385,7 @@ impl DagSignalArtifactProvider<'_> {
         evaluate_normalized_spatial_source(self.store, node, source, coordinate, inputs)
     }
 
+    // crucible-lint: allow rust-allow -- trace evaluation authenticates artifact provenance, channel selection, and sampling coordinate together.
     #[allow(clippy::too_many_arguments)]
     fn evaluate_trace(
         &self,
@@ -465,6 +467,7 @@ impl DagSignalArtifactProvider<'_> {
         Ok(result)
     }
 
+    // crucible-lint: allow rust-allow -- trace sampling preserves the complete interpolation and boundary contract.
     #[allow(clippy::too_many_arguments)]
     fn sample_trace_channel(
         &self,
@@ -638,6 +641,7 @@ impl DagSignalArtifactProvider<'_> {
     }
 }
 
+// crucible-lint: allow rust-allow -- seeded fields retain all spatial quantization, correlation, distribution, and identity inputs.
 #[allow(clippy::too_many_arguments)]
 fn evaluate_seeded_field(
     node: &SignalNode,

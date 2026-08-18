@@ -534,6 +534,7 @@ impl WorldNodeClockSource {
         )
     }
 
+    // crucible-lint: allow rust-allow -- the clock manifest carries each independent hardware identity and behavior field.
     #[allow(
         clippy::too_many_arguments,
         reason = "the closed clock-source manifest carries independent hardware identity and behavior fields"

@@ -1,5 +1,6 @@
 //! Certification and deterministic-projection tests for the live 9p gate.
 
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used)]
 
 use super::super::ninep_io_servicer::QemuLive9pIoServiceStep;

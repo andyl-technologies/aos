@@ -277,6 +277,7 @@ pub(super) fn append_length_prefixed(
     Ok(())
 }
 
+// crucible-lint: allow rust-allow -- aggregate identity receives every independently owned checkpoint component explicitly.
 #[allow(
     clippy::too_many_arguments,
     reason = "the aggregate identity must receive every independently owned checkpoint component explicitly"

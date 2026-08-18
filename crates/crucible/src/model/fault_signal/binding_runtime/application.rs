@@ -271,6 +271,7 @@ impl<'a> FaultBindingRuntime<'a> {
         Ok(())
     }
 
+    // crucible-lint: allow rust-allow -- action application carries the full authenticated binding decision and runtime coordinate.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn apply_decision(
         &mut self,

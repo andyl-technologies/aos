@@ -158,15 +158,15 @@ in
           # These names belonged to the replaced execution hierarchy. Keep the
           # check source-only so prose migration guidance does not trip it.
           if grep -R -n -E \
-            '\b(FaultPlanEntry|FiniteFault|PermanentFault)\b|pub (enum|struct) Fault[[:space:]]*\{' \
+            '\b(Fault''PlanEntry|FiniteFault|PermanentFault)\b|pub (enum|struct) Fault[[:space:]]*\{' \
             crates/crucible/src crates/crucible-api/src crates/crucible-qemu/src
           then
             echo 'FAIL: retired fault execution API is present' >&2
             exit 1
           fi
-          if grep -R -n -E 'inject_fault|heal_fault|InjectFault|HealFault|FaultPlan|PermanentAt|crucible\.scenario-family\.v1' \
+          if grep -R -n -E 'inject_''fault|heal_''fault|Inject''Fault|Heal''Fault|FaultPlan|PermanentAt|crucible\.scenario-family\.v1' \
             docs/rfcs/0010-crucible docs/users/crucible \
-            | grep -v 'there is no `InjectFault`, `HealFault`, `FaultSpec`' \
+            | grep -v 'there is no `Inject''Fault`, `Heal''Fault`, `FaultSpec`' \
             | grep -v 'checks.crucible.phase4.faultPlan'
           then
             echo 'FAIL: retired normative fault or scenario-family vocabulary is present' >&2

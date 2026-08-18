@@ -626,6 +626,7 @@ impl BlockFaultState {
     ///
     /// Returns [`DeviceError`] for destination range, atomicity, cache, retained
     /// version, or durable-overlay failures.
+    // crucible-lint: allow rust-allow -- the atomic cross-device write carries independent request identity, time, range, and bytes.
     #[allow(
         clippy::too_many_arguments,
         reason = "the atomic cross-device write carries independent request identity, time, range, and bytes"

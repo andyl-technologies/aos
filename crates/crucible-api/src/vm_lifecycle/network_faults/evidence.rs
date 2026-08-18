@@ -37,6 +37,7 @@ pub(super) fn control_plane_outcome_evidence(
     Ok(ContentHash::from_bytes(&material))
 }
 
+// crucible-lint: allow rust-allow -- evidence commits every independent availability-transition input.
 #[allow(
     clippy::too_many_arguments,
     reason = "evidence commits every independent availability-transition input"

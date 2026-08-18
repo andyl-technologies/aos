@@ -1169,6 +1169,7 @@ impl FaultOpportunity {
     ///
     /// Returns [`FaultContractError`] when the target is malformed, the target
     /// and operation belong to different adapters, or payload invariants fail.
+    // crucible-lint: allow rust-allow -- an opportunity is the complete typed mutation coordinate and cannot omit an identity field.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         target: ResolvedFaultTarget,

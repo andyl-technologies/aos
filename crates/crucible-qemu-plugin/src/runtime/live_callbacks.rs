@@ -494,6 +494,7 @@ enum LiveFingerprintDigestWork {
     /// Publishes before acknowledging an exact stopped control boundary.
     PublishAndAcknowledge {
         captured: CapturedFingerprintSample,
+        // crucible-lint: allow stringly-error -- the private worker channel transports a diagnostic that is immediately wrapped in the typed callback error.
         completion: mpsc::SyncSender<Result<(), String>>,
     },
 }

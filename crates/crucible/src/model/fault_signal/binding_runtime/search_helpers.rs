@@ -13,6 +13,7 @@ pub(super) struct SearchResolution {
     pub(super) selected_transition: Option<FaultObjectId>,
 }
 
+// crucible-lint: allow rust-allow -- search policy evaluation keeps all canonical identity and mutable decision inputs explicit.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn apply_search_policy(
     program: ContentHash,
@@ -158,6 +159,7 @@ pub(super) fn object_candidates_digest(candidates: &[FaultObjectId]) -> ContentH
     ContentHash::from_canonical_material("crucible.search-candidates.v1", &material)
 }
 
+// crucible-lint: allow rust-allow -- sample recording authenticates values, evidence, identity, coordinate, and opportunity together.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn record_sample(
     binding: &FaultBinding,
@@ -207,6 +209,7 @@ pub(super) fn record_sample(
     Ok(retain)
 }
 
+// crucible-lint: allow rust-allow -- observation emission preserves every canonical sample and opportunity field.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn push_sample_observation(
     binding: &FaultBinding,

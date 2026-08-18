@@ -244,6 +244,7 @@ fn resolve_single_effect(
     )
 }
 
+// crucible-lint: allow rust-allow -- the test helper keeps typed production mutation inputs explicit.
 #[allow(
     clippy::too_many_arguments,
     reason = "the test helper keeps the typed production mutation inputs explicit"

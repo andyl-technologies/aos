@@ -205,7 +205,11 @@ pub(super) fn error_logging_failures(
             );
         }
 
-        if !is_binary_boundary && identifier == "dyn" && dyn_error_follows(&tokens, index) {
+        if !is_binary_boundary
+            && identifier == "dyn"
+            && dyn_error_follows(&tokens, index)
+            && !is_standard_error_source_signature(&tokens, index)
+        {
             push_finding(
                 &mut findings,
                 path,
@@ -256,21 +260,28 @@ pub(super) fn result_string_error_failures(
         }
 
         let start_line = tokens[index].line;
-        let mut depth = 0usize;
+        let mut angle_depth = 0usize;
+        let mut delimiter_depth = 0usize;
         let mut comma_at_depth_one = false;
         let mut error_uses_string = false;
 
         index += 1;
         while index < tokens.len() {
             match &tokens[index].kind {
-                TokenKind::Punct('<') => depth += 1,
+                TokenKind::Punct('<') => angle_depth += 1,
                 TokenKind::Punct('>') => {
-                    depth = depth.saturating_sub(1);
-                    if depth == 0 {
+                    angle_depth = angle_depth.saturating_sub(1);
+                    if angle_depth == 0 {
                         break;
                     }
                 }
-                TokenKind::Punct(',') if depth == 1 => comma_at_depth_one = true,
+                TokenKind::Punct('(' | '[' | '{') => delimiter_depth += 1,
+                TokenKind::Punct(')' | ']' | '}') => {
+                    delimiter_depth = delimiter_depth.saturating_sub(1)
+                }
+                TokenKind::Punct(',') if angle_depth == 1 && delimiter_depth == 0 => {
+                    comma_at_depth_one = true
+                }
                 TokenKind::Ident(identifier) if comma_at_depth_one && identifier == "String" => {
                     error_uses_string = true;
                 }
@@ -295,6 +306,14 @@ pub(super) fn result_string_error_failures(
     }
 
     findings
+}
+
+fn is_standard_error_source_signature(tokens: &[Token], dyn_index: usize) -> bool {
+    tokens[..dyn_index]
+        .iter()
+        .rev()
+        .take_while(|token| !matches!(token.kind, TokenKind::Punct('{' | '}' | ';')))
+        .any(|token| token.kind.as_ident() == Some("source"))
 }
 
 pub(super) fn finding(path: &Path, line: usize, reason: &str, pattern: &str) -> String {

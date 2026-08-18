@@ -1004,6 +1004,7 @@ use support::*;
 
 #[cfg(test)]
 mod fingerprint_tests {
+    // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
     #![allow(clippy::unwrap_used)]
 
     use crucible_shmem::{FingerprintSample, FingerprintSampleVcpu};

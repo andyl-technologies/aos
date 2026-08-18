@@ -84,6 +84,7 @@ pub fn read_storage_array(
     count: u32,
     request_key: &[u8],
     outstanding: &BTreeMap<u16, u64>,
+    // crucible-lint: allow stringly-error -- heterogeneous member transports are folded immediately into typed StorageArrayError context.
     mut read_member: impl FnMut(ContentHash, u64, u32) -> Result<Vec<u8>, String>,
 ) -> Result<Vec<u8>, StorageArrayError> {
     let members = ordered_members(policy)?;
@@ -159,6 +160,7 @@ pub fn plan_storage_array_write(
     policy: &ResolvedStorageArrayPolicy,
     offset: u64,
     bytes: &[u8],
+    // crucible-lint: allow stringly-error -- heterogeneous member transports are folded immediately into typed StorageArrayError context.
     mut read_member: impl FnMut(ContentHash, u64, u32) -> Result<Vec<u8>, String>,
 ) -> Result<StorageArrayWritePlan, StorageArrayError> {
     let members = ordered_members(policy)?;
@@ -373,6 +375,7 @@ fn load_stripe(
     members: &[&crate::ResolvedStorageArrayMember],
     stripe: u64,
     chunk_bytes: usize,
+    // crucible-lint: allow stringly-error -- the private callback seam folds member diagnostics into typed StorageArrayError context.
     read_member: &mut impl FnMut(ContentHash, u64, u32) -> Result<Vec<u8>, String>,
 ) -> Result<Vec<Vec<u8>>, StorageArrayError> {
     let physical = stripe
@@ -604,6 +607,7 @@ fn exact_read(
     device: ContentHash,
     offset: u64,
     count: u32,
+    // crucible-lint: allow stringly-error -- the private callback seam folds member diagnostics into typed StorageArrayError context.
     read_member: &mut impl FnMut(ContentHash, u64, u32) -> Result<Vec<u8>, String>,
 ) -> Result<Vec<u8>, StorageArrayError> {
     let bytes = read_member(device, offset, count)

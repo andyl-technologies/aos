@@ -237,6 +237,7 @@ impl BlockFlashState {
     ///
     /// Returns [`DeviceError`] for invalid geometry/ranges, noncanonical
     /// contributors, overflow, or sparse-state exhaustion.
+    // crucible-lint: allow rust-allow -- an erase fragment authenticates independent request, time, geometry, and contributor inputs.
     #[allow(
         clippy::too_many_arguments,
         reason = "a registered erase fragment authenticates independent request, fragment, time, geometry, and contributor inputs"

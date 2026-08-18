@@ -64,6 +64,7 @@ pub(in super::super) fn contact_traffic_bounds(
     Ok((open, end))
 }
 
+// crucible-lint: allow rust-allow -- contact service reservation keeps topology, plan, endpoint, and interval identities explicit.
 #[allow(clippy::too_many_arguments)]
 pub(in super::super) fn reserve_network_contact_service(
     state: &mut NetworkEffectRuntimeState,
@@ -269,6 +270,7 @@ pub(in super::super) fn preview_network_contact_service(
     Ok(Some((start, finish, arrival, key, identity)))
 }
 
+// crucible-lint: allow rust-allow -- routed contact reservation keeps the complete path and endpoint identities explicit.
 #[allow(clippy::too_many_arguments)]
 pub(in super::super) fn reserve_network_contact_route(
     state: &mut NetworkEffectRuntimeState,
@@ -522,6 +524,7 @@ pub(in super::super) fn contact_graph_has_path(
     false
 }
 
+// crucible-lint: allow rust-allow -- custody mutation joins payload, effects, runtime state, topology, action, and opportunity atomically.
 #[allow(clippy::too_many_arguments)]
 pub(in super::super) fn apply_network_custody_queue(
     payload: &[u8],
@@ -1658,6 +1661,7 @@ pub(in super::super) fn uniform_inclusive(draw: u64, maximum: u64) -> u64 {
     ((u128::from(draw) * range) >> 64) as u64
 }
 
+// crucible-lint: allow rust-allow -- recipient selection authenticates action, opportunity, seed, topology, and membership version together.
 #[allow(clippy::too_many_arguments)]
 pub(in super::super) fn apply_network_recipient_subset(
     effects: &mut crucible::ResolvedNetworkFrameEffects,

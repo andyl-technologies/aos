@@ -8,7 +8,7 @@
 use std::any::Any;
 use std::net::SocketAddr;
 use std::process::Child;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
@@ -35,6 +35,7 @@ use crate::shutdown::{
     QemuChildWait, QemuReap, QemuShutdownPolicy, QemuShutdownReport, QemuShutdownRung,
     QemuShutdownTarget, QemuShutdownTargetError, shutdown_qemu_child, signal_child, wait_child,
 };
+use crate::supervision::HostSupervisionDeadline;
 use crate::{
     QemuAsyncCrashEscalationTarget, QemuAsyncDriverPolicy, QemuAsyncDriverTargetError,
     QemuAsyncNodeStepOutcome, QemuAsyncNodeStepTarget, QemuAsyncQuantumCompletion,
@@ -122,10 +123,6 @@ pub fn linux_process_identity(
 /// Returns [`QemuNodeError`] when `/proc` cannot be validated, signaling fails,
 /// or the matching process remains present through `timeout`.
 #[cfg(target_os = "linux")]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "host time bounds only process quarantine and never enters modeled state"
-)]
 pub fn quarantine_orphaned_qemu_process(
     expected: &QemuProcessIdentity,
     timeout: Duration,
@@ -139,12 +136,12 @@ pub fn quarantine_orphaned_qemu_process(
         "kill orphaned QEMU generation",
     )
     .map_err(|error| QemuNodeError::fault_command(error.to_string()))?;
-    let started = Instant::now();
+    let deadline = HostSupervisionDeadline::start(timeout);
     loop {
         if linux_process_identity(expected.process_id)?.as_ref() != Some(expected) {
             return Ok(());
         }
-        if started.elapsed() >= timeout {
+        if !deadline.has_time_remaining() {
             return Err(QemuNodeError::fault_command(format!(
                 "orphaned QEMU PID {} remained present through {:?}",
                 expected.process_id, timeout
@@ -1368,16 +1365,12 @@ impl QemuNode {
     /// Returns [`QemuNodeError`] when the child does not exit before the
     /// bounded supervision deadline, waitpid fails, the process is terminated
     /// by a signal, or its exit code differs from `expected_exit_code`.
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "host time bounds child supervision and never enters modeled state"
-    )]
     pub fn await_intended_lifecycle_exit(
         &mut self,
         expected_exit_code: i32,
         action: crucible::ContentHash,
     ) -> Result<i32, QemuNodeError> {
-        let started = Instant::now();
+        let deadline = HostSupervisionDeadline::start(self.async_policy.advance_completion_timeout);
         loop {
             let status = match self.child.try_wait_natural_exit() {
                 Ok(status) => status,
@@ -1408,7 +1401,7 @@ impl QemuNode {
                     self.lifecycle_state = QemuNodeLifecycleState::ShutdownRequested;
                     return Ok(actual);
                 }
-                None if started.elapsed() < self.async_policy.advance_completion_timeout => {
+                None if deadline.has_time_remaining() => {
                     std::thread::sleep(Duration::from_millis(1));
                 }
                 None => {
@@ -1706,17 +1699,13 @@ impl QemuNode {
     /// Returns [`QemuNodeError`] when the plugin reports an invalid sample,
     /// exits, or does not publish the current boundary's complete sample within
     /// the configured bounded advance-completion timeout.
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "host time bounds fingerprint-worker liveness and never enters modeled state"
-    )]
     pub fn execution_fingerprint(&mut self) -> Result<ExecutionFingerprint, QemuNodeError> {
         let timeout = self.async_policy.advance_completion_timeout;
-        let started = Instant::now();
+        let deadline = HostSupervisionDeadline::start(timeout);
         loop {
             match self.channels.shmem_hot_path.execution_fingerprint() {
                 Ok(fingerprint) => return Ok(fingerprint),
-                Err(source) if source.is_retryable() && started.elapsed() < timeout => {
+                Err(source) if source.is_retryable() && deadline.has_time_remaining() => {
                     match self.child.try_wait_natural_exit() {
                         Ok(None) => std::thread::sleep(Duration::from_millis(1)),
                         Ok(Some(status)) => {
