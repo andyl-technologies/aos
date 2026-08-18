@@ -17,8 +17,8 @@ use std::process::{Command, Output};
 use aos_boot_identity::{BootSlot, parse_normal};
 
 use crate::device::discover_host_layout;
+use crate::trust;
 
-const DB_CERT: &str = "/etc/aos/trust/db.crt";
 const MANIFEST: &str = "/lib/aos/recovery/slot-manifest.json";
 const MANIFEST_SIGNATURE: &str = "/lib/aos/recovery/slot-manifest.json.sig";
 const WORK_DIR: &str = "/run/aos-recovery";
@@ -229,10 +229,7 @@ pub fn verify_slot(slot: BootSlot) -> Result<VerifiedSlot, VerificationError> {
         .first()
         .ok_or_else(|| VerificationError::Internal("unique UKI disappeared".into()))?;
 
-    if !run_output("/bin/sbverify", ["--cert", DB_CERT], Some(uki))?
-        .status
-        .success()
-    {
+    if trust::verify_uki(uki).is_err() {
         return Err(VerificationError::UkiSignature);
     }
 
@@ -295,38 +292,14 @@ pub fn verify_slot(slot: BootSlot) -> Result<VerifiedSlot, VerificationError> {
 fn prepare_runtime() -> Result<(), VerificationError> {
     bounded_file(MANIFEST, MAX_MANIFEST_BYTES)?;
     bounded_file(MANIFEST_SIGNATURE, MAX_SIGNATURE_BYTES)?;
-    bounded_file(DB_CERT, MAX_MANIFEST_BYTES)?;
     fs::create_dir_all(WORK_DIR)?;
     fs::create_dir_all(ESP_MOUNT)?;
     Ok(())
 }
 
 fn verify_manifest_signature() -> Result<(), VerificationError> {
-    let public_key = format!("{WORK_DIR}/db-public.pem");
-    let output = Command::new("/bin/openssl")
-        .args(["x509", "-pubkey", "-noout", "-in", DB_CERT])
-        .output()?;
-    if !output.status.success() {
-        return Err(VerificationError::Manifest(stderr_reason(&output)));
-    }
-    fs::write(&public_key, output.stdout)?;
-
-    let output = Command::new("/bin/openssl")
-        .args([
-            "dgst",
-            "-sha256",
-            "-verify",
-            &public_key,
-            "-signature",
-            MANIFEST_SIGNATURE,
-            MANIFEST,
-        ])
-        .output()?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(VerificationError::Manifest(stderr_reason(&output)))
-    }
+    trust::verify_detached_signature(Path::new(MANIFEST), Path::new(MANIFEST_SIGNATURE))
+        .map_err(VerificationError::Manifest)
 }
 
 fn read_manifest_slot(slot: BootSlot) -> Result<ManifestSlot, VerificationError> {

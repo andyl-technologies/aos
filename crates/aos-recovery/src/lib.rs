@@ -13,6 +13,7 @@ pub mod device;
 pub mod maintenance;
 pub mod restore;
 pub mod status;
+mod trust;
 pub mod verify;
 
 use std::error::Error;

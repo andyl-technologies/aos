@@ -315,11 +315,6 @@ class QemuMachine(Machine):
             if self.metadata_src is not None:
                 log.info("  Metadata: %s", self.metadata_copy)
 
-        # Own the serial socket in-process so tests can drive a bounded
-        # pre-agent console (notably the signed recovery UI) while preserving
-        # the append-only transcript used by boot diagnostics.
-        self._start_serial_bridge()
-
         # The metadata ISO rides on a SCSI CD-ROM so the guest sees
         # /dev/sr0 with ISO9660 volume label `aos-metadata` — exactly
         # what the initrd metadata detector probes for.
@@ -414,6 +409,10 @@ class QemuMachine(Machine):
         # vTPM must be up before QEMU connects to its socket — on the reboot
         # leg swtpm died with the previous QEMU, so (re)launch it here.
         self._ensure_swtpm()
+        # Every QEMU process opens a fresh serial connection. Recreate the
+        # bridge on every launch so relaunch-based recovery and rejected-input
+        # tests retain both their transcript and interactive console.
+        self._start_serial_bridge()
 
         # Image boot uses the SB+SMM OVMF, which requires the q35 SMM
         # machine. Kernel boot keeps the plain machine.

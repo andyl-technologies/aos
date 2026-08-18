@@ -112,6 +112,8 @@ const RUNNING_TOPLEVEL_LINK: &str = "/aos-toplevel";
 const RUNNING_OS_RELEASE: &str = "/aos-toplevel/os-release";
 const RUNNING_CMDLINE: &str = "/proc/cmdline";
 const IMMUTABLE_SECURE_BOOT_DB: &str = "/aos-toplevel/etc-basedir/aos/trust/secure-boot-db.crt";
+const IMMUTABLE_CONFIGURED_DB_DIR: &str = "/aos-toplevel/etc-basedir/apm/trusted-sb-certs.d";
+const MAX_CONFIGURED_DB_CERTIFICATES: usize = 32;
 const SUPPORTED_RECOVERY_ABI: u32 = 1;
 
 /// Recoverable intent record for publishing a generation as current.
@@ -1948,7 +1950,7 @@ fn discover_installed_slot_ukis(
             .get(&stable)
             .with_context(|| format!("ESP contains unrecorded normal UKI {name}"))?;
         let authoritative_slot = if authenticate_slot {
-            reverify_uki(&entry.path(), Path::new(IMMUTABLE_SECURE_BOOT_DB))?;
+            reverify_installed_uki(&entry.path())?;
             let cmdline = read_uki_section_text(&entry.path(), ".cmdline")?;
             let signed_slot = match aos_boot_identity::parse_normal(&cmdline)
                 .with_context(|| {
@@ -2018,7 +2020,7 @@ fn validate_known_good_recovery(
         "known-good recovery UKI",
     )?;
     let recovery_path = layout.boot_root.join(uki_path);
-    reverify_uki(&recovery_path, Path::new(IMMUTABLE_SECURE_BOOT_DB))?;
+    reverify_installed_uki(&recovery_path)?;
     aos_boot_identity::parse_recovery(&read_uki_section_text(&recovery_path, ".cmdline")?)
         .context("known-good recovery UKI has a noncanonical signed command line")?;
     let os_release = parse_uki_os_release(&recovery_path)?;
@@ -4763,6 +4765,123 @@ fn find_uki_in_image(store_path: &str) -> Result<Option<PathBuf>> {
     }
 }
 
+/// Re-verifies an installed UKI against the immutable configured db snapshot.
+fn reverify_installed_uki(uki: &Path) -> Result<()> {
+    let certificates = immutable_active_db_certificates()?;
+    let mut temporary_certificates = Vec::new();
+    for certificate in certificates {
+        let mut temporary = tempfile::Builder::new()
+            .prefix("aos-configured-db-")
+            .suffix(".crt")
+            .tempfile()
+            .context("creating temporary configured db certificate")?;
+        temporary
+            .write_all(certificate.as_bytes())
+            .context("writing temporary configured db certificate")?;
+        let validation = std::process::Command::new("openssl")
+            .args(["x509", "-noout", "-in"])
+            .arg(temporary.path())
+            .output()
+            .context("validating immutable configured db certificate")?;
+        if !validation.status.success() {
+            bail!("immutable configured db snapshot contains an invalid X.509 certificate");
+        }
+        temporary_certificates.push(temporary);
+    }
+
+    let mut failures = Vec::new();
+    for temporary in &temporary_certificates {
+        match reverify_uki(uki, temporary.path()) {
+            Ok(()) => return Ok(()),
+            Err(error) => failures.push(error.to_string()),
+        }
+    }
+    bail!(
+        "installed UKI {} is not authorized by the immutable configured db snapshot: {}",
+        uki.display(),
+        failures.join("; ")
+    )
+}
+
+fn immutable_active_db_certificates() -> Result<Vec<String>> {
+    let mut sources = vec![PathBuf::from(IMMUTABLE_SECURE_BOOT_DB)];
+    let configured_dir = Path::new(IMMUTABLE_CONFIGURED_DB_DIR);
+    if configured_dir.exists() {
+        if !configured_dir.is_dir() {
+            bail!("immutable configured db certificate path is not a directory");
+        }
+        let mut registry_sources = std::fs::read_dir(configured_dir)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        registry_sources.sort();
+        sources.extend(registry_sources);
+    }
+
+    let mut certificates = Vec::new();
+    for source in sources {
+        let metadata = std::fs::metadata(&source).with_context(|| {
+            format!(
+                "inspecting configured db certificate source {}",
+                source.display()
+            )
+        })?;
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 1024 * 1024 {
+            bail!(
+                "configured db certificate source {} is empty, oversized, or not a regular file",
+                source.display()
+            );
+        }
+        let bundle = std::fs::read_to_string(&source).with_context(|| {
+            format!(
+                "reading configured db certificate source {}",
+                source.display()
+            )
+        })?;
+        certificates.extend(parse_pem_certificates(&bundle).with_context(|| {
+            format!(
+                "parsing configured db certificate source {}",
+                source.display()
+            )
+        })?);
+        if certificates.len() > MAX_CONFIGURED_DB_CERTIFICATES {
+            bail!(
+                "immutable configured db snapshot contains more than {MAX_CONFIGURED_DB_CERTIFICATES} certificates"
+            );
+        }
+    }
+    if certificates.is_empty() {
+        bail!("immutable configured db snapshot contains no certificates");
+    }
+    Ok(certificates)
+}
+
+fn parse_pem_certificates(bundle: &str) -> Result<Vec<String>> {
+    const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
+    const END: &str = "-----END CERTIFICATE-----";
+
+    let mut remaining = bundle;
+    let mut certificates = Vec::new();
+    loop {
+        remaining = remaining.trim_start();
+        if remaining.is_empty() {
+            break;
+        }
+        if !remaining.starts_with(BEGIN) {
+            bail!("certificate bundle contains data outside a PEM certificate");
+        }
+        let end = remaining
+            .find(END)
+            .context("certificate bundle contains an unterminated PEM certificate")?
+            + END.len();
+        certificates.push(format!("{}\n", &remaining[..end]));
+        remaining = &remaining[end..];
+    }
+    if certificates.is_empty() {
+        bail!("certificate bundle contains no PEM certificates");
+    }
+    Ok(certificates)
+}
+
 /// Re-verify a downloaded UKI's Authenticode signature against a db cert.
 ///
 /// # Errors
@@ -4957,6 +5076,15 @@ fn days_to_ymd(days: i64) -> (i32, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_only_complete_pem_certificate_sets() {
+        let certificate = "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----\n";
+        let pair = format!("{certificate}\n{certificate}");
+        assert_eq!(parse_pem_certificates(&pair).unwrap().len(), 2);
+        assert!(parse_pem_certificates(&format!("{certificate}junk")).is_err());
+        assert!(parse_pem_certificates("-----BEGIN CERTIFICATE-----\n").is_err());
+    }
     use crate::registry::sb_certs::{RevokedSbCert, SbCert, write_sb_certs_toml};
     use crate::types::{SbatEntry, SysrootImageEntry};
     use tempfile::TempDir;
