@@ -204,8 +204,8 @@ in
           [Unit]
           Description=AOS signed recovery environment
           DefaultDependencies=no
-          Requires=systemd-journald.socket systemd-udevd.service systemd-udev-trigger.service aos-recovery-ui.service
-          After=systemd-journald.socket systemd-udevd.service systemd-udev-trigger.service
+          Requires=systemd-journald.socket systemd-modules-load.service systemd-udevd.service systemd-udev-trigger.service aos-recovery-ui.service
+          After=systemd-journald.socket systemd-modules-load.service systemd-udevd.service systemd-udev-trigger.service
           Conflicts=shutdown.target
           AllowIsolate=yes
           TARGET
