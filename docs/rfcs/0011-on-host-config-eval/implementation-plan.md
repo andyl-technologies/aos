@@ -7,10 +7,9 @@ local run. A checked item means that the production path and its regression
 coverage exist in the tree. The exact release gates are listed at the end and
 must pass before merge.
 
-P2 `aos-nix` is the only production evaluator. Stock Nix remains solely as the
-differential oracle used by `checks.config-parity-p2`; it is not a runtime
-fallback. The earlier P1 stock-evaluator milestones are therefore recorded
-below by the production behavior that superseded them.
+The hermetic AOS-built C++ Nix evaluator is the production evaluator. The
+experimental `aos-nix` implementation was removed after proving slower than
+C++ Nix; its closed PR remains available if that work is revisited.
 
 ## Structural contracts and pure rendering
 
@@ -47,7 +46,7 @@ below by the production behavior that superseded them.
       Evidence: `checks.eval`, `checks.module-enforcement`, and
       `checks.config-provenance`.
 
-## Native resolution and evaluation
+## Resolution and evaluation
 
 - [x] Resolve missing providers to a bounded fixpoint with structured causal
       errors for missing, ambiguous, incompatible, cyclic, or conflicting
@@ -55,18 +54,12 @@ below by the production behavior that superseded them.
 - [x] Record and enforce `module_abi` and each config module's compatibility
       band before manifest publication.
 - [x] Run `aos-eval.service` after network readiness and before graph
-      compilation as a pure, allowlisted, no-build native evaluation.
-- [x] Enforce native step, heap, and call-depth limits plus the systemd
-      defense-in-depth sandbox (`MemoryMax`, `MemoryHigh`, `TasksMax`, timeout,
+      compilation as a pure, allowlisted, no-build stock Nix evaluation.
+- [x] Enforce the systemd defense-in-depth sandbox (`MemoryMax`, `MemoryHigh`,
+      `TasksMax`, timeout,
       read-only inputs, `ProtectSystem=strict`, and syscall restrictions).
-- [x] Reject statically evident divergence across the strictly demanded import
-      tree before execution.
-- [x] Return a first-class option read/write graph and use it for resolver DAG
-      edges and exact provider discovery.
-- [x] Persist dependency-traced evaluation state and perform early cutoff for
-      unaffected imports/roots after a small host change.
-      Evidence for this section is `checks.config-eval` and
-      `checks.config-parity-p2` plus the native evaluator's Rust tests.
+      Evidence for this section is `checks.config-eval` plus the
+      `aos-package` Rust tests.
 
 ## Two-axis generations and activation
 

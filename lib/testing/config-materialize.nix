@@ -33,7 +33,7 @@
   };
 
   # Exercise the same resolver-controlled `operatorModules` provenance arm
-  # that the native evaluator uses after authenticating host.nix. `toFile`
+  # that the evaluator uses after authenticating host.nix. `toFile`
   # rejects string context, and the manifest's store-path strings carry it;
   # the manifest is pure data here, so discard it (the paths stay verbatim).
   manifestJson = builtins.toJSON system.config.system.build.configManifest;

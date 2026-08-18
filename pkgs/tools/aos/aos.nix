@@ -94,14 +94,12 @@ in
 
     cargoFlags = "-p aos";
 
-    # The native evaluator uses `nix-compat` from the pinned snix monorepo.
-    # The lockfile-driven vendor builder extracts the crate subtree instead of
-    # treating the whole monorepo as a crate root.
+    # The lockfile-driven vendor builder extracts the workspace crate subtree.
     cargoDeps = fetchCargoVendor {
       inherit src;
       name = "aos-vendor-${version}";
       sourceRoot = "source/crates";
-      hash = "sha256-byK2knHIciv8rLm+TLiOfTXNU9m/u7idWbSsvG6mIys=";
+      hash = "sha256-7UbWLsqtTDGrusSXa2YfKT5VI8MqsRStJze9z0gctjo=";
     };
 
     # cmake + libssh2: git2's vendored libgit2 is compiled from source here
@@ -155,9 +153,7 @@ in
 
     doCheck = true;
     # This package owns the AOS application and package-manager test surface.
-    # Native evaluator components are tested by `pkgs.aos-evaluator-tests`,
-    # whose source intentionally includes the repository Nix/fuzz corpus. Keep
-    # those repository-aware tests out of the shipped CLI derivation so edits
+    # Keep repository-aware checks out of the shipped CLI derivation so edits
     # to unrelated Nix sources do not change the runtime package identity.
     cargoTestFlags = applicationTestFlags;
     # Run the workspace test suite in the debug profile while the binary itself

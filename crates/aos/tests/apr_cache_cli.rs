@@ -1551,7 +1551,7 @@ struct NixToolPath {
 
 fn nix_tool_path() -> Result<NixToolPath> {
     let tmp = tempfile::Builder::new()
-        .prefix("aos-nix-tools-")
+        .prefix("aos-tools-")
         .tempdir()
         .context("creating Nix tool wrapper directory")?;
     let shell = find_shell()?;
