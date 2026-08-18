@@ -557,7 +557,8 @@ pub enum PackageCommand {
     /// Reads `--manifest` (an `aos.config-manifest/v1` document), writes its
     /// `--generation-dir` atomically publishes and validates the retained
     /// EROFS artifact used by activation. `--etc-root` is the unmounted-tree
-    /// test and compatibility seam. Exactly one mode must be selected.
+    /// test seam; `--overlay-root` applies declared image-path removals to a
+    /// mounted candidate overlay. Exactly one mode must be selected.
     #[command(name = "__materialize", hide = true)]
     Materialize {
         /// The converged manifest (`aos.config-manifest/v1` JSON).
@@ -566,6 +567,9 @@ pub enum PackageCommand {
         /// An unmounted `/etc` tree to write directly (test/compatibility mode).
         #[arg(long = "etc-root")]
         etc_root: Option<PathBuf>,
+        /// Mounted candidate `/etc` overlay where image removals become whiteouts.
+        #[arg(long = "overlay-root")]
+        overlay_root: Option<PathBuf>,
         /// The durable config-generation directory that owns `config-lower/`.
         #[arg(long = "generation-dir")]
         generation_dir: Option<PathBuf>,
@@ -2418,19 +2422,31 @@ pub async fn run(
     if let PackageCommand::Materialize {
         manifest,
         etc_root,
+        overlay_root,
         generation_dir,
         mkfs_erofs,
         fsck_erofs,
         job_scripts_runtime_dir,
     } = command
     {
-        return match (etc_root, generation_dir, mkfs_erofs, fsck_erofs) {
-            (Some(etc_root), None, None, None) => config_eval::materialize::materialize_manifest(
-                manifest,
-                etc_root,
-                job_scripts_runtime_dir,
-            ),
-            (None, Some(generation_dir), Some(mkfs_erofs), Some(fsck_erofs)) => {
+        return match (
+            etc_root,
+            overlay_root,
+            generation_dir,
+            mkfs_erofs,
+            fsck_erofs,
+        ) {
+            (Some(etc_root), None, None, None, None) => {
+                config_eval::materialize::materialize_manifest(
+                    manifest,
+                    etc_root,
+                    job_scripts_runtime_dir,
+                )
+            }
+            (None, Some(overlay_root), None, None, None) => {
+                config_eval::materialize::apply_manifest_removals(&manifest, &overlay_root)
+            }
+            (None, None, Some(generation_dir), Some(mkfs_erofs), Some(fsck_erofs)) => {
                 config_eval::materialize::materialize_generation_lower(
                     manifest,
                     generation_dir,
@@ -2441,7 +2457,7 @@ pub async fn run(
                 .map(|_| ())
             }
             _ => bail!(
-                "__materialize requires either --etc-root alone, or --generation-dir with --mkfs-erofs and --fsck-erofs"
+                "__materialize requires --etc-root alone, --overlay-root alone, or --generation-dir with --mkfs-erofs and --fsck-erofs"
             ),
         };
     }

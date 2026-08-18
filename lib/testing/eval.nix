@@ -34,6 +34,75 @@
     then throw "aos.security.hardening.kernelLockdown must not exist; kernel lockdown pulls in module signing and is not part of the reproducible public base"
     else "ok";
 
+  mergeImageManifest = import ../build/merge-image-manifest.nix {inherit lib;};
+  activationImageOverride = let
+    hostnameUnit = "aos-hostname.service";
+    hostnamePath = "systemd/system/${hostnameUnit}";
+    hostnameScript = "${hostnameUnit}:ExecStart.0";
+    firewallUnit = "nftables.service";
+    firewallPath = "systemd/system/${firewallUnit}";
+    firewallWant = "systemd/system/multi-user.target.wants/${firewallUnit}";
+    emptyOwnership = {
+      etc = {};
+      units = {};
+      jobScripts = {};
+      users = {};
+      presets = {};
+      storePaths = {};
+    };
+    baseline = {
+      etc = {
+        ${hostnamePath} = {kind = "text"; text = "candidate unit"; mode = "0644";};
+        ${firewallPath} = {kind = "text"; text = "firewall"; mode = "0644";};
+        ${firewallWant} = {kind = "symlink"; target = "../${firewallUnit}";};
+      };
+      units = {
+        ${hostnameUnit} = {action = "restart";};
+        ${firewallUnit} = {action = "restart";};
+      };
+      jobScripts.${hostnameScript} = {text = "hostname aos"; mode = "0755"; name = "hostname";};
+      users = [];
+      presets = [];
+      storePaths = [];
+      ownership = emptyOwnership // {
+        etc = builtins.mapAttrs (_: _: "@base") baseline.etc;
+        units = builtins.mapAttrs (_: _: "@base") baseline.units;
+        jobScripts.${hostnameScript} = "@base";
+      };
+    };
+    imageManifest = baseline // {
+      etc = baseline.etc // {
+        ${hostnamePath} = {kind = "text"; text = "image unit"; mode = "0644";};
+      };
+      units = baseline.units // {
+        ${hostnameUnit} = {action = "image";};
+      };
+    };
+    candidate = baseline // {
+      etc = builtins.removeAttrs baseline.etc [firewallPath firewallWant];
+      units = builtins.removeAttrs baseline.units [firewallUnit];
+      jobScripts.${hostnameScript} = {text = "hostname node-1"; mode = "0755"; name = "hostname";};
+      ownership = baseline.ownership // {
+        etc = builtins.removeAttrs baseline.ownership.etc [firewallPath firewallWant];
+        units = builtins.removeAttrs baseline.ownership.units [firewallUnit];
+      };
+    };
+    merged = mergeImageManifest {inherit imageManifest baseline candidate;};
+  in
+    if merged.etc.${hostnamePath}.text != "candidate unit"
+    then throw "a changed generated job script must select its candidate unit body"
+    else if merged.units.${hostnameUnit}.action != "restart"
+    then throw "a changed generated job script must select its candidate unit action"
+    else if merged.ownership.etc.${hostnamePath} != "@host"
+    then throw "a changed generated job script must make its candidate unit host-owned"
+    else if merged.ownership.units.${hostnameUnit} != "@host"
+    then throw "a changed generated job script must make its unit action host-owned"
+    else if merged.removedEtc != [firewallWant firewallPath]
+    then throw "explicitly removed image artifacts must become deterministic overlay removals"
+    else if builtins.hasAttr firewallPath merged.etc || builtins.hasAttr firewallUnit merged.units
+    then throw "explicitly removed image units must not survive manifest merging"
+    else "ok";
+
   assertRecurringLifecycleUnit = name: unit:
     if unit.unitConfig ? ConditionFirstBoot
     then throw "${name} must not be guarded by ConditionFirstBoot"
@@ -506,7 +575,6 @@
     [[registry.caches]]
     url = "https://cache.example/aos"
     priority = 75
-
     [[registry.caches]]
     url = "file:///var/lib/aos-cache"
     priority = 100
@@ -1038,6 +1106,7 @@ in
         echo "base-lib ABI:    follows image module overrides (${baseLibFollowsImageAbi})"
         echo "kernelLockdown: removed (${noKernelLockdown})"
         echo "configuration pipeline: structural default (${structuralConfiguration}), closed early projection (${provisioningProjectionIsClosed}), pure JSON (${provisioningProjectionHasNoModuleInternals}), closed package selection (${hostSelectionProjectionIsClosed})"
+        echo "activation overlay: changed job scripts and removed image artifacts (${activationImageOverride})"
         echo "lifecycle units: recurrent provisioning/tmpfiles/sysusers (${rfcLifecycleRecurrence})"
         echo "edge boundary:   image capability only (${edgeImageHostBoundary}), host-selectable runtime role (${edgeHostRole})"
         echo "apm registries: content (${apmRegistriesContent}), malformed key (${apmRegistriesRejectsMalformedKey}), empty keys (${apmRegistriesRejectsEmptyKeys})"
