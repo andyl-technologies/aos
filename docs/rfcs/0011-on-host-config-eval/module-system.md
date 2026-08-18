@@ -112,9 +112,8 @@ expressions behind `mkIf`). Two mechanical discovery paths, both edge-free:
      SystemRoots[X] ? installed owner : registry-by-name(X) → fetch provider → re-eval → …
    ```
 
-   Parsing human-readable throw strings is an acknowledged **P1 fragility** (not a
-   stable API); P2 aos-nix exposes structured missing-option errors and the
-   read/write graph directly, removing the regex dependency.
+   Parsing human-readable throw strings is an acknowledged fragility. The
+   parser is isolated and exhaustively covered by fixtures.
 
 This is sound *because* the system always eval-then-activates: conditional reads
 that only fire under some config are discovered on the next resolve↔eval cycle,
@@ -297,6 +296,6 @@ Confirmed present (no new machinery), with citations: options-only eval
 throw on undeclared paths (`lib/modules.nix:591-614, 813-922`); base-lib
 injection via `extraArgs`/`specialArgs`/`_module.args` (`:541-567, 620`);
 priority merge (`:19-30, 700-711`); assertions/warnings (`:934-936`);
-undefined-option throws naming path + file (`:744, 917`). The one capability not
-natively available is **read-access instrumentation** — assigned to aos-nix in
-P2; P1 uses the AST scan + error-driven fixpoint instead.
+undefined-option throws naming path + file (`:744, 917`). Stock Nix does not
+provide read-access instrumentation, so the driver uses the AST scan and
+error-driven fixpoint.

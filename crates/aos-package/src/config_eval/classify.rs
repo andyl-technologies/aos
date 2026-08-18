@@ -3,9 +3,7 @@
 //! Stock Nix has no read-access instrumentation, so the resolver discovers the
 //! provider set by *parsing* the human-readable throw strings stock Nix prints
 //! to stderr. This module isolates that fragile parse behind one
-//! [`classify`] function with an exhaustive test fixture, so the P2 aos-nix
-//! evaluator (RFC-0007) can replace exactly this function with structured
-//! errors and leave the driver's `match` arms untouched.
+//! [`classify`] function with an exhaustive test fixture.
 //!
 //! The two *missing-option* cases are mechanically distinct and are detected
 //! separately:
@@ -106,19 +104,11 @@ pub struct ConflictDef {
 
 /// The classified outcome of a single stock-Nix eval attempt.
 ///
-/// This is the seam between the string-parsing P1 evaluator and the driver: the
-/// P2 aos-nix evaluator produces the same enum from structured engine errors.
+/// This is the seam between the stock Nix subprocess and the fixpoint driver.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EvalClass {
     /// Eval succeeded; carries the JSON manifest text from stdout.
     Manifest(String),
-    /// Native eval succeeded with its canonical first-class option graph.
-    NativeManifest {
-        /// Strict JSON manifest.
-        manifest: String,
-        /// Canonical option accesses.
-        option_graph: aos_core::nix::native::OptionGraph,
-    },
     /// One or more missing options (Case A: n≥1 writes; Case B: a single read).
     Missing(Vec<MissingOption>),
     /// A *declared* option left undefined with no default (`lib/modules.nix:744`).
