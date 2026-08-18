@@ -38,7 +38,11 @@ uses architecture GDB readers only; in particular, x86 MXCSR observation uses
 the pure getter and cannot synchronize state as a read side effect.
 
 The same observation snapshots six monotonic counters, indexed by the existing
-register side-effect bitmap:
+register side-effect bitmap. A thread-local audit scope is entered only around
+an admitted architecture register write. Production primitives increment the
+counters only while executing in that call chain, so ordinary interrupts,
+translation maintenance, and vCPU exits cannot be misattributed to a register
+mutation:
 
 | Index | Effect | Instrumented production operation |
 | --- | --- | --- |
@@ -46,12 +50,15 @@ register side-effect bitmap:
 | 1 | TB | `tb_flush` |
 | 2 | flags | architecture flags/FPU status recomputation |
 | 3 | interrupt | interrupt request/reset and architecture reevaluation |
-| 4 | timer | declared timer reevaluation hook; currently no register advertises it |
+| 4 | timer | reserved and required to remain zero because no supported register advertises a timer side effect |
 | 5 | control flow | `cpu_exit` |
 
-The user-mode build receives an inert inline hook because Crucible register
-faults exist only in system emulation. System emulation always records the real
-production operations; tests do not substitute a model or fake counter source.
+The user-mode build receives inert inline scope and observation hooks because
+Crucible register faults exist only in system emulation. System emulation
+records the real production operations reached from the mutation call chain;
+tests do not substitute a model or fake counter source. Scope depth is
+thread-local so unrelated I/O-thread or main-loop activity cannot enter the
+audit accidentally, and an unbalanced scope is a fatal QEMU invariant failure.
 
 ## Rejection transaction
 

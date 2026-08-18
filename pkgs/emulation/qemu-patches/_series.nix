@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "21507255bec37135e4dca0ab328456ba727ed288ea635431aa52cb721ce5a6f1";
+  patchBranchBundleSha256 = "5c3ca5ef4de2ed658734723bf9669911b7d73ada2c903f507f26243087aaad55";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "818b31006a065b88069e93a22a5b8c75f5811c97";
+  patchBranchHeadCommit = "e9e92b2f4adfb7a8db0da0d48fec941652a635e3";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -779,8 +779,8 @@ let
     {
       file = "0085-crucible-register-rejection-atomicity.patch";
       branchSubject = "crucible: prove register rejection atomicity";
-      branchCommit = "818b31006a065b88069e93a22a5b8c75f5811c97";
-      branchTree = "41ea30836a0a5cb39d9acfde35a3ba1c83f5f584";
+      branchCommit = "e9e92b2f4adfb7a8db0da0d48fec941652a635e3";
+      branchTree = "fecd328e091ee3dcebe52fe4efdc12cdfa049b89";
       catalogName = "crucible-register-rejection-atomicity";
       class = "D";
       enforces = "DET-1,QFP-REG-1,QFP-REG-2,FAULT-EVIDENCE";
