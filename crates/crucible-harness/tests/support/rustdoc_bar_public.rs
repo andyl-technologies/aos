@@ -101,18 +101,36 @@ pub(super) fn collect_signature(lines: &[&str], start: usize) -> String {
 }
 
 pub(super) fn signature_returns_result(signature: &str) -> bool {
-    let Some((_before_arrow, after_arrow)) = signature.split_once("->") else {
+    let mut parenthesis_depth = 0usize;
+    let mut outer_return_arrow = None;
+    let bytes = signature.as_bytes();
+
+    for (index, byte) in bytes.iter().enumerate() {
+        match byte {
+            b'(' => parenthesis_depth = parenthesis_depth.saturating_add(1),
+            b')' => parenthesis_depth = parenthesis_depth.saturating_sub(1),
+            b'-' if parenthesis_depth == 0 && bytes.get(index + 1) == Some(&b'>') => {
+                outer_return_arrow = Some(index + 2);
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let Some(return_start) = outer_return_arrow else {
         return false;
     };
-    let return_type = after_arrow
+    let return_type = signature[return_start..]
         .split(" where ")
         .next()
-        .unwrap_or(after_arrow)
+        .unwrap_or(&signature[return_start..])
         .split('{')
         .next()
-        .unwrap_or(after_arrow)
+        .unwrap_or(&signature[return_start..])
         .trim();
-    return_type.contains("Result")
+    return_type
+        .split(|character: char| character == '_' || !character.is_ascii_alphanumeric())
+        .any(|identifier| identifier == "Result")
 }
 
 pub(super) fn function_name(signature: &str) -> String {
@@ -172,10 +190,25 @@ pub(super) fn doc_block_contains(lines: &[&str], item_line: usize, required: &st
 pub(super) fn doc_block_before(lines: &[&str], item_line: usize) -> Vec<String> {
     let mut docs = Vec::new();
     let mut cursor = item_line;
+    let mut inside_multiline_attribute = false;
 
     while cursor > 0 {
         cursor -= 1;
         let trimmed = lines[cursor].trim_start();
+
+        if inside_multiline_attribute {
+            if trimmed.starts_with("#[") {
+                inside_multiline_attribute = false;
+            }
+            continue;
+        }
+
+        if trimmed.ends_with(']') && !trimmed.starts_with("///") && !trimmed.starts_with("//!") {
+            if !trimmed.starts_with("#[") {
+                inside_multiline_attribute = true;
+            }
+            continue;
+        }
 
         if trimmed.is_empty()
             || trimmed.starts_with("#[")

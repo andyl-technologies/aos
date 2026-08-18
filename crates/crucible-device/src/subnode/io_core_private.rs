@@ -58,6 +58,12 @@ impl IoCore {
     }
 
     /// COMPUTEs one request and inserts its response in delivery order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] when virtual-time conversion or completion-time
+    /// arithmetic fails, the device rejects the request, or the computed
+    /// response cannot be inserted at its immutable delivery coordinate.
     pub fn compute_request<D>(
         &mut self,
         device: &mut D,

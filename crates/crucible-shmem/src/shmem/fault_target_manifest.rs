@@ -240,6 +240,11 @@ pub enum FaultInterruptFamilyV1 {
 
 impl FaultInterruptFamilyV1 {
     /// Decodes one public wire tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultAbiError::CapabilityInvariant`] when `value` is not a
+    /// defined interrupt-family tag.
     pub fn from_u16(value: u16) -> Result<Self, FaultAbiError> {
         match value {
             1 => Ok(Self::X86LocalApicFixed),
@@ -319,6 +324,11 @@ pub enum FaultInterruptTriggerV1 {
 
 impl FaultInterruptTriggerV1 {
     /// Decodes one public wire tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultAbiError::CapabilityInvariant`] when `value` is not a
+    /// defined trigger-mode tag.
     pub fn from_u16(value: u16) -> Result<Self, FaultAbiError> {
         match value {
             1 => Ok(Self::Edge),
@@ -340,6 +350,11 @@ pub enum FaultInterruptPolarityV1 {
 
 impl FaultInterruptPolarityV1 {
     /// Decodes one public wire tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultAbiError::CapabilityInvariant`] when `value` is not a
+    /// defined polarity tag.
     pub fn from_u16(value: u16) -> Result<Self, FaultAbiError> {
         match value {
             1 => Ok(Self::ActiveHigh),
@@ -361,6 +376,11 @@ pub enum FaultInterruptDeliveryDropV1 {
 
 impl FaultInterruptDeliveryDropV1 {
     /// Decodes one public wire tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultAbiError::CapabilityInvariant`] when `value` is not a
+    /// defined dropped-delivery transition tag.
     pub fn from_u16(value: u16) -> Result<Self, FaultAbiError> {
         match value {
             1 => Ok(Self::ConsumeEdge),

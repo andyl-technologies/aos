@@ -348,7 +348,7 @@ impl NinepDevice {
     /// Captures the uniform-core snapshot (clock, rings, in-flight responses),
     /// the server's fid table and negotiated `msize`, the latency model (part of
     /// the `World`, [IO-22]), exact directives, visibility continuation, and
-    /// session identity — **never**
+    /// session identity -- **never**
     /// the served tree bytes ([TEMP-9]).
     #[must_use]
     pub fn snapshot(&self) -> NinepSnapshot {

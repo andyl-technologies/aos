@@ -134,7 +134,7 @@ fn readdir_respects_msize_budget_across_chunks() {
     );
 }
 
-// ---- regression: MAJOR #1 — every reply is bounded by msize ----------
+// ---- regression: MAJOR #1 -- every reply is bounded by msize ----------
 
 #[test]
 fn regression_no_reply_exceeds_negotiated_msize() {
@@ -260,12 +260,12 @@ fn regression_walk_rejects_illegal_component_from_wire() {
     assert_eq!(rlerror_code(&reply), errno::EINVAL);
 }
 
-// ---- regression: MAJOR #3 — readdir never silently truncates ---------
+// ---- regression: MAJOR #3 -- readdir never silently truncates ---------
 
 #[test]
 fn regression_oversized_single_dirent_returns_emsgsize_not_empty() {
     // Before the fix, a dirent larger than the client `count` budget yielded
-    // an empty Rreaddir (count=0) — read as end-of-directory by the client,
+    // an empty Rreaddir (count=0) -- read as end-of-directory by the client,
     // i.e. silent truncation that [IO-18] forbids. Now the server returns
     // Rlerror(EMSGSIZE) when not even the first resumable entry fits.
     //

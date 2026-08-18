@@ -716,6 +716,22 @@ pub const PHASE_GATE_ORDER: &[PhaseGateOccurrence] = &[
         false,
     ),
     catalog_gate(
+        PhasePlanPhase::Phase6,
+        "gate:checkpoint-materialization",
+        "checks.crucible.phase6.checkpointMaterialization",
+        "exact durable search state",
+        false,
+        false,
+    ),
+    catalog_gate(
+        PhasePlanPhase::Phase6,
+        "gate:state-space-search",
+        "checks.crucible.phase6.stateSpaceSearch",
+        "authenticated frontier expansion",
+        false,
+        false,
+    ),
+    catalog_gate(
         PhasePlanPhase::Phase7,
         "gate:perf-bench",
         "checks.crucible.phase7.gates.perfBench",

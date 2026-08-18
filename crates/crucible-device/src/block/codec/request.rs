@@ -118,7 +118,7 @@ impl BlockRequest {
     /// # Errors
     ///
     /// Returns [`BlockCodecError::CountOverflow`] when a write payload exceeds
-    /// `u32::MAX` bytes and cannot be represented in the wire `count` field —
+    /// `u32::MAX` bytes and cannot be represented in the wire `count` field --
     /// rejected loudly rather than silently clamped ([IO-8]).
     pub fn encode(&self) -> Result<Vec<u8>, BlockCodecError> {
         let count = if self.op == BlockOp::Write {

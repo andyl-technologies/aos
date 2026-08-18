@@ -439,7 +439,7 @@ const _: () = assert!(core::mem::align_of::<NodeSlot>() == 128);
   region. *Gate:* `gate:abi-conformance`, `gate:layer1-injection`. *Spec:*
   §13.3.2, forward-ref [`12-qemu-plugin.md`](12-qemu-plugin.md), 09.
 
-- **[SHM-47]** Every quiesced VM publication MUST place the logical
+- **[SHM-49]** Every quiesced VM publication MUST place the logical
   `current_icount` and QEMU's raw icount in the same seqlock transaction. An
   exact checkpoint MUST retain that pair. After VMState load, while QEMU is
   still inaccessible to the scheduler, the host MUST publish a fresh nonzero

@@ -83,7 +83,7 @@ fn reorder_into_consumer_past_fails_loud() {
     let mut l = link(faults);
     // Move the frontier to icount 50.
     let _ = ok(l.advance_to(50));
-    // A frame emitted at icount 0 with base 10 icounts would deliver at 10 —
+    // A frame emitted at icount 0 with base 10 icounts would deliver at 10 --
     // already in the past relative to frontier 50. Fail loud, do not deliver.
     let res = l.emit(
         &frame(vec![0; 4]),

@@ -194,7 +194,7 @@ fn subfloor_latency_is_clamped_to_floor() {
     assert_eq!(l.effective_latency_ns(), BASE_NS.max(FLOOR_NS));
 
     // Construct a link whose base equals the floor; effective latency stays
-    // pinned at the floor — never below.
+    // pinned at the floor -- never below.
     let at_floor = ok(NetLink::new(
         SHIFT,
         0,
@@ -270,7 +270,7 @@ fn reorder_moves_a_frame_past_its_sibling() {
     assert_eq!(ids, vec![2, 1], "reorder did not move frame 1 past frame 2");
 }
 
-// ---- bandwidth adds serialization delay ∝ size (IO-20) ----
+// ---- bandwidth adds serialization delay proportional to size (IO-20) ----
 
 #[test]
 fn bandwidth_adds_size_proportional_delay() {

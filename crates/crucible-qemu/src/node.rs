@@ -823,6 +823,11 @@ impl QemuNode {
     }
 
     /// Captures block state for rollback of an uncommitted scheduler boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the host-I/O runtime cannot capture the
+    /// complete block-fault continuation.
     #[cfg(target_os = "linux")]
     pub fn checkpoint_block_boundary_state(
         &self,

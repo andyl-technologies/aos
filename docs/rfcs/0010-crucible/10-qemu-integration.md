@@ -836,8 +836,8 @@ determinism contract (04).
 - [x] **T-QEMU-5** Implement exact snapshot capture and restore with icount,
   bias, TCG, timer, plugin time-control, QEMU device state, and Apache-side
   host-I/O continuations preserved under one content identity; oracle-validate
-  every `loadvm`-realized runtime. — satisfies [QEMU-21], [QEMU-22]; spec §10.4,
-  forward-ref §30.
+  every `loadvm`-realized runtime. — satisfies [QEMU-21], [QEMU-22], [SHM-49];
+  spec §10.4, 13 §13.3.2, forward-ref §30.
   Completed by `QemuNode::capture_exact_snapshot`, `QemuVmSnapshot`,
   `QemuHostIoCheckpoint`, `QemuExactSnapshotPolicy`, and
   `checks.crucible.phase2.qemuExactSnapshotRestore`. Capture writes the host

@@ -84,6 +84,11 @@ impl BlockResponse {
     }
 
     /// Builds a reset disposition for an outstanding request.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics when `status` is not one of the three reset
+    /// dispositions accepted by the guest protocol.
     #[must_use]
     pub fn reset_disposition(identity: BlockRequestIdentity, status: BlockStatus) -> Self {
         debug_assert!(matches!(

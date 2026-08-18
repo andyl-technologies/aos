@@ -3,28 +3,46 @@
 #
 # Format:
 # package<TAB>test target<TAB>pattern<TAB>count
+#
+# `retry` entries in the signal-fault sources below name modeled protocol or
+# device retry semantics. They do not rerun a failed test. The fixed sleeps are
+# production process-polling boundaries or child-process fixtures; their tests
+# still fail on the first unmet assertion or timeout.
 crucible-api	src/debug_gateway	std::thread::sleep	1
 crucible-api	src/debug_gateway	thread::sleep	1
+crucible-api	src/vm_lifecycle/network_faults/route/custody_and_payload	retry	1
+crucible-api	src/vm_lifecycle/network_faults/route_tests	retry	1
 crucible-cli	tests/serve_process	thread::sleep	1
 crucible-debug-gateway	tests/process_lifecycle	thread::sleep	1
+crucible-device	src/block/fault	retry	1
+crucible-device	src/block/fault/state_admission	retry	1
+crucible-device	src/block/fault/state_execution	retry	1
+crucible-device	src/block_lifecycle_test	retry	1
+crucible-device	src/block_snapshot_array_test	retry	1
 crucible-guest	src/guest_introspection_agent	retry	1
 crucible-guest	src/guest_introspection_agent/tests	thread::sleep	1
 crucible-protocol	src/guest_introspection_doorbell	retry	1
-crucible-qemu	src/async_driver	retry	1
+crucible-qemu	src/async_driver_test	retry	1
 crucible-qemu	src/block_realization_gate	thread::sleep	1
 crucible-qemu	src/crash_detection	retry	1
 crucible-qemu	src/gdbstub_proxy	thread::sleep	1
 crucible-qemu	src/live_coverage_gate	thread::sleep	1
 crucible-qemu	src/live_plugin_gate/support	thread::sleep	1
 crucible-qemu	src/live_plugin_quantum_gate/scheduler	thread::sleep	1
+crucible-qemu	src/node	std::thread::sleep	1
+crucible-qemu	src/node	thread::sleep	1
 crucible-qemu	src/node_factory	thread::sleep	1
+crucible-qemu	src/node_factory/tests	thread::sleep	1
+crucible-qemu	src/production_fault_runtime/evidence	retry	1
+crucible-qemu	src/production_fault_runtime/lifecycle_tests	retry	1
+crucible-qemu	src/production_fault_runtime/test_support	retry	1
 crucible-qemu	src/qmp	thread::sleep	1
 crucible-qemu	src/shutdown	thread::sleep	1
 crucible-qemu	src/single_vm_fingerprint/live_runner/process	thread::sleep	1
 crucible-qemu	src/single_vm_fingerprint/live_runner/qmp_poll	thread::sleep	1
 crucible-qemu	src/single_vm_fingerprint/plugin_live_runner	thread::sleep	1
-crucible-qemu	src/spawn	std::thread::sleep	1
-crucible-qemu	src/spawn	thread::sleep	1
+crucible-qemu	src/spawn_test	std::thread::sleep	1
+crucible-qemu	src/spawn_test	thread::sleep	1
 crucible-qemu	src/supervision/block_io_gate	thread::sleep	1
 crucible-qemu	src/supervision/block_io_gate/evidence	thread::sleep	1
 crucible-qemu	src/supervision/block_node_gate	thread::sleep	1
@@ -34,4 +52,13 @@ crucible-qemu	src/supervision/ninep_io_gate	thread::sleep	1
 crucible-qemu	src/supervision/node_step_gate/support	thread::sleep	1
 crucible-qemu	tests/crash_detection	retry	1
 crucible-qemu-plugin	tests/support/gate_patch_microtests/surfaces	retry	1
+crucible-qemu-plugin	src/block_io	retry	1
+crucible-qemu-plugin	src/runtime/live_callbacks/devices	retry	1
+crucible-qemu-plugin	src/runtime/live_callbacks/devices/tests	retry	1
 crucible-qemu-plugin	src/runtime/live_whitebox/guest_introspection	retry	1
+crucible	src/model/fault_signal/network_effect	retry	1
+crucible	src/model/fault_signal/node_effect	retry	1
+crucible	src/model/world_network_policy	retry	1
+crucible	src/model/world_storage_policy	retry	1
+crucible	src/model/world_storage_policy/media	retry	1
+crucible	src/model/world_storage_policy_test	retry	1

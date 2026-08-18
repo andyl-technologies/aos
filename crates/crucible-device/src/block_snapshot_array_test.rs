@@ -132,7 +132,7 @@ fn delta_pages_are_blake3_keyed() {
     assert_eq!(hashes, again);
 }
 
-// ---- regression: MAJOR #1 — snapshot/restore preserves dirty set ----
+// ---- regression: MAJOR #1 -- snapshot/restore preserves dirty set ----
 
 #[test]
 fn regression_restore_preserves_mid_epoch_dirty_set() {
@@ -150,7 +150,7 @@ fn regression_restore_preserves_mid_epoch_dirty_set() {
     assert_eq!(snap.delta_page_count(), 1, "page dirtied since boundary");
 
     // Restore (self-contained), then snapshot again: the delta must STILL be
-    // 1 — the dirty page survived the round-trip.
+    // 1 -- the dirty page survived the round-trip.
     let restored = ok(BlockDevice::restore(&snap, ramp_base(PAGE_SIZE * 2), None));
     let resnap = restored.snapshot();
     assert_eq!(
@@ -170,7 +170,7 @@ fn regression_restore_preserves_mid_epoch_dirty_set() {
     assert_eq!(restored_p.snapshot().delta_page_count(), 1);
 }
 
-// ---- regression: MAJOR #2 — restore preserves the latency model ----
+// ---- regression: MAJOR #2 -- restore preserves the latency model ----
 
 #[test]
 fn regression_restore_preserves_latency_so_delivery_icount_matches() {
@@ -201,7 +201,7 @@ fn regression_restore_preserves_latency_so_delivery_icount_matches() {
     assert_eq!(restored_event, Some(36));
 }
 
-// ---- regression: MAJOR #3 — oversized read rejected, not un-transportable ----
+// ---- regression: MAJOR #3 -- oversized read rejected, not un-transportable ----
 
 #[test]
 fn regression_read_over_frame_cap_returns_error_status() {

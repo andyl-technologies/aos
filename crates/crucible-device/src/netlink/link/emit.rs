@@ -112,7 +112,7 @@ impl NetLink {
     /// Replaces the effective fault table, flagging a lookahead recompute if needed.
     ///
     /// If the new table changes the link's conservative minimum effective latency
-    /// ([IO-33]) — currently the `added_latency_ns` component — the link sets the
+    /// ([IO-33]) -- currently the `added_latency_ns` component -- the link sets the
     /// lookahead-recompute flag so the scheduler recomputes its lookahead/horizon
     /// at the **next quantum boundary**, never mid-RUN. The signal is exposed via
     /// [`NetLink::take_lookahead_recompute`]; this method cannot call the
@@ -179,7 +179,7 @@ impl NetLink {
     ///
     /// Returns [`DeviceError::CompletionOverflow`] / [`DeviceError::Clock`] /
     /// [`DeviceError::IcountOverflow`] when the virtual-time arithmetic overflows,
-    /// and — when `policy` is [`PastDeliveryPolicy::FailLoud`] —
+    /// and -- when `policy` is [`PastDeliveryPolicy::FailLoud`] --
     /// [`DeviceError::DeliveryReorderedIntoPast`] if a jitter/reorder shift would
     /// move the delivery to at or before the consumer's current frontier ([IO-34]).
     /// On any error no delivery is enqueued (the frame is fully rejected).

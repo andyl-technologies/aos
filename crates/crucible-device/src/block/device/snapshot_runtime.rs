@@ -10,7 +10,7 @@ impl BlockDevice {
     /// snapshot/restore preserves which pages still owe the next checkpoint a
     /// delta, [IO-7]), the device RNG cursor, the active fault table, the latency model
     /// parameters (part of the `World`, [IO-10]), the in-flight responses with
-    /// their delivery icounts, the base hash, and the device length — **never**
+    /// their delivery icounts, the base hash, and the device length -- **never**
     /// the base image bytes ([TEMP-9]). The dirty set is *not* cleared here;
     /// call [`BlockDevice::checkpoint_boundary`] after taking the delta to begin
     /// a disjoint successor delta.
