@@ -12,6 +12,7 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
+  portableArtifactConstants = builtins.readFile ../../crates/crucible-cli/src/portable_artifact_constants.rs;
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   apiLifecycle = import ./_rust-module-source.nix {
     inherit lib;
@@ -120,10 +121,6 @@
       {
         label = "marker selector coordinate";
         needle = "--marker <name>";
-      }
-      {
-        label = "save handle schema";
-        needle = "crucible.savepoint-handle.v2";
       }
       {
         label = "save oracle proof";
@@ -268,6 +265,12 @@
       {
         label = "remote inline scenario source transfer";
         needle = "CreateSessionRequest::inline_form(run_plan.scenario.scenario_form().clone(), seed)";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cli/src/portable_artifact_constants.rs" portableArtifactConstants [
+      {
+        label = "save handle schema";
+        needle = "crucible.savepoint-handle.v3";
       }
     ]
     ++ failuresFor "crates/crucible-api/src/streaming.rs" apiStreaming [

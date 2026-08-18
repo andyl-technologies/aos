@@ -1092,8 +1092,9 @@ fn savepoint_handle_text(
     let scenario = form.scenario_def();
     let scenario_payload = form.to_compact_binary();
     let schedule_payload = schedule.to_compact_binary();
+    let boundary_predicate = crucible::Predicate::quiescent().to_compact_binary();
     let mut text = String::new();
-    artifact_line(&mut text, &["schema", "crucible.savepoint-handle.v2"]);
+    artifact_line(&mut text, &["schema", "crucible.savepoint-handle.v3"]);
     artifact_line(&mut text, &["label", "process-replay-to"]);
     artifact_line(
         &mut text,
@@ -1127,6 +1128,26 @@ fn savepoint_handle_text(
         &["frontier", &checkpoint.virtual_time.ticks.to_string()],
     );
     artifact_line(&mut text, &["at", "quiescence"]);
+    artifact_line(&mut text, &["selector", "none"]);
+    artifact_line(
+        &mut text,
+        &[
+            "boundary-proof",
+            "breakpoint",
+            "1",
+            "suspend",
+            &checkpoint.virtual_time.ticks.to_string(),
+            "1",
+        ],
+    );
+    artifact_line(
+        &mut text,
+        &[
+            "boundary-predicate",
+            &content_address_bytes(&boundary_predicate),
+            &hex_bytes(&boundary_predicate),
+        ],
+    );
     artifact_line(&mut text, &["terminal-condition", "quiescence"]);
     artifact_line(&mut text, &["materialization", "create-savepoint", "reply"]);
     artifact_line(&mut text, &["oracle", "fat==thin-passed"]);
