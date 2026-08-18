@@ -501,8 +501,13 @@ in {
           # wiping the bootstrap slot, otherwise a later TPM unseal failure
           # (legit firmware/SB or boot-input change → pinned PCR mismatch) would brick /var
           # with no way in. `set -e` propagates a failure here.
-          "$enroll" --unlock-key-file="$keyf" --recovery-key "$dev" \
-            > ${cfg.measuredBoot.recoveryKeyPath}
+          # Command substitution removes systemd-cryptenroll's presentation
+          # newline. cryptsetup treats every byte in a key file as key
+          # material, so retaining that newline would make direct exact-slot
+          # recovery verification disagree with systemd's password reader.
+          recovery_key=$("$enroll" --unlock-key-file="$keyf" --recovery-key "$dev")
+          printf '%s' "$recovery_key" > ${cfg.measuredBoot.recoveryKeyPath}
+          unset recovery_key
           chmod 600 ${cfg.measuredBoot.recoveryKeyPath}
           # Drop the throwaway bootstrap keyslot by TYPE (a plain
           # passphrase/keyfile slot), not by a guessed slot number — the

@@ -70,6 +70,17 @@ mkDerivation {
         after=$work/after.json
         record=$work/record.json
 
+        # Accept the conventional one-line secret file while ensuring direct
+        # cryptsetup exact-keyslot verification receives the same canonical
+        # bytes that systemd's recovery-key reader uses.
+        normalized_recovery_key=$work/recovery.key
+        recovery_value=$(${coreutils}/bin/tr -d '\n' < "$recovery_key")
+        [ -n "$recovery_value" ] || { echo "recovery key is empty" >&2; exit 1; }
+        printf '%s' "$recovery_value" > "$normalized_recovery_key"
+        chmod 0600 "$normalized_recovery_key"
+        unset recovery_value
+        recovery_key=$normalized_recovery_key
+
         publish_record() {
           evidence_dir=$(${coreutils}/bin/dirname "$evidence")
           mkdir -p "$evidence_dir"

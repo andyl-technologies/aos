@@ -275,7 +275,10 @@ token without wiping the old one, and validates the token ID and keyslot, PCR
 absence of alternate token modes. The supplied recovery key must open the
 single keyslot named by the retained `systemd-recovery` token before and after
 the transaction. The exact new external token is tested using systemd's
-canonical runtime signature path.
+canonical runtime signature path. Generated recovery-key files contain the
+canonical key bytes without a presentation newline; migration removes line
+feeds from a conventional one-line input file before direct exact-keyslot
+verification, matching systemd's recovery-key reader.
 
 Evidence advances atomically through `prepared`, `verified`, and `complete`
 states, with file and containing-directory synchronization at each published
