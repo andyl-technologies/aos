@@ -206,6 +206,13 @@ name = "aos-boot-identity"
 version = "0.1.0"
 
 [[package]]
+name = "aos-recovery"
+version = "0.1.0"
+dependencies = [
+ "aos-boot-identity",
+]
+
+[[package]]
 name = "aos-cache"
 version = "0.1.0"
 dependencies = [
@@ -524,6 +531,7 @@ name = "aos-package"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-boot-identity",
  "aos-cache",
  "aos-core",
  "aos-net",

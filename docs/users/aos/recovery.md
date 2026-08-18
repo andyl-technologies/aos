@@ -23,9 +23,78 @@ not as a prompt that can be authenticated locally.
 
 The development debug profile can add direct autologin gettys, but enabling it
 is an explicit security waiver and it must not be used for production images.
-Until a release provides the dedicated signed recovery UKI described by the
-recovery design, use authenticated external rescue media or reimage the host
-when recovery requires access before switch-root.
+
+Secure Boot plus dm-verity images build paired `AOS Recovery A` and `AOS
+Recovery B` firmware entries. They are uncounted and independent of the normal
+candidate counter. Recovery A is paired with immutable slot A and recovery B
+with slot B; an inactive-slot update may replace only the matching recovery
+copy, leaving the opposite copy intact.
+
+## Use the signed recovery console
+
+Select either recovery entry from the firmware menu. The signed command line
+starts a dedicated initrd that has no normal-root mount, switch-root, TPM
+automatic unlock, provisioning, package activation, debug login, or automatic
+networking path. Its fixed menu provides:
+
+1. bounded firmware, recovery-copy, and slot status;
+2. offline verification of immutable slot A;
+3. offline verification of immutable slot B;
+4. one-shot boot of slot A after verification in the same session;
+5. one-shot boot of slot B after verification in the same session;
+6. authenticated removable-media restore of the inactive slot;
+7. `/var` unlock with the per-machine recovery key;
+8. an authenticated maintenance shell;
+9. explicit `/var` lock; and
+10. poweroff.
+
+Verification checks the selected normal UKI signature and embedded boot
+identity, its release and slot metadata, the cataloged root hash, and the
+dm-verity tree without mounting the root. A failed check does not enable the
+one-shot boot operation.
+
+Unlock and restore prompt for the off-machine LUKS recovery key through
+`systemd-ask-password`. Recovery selects the exact retained
+`systemd-recovery` token; it does not guess a keyslot and does not use TPM
+automatic unlock. Exiting the maintenance shell unmounts `/var`, closes the
+mapping, and returns to the bounded menu. It never blesses a normal image.
+
+Do not treat the presence of this menu as proof that recovery is operational.
+Before production use, exercise per-machine key generation, off-host escrow,
+retrieval, rotation, removal, wrong-key refusal, and a successful recovery on
+representative hardware. If the key is unavailable, or firmware, the ESP,
+both recovery copies, or the encrypted volume is lost, use authenticated
+external rescue media or reimage the host.
+
+## Restore an inactive slot from removable media
+
+The image build exposes a recovery bundle with a fixed `aos/recovery/`
+directory. Copy that directory without renaming or adding files to an ext4
+filesystem labeled `AOS-RECOVERY`. It contains the root and verity payloads,
+normal and recovery UKIs, both recovery loader entries, image metadata, and a
+detached signed manifest.
+
+Recovery mounts only that fixed label and location, read-only with
+`nodev,nosuid,noexec`. It validates the manifest's direct deployment-db
+signature, rejects unknown or non-regular directory members, and verifies
+every component before prompting for write authorization. The publisher also
+requires this exact manifest to equal the copy in the signed release catalog;
+the offline console does not carry or independently replay the registry
+catalog chain. Restore can replace only the slot opposite the running recovery
+copy. The console displays the authenticated release and requires the exact
+confirmation `RESTORE SLOT A` or `RESTORE SLOT B`, followed by the per-machine
+recovery key.
+
+The writer disarms the inactive normal UKI before changing its root, performs
+read-back verification, publishes the matching recovery UKI and entry, and
+makes the restored counted normal UKI discoverable last. A recovery copy
+accepts the fixed `AOS-RECOVERY` filesystem only from a kernel-reported
+removable device outside the installed disk; a second internal disk carrying
+that label is rejected. A recovery copy
+embeds the slot manifest for its own release, so the old running recovery copy
+cannot verify a newly restored release. After success, reboot into the newly
+installed recovery entry paired with the restored slot, verify that slot from
+its menu, and only then select the one-shot normal boot.
 
 ## Migrate an existing `/var` TPM policy
 

@@ -4,6 +4,7 @@ members = [
     "aos",
     "aos-core",
     "aos-boot-identity",
+    "aos-recovery",
     "aos-nix",
     "aos-nix-syntax",
     "aos-nix-compat",
@@ -218,6 +219,7 @@ rcgen = "0.14"
 # Internal crates
 crucible-cas = { path = "crucible-cas" }
 aos-core = { path = "aos-core" }
+aos-boot-identity = { path = "aos-boot-identity" }
 aos-nix = { path = "aos-nix" }
 aos-nix-syntax = { path = "aos-nix-syntax" }
 aos-nix-compat = { path = "aos-nix-compat" }

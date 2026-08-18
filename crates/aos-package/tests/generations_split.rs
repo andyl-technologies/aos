@@ -41,12 +41,15 @@ fn generation_axes_round_trip_independently() {
         root_verity_roothash: None,
         initrd_pcr11: None,
         expected_pcr11: None,
+        recovery: None,
         created_at: "2026-01-01T00:00:00Z".into(),
     };
     let images = ImageGenerationState {
         running: 3,
         default: 3,
         pending: None,
+        recovery_known_good: None,
+        recovery_pending: None,
         generations: vec![image],
     };
     let decoded: ImageGenerationState =

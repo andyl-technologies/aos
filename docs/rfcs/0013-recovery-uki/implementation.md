@@ -7,7 +7,9 @@ invariants.
 
 ## Implementation status
 
-Phases 1 and 2 are implemented. Every base initrd now carries an impossible root
+Phases 1 through 8 are implemented. Final fleet qualification remains in
+progress; the implementation details and remaining release prerequisite are
+recorded below. Every base initrd now carries an impossible root
 password hash and masks the upstream interactive emergency and rescue
 services. The debug profile retains separate, explicitly enabled direct
 gettys; its stage-2 empty root password remains part of that development-only
@@ -39,9 +41,65 @@ diagnostic race.
 
 Phase 2 validates internal consistency but cannot by itself distinguish a
 complete valid slot-A tuple appended in place of slot B (or the reverse),
-because both UKIs currently share the same initrd. The PCR-12 binding in Phase
-3 is the required authorization boundary for any appended tuple substitution;
-the implementation must not claim that guarantee until Phase 3 lands.
+because both UKIs currently share the same initrd. Phase 3 closes that
+authorization gap: `/var` enrollment pins PCRs 7 and 12 and uses the signed
+PCR-11 policy. Recovery-key-authorized migration keeps the old TPM token until
+the exact replacement token has been tested and durable transaction evidence
+has been published. Quote verification retains PCR 12 through both local and
+remote policy decisions.
+
+Secure Boot plus verity images now build two separately signed, uncounted
+recovery UKIs. Each contains a copy-specific dedicated initrd, the exact
+recovery command line, an embedded db-signed slot manifest, and no normal
+`.pcrsig`. The recovery unit graph has no normal root, switch-root, TPM unlock,
+provisioning, activation, package management, debug getty, or automatic
+network path. The console application accepts only fixed menu operations.
+
+Normal slot verification shares the Phase-2 command-line parser. It verifies
+the UKI's Authenticode signature, copy/slot/release identity, root hash, and
+dm-verity tree without mounting the root. One-shot boot consumes an in-memory
+capability created by a successful verification in the same process. Access
+to `/var`, a maintenance shell, or restore writes requires the exact retained
+`systemd-recovery` token and its off-machine recovery key; no credential is
+embedded in the image.
+
+Image-generation state records the paired recovery copy, known-good copy, and
+pending publication. The existing inactive-slot transaction writes root and
+verity data, stages the normal UKI, publishes and read-back-verifies the
+matching recovery UKI and uncounted entry, and exposes the counted normal UKI
+last. Injected cuts at every publication boundary in both A-to-B and B-to-A
+directions must leave the opposite recovery copy unchanged.
+
+Neither the state record nor an ESP digest is retention authority. Initial
+seeding and every later inactive-slot update re-verify the retained recovery
+UKI against the deployment db certificate stored in the immutable running
+toplevel, then require its signed command line, release, copy, and ABI to match
+the canonical record. The updater likewise authenticates every discoverable
+normal UKI and derives its slot from the signed command line; mutable
+generation state must agree. A retry after candidate publication first
+disarms that exact candidate again and replays the transaction, while any
+other mixed discoverable/disabled state fails closed.
+
+The image build also emits a fixed-layout removable-media bundle. Its strict
+ten-component manifest is authenticated by the deployment db key and repeated
+in the signed release catalog; the consumer requires both representations to
+agree. Recovery mounts only the fixed `AOS-RECOVERY` filesystem on a
+kernel-reported removable parent outside the installed disk, read-only,
+rejects unaccounted or non-regular files, verifies all sizes and digests before
+authorization, and permits writes only to the slot opposite the running
+recovery copy. Recovery and its loader entry are published before the restored
+normal counted UKI.
+
+The same deployment db hierarchy authenticates recovery UKIs, slot metadata,
+the release catalog, and the detached removable-bundle manifest. There is no
+second ad-hoc recovery trust root. This authenticates code and payloads, not
+the operator: destructive or state-bearing operations still require the
+per-machine LUKS recovery key.
+
+Production maintenance remains gated on the Phase-6 escrow prerequisite.
+Building the recovery environment does not prove that a deployment has
+off-host generation, retrieval, rotation, removal, and incident exercises for
+its per-machine recovery keys.
 
 ## Phase 1: Lock the normal initrd
 
@@ -335,7 +393,11 @@ Extend image-generation state with recovery copy metadata sufficient to prove:
 - whether an inactive-copy publication transaction is pending.
 
 The state is evidence, not authority for Secure Boot or component digest
-verification.
+verification. At seed and immediately before the inactive slot is touched,
+authenticate the retained recovery copy against the immutable running
+toplevel's db certificate and its signed command-line/os-release identity.
+Authenticate each installed normal UKI the same way and classify its slot from
+that signed command line; reject disagreement with mutable generation state.
 
 ### 7.2 Transaction integration
 
@@ -346,7 +408,9 @@ recovery UKI/entry, followed by candidate arming.
 Use temporary files, read-back verification, sync, and recoverable journals in
 the same manner as the current normal UKI transaction. Recovery of an
 interrupted journal must never choose deletion of the opposite known-good
-recovery copy.
+recovery copy. A cut after normal-UKI publication but before stale-file cleanup
+is replayable only when the sole discoverable inactive UKI is the exact
+intended destination; disarm it again before replaying writes.
 
 ### 7.3 Boot tests
 
@@ -366,8 +430,10 @@ stronger than the existing test that corrupts only a copied image and invokes
 ### 8.1 Bundle manifest
 
 Define a versioned manifest over the existing root, verity, slot UKI, recovery
-UKI, image metadata, platform, and module/recovery ABI outputs. Authenticate it
-through the current signed system-image release catalog.
+UKI, image metadata, platform, and module/recovery ABI outputs. Publication
+requires exact equality with the copy in the signed system-image release
+catalog. The removable copy also carries a direct deployment-db signature so
+the offline initrd can authenticate it without registry state or networking.
 
 Add strict size limits, path-free component identifiers, exact digests, and
 architecture/platform constraints. The parser rejects unknown required fields,
@@ -391,7 +457,10 @@ restoration write. The authorization check may close the mapping without
 mounting `/var`. Default restoration targets only the slot opposite the
 recovery copy selected as known good. Display the resolved persistent devices,
 source generation, and destructive effect; require exact confirmation; then
-reuse the normal inactive-slot writer and read-back verification.
+use the dedicated-initrd writer with the same inactive-slot ordering and
+read-back contract as the normal writer. It remains dependency-free so the
+recovery closure does not acquire APM, registry, or activation code; shared
+crash-cut tests are the compatibility boundary between the two implementations.
 
 An authenticated maintenance session may request replacement of the retained
 slot, but the tool must first prove the other recovery copy boots and validates

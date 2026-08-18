@@ -146,6 +146,24 @@ in {
     '';
   };
 
+  options.system.build.recoveryUkiA = lib.mkOption {
+    type = lib.types.nullOr lib.types.package;
+    default = null;
+    description = "Signed, uncounted recovery UKI paired with immutable slot A.";
+  };
+
+  options.system.build.recoveryUkiB = lib.mkOption {
+    type = lib.types.nullOr lib.types.package;
+    default = null;
+    description = "Signed, uncounted recovery UKI paired with immutable slot B.";
+  };
+
+  options.system.build.recoveryBundle = lib.mkOption {
+    type = lib.types.nullOr lib.types.package;
+    default = null;
+    description = "Authenticated fixed-layout payload for removable recovery media.";
+  };
+
   config = lib.mkIf cfg.enable {
     system.build.image = {
       raw = rawImage;
@@ -169,5 +187,10 @@ in {
       };
     };
     system.build.uki = rawImage.uki;
+    system.build.recoveryInitrd = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryInitrdA;
+    system.build.recoverySlotManifest = lib.mkIf config.aos.boot.recovery.enable rawImage.recoverySlotManifest;
+    system.build.recoveryUkiA = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryUkiA;
+    system.build.recoveryUkiB = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryUkiB;
+    system.build.recoveryBundle = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryBundle;
   };
 }

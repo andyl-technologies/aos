@@ -394,17 +394,26 @@ recovery-A UKI digest and recovery ABI
 recovery-B UKI digest and recovery ABI
 ```
 
-The manifest is authenticated through the existing signed system-image release
-catalog. A separate ad-hoc recovery signing hierarchy is not introduced.
-Recovery media may be removable local storage. Network retrieval is a later
-transport over the same authenticated bundle format, not a second trust model.
+Publication requires the manifest to equal the copy in the signed system-image
+release catalog. Offline recovery additionally verifies a direct signature by
+the deployment db key already embedded in the recovery UKI; it does not carry
+or replay the registry catalog chain. This makes the same deployment trust root
+usable without networking and does not introduce an ad-hoc recovery signing
+hierarchy. Recovery media may be removable local storage. Network retrieval is
+a later transport over the same authenticated bundle format, not a second
+trust model.
 
-Inactive-slot restoration uses the existing system-image transaction's write,
-read-back verification, ESP temporary-file, sync, and publication primitives.
-Recovery does not invent a second block-writing implementation. The running
-normal slot concept is absent in recovery, so the retained recovery-copy rule
-supplies the safety boundary: by default only the slot opposite the selected
-known-good recovery copy may be overwritten.
+Inactive-slot restoration follows the existing system-image transaction's
+write, read-back verification, ESP temporary-file, sync, and publication
+contract. The dedicated initrd cannot link the full APM/sysroot implementation
+without defeating its closure boundary, so its small dependency-free writer
+implements the same ordered state machine: disarm the inactive normal UKI,
+write and read back root and verity, publish recovery UKI and entry, then
+publish the counted normal UKI last. Both writers share the same crash-cut
+invariants and qualification matrix rather than a process or library
+dependency. The running normal slot concept is absent in recovery, so the
+retained recovery-copy rule supplies the safety boundary: by default only the
+slot opposite the selected known-good recovery copy may be overwritten.
 
 ## Recovery update lifecycle
 
@@ -640,11 +649,14 @@ UI. After step 1, ordinary initrd failures intentionally have no interactive
 shell until the signed recovery path lands. Operators of development fixtures
 retain explicit debug autologin.
 
-The recovery initrd publishes a `recovery_abi`. A recovery UKI may inspect
-older/newer slots only when their image metadata version is supported. It must
-report an unsupported version rather than guessing. Format transitions retain
-the previous recovery copy until the new recovery ABI has booted successfully
-in CI and on the candidate machine.
+The recovery initrd publishes a `recovery_abi`. Version 1 accepts only ABI 1;
+the build option is constrained to that value rather than advertising an
+unsupported version. A recovery UKI may inspect slots only when their image
+metadata version is supported and reports an unsupported version rather than
+guessing. A future format transition must add an explicit qualification state
+that retains the previous recovery copy until the new recovery ABI has booted
+successfully in CI and on the candidate machine; the v1 paired-normal commit
+record is not evidence of such a future ABI qualification.
 
 ## Acceptance criteria
 
