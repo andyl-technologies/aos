@@ -113,7 +113,7 @@ pub fn discover_host_layout() -> Result<HostLayout, DeviceError> {
 /// and its kernel parent differs from the installed parent disk.
 pub fn discover_recovery_media(host: &HostLayout) -> Result<PathBuf, DeviceError> {
     let media = unique_blkid("LABEL", "AOS-RECOVERY")?;
-    let parent = partition_parent(&media)?;
+    let parent = media_parent(&media)?;
     if parent == host.parent {
         return Err(DeviceError::Topology(
             "recovery media is a partition on the installed disk".into(),
@@ -126,6 +126,19 @@ pub fn discover_recovery_media(host: &HostLayout) -> Result<PathBuf, DeviceError
         ));
     }
     Ok(media)
+}
+
+fn media_parent(device: &Path) -> Result<PathBuf, DeviceError> {
+    let name = device
+        .file_name()
+        .ok_or_else(|| DeviceError::Topology("media device has no kernel name".into()))?;
+    let sys = fs::canonicalize(Path::new("/sys/class/block").join(name))?;
+    if sys.join("partition").is_file() {
+        return sys.parent().map(Path::to_path_buf).ok_or_else(|| {
+            DeviceError::Topology("recovery-media partition has no parent device".into())
+        });
+    }
+    Ok(sys)
 }
 
 fn unique_blkid(field: &str, value: &str) -> Result<PathBuf, DeviceError> {

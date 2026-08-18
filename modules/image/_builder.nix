@@ -121,6 +121,45 @@
   verityEnabled = system.config.aos.security.verity.enable;
   recovery = system.config.aos.boot.recovery;
   recoveryEnabled = recovery.enable;
+  activeRegistryDbCerts = lib.concatLists (
+    map
+    (registry: registry.sbDbCerts)
+    (builtins.attrValues system.config.aos.apm.registries)
+  );
+  activeRegistryDbCertFiles = lib.imap
+    (index: certificate:
+      pkgs.writeTextFile {
+        name = "aos-recovery-active-db-${toString index}";
+        destination = "/certificate.pem";
+        text = certificate;
+      })
+    activeRegistryDbCerts;
+  activeRecoveryDbCerts =
+    if recoveryEnabled
+    then
+      pkgs.mkDerivation {
+        pname = "aos-recovery-active-db-certs";
+        version = "1";
+        src = null;
+        buildDeps = [pkgs.coreutils];
+        runtimeDeps = [];
+        propagatedDeps = [];
+        phases = [
+          {
+            name = "install";
+            script = ''
+              mkdir -p $out
+              cp ${sb.dbCert} $out/active-db-certs.pem
+              chmod u+w $out/active-db-certs.pem
+              ${lib.concatMapStringsSep "\n" (certificate: ''
+                  printf '\n' >> $out/active-db-certs.pem
+                  cat ${certificate}/certificate.pem >> $out/active-db-certs.pem
+                '') activeRegistryDbCertFiles}
+            '';
+          }
+        ];
+      }
+    else null;
 
   rootfs = mkRootfs ({
       inherit pkgs lib system;
@@ -251,6 +290,7 @@
       kernel = system.config.system.build.kernel;
       loadModules = system.config.aos.boot.initrd.loadModules;
       dbCert = sb.dbCert;
+      authorizedDbCerts = "${activeRecoveryDbCerts}/active-db-certs.pem";
       slotManifest = recoverySlotManifest;
       recoveryCopy = lib.toUpper copy;
       recoveryAbi = recovery.abi;

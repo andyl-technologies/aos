@@ -86,7 +86,8 @@ in the signed release catalog; the consumer requires both representations to
 agree. Recovery mounts only the fixed `AOS-RECOVERY` filesystem on a
 kernel-reported removable parent outside the installed disk, read-only,
 rejects unaccounted or non-regular files, verifies all sizes and digests before
-authorization, and permits writes only to the slot opposite the running
+authorization, re-verifies every UKI's Authenticode signature and signed
+slot/copy identity, and permits writes only to the slot opposite the running
 recovery copy. Recovery and its loader entry are published before the restored
 normal counted UKI.
 
@@ -395,7 +396,13 @@ Extend image-generation state with recovery copy metadata sufficient to prove:
 The state is evidence, not authority for Secure Boot or component digest
 verification. At seed and immediately before the inactive slot is touched,
 authenticate the retained recovery copy against the immutable running
-toplevel's db certificate and its signed command-line/os-release identity.
+toplevel's configured db-certificate snapshot and its signed
+command-line/os-release identity. The snapshot includes the current image
+signer and every build-configured rotation-overlap certificate, so an old-slot
+UKI remains usable during an intentional overlap. It is not the mutable
+registry roster: retiring a provisioned certificate requires a replacement
+image that removes it from `sbDbCerts`, followed by qualification and firmware
+db/dbx rollout. Mutable `/etc` trust files are never authority for this check.
 Authenticate each installed normal UKI the same way and classify its slot from
 that signed command line; reject disagreement with mutable generation state.
 
@@ -461,6 +468,10 @@ use the dedicated-initrd writer with the same inactive-slot ordering and
 read-back contract as the normal writer. It remains dependency-free so the
 recovery closure does not acquire APM, registry, or activation code; shared
 crash-cut tests are the compatibility boundary between the two implementations.
+Disabled inactive-slot UKIs are removed only after the new counted UKI is
+synced and read back successfully. A retry reclassifies and disarms the exact
+authenticated target set before replay, preventing both stale bootability and
+unbounded ESP accumulation.
 
 An authenticated maintenance session may request replacement of the retained
 slot, but the tool must first prove the other recovery copy boots and validates

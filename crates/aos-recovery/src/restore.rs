@@ -13,19 +13,20 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
-use aos_boot_identity::{BootSlot, parse_normal};
+use aos_boot_identity::{BootSlot, parse_normal, parse_recovery};
+use sha2::{Digest, Sha256};
 
 use crate::device::{HostLayout, discover_host_layout, discover_recovery_media};
 use crate::maintenance::RestoreAuthorization;
 use crate::status::RecoveryCopy;
+use crate::trust;
 
 const MEDIA_MOUNT: &str = "/run/aos-recovery/media";
 const BUNDLE_DIR: &str = "/run/aos-recovery/media/aos/recovery";
 const MANIFEST: &str = "/run/aos-recovery/media/aos/recovery/recovery-bundle.json";
 const SIGNATURE: &str = "/run/aos-recovery/media/aos/recovery/recovery-bundle.json.sig";
-const DB_CERT: &str = "/etc/aos/trust/db.crt";
 const ESP_MOUNT: &str = "/run/aos-recovery/esp";
 const WORK_DIR: &str = "/run/aos-recovery";
 const MAX_COMPONENTS: usize = 10;
@@ -147,11 +148,11 @@ impl VerifiedBundle {
             BootSlot::A => (&self.host.root_a, &self.host.root_a_hash),
             BootSlot::B => (&self.host.root_b, &self.host.root_b_hash),
         };
-        write_block_component(self.component("root-image")?, root)?;
-        write_block_component(self.component("root-verity")?, hash)?;
+        write_slot_storage(&self, root, hash)?;
 
         remount_esp(true)?;
-        let publication = publish_boot_artifacts(&self);
+        let publication =
+            publish_boot_artifacts(&self).and_then(|()| cleanup_disabled_slot_ukis(self.target));
         let restore = remount_esp(false);
         match (publication, restore) {
             (Ok(()), Ok(())) => Ok(()),
@@ -189,6 +190,17 @@ pub fn verify_offline_bundle(copy: RecoveryCopy) -> Result<VerifiedBundle, Resto
     for (id, component) in &components {
         verify_component(id, component)?;
     }
+    let root_hash = canonical_bundle_root_hash(&components)?;
+    for (id, component) in &components {
+        if matches!(
+            id.as_str(),
+            "normal-uki-a" | "normal-uki-b" | "recovery-uki-a" | "recovery-uki-b"
+        ) {
+            verify_bundle_uki_identity(id, component, &release, &root_hash)?;
+        }
+    }
+    verify_bundle_verity(&components, &root_hash)?;
+    verify_recovery_entries(&components, &release)?;
     Ok(VerifiedBundle {
         target: match copy {
             RecoveryCopy::A => BootSlot::B,
@@ -219,30 +231,8 @@ fn mount_media_read_only(device: &Path) -> Result<(), RestoreError> {
 fn verify_manifest_signature() -> Result<(), RestoreError> {
     bounded_regular(Path::new(MANIFEST), 256 * 1024)?;
     bounded_regular(Path::new(SIGNATURE), 16 * 1024)?;
-    let public_key = format!("{WORK_DIR}/bundle-public.pem");
-    let output = Command::new("/bin/openssl")
-        .args(["x509", "-pubkey", "-noout", "-in", DB_CERT])
-        .output()?;
-    if !output.status.success() {
-        return Err(RestoreError::Manifest(stderr_reason(&output)));
-    }
-    fs::write(&public_key, output.stdout)?;
-    let output = Command::new("/bin/openssl")
-        .args([
-            "dgst",
-            "-sha256",
-            "-verify",
-            &public_key,
-            "-signature",
-            SIGNATURE,
-            MANIFEST,
-        ])
-        .output()?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(RestoreError::Manifest(stderr_reason(&output)))
-    }
+    trust::verify_detached_signature(Path::new(MANIFEST), Path::new(SIGNATURE))
+        .map_err(RestoreError::Manifest)
 }
 
 fn parse_manifest() -> Result<(String, BTreeMap<String, Component>), RestoreError> {
@@ -369,6 +359,160 @@ fn verify_component(id: &str, component: &Component) -> Result<(), RestoreError>
     Ok(())
 }
 
+fn canonical_bundle_root_hash(
+    components: &BTreeMap<String, Component>,
+) -> Result<String, RestoreError> {
+    let component = components
+        .get("root-hash")
+        .ok_or_else(|| RestoreError::Manifest("bundle has no root-hash component".into()))?;
+    let text = fs::read_to_string(&component.path)?;
+    let root_hash = text.trim();
+    if root_hash.len() != 64
+        || !root_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(RestoreError::Component(
+            "root-hash is not canonical lowercase SHA-256".into(),
+        ));
+    }
+    Ok(root_hash.to_string())
+}
+
+fn verify_bundle_uki_identity(
+    id: &str,
+    component: &Component,
+    release: &str,
+    root_hash: &str,
+) -> Result<(), RestoreError> {
+    if trust::verify_uki(&component.path).is_err() {
+        return Err(RestoreError::Component(format!(
+            "{id} is not authorized by Secure Boot db"
+        )));
+    }
+
+    let cmdline = extract_uki_section(&component.path, ".cmdline", id)?;
+    match id {
+        "normal-uki-a" | "normal-uki-b" => {
+            let identity = parse_normal(&cmdline)
+                .map_err(|error| RestoreError::Component(format!("{id}: {error}")))?;
+            let expected = if id.ends_with("-a") {
+                BootSlot::A
+            } else {
+                BootSlot::B
+            };
+            if identity.slot != expected {
+                return Err(RestoreError::Component(format!(
+                    "{id} signed command line selects the wrong slot"
+                )));
+            }
+            if identity.root_hash != root_hash {
+                return Err(RestoreError::Component(format!(
+                    "{id} signed root hash disagrees with root.roothash"
+                )));
+            }
+            let os_release = extract_uki_section(&component.path, ".osrel", id)?;
+            if unique_os_release(&os_release, "VERSION_ID")? != release {
+                return Err(RestoreError::Component(format!(
+                    "{id} signed release disagrees with the bundle"
+                )));
+            }
+        }
+        "recovery-uki-a" | "recovery-uki-b" => {
+            parse_recovery(&cmdline)
+                .map_err(|error| RestoreError::Component(format!("{id}: {error}")))?;
+            let os_release = extract_uki_section(&component.path, ".osrel", id)?;
+            let expected_copy = if id.ends_with("-a") { "A" } else { "B" };
+            if unique_os_release(&os_release, "VERSION_ID")? != release
+                || unique_os_release(&os_release, "AOS_RECOVERY_COPY")? != expected_copy
+                || unique_os_release(&os_release, "AOS_RECOVERY_ABI")? != "1"
+            {
+                return Err(RestoreError::Component(format!(
+                    "{id} signed release, copy, or ABI disagrees with the bundle"
+                )));
+            }
+        }
+        _ => {
+            return Err(RestoreError::Component(format!(
+                "unexpected UKI component {id}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn verify_bundle_verity(
+    components: &BTreeMap<String, Component>,
+    root_hash: &str,
+) -> Result<(), RestoreError> {
+    let root = components
+        .get("root-image")
+        .ok_or_else(|| RestoreError::Manifest("bundle has no root-image component".into()))?;
+    let hash = components
+        .get("root-verity")
+        .ok_or_else(|| RestoreError::Manifest("bundle has no root-verity component".into()))?;
+    let output = Command::new("/bin/veritysetup")
+        .arg("verify")
+        .arg(&root.path)
+        .arg(&hash.path)
+        .arg(root_hash)
+        .output()?;
+    if !output.status.success() {
+        return Err(RestoreError::Component(format!(
+            "root image and verity tree are incoherent: {}",
+            stderr_reason(&output)
+        )));
+    }
+    Ok(())
+}
+
+fn verify_recovery_entries(
+    components: &BTreeMap<String, Component>,
+    release: &str,
+) -> Result<(), RestoreError> {
+    for (suffix, copy) in [("a", "A"), ("b", "B")] {
+        let component = components
+            .get(&format!("recovery-entry-{suffix}"))
+            .ok_or_else(|| {
+                RestoreError::Manifest(format!("bundle has no recovery-entry-{suffix} component"))
+            })?;
+        let expected =
+            format!("title AOS Recovery {copy} ({release})\nefi /EFI/AOS/recovery-{suffix}.efi\n");
+        if fs::read(&component.path)? != expected.as_bytes() {
+            return Err(RestoreError::Component(format!(
+                "recovery-entry-{suffix} is not canonical for the bundle"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn extract_uki_section(uki: &Path, section: &str, id: &str) -> Result<String, RestoreError> {
+    let destination =
+        Path::new(WORK_DIR).join(format!("bundle-{}-{}", id, section.trim_start_matches('.')));
+    let output = Command::new("/bin/objcopy")
+        .args(["-O", "binary"])
+        .arg(format!("--only-section={section}"))
+        .arg(uki)
+        .arg(&destination)
+        .output()?;
+    if !output.status.success() {
+        return Err(RestoreError::Component(format!(
+            "cannot inspect {section} in {id}"
+        )));
+    }
+    let mut bytes = fs::read(destination)?;
+    while bytes.last() == Some(&0) {
+        bytes.pop();
+    }
+    if bytes.is_empty() {
+        return Err(RestoreError::Component(format!(
+            "{id} has no {section} section"
+        )));
+    }
+    String::from_utf8(bytes).map_err(|error| RestoreError::Component(error.to_string()))
+}
+
 fn write_block_component(component: &Component, destination: &Path) -> Result<(), RestoreError> {
     let resolved = fs::canonicalize(destination)?;
     if !resolved.starts_with("/dev") {
@@ -398,13 +542,88 @@ fn write_block_component(component: &Component, destination: &Path) -> Result<()
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StorageBoundary {
+    RootWritten,
+    VerityWritten,
+}
+
+fn write_slot_storage(
+    bundle: &VerifiedBundle,
+    root: &Path,
+    hash: &Path,
+) -> Result<(), RestoreError> {
+    write_slot_storage_with(
+        &bundle.components,
+        root,
+        hash,
+        write_block_component,
+        |_| Ok(()),
+    )
+}
+
+fn write_slot_storage_with<F, C>(
+    components: &BTreeMap<String, Component>,
+    root: &Path,
+    hash: &Path,
+    mut writer: F,
+    mut checkpoint: C,
+) -> Result<(), RestoreError>
+where
+    F: FnMut(&Component, &Path) -> Result<(), RestoreError>,
+    C: FnMut(StorageBoundary) -> Result<(), RestoreError>,
+{
+    let root_component = components
+        .get("root-image")
+        .ok_or_else(|| RestoreError::Manifest("component root-image disappeared".into()))?;
+    let verity_component = components
+        .get("root-verity")
+        .ok_or_else(|| RestoreError::Manifest("component root-verity disappeared".into()))?;
+    writer(root_component, root)?;
+    checkpoint(StorageBoundary::RootWritten)?;
+    writer(verity_component, hash)?;
+    checkpoint(StorageBoundary::VerityWritten)
+}
+
 fn publish_boot_artifacts(bundle: &VerifiedBundle) -> Result<(), RestoreError> {
-    let suffix = slot_suffix(bundle.target);
-    let staging = Path::new(ESP_MOUNT).join("EFI/.aos-staging");
+    publish_boot_artifacts_with(
+        bundle.target,
+        &bundle.release,
+        &bundle.components,
+        Path::new(ESP_MOUNT),
+        |_| Ok(()),
+    )
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublicationBoundary {
+    Staged,
+    RecoveryPublished,
+    EntryPublished,
+    NormalPublished,
+}
+
+fn publish_boot_artifacts_with<F>(
+    target: BootSlot,
+    release: &str,
+    components: &BTreeMap<String, Component>,
+    esp_root: &Path,
+    mut checkpoint: F,
+) -> Result<(), RestoreError>
+where
+    F: FnMut(PublicationBoundary) -> Result<(), RestoreError>,
+{
+    let suffix = slot_suffix(target);
+    let staging = esp_root.join("EFI/.aos-staging");
     fs::create_dir_all(&staging)?;
-    let recovery = bundle.component(&format!("recovery-uki-{suffix}"))?;
-    let recovery_entry = bundle.component(&format!("recovery-entry-{suffix}"))?;
-    let normal = bundle.component(&format!("normal-uki-{suffix}"))?;
+    let component = |id: &str| {
+        components
+            .get(id)
+            .ok_or_else(|| RestoreError::Manifest(format!("component {id} disappeared")))
+    };
+    let recovery = component(&format!("recovery-uki-{suffix}"))?;
+    let recovery_entry = component(&format!("recovery-entry-{suffix}"))?;
+    let normal = component(&format!("normal-uki-{suffix}"))?;
 
     let recovery_temp = staging.join(format!("restore-recovery-{suffix}.efi"));
     let entry_temp = staging.join(format!("restore-recovery-{suffix}.conf"));
@@ -413,11 +632,12 @@ fn publish_boot_artifacts(bundle: &VerifiedBundle) -> Result<(), RestoreError> {
     copy_regular(recovery_entry, &entry_temp)?;
     copy_regular(normal, &normal_temp)?;
     sync_path(&staging)?;
+    checkpoint(PublicationBoundary::Staged)?;
 
-    let recovery_destination = Path::new(ESP_MOUNT)
+    let recovery_destination = esp_root
         .join("EFI/AOS")
         .join(format!("recovery-{suffix}.efi"));
-    let entry_destination = Path::new(ESP_MOUNT)
+    let entry_destination = esp_root
         .join("loader/entries")
         .join(format!("recovery-{suffix}.conf"));
     fs::create_dir_all(
@@ -429,28 +649,68 @@ fn publish_boot_artifacts(bundle: &VerifiedBundle) -> Result<(), RestoreError> {
         RestoreError::Destination("loader entry destination has no parent".into())
     })?)?;
     fs::rename(&recovery_temp, &recovery_destination)?;
-    sync_path(
-        recovery_destination
-            .parent()
-            .unwrap_or(Path::new(ESP_MOUNT)),
-    )?;
+    let recovery_parent = recovery_destination
+        .parent()
+        .ok_or_else(|| RestoreError::Destination("recovery destination has no parent".into()))?;
+    sync_path(recovery_parent)?;
     verify_installed(recovery, &recovery_destination)?;
+    checkpoint(PublicationBoundary::RecoveryPublished)?;
     fs::rename(&entry_temp, &entry_destination)?;
-    sync_path(entry_destination.parent().unwrap_or(Path::new(ESP_MOUNT)))?;
+    let entry_parent = entry_destination.parent().ok_or_else(|| {
+        RestoreError::Destination("loader entry destination has no parent".into())
+    })?;
+    sync_path(entry_parent)?;
     verify_installed(recovery_entry, &entry_destination)?;
+    checkpoint(PublicationBoundary::EntryPublished)?;
 
-    let normal_name = format!("aos-restored-{}-slot-{suffix}+3.efi", bundle.release);
-    let normal_destination = Path::new(ESP_MOUNT).join("EFI/Linux").join(normal_name);
+    let normal_name = format!("aos-restored-{release}-slot-{suffix}+3.efi");
+    let normal_destination = esp_root.join("EFI/Linux").join(normal_name);
+    fs::create_dir_all(normal_destination.parent().ok_or_else(|| {
+        RestoreError::Destination("normal UKI destination has no parent".into())
+    })?)?;
     fs::rename(&normal_temp, &normal_destination)?;
-    sync_path(normal_destination.parent().unwrap_or(Path::new(ESP_MOUNT)))?;
+    let normal_parent = normal_destination
+        .parent()
+        .ok_or_else(|| RestoreError::Destination("normal UKI destination has no parent".into()))?;
+    sync_path(normal_parent)?;
     verify_installed(normal, &normal_destination)?;
-    run_success("/bin/sync", std::iter::empty::<&str>())
+    checkpoint(PublicationBoundary::NormalPublished)?;
+    sync_path(esp_root)
 }
 
 fn disarm_slot_ukis(slot: BootSlot) -> Result<(), RestoreError> {
-    let linux = Path::new(ESP_MOUNT).join("EFI/Linux");
-    let staging = Path::new(ESP_MOUNT).join("EFI/.aos-staging");
+    disarm_slot_ukis_with(slot, Path::new(ESP_MOUNT), classify_installed_uki)
+}
+
+fn disarm_slot_ukis_with<F>(
+    slot: BootSlot,
+    esp_root: &Path,
+    mut classify: F,
+) -> Result<(), RestoreError>
+where
+    F: FnMut(&Path, usize) -> Result<BootSlot, RestoreError>,
+{
+    let linux = esp_root.join("EFI/Linux");
+    let staging = esp_root.join("EFI/.aos-staging");
     fs::create_dir_all(&staging)?;
+    let disabled_prefix = format!("disabled-restore-{}-", slot_suffix(slot));
+    let mut disabled_count = 0_usize;
+    for entry in fs::read_dir(&staging)? {
+        let entry = entry?;
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(&disabled_prefix)
+        {
+            continue;
+        }
+        disabled_count += 1;
+        if disabled_count > 64 || !entry.file_type()?.is_file() {
+            return Err(RestoreError::Destination(
+                "inactive-slot recovery staging is ambiguous".into(),
+            ));
+        }
+    }
     let mut candidates = Vec::new();
     for entry in fs::read_dir(&linux)? {
         let entry = entry?;
@@ -467,37 +727,88 @@ fn disarm_slot_ukis(slot: BootSlot) -> Result<(), RestoreError> {
         }
     }
     for (index, candidate) in candidates.into_iter().enumerate() {
-        let section = Path::new(WORK_DIR).join(format!("restore-cmdline-{index}"));
-        let output = Command::new("/bin/objcopy")
-            .args(["-O", "binary", "--only-section=.cmdline"])
-            .arg(&candidate)
-            .arg(&section)
-            .output()?;
-        if !output.status.success() {
-            return Err(RestoreError::Destination(format!(
-                "cannot classify normal UKI {}",
-                candidate.display()
-            )));
-        }
-        let mut bytes = fs::read(&section)?;
-        while bytes.last() == Some(&0) {
-            bytes.pop();
-        }
-        let cmdline = String::from_utf8(bytes)
-            .map_err(|error| RestoreError::Destination(error.to_string()))?;
-        let identity =
-            parse_normal(&cmdline).map_err(|error| RestoreError::Destination(error.to_string()))?;
-        if identity.slot == slot {
+        if classify(&candidate, index)? == slot {
             let name = candidate
                 .file_name()
                 .ok_or_else(|| RestoreError::Destination("normal UKI has no filename".into()))?;
             fs::rename(
                 &candidate,
-                staging.join(format!("disabled-{}", name.to_string_lossy())),
+                staging.join(format!("{disabled_prefix}{}", name.to_string_lossy())),
             )?;
         }
     }
     sync_path(&linux)?;
+    sync_path(&staging)
+}
+
+fn classify_installed_uki(candidate: &Path, index: usize) -> Result<BootSlot, RestoreError> {
+    if trust::verify_uki(candidate).is_err() {
+        return Err(RestoreError::Destination(format!(
+            "installed normal UKI {} is not authorized by Secure Boot db",
+            candidate.display()
+        )));
+    }
+    let section = Path::new(WORK_DIR).join(format!("restore-cmdline-{index}"));
+    let output = Command::new("/bin/objcopy")
+        .args(["-O", "binary", "--only-section=.cmdline"])
+        .arg(candidate)
+        .arg(&section)
+        .output()?;
+    if !output.status.success() {
+        return Err(RestoreError::Destination(format!(
+            "cannot classify normal UKI {}",
+            candidate.display()
+        )));
+    }
+    let mut bytes = fs::read(&section)?;
+    while bytes.last() == Some(&0) {
+        bytes.pop();
+    }
+    let cmdline =
+        String::from_utf8(bytes).map_err(|error| RestoreError::Destination(error.to_string()))?;
+    parse_normal(&cmdline)
+        .map(|identity| identity.slot)
+        .map_err(|error| RestoreError::Destination(error.to_string()))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CleanupBoundary {
+    Removed(usize),
+}
+
+fn cleanup_disabled_slot_ukis(slot: BootSlot) -> Result<(), RestoreError> {
+    cleanup_disabled_slot_ukis_with(slot, Path::new(ESP_MOUNT), |_| Ok(()))
+}
+
+fn cleanup_disabled_slot_ukis_with<F>(
+    slot: BootSlot,
+    esp_root: &Path,
+    mut checkpoint: F,
+) -> Result<(), RestoreError>
+where
+    F: FnMut(CleanupBoundary) -> Result<(), RestoreError>,
+{
+    let staging = esp_root.join("EFI/.aos-staging");
+    let disabled_prefix = format!("disabled-restore-{}-", slot_suffix(slot));
+    let mut removed = 0_usize;
+    for entry in fs::read_dir(&staging)? {
+        let entry = entry?;
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(&disabled_prefix)
+        {
+            continue;
+        }
+        removed += 1;
+        if removed > 128 || !entry.file_type()?.is_file() {
+            return Err(RestoreError::Destination(
+                "inactive-slot recovery cleanup is ambiguous".into(),
+            ));
+        }
+        fs::remove_file(entry.path())?;
+        checkpoint(CleanupBoundary::Removed(removed))?;
+    }
     sync_path(&staging)
 }
 
@@ -602,51 +913,37 @@ fn bounded_regular(path: &Path, maximum: u64) -> Result<(), RestoreError> {
 }
 
 fn sha256(path: &Path) -> Result<String, RestoreError> {
-    let output = Command::new("/bin/openssl")
-        .args(["dgst", "-sha256", "-r"])
-        .arg(path)
-        .output()?;
-    parse_digest(&output)
+    let mut input = File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = input.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 fn sha256_prefix(path: &Path, length: u64) -> Result<String, RestoreError> {
-    let mut input = File::open(path)?.take(length);
-    let mut child = Command::new("/bin/openssl")
-        .args(["dgst", "-sha256", "-r"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| RestoreError::Helper("openssl stdin was not created".into()))?;
-    let copied = io::copy(&mut input, &mut stdin)?;
-    drop(stdin);
-    if copied != length {
+    let mut input = File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut remaining = length;
+    let mut buffer = [0_u8; 64 * 1024];
+    while remaining > 0 {
+        let wanted = remaining.min(buffer.len() as u64) as usize;
+        let read = input.read(&mut buffer[..wanted])?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+        remaining -= read as u64;
+    }
+    if remaining != 0 {
         return Err(RestoreError::Destination("short block read-back".into()));
     }
-    parse_digest(&child.wait_with_output()?)
-}
-
-fn parse_digest(output: &std::process::Output) -> Result<String, RestoreError> {
-    if !output.status.success() {
-        return Err(RestoreError::Helper(stderr_reason(output)));
-    }
-    let text = String::from_utf8(output.stdout.clone())
-        .map_err(|error| RestoreError::Helper(error.to_string()))?;
-    let digest = text.split_ascii_whitespace().next().unwrap_or_default();
-    if digest.len() == 64
-        && digest
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        Ok(digest.to_string())
-    } else {
-        Err(RestoreError::Helper(
-            "openssl returned a malformed SHA-256 digest".into(),
-        ))
-    }
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 fn sync_path(path: &Path) -> Result<(), RestoreError> {
@@ -680,5 +977,208 @@ fn stderr_reason(output: &std::process::Output) -> String {
         format!("exit status {}", output.status)
     } else {
         stderr
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use aos_boot_identity::BootSlot;
+
+    use super::{
+        CleanupBoundary, Component, PublicationBoundary, RestoreError, StorageBoundary,
+        cleanup_disabled_slot_ukis_with, disarm_slot_ukis_with, publish_boot_artifacts_with,
+        slot_suffix, write_slot_storage_with,
+    };
+
+    fn temporary_root(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "aos-recovery-{label}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    fn component(root: &Path, id: &str, bytes: &[u8]) -> Component {
+        let path = root.join(id);
+        fs::write(&path, bytes).unwrap();
+        Component {
+            path,
+            byte_size: bytes.len() as u64,
+            sha256: super::sha256(&root.join(id)).unwrap(),
+        }
+    }
+
+    #[test]
+    fn recovery_esp_transaction_replays_every_cut_in_both_directions() {
+        let boundaries = [
+            PublicationBoundary::Staged,
+            PublicationBoundary::RecoveryPublished,
+            PublicationBoundary::EntryPublished,
+            PublicationBoundary::NormalPublished,
+        ];
+        for slot in [BootSlot::A, BootSlot::B] {
+            for boundary in boundaries {
+                let root = temporary_root(&format!("{:?}-{boundary:?}", slot));
+                let source = root.join("source");
+                let esp = root.join("esp");
+                fs::create_dir_all(&source).unwrap();
+                fs::create_dir_all(esp.join("EFI/Linux")).unwrap();
+                fs::create_dir_all(esp.join("EFI/AOS")).unwrap();
+                let suffix = slot_suffix(slot);
+                let opposite = match slot {
+                    BootSlot::A => BootSlot::B,
+                    BootSlot::B => BootSlot::A,
+                };
+                let opposite_suffix = slot_suffix(opposite);
+                let old_target = esp.join(format!("EFI/Linux/old-target-{suffix}.efi"));
+                let old_opposite =
+                    esp.join(format!("EFI/Linux/old-opposite-{opposite_suffix}.efi"));
+                let opposite_recovery = esp.join(format!("EFI/AOS/recovery-{opposite_suffix}.efi"));
+                fs::write(&old_target, b"old target normal").unwrap();
+                fs::write(&old_opposite, b"old opposite normal").unwrap();
+                fs::write(&opposite_recovery, b"opposite recovery").unwrap();
+                let mut components = BTreeMap::new();
+                components.insert(
+                    format!("recovery-uki-{suffix}"),
+                    component(&source, "recovery.efi", b"recovery bytes"),
+                );
+                components.insert(
+                    format!("recovery-entry-{suffix}"),
+                    component(&source, "recovery.conf", b"entry bytes"),
+                );
+                components.insert(
+                    format!("normal-uki-{suffix}"),
+                    component(&source, "normal.efi", b"normal bytes"),
+                );
+
+                disarm_slot_ukis_with(slot, &esp, |candidate, _| {
+                    if candidate.file_name() == old_target.file_name() {
+                        Ok(slot)
+                    } else {
+                        Ok(opposite)
+                    }
+                })
+                .unwrap();
+                assert!(!old_target.exists());
+                assert_eq!(fs::read(&old_opposite).unwrap(), b"old opposite normal");
+
+                let interrupted =
+                    publish_boot_artifacts_with(slot, "test-release", &components, &esp, |found| {
+                        if found == boundary {
+                            Err(RestoreError::Destination("injected cut".into()))
+                        } else {
+                            Ok(())
+                        }
+                    });
+                assert!(interrupted.is_err());
+                publish_boot_artifacts_with(slot, "test-release", &components, &esp, |_| Ok(()))
+                    .unwrap();
+
+                let cleanup_cut = cleanup_disabled_slot_ukis_with(slot, &esp, |found| {
+                    if found == CleanupBoundary::Removed(1) {
+                        Err(RestoreError::Destination("injected cleanup cut".into()))
+                    } else {
+                        Ok(())
+                    }
+                });
+                assert!(cleanup_cut.is_err());
+                cleanup_disabled_slot_ukis_with(slot, &esp, |_| Ok(())).unwrap();
+
+                assert_eq!(
+                    fs::read(esp.join(format!("EFI/AOS/recovery-{suffix}.efi"))).unwrap(),
+                    b"recovery bytes"
+                );
+                assert_eq!(
+                    fs::read(esp.join(format!("loader/entries/recovery-{suffix}.conf"))).unwrap(),
+                    b"entry bytes"
+                );
+                assert_eq!(
+                    fs::read(esp.join(format!(
+                        "EFI/Linux/aos-restored-test-release-slot-{suffix}+3.efi"
+                    )))
+                    .unwrap(),
+                    b"normal bytes"
+                );
+                assert!(
+                    fs::read_dir(esp.join("EFI/.aos-staging"))
+                        .unwrap()
+                        .next()
+                        .is_none()
+                );
+                assert_eq!(fs::read(&old_opposite).unwrap(), b"old opposite normal");
+                assert_eq!(fs::read(&opposite_recovery).unwrap(), b"opposite recovery");
+                fs::remove_dir_all(&root).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn recovery_storage_transaction_replays_every_cut_in_both_directions() {
+        for slot in [BootSlot::A, BootSlot::B] {
+            for boundary in [StorageBoundary::RootWritten, StorageBoundary::VerityWritten] {
+                let root = temporary_root(&format!("storage-{:?}-{boundary:?}", slot));
+                let source = root.join("source");
+                fs::create_dir_all(&source).unwrap();
+                let root_destination = root.join("target-root");
+                let hash_destination = root.join("target-hash");
+                let opposite_root = root.join("opposite-root");
+                fs::write(&root_destination, b"old root").unwrap();
+                fs::write(&hash_destination, b"old hash").unwrap();
+                fs::write(&opposite_root, b"opposite root").unwrap();
+                let mut components = BTreeMap::new();
+                components.insert(
+                    "root-image".into(),
+                    component(&source, "root.img", b"new root bytes"),
+                );
+                components.insert(
+                    "root-verity".into(),
+                    component(&source, "root.verity", b"new hash bytes"),
+                );
+                let writer = |component: &Component, destination: &Path| {
+                    fs::copy(&component.path, destination)?;
+                    if super::sha256(destination)? != component.sha256 {
+                        return Err(RestoreError::Destination(
+                            "test writer read-back mismatch".into(),
+                        ));
+                    }
+                    Ok(())
+                };
+
+                let interrupted = write_slot_storage_with(
+                    &components,
+                    &root_destination,
+                    &hash_destination,
+                    writer,
+                    |found| {
+                        if found == boundary {
+                            Err(RestoreError::Destination("injected storage cut".into()))
+                        } else {
+                            Ok(())
+                        }
+                    },
+                );
+                assert!(interrupted.is_err());
+                write_slot_storage_with(
+                    &components,
+                    &root_destination,
+                    &hash_destination,
+                    writer,
+                    |_| Ok(()),
+                )
+                .unwrap();
+                assert_eq!(fs::read(&root_destination).unwrap(), b"new root bytes");
+                assert_eq!(fs::read(&hash_destination).unwrap(), b"new hash bytes");
+                assert_eq!(fs::read(&opposite_root).unwrap(), b"opposite root");
+                fs::remove_dir_all(&root).unwrap();
+            }
+        }
     }
 }

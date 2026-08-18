@@ -75,8 +75,9 @@ normal and recovery UKIs, both recovery loader entries, image metadata, and a
 detached signed manifest.
 
 Recovery mounts only that fixed label and location, read-only with
-`nodev,nosuid,noexec`. It validates the manifest's direct deployment-db
-signature, rejects unknown or non-regular directory members, and verifies
+`nodev,nosuid,noexec`. It validates the manifest's direct signature against
+the immutable build-configured deployment-db certificate snapshot, rejects unknown or
+non-regular directory members, and verifies
 every component before prompting for write authorization. The publisher also
 requires this exact manifest to equal the copy in the signed release catalog;
 the offline console does not carry or independently replay the registry
@@ -85,12 +86,21 @@ copy. The console displays the authenticated release and requires the exact
 confirmation `RESTORE SLOT A` or `RESTORE SLOT B`, followed by the per-machine
 recovery key.
 
+The snapshot contains the image signer and any `sbDbCerts` deliberately kept
+for certificate-rotation overlap. Removing or revoking an overlap certificate
+in registry state does not rewrite an already signed recovery initrd. Retire
+it with a newly qualified image that omits the certificate, then complete the
+deployment's firmware db/dbx rotation procedure.
+
 The writer disarms the inactive normal UKI before changing its root, performs
 read-back verification, publishes the matching recovery UKI and entry, and
-makes the restored counted normal UKI discoverable last. A recovery copy
+makes the restored counted normal UKI discoverable last. It removes disabled
+old UKIs only after that publication is synced and verified. A recovery copy
 accepts the fixed `AOS-RECOVERY` filesystem only from a kernel-reported
 removable device outside the installed disk; a second internal disk carrying
-that label is rejected. A recovery copy
+that label is rejected. The manifest, every component digest, every UKI
+signature, and each signed slot/copy identity are checked before the key prompt
+or any write. A recovery copy
 embeds the slot manifest for its own release, so the old running recovery copy
 cannot verify a newly restored release. After success, reboot into the newly
 installed recovery entry paired with the restored slot, verify that slot from
