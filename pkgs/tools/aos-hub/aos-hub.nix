@@ -65,7 +65,7 @@ in
       inherit src;
       name = "aos-vendor-${version}";
       sourceRoot = "source/crates";
-      hash = "sha256-u3sHtecmdm6fwDpMglTLamokYmKc/v15BsRIgZT1iiw=";
+      hash = "sha256-HpIXteO0Adw3+VmLING6Fd5vDHrGHUt+KQ8gZ312bkU=";
     };
 
     buildDeps = [perl pkg-config openssl protobuf];
