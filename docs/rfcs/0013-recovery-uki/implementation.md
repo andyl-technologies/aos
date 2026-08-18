@@ -72,7 +72,7 @@ directions must leave the opposite recovery copy unchanged.
 
 Neither the state record nor an ESP digest is retention authority. Initial
 seeding and every later inactive-slot update re-verify the retained recovery
-UKI against the deployment db certificate stored in the immutable running
+UKI against the deployment db snapshot stored in the immutable running
 toplevel, then require its signed command line, release, copy, and ABI to match
 the canonical record. The updater likewise authenticates every discoverable
 normal UKI and derives its slot from the signed command line; mutable

@@ -68,10 +68,11 @@ The recovery copy paired with the running known-good slot is not touched. The
 running image and active configuration are unchanged until reboot.
 
 Before any inactive root write, APM re-authenticates the retained recovery UKI
-and every installed normal UKI against the Secure Boot db certificate in the
-immutable running image. Signed UKI identity, rather than editable image-state
-slot fields, determines each normal UKI's slot. Digest and generation records
-are supporting evidence and must agree; they are not signature authority.
+and every installed normal UKI against the immutable Secure Boot db snapshot
+in the immutable running image. Signed UKI identity, rather than editable
+image-state slot fields, determines each normal UKI's slot. Digest and
+generation records are supporting evidence and must agree; they are not
+signature authority.
 
 Activation modes are:
 
