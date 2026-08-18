@@ -36,7 +36,7 @@ Seal/attestation changes: seal mechanism unchanged — still PCR 11 (signed) + P
 
 **Decision.** LOCK F2-A. The manifest carries each job script's TEXT (never a built `unit-script` derivation); the APM materializer writes the texts to generation-local paths and rewrites the `Exec*=` assignments to point there. `makeJobScript` (`lib/modules/systemd/unit-options.nix:644` / `lib/modules/systemd/lib.nix:691`) stops calling `pkgs.writeShellScriptBin` and instead records `{ key, text, mode }` records into a top-level `manifest.jobScripts` map, emitting a stable placeholder token into the unit's `Exec*` line. F2-B (banning these options) is rejected: it is a real language restriction that falsifies "evaluates identically on either evaluator."
 
-**Rationale.** script=/preStart=/postStart=/reload=/preStop=/postStop= compile through `makeJobScript` → `pkgs.writeShellScriptBin` → a derivation whose built `/nix/store/...-unit-script-*/bin/*` path is currently interpolated into `Exec*=` by `attrsToSection def.serviceConfig` (`lib.nix:986`, via `serviceToUnit`). The script body is a function of the *evaluated* stage-2 config, so it cannot be pre-built in stage 1, and an eval-only host must not build it (invariant 1). Carrying text and materializing it imperatively is the only option that (a) keeps the full systemd module language so the same modules evaluate identically on stock Nix and aos-nix, and (b) keeps materialization in the "assemble already-present bytes, no compiler/configure/derivation-realization" category that the architecture's render/assemble split requires. Focused manifest and materializer parity checks cover the representation change without pinning generated systems in source control.
+**Rationale.** script=/preStart=/postStart=/reload=/preStop=/postStop= compile through `makeJobScript` → `pkgs.writeShellScriptBin` → a derivation whose built `/nix/store/...-unit-script-*/bin/*` path is currently interpolated into `Exec*=` by `attrsToSection def.serviceConfig` (`lib.nix:986`, via `serviceToUnit`). The script body is a function of the *evaluated* stage-2 config, so it cannot be pre-built in stage 1, and an eval-only host must not build it (invariant 1). Carrying text and materializing it imperatively keeps the full systemd module language while keeping materialization in the "assemble already-present bytes, no compiler/configure/derivation-realization" category that the architecture's render/assemble split requires. Focused manifest and materializer parity checks cover the representation change without pinning generated systems in source control.
 
 **Mechanism.**
 
@@ -52,7 +52,7 @@ EXEC REWRITE — during materialization (the imperative assemble step in `crates
 
 PARITY CHECK — focused unit tests resolve each job-script placeholder through
 `manifest.jobScripts[key].text`, require every placeholder to have exactly one
-entry, reject unused entries, and compare stock/native manifest output. The
+entry, reject unused entries, and compare the supported manifest renderings. The
 build-side derivation remains linked through ordinary Nix string context; no
 rendered unit or store output is copied into a committed snapshot.
 

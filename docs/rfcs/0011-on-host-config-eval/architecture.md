@@ -2,8 +2,8 @@
 
 This document specifies the two-stage evaluation model, the render/assemble
 split that keeps the "nothing is built on-host" invariant honest, the `config`
-output and the manifest data contract, the evaluator (stock Nix for P1,
-aos-nix for P2), and the boot / first-boot bootstrap ordering.
+output and the manifest data contract, the stock Nix evaluator, and the boot /
+first-boot bootstrap ordering.
 
 ## Two-stage evaluation
 
@@ -37,7 +37,7 @@ This discipline is **mechanically enforced, not left to convention** (review): a
 derivation or forces an `outPath` — the same probe-eval pass that checks the
 provides/requires interface ([`module-system.md`](module-system.md)). An
 accidental derivation reference is a publish failure, not a silent on-host build
-attempt. (P2 aos-nix can additionally refuse instantiation in the engine.)
+attempt.
 
 ### Stage 2 — activation (on-host, eval-only, config-producing)
 
@@ -150,13 +150,11 @@ manifest contains **no secret values** — credentials appear only as handles
 
 ## The evaluator
 
-### P1 — stock C++ Nix (historical parity baseline)
+### Stock C++ Nix
 
 Stock C++ Nix 2.24.12 is already built from source as an AOS package
-(`pkgs/tools/nix.nix`) with `nix-instantiate --eval` present and tested. P1
-used it directly during the first phase. The completed P2 system keeps this
-invocation only in hermetic differential checks; it is not shipped as a
-production fallback.
+(`pkgs/tools/nix.nix`) with `nix-instantiate --eval` present and tested. It is
+the production evaluator.
 Starting on stock Nix is not a compromise on the model: the module system is
 *our* Nix code (`lib/modules.nix`) and evaluates identically on either
 evaluator. The seam is exactly `eval entry.nix → JSON manifest`.
@@ -172,7 +170,7 @@ nix-instantiate --store dummy:// --eval --strict --json \
   -A manifest /run/aos-eval/entry.nix
 ```
 
-Three capabilities stock Nix lacks vs aos-nix, each with a P1 stand-in:
+The driver supplies the capabilities needed around stock Nix:
 
 - **Read instrumentation** → not needed for the fixpoint. The strict module
   system already names the missing option when it throws
@@ -187,18 +185,6 @@ Three capabilities stock Nix lacks vs aos-nix, each with a P1 stand-in:
 - **Incremental cache** → full re-eval each activation. Acceptable: activation
   is infrequent and the on-host eval is only base-lib + config modules +
   host.nix, not nixpkgs-scale.
-
-### P2 — aos-nix, behind the same seam
-
-`aos-nix` (RFC-0007, Phase-1 complete) exposes `eval_expr → JSON` that never
-realizes, plus `TreeWalkOptions` with `restrict-eval` path allowlists,
-`pure-eval`, URI allowlists, and an opt-in IFD realizer. P2 swaps it in behind
-the `eval → manifest` seam, upgrading: one-shot read-tracing (no fixpoint loop),
-**in-engine** bounding/timeouts (cleaner than an OOM-kill, and a path to
-totality analysis), an incremental early-cutoff cache (cheap re-eval), and
-first-class graph intrinsics (the option read/write graph exposed directly to
-the resolver instead of reconstructed from AST scans and eval errors). None of
-this touches the registry format, the module contract, or the generations.
 
 ## Boot / first-boot bootstrap ordering
 

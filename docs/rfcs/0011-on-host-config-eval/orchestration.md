@@ -187,10 +187,10 @@ multi-user:
 ## Mapping the config dependency graph onto the systemd graph
 
 The eval emits `manifest.json` (the data contract) and a companion `graph.json`
-(the cross-package option read/write DAG — `nginx` reads `firewall.forwardPolicy`
-⇒ edge `nginx → firewall`). In P2, aos-nix exposes the read/write graph as a
-first-class intrinsic; in P1 it is reconstructed from the publish-time AST scan +
-the error-driven fixpoint ([`module-system.md`](module-system.md)). Keep **two
+(the cross-package dependency DAG — `nginx` depends on `firewall`
+⇒ edge `nginx → firewall`). It is derived from authenticated package metadata,
+the publish-time AST scan, and the error-driven fixpoint
+([`module-system.md`](module-system.md)). Keep **two
 projections** of that DAG separate:
 
 1. **Eval-time resolution (already done before any unit exists).** "nginx needs

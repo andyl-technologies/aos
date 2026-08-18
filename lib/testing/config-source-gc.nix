@@ -17,7 +17,6 @@ in
     src = null;
     buildDeps = [
       pkgs.aos
-      pkgs.aos-nix
       pkgs.bash
       pkgs.coreutils
       pkgs.diffutils
@@ -42,7 +41,6 @@ in
           home="$work/home"
           cache="$work/cache"
           nix_conf="$work/nix-conf"
-          eval_cache="$work/eval-cache"
           mkdir -p \
             "$store_dir" \
             "$state_dir/db" \
@@ -55,8 +53,7 @@ in
             "$config_root/registries.d" \
             "$home" \
             "$cache" \
-            "$nix_conf" \
-            "$eval_cache"
+            "$nix_conf"
 
           fail() {
             echo "FAIL: $1" >&2
@@ -118,9 +115,8 @@ in
             base_lib="$2"
             requested_abi="$3"
             # Production parses the normalized JSON outside the evaluator and
-            # renders host-facts.nix.  Embed the same authenticated bytes here
-            # as a Nix string before fromJSON, so the native evaluator never
-            # performs the intentionally CLI-sensitive readFile operation.
+            # renders host-facts.nix. Embed the same authenticated bytes here
+            # as a Nix string before fromJSON.
             facts_json=$(${pkgs.jq}/bin/jq -Rs . "$facts_store")
             cat > "$destination" <<ENTRY
           let
@@ -133,24 +129,28 @@ in
               requestedAbi = $requested_abi;
             };
           in
-            {
-              manifest = evaluated;
-              optionWrites = [];
-            }
+            { manifest = evaluated; }
           ENTRY
           }
 
           eval_entry() {
             entry="$1"
             destination="$2"
-            ${pkgs.aos-nix}/bin/aos-nix-eval \
+            ${pkgs.nix}/bin/nix-instantiate \
+              --store dummy:// \
+              --eval \
+              --strict \
+              --json \
+              --pure-eval \
+              --option restrict-eval true \
+              --option allow-import-from-derivation false \
+              -I "$entry" \
+              -I "$base_v1_store" \
+              -I "$base_v2_store" \
+              -I "$host_store" \
+              -I "$facts_store" \
+              -I "$config_module_store" \
               "$entry" \
-              --allow "$base_v1_store" \
-              --allow "$base_v2_store" \
-              --allow "$host_store" \
-              --allow "$facts_store" \
-              --allow "$config_module_store" \
-              --cache-root "$eval_cache" \
               > "$destination"
           }
 

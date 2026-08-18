@@ -75,10 +75,10 @@
     else [
       (def
         // {
-        inherit value;
-        _priority = priority;
-        _condition = condition;
-      })
+          inherit value;
+          _priority = priority;
+          _condition = condition;
+        })
     ];
 
   # Given a list of defs whose values may be wrapped in any combination
@@ -361,14 +361,18 @@ in rec {
       # def-level default priority (`defPriority`).
       processElem = def: defPriority: elem:
         if isOrder elem
-        then def // {
-          value = elem._value;
-          priority = elem._priority;
-        }
-        else def // {
-          value = elem;
-          priority = defPriority;
-        };
+        then
+          def
+          // {
+            value = elem._value;
+            priority = elem._priority;
+          }
+        else
+          def
+          // {
+            value = elem;
+            priority = defPriority;
+          };
       # Expand a def into its tagged element records. If the def's value
       # is itself an order marker (`mkAfter [...]`), the inner list is
       # extracted and the marker's priority becomes the default for every
@@ -457,14 +461,13 @@ in rec {
                   // {_priority = d._priority or 100;})
                 defs
               );
-            valueDefs =
-              builtins.map (d:
-                d
-                // {
+            valueDefs = builtins.map (d:
+              d
+              // {
                 value = d.value.${key};
                 _priority = d._priority or 100;
               })
-              keyDefs;
+            keyDefs;
             # Unwrap override / mkIf / mkMerge markers at the sub-
             # attribute level and keep only defs at the winning
             # priority. This lets
@@ -677,11 +680,6 @@ in rec {
     name = "uniq(${elemType.name})";
     description = "unique ${elemType.description}";
     check = elemType.check;
-    # The module engine uses this marker only when structured evaluator
-    # diagnostics are requested. Keeping the marker on the type (rather than
-    # parsing a human error string) lets the native evaluator receive the
-    # complete conflicting definition set as typed data.
-    conflictOnDisagreement = true;
     merge = loc: defs: let
       first = builtins.elemAt defs 0;
       allSame = builtins.all (d: d.value == first.value) defs;

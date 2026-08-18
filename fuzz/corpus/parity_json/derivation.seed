@@ -1,6 +1,0 @@
-# aos-nix-fuzz-source
-derivationStrict {
-  name = "fuzz";
-  system = "x86_64-linux";
-  builder = ":";
-}

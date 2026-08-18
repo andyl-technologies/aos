@@ -40,28 +40,21 @@ specification.
   - Gates for this section: `checks.eval`, `checks.module-enforcement`, and
     `checks.config-provenance`.
 
-## Native evaluator and resolver
+## Evaluator and resolver
 
-- [x] Production evaluation is in-process `aos-nix`; there is no stock-Nix
-      runtime fallback.
+- [x] Production evaluation uses the hermetic AOS-built C++ Nix evaluator.
 - [x] Missing providers, ambiguity, incompatibility, conflicts, unsatisfiable
       cycles, non-convergence, and resource exhaustion produce stable structured
       errors before activation.
 - [x] Module ABI compatibility is checked before manifest publication and the
       chosen ABI is retained in each config-generation record.
-- [x] Evaluation is pure and allowlisted, performs no builds, enforces step,
-      heap, and call-depth limits, and rejects statically evident divergence in
-      the strictly demanded import tree.
-- [x] The evaluator returns a first-class option access graph. Persistent,
-      dependency-traced cache entries cut off unaffected work while a changed
-      host dependency is recomputed; warm and cold results remain identical.
+- [x] Evaluation is pure and allowlisted, performs no builds, and is bounded by
+      the service cgroup and timeout.
 - [x] `aos-eval.service` is ordered after network readiness and before graph
       compilation and applies its documented cgroup, filesystem, task, timeout,
       and syscall restrictions.
-  - Gates: `checks.config-eval`, `checks.config-parity-p2`, and the native
-    evaluator Rust tests included in `pkgs.aos`.
-  - `checks.config-parity-p2` is the stock/native differential oracle; stock
-    evaluation is test-only.
+  - Gates: `checks.config-eval` and the evaluator driver tests included in
+    `pkgs.aos`.
 
 ## Graph, degradation, and atomic activation
 

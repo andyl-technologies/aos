@@ -1,2 +1,0 @@
-# aos-nix-fuzz-source
-let shared = { a = 1 + 2; b = "value"; }; in { inherit shared; again = [ shared ]; }

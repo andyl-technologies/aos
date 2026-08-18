@@ -16,7 +16,6 @@
   pkgs,
   lib,
   provenance,
-  aosStructuredErrors ? false,
   ...
 }: let
   systemdLib = import ../../lib/modules/systemd/lib.nix {inherit lib pkgs;};
@@ -456,15 +455,6 @@ in {
       assertionCheck =
         if failedAssertions == []
         then null
-        else if aosStructuredErrors
-        then
-          throw (builtins.toJSON {
-            __aosEvalError = {
-              kind = "assertion";
-              msg = (builtins.head failedAssertions).message;
-              file = null;
-            };
-          })
         else
           throw ''
             Failed assertions:

@@ -55,8 +55,8 @@ enumerated by `aos-cache/src/discover.rs:18`), and `resolution_trace`.
 `--eval-system x86_64-linux` and a checked-out `host.nix` + a pinned registry
 lock, per host fixture: (1) `evalModules` succeeds (else fail with the
 module-system error verbatim); (2) the manifest is schema-valid and
-**deterministic** — eval twice, assert byte-identical JSON (the same discipline
-as the aos-nix `.drv` parity gate); (3) optionally diff against the fleet's
+**deterministic** — eval twice, assert byte-identical JSON; (3) optionally diff
+against the fleet's
 last-known-good manifest committed in-tree so a reviewer sees the change in the
 PR. The on-host `--dry-run` and the CI gate share one Rust codepath, so green CI
 is a real prediction of on-box behavior.
@@ -140,7 +140,7 @@ eval path *replaces* the flat renderer for opted-in packages; the downstream
 `materialize_package_config` / `apply_config_reconciliation` machinery is
 identical. No flag-day.
 
-**Parity gate** (model: the aos-nix `.drv` parity gate). `checks.config-parity`
+**Parity gate.** `checks.config-parity`
 takes fixture packages that have **both** a flat `expose.config` and an
 equivalent config module; for each, render **both ways** with the same
 `desired.toml` inputs, canonicalize, and **byte-diff** the materialized
@@ -168,9 +168,7 @@ host.nix). Targets for ≤ ~50 config-module packages:
 > first boot needing K providers is ≈ K cold evals. The publish-time AST scan
 > pre-closes the set to keep K small (usually 0–1 extra), and the wall budget
 > above is **per eval** — `RuntimeMaxSec` bounds each, while the resolver bounds
-> the total iteration count. P2 aos-nix collapses K to 1 (structured errors,
-> one-shot read-tracing) and adds an incremental cache; the cold-subprocess tax is
-> a P1-only cost, not inherent.
+> the total iteration count.
 
 The budget *defines* the systemd limits on the transient eval scope (the cgroup
 is the enforcement, and a kill maps to the OOM/timeout diagnostic above):
