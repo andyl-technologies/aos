@@ -502,12 +502,22 @@ class QemuMachine(Machine):
                     scsi_device,
                 ]
             elif interface == "usb":
+                removable = disk.get("removable", False)
+                if not isinstance(removable, bool):
+                    raise RuntimeError(
+                        f"[{self.name}] extra disk {index} has invalid removable flag"
+                    )
                 controller_id = f"extra_usb{index}"
+                storage_device = (
+                    f"usb-storage,drive={drive_id},bus={controller_id}.0,serial={serial}"
+                )
+                if removable:
+                    storage_device += ",removable=on"
                 argv += [
                     "-device",
                     f"qemu-xhci,id={controller_id}",
                     "-device",
-                    f"usb-storage,drive={drive_id},bus={controller_id}.0,serial={serial}",
+                    storage_device,
                 ]
             else:
                 raise RuntimeError(
