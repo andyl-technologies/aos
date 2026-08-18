@@ -103,6 +103,45 @@
     then throw "explicitly removed image units must not survive manifest merging"
     else "ok";
 
+  activationStructuralReplacement = let
+    ownershipFor = etc: {
+      etc = builtins.mapAttrs (_: _: "@base") etc;
+      units = {};
+      jobScripts = {};
+      users = {};
+      presets = {};
+      storePaths = {};
+    };
+    manifestWithEtc = etc: {
+      inherit etc;
+      units = {};
+      jobScripts = {};
+      users = [];
+      presets = [];
+      storePaths = [];
+      ownership = ownershipFor etc;
+    };
+    oldFile = {"service" = {kind = "text"; text = "old"; mode = "0644";};};
+    newSubtree = {"service/config" = {kind = "text"; text = "new"; mode = "0644";};};
+    oldSubtree = {"service/config" = {kind = "text"; text = "old"; mode = "0644";};};
+    newFile = {"service" = {kind = "text"; text = "new"; mode = "0644";};};
+    fileToDirectory = mergeImageManifest {
+      imageManifest = manifestWithEtc oldFile;
+      baseline = manifestWithEtc oldFile;
+      candidate = manifestWithEtc newSubtree;
+    };
+    directoryToFile = mergeImageManifest {
+      imageManifest = manifestWithEtc oldSubtree;
+      baseline = manifestWithEtc oldSubtree;
+      candidate = manifestWithEtc newFile;
+    };
+  in
+    if fileToDirectory.removedEtc != [] || !(builtins.hasAttr "service/config" fileToDirectory.etc)
+    then throw "a candidate subtree must structurally hide the image file it replaces"
+    else if directoryToFile.removedEtc != [] || !(builtins.hasAttr "service" directoryToFile.etc)
+    then throw "a candidate file must structurally hide the image subtree it replaces"
+    else "ok";
+
   assertRecurringLifecycleUnit = name: unit:
     if unit.unitConfig ? ConditionFirstBoot
     then throw "${name} must not be guarded by ConditionFirstBoot"
@@ -1106,7 +1145,7 @@ in
         echo "base-lib ABI:    follows image module overrides (${baseLibFollowsImageAbi})"
         echo "kernelLockdown: removed (${noKernelLockdown})"
         echo "configuration pipeline: structural default (${structuralConfiguration}), closed early projection (${provisioningProjectionIsClosed}), pure JSON (${provisioningProjectionHasNoModuleInternals}), closed package selection (${hostSelectionProjectionIsClosed})"
-        echo "activation overlay: changed job scripts and removed image artifacts (${activationImageOverride})"
+        echo "activation overlay: changed job scripts and removed image artifacts (${activationImageOverride}), structural replacements (${activationStructuralReplacement})"
         echo "lifecycle units: recurrent provisioning/tmpfiles/sysusers (${rfcLifecycleRecurrence})"
         echo "edge boundary:   image capability only (${edgeImageHostBoundary}), host-selectable runtime role (${edgeHostRole})"
         echo "apm registries: content (${apmRegistriesContent}), malformed key (${apmRegistriesRejectsMalformedKey}), empty keys (${apmRegistriesRejectsEmptyKeys})"

@@ -359,11 +359,33 @@ impl ConfigManifest {
                 }
             }
         }
-        let mut removed_etc = BTreeSet::new();
+        let mut removed_etc: BTreeSet<String> = BTreeSet::new();
         for path in &self.removed_etc {
             validate_relative_path(path, "removedEtc")?;
-            if self.etc.contains_key(path) {
-                bail!("removedEtc path {path:?} is also present in etc");
+            if let Some(rendered) = self.etc.keys().find(|rendered| {
+                *rendered == path
+                    || rendered
+                        .strip_prefix(path)
+                        .is_some_and(|suffix| suffix.starts_with('/'))
+                    || path
+                        .strip_prefix(rendered.as_str())
+                        .is_some_and(|suffix| suffix.starts_with('/'))
+            }) {
+                bail!(
+                    "removedEtc path {path:?} conflicts structurally with etc path {rendered:?}"
+                );
+            }
+            if let Some(existing) = removed_etc.iter().find(|existing| {
+                existing
+                    .strip_prefix(path)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+                    || path
+                        .strip_prefix(existing.as_str())
+                        .is_some_and(|suffix| suffix.starts_with('/'))
+            }) {
+                bail!(
+                    "removedEtc paths {existing:?} and {path:?} conflict structurally"
+                );
             }
             if !removed_etc.insert(path) {
                 bail!("removedEtc contains duplicate path {path:?}");
@@ -2474,7 +2496,22 @@ mod tests {
         let error = manifest
             .validate()
             .expect_err("a path cannot be both rendered and removed");
-        assert!(error.to_string().contains("also present in etc"));
+        assert!(error.to_string().contains("conflicts structurally"));
+    }
+
+    #[test]
+    fn removed_etc_must_not_cross_a_rendered_subtree() {
+        let mut manifest = manifest_from(
+            r#"{ "schema": "aos.config-manifest/v1",
+                 "etc": { "service/config": { "kind": "text", "mode": "0644", "text": "new\n" } },
+                 "jobScripts": {} }"#,
+        );
+        manifest.removed_etc.push("service".to_string());
+
+        let error = manifest
+            .validate()
+            .expect_err("a removal cannot mask a rendered subtree");
+        assert!(error.to_string().contains("conflicts structurally"));
     }
 
     #[test]
