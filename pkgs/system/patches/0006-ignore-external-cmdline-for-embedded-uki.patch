@@ -1,0 +1,52 @@
+From: AOS maintainers <maintainers@andyl.com>
+Subject: [PATCH] stub: keep embedded UKI command lines authoritative
+
+AOS UKIs carry a signed .cmdline section.  Measure but do not append
+command-line fragments from PE addons or SMBIOS when that section is present:
+both sources can otherwise change init selection before the initrd's userspace
+validator is able to run.  Measuring the rejected input preserves PCR 12 as a
+denial boundary for sealed state.  EFI LoadOptions already follow the embedded
+command-line rule under Secure Boot.
+
+Keep upstream behavior for non-UKI EFI images without an embedded command
+line.
+---
+ src/boot/stub.c | 24 ++++++++++++++++++------
+ 1 file changed, 18 insertions(+), 6 deletions(-)
+
+diff --git a/src/boot/stub.c b/src/boot/stub.c
+index 3ac6e917d7..f99d52210a 100644
+--- a/src/boot/stub.c
++++ b/src/boot/stub.c
+@@ -1267,11 +1267,23 @@ static EFI_STATUS run(EFI_HANDLE image) {
+         load_all_addons(image, loaded_image, uname, &cmdline_addons, &dt_addons, &n_dt_addons, &initrd_addons, &n_initrd_addons, &ucode_addons, &n_ucode_addons);
+ 
+-        /* If we have any extra command line to add via PE addons, load them now and append, and measure the
+-         * additions together, after the embedded options, but before the smbios ones, so that the order is
+-         * reversed from "most hardcoded" to "most dynamic". The global addons are loaded first, and the
+-         * image-specific ones later, for the same reason. */
+-        cmdline_append_and_measure_addons(cmdline_addons, &cmdline, &parameters_measured);
+-        cmdline_append_and_measure_smbios(&cmdline, &parameters_measured);
++        /* An embedded command line is part of the signed UKI identity. Measure addon and SMBIOS input into
++         * PCR 12, but do not let it replace that identity before initrd userspace can validate it. EFI
++         * LoadOptions are already suppressed for this case by settle_command_line() while Secure Boot is
++         * enabled. Images without an embedded command line retain the upstream augmentation behavior. */
++        if (PE_SECTION_VECTOR_IS_SET(sections + UNIFIED_SECTION_CMDLINE)) {
++                _cleanup_free_ char16_t *ignored_cmdline = NULL;
++
++                cmdline_append_and_measure_addons(cmdline_addons, &ignored_cmdline, &parameters_measured);
++                cmdline_append_and_measure_smbios(&ignored_cmdline, &parameters_measured);
++                if (!isempty(ignored_cmdline))
++                        log_warning("Ignoring externally supplied command line because the UKI embeds one.");
++        } else {
++                /* If we have any extra command line to add via PE addons, load them now and append, and
++                 * measure the additions together, before the SMBIOS ones. The global addons are loaded
++                 * first, and the image-specific ones later. */
++                cmdline_append_and_measure_addons(cmdline_addons, &cmdline, &parameters_measured);
++                cmdline_append_and_measure_smbios(&cmdline, &parameters_measured);
++        }
+ 
+         export_common_variables(loaded_image);
+         export_stub_variables(loaded_image, profile);
+-- 
+2.51.0

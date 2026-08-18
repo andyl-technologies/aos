@@ -231,6 +231,8 @@ fn is_forbidden_normal_key(key: &str) -> bool {
             | "luks"
             | "rd.systemd.verity"
             | "SYSTEMD_SULOGIN_FORCE"
+            | "init"
+            | "rdinit"
             | "systemd.unit"
             | "rd.systemd.unit"
             | "systemd.wants"
@@ -256,6 +258,8 @@ fn forbidden_name(key: &str) -> &'static str {
         "luks" => "luks",
         "rd.systemd.verity" => "rd.systemd.verity",
         "SYSTEMD_SULOGIN_FORCE" => "SYSTEMD_SULOGIN_FORCE",
+        "init" => "init",
+        "rdinit" => "rdinit",
         "systemd.verity_root_options" => "systemd.verity_root_options",
         key if key.contains("extra-unit") => "systemd.extra-unit.*",
         key if key.contains("unit-dropin") => "systemd.unit-dropin.*",
@@ -399,6 +403,8 @@ mod tests {
             "luks=0",
             "rd.systemd.verity=no",
             "SYSTEMD_SULOGIN_FORCE=1",
+            "init=/bin/sh",
+            "rdinit=/bin/sh",
             "systemd.debug_shell=1",
             "rd.systemd.debug_shell=1",
             "systemd.break=pre-mount",

@@ -46,53 +46,71 @@
   };
   ukiBMedia = effectiveSystem: let
     measuredImage = effectiveSystem.config.system.build.image.raw;
-  in pkgs.mkDerivation {
-    pname = "aos-measured-boot-uki-b-media";
-    version = "1";
-    src = null;
-    buildDeps = [pkgs.coreutils pkgs.e2fsprogs];
-    runtimeDeps = [];
-    propagatedDeps = [];
-    phases = [
-      {
-        name = "install";
-        script = ''
-          mkdir -p media $out
-          cp ${measuredImage}/uki-b.efi media/uki-b.efi
-          uki_bytes=$(${pkgs.coreutils}/bin/stat -c %s media/uki-b.efi)
-          media_bytes=$(( (uki_bytes + 64 * 1024 * 1024 + 1048575) / 1048576 * 1048576 ))
-          ${pkgs.coreutils}/bin/truncate -s "$media_bytes" uki-b-media.img
-          ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -q -L aos-uki-b -d media uki-b-media.img
-          mv uki-b-media.img $out/uki-b-media.img
-        '';
-      }
-    ];
-  };
+    dbKey = effectiveSystem.config.aos.boot.secureBoot.dbKey;
+    dbCert = effectiveSystem.config.aos.boot.secureBoot.dbCert;
+  in
+    pkgs.mkDerivation {
+      pname = "aos-measured-boot-uki-b-media";
+      version = "1";
+      src = null;
+      buildDeps = [
+        pkgs.coreutils
+        pkgs.e2fsprogs
+        pkgs.sbsigntools
+        pkgs.systemd.tools
+      ];
+      runtimeDeps = [];
+      propagatedDeps = [];
+      phases = [
+        {
+          name = "install";
+          script = ''
+            mkdir -p media $out
+            cp ${measuredImage}/uki-b.efi media/uki-b.efi
+            ${pkgs.systemd.tools}/bin/ukify build \
+              --stub=${pkgs.systemd}/lib/systemd/boot/efi/addonx64.efi.stub \
+              --cmdline='rdinit=/bin/sh' \
+              --output=media/unsigned.addon.efi
+            ${pkgs.sbsigntools}/bin/sbsign \
+              --key ${dbKey} \
+              --cert ${dbCert} \
+              --output media/signed.addon.efi \
+              media/unsigned.addon.efi
+            payload_bytes=$(${pkgs.coreutils}/bin/du -sb media | ${pkgs.coreutils}/bin/cut -f1)
+            media_bytes=$(( (payload_bytes + 64 * 1024 * 1024 + 1048575) / 1048576 * 1048576 ))
+            ${pkgs.coreutils}/bin/truncate -s "$media_bytes" uki-b-media.img
+            ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -q -L aos-uki-b -d media uki-b-media.img
+            mv uki-b-media.img $out/uki-b-media.img
+          '';
+        }
+      ];
+    };
   recoveryMedia = effectiveSystem: let
     recoveryBundle = effectiveSystem.config.system.build.recoveryBundle;
-  in pkgs.mkDerivation {
-    pname = "aos-measured-boot-recovery-media";
-    version = "1";
-    src = null;
-    buildDeps = [pkgs.coreutils pkgs.e2fsprogs];
-    runtimeDeps = [];
-    propagatedDeps = [];
-    phases = [
-      {
-        name = "install";
-        script = ''
-          mkdir -p media/aos/recovery $out
-          cp -a ${recoveryBundle}/aos/recovery/. media/aos/recovery/
-          bundle_bytes=$(${pkgs.coreutils}/bin/du -sb ${recoveryBundle}/aos/recovery | ${pkgs.coreutils}/bin/cut -f1)
-          media_bytes=$(( (bundle_bytes + 256 * 1024 * 1024 + 1048575) / 1048576 * 1048576 ))
-          ${pkgs.coreutils}/bin/truncate -s "$media_bytes" recovery-media.img
-          ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -q -L AOS-RECOVERY \
-            -d media recovery-media.img
-          mv recovery-media.img $out/recovery-media.img
-        '';
-      }
-    ];
-  };
+  in
+    pkgs.mkDerivation {
+      pname = "aos-measured-boot-recovery-media";
+      version = "1";
+      src = null;
+      buildDeps = [pkgs.coreutils pkgs.e2fsprogs];
+      runtimeDeps = [];
+      propagatedDeps = [];
+      phases = [
+        {
+          name = "install";
+          script = ''
+            mkdir -p media/aos/recovery $out
+            cp -a ${recoveryBundle}/aos/recovery/. media/aos/recovery/
+            bundle_bytes=$(${pkgs.coreutils}/bin/du -sb ${recoveryBundle}/aos/recovery | ${pkgs.coreutils}/bin/cut -f1)
+            media_bytes=$(( (bundle_bytes + 256 * 1024 * 1024 + 1048575) / 1048576 * 1048576 ))
+            ${pkgs.coreutils}/bin/truncate -s "$media_bytes" recovery-media.img
+            ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -q -L AOS-RECOVERY \
+              -d media recovery-media.img
+            mv recovery-media.img $out/recovery-media.img
+          '';
+        }
+      ];
+    };
 in {
   name = "measured-boot";
   # Image boot + enrollment/migration + the A/B counted-candidate lifecycle.
@@ -218,6 +236,24 @@ in {
                   return transcript
               time.sleep(0.25)
           raise AssertionError(f"serial marker {marker!r} not observed:\n{transcript[-12000:]}")
+
+      def serial_since(offset):
+          try:
+              with open(target.serial_log_path, "r", errors="replace") as serial:
+                  serial.seek(offset)
+                  return serial.read()
+          except OSError:
+              return ""
+
+      def assert_external_cmdline_absent(transcript, fragment):
+          kernel_cmdlines = [
+              line.split("Command line:", 1)[1].strip()
+              for line in transcript.splitlines()
+              if "Command line:" in line
+          ]
+          assert kernel_cmdlines, transcript[-12000:]
+          effective_cmdline = kernel_cmdlines[-1].split()
+          assert fragment not in effective_cmdline, effective_cmdline
 
       def canonical_json(value):
           """Encode canonical attestation JSON independently of the AOS CLI."""
@@ -1283,9 +1319,136 @@ in {
       assert var_source() == "/dev/mapper/var"
       assert json.loads(target.succeed("cat /var/lib/profiles/image/state.json")) == image_state_a
 
-      # ════ 6. Firmware-appended boot input fails before storage ══════
+      # ════ 6. External command-line transports cannot override UKIs ════
+      # Under enforcing Secure Boot, EFI LoadOptions are discarded before
+      # measurement when an embedded .cmdline exists. The signed command line
+      # and clean PCR 12 therefore remain authoritative and /var may unseal.
+      target.succeed(f"""
+          {MOUNT} -o remount,rw /boot
+          printf '%s\n' \
+            'title AOS EFI LoadOptions rejection test' \
+            'efi /EFI/Linux/{stable_a_name}' \
+            'options rdinit=/bin/sh' \
+            > /boot/loader/entries/aos-load-options-test.conf
+          {BOOTCTL} set-oneshot aos-load-options-test.conf
+          sync /boot
+          {MOUNT} -o remount,ro /boot
+      """)
+      offset = serial_offset()
+      target.relaunch_with_smbios_oem_strings([], timeout=600)
+      wait_multi_user("EFI LoadOptions rejection")
+      transcript = serial_since(offset)
+      assert_external_cmdline_absent(transcript, "rdinit=/bin/sh")
+      assert read_pcr12() == clean_pcr12
+      assert var_source() == "/dev/mapper/var"
+      target.succeed(f"""
+          {MOUNT} -o remount,rw /boot
+          rm -f /boot/loader/entries/aos-load-options-test.conf
+          {MOUNT} -o remount,ro /boot
+      """)
+
+      # A db-signed addon is accepted and measured into PCR 12, but its
+      # command-line fragment is discarded. The changed PCR denies unattended
+      # /var unlock, proving measurement happened even though rdinit did not.
+      target.succeed(f"""
+          mkdir -p /run/aos-uki-b-media
+          {MOUNT} -t ext4 -o ro /dev/disk/by-label/aos-uki-b /run/aos-uki-b-media
+          {MOUNT} -o remount,rw /boot
+          cp /boot/EFI/Linux/{stable_a_name} /boot/EFI/Linux/aos-signed-addon-test.efi
+          mkdir -p /boot/EFI/Linux/aos-signed-addon-test.efi.extra.d
+          cp /run/aos-uki-b-media/signed.addon.efi \
+            /boot/EFI/Linux/aos-signed-addon-test.efi.extra.d/injected.addon.efi
+          {BOOTCTL} set-oneshot aos-signed-addon-test.efi
+          sync /boot
+          {MOUNT} -o remount,ro /boot
+          {UMOUNT} /run/aos-uki-b-media
+      """)
+      transcript = target.relaunch_with_smbios_oem_strings(
+          [], expect_agent=False, settle=45
+      )
+      assert "Ignoring externally supplied command line because the UKI embeds one." in transcript, transcript[-12000:]
+      assert_external_cmdline_absent(transcript, "rdinit=/bin/sh")
+      assert "aos-var-crypt: TPM2 unlock failed" in transcript, transcript[-12000:]
+      assert "AOS recovery>" not in transcript, transcript[-12000:]
+
+      target.relaunch_with_smbios_oem_strings([], timeout=600)
+      wait_multi_user("clean recovery after signed addon")
+      assert read_pcr12() == clean_pcr12
+      assert var_source() == "/dev/mapper/var"
+      target.succeed(f"""
+          {MOUNT} -o remount,rw /boot
+          rm -rf /boot/EFI/Linux/aos-signed-addon-test.efi.extra.d
+          rm -f /boot/EFI/Linux/aos-signed-addon-test.efi
+          {MOUNT} -o remount,ro /boot
+      """)
+
+      # An unsigned addon is rejected by the Secure Boot image loader before
+      # its .cmdline is measured. The copied UKI still boots with clean PCR 12.
+      target.succeed(f"""
+          mkdir -p /run/aos-uki-b-media
+          {MOUNT} -t ext4 -o ro /dev/disk/by-label/aos-uki-b /run/aos-uki-b-media
+          {MOUNT} -o remount,rw /boot
+          cp /boot/EFI/Linux/{stable_a_name} /boot/EFI/Linux/aos-unsigned-addon-test.efi
+          mkdir -p /boot/EFI/Linux/aos-unsigned-addon-test.efi.extra.d
+          cp /run/aos-uki-b-media/unsigned.addon.efi \
+            /boot/EFI/Linux/aos-unsigned-addon-test.efi.extra.d/injected.addon.efi
+          {BOOTCTL} set-oneshot aos-unsigned-addon-test.efi
+          sync /boot
+          {MOUNT} -o remount,ro /boot
+          {UMOUNT} /run/aos-uki-b-media
+      """)
+      offset = serial_offset()
+      target.relaunch_with_smbios_oem_strings([], timeout=600)
+      wait_multi_user("unsigned addon rejection")
+      transcript = serial_since(offset)
+      assert "injected.addon.efi" in transcript and "ignoring" in transcript, transcript[-12000:]
+      assert_external_cmdline_absent(transcript, "rdinit=/bin/sh")
+      assert read_pcr12() == clean_pcr12
+      assert var_source() == "/dev/mapper/var"
+      target.succeed(f"""
+          {MOUNT} -o remount,rw /boot
+          rm -rf /boot/EFI/Linux/aos-unsigned-addon-test.efi.extra.d
+          rm -f /boot/EFI/Linux/aos-unsigned-addon-test.efi
+          {MOUNT} -o remount,ro /boot
+      """)
+
+      # The same signed-addon boundary applies to recovery UKIs. Recovery A
+      # must reach only the bounded console, never the injected rdinit shell.
+      target.succeed(f"""
+          mkdir -p /run/aos-uki-b-media
+          {MOUNT} -t ext4 -o ro /dev/disk/by-label/aos-uki-b /run/aos-uki-b-media
+          {MOUNT} -o remount,rw /boot
+          mkdir -p /boot/EFI/AOS/recovery-a.efi.extra.d
+          cp /run/aos-uki-b-media/signed.addon.efi \
+            /boot/EFI/AOS/recovery-a.efi.extra.d/injected.addon.efi
+          {BOOTCTL} set-oneshot recovery-a.conf
+          sync /boot
+          {MOUNT} -o remount,ro /boot
+          {UMOUNT} /run/aos-uki-b-media
+      """)
+      transcript = target.relaunch_with_smbios_oem_strings(
+          [], expect_agent=False, settle=45
+      )
+      assert "Ignoring externally supplied command line because the UKI embeds one." in transcript, transcript[-12000:]
+      assert_external_cmdline_absent(transcript, "rdinit=/bin/sh")
+      assert "AOS signed recovery environment" in transcript, transcript[-12000:]
+      assert "AOS recovery>" in transcript, transcript[-12000:]
+      assert "aos-var-crypt: unlocking /var via TPM2" not in transcript, transcript[-12000:]
+
+      target.relaunch_with_smbios_oem_strings([], timeout=600)
+      wait_multi_user("normal boot after recovery signed-addon rejection")
+      assert read_pcr12() == clean_pcr12
+      target.succeed(f"""
+          {MOUNT} -o remount,rw /boot
+          rm -rf /boot/EFI/AOS/recovery-a.efi.extra.d
+          {MOUNT} -o remount,ro /boot
+      """)
+
+      # SMBIOS Type-11 fragments are accepted and measured before being
+      # discarded, so every case must deny the PCR-12-bound TPM token.
       appended_inputs = [
           "SYSTEMD_SULOGIN_FORCE=1",
+          "rdinit=/bin/sh",
           f"roothash={root_hash}",
           "rd.systemd.unit=emergency.target",
       ]
@@ -1295,9 +1458,23 @@ in {
               expect_agent=False,
               settle=45,
           )
-          assert "aos-boot-identity: rejected normal boot" in transcript, transcript
-          assert "AOS boot identity failure: verity root absent; /var unmounted" in transcript, transcript
-          assert "unlocking /var via TPM2" not in transcript, transcript
+          assert (
+              "Ignoring externally supplied command line because the UKI embeds one."
+              in transcript
+          ), transcript
+          if appended.startswith("roothash="):
+              kernel_cmdlines = [
+                  line.split("Command line:", 1)[1].strip()
+                  for line in transcript.splitlines()
+                  if "Command line:" in line
+              ]
+              assert kernel_cmdlines, transcript
+              effective_cmdline = kernel_cmdlines[-1].split()
+              assert effective_cmdline.count(appended) == 1, effective_cmdline
+          else:
+              assert_external_cmdline_absent(transcript, appended)
+          assert "aos-var-crypt: TPM2 unlock failed" in transcript, transcript
+          assert "AOS recovery>" not in transcript, transcript
 
           target.relaunch_with_smbios_oem_strings([], timeout=600)
           wait_multi_user(f"clean recovery after appended input {appended}")
