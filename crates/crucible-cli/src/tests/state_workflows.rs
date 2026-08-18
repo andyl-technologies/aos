@@ -1010,13 +1010,10 @@ pub(super) fn cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inp
         .collect::<Vec<_>>()
         .join("\n")
         + "\n";
-    let retired_v2_error = decode_savepoint_handle(retired_v2_text.as_bytes())
+    let error = decode_savepoint_handle(retired_v2_text.as_bytes())
         .expect_err("retired v2 savepoint handles must fail closed");
-    assert!(
-        retired_v2_error
-            .to_string()
-            .contains("unsupported savepoint handle schema")
-    );
+    let message = error.to_string();
+    assert!(message.contains("unsupported savepoint handle schema"));
 
     let reference = format_content_hash_ref(checkpoint);
     let hash_cli = Cli::parse_from([
