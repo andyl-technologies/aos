@@ -1303,7 +1303,7 @@ in {
       # contains a maintenance shell, and closes both /var and its mapper on
       # shell exit. Exercise a valid authenticated restore while recovery A is
       # running; it may replace only B.
-      target.succeed("bootctl set-oneshot recovery-a.conf && sync")
+      target.succeed(f"{BOOTCTL} set-oneshot recovery-a.conf && sync")
       transcript = target.relaunch_with_smbios_oem_strings(
           [], expect_agent=False, settle=45
       )
@@ -1395,7 +1395,7 @@ in {
           "find /boot/EFI/Linux -maxdepth 1 -type f -name '*.efi' -printf '%f\\n' | sort"
       )
       for copy in ["a", "b"]:
-          target.succeed(f"bootctl set-oneshot recovery-{copy}.conf && sync")
+          target.succeed(f"{BOOTCTL} set-oneshot recovery-{copy}.conf && sync")
           transcript = target.relaunch_with_smbios_oem_strings(
               [], expect_agent=False, settle=45
           )
@@ -1453,7 +1453,7 @@ in {
           {MOUNT} -o remount,ro /boot
           printf X | dd of=/dev/disk/by-partlabel/root-b bs=1 seek=4096 conv=notrunc
           sync /dev/disk/by-partlabel/root-b
-          {BOOTCTL} set-oneshot aos-corrupt-slot-b+1.efi
+          {BOOTCTL} set-oneshot aos-corrupt-slot-b.efi
           sync
       """)
       transcript = target.relaunch_with_smbios_oem_strings(
