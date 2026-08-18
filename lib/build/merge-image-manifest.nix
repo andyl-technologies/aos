@@ -98,8 +98,17 @@
   mergedUsers = mergeImageDefaults imageUsers baselineUsers candidateUsers;
   mergedPresets = mergeImageDefaults imagePresets baselinePresets candidatePresets;
   mergedStorePaths = imageStorePaths // candidateStorePaths;
+  pathIsAncestor = ancestor: path: lib.hasPrefix "${ancestor}/" path;
+  structurallyMasked = removedPath:
+    builtins.any
+    (mergedPath:
+      pathIsAncestor removedPath mergedPath
+      || pathIsAncestor mergedPath removedPath)
+    (builtins.attrNames mergedEtc);
   removedEtc = builtins.filter
-    (name: !(builtins.hasAttr name mergedEtc))
+    (name:
+      !(builtins.hasAttr name mergedEtc)
+      && !structurallyMasked name)
     (builtins.attrNames imageManifest.etc);
 in
   candidate
