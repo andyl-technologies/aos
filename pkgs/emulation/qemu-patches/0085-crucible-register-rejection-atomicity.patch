@@ -1,4 +1,4 @@
-From e9e92b2f4adfb7a8db0da0d48fec941652a635e3 Mon Sep 17 00:00:00 2001
+From de6a2d8f549427a90a03541cb36dc6688aaa8530 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: prove register rejection atomicity
@@ -8,18 +8,18 @@ Signed-off-by: Dylan Plecki <dylan@andyl.com>
  accel/tcg/cputlb.c                    |  2 +
  accel/tcg/tb-maint.c                  |  2 +
  hw/core/cpu-common.c                  |  4 ++
- include/qemu/crucible-fault.h         | 17 ++++++
+ include/qemu/crucible-fault.h         | 17 +++++
  include/qemu/plugin.h                 |  1 +
- include/qemu/qemu-plugin.h            | 31 ++++++++++
+ include/qemu/qemu-plugin.h            | 31 +++++++++
  plugins/api-system.c                  |  5 ++
  plugins/api.c                         | 14 +++--
- plugins/crucible-fault-node.c         | 88 ++++++++++++++++++++-------
- plugins/crucible-fault-register.c     | 88 ++++++++++++++++++++++++++-
+ plugins/crucible-fault-node.c         | 88 +++++++++++++++++++-------
+ plugins/crucible-fault-register.c     | 91 ++++++++++++++++++++++++++-
  system/cpus.c                         |  2 +
  target/arm/crucible-register.c        | 12 +++-
  target/i386/crucible-register.c       | 22 +++++--
- tests/tcg/plugins/crucible-register.c | 62 ++++++++++---------
- 14 files changed, 283 insertions(+), 67 deletions(-)
+ tests/tcg/plugins/crucible-register.c | 62 +++++++++---------
+ 14 files changed, 286 insertions(+), 67 deletions(-)
 
 diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
 index 40c17f020..af804870a 100644
@@ -371,10 +371,18 @@ index ba3c8484a..b5e8c8b5f 100644
          result->status = CRUCIBLE_FAULT_STATUS_PRECONDITION_MISMATCH;
          return -ESTALE;
 diff --git a/plugins/crucible-fault-register.c b/plugins/crucible-fault-register.c
-index b6a4ed0cc..994c1957e 100644
+index b6a4ed0cc..cefa0b879 100644
 --- a/plugins/crucible-fault-register.c
 +++ b/plugins/crucible-fault-register.c
-@@ -58,6 +58,33 @@ static uint8_t crucible_register_architecture_identity[32];
+@@ -11,6 +11,7 @@
+ #include "qemu/bswap.h"
+ #include "qemu/crucible-fault.h"
+ #include "qemu/error-report.h"
++#include "qemu/plugin.h"
+ #include "qemu/qemu-plugin.h"
+ #include "qobject/qdict.h"
+ #include "qobject/qstring.h"
+@@ -58,6 +59,33 @@ static uint8_t crucible_register_architecture_identity[32];
  static bool crucible_register_architecture_bound;
  static bool crucible_register_bindings_sealed;
  static bool crucible_register_handler_registered;
@@ -408,7 +416,7 @@ index b6a4ed0cc..994c1957e 100644
  
  static bool crucible_register_mask_test(const uint8_t *mask, uint32_t bit)
  {
-@@ -349,7 +376,7 @@ int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
+@@ -349,7 +377,7 @@ int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
                                  CrucibleRegisterCapability,
                                  numeric_id - 1);
      if (capability->numeric_id != numeric_id ||
@@ -417,7 +425,7 @@ index b6a4ed0cc..994c1957e 100644
          return -EINVAL;
      }
      bytes = DIV_ROUND_UP(capability->width_bits, 8);
-@@ -358,7 +385,8 @@ int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
+@@ -358,7 +386,8 @@ int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
          return -ENOSPC;
      }
      if (!qemu_plugin_crucible_single_threaded_rr() || !current_cpu ||
@@ -427,7 +435,7 @@ index b6a4ed0cc..994c1957e 100644
          return -EPERM;
      }
  
-@@ -778,6 +806,59 @@ int qemu_crucible_fault_register_state_fingerprint(uint8_t output[32])
+@@ -778,6 +807,59 @@ int qemu_crucible_fault_register_state_fingerprint(uint8_t output[32])
      return digest_len == 32 ? 0 : -EIO;
  }
  
@@ -487,7 +495,7 @@ index b6a4ed0cc..994c1957e 100644
  static int crucible_register_execution_fingerprint(
      uint64_t icount, const struct qemu_plugin_rr_cursor *rr,
      uint8_t output[32])
-@@ -1048,7 +1129,8 @@ static int crucible_register_result_decode(
+@@ -1048,7 +1130,8 @@ static int crucible_register_result_decode(
      bool mask_nonzero = false;
  
      if (!cpu || !register_identity || !root || !apply || !mask_out ||
@@ -497,6 +505,22 @@ index b6a4ed0cc..994c1957e 100644
          return -EINVAL;
      }
      kind = qdict_get_try_str(root, "kind");
+@@ -1244,6 +1327,7 @@ void qemu_crucible_fault_register_instruction_boundary(
+         .icount = icount,
+     };
+ 
++    qemu_plugin_crucible_exact_boundary_enter();
+     qemu_crucible_fault_dispatch_boundary(
+         model_phase == QEMU_CRUCIBLE_MODEL_PHASE_BEFORE_INSTRUCTION ?
+         CRUCIBLE_FAULT_PHASE_BEFORE_INSTRUCTION :
+@@ -1254,6 +1338,7 @@ void qemu_crucible_fault_register_instruction_boundary(
+         crucible_register_persistent_visit, &visit);
+     qemu_crucible_fault_instruction_boundary_exception(
+         cpu, model_phase, icount);
++    qemu_plugin_crucible_exact_boundary_leave();
+ }
+ 
+ void qemu_crucible_fault_register_execution_begin(CPUState *cpu)
 diff --git a/system/cpus.c b/system/cpus.c
 index b6a796ec6..c038e3d39 100644
 --- a/system/cpus.c
