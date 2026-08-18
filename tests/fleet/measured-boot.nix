@@ -1170,7 +1170,10 @@ in {
       # A bytes, then boot the independently measured slot-B UKI under a
       # counted filename. This isolates the boot-entry lifecycle from payload
       # differences: every supported clean transition must leave PCR 12 at its
-      # reset value while PCR 11 selects the slot-specific signed policy.
+      # reset value while PCR 11 selects the slot-specific signed policy. The
+      # temporary generation also records recovery B exactly as a production
+      # slot-B generation would; initrd seeding rejects cross-slot recovery
+      # metadata before switch-root.
       candidate_name = "aos-phase3-slot-b+3.efi"
       stable_name = "aos-phase3-slot-b.efi"
       image_state_a_text = target.succeed("cat /var/lib/profiles/image/state.json")
@@ -1193,12 +1196,24 @@ in {
           {MOUNT} -t ext4 -o ro /dev/disk/by-label/aos-uki-b /run/aos-uki-b-media
           {MOUNT} -o remount,rw /boot
           cp /run/aos-uki-b-media/uki-b.efi /boot/EFI/Linux/{candidate_name}
-          {JQ} --arg candidate "EFI/Linux/{candidate_name}" '
+          recovery_b_digest=$(${pkgs.coreutils}/bin/sha256sum \
+            /boot/EFI/AOS/recovery-b.efi | ${pkgs.coreutils}/bin/cut -d' ' -f1)
+          recovery_b_size=$(${pkgs.coreutils}/bin/stat -c %s \
+            /boot/EFI/AOS/recovery-b.efi)
+          {JQ} --arg candidate "EFI/Linux/{candidate_name}" \
+            --arg recovery_digest "$recovery_b_digest" \
+            --argjson recovery_size "$recovery_b_size" '
             .running as $running
             | (.generations[] | select(.number == $running)) |=
                 (.uki_source_path = (.uki_source_path // .uki_path)
                  | .uki_path = $candidate
                  | .slot = "B"
+                 | .recovery.copy = "B"
+                 | .recovery.uki_path = "EFI/AOS/recovery-b.efi"
+                 | .recovery.entry_path = "loader/entries/aos-recovery-b.conf"
+                 | .recovery.source_path = "recovery-b.efi"
+                 | .recovery.sha256 = $recovery_digest
+                 | .recovery.byte_size = $recovery_size
                  | del(.initrd_pcr11, .expected_pcr11))
             | .default = $running
             | .pending = null
