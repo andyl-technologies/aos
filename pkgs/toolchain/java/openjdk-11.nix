@@ -51,6 +51,10 @@ in
     build = "9";
     srcHash = "sha256-pmnvno57buWNPlFZ31f9Eqp0KBn7voYvKLncdJ9H8E4=";
     prevJdk = openjdk-10;
+    # JDK 10's module reader is not safe under highly parallel javac batches.
+    # Keep native compilation parallel while bounding the number of concurrent
+    # boot-compiler invocations used to construct JDK 11.
+    buildJobs = 16;
     # JDK 10's javac server has a ConcurrentModificationException bug in
     # jrtfs when multiple threads access the module system simultaneously.
     # Disable the javac server to avoid the race condition.
