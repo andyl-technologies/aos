@@ -101,7 +101,7 @@ in
       inherit src;
       name = "aos-vendor-${version}";
       sourceRoot = "source/crates";
-      hash = "sha256-7kIzauWmyPnrmEMKLhOfpeuRkh8oi5uSLCOMnbzIvcs=";
+      hash = "sha256-nwEvuWQPu98b6w5O/yM0d0XYHYhoGyuf0gn+XLzZ6P0=";
     };
 
     # cmake + libssh2: git2's vendored libgit2 is compiled from source here

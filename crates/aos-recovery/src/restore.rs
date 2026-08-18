@@ -13,10 +13,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use aos_boot_identity::{BootSlot, parse_normal, parse_recovery};
-use sha2::{Digest, Sha256};
 
 use crate::device::{HostLayout, discover_host_layout, discover_recovery_media};
 use crate::maintenance::RestoreAuthorization;
@@ -591,6 +590,7 @@ fn publish_boot_artifacts(bundle: &VerifiedBundle) -> Result<(), RestoreError> {
         &bundle.release,
         &bundle.components,
         Path::new(ESP_MOUNT),
+        verify_installed,
         |_| Ok(()),
     )
 }
@@ -603,15 +603,17 @@ enum PublicationBoundary {
     NormalPublished,
 }
 
-fn publish_boot_artifacts_with<F>(
+fn publish_boot_artifacts_with<F, V>(
     target: BootSlot,
     release: &str,
     components: &BTreeMap<String, Component>,
     esp_root: &Path,
+    mut verify: V,
     mut checkpoint: F,
 ) -> Result<(), RestoreError>
 where
     F: FnMut(PublicationBoundary) -> Result<(), RestoreError>,
+    V: FnMut(&Component, &Path) -> Result<(), RestoreError>,
 {
     let suffix = slot_suffix(target);
     let staging = esp_root.join("EFI/.aos-staging");
@@ -631,9 +633,9 @@ where
     copy_regular(recovery, &recovery_temp)?;
     copy_regular(recovery_entry, &entry_temp)?;
     copy_regular(normal, &normal_temp)?;
-    verify_installed(recovery, &recovery_temp)?;
-    verify_installed(recovery_entry, &entry_temp)?;
-    verify_installed(normal, &normal_temp)?;
+    verify(recovery, &recovery_temp)?;
+    verify(recovery_entry, &entry_temp)?;
+    verify(normal, &normal_temp)?;
     sync_path(&staging)?;
     checkpoint(PublicationBoundary::Staged)?;
 
@@ -656,14 +658,14 @@ where
         .parent()
         .ok_or_else(|| RestoreError::Destination("recovery destination has no parent".into()))?;
     sync_path(recovery_parent)?;
-    verify_installed(recovery, &recovery_destination)?;
+    verify(recovery, &recovery_destination)?;
     checkpoint(PublicationBoundary::RecoveryPublished)?;
     fs::rename(&entry_temp, &entry_destination)?;
     let entry_parent = entry_destination.parent().ok_or_else(|| {
         RestoreError::Destination("loader entry destination has no parent".into())
     })?;
     sync_path(entry_parent)?;
-    verify_installed(recovery_entry, &entry_destination)?;
+    verify(recovery_entry, &entry_destination)?;
     checkpoint(PublicationBoundary::EntryPublished)?;
 
     let normal_name = format!("aos-restored-{release}-slot-{suffix}+3.efi");
@@ -676,7 +678,7 @@ where
         .parent()
         .ok_or_else(|| RestoreError::Destination("normal UKI destination has no parent".into()))?;
     sync_path(normal_parent)?;
-    verify_installed(normal, &normal_destination)?;
+    verify(normal, &normal_destination)?;
     checkpoint(PublicationBoundary::NormalPublished)?;
     sync_path(esp_root)
 }
@@ -916,37 +918,51 @@ fn bounded_regular(path: &Path, maximum: u64) -> Result<(), RestoreError> {
 }
 
 fn sha256(path: &Path) -> Result<String, RestoreError> {
-    let mut input = File::open(path)?;
-    let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = input.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
-    }
-    Ok(format!("{:x}", digest.finalize()))
+    let output = Command::new("/bin/openssl")
+        .args(["dgst", "-sha256", "-r"])
+        .arg(path)
+        .output()?;
+    parse_digest(&output)
 }
 
 fn sha256_prefix(path: &Path, length: u64) -> Result<String, RestoreError> {
-    let mut input = File::open(path)?;
-    let mut digest = Sha256::new();
-    let mut remaining = length;
-    let mut buffer = [0_u8; 64 * 1024];
-    while remaining > 0 {
-        let wanted = remaining.min(buffer.len() as u64) as usize;
-        let read = input.read(&mut buffer[..wanted])?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
-        remaining -= read as u64;
-    }
-    if remaining != 0 {
+    let mut input = File::open(path)?.take(length);
+    let mut child = Command::new("/bin/openssl")
+        .args(["dgst", "-sha256", "-r"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| RestoreError::Helper("openssl stdin was not created".into()))?;
+    let copied = io::copy(&mut input, &mut stdin)?;
+    drop(stdin);
+    if copied != length {
         return Err(RestoreError::Destination("short block read-back".into()));
     }
-    Ok(format!("{:x}", digest.finalize()))
+    parse_digest(&child.wait_with_output()?)
+}
+
+fn parse_digest(output: &std::process::Output) -> Result<String, RestoreError> {
+    if !output.status.success() {
+        return Err(RestoreError::Helper(stderr_reason(output)));
+    }
+    let text = String::from_utf8(output.stdout.clone())
+        .map_err(|error| RestoreError::Helper(error.to_string()))?;
+    let digest = text.split_ascii_whitespace().next().unwrap_or_default();
+    if digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        Ok(digest.to_string())
+    } else {
+        Err(RestoreError::Helper(
+            "openssl returned a malformed SHA-256 digest".into(),
+        ))
+    }
 }
 
 fn sync_path(path: &Path) -> Result<(), RestoreError> {
@@ -1015,8 +1031,22 @@ mod tests {
         Component {
             path,
             byte_size: bytes.len() as u64,
-            sha256: super::sha256(&root.join(id)).unwrap(),
+            sha256: test_digest(bytes),
         }
+    }
+
+    fn test_digest(bytes: &[u8]) -> String {
+        format!("{bytes:02x?}")
+    }
+
+    fn verify_test_artifact(component: &Component, destination: &Path) -> Result<(), RestoreError> {
+        let bytes = fs::read(destination)?;
+        if bytes.len() as u64 != component.byte_size || test_digest(&bytes) != component.sha256 {
+            return Err(RestoreError::Destination(
+                "test artifact failed read-back verification".into(),
+            ));
+        }
+        Ok(())
     }
 
     #[test]
@@ -1073,17 +1103,30 @@ mod tests {
                 assert!(!old_target.exists());
                 assert_eq!(fs::read(&old_opposite).unwrap(), b"old opposite normal");
 
-                let interrupted =
-                    publish_boot_artifacts_with(slot, "test-release", &components, &esp, |found| {
+                let interrupted = publish_boot_artifacts_with(
+                    slot,
+                    "test-release",
+                    &components,
+                    &esp,
+                    verify_test_artifact,
+                    |found| {
                         if found == boundary {
                             Err(RestoreError::Destination("injected cut".into()))
                         } else {
                             Ok(())
                         }
-                    });
+                    },
+                );
                 assert!(interrupted.is_err());
-                publish_boot_artifacts_with(slot, "test-release", &components, &esp, |_| Ok(()))
-                    .unwrap();
+                publish_boot_artifacts_with(
+                    slot,
+                    "test-release",
+                    &components,
+                    &esp,
+                    verify_test_artifact,
+                    |_| Ok(()),
+                )
+                .unwrap();
 
                 let cleanup_cut = cleanup_disabled_slot_ukis_with(slot, &esp, |found| {
                     if found == CleanupBoundary::Removed(1) {
@@ -1147,12 +1190,7 @@ mod tests {
                 );
                 let writer = |component: &Component, destination: &Path| {
                     fs::copy(&component.path, destination)?;
-                    if super::sha256(destination)? != component.sha256 {
-                        return Err(RestoreError::Destination(
-                            "test writer read-back mismatch".into(),
-                        ));
-                    }
-                    Ok(())
+                    verify_test_artifact(component, destination)
                 };
 
                 let interrupted = write_slot_storage_with(
@@ -1208,8 +1246,14 @@ mod tests {
         let recovery_source = components.get("recovery-uki-a").unwrap().path.clone();
         fs::write(recovery_source, b"changed after authorization").unwrap();
 
-        let result =
-            publish_boot_artifacts_with(BootSlot::A, "test-release", &components, &esp, |_| Ok(()));
+        let result = publish_boot_artifacts_with(
+            BootSlot::A,
+            "test-release",
+            &components,
+            &esp,
+            verify_test_artifact,
+            |_| Ok(()),
+        );
         assert!(result.is_err());
         assert!(!esp.join("EFI/AOS/recovery-a.efi").exists());
         assert!(!esp.join("loader/entries/recovery-a.conf").exists());

@@ -6,7 +6,6 @@ license.workspace = true
 
 [dependencies]
 aos-boot-identity = { path = "../aos-boot-identity" }
-sha2 = { workspace = true }
 
 [lib]
 path = "src/lib.rs"
