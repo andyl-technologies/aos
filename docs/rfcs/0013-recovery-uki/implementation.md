@@ -38,8 +38,14 @@ directory. A private copy of the upstream verity implementation is retained
 under a name outside every generator search directory and is callable only by
 the validating wrapper. Debug images continue to use their explicit gettys,
 not kernel-command-line generator controls. The verity wrapper runs that
-private implementation against private output directories and publishes its
-unit output and success marker only after both validation stages succeed.
+private implementation against private output directories and publishes no
+partial output if upstream parsing fails. Success output includes a generated
+oneshot ordered before the guard; after PID 1 has established procfs and the
+final `/run` mount, that unit validates the command line and publishes the
+marker. The static guard prevents the already parsed verity unit and all `/var`
+consumers from running until this second stage succeeds. Validation deliberately
+does not depend on generator-time `/proc`, and the generator itself must not
+write the marker because an early runtime mount could hide it from the guard.
 Rejection selects the passive failure target through the early generator
 directory. The wrapper pins `PATH` to the immutable AOS coreutils output because
 systemd's generator environment does not provide shell utility lookup.

@@ -221,6 +221,8 @@ in {
             DefaultDependencies = "no";
             OnFailure = "aos-boot-identity-failure.target";
           };
+          wants = ["aos-boot-identity-success.service"];
+          after = ["aos-boot-identity-success.service"];
           serviceConfig = {
             Type = "oneshot";
             RemainAfterExit = true;

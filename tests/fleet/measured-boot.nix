@@ -36,6 +36,9 @@
         # Exercise the deployed-host transition rather than only fresh
         # enrollment under the new default.
         aos.boot.secureBoot.measuredBoot.pinnedPcrs = lib.mkForce "7";
+        # Keep the serial console last so /dev/console and journald expose
+        # initrd transaction failures in the fleet-test transcript.
+        aos.boot.kernelParams = lib.mkAfter ["console=ttyS0,115200"];
         aos.packages.test-http-server.bundle = true;
         environment.systemPackages = [pkgs.binutils pkgs.diffutils pkgs.jq];
       }
