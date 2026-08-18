@@ -13,14 +13,18 @@ Live canonical or single-register observation is permitted only when all of the
 following are true:
 
 1. the `sim` accelerator is running deterministic single-thread TCG;
-2. the caller is inside an exact plugin callback;
+2. the caller is inside an exact plugin callback or the internal exact
+   instruction-boundary dispatcher;
 3. `current_cpu` exists; and
 4. `current_cpu->cpu_index` equals the serialized RR owner.
 
 A stale `current_cpu`, a scheduler handoff, an ordinary plugin callback, MTTCG,
-and an unowned main-loop context fail closed. The only other admitted context is
-a non-running VM observed while the caller holds the BQL. This stopped path is
-for terminal-state export and may inspect every realized vCPU.
+and an unowned main-loop context fail closed. The internal dispatcher brackets
+the complete prepare/commit/completion transaction with the same nestable exact
+boundary token, so node validation and reentrant completion cannot fall out of
+the admitted ownership context. The only other admitted context is a
+non-running VM observed while the caller holds the BQL. This stopped path is for
+terminal-state export and may inspect every realized vCPU.
 
 The fault-register reader additionally requires the requested vCPU to be the
 serialized owner. Register-manifest seal, fault-register read, mutation decode,

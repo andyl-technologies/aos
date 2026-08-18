@@ -23,6 +23,10 @@
         needle = "qemu_plugin_crucible_exact_boundary_active";
       }
       {
+        label = "exact internal register transaction boundary";
+        needle = "qemu_plugin_crucible_exact_boundary_enter";
+      }
+      {
         label = "whole-machine canonical rejection observation";
         needle = "qemu_plugin_crucible_register_rejection_observe";
       }
