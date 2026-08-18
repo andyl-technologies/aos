@@ -52,7 +52,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         writeln!(stdout, "8) Start authenticated maintenance shell")?;
         writeln!(stdout, "9) Lock persistent state")?;
         writeln!(stdout, "p) Power off")?;
-        write!(stdout, "> ")?;
+        write!(stdout, "AOS recovery> ")?;
         stdout.flush()?;
 
         let Some(selection) = lines.next() else {

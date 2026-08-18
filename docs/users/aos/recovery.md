@@ -60,6 +60,8 @@ networking path. Its fixed menu provides:
 9. explicit `/var` lock; and
 10. poweroff.
 
+The bounded menu accepts input only at the `AOS recovery>` prompt.
+
 Verification checks the selected normal UKI signature and embedded boot
 identity, its release and slot metadata, the cataloged root hash, and the
 dm-verity tree without mounting the root. A failed check does not enable the
