@@ -554,6 +554,7 @@ in
             cat > root/lib/systemd/system-generators/systemd-veritysetup-generator <<'GENERATOR'
             #!${bash}/bin/bash
             set -eu
+            export PATH=${pkgs.coreutils}/bin
 
             mkdir -p /run/aos
             staging=/run/aos/verity-generator.$$
