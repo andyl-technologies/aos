@@ -373,7 +373,7 @@ index 02dfd45e3..819a46860 100644
      uint64_t event_id, uint64_t delivery_icount, unsigned int src_vcpu,
      unsigned int dst_vcpu, unsigned int delivery_mode, unsigned int vector)
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 1fcbe07da..1b9201e0a 100644
+index 7bed84ae7..ca3add729 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1042,6 +1042,23 @@ int qemu_plugin_icount_at_tb_entry(uint64_t tb_insns,

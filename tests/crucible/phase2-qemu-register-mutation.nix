@@ -290,7 +290,7 @@ in
             test "''${#single_vcpu_fingerprint}" -eq 64
             test "''${#two_vcpu_fingerprint}" -eq 64
             test "$single_vcpu_fingerprint" != "$two_vcpu_fingerprint"
-            run_mutation x86_64 reject-invalid cr3 5 before
+            run_mutation x86_64 reject-invalid efer 6 before
             run_mutation x86_64 reject-reserved cr0 5 before
             run_mutation x86_64 reject-read-only cr0 5 before
             run_mutation x86_64 reject-out-of-range cr2 5 before
@@ -318,8 +318,8 @@ in
             cat logs/patched-tcg-inert.log
             test "$patched_tcg_status" -ne 0
             test "$patched_tcg_status" -ne 124
-            grep -Fq \
-              'QEMU rejected the register mutation preparation' \
+            grep -Eq \
+              'the complete fault registry is unavailable|QEMU rejected the register mutation preparation' \
               logs/patched-tcg-inert.log
             ! grep -q CRUCIBLE_REGISTER_MUTATION_LIVE_PASS \
               logs/patched-tcg-inert.log

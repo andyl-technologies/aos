@@ -683,10 +683,10 @@ index 92f634dd2..9d38f9825 100644
   * Architecture interrupt-controller interception contract.  These objects are
   * private QEMU process state: only their closed scalar projection is exported
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index acf0acba7..e384dc8bc 100644
+index 833f488f3..0303cecfc 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1755,6 +1755,52 @@ size_t qemu_plugin_crucible_fault_interrupt_manifest(
+@@ -1776,6 +1776,52 @@ size_t qemu_plugin_crucible_fault_interrupt_manifest(
      struct qemu_plugin_crucible_fault_interrupt_capability *out,
      size_t capacity, uint16_t *architecture);
  

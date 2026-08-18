@@ -22,7 +22,7 @@ index db2f5f2d4..fea949d6e 100644
      const char *gdb_core_xml_file;
      const gchar * (*gdb_arch_name)(CPUState *cpu);
 diff --git a/plugins/api.c b/plugins/api.c
-index 57a11d764..8f50cd98f 100644
+index e9b04e076..b01afb8d5 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
 @@ -50,6 +50,7 @@
