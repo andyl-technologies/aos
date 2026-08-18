@@ -1269,6 +1269,27 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   non-restore execution retain upstream behavior.
 - **Risk:** D.
 
+### crucible-register-rejection-atomicity — prove rejected commands are inert
+
+- **Patch:** `0085-crucible-register-rejection-atomicity.patch`.
+- **Enforces:** [DET-1], [QFP-REG-1], [QFP-REG-2], [FAULT-EVIDENCE].
+- **Mechanism:** live register observation requires exact-callback depth and an
+  exact match between `current_cpu` and the serialized RR owner. Register read
+  and decode revalidate every manifest row for every realized vCPU. Rejection
+  transactions hash every vCPU's canonical GDB register export and compare
+  counters wired to the production TLB, TB, flags, interrupt, timer, and
+  control-flow side-effect paths before reporting a non-applied result.
+- **Micro-test:** the full x86-64 and AArch64 register matrix proves equal,
+  nonzero canonical hashes, unchanged side-effect counters, zero applied
+  icount, empty evidence, no emitted event, and unchanged selected-register
+  bytes for every delayed rejection. The inconsistent-identity case performs
+  the same whole-machine comparison around its reentrant synchronous result.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — observation and counters do not
+  mutate guest state; they are consulted only by register-fault validation and
+  its live gate. The user-mode hook is inert, and non-Crucible execution does
+  not read or branch on the counters.
+- **Risk:** D.
+
 ### crucible-whitebox-guest-write — return synchronous doorbell replies
 
 - **Enforces:** [PLUG-34], [PLUG-51], [GHC-32], [GHC-37].

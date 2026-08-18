@@ -1,6 +1,6 @@
 # 14 — QEMU fault-mutation patch series
 
-The complete node adapter and its exact-checkpoint handoff require thirty-five new single-purpose patches after the
+The complete node adapter and its exact-checkpoint handoff require thirty-six new single-purpose patches after the
 currently carried `0046-crucible-translation-prefetch-helper.patch`. Each patch
 has its own specification in this directory and remains part of the one atomic
 RFC-0013 implementation PR.
@@ -51,6 +51,7 @@ and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-pa
 | [`0082-crucible-deterministic-instruction-input-state`](33-deterministic-instruction-input-state.md) | Cross-process-stable register preconditions with full device-state hashes retained | Determinism-critical selector identity |
 | [`0083-crucible-inert-clock-restore`](34-inert-clock-restore.md) | Preserve QEMU-native timers when restored guest-clock faults are inactive | Determinism-critical restore ordering |
 | [`0084-crucible-exact-restore-network-announcement`](35-exact-restore-network-announcement.md) | Suppress migration-only virtio-net announcements during exact restore | Determinism-critical network continuation |
+| [`0085-crucible-register-rejection-atomicity`](36-register-rejection-atomicity.md) | Prove exact RR ownership and whole-machine architectural atomicity for rejected register commands | Determinism-critical fault rejection |
 
 The numbers are reserved by this RFC. If the existing series grows before
 implementation, the PR may renumber the files while preserving this exact order
@@ -90,7 +91,11 @@ still rearm and the dedicated wander-timer cleanup remains unconditional. Patch
 `0084` distinguishes an exact restore into the same modeled network from an
 ordinary migration, suppressing only the synthetic virtio-net guest
 announcement that would otherwise introduce packets absent from uninterrupted
-execution.
+execution. Patch `0085` then admits live architectural observation only from an
+exact callback owned by the serialized RR vCPU, revalidates the complete
+register manifest for every realized CPU at read and decode, and proves that a
+rejected register command changes neither any canonical GDB register byte nor
+any mutation-derived TLB, TB, flags, interrupt, timer, or control-flow effect.
 
 ## 14.2 Process and license boundary
 

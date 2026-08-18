@@ -411,6 +411,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0085-crucible-register-rejection-atomicity.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

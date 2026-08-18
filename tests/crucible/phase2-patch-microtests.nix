@@ -542,6 +542,12 @@
         inherit pkgs lib;
       };
     }
+    {
+      patch = "0085-crucible-register-rejection-atomicity.patch";
+      check = import ./phase2-qemu-register-mutation.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
   ];
 
   microtestPatchNames =
