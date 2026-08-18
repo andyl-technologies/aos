@@ -368,8 +368,9 @@ mkDerivation {
               end as $slots
             | if ($slots | length) != ($slots | unique | length)
               then error("shared TPM keyslot")
-              elif all($slots[] as $slot;
-                ([$tokens[] | .keyslots[]? | select(. == $slot)] | length) == 1)
+              elif all($slots[];
+                . as $slot
+                | ([$tokens[] | .keyslots[]? | select(. == $slot)] | length) == 1)
               then $slots | sort_by(tonumber) | join(",")
               else error("old TPM keyslot is shared with another token")
               end
@@ -416,8 +417,9 @@ mkDerivation {
             end as $slots
           | if ($slots | length) != ($slots | unique | length)
             then error("shared current TPM keyslot")
-            elif all($slots[] as $slot;
-              ([$tokens[] | .keyslots[]? | select(. == $slot)] | length) == 1)
+            elif all($slots[];
+              . as $slot
+              | ([$tokens[] | .keyslots[]? | select(. == $slot)] | length) == 1)
             then $slots | sort_by(tonumber) | join(",")
             else error("current TPM keyslot is shared with another token")
             end
