@@ -195,12 +195,12 @@ impl BlockDevice {
     ) -> Result<PreparedBlockTransportReset, DeviceError> {
         let mut next_faults = storage_faults.clone();
         let delivered_nanos = icount_to_virtual_ns(delivered_icount, core.shift_bits())?;
-        let qemu_virtual_limit = i64::MAX as u64;
-        if delivered_nanos > qemu_virtual_limit
-            || reset.recovery_nanos > qemu_virtual_limit
+        let emulator_virtual_limit = i64::MAX as u64;
+        if delivered_nanos > emulator_virtual_limit
+            || reset.recovery_nanos > emulator_virtual_limit
             || delivered_nanos
                 .checked_add(reset.recovery_nanos)
-                .is_none_or(|deadline| deadline > qemu_virtual_limit)
+                .is_none_or(|deadline| deadline > emulator_virtual_limit)
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "block transport recovery exceeds QEMU virtual-clock range",

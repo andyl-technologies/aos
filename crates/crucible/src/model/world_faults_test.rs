@@ -185,14 +185,14 @@ fn route_fault_targets_select_one_path_and_only_its_explicit_queues() {
 }
 
 #[test]
-fn node_dram_geometry_accepts_only_the_live_qemu_mapping() {
-    WorldNodeDramGeometry::qemu_v1()
+fn node_dram_geometry_accepts_only_the_live_emulator_mapping() {
+    WorldNodeDramGeometry::emulated_v1()
         .validate()
         .unwrap_or_else(|error| panic!("live QEMU geometry should validate: {error}"));
 
     let unsupported = WorldNodeDramGeometry {
         channels: 4,
-        ..WorldNodeDramGeometry::qemu_v1()
+        ..WorldNodeDramGeometry::emulated_v1()
     };
     assert!(matches!(
         unsupported.validate(),
@@ -216,16 +216,16 @@ fn node_capabilities_with_register(register: WorldNodeRegister) -> WorldNodeFaul
             length_bytes: 4096,
         }],
         page_bytes: 4096,
-        dram_geometry: WorldNodeDramGeometry::qemu_v1(),
+        dram_geometry: WorldNodeDramGeometry::emulated_v1(),
         interrupts: Vec::new(),
         hardware_errors: Vec::new(),
         clock_sources: vec![
-            WorldNodeClockSource::qemu_x86_tsc_v1(id("x86-tsc-vcpu-0")),
-            WorldNodeClockSource::qemu_x86_rtc_v1(id("x86-mc146818-rtc")),
-            WorldNodeClockSource::qemu_x86_pit_v1(id("x86-i8254-pit")),
-            WorldNodeClockSource::qemu_x86_hpet_v1(id("x86-hpet-0")),
-            WorldNodeClockSource::qemu_x86_apic_timer_v1(id("x86-local-apic-timer-vcpu-0")),
-            WorldNodeClockSource::qemu_x86_acpi_pm_timer_v1(id("x86-acpi-pm-timer")),
+            WorldNodeClockSource::emulated_x86_tsc_v1(id("x86-tsc-vcpu-0")),
+            WorldNodeClockSource::emulated_x86_rtc_v1(id("x86-mc146818-rtc")),
+            WorldNodeClockSource::emulated_x86_pit_v1(id("x86-i8254-pit")),
+            WorldNodeClockSource::emulated_x86_hpet_v1(id("x86-hpet-0")),
+            WorldNodeClockSource::emulated_x86_apic_timer_v1(id("x86-local-apic-timer-vcpu-0")),
+            WorldNodeClockSource::emulated_x86_acpi_pm_timer_v1(id("x86-acpi-pm-timer")),
         ],
         accelerators: Vec::new(),
         ready_markers: Vec::new(),
@@ -254,15 +254,15 @@ fn sample_x86_register() -> WorldNodeRegister {
 }
 
 #[test]
-fn qemu_clock_constructors_cover_the_realized_pc_and_virt_sources() {
+fn emulated_clock_constructors_cover_the_realized_pc_and_virt_sources() {
     let x86 = node_capabilities_with_register(sample_x86_register());
     x86.validate()
         .unwrap_or_else(|error| panic!("complete x86 clock manifest should validate: {error}"));
     assert_eq!(x86.clock_sources.len(), 6);
 
     let arm_counter =
-        WorldNodeClockSource::qemu_arm_counter_v1(id("arm-generic-counter-vcpu-0"), 62_500_000);
-    let arm_rtc = WorldNodeClockSource::qemu_arm_rtc_v1(id("arm-pl031-rtc-0"));
+        WorldNodeClockSource::emulated_arm_counter_v1(id("arm-generic-counter-vcpu-0"), 62_500_000);
+    let arm_rtc = WorldNodeClockSource::emulated_arm_rtc_v1(id("arm-pl031-rtc-0"));
     assert_eq!(
         arm_counter.source_kind,
         WorldNodeClockSourceKind::ArmCounter

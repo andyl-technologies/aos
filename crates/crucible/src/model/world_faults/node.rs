@@ -406,7 +406,7 @@ impl WorldNodeClockSource {
 
     /// Builds the exact QEMU TCG x86 timestamp-counter contract.
     #[must_use]
-    pub fn qemu_x86_tsc_v1(id: SignalId) -> Self {
+    pub fn emulated_x86_tsc_v1(id: SignalId) -> Self {
         Self {
             id,
             implementation: "target/i386/tcg".to_owned(),
@@ -431,8 +431,8 @@ impl WorldNodeClockSource {
 
     /// Builds the exact QEMU MC146818 RTC contract.
     #[must_use]
-    pub fn qemu_x86_rtc_v1(id: SignalId) -> Self {
-        Self::qemu_programmable_v1(
+    pub fn emulated_x86_rtc_v1(id: SignalId) -> Self {
+        Self::emulated_programmable_v1(
             id,
             "hw/rtc/mc146818rtc",
             WorldNodeClockSourceKind::X86Rtc,
@@ -446,8 +446,8 @@ impl WorldNodeClockSource {
 
     /// Builds the exact QEMU i8254 PIT contract.
     #[must_use]
-    pub fn qemu_x86_pit_v1(id: SignalId) -> Self {
-        Self::qemu_programmable_v1(
+    pub fn emulated_x86_pit_v1(id: SignalId) -> Self {
+        Self::emulated_programmable_v1(
             id,
             "hw/timer/i8254",
             WorldNodeClockSourceKind::X86Pit,
@@ -461,8 +461,8 @@ impl WorldNodeClockSource {
 
     /// Builds the exact QEMU HPET contract.
     #[must_use]
-    pub fn qemu_x86_hpet_v1(id: SignalId) -> Self {
-        Self::qemu_programmable_v1(
+    pub fn emulated_x86_hpet_v1(id: SignalId) -> Self {
+        Self::emulated_programmable_v1(
             id,
             "hw/timer/hpet",
             WorldNodeClockSourceKind::X86Hpet,
@@ -476,8 +476,8 @@ impl WorldNodeClockSource {
 
     /// Builds the exact QEMU userspace local-APIC timer contract.
     #[must_use]
-    pub fn qemu_x86_apic_timer_v1(id: SignalId) -> Self {
-        Self::qemu_programmable_v1(
+    pub fn emulated_x86_apic_timer_v1(id: SignalId) -> Self {
+        Self::emulated_programmable_v1(
             id,
             "hw/intc/apic",
             WorldNodeClockSourceKind::X86ApicTimer,
@@ -491,8 +491,8 @@ impl WorldNodeClockSource {
 
     /// Builds the exact QEMU ACPI power-management timer contract.
     #[must_use]
-    pub fn qemu_x86_acpi_pm_timer_v1(id: SignalId) -> Self {
-        Self::qemu_programmable_v1(
+    pub fn emulated_x86_acpi_pm_timer_v1(id: SignalId) -> Self {
+        Self::emulated_programmable_v1(
             id,
             "hw/acpi/core",
             WorldNodeClockSourceKind::X86AcpiPmTimer,
@@ -506,8 +506,8 @@ impl WorldNodeClockSource {
 
     /// Builds the exact QEMU AArch64 architectural-counter contract.
     #[must_use]
-    pub fn qemu_arm_counter_v1(id: SignalId, frequency_hz: u64) -> Self {
-        Self::qemu_programmable_v1(
+    pub fn emulated_arm_counter_v1(id: SignalId, frequency_hz: u64) -> Self {
+        Self::emulated_programmable_v1(
             id,
             "target/arm/generic-timer",
             WorldNodeClockSourceKind::ArmCounter,
@@ -521,8 +521,8 @@ impl WorldNodeClockSource {
 
     /// Builds the exact QEMU PL031 RTC contract.
     #[must_use]
-    pub fn qemu_arm_rtc_v1(id: SignalId) -> Self {
-        Self::qemu_programmable_v1(
+    pub fn emulated_arm_rtc_v1(id: SignalId) -> Self {
+        Self::emulated_programmable_v1(
             id,
             "hw/rtc/pl031",
             WorldNodeClockSourceKind::ArmRtc,
@@ -538,7 +538,7 @@ impl WorldNodeClockSource {
         clippy::too_many_arguments,
         reason = "the closed clock-source manifest carries independent hardware identity and behavior fields"
     )]
-    fn qemu_programmable_v1(
+    fn emulated_programmable_v1(
         id: SignalId,
         implementation: &str,
         source_kind: WorldNodeClockSourceKind,
@@ -1219,7 +1219,7 @@ pub struct WorldNodeDramGeometry {
 impl WorldNodeDramGeometry {
     /// Returns the only DRAM mapping implemented by the current QEMU patch set.
     #[must_use]
-    pub const fn qemu_v1() -> Self {
+    pub const fn emulated_v1() -> Self {
         Self {
             channels: 2,
             ranks: 2,
@@ -1231,7 +1231,7 @@ impl WorldNodeDramGeometry {
 
     pub(super) fn validate(self) -> Result<(), WorldFaultTopologyError> {
         require(
-            self == Self::qemu_v1(),
+            self == Self::emulated_v1(),
             "node DRAM geometry must match qemu 2c2r16b64",
         )
     }

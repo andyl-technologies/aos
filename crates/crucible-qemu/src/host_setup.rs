@@ -1556,8 +1556,8 @@ pub(crate) mod tests {
             vmstate_format_version: 1,
             vmstate_section_count: 9,
             vmstate_sections_sha256: [1; 32],
-            qemu_build_id: [2; 32],
-            qemu_patch_series_hash: [3; 32],
+            emulator_build_id: [2; 32],
+            emulator_patch_series_hash: [3; 32],
             shmem_header_hash: [4; 32],
         }
         .encode()?;
