@@ -6,6 +6,7 @@
   patchName ? "0051-crucible-add-architecture-register-fault-mutations.patch",
   attrPath ? "checks.crucible.phase2.qemuRegisterMutation",
   taskIds ? ["T-QEMU-0051"],
+  rejectionAtomicity ? false,
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
   series = import ../../pkgs/emulation/qemu-patches/_series.nix;
@@ -14,8 +15,31 @@
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   liveCaseCount = 67;
 
-  failures =
-    failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
+  patchRequirements =
+    if rejectionAtomicity
+    then [
+      {
+        label = "exact serialized RR ownership admission";
+        needle = "qemu_plugin_crucible_exact_boundary_active";
+      }
+      {
+        label = "whole-machine canonical rejection observation";
+        needle = "qemu_plugin_crucible_register_rejection_observe";
+      }
+      {
+        label = "all-vCPU manifest validation";
+        needle = "crucible_register_all_cpus_match_manifest";
+      }
+      {
+        label = "production side-effect observation";
+        needle = "qemu_crucible_fault_register_side_effect_observed";
+      }
+      {
+        label = "live rejection side-effect assertion";
+        needle = "test_rejection_side_effects_unchanged";
+      }
+    ]
+    else [
       {
         label = "architecture-owned register descriptors";
         needle = "crucible_register_describe";
@@ -36,7 +60,10 @@
         label = "live canonical register evidence validation";
         needle = "test_validate_register_evidence";
       }
-    ]
+    ];
+
+  failures =
+    failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource patchRequirements
     ++ forbiddenFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
       {
         label = "GDB mutation shortcut";
