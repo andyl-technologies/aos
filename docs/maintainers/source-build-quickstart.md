@@ -62,9 +62,12 @@ Create `host.nix` in the repository root:
 }
 ```
 
-`host.nix` is literal Nix, not JSON or cloud-config. Storage is its supported
-operational use today. The layout is committed once; changing this file after
-the first successful boot does not resize or repartition the machine.
+`host.nix` is literal Nix, not JSON or cloud-config. This example focuses on
+first-boot storage; the same policy can manage runtime hostname, networking,
+firewall, service, and package configuration as described in the
+[`host.nix` guide](../users/aos/host-nix.md). The storage layout is committed
+once; changing this file after the first successful boot does not resize or
+repartition the machine.
 
 Put the file on an AOS metadata ISO:
 
