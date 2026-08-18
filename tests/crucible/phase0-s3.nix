@@ -740,6 +740,7 @@ in
             save_args="$3"
             expected_medium="$4"
             expected_suffix="$5"
+            expected_hlt_events="$6"
 
             tag="s3-$case_name"
             case "$expected_suffix" in
@@ -762,11 +763,14 @@ in
               "$TMPDIR/pause-save-$case_name.json" >/dev/null \
               || fail "$case_name save sample missing time-control/marker evidence"
             if [ "$expected_medium" != none ]; then
-              jq --arg medium "$expected_medium" -e '
+              jq --arg medium "$expected_medium" \
+                --argjson expected_hlt_events "$expected_hlt_events" -e '
                 .operation_active == true
                 and .active_medium == $medium
+                and .pause_medium == $medium
                 and .pause_io_events >= 1
-                and .pause_hlt_events >= 1
+                and .pause_hlt_events == $expected_hlt_events
+                and .operation_hlt_events == $expected_hlt_events
                 and .io_events >= 1
               ' "$TMPDIR/pause-save-$case_name.json" >/dev/null \
                 || fail "$case_name did not pause inside expected I/O operation"
@@ -853,9 +857,9 @@ in
           cp phase0-s3-owned-state.c "$out/owned-state.c"
 
           : > "$TMPDIR/case-results.txt"
-          run_case boot_window diskless_boot_window "pause_at=$SNAPSHOT_ICOUNT" none match
-          run_case cpu_timer_window cpu_timer_window "pause_at=$((SNAPSHOT_ICOUNT + SEGMENT_ICOUNT))" none match
-          run_case mid_io_burst block_pending_io "pause_on_io_idle=on,pause_medium=block" block diverge
+          run_case boot_window diskless_boot_window "pause_at=$SNAPSHOT_ICOUNT" none match 0
+          run_case cpu_timer_window cpu_timer_window "pause_at=$((SNAPSHOT_ICOUNT + SEGMENT_ICOUNT))" none match 0
+          run_case mid_io_burst block_pending_io "pause_on_io=on,pause_medium=block" block diverge 0
 
           suffix_state_hash=$(awk '$1 == "boot_window" { print $4 }' "$TMPDIR/case-results.txt")
           suffix_stream_hash=$(awk '$1 == "boot_window" { print $5 }' "$TMPDIR/case-results.txt")

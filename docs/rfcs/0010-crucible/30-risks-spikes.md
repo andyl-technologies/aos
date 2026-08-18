@@ -1437,18 +1437,21 @@ node rather than HMP. It tested three snapshot points:
 `snapshot_point_1=cpu_timer_window`, and
 `snapshot_point_2=block_pending_io`. The diskless and CPU-timer restored suffixes
 matched replay, while the marked block pending-I/O negative control reached
-`mid_io_active_medium=block`, `mid_io_pause_io_events=1`,
-`mid_io_pause_hlt_events=1`, and `mid_io_guest_block_direct=true`, then diverged
-after restore with `mid_io_suffix_fingerprint_match=false`. The run reported
-`snapshot_icount=100000008`, `cpu_timer_snapshot_icount=150000010`,
-`mid_io_snapshot_icount=6211647588`,
+`mid_io_active_medium=block`, `mid_io_pause_medium=block`,
+`mid_io_pause_io_events=1`, `mid_io_operation_io_events=1`,
+`mid_io_pause_hlt_events=0`, `mid_io_operation_hlt_events=0`, and
+`mid_io_guest_block_direct=true`, then diverged after restore with
+`mid_io_suffix_fingerprint_match=false`. The run reported
+`snapshot_icount=110601147`, `cpu_timer_snapshot_icount=165526548`,
+`mid_io_snapshot_icount=5789834836`,
 `all_suffix_fingerprints_match=false`,
 `boot_window_suffix_fingerprint_match=true`,
 `cpu_timer_suffix_fingerprint_match=true`,
 `suffix_fingerprint_match=true`, `register_hash_match=true`,
-`ram_hash_match=true`, `suffix_stream_hash=bdb7658e9d86101e`,
-`suffix_register_hash=75b96364eff3a764`,
-`suffix_ram_hash=78d57d4a3984e159`, `suffix_ram_bytes=1074274304`,
+`ram_hash_match=true`, `suffix_stream_hash=e2630ef2353d1e30`,
+`suffix_register_hash=a2571e16a6d8d547`,
+`suffix_ram_hash=cb1af0eb48c320c9`, `suffix_ram_bytes=1074274304`,
+`suffix_state_hash=f6350011aedebc94`,
 `current_vmstate_snapshot_scope=diskless_and_cpu_timer_single_vcpu_qemu_vmstate_plus_block_pending_negative_control`,
 `mid_io_burst_snapshot_exercised=true`,
 `mid_io_burst_snapshot_covered=false`,
