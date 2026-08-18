@@ -318,9 +318,21 @@
                 -o "$out/metadata.iso" \
                 "$out/tree"
             '';
+        resolvedExtraDisks =
+          builtins.map
+          (disk:
+            disk
+            // {
+              source =
+                if builtins.isFunction disk.source
+                then disk.source effectiveSystem
+                else disk.source;
+            })
+          m.extraDisks;
       in
         {
-          inherit (m) name ip mac debugMac index packages bootMode tpm varProvisioning varSizeMiB memoryMiB extraDisks expectAgent;
+          inherit (m) name ip mac debugMac index packages bootMode tpm varProvisioning varSizeMiB memoryMiB expectAgent;
+          extraDisks = resolvedExtraDisks;
           inherit metadataISO;
           system = effectiveSystem;
         }

@@ -30,6 +30,8 @@
     name = "unspecified";
     description = "any value";
   };
+  diskSourceType = types.addCheck unspecifiedType (value:
+    builtins.isString value || builtins.isFunction value);
 
   positiveInt = types.addCheck types.int (v: v > 0);
   extraDiskType = types.submodule {
@@ -43,11 +45,13 @@
         description = "Capacity of the additional disk in MiB.";
       };
       source = mkOption {
-        type = types.nullOr types.str;
+        type = types.nullOr diskSourceType;
         default = null;
         description = ''
           Optional raw disk image copied into the per-run writable disk.
-          When absent, the driver creates an empty sparse disk.
+          A function receives the effective machine system and returns the raw
+          image path, which lets artifacts match test-only modules baked by the
+          fleet harness. When absent, the driver creates an empty sparse disk.
         '';
       };
       readOnly = mkOption {

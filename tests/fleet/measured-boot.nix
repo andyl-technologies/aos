@@ -44,9 +44,9 @@
       }
     ];
   };
-  measuredImage = measuredSystem.config.system.build.image.raw;
-  recoveryBundle = measuredSystem.config.system.build.recoveryBundle;
-  ukiBMedia = pkgs.mkDerivation {
+  ukiBMedia = effectiveSystem: let
+    measuredImage = effectiveSystem.config.system.build.image.raw;
+  in pkgs.mkDerivation {
     pname = "aos-measured-boot-uki-b-media";
     version = "1";
     src = null;
@@ -68,7 +68,9 @@
       }
     ];
   };
-  recoveryMedia = pkgs.mkDerivation {
+  recoveryMedia = effectiveSystem: let
+    recoveryBundle = effectiveSystem.config.system.build.recoveryBundle;
+  in pkgs.mkDerivation {
     pname = "aos-measured-boot-recovery-media";
     version = "1";
     src = null;
@@ -118,14 +120,14 @@ in {
           # future artifact that exceeds it before launching QEMU.
           sizeMiB = 256;
           serial = "uki-b-media";
-          source = "${ukiBMedia}/uki-b-media.img";
+          source = effectiveSystem: "${ukiBMedia effectiveSystem}/uki-b-media.img";
           readOnly = true;
         }
         {
           interface = "usb";
           sizeMiB = 8192;
           serial = "aos-recovery-media";
-          source = "${recoveryMedia}/recovery-media.img";
+          source = effectiveSystem: "${recoveryMedia effectiveSystem}/recovery-media.img";
           # The recovery environment always mounts this untrusted transport
           # read-only. Keeping the harness copy writable lets the normal test
           # boot corrupt its manifest and prove signature rejection.
