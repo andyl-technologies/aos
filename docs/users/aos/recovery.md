@@ -112,7 +112,7 @@ Hosts enrolled before PCR 12 was pinned keep their PCR-7-only TPM token until
 an operator authorizes replacement with the off-machine recovery key. Perform
 the migration only from a known-clean signed boot whose current PCR signature
 matches the deployed policy key. Put the recovery key in a root-only file on
-tmpfs, then run:
+tmpfs, as one canonical key line (a trailing line feed is ignored), then run:
 
 ```sh
 chmod 0600 /run/aos-var-recovery.key
