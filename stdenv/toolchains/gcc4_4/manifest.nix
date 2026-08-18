@@ -382,6 +382,11 @@ in {
     configureFlags =
       tripletNoNls
       ++ ["--without-bash-malloc"];
+    postFreeze = ''
+      # Bash's Makefile invokes autoconf directly when configure is older than
+      # its inputs, bypassing the disabled-maintainer-tool arguments below.
+      touch configure
+    '';
     postInstall = ''
       [ -f "$out/bin/bash" ] && [ ! -f "$out/bin/sh" ] && ln -sf bash "$out/bin/sh"
     '';
