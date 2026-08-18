@@ -98,6 +98,7 @@ static bool terminal_pause_requested;
 static bool terminal_callback_completed;
 static bool terminal_state_emitted;
 static bool terminal_final_emitted;
+static bool final_sample_emitted;
 static bool terminal_state_complete;
 static int terminal_pause_status = -1;
 static uint64_t terminal_observed_icount;
@@ -1877,6 +1878,30 @@ on_insn(unsigned int vcpu_index, void *userdata)
 }
 
 static void
+on_final_sample_paused(int status, void *userdata)
+{
+  (void)userdata;
+
+  if (final_sample_emitted) {
+    return;
+  }
+  if (status != 0) {
+    qemu_plugin_outs(
+        "crucible-qemu-trace-plugin: final sample pause failed\n");
+    qemu_plugin_request_shutdown(1);
+    return;
+  }
+
+  /*
+   * Canonical register export is admitted only after every vCPU is stopped
+   * under QEMU's serialized boundary. Process-exit callbacks do not own that
+   * boundary and therefore cannot serve as final architectural evidence.
+   */
+  record_sample(UINT_MAX, true);
+  final_sample_emitted = true;
+}
+
+static void
 on_sim_observe_icount(uint64_t current_icount, void *userdata)
 {
   (void)userdata;
@@ -1963,7 +1988,6 @@ on_sim_observe_icount(uint64_t current_icount, void *userdata)
   }
   if (horizon_due) {
     stop_requested = true;
-    (void)request_exact_vmstop();
   }
   record_sample(
       last_valid_rr_cursor_available
@@ -1972,6 +1996,17 @@ on_sim_observe_icount(uint64_t current_icount, void *userdata)
       false);
   if (horizon_due) {
     horizon_emitted = true;
+    next_sample = UINT64_MAX;
+    terminal_pause_requested = true;
+    const int status = qemu_plugin_crucible_request_terminal_pause(
+        on_final_sample_paused, NULL);
+
+    if (status != 0) {
+      qemu_plugin_outs(
+          "crucible-qemu-trace-plugin: final sample pause request failed\n");
+      qemu_plugin_request_shutdown(1);
+    }
+    return;
   }
   if (periodic_due) {
     if (UINT64_MAX - next_sample < cadence) {
@@ -2038,14 +2073,17 @@ on_plugin_exit(qemu_plugin_id_t id, void *userdata)
       terminal_observed_icount = qemu_plugin_crucible_icount();
       record_terminal_final();
     }
-  } else if (!definition_only) {
-    record_sample(UINT_MAX, true);
-  } else {
+  } else if (definition_only) {
     record_definition();
     if (!definition_emitted) {
       qemu_plugin_outs(
           "crucible-qemu-trace-plugin: definition record was not emitted\n");
     }
+  } else if (stop_at == 0) {
+    record_sample(UINT_MAX, true);
+  } else if (!final_sample_emitted) {
+    qemu_plugin_outs(
+        "crucible-qemu-trace-plugin: missing stopped-boundary final sample\n");
   }
   fclose(trace_file);
   trace_file = NULL;
