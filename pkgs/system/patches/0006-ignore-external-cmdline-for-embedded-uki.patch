@@ -5,20 +5,22 @@ AOS UKIs carry a signed .cmdline section.  Measure but do not append
 command-line fragments from PE addons or SMBIOS when that section is present:
 both sources can otherwise change init selection before the initrd's userspace
 validator is able to run.  Measuring the rejected input preserves PCR 12 as a
-denial boundary for sealed state.  EFI LoadOptions already follow the embedded
-command-line rule under Secure Boot.
+denial boundary for sealed state.  Recovery UKIs fail the launch after that
+measurement because they have no TPM-authorized state that needs a degraded
+boot path.  EFI LoadOptions already follow the embedded-command-line rule under
+Secure Boot.
 
 Keep upstream behavior for non-UKI EFI images without an embedded command
 line.
 ---
- src/boot/stub.c | 24 ++++++++++++++++++------
- 1 file changed, 18 insertions(+), 6 deletions(-)
+ src/boot/stub.c | 28 ++++++++++++++++++++++------
+ 1 file changed, 22 insertions(+), 6 deletions(-)
 
 diff --git a/src/boot/stub.c b/src/boot/stub.c
 index 3ac6e917d7..f99d52210a 100644
 --- a/src/boot/stub.c
 +++ b/src/boot/stub.c
-@@ -1267,11 +1267,23 @@ static EFI_STATUS run(EFI_HANDLE image) {
+@@ -1267,11 +1267,27 @@ static EFI_STATUS run(EFI_HANDLE image) {
          load_all_addons(image, loaded_image, uname, &cmdline_addons, &dt_addons, &n_dt_addons, &initrd_addons, &n_initrd_addons, &ucode_addons, &n_ucode_addons);
  
 -        /* If we have any extra command line to add via PE addons, load them now and append, and measure the
@@ -33,11 +35,15 @@ index 3ac6e917d7..f99d52210a 100644
 +         * enabled. Images without an embedded command line retain the upstream augmentation behavior. */
 +        if (PE_SECTION_VECTOR_IS_SET(sections + UNIFIED_SECTION_CMDLINE)) {
 +                _cleanup_free_ char16_t *ignored_cmdline = NULL;
++                bool recovery_uki = efi_fnmatch(u"*aos.recovery=1*", cmdline);
 +
 +                cmdline_append_and_measure_addons(cmdline_addons, &ignored_cmdline, &parameters_measured);
 +                cmdline_append_and_measure_smbios(&ignored_cmdline, &parameters_measured);
-+                if (!isempty(ignored_cmdline))
++                if (!isempty(ignored_cmdline)) {
 +                        log_warning("Ignoring externally supplied command line because the UKI embeds one.");
++                        if (recovery_uki)
++                                return log_error_status(EFI_SECURITY_VIOLATION, "Refusing recovery boot with an external command line.");
++                }
 +        } else {
 +                /* If we have any extra command line to add via PE addons, load them now and append, and
 +                 * measure the additions together, before the SMBIOS ones. The global addons are loaded

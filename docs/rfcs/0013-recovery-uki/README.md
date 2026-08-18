@@ -248,10 +248,12 @@ used for normal UKIs. It contains:
 The signed command line is equivalent to:
 
 ```text
-rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0
+console=ttyS0,115200 rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0
 ```
 
-It does not contain `root=`, `roothash=`, or normal verity device hints because
+The fixed serial console makes the bounded operator interface available on
+headless systems without accepting a mutable console selector. It does not
+contain `root=`, `roothash=`, or normal verity device hints because
 the recovery environment runs entirely from the initrd. The recovery initrd
 does not switch root.
 
@@ -559,6 +561,11 @@ them when an embedded command line exists. Unsigned addons are rejected by the
 image loader before command-line measurement and leave PCR 12 unchanged. If a
 duplicate or invalid tuple reaches the effective command line by another path,
 the initrd guard rejects it before verity/root activation.
+
+Recovery UKIs have no TPM-authorized degraded mode to preserve. If a db-signed
+addon or SMBIOS source supplies an external command-line fragment, the stub
+measures it and refuses the recovery launch before starting the kernel. A clean
+relaunch remains available from the separately signed recovery entry.
 
 ### Appended `SYSTEMD_SULOGIN_FORCE=1`
 

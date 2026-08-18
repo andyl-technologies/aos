@@ -179,7 +179,8 @@ pub fn parse_normal(cmdline: &str) -> Result<NormalBootIdentity, ParseError> {
 /// Parses and validates the dedicated recovery command line.
 ///
 /// Recovery runs entirely from its initrd, so its signed command line is an
-/// exact three-field allowlist. Rejecting every additional token prevents a
+/// exact four-field allowlist, including the serial console used by the
+/// bounded operator interface. Rejecting every additional token prevents a
 /// firmware-appended command line from selecting a normal root, an alternate
 /// target, a debug shell, or another systemd command-line control surface.
 ///
@@ -191,6 +192,7 @@ pub fn parse_recovery(cmdline: &str) -> Result<RecoveryBootIdentity, ParseError>
     let mut recovery = None;
     let mut target = None;
     let mut luks = None;
+    let mut console = None;
 
     for token in cmdline.split_ascii_whitespace() {
         let (key, value) = match token.split_once('=') {
@@ -202,6 +204,7 @@ pub fn parse_recovery(cmdline: &str) -> Result<RecoveryBootIdentity, ParseError>
             "aos.recovery" => set_once(&mut recovery, value, "aos.recovery")?,
             "rd.systemd.unit" => set_once(&mut target, value, "rd.systemd.unit")?,
             "rd.luks" => set_once(&mut luks, value, "rd.luks")?,
+            "console" => set_once(&mut console, value, "console")?,
             _ => return Err(ParseError::UnexpectedField(key.to_owned())),
         }
     }
@@ -219,6 +222,11 @@ pub fn parse_recovery(cmdline: &str) -> Result<RecoveryBootIdentity, ParseError>
     let luks = required_nonempty(luks, "rd.luks")?;
     if luks != "0" {
         return Err(invalid("rd.luks", luks));
+    }
+
+    let console = required_nonempty(console, "console")?;
+    if console != "ttyS0,115200" {
+        return Err(invalid("console", console));
     }
 
     Ok(RecoveryBootIdentity)
@@ -441,7 +449,9 @@ mod tests {
     #[test]
     fn accepts_only_the_canonical_recovery_identity() {
         assert_eq!(
-            parse_recovery("rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0"),
+            parse_recovery(
+                "console=ttyS0,115200 rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0"
+            ),
             Ok(RecoveryBootIdentity)
         );
     }
@@ -454,6 +464,9 @@ mod tests {
             "rd.systemd.unit=emergency.target aos.recovery=1 rd.luks=0",
             "rd.systemd.unit=aos-recovery.target aos.recovery=0 rd.luks=0",
             "rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=1",
+            "rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0",
+            "console=tty0 rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0",
+            "console=ttyS0,115200 console=ttyS0,115200 rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0",
         ] {
             assert!(parse_recovery(cmdline).is_err(), "accepted `{cmdline}`");
         }
@@ -468,10 +481,10 @@ mod tests {
             "systemd.unit=emergency.target",
             "rd.systemd.wants=debug-shell.service",
             "SYSTEMD_SULOGIN_FORCE=1",
-            "console=ttyS0",
         ] {
-            let cmdline =
-                format!("rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0 {appended}");
+            let cmdline = format!(
+                "console=ttyS0,115200 rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0 {appended}"
+            );
             assert!(matches!(
                 parse_recovery(&cmdline),
                 Err(ParseError::UnexpectedField(_))

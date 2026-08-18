@@ -25,8 +25,8 @@ proof that both interactive upstream services resolve to `/dev/null`.
 Verity images now install a single generator-path boot-identity guard. It
 requires the complete canonical normal tuple, including exactly one
 `rd.luks=0` so automatic LUKS discovery cannot race the AOS `/var` unlocker,
-and rejects duplicate scalars,
-uppercase hashes, recovery selectors, verity options, rd/non-rd systemd
+and rejects duplicate scalars, uppercase hashes, recovery selectors, verity
+options, rd/non-rd systemd
 control aliases, and generator-provided unit or drop-in controls. Non-verity
 images do not install this strict production guard; they retain the locked
 initrd boundary from Phase 1.
@@ -54,9 +54,11 @@ diagnostic race.
 
 The AOS systemd-stub also treats an embedded UKI `.cmdline` as authoritative.
 Db-signed PE-addon and SMBIOS command-line fragments are measured into PCR 12
-but are not appended when an embedded command line exists. This boundary is
-earlier than PID 1: selectors such as `rd.systemd.unit=` and `rdinit=` must not
-be allowed to choose a process or target before a userspace validator can run.
+but are not appended when an embedded command line exists. A recovery UKI then
+refuses the launch, because it has no TPM-authorized degraded mode to preserve.
+This boundary is earlier than PID 1: selectors such as `rd.systemd.unit=` and
+`rdinit=` must not be allowed to choose a process or target before a userspace
+validator can run.
 Under enforcing Secure Boot, systemd-boot measures Type #1 entry options into
 PCR 12 and the stub discards them when an embedded command line exists, while
 unsigned addons are rejected by the image loader before command-line
@@ -239,7 +241,8 @@ systemd control alias. Executable tests cover every earlier transport boundary:
   the embedded command line intact while the changed PCR 12 denies unattended
   `/var` unlock;
 - an unsigned addon is rejected before measurement and the clean boot proceeds;
-- a signed addon attached to a recovery UKI cannot escape its bounded console;
+- an SMBIOS fragment supplied while booting a recovery UKI is measured and the
+  launch is refused before the kernel or bounded console starts;
   and
 - after every changed-PCR negative, a clean relaunch restores the signed PCR
   value and the exact retained recovery key still authorizes the volume.
@@ -357,8 +360,10 @@ uses the normal Secure Boot key/certificate but omits `pcrPrivateKey` and
 `pcrPublicKey`, yielding no signed normal PCR-11 authorization.
 
 Produce `recovery-a.efi` and `recovery-b.efi` with release/recovery-ABI metadata
-and the signed recovery command line. Verify their PE signatures during the
-build.
+and the signed recovery command line. The command line pins
+`console=ttyS0,115200` so the bounded interface works on headless systems
+without accepting a mutable console selector. Verify their PE signatures
+during the build.
 
 ### 4.4 Image assembly
 
