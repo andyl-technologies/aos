@@ -1899,13 +1899,10 @@ pub(super) fn cli_triage_is_offline_and_uses_uniform_failure_exit_code() {
 }
 
 #[test]
-pub(super) fn cli_selftest_canonical_gate_names_match_harness_catalog() {
-    let harness_gate_names = crucible_harness::canonical_gates()
-        .iter()
-        .map(|gate| gate.name)
-        .collect::<Vec<_>>();
-
-    assert_eq!(CANONICAL_GATE_NAMES, harness_gate_names.as_slice());
+pub(super) fn cli_selftest_builtin_gate_set_belongs_to_the_harness_catalog() {
+    for gate in BUILT_IN_CORPUS_SELFTEST_GATES {
+        assert!(crucible_harness::find_gate(gate).is_some(), "{gate}");
+    }
 }
 
 #[test]

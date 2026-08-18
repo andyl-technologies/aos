@@ -70,6 +70,8 @@ invariants/requirements it enforces.
 | `gate:adversarial-determinism` | Cross-layer (Phase ≥ L2) | INV-1, INV-4, INV-9; HARN-11 | N runs under hostile host conditions yield byte-identical canonical logs. |
 | `gate:e2e-determinism` | Final acceptance (all layers) | All headline invariants; HARN-22, HARN-23 | A representative multi-VM, fault-injected scenario runs bit-identically across adversarial conditions and reproduces from its artifact. |
 | `gate:basic-block-coverage` | L2/L3 coverage observation | INV-4, INV-7; ADV-21, PLUG-35..PLUG-37 | An opt-in loaded-QEMU run emits the expected guest-PC/block-length coverage stream with no fingerprint effect; off mode installs no callback. |
+| `gate:checkpoint-materialization` | L3 temporal graph (Phase 6) | INV-1, INV-2, INV-6; ADV-6, FAULT-27 | An exact fat checkpoint persists a complete content-addressed state closure, while a thin checkpoint remains only an advisory reconstruction cache. |
+| `gate:state-space-search` | L3 temporal graph and scheduler (Phase 6) | INV-1, INV-2, INV-4; ADV-7, FAULT-26 | Search expands only authenticated, genuine runtime decisions; materializes each frontier from canonical state; and deduplicates children by configuration identity. |
 | `gate:perf-bench` | Cross-layer (Phase ≥ L2), regression | G-9; PERF-1..PERF-34 | Cost-model metrics meet their baselines and no metric regresses beyond threshold. Unlike every other gate this is a *regression* gate (per-metric baselines), not a byte-identity check; it MUST never trade determinism for speed (defined in [`25-performance-targets.md`](25-performance-targets.md) §25.11). |
 | `gate:fleet-equivalence` | Cross-layer (Phase ≥ L3) | DCE-16, DCE-17, DCE-20; G-6 | Single-host and fleet search over the same `(family, seed, budget)` discover the same content-addressed finding-set with byte-identical artifacts; discovery order may differ. |
 | `gate:campaign-continuity` | Cross-layer (Phase ≥ L3) | DCE-11, DCE-12, DCE-26; PERF-28 | Seeding run N+1 from run N's campaign reproduces each corpus entry bit-identically, accumulated coverage is monotone non-decreasing across runs, and cross-provenance reuse is refused. |
@@ -865,6 +867,8 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   phase5  gate:control-responsive            (control plane)
   phase6  gate:replay-oracle                 (active search)
   phase6  gate:basic-block-coverage           (loaded-QEMU coverage boundary)
+  phase6  gate:checkpoint-materialization    (exact durable search state)
+  phase6  gate:state-space-search            (authenticated frontier expansion)
   phase7  gate:perf-bench                    (performance regression)
   phase7  gate:e2e-determinism               (final acceptance)
   phase7  gate:fleet-equivalence             (distributed equivalence)

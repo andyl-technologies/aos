@@ -41,7 +41,7 @@ pub(crate) fn plan_selftest_gates(args: &SelftestArgs) -> Result<Vec<String>, Cl
                 "duplicate selftest gate `{gate}` in --gates"
             )));
         }
-        if !CANONICAL_GATE_NAMES.contains(gate) {
+        if crucible_harness::find_gate(gate).is_none() {
             return Err(usage_error(format!(
                 "unknown selftest gate `{gate}`; run selftest without --gates to use the supported default set"
             )));

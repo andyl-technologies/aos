@@ -76,7 +76,10 @@ implemented and an adversarial review confirms the gate exercises that behavior.
   Phase 4  Engine           spatial+temporal graph, faults,           gate:replay-oracle (full), gate:e2e-determinism (mock)
                             assertions, event log, guest-host channel
   Phase 5  Control plane    session actor, API, CLI, daemon          gate:control-responsive
-  Phase 6  Exploration      fork, save/resume, search, fuzz, coverage gate:replay-oracle (under search)
+  Phase 6  Exploration      fork, save/resume, search, fuzz, coverage gate:replay-oracle (under search),
+                                                                            gate:checkpoint-materialization,
+                                                                            gate:state-space-search,
+                                                                            gate:basic-block-coverage
   Phase 7  Package+perf+e2e AOS packaging, performance, acceptance   gate:perf-bench, gate:e2e-determinism (acceptance),
                                                                             gate:fleet-equivalence, gate:campaign-continuity,
                                                                             gate:signal-fault-system
@@ -838,7 +841,10 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   uniform triage exit-code surface ([`34`](34-failure-triage.md)).
 
 **Exit gates.** `gate:replay-oracle` continues to hold under active search
-(forks and restores validated continuously), reproduction artifacts replay
+(forks and restores validated continuously), `gate:checkpoint-materialization`
+proves exact fat checkpoints contain their complete content-addressed closure,
+`gate:state-space-search` proves authenticated frontier expansion and
+configuration-identity deduplication, reproduction artifacts replay
 bit-identically, and `gate:basic-block-coverage` proves the opt-in coverage path
 through a loaded-QEMU callback run without affecting fingerprints.
 

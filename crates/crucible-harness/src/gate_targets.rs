@@ -281,6 +281,20 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         placeholder: false,
     },
     GateTargetSpec {
+        gate: "gate:checkpoint-materialization",
+        package: "crucible",
+        test_target: "gate_checkpoint_materialization",
+        required_features: &[],
+        placeholder: false,
+    },
+    GateTargetSpec {
+        gate: "gate:state-space-search",
+        package: "crucible",
+        test_target: "gate_state_space_search",
+        required_features: &[],
+        placeholder: false,
+    },
+    GateTargetSpec {
         gate: "gate:fleet-equivalence",
         package: "crucible",
         test_target: "gate_fleet_equivalence",
