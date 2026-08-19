@@ -334,6 +334,10 @@
         needle = "qemu_plugin_crucible_rr_switch_quantum";
       }
       {
+        label = "trace plugin requires authoritative exact-boundary RR cursor";
+        needle = "if (!boundary_rr_cursor_valid && rr_cursor_required)";
+      }
+      {
         label = "trace plugin canonical register byte counts";
         needle = "register_file_bytes";
       }

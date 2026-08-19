@@ -613,7 +613,14 @@
       catalogName = "crucible-deterministic-host-kick-boundary";
       class = "D";
       enforces = "DET-1,DET-29,QEMU-43";
-      capability = "generic host work and main-loop notifications wait for the next bounded deterministic RR boundary instead of asynchronously ending a sim translation block";
+      capability = "state-free host latency hints cannot end an active sim translation block, while between-slice and committed stop, unplug, halted, stopped, and interrupt-request kicks retain immediate progress";
+    }
+    {
+      file = "0089-crucible-exact-boundary-vcpu-introspection.patch";
+      catalogName = "crucible-exact-boundary-vcpu-introspection";
+      class = "D";
+      enforces = "DET-1,QFP-REG-1,QFP-STATE-2";
+      capability = "exact BQL-held main-loop boundaries read every quiescent vCPU register file and the committed RR cursor without a current vCPU, while arbitrary unowned contexts remain rejected";
     }
   ];
 

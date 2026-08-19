@@ -403,9 +403,16 @@ produce live patched-QEMU architectural or device evidence.
   path outside sim mode.
 - [x] **T-QEMU-0088** Implement
   [`crucible-deterministic-host-kick-boundary`](14-qemu-fault-patches/39-deterministic-host-kick-boundary.md):
-  defer generic host work and main-loop kick requests to the next finite RR
-  return in bounded sim mode, preserve level-triggered control progress, and
-  retain the immediate upstream kick in every other configuration.
+  prevent host latency hints from ending a running translation block in bounded
+  sim mode while an RR execution slice is active, retain immediate exits for
+  admitted exact terminal observation and committed control and interrupt
+  state, and retain upstream kicks at zero icount and between slices for RR
+  progress.
+- [x] **T-QEMU-0089** Implement
+  [`crucible-exact-boundary-vcpu-introspection`](14-qemu-fault-patches/40-exact-boundary-vcpu-introspection.md):
+  admit quiescent all-vCPU register files and the committed serialized RR cursor
+  from QEMU-owned exact BQL-held control boundaries without requiring a current
+  vCPU, while retaining fail-closed rejection for arbitrary unowned contexts.
 - [x] **T-QEMU-0060** Implement
   [`crucible-block-typed-errors`](14-qemu-fault-patches/14-block-typed-errors.md):
   the closed block result ABI, exact Linux errno translation, malformed-result
