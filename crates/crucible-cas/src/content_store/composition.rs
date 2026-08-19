@@ -35,25 +35,17 @@ impl ImmutableBlobBackend for VerifiedStore {
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
-        match self.child.read(id, None) {
-            Ok(bytes) => {
-                validate_bytes(id, &bytes)?;
-                Ok(true)
-            }
-            Err(StoreError::NotFound { .. }) => Ok(false),
-            Err(error) => Err(error),
-        }
+        self.child.contains(id)
     }
 
-    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<Vec<u8>, StoreError> {
-        let bytes = self.child.read(id, None)?;
-        validate_bytes(id, &bytes)?;
-        slice_range(bytes, range)
+    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+        let blob = self.child.read(id, None)?;
+        blob.verified_as(id)?.slice(range)
     }
 
-    fn put_if_absent(&self, id: ContentId, bytes: &[u8]) -> Result<PutReceipt, StoreError> {
-        validate_bytes(id, bytes)?;
-        self.child.put_if_absent(id, bytes)
+    fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        let source = source.verified_as(id)?;
+        self.child.put_if_absent(id, &source)
     }
 }
 
@@ -102,6 +94,7 @@ impl ImmutableBlobBackend for RoutedStore {
         let mut capabilities = BackendCapabilities {
             durable: true,
             range_read: true,
+            streaming_read: true,
             conditional_create: true,
             streaming_put: true,
             repair_inventory: true,
@@ -111,6 +104,7 @@ impl ImmutableBlobBackend for RoutedStore {
             let child = child.capabilities();
             capabilities.durable &= child.durable;
             capabilities.range_read &= child.range_read;
+            capabilities.streaming_read &= child.streaming_read;
             capabilities.conditional_create &= child.conditional_create;
             capabilities.streaming_put &= child.streaming_put;
             capabilities.repair_inventory &= child.repair_inventory;
@@ -123,13 +117,13 @@ impl ImmutableBlobBackend for RoutedStore {
         self.route(id)?.contains(id)
     }
 
-    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<Vec<u8>, StoreError> {
+    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
         self.route(id)?.read(id, range)
     }
 
-    fn put_if_absent(&self, id: ContentId, bytes: &[u8]) -> Result<PutReceipt, StoreError> {
-        validate_bytes(id, bytes)?;
-        self.route(id)?.put_if_absent(id, bytes)
+    fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        let source = source.verified_as(id)?;
+        self.route(id)?.put_if_absent(id, &source)
     }
 }
 
@@ -175,12 +169,11 @@ impl TieredStore {
         })
     }
 
-    fn read_full(&self, id: ContentId) -> Result<(usize, Vec<u8>), StoreError> {
+    fn read_full(&self, id: ContentId) -> Result<(usize, BlobHandle), StoreError> {
         for (index, tier) in self.tiers.iter().enumerate() {
             match tier.read(id, None) {
-                Ok(bytes) => {
-                    validate_bytes(id, &bytes)?;
-                    return Ok((index, bytes));
+                Ok(blob) => {
+                    return Ok((index, blob));
                 }
                 Err(StoreError::NotFound { .. }) => {}
                 Err(error) => return Err(error),
@@ -196,7 +189,17 @@ impl ImmutableBlobBackend for TieredStore {
     }
 
     fn capabilities(&self) -> BackendCapabilities {
-        self.tiers[self.write_tier].capabilities()
+        let mut capabilities = self.tiers[self.write_tier].capabilities();
+        capabilities.range_read = self.tiers.iter().all(|tier| tier.capabilities().range_read);
+        capabilities.streaming_read = self
+            .tiers
+            .iter()
+            .all(|tier| tier.capabilities().streaming_read)
+            && (!self.promote_reads
+                || self.tiers[..self.tiers.len().saturating_sub(1)]
+                    .iter()
+                    .all(|tier| tier.capabilities().streaming_put));
+        capabilities
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
@@ -207,18 +210,18 @@ impl ImmutableBlobBackend for TieredStore {
         }
     }
 
-    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<Vec<u8>, StoreError> {
-        let (found_tier, bytes) = self.read_full(id)?;
+    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+        let (found_tier, blob) = self.read_full(id)?;
         if self.promote_reads && found_tier > 0 {
             for tier in &self.tiers[..found_tier] {
-                let _promotion = tier.put_if_absent(id, &bytes);
+                let _promotion = tier.put_if_absent(id, &blob);
             }
         }
-        slice_range(bytes, range)
+        blob.slice(range)
     }
 
-    fn put_if_absent(&self, id: ContentId, bytes: &[u8]) -> Result<PutReceipt, StoreError> {
-        self.tiers[self.write_tier].put_if_absent(id, bytes)
+    fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        self.tiers[self.write_tier].put_if_absent(id, source)
     }
 }
 
@@ -261,6 +264,7 @@ impl ImmutableBlobBackend for WriteThroughStore {
             let child = child.capabilities();
             capabilities.durable |= child.durable;
             capabilities.range_read &= child.range_read;
+            capabilities.streaming_read &= child.streaming_read;
             capabilities.conditional_create &= child.conditional_create;
             capabilities.streaming_put &= child.streaming_put;
             capabilities.repair_inventory &= child.repair_inventory;
@@ -271,17 +275,19 @@ impl ImmutableBlobBackend for WriteThroughStore {
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
         for child in &self.children {
-            if !child.contains(id)? {
-                return Ok(false);
+            match child.contains(id) {
+                Ok(true) => return Ok(true),
+                Ok(false) => {}
+                Err(error) => return Err(error),
             }
         }
-        Ok(true)
+        Ok(false)
     }
 
-    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<Vec<u8>, StoreError> {
+    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
         for child in &self.children {
             match child.read(id, range) {
-                Ok(bytes) => return Ok(bytes),
+                Ok(blob) => return Ok(blob),
                 Err(StoreError::NotFound { .. }) => {}
                 Err(error) => return Err(error),
             }
@@ -289,11 +295,10 @@ impl ImmutableBlobBackend for WriteThroughStore {
         Err(StoreError::NotFound { id })
     }
 
-    fn put_if_absent(&self, id: ContentId, bytes: &[u8]) -> Result<PutReceipt, StoreError> {
-        validate_bytes(id, bytes)?;
+    fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
         let mut placements = Vec::new();
         for child in &self.children {
-            let receipt = child.put_if_absent(id, bytes)?;
+            let receipt = child.put_if_absent(id, source)?;
             placements.extend(receipt.placements);
         }
         Ok(PutReceipt { id, placements })

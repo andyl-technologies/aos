@@ -15,7 +15,7 @@ pub struct MemoryBlobBackend {
 
 #[derive(Debug, Default)]
 struct MemoryBlobState {
-    objects: BTreeMap<ContentId, Vec<u8>>,
+    objects: BTreeMap<ContentId, Arc<[u8]>>,
     logical_bytes: u64,
 }
 
@@ -64,6 +64,7 @@ impl ImmutableBlobBackend for MemoryBlobBackend {
         BackendCapabilities {
             durable: false,
             range_read: true,
+            streaming_read: true,
             conditional_create: true,
             streaming_put: false,
             repair_inventory: false,
@@ -82,7 +83,7 @@ impl ImmutableBlobBackend for MemoryBlobBackend {
         Ok(true)
     }
 
-    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<Vec<u8>, StoreError> {
+    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
         let state = self.state.lock().map_err(|_| StoreError::Poisoned {
             operation: "memory-read",
         })?;
@@ -92,18 +93,26 @@ impl ImmutableBlobBackend for MemoryBlobBackend {
             .cloned()
             .ok_or(StoreError::NotFound { id })?;
         validate_bytes(id, &bytes)?;
-        slice_range(bytes, range)
+        BlobHandle::from_authenticated_bytes(id, bytes).slice(range)
     }
 
-    fn put_if_absent(&self, id: ContentId, bytes: &[u8]) -> Result<PutReceipt, StoreError> {
-        validate_bytes(id, bytes)?;
+    fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        let logical_length = source.logical_length();
+        if logical_length > self.max_logical_bytes {
+            source.verified_as(id)?;
+            return Err(StoreError::Quota);
+        }
+        let bytes = match read_handle_all(source, self.max_logical_bytes) {
+            Err(StoreError::InvalidSourceLength { .. }) => return Err(StoreError::Corrupt { id }),
+            result => result?,
+        };
+        validate_bytes(id, &bytes)?;
         let mut state = self.state.lock().map_err(|_| StoreError::Poisoned {
             operation: "memory-put",
         })?;
         if let Some(existing) = state.objects.get(&id) {
             validate_bytes(id, existing)?;
         } else {
-            let logical_length = u64::try_from(bytes.len()).map_err(|_| StoreError::Quota)?;
             let next_logical_bytes = state
                 .logical_bytes
                 .checked_add(logical_length)
@@ -111,7 +120,7 @@ impl ImmutableBlobBackend for MemoryBlobBackend {
             if next_logical_bytes > self.max_logical_bytes {
                 return Err(StoreError::Quota);
             }
-            state.objects.insert(id, bytes.to_vec());
+            state.objects.insert(id, Arc::from(bytes));
             state.logical_bytes = next_logical_bytes;
         }
         Ok(PutReceipt::one(
@@ -119,7 +128,7 @@ impl ImmutableBlobBackend for MemoryBlobBackend {
             PlacementReceipt {
                 backend: self.name.clone(),
                 durable: false,
-                logical_length: bytes.len() as u64,
+                logical_length,
             },
         ))
     }
