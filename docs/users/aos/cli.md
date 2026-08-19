@@ -91,8 +91,13 @@ authorizes a private registry and is rejected over cleartext HTTP.
 
 Downloads resume an existing hidden partial file with an HTTP range request.
 The command enforces the signed size and SHA-256 before atomically installing
-the final file; verification cannot be disabled. `--no-resume` restarts the
-partial download. With no `--output`, the signed useful filename is used.
+the final file; verification cannot be disabled. A partial identity file binds
+resume state to its release, architecture, format, size, and hash so reusing an
+output name for another image fails before additional bytes transfer.
+`--no-resume` restarts the partial download. With no `--output`, the signed
+useful filename is used. Transient failures retry three times by default; use
+`--retries` to change that limit. An interrupted download reports the retained
+partial path and exits with status 130.
 
 All three subcommands support the global JSON output mode:
 
@@ -105,6 +110,35 @@ aos --json image show --registry andyl/main --release 2026.3.0 \
 `apm install PACKAGE --system --image FORMAT --output FILE` remains available
 for package-oriented installation flows. Prefer `aos image` when choosing by
 end-user target, release channel, or direct disk encoding.
+
+## Run a downloaded image locally
+
+`aos vm run` prepares a persistent writable disk from a downloaded raw or
+QCOW2 image and boots it through UEFI. The verified download remains unchanged.
+The command enlarges the working disk, relocates its backup GPT, retains a
+per-VM OVMF variable store, and can deliver literal `host.nix` through QEMU's
+native metadata channel:
+
+```sh
+aos vm run ./aos.qcow2 \
+  --host-config ./host.nix \
+  --disk-size-gib 16 \
+  --ssh-port 2222
+```
+
+The packaged CLI carries the AOS-built QEMU, OVMF, `qemu-img`, and `sgdisk`.
+When running a development binary, pass `--firmware-code` and
+`--firmware-vars`, or set `AOS_OVMF_CODE` and `AOS_OVMF_VARS`, if firmware is
+not installed at a conventional system path.
+
+KVM is selected only when `/dev/kvm` is accessible; automatic selection falls
+back to slower TCG emulation with a warning. Use `--accel kvm` to require
+hardware acceleration. Inspect paths, resources, firmware, forwarding, and
+acceleration without changing state by adding `--dry-run`. VM state lives under
+`$XDG_STATE_HOME/aos/vms/<name>` (or `$HOME/.local/state/aos/vms/<name>`) unless
+`--state-dir` is supplied. Its metadata binds the persistent disk to the base
+image hash and requested capacity so a reused name cannot silently boot the
+wrong disk.
 
 ## Run checks and maintenance commands
 
@@ -143,6 +177,10 @@ Global output modes are explicit:
 | `--json` | Compact JSON on standard output |
 | `--quiet` | Suppress non-error printer output |
 | `-v` | Verbose output |
+| `--progress auto` | Use a terminal display interactively and stable lines in logs |
+| `--progress tty` | Force an updating terminal display |
+| `--progress plain` | Emit stable newline-delimited progress updates |
+| `--progress off` | Suppress progress while retaining final results and errors |
 | `-vv` | Also stream Nix subprocess standard error |
 | `-vvv` | Also print the Nix command line |
 

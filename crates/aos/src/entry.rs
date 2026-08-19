@@ -121,6 +121,11 @@ async fn run(cli: &Cli) -> Result<()> {
         return commands::image::run(command, &printer).await;
     }
 
+    // Local VM runs use downloaded artifacts and host-side QEMU tools.
+    if let Commands::Vm { command } = &cli.command {
+        return commands::vm::run(command, &printer);
+    }
+
     let nix = NixRunner::new(cli.verbose, cli.quiet)?;
 
     match &cli.command {
@@ -222,6 +227,7 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::Metadata { .. } => unreachable!(),
         Commands::Hub { .. } => unreachable!(),
         Commands::Image { .. } => unreachable!(),
+        Commands::Vm { .. } => unreachable!(),
     }
 }
 
