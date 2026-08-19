@@ -12,6 +12,7 @@ impl CampaignRepository {
             refs,
             merkle,
             mutation_lock: Mutex::new(()),
+            validated_heads: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -135,7 +136,7 @@ impl CampaignRepository {
     /// transition, or invalid historical state transition.
     pub fn state(&self, name: &str) -> Result<CampaignState, CampaignRepositoryError> {
         let head = self.head(name)?;
-        self.project_state(head.content_id())
+        self.current_lifecycle(head.content_id())
             .map(|state| state.visible)
     }
 
@@ -167,14 +168,29 @@ impl CampaignRepository {
         self.validate_complete_head(current_content)?;
 
         let request_id = request.id()?;
-        if let Some(result) = self.find_branch_request_result(current_content, request_id)? {
-            return Ok(result);
-        }
-        if let BranchRequestCause::Operator(command) = request.cause()
-            && self.mutation_command_exists(current_content, command)?
+        let request_key = map_key_content("exploration.branch-request", request_id.content_id());
+        if self
+            .merkle
+            .get(current.snapshot.roots().exploration, request_key)?
+            .is_some()
         {
-            return Err(CampaignRepositoryError::CommandReuse);
+            return self
+                .find_branch_request_result(current_content, request_id)?
+                .ok_or_else(|| integrity("branch-request-index-has-no-ancestry-transition"));
         }
+        let command_key = if let BranchRequestCause::Operator(command) = request.cause() {
+            let key = map_key_hash("accounting.command", command.as_hash());
+            if self
+                .merkle
+                .get(current.snapshot.roots().accounting, key)?
+                .is_some()
+            {
+                return Err(CampaignRepositoryError::CommandReuse);
+            }
+            Some(key)
+        } else {
+            None
+        };
 
         let current_id = CampaignSnapshotId::from_content_id(current_content)?;
         if expected_snapshot != current_id {
@@ -190,14 +206,6 @@ impl CampaignRepository {
         if request_content != request_id.content_id() {
             return Err(integrity("branch-request-publication-id-mismatch"));
         }
-        let request_key = map_key_content("exploration.branch-request", request_content);
-        if self
-            .merkle
-            .get(current.snapshot.roots().exploration, request_key)?
-            .is_some()
-        {
-            return Err(integrity("branch-request-index-has-no-ancestry-transition"));
-        }
         let exploration = self.merkle.insert(
             current.snapshot.roots().exploration,
             request_key,
@@ -208,6 +216,13 @@ impl CampaignRepository {
         let transition_content = self.put_fact(&fact)?;
         let mut roots = current.snapshot.roots();
         roots.exploration = exploration.content_id();
+        roots.coordination = self.coordination_with_parent_result(current_content, &current)?;
+        if let Some(command_key) = command_key {
+            roots.accounting = self
+                .merkle
+                .insert(roots.accounting, command_key, transition_content)?
+                .content_id();
+        }
         let next = CampaignSnapshot::successor(
             current_id,
             current.snapshot.lineage(),
@@ -216,18 +231,26 @@ impl CampaignRepository {
             crate::CampaignFactId::from_content_id(transition_content)?,
         )?;
         let next_content = self.put_snapshot(&next)?;
-        self.validate_complete_head(next_content)?;
+        let checkpoint = self.prepare_local_successor_checkpoint(
+            current_content,
+            next_content,
+            None,
+            MAX_SIMPLE_SUCCESSOR_GROWTH,
+        )?;
 
         match self
             .refs
             .compare_exchange(&campaign_ref, Some(current_content), next_content)?
         {
-            RefCasOutcome::Advanced { .. } => Ok(BranchRequestResult {
-                prior_snapshot: current_id,
-                new_snapshot: CampaignSnapshotId::from_content_id(next_content)?,
-                request: request_id,
-                replayed: false,
-            }),
+            RefCasOutcome::Advanced { .. } => {
+                self.promote_local_successor(current_content, next_content, checkpoint);
+                Ok(BranchRequestResult {
+                    prior_snapshot: current_id,
+                    new_snapshot: CampaignSnapshotId::from_content_id(next_content)?,
+                    request: request_id,
+                    replayed: false,
+                })
+            }
             RefCasOutcome::Conflict { current, .. } => {
                 Err(CampaignRepositoryError::RefConflict { current })
             }
@@ -262,8 +285,15 @@ impl CampaignRepository {
         self.validate_complete_head(current_content)?;
 
         let proposal_id = proposal.id()?;
-        if let Some(result) = self.find_proposal_result(current_content, proposal_id)? {
-            return Ok(result);
+        let proposal_key = map_key_content("exploration.proposal", proposal_id.content_id());
+        if self
+            .merkle
+            .get(current.snapshot.roots().exploration, proposal_key)?
+            .is_some()
+        {
+            return self
+                .find_proposal_result(current_content, proposal_id)?
+                .ok_or_else(|| integrity("proposal-index-has-no-ancestry-transition"));
         }
 
         let current_id = CampaignSnapshotId::from_content_id(current_content)?;
@@ -285,7 +315,6 @@ impl CampaignRepository {
         if proposal_content != proposal_id.content_id() {
             return Err(integrity("proposal-publication-id-mismatch"));
         }
-        let proposal_key = map_key_content("exploration.proposal", proposal_content);
         let ordinal_key = proposal_ordinal_key(proposal.request(), proposal.ordinal());
         let value_key = proposal_value_key(proposal.request(), proposal.value());
         for key in [proposal_key, ordinal_key, value_key] {
@@ -326,6 +355,7 @@ impl CampaignRepository {
         let transition_content = self.put_fact(&fact)?;
         let mut roots = current.snapshot.roots();
         roots.exploration = exploration.content_id();
+        roots.coordination = self.coordination_with_parent_result(current_content, &current)?;
         let next = CampaignSnapshot::successor(
             current_id,
             current.snapshot.lineage(),
@@ -334,18 +364,26 @@ impl CampaignRepository {
             crate::CampaignFactId::from_content_id(transition_content)?,
         )?;
         let next_content = self.put_snapshot(&next)?;
-        self.validate_complete_head(next_content)?;
+        let checkpoint = self.prepare_local_successor_checkpoint(
+            current_content,
+            next_content,
+            None,
+            MAX_SIMPLE_SUCCESSOR_GROWTH,
+        )?;
 
         match self
             .refs
             .compare_exchange(&campaign_ref, Some(current_content), next_content)?
         {
-            RefCasOutcome::Advanced { .. } => Ok(ProposalResult {
-                prior_snapshot: current_id,
-                new_snapshot: CampaignSnapshotId::from_content_id(next_content)?,
-                proposal: proposal_id,
-                replayed: false,
-            }),
+            RefCasOutcome::Advanced { .. } => {
+                self.promote_local_successor(current_content, next_content, checkpoint);
+                Ok(ProposalResult {
+                    prior_snapshot: current_id,
+                    new_snapshot: CampaignSnapshotId::from_content_id(next_content)?,
+                    proposal: proposal_id,
+                    replayed: false,
+                })
+            }
             RefCasOutcome::Conflict { current, .. } => {
                 Err(CampaignRepositoryError::RefConflict { current })
             }
@@ -397,7 +435,16 @@ impl CampaignRepository {
             return Err(integrity("proposal-admission-input-closure-mismatch"));
         }
         let attempt_id = attempt.id()?;
-        if let Some(result) = self.find_attempt_admission_result(current_content, proposal)? {
+        let proposal_admission_key =
+            map_key_content("accounting.proposal-admission", proposal.content_id());
+        if self
+            .merkle
+            .get(current.snapshot.roots().accounting, proposal_admission_key)?
+            .is_some()
+        {
+            let result = self
+                .find_attempt_admission_result(current_content, proposal)?
+                .ok_or_else(|| integrity("proposal-admission-index-has-no-ancestry-transition"))?;
             if result.attempt != attempt_id {
                 return Err(integrity("proposal-admission-replay-attempt-mismatch"));
             }
@@ -458,6 +505,7 @@ impl CampaignRepository {
         let transition_content = self.put_fact(&fact)?;
         let mut roots = current.snapshot.roots();
         roots.accounting = accounting;
+        roots.coordination = self.coordination_with_parent_result(current_content, &current)?;
         let next = CampaignSnapshot::successor(
             current_id,
             current.snapshot.lineage(),
@@ -466,20 +514,28 @@ impl CampaignRepository {
             crate::CampaignFactId::from_content_id(transition_content)?,
         )?;
         let next_content = self.put_snapshot(&next)?;
-        self.validate_complete_head(next_content)?;
+        let checkpoint = self.prepare_local_successor_checkpoint(
+            current_content,
+            next_content,
+            None,
+            MAX_SIMPLE_SUCCESSOR_GROWTH,
+        )?;
 
         match self
             .refs
             .compare_exchange(&campaign_ref, Some(current_content), next_content)?
         {
-            RefCasOutcome::Advanced { .. } => Ok(AttemptAdmissionResult {
-                prior_snapshot: current_id,
-                new_snapshot: CampaignSnapshotId::from_content_id(next_content)?,
-                proposal,
-                attempt: attempt_id,
-                admission: admission_id,
-                replayed: false,
-            }),
+            RefCasOutcome::Advanced { .. } => {
+                self.promote_local_successor(current_content, next_content, checkpoint);
+                Ok(AttemptAdmissionResult {
+                    prior_snapshot: current_id,
+                    new_snapshot: CampaignSnapshotId::from_content_id(next_content)?,
+                    proposal,
+                    attempt: attempt_id,
+                    admission: admission_id,
+                    replayed: false,
+                })
+            }
             RefCasOutcome::Conflict { current, .. } => {
                 Err(CampaignRepositoryError::RefConflict { current })
             }
@@ -516,16 +572,15 @@ impl CampaignRepository {
             .get(current.snapshot.roots().accounting, command_key)?
         {
             let fact = self.read_fact(fact_content)?;
-            let CampaignFact::ControlRequested(prior_request) = fact else {
-                return Err(integrity("command-index-value-is-not-control-fact"));
-            };
-            if prior_request != *request {
-                return Err(CampaignRepositoryError::CommandReuse);
+            match fact {
+                CampaignFact::ControlRequested(prior_request) if prior_request == *request => {
+                    return self.find_command_result(current_content, request, true);
+                }
+                CampaignFact::ControlRequested(_) | CampaignFact::BranchRequestIssued(_) => {
+                    return Err(CampaignRepositoryError::CommandReuse);
+                }
+                _ => return Err(integrity("command-index-value-is-not-mutation-fact")),
             }
-            return self.find_command_result(current_content, request, true);
-        }
-        if self.mutation_command_exists(current_content, request.command)? {
-            return Err(CampaignRepositoryError::CommandReuse);
         }
 
         let current_id = CampaignSnapshotId::from_content_id(current_content)?;
@@ -535,7 +590,7 @@ impl CampaignRepository {
                 current: current_id,
             });
         }
-        let mut projected = self.project_state(current_content)?;
+        let mut projected = self.current_lifecycle(current_content)?;
         projected.apply(&request.action)?;
 
         let control_fact = CampaignFact::ControlRequested(request.clone());
@@ -572,6 +627,7 @@ impl CampaignRepository {
 
         let mut roots = current.snapshot.roots();
         roots.accounting = accounting.content_id();
+        roots.coordination = self.coordination_with_parent_result(current_content, &current)?;
         let next = CampaignSnapshot::successor(
             current_id,
             current.snapshot.lineage(),
@@ -580,17 +636,25 @@ impl CampaignRepository {
             crate::CampaignFactId::from_content_id(control_content)?,
         )?;
         let next_content = self.put_snapshot(&next)?;
-        self.validate_complete_head(next_content)?;
+        let checkpoint = self.prepare_local_successor_checkpoint(
+            current_content,
+            next_content,
+            Some(&request.action),
+            MAX_SIMPLE_SUCCESSOR_GROWTH,
+        )?;
 
         match self
             .refs
             .compare_exchange(&campaign_ref, Some(current_content), next_content)?
         {
-            RefCasOutcome::Advanced { .. } => Ok(CampaignCommandResult {
-                prior_snapshot: current_id,
-                new_snapshot: CampaignSnapshotId::from_content_id(next_content)?,
-                replayed: false,
-            }),
+            RefCasOutcome::Advanced { .. } => {
+                self.promote_local_successor(current_content, next_content, checkpoint);
+                Ok(CampaignCommandResult {
+                    prior_snapshot: current_id,
+                    new_snapshot: CampaignSnapshotId::from_content_id(next_content)?,
+                    replayed: false,
+                })
+            }
             RefCasOutcome::Conflict { current, .. } => {
                 Err(CampaignRepositoryError::RefConflict { current })
             }
@@ -864,7 +928,7 @@ impl CampaignRepository {
             return Err(integrity("planner-step-publication-id-mismatch"));
         }
 
-        let mut coordination = current.snapshot.roots().coordination;
+        let mut coordination = self.coordination_with_parent_result(current_content, &current)?;
         for key in [step_key, invocation_key, planner_head_key()] {
             coordination = self
                 .merkle
@@ -875,6 +939,7 @@ impl CampaignRepository {
         let fact = CampaignFact::PlannerAdvanced(step_id);
         let transition_content = self.put_fact(&fact)?;
         let mut roots = current.snapshot.roots();
+        let issued = issue_projection.is_some();
         if let Some(projected) = issue_projection {
             roots.exploration = projected.exploration;
             roots.accounting = projected.accounting;
@@ -888,18 +953,31 @@ impl CampaignRepository {
             crate::CampaignFactId::from_content_id(transition_content)?,
         )?;
         let next_content = self.put_snapshot(&next)?;
-        self.validate_complete_head(next_content)?;
+        let closure_growth_upper = if issued {
+            MAX_PLANNER_ISSUE_SUCCESSOR_GROWTH
+        } else {
+            MAX_SIMPLE_SUCCESSOR_GROWTH
+        };
+        let checkpoint = self.prepare_local_successor_checkpoint(
+            current_content,
+            next_content,
+            None,
+            closure_growth_upper,
+        )?;
 
         match self
             .refs
             .compare_exchange(&campaign_ref, Some(current_content), next_content)?
         {
-            RefCasOutcome::Advanced { .. } => Ok(PlannerStepResult {
-                prior_snapshot: current_id,
-                new_snapshot: CampaignSnapshotId::from_content_id(next_content)?,
-                step: step_id,
-                replayed: false,
-            }),
+            RefCasOutcome::Advanced { .. } => {
+                self.promote_local_successor(current_content, next_content, checkpoint);
+                Ok(PlannerStepResult {
+                    prior_snapshot: current_id,
+                    new_snapshot: CampaignSnapshotId::from_content_id(next_content)?,
+                    step: step_id,
+                    replayed: false,
+                })
+            }
             RefCasOutcome::Conflict { current, .. } => {
                 Err(CampaignRepositoryError::RefConflict { current })
             }

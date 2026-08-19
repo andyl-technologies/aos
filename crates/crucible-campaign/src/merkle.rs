@@ -215,6 +215,14 @@ impl MerkleMap {
         &self,
         root: ContentId,
     ) -> Result<VerifiedMerkleClosure, CampaignStoreError> {
+        self.verify_closure_objects_cached(root, &mut BTreeSet::new())
+    }
+
+    pub(crate) fn verify_closure_objects_cached(
+        &self,
+        root: ContentId,
+        verified_positions: &mut BTreeSet<(ContentId, Vec<u8>)>,
+    ) -> Result<VerifiedMerkleClosure, CampaignStoreError> {
         let root_node = self.read_node(root, 0)?;
         let expected_entries = root_node.entry_count;
         let mut stack = vec![(root, root_node, Vec::<u8>::new())];
@@ -223,12 +231,19 @@ impl MerkleMap {
         let mut observed_entries = 0_u64;
 
         while let Some((node_id, node, prefix)) = stack.pop() {
+            if verified_positions.contains(&(node_id, prefix.clone())) {
+                observed_entries = observed_entries
+                    .checked_add(node.entry_count)
+                    .ok_or(invalid("entry-count-overflow"))?;
+                continue;
+            }
             if !visited.insert(node_id) {
                 return Err(invalid("node-reused-at-multiple-prefixes"));
             }
             if visited.len() > MAX_VERIFIED_NODES {
                 return Err(invalid("closure-node-limit"));
             }
+            verified_positions.insert((node_id, prefix.clone()));
             for (slot, entry) in node.entries.iter().rev() {
                 let mut child_prefix = prefix.clone();
                 child_prefix.push(*slot);
@@ -380,49 +395,161 @@ impl MerkleMap {
         next: ContentId,
         upserts: &BTreeMap<CampaignHash, ContentId>,
     ) -> Result<bool, CampaignStoreError> {
-        let mut prior_entries = MerkleScanCursor::new(self, prior);
-        let mut next_entries = MerkleScanCursor::new(self, next);
-        let mut prior_entry = prior_entries.next_entry()?;
-        let mut upsert_entries = upserts.iter().map(|(key, value)| (*key, *value));
-        let mut upsert_entry = upsert_entries.next();
-
-        loop {
-            let expected = match (prior_entry, upsert_entry) {
-                (None, None) => None,
-                (Some(entry), None) => {
-                    prior_entry = prior_entries.next_entry()?;
-                    Some(entry)
-                }
-                (None, Some(entry)) => {
-                    upsert_entry = upsert_entries.next();
-                    Some(entry)
-                }
-                (Some(prior_value), Some(upsert_value)) => {
-                    match prior_value.0.cmp(&upsert_value.0) {
-                        std::cmp::Ordering::Less => {
-                            prior_entry = prior_entries.next_entry()?;
-                            Some(prior_value)
-                        }
-                        std::cmp::Ordering::Equal => {
-                            prior_entry = prior_entries.next_entry()?;
-                            upsert_entry = upsert_entries.next();
-                            Some(upsert_value)
-                        }
-                        std::cmp::Ordering::Greater => {
-                            upsert_entry = upsert_entries.next();
-                            Some(upsert_value)
-                        }
-                    }
-                }
-            };
-
-            let Some(expected) = expected else {
-                return Ok(next_entries.next_entry()?.is_none());
-            };
-            if next_entries.next_entry()? != Some(expected) {
-                return Ok(false);
-            }
+        let mut overlay = BTreeMap::new();
+        let mut current = prior;
+        for (key, value) in upserts {
+            let node = self.read_overlay_node(current, 0, &overlay)?;
+            current = self
+                .insert_overlay_node(current, node, *key, *value, &mut overlay)?
+                .content_id;
         }
+        Ok(current == next)
+    }
+
+    fn insert_overlay_node(
+        &self,
+        original_id: ContentId,
+        mut node: MerkleNode,
+        key: CampaignHash,
+        value: ContentId,
+        overlay: &mut BTreeMap<ContentId, MerkleNode>,
+    ) -> Result<NodeUpdate, CampaignStoreError> {
+        let slot = digest_nibble(key, node.depth);
+        let existing = node.entries.get(&slot).cloned();
+        let (entry, changed) = match existing {
+            None => (MerkleEntry::Leaf { key, value }, true),
+            Some(MerkleEntry::Leaf {
+                key: stored_key,
+                value: stored_value,
+            }) if stored_key == key => (MerkleEntry::Leaf { key, value }, stored_value != value),
+            Some(MerkleEntry::Leaf {
+                key: stored_key,
+                value: stored_value,
+            }) => {
+                let next_depth = node
+                    .depth
+                    .checked_add(1)
+                    .ok_or(invalid("distinct-keys-exhausted-digest"))?;
+                let child = self.split_overlay_leaves(
+                    next_depth,
+                    (stored_key, stored_value),
+                    (key, value),
+                    overlay,
+                )?;
+                (
+                    MerkleEntry::Node {
+                        content_id: child.content_id,
+                        entry_count: child.entry_count,
+                    },
+                    true,
+                )
+            }
+            Some(MerkleEntry::Node {
+                content_id,
+                entry_count,
+            }) => {
+                let next_depth = node.depth.checked_add(1).ok_or(invalid("depth-overflow"))?;
+                let child = self.read_overlay_node(content_id, next_depth, overlay)?;
+                if child.entry_count != entry_count {
+                    return Err(invalid("child-entry-count-mismatch"));
+                }
+                let update = self.insert_overlay_node(content_id, child, key, value, overlay)?;
+                (
+                    MerkleEntry::Node {
+                        content_id: update.content_id,
+                        entry_count: update.entry_count,
+                    },
+                    update.changed,
+                )
+            }
+        };
+
+        if !changed {
+            return Ok(NodeUpdate {
+                content_id: original_id,
+                entry_count: node.entry_count,
+                changed: false,
+            });
+        }
+        node.entries.insert(slot, entry);
+        node.recompute_count()?;
+        let content_id = calculate_node_id(&node)?;
+        overlay.insert(content_id, node.clone());
+        Ok(NodeUpdate {
+            content_id,
+            entry_count: node.entry_count,
+            changed: true,
+        })
+    }
+
+    fn split_overlay_leaves(
+        &self,
+        depth: u8,
+        first: (CampaignHash, ContentId),
+        second: (CampaignHash, ContentId),
+        overlay: &mut BTreeMap<ContentId, MerkleNode>,
+    ) -> Result<NodeUpdate, CampaignStoreError> {
+        if depth >= DIGEST_NIBBLES {
+            return Err(invalid("distinct-keys-exhausted-digest"));
+        }
+        let first_slot = digest_nibble(first.0, depth);
+        let second_slot = digest_nibble(second.0, depth);
+        let mut node = MerkleNode {
+            schema_version: MERKLE_NODE_SCHEMA_VERSION,
+            depth,
+            entry_count: 2,
+            entries: BTreeMap::new(),
+        };
+        if first_slot != second_slot {
+            node.entries.insert(
+                first_slot,
+                MerkleEntry::Leaf {
+                    key: first.0,
+                    value: first.1,
+                },
+            );
+            node.entries.insert(
+                second_slot,
+                MerkleEntry::Leaf {
+                    key: second.0,
+                    value: second.1,
+                },
+            );
+        } else {
+            let next_depth = depth
+                .checked_add(1)
+                .ok_or(invalid("distinct-keys-exhausted-digest"))?;
+            let child = self.split_overlay_leaves(next_depth, first, second, overlay)?;
+            node.entries.insert(
+                first_slot,
+                MerkleEntry::Node {
+                    content_id: child.content_id,
+                    entry_count: child.entry_count,
+                },
+            );
+        }
+        let content_id = calculate_node_id(&node)?;
+        overlay.insert(content_id, node);
+        Ok(NodeUpdate {
+            content_id,
+            entry_count: 2,
+            changed: true,
+        })
+    }
+
+    fn read_overlay_node(
+        &self,
+        content_id: ContentId,
+        expected_depth: u8,
+        overlay: &BTreeMap<ContentId, MerkleNode>,
+    ) -> Result<MerkleNode, CampaignStoreError> {
+        if let Some(node) = overlay.get(&content_id) {
+            if node.depth != expected_depth {
+                return Err(invalid("node-depth-mismatch"));
+            }
+            return Ok(node.clone());
+        }
+        self.read_node(content_id, expected_depth)
     }
 
     fn insert_node(
@@ -637,48 +764,22 @@ impl MerkleMap {
     }
 }
 
+fn calculate_node_id(node: &MerkleNode) -> Result<ContentId, CampaignStoreError> {
+    node.validate()?;
+    let envelope = ObjectEnvelope::for_record(
+        CampaignRecordKind::MerkleNode,
+        node.child_references()?,
+        codec::encode(node),
+    )?;
+    Ok(envelope.content_id())
+}
+
 /// Authenticated leaf values discovered while validating one complete map.
 pub(crate) struct VerifiedMerkleClosure {
     /// Authenticated root identity and entry count.
     pub(crate) root: MerkleMapRoot,
     /// Leaf values that the enclosing campaign closure must also validate.
     pub(crate) values: BTreeSet<ContentId>,
-}
-
-struct MerkleScanCursor<'a> {
-    map: &'a MerkleMap,
-    root: ContentId,
-    after: Option<CampaignHash>,
-    buffered: std::vec::IntoIter<(CampaignHash, ContentId)>,
-    exhausted: bool,
-}
-
-impl<'a> MerkleScanCursor<'a> {
-    fn new(map: &'a MerkleMap, root: ContentId) -> Self {
-        Self {
-            map,
-            root,
-            after: None,
-            buffered: Vec::new().into_iter(),
-            exhausted: false,
-        }
-    }
-
-    fn next_entry(&mut self) -> Result<Option<(CampaignHash, ContentId)>, CampaignStoreError> {
-        loop {
-            if let Some(entry) = self.buffered.next() {
-                return Ok(Some(entry));
-            }
-            if self.exhausted {
-                return Ok(None);
-            }
-
-            let page = self.map.scan(self.root, self.after, MAX_PAGE_ITEMS)?;
-            self.after = page.next_after;
-            self.exhausted = page.next_after.is_none();
-            self.buffered = page.entries.into_iter();
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -921,6 +1022,43 @@ mod tests {
 
         assert_eq!(first, second);
         assert_eq!(first.entry_count(), 5);
+    }
+
+    #[test]
+    fn read_only_upsert_equivalence_matches_persisted_roots_without_writes() {
+        let (backend, map) = map();
+        let prior = map
+            .insert(
+                map.empty().expect("empty").content_id(),
+                hash(0x12),
+                value("prior"),
+            )
+            .expect("prior root");
+        let upserts = BTreeMap::from([
+            (hash(0x1f), value("second")),
+            (hash(0xa0), value("third")),
+            (hash(0x12), value("replacement")),
+        ]);
+        let mut expected = prior;
+        for (key, value) in &upserts {
+            expected = map
+                .insert(expected.content_id(), *key, *value)
+                .expect("persisted upsert");
+        }
+        let objects_before = backend.object_count().expect("object count");
+
+        assert!(
+            map.equals_after_upserts(prior.content_id(), expected.content_id(), &upserts)
+                .expect("equivalent roots")
+        );
+        assert!(
+            !map.equals_after_upserts(prior.content_id(), prior.content_id(), &upserts)
+                .expect("different roots")
+        );
+        assert_eq!(
+            backend.object_count().expect("object count after overlay"),
+            objects_before
+        );
     }
 
     #[test]

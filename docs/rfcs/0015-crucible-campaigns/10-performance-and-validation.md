@@ -166,9 +166,40 @@ The gate proves domain cardinality is not enumerated, generator polling is
 bounded, projections paginate, and strict mode produces identical planner steps
 under shuffled completion delivery.
 
+Mutation-scale fixtures also create at least 10,000 sequential, uniquely keyed
+branch-request and lifecycle-control mutations in one campaign. A repository
+instance may remember that an immutable snapshot has passed complete ancestry
+and closure validation. The bounded checkpoint carries validated ancestry
+depth, a conservative reachable-object work bound, and projected lifecycle
+state. An exact local owner transaction may prepare its child from that basis
+without walking unchanged history, but promotes the child only after the
+authoritative ref CAS advances. Reaching a conservative work limit falls back
+to complete validation; reaching the canonical ancestry limit rejects locally
+just as restart/import validation would.
+
+Each successor also carries an authenticated coordination locator for its
+parent transition. The current head is its own direct result; every older
+command, branch request, proposal, admission, or planner result is therefore an
+indexed immutable snapshot lookup, not an ancestry scan. A head first observed
+after restart or import receives complete validation before it can seed this
+process-local checkpoint chain. Checkpoints remain bounded acceleration state,
+never campaign truth, and may be discarded at any time.
+
 - **[CPERF-6]** `gate:lazy-frontier` MUST include allocation instrumentation and
   fail if validating or polling a huge integral domain allocates proportional to
   cardinality.
+- **[CPERF-9]** Sequential local campaign mutation validation MUST be
+  proportional to the authenticated delta after the first fully validated head,
+  not to total snapshot ancestry or closure size. Imported and restarted heads
+  MUST still fail closed through complete validation before incremental
+  promotion. Checkpoint memory MUST be bounded, rejected CAS children MUST NOT
+  be promoted, exact replay MUST use authenticated result locators rather than
+  history scans, and deleting every validation checkpoint MUST preserve
+  semantics. Relative to exact anchors authenticated by the parent checkpoint,
+  incremental closure accounting MUST authenticate and charge the complete
+  newly reachable transition closure, including immutable graphs published
+  before but not reachable from the parent, plus a conservative bound for newly
+  created owner-index nodes.
 
 ## 10.7 Correctness gates
 

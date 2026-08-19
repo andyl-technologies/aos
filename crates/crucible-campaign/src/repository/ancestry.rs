@@ -20,268 +20,243 @@ impl CampaignRepository {
 
     pub(super) fn find_command_result(
         &self,
-        mut content_id: ContentId,
+        content_id: ContentId,
         request: &ControlRequest,
         replayed: bool,
     ) -> Result<CampaignCommandResult, CampaignRepositoryError> {
-        let mut visited = BTreeSet::new();
-        for _ in 0..MAX_SNAPSHOT_ANCESTRY {
-            if !visited.insert(content_id) {
-                return Err(integrity("snapshot-ancestry-cycle"));
-            }
-            let loaded = self.read_snapshot(content_id)?;
-            if let Some(transition_content) = optional_child(&loaded.envelope, "transition") {
-                let transition = self.read_fact(transition_content)?;
-                if let CampaignFact::ControlRequested(candidate) = transition
-                    && candidate.command == request.command
-                {
-                    if candidate != *request {
-                        return Err(CampaignRepositoryError::CommandReuse);
-                    }
-                    return Ok(CampaignCommandResult {
-                        prior_snapshot: request.expected_snapshot,
-                        new_snapshot: CampaignSnapshotId::from_content_id(content_id)?,
-                        replayed,
-                    });
-                }
-            }
-            let Some(parent) = optional_child(&loaded.envelope, "parent") else {
-                return Err(integrity("command-index-entry-has-no-ancestry-transition"));
-            };
-            content_id = parent;
+        let key = mutation_result_hash_key("control", request.command.as_hash());
+        let (result_content, loaded, fact) = self.mutation_result_snapshot(content_id, key)?;
+        let CampaignFact::ControlRequested(candidate) = fact else {
+            return Err(integrity("control-result-index-type-mismatch"));
+        };
+        if candidate != *request {
+            return Err(CampaignRepositoryError::CommandReuse);
         }
-        Err(integrity("snapshot-ancestry-limit"))
+        let prior_snapshot = loaded
+            .snapshot
+            .parent()
+            .ok_or_else(|| integrity("control-result-has-no-parent"))?;
+        Ok(CampaignCommandResult {
+            prior_snapshot,
+            new_snapshot: CampaignSnapshotId::from_content_id(result_content)?,
+            replayed,
+        })
     }
 
     pub(super) fn find_branch_request_result(
         &self,
-        mut content_id: ContentId,
+        content_id: ContentId,
         request: BranchRequestId,
     ) -> Result<Option<BranchRequestResult>, CampaignRepositoryError> {
-        let mut visited = BTreeSet::new();
-        for _ in 0..MAX_SNAPSHOT_ANCESTRY {
-            if !visited.insert(content_id) {
-                return Err(integrity("snapshot-ancestry-cycle"));
-            }
-            let loaded = self.read_snapshot(content_id)?;
-            if let Some(transition_content) = optional_child(&loaded.envelope, "transition") {
-                let transition = self.read_fact(transition_content)?;
-                if transition == CampaignFact::BranchRequestIssued(request) {
-                    let prior_snapshot = loaded
-                        .snapshot
-                        .parent()
-                        .ok_or_else(|| integrity("branch-request-transition-has-no-parent"))?;
-                    return Ok(Some(BranchRequestResult {
-                        prior_snapshot,
-                        new_snapshot: CampaignSnapshotId::from_content_id(content_id)?,
-                        request,
-                        replayed: true,
-                    }));
-                }
-            }
-            let Some(parent) = optional_child(&loaded.envelope, "parent") else {
-                return Ok(None);
-            };
-            content_id = parent;
+        let key = mutation_result_content_key("branch-request", request.content_id());
+        let Ok((result_content, loaded, fact)) = self.mutation_result_snapshot(content_id, key)
+        else {
+            return Ok(None);
+        };
+        if fact != CampaignFact::BranchRequestIssued(request) {
+            return Err(integrity("branch-request-result-index-type-mismatch"));
         }
-        Err(integrity("snapshot-ancestry-limit"))
+        let prior_snapshot = loaded
+            .snapshot
+            .parent()
+            .ok_or_else(|| integrity("branch-request-transition-has-no-parent"))?;
+        Ok(Some(BranchRequestResult {
+            prior_snapshot,
+            new_snapshot: CampaignSnapshotId::from_content_id(result_content)?,
+            request,
+            replayed: true,
+        }))
     }
 
     pub(super) fn find_proposal_result(
         &self,
-        mut content_id: ContentId,
+        content_id: ContentId,
         proposal: ProposalId,
     ) -> Result<Option<ProposalResult>, CampaignRepositoryError> {
-        let mut visited = BTreeSet::new();
-        for _ in 0..MAX_SNAPSHOT_ANCESTRY {
-            if !visited.insert(content_id) {
-                return Err(integrity("snapshot-ancestry-cycle"));
-            }
-            let loaded = self.read_snapshot(content_id)?;
-            if let Some(transition_content) = optional_child(&loaded.envelope, "transition") {
-                let transition = self.read_fact(transition_content)?;
-                if transition == CampaignFact::ProposalIssued(proposal) {
-                    let prior_snapshot = loaded
-                        .snapshot
-                        .parent()
-                        .ok_or_else(|| integrity("proposal-transition-has-no-parent"))?;
-                    return Ok(Some(ProposalResult {
-                        prior_snapshot,
-                        new_snapshot: CampaignSnapshotId::from_content_id(content_id)?,
-                        proposal,
-                        replayed: true,
-                    }));
-                }
-            }
-            let Some(parent) = optional_child(&loaded.envelope, "parent") else {
-                return Ok(None);
-            };
-            content_id = parent;
+        let key = mutation_result_content_key("proposal", proposal.content_id());
+        let Ok((result_content, loaded, fact)) = self.mutation_result_snapshot(content_id, key)
+        else {
+            return Ok(None);
+        };
+        if fact != CampaignFact::ProposalIssued(proposal) {
+            return Err(integrity("proposal-result-index-type-mismatch"));
         }
-        Err(integrity("snapshot-ancestry-limit"))
+        let prior_snapshot = loaded
+            .snapshot
+            .parent()
+            .ok_or_else(|| integrity("proposal-transition-has-no-parent"))?;
+        Ok(Some(ProposalResult {
+            prior_snapshot,
+            new_snapshot: CampaignSnapshotId::from_content_id(result_content)?,
+            proposal,
+            replayed: true,
+        }))
     }
 
     pub(super) fn find_attempt_admission_result(
         &self,
-        mut content_id: ContentId,
+        content_id: ContentId,
         proposal: ProposalId,
     ) -> Result<Option<AttemptAdmissionResult>, CampaignRepositoryError> {
-        let mut visited = BTreeSet::new();
-        for _ in 0..MAX_SNAPSHOT_ANCESTRY {
-            if !visited.insert(content_id) {
-                return Err(integrity("snapshot-ancestry-cycle"));
-            }
-            let loaded = self.read_snapshot(content_id)?;
-            if let Some(transition_content) = optional_child(&loaded.envelope, "transition") {
-                let transition = self.read_fact(transition_content)?;
-                if let CampaignFact::AttemptAdmitted(admission_id) = transition {
-                    let admission = self.read_attempt_admission(admission_id.content_id())?;
-                    let candidate = match admission.role() {
-                        AttemptAdmissionRole::ExecutionBasis { proposal, .. } => proposal,
-                        AttemptAdmissionRole::AdditionalCause { proposal } => Some(proposal),
-                    };
-                    if candidate == Some(proposal) {
-                        let prior_snapshot = loaded.snapshot.parent().ok_or_else(|| {
-                            integrity("attempt-admission-transition-has-no-parent")
-                        })?;
-                        return Ok(Some(AttemptAdmissionResult {
-                            prior_snapshot,
-                            new_snapshot: CampaignSnapshotId::from_content_id(content_id)?,
-                            proposal,
-                            attempt: admission.attempt(),
-                            admission: admission_id,
-                            replayed: true,
-                        }));
-                    }
-                }
-            }
-            let Some(parent) = optional_child(&loaded.envelope, "parent") else {
-                return Ok(None);
-            };
-            content_id = parent;
+        let key = mutation_result_content_key("admission", proposal.content_id());
+        let Ok((result_content, loaded, fact)) = self.mutation_result_snapshot(content_id, key)
+        else {
+            return Ok(None);
+        };
+        let CampaignFact::AttemptAdmitted(admission_id) = fact else {
+            return Err(integrity("admission-result-index-type-mismatch"));
+        };
+        let admission = self.read_attempt_admission(admission_id.content_id())?;
+        let candidate = match admission.role() {
+            AttemptAdmissionRole::ExecutionBasis { proposal, .. } => proposal,
+            AttemptAdmissionRole::AdditionalCause { proposal } => Some(proposal),
+        };
+        if candidate != Some(proposal) {
+            return Err(integrity("admission-result-index-proposal-mismatch"));
         }
-        Err(integrity("snapshot-ancestry-limit"))
+        let prior_snapshot = loaded
+            .snapshot
+            .parent()
+            .ok_or_else(|| integrity("attempt-admission-transition-has-no-parent"))?;
+        Ok(Some(AttemptAdmissionResult {
+            prior_snapshot,
+            new_snapshot: CampaignSnapshotId::from_content_id(result_content)?,
+            proposal,
+            attempt: admission.attempt(),
+            admission: admission_id,
+            replayed: true,
+        }))
     }
 
     pub(super) fn find_planner_step_result(
         &self,
-        mut content_id: ContentId,
+        content_id: ContentId,
         invocation: PlannerInvocationId,
     ) -> Result<Option<PlannerStepResult>, CampaignRepositoryError> {
-        let mut visited = BTreeSet::new();
-        for _ in 0..MAX_SNAPSHOT_ANCESTRY {
-            if !visited.insert(content_id) {
-                return Err(integrity("snapshot-ancestry-cycle"));
-            }
-            let loaded = self.read_snapshot(content_id)?;
-            if let Some(transition_content) = optional_child(&loaded.envelope, "transition") {
-                let transition = self.read_fact(transition_content)?;
-                if let CampaignFact::PlannerAdvanced(step_id) = transition {
-                    let step = self.read_planner_step(step_id.content_id())?;
-                    if step.invocation() == invocation {
-                        let prior_snapshot = loaded
-                            .snapshot
-                            .parent()
-                            .ok_or_else(|| integrity("planner-step-transition-has-no-parent"))?;
-                        return Ok(Some(PlannerStepResult {
-                            prior_snapshot,
-                            new_snapshot: CampaignSnapshotId::from_content_id(content_id)?,
-                            step: step_id,
-                            replayed: true,
-                        }));
-                    }
-                }
-            }
-            let Some(parent) = optional_child(&loaded.envelope, "parent") else {
-                return Ok(None);
-            };
-            content_id = parent;
+        let key = mutation_result_content_key("planner", invocation.content_id());
+        let Ok((result_content, loaded, fact)) = self.mutation_result_snapshot(content_id, key)
+        else {
+            return Ok(None);
+        };
+        let CampaignFact::PlannerAdvanced(step_id) = fact else {
+            return Err(integrity("planner-result-index-type-mismatch"));
+        };
+        let step = self.read_planner_step(step_id.content_id())?;
+        if step.invocation() != invocation {
+            return Err(integrity("planner-result-index-invocation-mismatch"));
         }
-        Err(integrity("snapshot-ancestry-limit"))
+        let prior_snapshot = loaded
+            .snapshot
+            .parent()
+            .ok_or_else(|| integrity("planner-step-transition-has-no-parent"))?;
+        Ok(Some(PlannerStepResult {
+            prior_snapshot,
+            new_snapshot: CampaignSnapshotId::from_content_id(result_content)?,
+            step: step_id,
+            replayed: true,
+        }))
     }
 
-    pub(super) fn mutation_command_exists(
+    pub(super) fn parent_result_upsert(
         &self,
-        mut content_id: ContentId,
-        command: crate::CampaignCommandId,
+        content_id: ContentId,
+        loaded: &LoadedSnapshot,
+    ) -> Result<Option<(CampaignHash, ContentId)>, CampaignRepositoryError> {
+        let Some(transition_content) = optional_child(&loaded.envelope, "transition") else {
+            return Ok(None);
+        };
+        let fact = self.read_fact(transition_content)?;
+        Ok(self
+            .mutation_result_key(&fact)?
+            .map(|key| (key, content_id)))
+    }
+
+    pub(super) fn coordination_with_parent_result(
+        &self,
+        content_id: ContentId,
+        loaded: &LoadedSnapshot,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        let root = loaded.snapshot.roots().coordination;
+        let Some((key, value)) = self.parent_result_upsert(content_id, loaded)? else {
+            return Ok(root);
+        };
+        Ok(self.merkle.insert(root, key, value)?.content_id())
+    }
+
+    pub(super) fn coordination_matches_parent_result(
+        &self,
+        parent: &LoadedSnapshot,
+        next: ContentId,
     ) -> Result<bool, CampaignRepositoryError> {
-        let mut visited = BTreeSet::new();
-        for _ in 0..MAX_SNAPSHOT_ANCESTRY {
-            if !visited.insert(content_id) {
-                return Err(integrity("snapshot-ancestry-cycle"));
-            }
-            let loaded = self.read_snapshot(content_id)?;
-            if let Some(transition_content) = optional_child(&loaded.envelope, "transition") {
-                match self.read_fact(transition_content)? {
-                    CampaignFact::ControlRequested(request) if request.command == command => {
-                        return Ok(true);
-                    }
-                    CampaignFact::BranchRequestIssued(request) => {
-                        let request = self.read_branch_request(request.content_id())?;
-                        if request.cause() == BranchRequestCause::Operator(command) {
-                            return Ok(true);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            let Some(parent) = optional_child(&loaded.envelope, "parent") else {
-                return Ok(false);
-            };
-            content_id = parent;
-        }
-        Err(integrity("snapshot-ancestry-limit"))
+        let parent_content = parent.envelope.content_id();
+        let upserts = self
+            .parent_result_upsert(parent_content, parent)?
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        self.merkle
+            .equals_after_upserts(parent.snapshot.roots().coordination, next, &upserts)
+            .map_err(CampaignRepositoryError::from)
     }
 
-    pub(super) fn project_state(
+    fn mutation_result_snapshot(
         &self,
-        mut content_id: ContentId,
-    ) -> Result<ProjectedState, CampaignRepositoryError> {
-        let mut actions = Vec::new();
-        let mut visited = BTreeSet::new();
-        for _ in 0..MAX_SNAPSHOT_ANCESTRY {
-            if !visited.insert(content_id) {
-                return Err(integrity("snapshot-ancestry-cycle"));
-            }
-            let loaded = self.read_snapshot(content_id)?;
-            let parent_id = loaded.snapshot.parent();
-            let parent_content = optional_child(&loaded.envelope, "parent");
-            let transition_content = optional_child(&loaded.envelope, "transition");
-            match (parent_id, parent_content, transition_content) {
-                (None, None, None) => {
-                    actions.reverse();
-                    let mut projected = ProjectedState::new();
-                    for action in &actions {
-                        projected.apply(action)?;
-                    }
-                    return Ok(projected);
-                }
-                (Some(parent_id), Some(parent_content), Some(transition_content)) => {
-                    self.read_snapshot(parent_content)?;
-                    if CampaignSnapshotId::from_content_id(parent_content)? != parent_id {
-                        return Err(integrity("parent-logical-id-mismatch"));
-                    }
-                    let transition = self.read_fact(transition_content)?;
-                    match transition {
-                        CampaignFact::ControlRequested(request) => {
-                            if request.expected_snapshot != parent_id {
-                                return Err(integrity("transition-precondition-parent-mismatch"));
-                            }
-                            actions.push(request.action);
-                        }
-                        CampaignFact::BranchRequestIssued(_)
-                        | CampaignFact::ProposalIssued(_)
-                        | CampaignFact::AttemptAdmitted(_)
-                        | CampaignFact::PlannerAdvanced(_) => {}
-                        _ => {
-                            return Err(integrity("snapshot-transition-type-is-not-implemented"));
-                        }
-                    }
-                    content_id = parent_content;
-                }
-                _ => return Err(integrity("snapshot-parent-transition-shape")),
+        current_content: ContentId,
+        key: CampaignHash,
+    ) -> Result<(ContentId, LoadedSnapshot, CampaignFact), CampaignRepositoryError> {
+        let current = self.read_snapshot(current_content)?;
+        if let Some(transition_content) = optional_child(&current.envelope, "transition") {
+            let fact = self.read_fact(transition_content)?;
+            if self.mutation_result_key(&fact)? == Some(key) {
+                return Ok((current_content, current, fact));
             }
         }
-        Err(integrity("snapshot-ancestry-limit"))
+
+        let result_content = self
+            .merkle
+            .get(current.snapshot.roots().coordination, key)?
+            .ok_or_else(|| integrity("mutation-result-index-missing"))?;
+        let loaded = self.read_snapshot(result_content)?;
+        let transition_content = optional_child(&loaded.envelope, "transition")
+            .ok_or_else(|| integrity("mutation-result-index-target-has-no-transition"))?;
+        let fact = self.read_fact(transition_content)?;
+        if self.mutation_result_key(&fact)? != Some(key) {
+            return Err(integrity("mutation-result-index-key-mismatch"));
+        }
+        Ok((result_content, loaded, fact))
+    }
+
+    fn mutation_result_key(
+        &self,
+        fact: &CampaignFact,
+    ) -> Result<Option<CampaignHash>, CampaignRepositoryError> {
+        let key = match fact {
+            CampaignFact::ControlRequested(request) => {
+                mutation_result_hash_key("control", request.command.as_hash())
+            }
+            CampaignFact::BranchRequestIssued(request) => {
+                mutation_result_content_key("branch-request", request.content_id())
+            }
+            CampaignFact::ProposalIssued(proposal) => {
+                mutation_result_content_key("proposal", proposal.content_id())
+            }
+            CampaignFact::AttemptAdmitted(admission) => {
+                let admission = self.read_attempt_admission(admission.content_id())?;
+                let proposal = match admission.role() {
+                    AttemptAdmissionRole::ExecutionBasis {
+                        proposal: Some(proposal),
+                        ..
+                    }
+                    | AttemptAdmissionRole::AdditionalCause { proposal } => proposal,
+                    AttemptAdmissionRole::ExecutionBasis { proposal: None, .. } => return Ok(None),
+                };
+                mutation_result_content_key("admission", proposal.content_id())
+            }
+            CampaignFact::PlannerAdvanced(step) => {
+                let step = self.read_planner_step(step.content_id())?;
+                mutation_result_content_key("planner", step.invocation().content_id())
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(key))
     }
 }

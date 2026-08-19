@@ -7,21 +7,142 @@ impl CampaignRepository {
         &self,
         head: ContentId,
     ) -> Result<(), CampaignRepositoryError> {
-        self.validate_snapshot_ancestry(head)?;
-        self.verify_campaign_closure(head)
+        self.load_validation_checkpoint(head).map(|_| ())
+    }
+
+    fn load_validation_checkpoint(
+        &self,
+        head: ContentId,
+    ) -> Result<ValidationCheckpoint, CampaignRepositoryError> {
+        if let Some(checkpoint) = self.validation_checkpoints().get(&head).copied() {
+            return Ok(checkpoint);
+        }
+
+        let (ancestry_depth, lifecycle) = self.validate_snapshot_ancestry(head)?;
+        let closure_objects = self.verify_campaign_closure(head)?;
+        let checkpoint = ValidationCheckpoint {
+            ancestry_depth,
+            closure_objects,
+            lifecycle,
+        };
+        self.remember_validation_checkpoint(head, checkpoint);
+        Ok(checkpoint)
+    }
+
+    pub(super) fn prepare_local_successor_checkpoint(
+        &self,
+        parent: ContentId,
+        child: ContentId,
+        action: Option<&CampaignControlAction>,
+        closure_growth_upper: usize,
+    ) -> Result<ValidationCheckpoint, CampaignRepositoryError> {
+        // Transaction helpers have already authenticated their inputs and
+        // constructed the exact owner delta. This final shape check prevents a
+        // future caller from promoting an unrelated object while avoiding a
+        // second walk over the immutable parent closure.
+        let loaded = self.read_snapshot(child)?;
+        if loaded.snapshot.parent().map(CampaignSnapshotId::content_id) != Some(parent)
+            || optional_child(&loaded.envelope, "parent") != Some(parent)
+            || loaded.snapshot.transition().is_none()
+            || optional_child(&loaded.envelope, "transition").is_none()
+        {
+            return Err(integrity("local-successor-checkpoint-shape"));
+        }
+        let transition_content = optional_child(&loaded.envelope, "transition")
+            .ok_or_else(|| integrity("local-successor-checkpoint-shape"))?;
+        let parent_checkpoint = self.load_validation_checkpoint(parent)?;
+        let parent_snapshot = self.read_snapshot(parent)?;
+        let ancestry_depth = parent_checkpoint
+            .ancestry_depth
+            .checked_add(1)
+            .ok_or_else(|| integrity("snapshot-ancestry-limit"))?;
+        if ancestry_depth > MAX_SNAPSHOT_ANCESTRY {
+            return Err(integrity("snapshot-ancestry-limit"));
+        }
+        let mut lifecycle = parent_checkpoint.lifecycle;
+        if let Some(action) = action {
+            lifecycle.apply(action)?;
+        }
+        // A transition may make a large, already-published object graph newly
+        // reachable. Relative to exact parent-owned anchors, authenticate and
+        // charge that complete new closure in addition to the conservative
+        // bound for constructed snapshot and Merkle nodes, so a local
+        // checkpoint never understates restart validation.
+        let anchors = self.incremental_closure_anchors(&parent_snapshot, transition_content)?;
+        let linked_objects = self.verify_campaign_closure_anchored(transition_content, &anchors)?;
+        let closure_growth_upper = closure_growth_upper
+            .checked_add(linked_objects)
+            .ok_or_else(|| integrity("campaign-closure-object-limit"))?;
+        let closure_objects = parent_checkpoint
+            .closure_objects
+            .checked_add(closure_growth_upper)
+            .ok_or_else(|| integrity("campaign-closure-object-limit"))?;
+        if closure_objects <= MAX_CLOSURE_OBJECTS {
+            return Ok(ValidationCheckpoint {
+                ancestry_depth,
+                closure_objects,
+                lifecycle,
+            });
+        }
+
+        let (ancestry_depth, lifecycle) = self.validate_snapshot_ancestry(child)?;
+        let closure_objects = self.verify_campaign_closure(child)?;
+        Ok(ValidationCheckpoint {
+            ancestry_depth,
+            closure_objects,
+            lifecycle,
+        })
+    }
+
+    pub(super) fn promote_local_successor(
+        &self,
+        parent: ContentId,
+        child: ContentId,
+        checkpoint: ValidationCheckpoint,
+    ) {
+        let mut checkpoints = self.validation_checkpoints();
+        checkpoints.remove(&parent);
+        if checkpoints.len() >= MAX_VALIDATED_HEADS {
+            checkpoints.clear();
+        }
+        checkpoints.insert(child, checkpoint);
+    }
+
+    pub(super) fn current_lifecycle(
+        &self,
+        head: ContentId,
+    ) -> Result<ProjectedState, CampaignRepositoryError> {
+        Ok(self.load_validation_checkpoint(head)?.lifecycle)
+    }
+
+    fn remember_validation_checkpoint(&self, head: ContentId, checkpoint: ValidationCheckpoint) {
+        let mut checkpoints = self.validation_checkpoints();
+        if checkpoints.len() >= MAX_VALIDATED_HEADS {
+            checkpoints.clear();
+        }
+        checkpoints.insert(head, checkpoint);
+    }
+
+    fn validation_checkpoints(
+        &self,
+    ) -> std::sync::MutexGuard<'_, BTreeMap<ContentId, ValidationCheckpoint>> {
+        match self.validated_heads.lock() {
+            Ok(checkpoints) => checkpoints,
+            Err(poisoned) => poisoned.into_inner(),
+        }
     }
 
     pub(super) fn validate_snapshot_ancestry(
         &self,
         mut content_id: ContentId,
-    ) -> Result<(), CampaignRepositoryError> {
+    ) -> Result<(usize, ProjectedState), CampaignRepositoryError> {
         let mut snapshots = BTreeSet::new();
         let mut verified_roots = BTreeSet::new();
         let mut seen_commands = BTreeSet::new();
         let mut expected_lineage = None;
         let mut actions = Vec::new();
 
-        for _ in 0..MAX_SNAPSHOT_ANCESTRY {
+        for depth in 1..=MAX_SNAPSHOT_ANCESTRY {
             if !snapshots.insert(content_id) {
                 return Err(integrity("snapshot-ancestry-cycle"));
             }
@@ -44,7 +165,7 @@ impl CampaignRepository {
                     for action in &actions {
                         projected.apply(action)?;
                     }
-                    return Ok(());
+                    return Ok((depth, projected));
                 }
                 (Some(parent), Some(transition)) => {
                     let transition_fact = self.read_fact(transition.content_id())?;
@@ -76,6 +197,7 @@ impl CampaignRepository {
                                 &parent_snapshot,
                                 &loaded,
                                 request,
+                                transition.content_id(),
                             )?;
                         }
                         CampaignFact::ProposalIssued(proposal) => {
@@ -173,7 +295,6 @@ impl CampaignRepository {
             || prior_roots.coverage != next_roots.coverage
             || prior_roots.findings != next_roots.findings
             || prior_roots.pins != next_roots.pins
-            || prior_roots.coordination != next_roots.coordination
         {
             return Err(integrity("control-transition-changed-nonaccounting-root"));
         }
@@ -205,6 +326,9 @@ impl CampaignRepository {
         )? {
             return Err(integrity("control-transition-accounting-root-mismatch"));
         }
+        if !self.coordination_matches_parent_result(parent, next_roots.coordination)? {
+            return Err(integrity("control-transition-coordination-root-mismatch"));
+        }
         Ok(())
     }
 
@@ -213,6 +337,7 @@ impl CampaignRepository {
         parent: &LoadedSnapshot,
         child: &LoadedSnapshot,
         request: BranchRequestId,
+        transition_content: ContentId,
     ) -> Result<(), CampaignRepositoryError> {
         if child.snapshot.lineage() != parent.snapshot.lineage()
             || child.snapshot.active_policy() != parent.snapshot.active_policy()
@@ -230,8 +355,6 @@ impl CampaignRepository {
             || prior_roots.coverage != next_roots.coverage
             || prior_roots.findings != next_roots.findings
             || prior_roots.pins != next_roots.pins
-            || prior_roots.accounting != next_roots.accounting
-            || prior_roots.coordination != next_roots.coordination
         {
             return Err(integrity(
                 "branch-request-transition-changed-unrelated-root",
@@ -265,6 +388,44 @@ impl CampaignRepository {
                 "branch-request-transition-exploration-root-mismatch",
             ));
         }
+        match request_record.cause() {
+            BranchRequestCause::Operator(command) => {
+                let command_key = map_key_hash("accounting.command", command.as_hash());
+                if self
+                    .merkle
+                    .get(prior_roots.accounting, command_key)?
+                    .is_some()
+                {
+                    return Err(integrity("branch-request-transition-reused-command"));
+                }
+                if !self.merkle.equals_after_upserts(
+                    prior_roots.accounting,
+                    next_roots.accounting,
+                    &BTreeMap::from([(command_key, transition_content)]),
+                )? {
+                    return Err(integrity(
+                        "branch-request-transition-accounting-root-mismatch",
+                    ));
+                }
+            }
+            BranchRequestCause::Planner(_)
+            | BranchRequestCause::ExhaustivePolicy(_)
+            | BranchRequestCause::Debugger(_)
+                if prior_roots.accounting != next_roots.accounting =>
+            {
+                return Err(integrity(
+                    "branch-request-transition-changed-accounting-root",
+                ));
+            }
+            BranchRequestCause::Planner(_)
+            | BranchRequestCause::ExhaustivePolicy(_)
+            | BranchRequestCause::Debugger(_) => {}
+        }
+        if !self.coordination_matches_parent_result(parent, next_roots.coordination)? {
+            return Err(integrity(
+                "branch-request-transition-coordination-root-mismatch",
+            ));
+        }
         Ok(())
     }
 
@@ -289,7 +450,6 @@ impl CampaignRepository {
             || prior_roots.findings != next_roots.findings
             || prior_roots.pins != next_roots.pins
             || prior_roots.accounting != next_roots.accounting
-            || prior_roots.coordination != next_roots.coordination
         {
             return Err(integrity("proposal-transition-changed-unrelated-root"));
         }
@@ -333,6 +493,9 @@ impl CampaignRepository {
         )? {
             return Err(integrity("proposal-transition-exploration-root-mismatch"));
         }
+        if !self.coordination_matches_parent_result(parent, next_roots.coordination)? {
+            return Err(integrity("proposal-transition-coordination-root-mismatch"));
+        }
         Ok(())
     }
 
@@ -358,7 +521,6 @@ impl CampaignRepository {
             || prior_roots.coverage != next_roots.coverage
             || prior_roots.findings != next_roots.findings
             || prior_roots.pins != next_roots.pins
-            || prior_roots.coordination != next_roots.coordination
         {
             return Err(integrity(
                 "attempt-admission-transition-changed-unrelated-root",
@@ -400,6 +562,11 @@ impl CampaignRepository {
         )? {
             return Err(integrity(
                 "attempt-admission-transition-accounting-root-mismatch",
+            ));
+        }
+        if !self.coordination_matches_parent_result(parent, next_roots.coordination)? {
+            return Err(integrity(
+                "attempt-admission-transition-coordination-root-mismatch",
             ));
         }
         Ok(())
@@ -455,11 +622,19 @@ impl CampaignRepository {
                 return Err(integrity("planner-step-transition-reused-index"));
             }
         }
-        let upserts = BTreeMap::from([
+        let mut upserts = BTreeMap::from([
             (step_key, step_content),
             (invocation_key, step_content),
             (planner_head_key(), step_content),
         ]);
+        if let Some((key, value)) =
+            self.parent_result_upsert(parent.envelope.content_id(), parent)?
+        {
+            if self.merkle.get(prior_roots.coordination, key)?.is_some() {
+                return Err(integrity("planner-step-transition-reused-result-index"));
+            }
+            upserts.insert(key, value);
+        }
         if !self.merkle.equals_after_upserts(
             prior_roots.coordination,
             next_roots.coordination,
@@ -496,7 +671,7 @@ impl CampaignRepository {
         }
         for root in snapshot_roots(&loaded.snapshot) {
             if verified_roots.insert(root) {
-                self.merkle.verify_closure(root)?;
+                self.merkle.inspect_shallow(root)?;
             }
         }
         Ok(())
@@ -505,20 +680,181 @@ impl CampaignRepository {
     pub(super) fn verify_campaign_closure(
         &self,
         root: ContentId,
-    ) -> Result<(), CampaignRepositoryError> {
+    ) -> Result<usize, CampaignRepositoryError> {
+        self.verify_campaign_closure_anchored(root, &BTreeSet::new())
+    }
+
+    fn incremental_closure_anchors(
+        &self,
+        parent: &LoadedSnapshot,
+        transition: ContentId,
+    ) -> Result<BTreeSet<ContentId>, CampaignRepositoryError> {
+        let mut anchors = BTreeSet::from([
+            parent.envelope.content_id(),
+            parent.snapshot.lineage().content_id(),
+            parent.snapshot.active_policy().content_id(),
+        ]);
+        anchors.extend(snapshot_roots(&parent.snapshot));
+
+        // These immutable basis records were authenticated with the parent.
+        // Anchor their direct reusable roots as well because a new transition
+        // can reference them without passing through the basis record itself.
+        for basis in [
+            parent.snapshot.lineage().content_id(),
+            parent.snapshot.active_policy().content_id(),
+        ] {
+            let handle = self.blobs.read(basis, None)?;
+            let envelope =
+                ObjectEnvelope::from_canonical_bytes(&handle.read_all(MAX_ENVELOPE_BYTES)?)?;
+            if envelope.content_id() != basis {
+                return Err(integrity("incremental-closure-anchor-envelope-id"));
+            }
+            anchors.extend(envelope.children().iter().map(crate::ChildReference::id));
+        }
+
+        let roots = parent.snapshot.roots();
+        if let Some(step) = self.merkle.get(roots.coordination, planner_head_key())? {
+            anchors.insert(step);
+            let envelope =
+                self.require_record_kind(step, crate::CampaignRecordKind::PlannerStep)?;
+            anchors.extend(envelope.children().iter().map(crate::ChildReference::id));
+        }
+
+        match self.read_fact(transition)? {
+            CampaignFact::BranchRequestIssued(request_id) => {
+                let request = self.decode_branch_request(request_id.content_id())?;
+                if let BranchRequestCause::Planner(invocation) = request.cause()
+                    && self
+                        .merkle
+                        .get(
+                            roots.coordination,
+                            planner_invocation_result_key(invocation),
+                        )?
+                        .is_some()
+                {
+                    anchors.insert(invocation.content_id());
+                }
+            }
+            CampaignFact::ProposalIssued(proposal_id) => {
+                let proposal = self.decode_proposal(proposal_id.content_id())?;
+                let request = proposal.request().content_id();
+                if self.merkle.get(
+                    roots.exploration,
+                    map_key_content("exploration.branch-request", request),
+                )? == Some(request)
+                {
+                    anchors.insert(request);
+                }
+                if let Some(invocation) = proposal.planner_invocation()
+                    && self
+                        .merkle
+                        .get(
+                            roots.coordination,
+                            planner_invocation_result_key(invocation),
+                        )?
+                        .is_some()
+                {
+                    anchors.insert(invocation.content_id());
+                }
+            }
+            CampaignFact::AttemptAdmitted(admission_id) => {
+                let admission = self.decode_attempt_admission(admission_id.content_id())?;
+                let proposal = match admission.role() {
+                    AttemptAdmissionRole::ExecutionBasis {
+                        proposal: Some(proposal),
+                        ..
+                    }
+                    | AttemptAdmissionRole::AdditionalCause { proposal } => Some(proposal),
+                    AttemptAdmissionRole::ExecutionBasis { proposal: None, .. } => None,
+                };
+                if let Some(proposal) = proposal {
+                    let proposal = proposal.content_id();
+                    if self.merkle.get(
+                        roots.exploration,
+                        map_key_content("exploration.proposal", proposal),
+                    )? == Some(proposal)
+                    {
+                        anchors.insert(proposal);
+                    }
+                }
+            }
+            CampaignFact::PlannerAdvanced(step_id) => {
+                let envelope = self.require_record_kind(
+                    step_id.content_id(),
+                    crate::CampaignRecordKind::PlannerStep,
+                )?;
+                let step = PlannerStep::from_canonical_bytes(envelope.body())?;
+                if step.id()? != step_id {
+                    return Err(integrity("planner-step-envelope-shape"));
+                }
+                let (_, invocation) =
+                    self.decode_planner_invocation(step.invocation().content_id())?;
+                let mut sources = invocation
+                    .scan_page()
+                    .positions()
+                    .iter()
+                    .map(|position| position.source().content_id())
+                    .collect::<BTreeSet<_>>();
+                if let Some(after) = invocation.scan_page().after() {
+                    sources.insert(after.source().content_id());
+                }
+                for source in sources {
+                    if self.merkle.get(
+                        roots.exploration,
+                        map_key_content("exploration.branch-request", source),
+                    )? == Some(source)
+                    {
+                        anchors.insert(source);
+                    }
+                }
+            }
+            CampaignFact::ChoiceOpportunityDiscovered(_)
+            | CampaignFact::ControlRequested(_)
+            | CampaignFact::ObservationPublished(_)
+            | CampaignFact::FindingPublished(_)
+            | CampaignFact::AttemptClosed { .. }
+            | CampaignFact::PolicyActivated(_)
+            | CampaignFact::BudgetGranted(_)
+            | CampaignFact::PinChanged(_) => {}
+        }
+        Ok(anchors)
+    }
+
+    fn verify_campaign_closure_anchored(
+        &self,
+        root: ContentId,
+        anchors: &BTreeSet<ContentId>,
+    ) -> Result<usize, CampaignRepositoryError> {
         let mut stack = vec![root];
         let mut visited = BTreeSet::new();
+        let mut verified_merkle_positions = BTreeSet::new();
 
         while let Some(id) = stack.pop() {
+            if anchors.contains(&id) {
+                continue;
+            }
             if !visited.insert(id) {
                 continue;
             }
-            if visited.len() > MAX_CLOSURE_OBJECTS {
+            if visited
+                .len()
+                .checked_add(verified_merkle_positions.len())
+                .is_none_or(|objects| objects > MAX_CLOSURE_OBJECTS)
+            {
                 return Err(integrity("campaign-closure-object-limit"));
             }
 
             if id.kind() == ObjectKind::MerkleNode {
-                let verified = self.merkle.verify_closure_objects(id)?;
+                let verified = self
+                    .merkle
+                    .verify_closure_objects_cached(id, &mut verified_merkle_positions)?;
+                if visited
+                    .len()
+                    .checked_add(verified_merkle_positions.len())
+                    .is_none_or(|objects| objects > MAX_CLOSURE_OBJECTS)
+                {
+                    return Err(integrity("campaign-closure-object-limit"));
+                }
                 stack.extend(verified.values);
                 continue;
             }
@@ -606,6 +942,9 @@ impl CampaignRepository {
             }
             stack.extend(envelope.children().iter().map(crate::ChildReference::id));
         }
-        Ok(())
+        visited
+            .len()
+            .checked_add(verified_merkle_positions.len())
+            .ok_or_else(|| integrity("campaign-closure-object-limit"))
     }
 }

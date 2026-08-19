@@ -172,11 +172,17 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   `CampaignService`, pure `PlannerEngine`, and local `ExecutorService` schemas;
   provide direct and loopback-RPC adapters, golden vectors, fake components,
   capability negotiation, idempotent assignment, and component conformance.
+- [x] **T-CAM-4.10** Replace repeated full-history validation on local owner
+  mutations with bounded immutable validated-head/lifecycle checkpoints and
+  authenticated membership and result-locator indexes; promote only after ref
+  CAS, retain full fail-closed validation for imported or restarted heads, and
+  exercise 10,000 mixed request/control mutations plus deep exact replay.
 
 **Gates:** `gate:branch-point-model`, `gate:lazy-frontier`,
 `gate:attempt-idempotence`, `gate:campaign-replay`,
 `gate:campaign-statistics`, `gate:component-contract`,
-`gate:control-responsiveness`, `gate:harness-lint`.
+`gate:control-responsiveness`, `gate:campaign-mutation-scaling`,
+`gate:harness-lint`.
 
 **Manual gate:** accepted §14 Phase 4 local campaign flight.
 
