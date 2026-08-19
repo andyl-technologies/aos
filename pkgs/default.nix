@@ -709,8 +709,17 @@
     filePackages // subdirPackages;
 
   discoveredPackages = discoverPackages ./.;
+  # Discovered factory modules are callable package constructors, not
+  # derivations. Keep them in `pkgs` for their consumers, but never advertise
+  # them as buildable `pkg-*` flake outputs or aggregate build dependencies.
+  # This explicit structural inventory preserves lazy package enumeration:
+  # probing every value with tryEval would execute unrelated IFDs.
+  packageFactories = [
+    "aos-uki"
+    "dbus-conf"
+  ];
   packageNames = builtins.attrNames (
-    builtins.removeAttrs discoveredPackages ["trivial-builders"]
+    builtins.removeAttrs discoveredPackages (["trivial-builders"] ++ packageFactories)
     // {
       nuke-references = null;
       qemu-crucible = null;
