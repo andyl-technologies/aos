@@ -17,6 +17,11 @@ mkDerivation {
 
   runtimeDeps = [aos edk2 gptfdisk qemu];
 
+  # This package copies the base CLI launcher so it can add the VM-specific
+  # environment without another shell process. Preserve the launcher's
+  # intentional references to the base CLI runtime closure.
+  dontNukeRefs = true;
+
   phases = [
     {
       name = "install";
