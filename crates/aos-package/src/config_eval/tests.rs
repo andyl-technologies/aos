@@ -15,6 +15,23 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
 
 use super::*;
+
+#[test]
+fn host_selection_entry_quotes_unusual_paths_without_nix_interpolation() {
+    let rendered = render_host_selection_entry(
+        Path::new("/tmp/base lib;\")"),
+        Path::new("/tmp/host-${builtins.abort \"injected\"}.nix"),
+    );
+
+    assert!(
+        rendered.contains("import \"/tmp/base lib;\\\")\""),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("import \"/tmp/host-\\${builtins.abort \\\"injected\\\"}.nix\""),
+        "{rendered}"
+    );
+}
 use crate::types::{
     ConfigModuleMeta, ConfigOutputMeta, ModuleAbiCompat, OwnedRoot, RootContribution,
 };

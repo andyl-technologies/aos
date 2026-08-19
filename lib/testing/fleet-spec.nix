@@ -30,6 +30,8 @@
     name = "unspecified";
     description = "any value";
   };
+  diskSourceType = types.addCheck unspecifiedType (value:
+    builtins.isString value || builtins.isFunction value);
 
   positiveInt = types.addCheck types.int (v: v > 0);
   extraDiskType = types.submodule {
@@ -40,15 +42,39 @@
       };
       sizeMiB = mkOption {
         type = positiveInt;
-        description = "Capacity of the empty additional disk in MiB.";
+        description = "Capacity of the additional disk in MiB.";
+      };
+      source = mkOption {
+        type = types.nullOr diskSourceType;
+        default = null;
+        description = ''
+          Optional raw disk image copied into the per-run writable disk.
+          A function receives the effective machine system and returns the raw
+          image path, which lets artifacts match test-only modules baked by the
+          fleet harness. When absent, the driver creates an empty sparse disk.
+        '';
+      };
+      readOnly = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Attach the additional disk read-only to the guest.";
+      };
+      removable = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Report USB storage as removable media. QEMU defaults USB storage to
+          fixed media, so tests of removable-device policy must opt in.
+        '';
       };
       interface = mkOption {
-        type = types.enum ["virtio" "scsi"];
+        type = types.enum ["virtio" "scsi" "usb"];
         default = "virtio";
         description = ''
           QEMU interface used for the additional disk. Virtio preserves the
           existing stable-path contract; SCSI keeps auxiliary disks outside
-          the root virtio block-device namespace.
+          the root virtio block-device namespace; USB models a removable
+          transport such as authenticated recovery media.
         '';
       };
     };
@@ -140,7 +166,8 @@
         type = types.listOf extraDiskType;
         default = [];
         description = ''
-          Empty block devices attached in addition to the root disk. Virtio
+          Block devices attached in addition to the root disk. They are empty
+          by default or may be initialized from a raw source image. Virtio
           devices expose /dev/disk/by-id/virtio-<serial>; SCSI devices are
           available for tests that must preserve root-disk enumeration.
         '';

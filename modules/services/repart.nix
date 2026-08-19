@@ -65,7 +65,11 @@ in {
         };
         script = ''
           set -uo pipefail
-          klog() { echo "aos-repart: $*" > /dev/kmsg 2>/dev/null || echo "aos-repart: $*" >&2; }
+          # The service already routes stderr to the journal and console.
+          # Writing command output synchronously through /dev/kmsg can keep a
+          # completed repart process stuck in the oneshot on some virtio block
+          # devices, so diagnostics must use the service output channel only.
+          klog() { echo "aos-repart: $*" >&2; }
 
           if [ -e /dev/disk/by-partlabel/aos-provisioning-pending-v1 ]; then
             klog "pending provisioning marker found; refusing automatic replay"
@@ -88,6 +92,15 @@ in {
           root_disk="/dev/$root_name"
           targets=/run/aos-metadata/repart-targets
 
+          repart_seed() {
+            seed=$(blkid -p -s PTUUID -o value "$1") || return 1
+            case "$seed" in
+              ""|*[!0-9A-Fa-f-]*) return 1 ;;
+            esac
+            [ "''${#seed}" -eq 36 ] || return 1
+            printf '%s\n' "$seed"
+          }
+
           if [ -n "$committed" ]; then
             klog "durable $committed provisioning marker present; disk mutation is frozen"
             if [ ! -s "$targets" ]; then
@@ -100,13 +113,19 @@ in {
             drift=0
             while IFS="$(printf '\t')" read -r target definitions; do
               [ "$target" = root ] && target="$root_disk"
+              seed=$(repart_seed "$target") || {
+                klog "cannot derive a GPT repart seed for $target"
+                drift=1
+                continue
+              }
               klog "checking committed target=$target definitions=$definitions"
               if ! result=$(systemd-repart \
                 --definitions="/run/aos-metadata/repart.d/$definitions" \
                 --dry-run=yes \
                 --empty=allow \
+                --seed="$seed" \
                 --json=short \
-                "$target" 2>/dev/kmsg); then
+                "$target"); then
                 klog "unable to compare current storage intent for $target; continuing"
                 drift=1
                 continue
@@ -134,28 +153,65 @@ in {
           # Preflight every disk before mutating any disk.
           while IFS="$(printf '\t')" read -r target definitions; do
             [ "$target" = root ] && target="$root_disk"
+            seed=$(repart_seed "$target") || {
+              klog "cannot derive a GPT repart seed for $target"
+              exit 1
+            }
             klog "preflight target=$target definitions=$definitions"
             systemd-repart \
               --definitions="/run/aos-metadata/repart.d/$definitions" \
               --dry-run=yes \
               --empty=allow \
-              "$target" > /dev/kmsg 2>&1 || exit 1
+              --seed="$seed" \
+              "$target" >&2 || exit 1
           done < "$targets"
 
           while IFS="$(printf '\t')" read -r target definitions; do
             [ "$target" = root ] && target="$root_disk"
+            seed=$(repart_seed "$target") || {
+              klog "cannot derive a GPT repart seed for $target"
+              exit 1
+            }
             klog "applying target=$target definitions=$definitions"
-            if ! systemd-repart \
+            timeout --signal=TERM --kill-after=5s 30s systemd-repart \
               --definitions="/run/aos-metadata/repart.d/$definitions" \
               --dry-run=no \
               --empty=allow \
-              "$target" > /dev/kmsg 2>&1; then
+              --seed="$seed" \
+              "$target" >&2
+            repart_status=$?
+            if [ "$repart_status" -eq 124 ]; then
+              # A kernel partition-table rescan can leave repart waiting on
+              # teardown even after it has logged successful completion. The
+              # transaction remains ambiguous until a fresh, bounded dry run
+              # proves that every requested partition is unchanged.
+              klog "systemd-repart timed out after applying $target; verifying the resulting layout"
+              result=$(timeout --signal=TERM --kill-after=5s 15s systemd-repart \
+                --definitions="/run/aos-metadata/repart.d/$definitions" \
+                --dry-run=yes \
+                --empty=allow \
+                --seed="$seed" \
+                --json=short \
+                "$target") || {
+                  klog "cannot verify the layout after the timed-out repart operation"
+                  exit 1
+                }
+              printf '%s\n' "$result" | jq -e \
+                'all(.[]; .activity == "unchanged")' >/dev/null || {
+                  klog "repart timed out before the requested layout was complete"
+                  exit 1
+                }
+              klog "verified the complete layout after the bounded repart timeout"
+            elif [ "$repart_status" -ne 0 ]; then
               klog "systemd-repart failed; pending marker requires explicit recovery"
               exit 1
             fi
           done < "$targets"
 
-          udevadm settle || true
+          # The label polls below are the authoritative readiness checks.
+          # Bound udev's global queue wait so an unrelated device event cannot
+          # wedge the one-time provisioning transaction after repart succeeds.
+          udevadm settle --timeout=10 || true
           i=0
           while [ ! -e /dev/disk/by-partlabel/aos-provisioning-pending-v1 ] \
             && [ "$i" -lt 60 ]; do
@@ -176,7 +232,7 @@ in {
             *) klog "unknown provisioning source '$source'"; exit 1 ;;
           esac
           sfdisk --part-label "$root_disk" "$part_number" "$committed"
-          udevadm settle || true
+          udevadm settle --timeout=10 || true
 
           i=0
           while [ ! -e "/dev/disk/by-partlabel/$committed" ] && [ "$i" -lt 60 ]; do
@@ -187,7 +243,10 @@ in {
             klog "committed marker did not materialize"
             exit 1
           fi
-          klog "committed $committed; future boots will not mutate disks"
+          # The durable marker is the transaction boundary. Report completion
+          # through the service's journal/console stream.
+          echo "aos-repart: committed $committed; future boots will not mutate disks" >&2
+          exit 0
         '';
       };
 

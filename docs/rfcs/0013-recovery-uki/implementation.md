@@ -5,6 +5,141 @@ explicitly safer than the current one. File names are current-tree anchors;
 implementation may factor helpers as needed while preserving the RFC's
 invariants.
 
+## Implementation status
+
+Phases 1 through 8 are implemented, and the complete measured-boot fleet
+qualification exercises the normal A/B path, both recovery copies, interrupted
+publication, signed-media restore, identity rejection, TPM policy, and real
+counted-root corruption with known-good fallback. The implementation details
+and continuing deployment escrow prerequisite are recorded below. Every base
+initrd now carries an impossible root
+password hash and masks the upstream interactive emergency and rescue
+services. The debug profile retains separate, explicitly enabled direct
+gettys; its stage-2 empty root password remains part of that development-only
+posture. Security checks distinguish those two configurations instead of
+weakening the production assertion.
+
+The fleet negative test boots a production-profile image directly into the
+initrd emergency target, proves that the target was reached and switch-root
+did not occur, and rejects any sulogin, login, or debug-shell prompt in the
+serial transcript. The rendered initrd unit topology supplies the complementary
+proof that both interactive upstream services resolve to `/dev/null`.
+
+Verity images now install a single generator-path boot-identity guard. It
+requires the complete canonical normal tuple, including exactly one
+`rd.luks=0` so automatic LUKS discovery cannot race the AOS `/var` unlocker,
+and rejects duplicate scalars, uppercase hashes, recovery selectors, verity
+options, rd/non-rd systemd
+control aliases, and generator-provided unit or drop-in controls. Non-verity
+images do not install this strict production guard; they retain the locked
+initrd boundary from Phase 1.
+
+The guarded initrd removes `systemd-debug-generator`,
+`systemd-run-generator`, and duplicate discoverable copies of the verity
+generator from systemd's compiled-in immutable-store directory. The upstream
+verity implementation remains only under a private, non-generator path; debug
+images continue to use their explicit gettys, not kernel-command-line generator
+controls. After PID 1 has established procfs and the final `/run` mount, a
+dedicated oneshot validates the command line and invokes that private
+implementation against private staging directories. It accepts only the exact
+generated root unit, publishes that unit, reloads PID 1, queues it behind the
+static guard, and publishes the success marker last. The generated verity unit
+and all `/var` consumers require the guard, so parsing untrusted input does not
+authorize any storage effect. Validation and verity parsing deliberately do not
+depend on generator-time `/proc`, and the private generator cannot publish
+output itself. Rejection isolates to the passive failure target; that target
+explicitly permits isolation and conflicts with initrd root and switch-root.
+Verity initrds additionally mask the emergency and rescue targets themselves,
+so their failure jobs cannot win the transaction before the passive target.
+`systemd-veritysetup@root`, `/var` unlock, and `/var` mounting all require the
+success marker. This makes the guard a storage dependency instead of a
+diagnostic race.
+
+Because dm-verity authenticates blocks on demand, the normal initrd also reads
+the complete root mapper before `/var` can be unlocked or mounted. A counted
+image whose signed identity is valid but whose root data is corrupt therefore
+fails into the same passive target without releasing persistent state.
+
+The AOS systemd-stub also treats an embedded UKI `.cmdline` as authoritative.
+Db-signed PE-addon and SMBIOS command-line fragments are measured into PCR 12
+but are not appended when an embedded command line exists. A recovery UKI then
+refuses the launch, because it has no TPM-authorized degraded mode to preserve.
+This boundary is earlier than PID 1: selectors such as `rd.systemd.unit=` and
+`rdinit=` must not be allowed to choose a process or target before a userspace
+validator can run.
+Under enforcing Secure Boot, systemd-boot measures Type #1 entry options into
+PCR 12 and the stub discards them when an embedded command line exists, while
+unsigned addons are rejected by the image loader before command-line
+measurement. The initrd parser remains a defense-in-depth check for any
+forbidden control field that nevertheless reaches the effective command line.
+
+Phase 2 validates internal consistency but cannot by itself distinguish a
+complete valid slot-A tuple appended in place of slot B (or the reverse),
+because both UKIs currently share the same initrd. Phase 3 closes that
+authorization gap: `/var` enrollment pins PCRs 7 and 12 and uses the signed
+PCR-11 policy. Recovery-key-authorized migration keeps the old TPM token until
+the exact replacement token has been tested and durable transaction evidence
+has been published. Quote verification retains PCR 12 through both local and
+remote policy decisions.
+
+Secure Boot plus verity images now build two separately signed, uncounted
+recovery UKIs. Each contains a copy-specific dedicated initrd, the exact
+recovery command line, an embedded db-signed slot manifest, and no normal
+`.pcrsig`. The recovery unit graph starts kernel-module loading before the UI
+so required storage targets such as dm-crypt are registered. It has no normal
+root, switch-root, TPM unlock, provisioning, activation, package management,
+debug getty, or automatic network path. The console application accepts only
+fixed menu operations.
+
+Normal slot verification shares the Phase-2 command-line parser. It verifies
+the UKI's Authenticode signature, copy/slot/release identity, root hash, and
+dm-verity tree without mounting the root. One-shot boot consumes an in-memory
+capability created by a successful verification in the same process. Access
+to `/var`, a maintenance shell, or restore writes requires the exact retained
+`systemd-recovery` token and its off-machine recovery key; no credential is
+embedded in the image.
+
+Image-generation state records the paired recovery copy, known-good copy, and
+pending publication. The existing inactive-slot transaction writes root and
+verity data, stages the normal UKI, publishes and read-back-verifies the
+matching recovery UKI and uncounted entry, and exposes the counted normal UKI
+last. Injected cuts at every publication boundary in both A-to-B and B-to-A
+directions must leave the opposite recovery copy unchanged.
+
+Neither the state record nor an ESP digest is retention authority. Initial
+seeding re-verifies the paired recovery UKI against the deployment db
+certificate retained directly in the initrd's immutable closure. Every later
+inactive-slot update re-verifies the retained recovery UKI against the
+build-configured certificate snapshot in the immutable running toplevel. Both
+paths require its signed command line, release, copy, and ABI to match the
+canonical record. The updater likewise authenticates every discoverable normal
+UKI and derives its slot from the signed command line; mutable generation state
+must agree. A retry after candidate publication first disarms that exact
+candidate again and replays the transaction, while any other mixed
+discoverable/disabled state fails closed.
+
+The image build also emits a fixed-layout removable-media bundle. Its strict
+ten-component manifest is authenticated by the deployment db key and repeated
+in the signed release catalog; the consumer requires both representations to
+agree. Recovery mounts only the fixed `AOS-RECOVERY` filesystem on a
+kernel-reported removable parent outside the installed disk, read-only,
+rejects unaccounted or non-regular files, verifies all sizes and digests before
+authorization, re-verifies every UKI's Authenticode signature and signed
+slot/copy identity, and permits writes only to the slot opposite the running
+recovery copy. Recovery and its loader entry are published before the restored
+normal counted UKI.
+
+The same deployment db hierarchy authenticates recovery UKIs, slot metadata,
+the release catalog, and the detached removable-bundle manifest. There is no
+second ad-hoc recovery trust root. This authenticates code and payloads, not
+the operator: destructive or state-bearing operations still require the
+per-machine LUKS recovery key.
+
+Production maintenance remains gated on the Phase-6 escrow prerequisite.
+Building the recovery environment does not prove that a deployment has
+off-host generation, retrieval, rotation, removal, and incident exercises for
+its per-machine recovery keys.
+
 ## Phase 1: Lock the normal initrd
 
 ### 1.1 Base shadow entry
@@ -63,19 +198,32 @@ non-identity fields such as `console=` remain permitted.
 Share test vectors with the later recovery slot verifier so runtime and
 off-line interpretation cannot drift.
 
+The first implementation configures no verity options and therefore rejects
+`systemd.verity_root_options` rather than accepting an arbitrary nonempty
+value. A future configured option must be matched exactly before the allowlist
+is widened.
+
 ### 2.2 Generator integration
 
 Run validation before upstream verity generator output becomes actionable.
-Preferred implementation order:
+Supported implementation shapes are:
 
 1. a small AOS wrapper installed at the normal generator path that validates
    then invokes the renamed upstream `systemd-veritysetup-generator`; or
 2. a focused downstream systemd patch that performs the same uniqueness and
-   tuple checks in the upstream parser.
+   tuple checks in the upstream parser; or
+3. an unmodified upstream verity implementation kept under a private,
+   non-generator path and invoked by an AOS runtime guard. The guard runs only
+   after procfs and `/run` are authoritative, validates the live command line,
+   invokes upstream against private directories, publishes only the exact root
+   unit, reloads PID 1, queues the unit behind itself, and publishes the success
+   marker last.
 
 A separate generator that merely races the upstream generator is not
-acceptable. A later oneshot remains useful for image-state reconciliation but
-is not the security boundary.
+acceptable. In the third shape, the private implementation is not discoverable
+by PID 1 and its staged output is inert until the guard has validated it. The
+verity unit and every `/var` path carry hard dependencies on the guard rather
+than relying on generator order.
 
 Make `aos-var-crypt.service` require a successful normal-mode guard and add an
 explicit negative condition for `aos.recovery=1`.
@@ -85,14 +233,29 @@ shell, and recovery selectors unless they are part of the exact supported
 signed posture. A guard failure enters a noninteractive fail-closed target; it
 must not route attacker-controlled input into `emergency.target`.
 
+Both `rd.` and non-`rd.` aliases are rejected for target, wants, debug shell,
+breakpoint, transient command, and environment controls. Unit/drop-in command
+line injection is rejected by prefix. The initrd also omits the upstream
+generators that implement these controls, so later parser drift cannot silently
+re-enable them.
+
 ### 2.3 Negative coverage
 
-Boot with firmware/SMBIOS-added duplicates for each identity field and assert:
+Parser vectors cover duplicates of every identity field and every forbidden
+systemd control alias. Executable tests cover every earlier transport boundary:
 
-- the verity mapper is not accepted as the root;
-- `/var` is not TPM-unlocked or mounted;
-- no normal initrd root shell is available; and
-- the failure is attributed to the guard in the journal/console.
+- EFI LoadOptions from a Type #1 entry are measured by systemd-boot, then
+  discarded by the stub under enforcing Secure Boot; the embedded command line
+  remains intact while the changed PCR 12 denies unattended `/var` unlock;
+- a db-signed addon and SMBIOS fragments are measured but discarded, leaving
+  the embedded command line intact while the changed PCR 12 denies unattended
+  `/var` unlock;
+- an unsigned addon is rejected before measurement and the clean boot proceeds;
+- an SMBIOS fragment supplied while booting a recovery UKI is measured and the
+  launch is refused before the kernel or bounded console starts;
+  and
+- after every changed-PCR negative, a clean relaunch restores the signed PCR
+  value and the exact retained recovery key still authorizes the volume.
 
 ## Phase 3: Bind `/var` to PCR 12
 
@@ -110,11 +273,24 @@ Prove that supported clean boots share the policy's expected PCR-12 state. Any
 current feature that intentionally extends PCR 12 must be modeled before the
 default changes.
 
+The measured-boot fleet path performs a bootloader/PCR qualification by
+populating the inactive slot from the verified A bytes, booting the slot-B UKI
+under a counted Type-2 filename, committing it with `systemd-bless-boot`, and
+observing the subsequent stable reboot. Because the immutable payload is
+intentionally identical, this does not claim to exercise APM's distinct-image
+generation transition; the fixture restores the exact coherent slot-A image
+index before later production-service tests. It requires the reset PCR-12
+value for clean A, counted B, committed B, and the ordinary post-commit B
+reboot. The test driver can relaunch the same writable disk,
+firmware-variable store, and vTPM state with an exact SMBIOS Type-11 string set
+so firmware-provided boot inputs are tested rather than simulated in the
+guest.
+
 ### 3.2 Enrollment policy
 
-Change `aos.boot.secureBoot.measuredBoot.pinnedPcrs` from `"7"` to `"7,12"`
-and update option documentation, system fixture documentation, recovery docs,
-and tests.
+Change `aos.boot.secureBoot.measuredBoot.pinnedPcrs` from `"7"` to `"7+12"`
+(systemd's plus-separated command syntax) and update option documentation,
+system fixture documentation, recovery docs, and tests.
 
 Implement recovery-key-authorized token migration:
 
@@ -124,13 +300,45 @@ Implement recovery-key-authorized token migration:
 4. publish durable migration evidence; and
 5. remove the PCR-7-only token only after successful verification.
 
+`aos-var-policy-migrate` implements this as a recovery-key-authenticated,
+idempotent transaction. It snapshots the LUKS2 JSON metadata, adds the new
+token without wiping the old one, and validates the token ID and keyslot, PCR
+7+12 pin, signed PCR 11 selection, embedded public-key bytes, SHA-256 bank, and
+absence of alternate token modes. The supplied recovery key must open the
+single keyslot named by the retained `systemd-recovery` token before and after
+the transaction. The exact new external token is tested using systemd's
+canonical runtime signature path. Generated recovery-key files contain the
+canonical key bytes without a presentation newline; migration removes line
+feeds from a conventional one-line input file before direct exact-keyslot
+verification, matching systemd's recovery-key reader.
+
+Evidence advances atomically through `prepared`, `verified`, and `complete`
+states, with file and containing-directory synchronization at each published
+boundary. The `verified` record contains the exact retained and removal
+keyslots before cleanup begins. Resume accepts only a subset of that recorded
+removal set, so partial cleanup cannot expand its authority. Completed evidence
+is validated and preserved byte-for-byte on idempotent reruns. The record
+contains metadata digests, LUKS UUID, public-key digest, exact token identities,
+and policy without recording key material.
+
 An interrupted migration retains at least one working authorized unlock path.
+
+Generation quote verification carries PCR 12 through the checked quote instead
+of discarding it. Local boot commit compares quoted PCR 12 with the live TPM;
+remote verification requires `aos.gen-attestation-policy/v2` and compares it
+with the operator-authorized `expected_pcr12`. Version 1 policy is rejected
+because it has no PCR-12 authorization field.
 
 ### 3.3 Injection tests
 
-Inject an appended command line that changes PCR 12 and prove automatic unlock
-fails. Exercise at least `SYSTEMD_SULOGIN_FORCE=1`, a duplicate `roothash=`, and
-an alternate `rd.systemd.unit=`. The recovery key must still unlock the volume.
+Inject an external command-line fragment that changes PCR 12 and prove the
+stub measures but does not append it and automatic unlock fails. Exercise at
+least `SYSTEMD_SULOGIN_FORCE=1`, a duplicate `roothash=`, and an alternate
+`rd.systemd.unit=`; also exercise `rdinit=/bin/sh` because it is consumed by
+the kernel before PID 1. The recovery key must still unlock the volume.
+The fleet test also extends PCR 12 directly after a valid boot to isolate the
+TPM-policy property: exact TPM-token use and local boot-commit verification
+must fail, while the exact retained recovery keyslot must still open.
 
 ## Phase 4: Build the dedicated recovery initrd and UKI
 
@@ -147,13 +355,21 @@ unit set and a closure check over forbidden executables/services.
 
 ### 4.2 Recovery target
 
-Add `aos-recovery.target` with `DefaultDependencies=no`. It requires only the
-console, minimal udev/device discovery, read-only EFI variable access, and the
-recovery UI service.
+Add `aos-recovery.target` with `DefaultDependencies=no`. It requires only
+kernel-module loading, the console, minimal udev/device discovery, read-only
+EFI variable access, and the recovery UI service. Module loading is a hard
+ordering dependency of the target so storage targets needed by explicit
+authenticated operations are registered before the UI starts.
 
 The UI is a dedicated Rust subcommand or binary using structured operations.
 Do not construct a shell script that interpolates user-selected devices,
-paths, or commands.
+paths, or commands. Its fixed `AOS recovery>` prompt gives the executable
+tests an unambiguous marker for entry into the bounded interface.
+
+Systemd owns the efivarfs API mount. Before starting the UI, recovery remounts
+that existing filesystem read-only and fails closed if the remount fails; a
+same-session verified one-shot operation alone may temporarily remount it
+read-write and must restore it read-only before rebooting.
 
 ### 4.3 UKI builder
 
@@ -162,8 +378,12 @@ uses the normal Secure Boot key/certificate but omits `pcrPrivateKey` and
 `pcrPublicKey`, yielding no signed normal PCR-11 authorization.
 
 Produce `recovery-a.efi` and `recovery-b.efi` with release/recovery-ABI metadata
-and the signed recovery command line. Verify their PE signatures during the
-build.
+and the signed recovery command line. The command line pins
+`console=ttyS0,115200` so the bounded interface works on headless systems
+without accepting a mutable console selector. The recovery UI service binds
+directly to `/dev/ttyS0`; it does not depend on the synthetic `/dev/console`
+device unit, which is not guaranteed to appear in the recovery initrd. Verify
+their PE signatures during the build.
 
 ### 4.4 Image assembly
 
@@ -214,6 +434,12 @@ Prompt through `systemd-ask-password` and invoke `cryptsetup` with token-based
 automatic unlock disabled. Select the LUKS recovery slot by its supported token
 semantics rather than guessing a keyslot number.
 
+The prompt process inherits the recovery service's fixed serial TTY. Use the
+packaged `systemd-ask-password` interface directly; do not depend on an
+unsupported `--tty` compatibility option. Pipe its newline-delimited response
+to cryptsetup's stdin passphrase mode, not `--key-file=-`, so the line delimiter
+does not become part of the enrolled recovery key.
+
 On success, mount `/var` with the normal security flags and record that the
 session is authenticated. On failure, close any partial mapping, erase key
 material from temporary storage, and return to the bounded menu.
@@ -221,8 +447,10 @@ material from temporary storage, and return to the bounded menu.
 ### 6.2 Maintenance shell
 
 Only an authenticated recovery session may start the maintenance shell. The
-shell receives an explicit PATH of AOS-built tools, no automatic network, and a
-clear banner describing the mounted state and selected recovery copy.
+shell receives an explicit PATH of AOS-built tools, including the fixed
+directory-creation, mount/unmount, and file-copy tools needed to repair
+authenticated persistent and ESP state, no automatic network, and a clear
+banner describing the mounted state and selected recovery copy.
 
 Ending the shell unmounts `/var`, closes the mapping, clears session evidence,
 and returns to the menu or powers off. A shell exit must not implicitly bless a
@@ -246,7 +474,22 @@ Extend image-generation state with recovery copy metadata sufficient to prove:
 - whether an inactive-copy publication transaction is pending.
 
 The state is evidence, not authority for Secure Boot or component digest
-verification.
+verification. At seed, authenticate the paired copy against the immutable db
+certificate embedded by reference in the initrd closure. Immediately before an
+inactive slot is touched, authenticate the retained recovery copy against the
+immutable running toplevel's configured db-certificate snapshot and its signed
+command-line/os-release identity. Normal UKIs carry a signed
+`AOS_RELEASE_ID`, rather than `VERSION_ID`, because the latter is deliberately
+omitted from Type #2 normal entries so local generation filenames remain the
+only boot-order authority. Recovery UKIs retain `VERSION_ID` for their
+human-facing release identity. The snapshot includes the current image
+signer and every build-configured rotation-overlap certificate, so an old-slot
+UKI remains usable during an intentional overlap. It is not the mutable
+registry roster: retiring a provisioned certificate requires a replacement
+image that removes it from `sbDbCerts`, followed by qualification and firmware
+db/dbx rollout. Mutable `/etc` trust files are never authority for this check.
+Authenticate each installed normal UKI the same way and classify its slot from
+that signed command line; reject disagreement with mutable generation state.
 
 ### 7.2 Transaction integration
 
@@ -257,7 +500,9 @@ recovery UKI/entry, followed by candidate arming.
 Use temporary files, read-back verification, sync, and recoverable journals in
 the same manner as the current normal UKI transaction. Recovery of an
 interrupted journal must never choose deletion of the opposite known-good
-recovery copy.
+recovery copy. A cut after normal-UKI publication but before stale-file cleanup
+is replayable only when the sole discoverable inactive UKI is the exact
+intended destination; disarm it again before replaying writes.
 
 ### 7.3 Boot tests
 
@@ -277,8 +522,10 @@ stronger than the existing test that corrupts only a copied image and invokes
 ### 8.1 Bundle manifest
 
 Define a versioned manifest over the existing root, verity, slot UKI, recovery
-UKI, image metadata, platform, and module/recovery ABI outputs. Authenticate it
-through the current signed system-image release catalog.
+UKI, image metadata, platform, and module/recovery ABI outputs. Publication
+requires exact equality with the copy in the signed system-image release
+catalog. The removable copy also carries a direct deployment-db signature so
+the offline initrd can authenticate it without registry state or networking.
 
 Add strict size limits, path-free component identifiers, exact digests, and
 architecture/platform constraints. The parser rejects unknown required fields,
@@ -302,7 +549,14 @@ restoration write. The authorization check may close the mapping without
 mounting `/var`. Default restoration targets only the slot opposite the
 recovery copy selected as known good. Display the resolved persistent devices,
 source generation, and destructive effect; require exact confirmation; then
-reuse the normal inactive-slot writer and read-back verification.
+use the dedicated-initrd writer with the same inactive-slot ordering and
+read-back contract as the normal writer. It remains dependency-free so the
+recovery closure does not acquire APM, registry, or activation code; shared
+crash-cut tests are the compatibility boundary between the two implementations.
+Disabled inactive-slot UKIs are removed only after the new counted UKI is
+synced and read back successfully. A retry reclassifies and disarms the exact
+authenticated target set before replay, preventing both stale bootability and
+unbounded ESP accumulation.
 
 An authenticated maintenance session may request replacement of the retained
 slot, but the tool must first prove the other recovery copy boots and validates

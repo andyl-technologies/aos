@@ -1,0 +1,45 @@
+diff --git a/src/nix-instantiate/nix-instantiate.cc b/src/nix-instantiate/nix-instantiate.cc
+index c93c9b6b8..f2ab0a737 100644
+--- a/src/nix-instantiate/nix-instantiate.cc
++++ b/src/nix-instantiate/nix-instantiate.cc
+@@ -2,6 +2,7 @@
+ #include "print-ambiguous.hh"
+ #include "shared.hh"
+ #include "eval.hh"
++#include "eval-settings.hh"
+ #include "eval-inline.hh"
+ #include "get-drvs.hh"
+ #include "attr-path.hh"
+@@ -103,6 +103,7 @@ static int main_nix_instantiate(int argc, char * * argv)
+         bool strict = false;
+         Strings attrPaths;
+         bool wantsReadWrite = false;
++        Strings aosPureEvalInputs;
+ 
+         struct MyArgs : LegacyArgs, MixEvalArgs
+         {
+@@ -127,6 +128,12 @@ static int main_nix_instantiate(int argc, char * * argv)
+                 parseOnly = evalOnly = true;
+             else if (*arg == "--find-file")
+                 findFile = true;
++            else if (*arg == "--aos-pure-eval-input") {
++                auto path = getArg(*arg, arg, end);
++                if (path.empty() || path.front() != '/')
++                    throw UsageError("--aos-pure-eval-input requires an absolute path");
++                aosPureEvalInputs.push_back(canonPath(path));
++            }
+             else if (*arg == "--attr" || *arg == "-A")
+                 attrPaths.push_back(getArg(*arg, arg, end));
+             else if (*arg == "--add-root")
+@@ -160,5 +167,11 @@ static int main_nix_instantiate(int argc, char * * argv)
+ 
+         auto state = std::make_unique<EvalState>(myArgs.lookupPath, evalStore, fetchSettings, evalSettings, store);
+         state->repair = myArgs.repair;
++        if (!aosPureEvalInputs.empty() && !evalSettings.pureEval)
++            throw UsageError("--aos-pure-eval-input requires pure evaluation mode");
++        for (auto & path : aosPureEvalInputs) {
++            debug("admitting AOS pure-eval input '%s'", path);
++            state->allowPath(path);
++        }
+ 
+         Bindings & autoArgs = *myArgs.getAutoArgs(*state);

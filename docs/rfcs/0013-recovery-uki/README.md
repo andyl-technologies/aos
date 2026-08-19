@@ -1,6 +1,6 @@
 # RFC-0013: A/B-aware signed recovery UKIs and initrd fail-closed hardening
 
-- **Status:** Proposed
+- **Status:** Implemented
 - **Date:** 2026-08-17
 - **Audience:** maintainers of `modules/image/`, `modules/base/_initrd-builder.nix`,
   `modules/base/secure-boot.nix`, `modules/services/boot-substrate.nix`,
@@ -248,10 +248,12 @@ used for normal UKIs. It contains:
 The signed command line is equivalent to:
 
 ```text
-rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0
+console=ttyS0,115200 rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0
 ```
 
-It does not contain `root=`, `roothash=`, or normal verity device hints because
+The fixed serial console makes the bounded operator interface available on
+headless systems without accepting a mutable console selector. It does not
+contain `root=`, `roothash=`, or normal verity device hints because
 the recovery environment runs entirely from the initrd. The recovery initrd
 does not switch root.
 
@@ -394,17 +396,26 @@ recovery-A UKI digest and recovery ABI
 recovery-B UKI digest and recovery ABI
 ```
 
-The manifest is authenticated through the existing signed system-image release
-catalog. A separate ad-hoc recovery signing hierarchy is not introduced.
-Recovery media may be removable local storage. Network retrieval is a later
-transport over the same authenticated bundle format, not a second trust model.
+Publication requires the manifest to equal the copy in the signed system-image
+release catalog. Offline recovery additionally verifies a direct signature by
+the deployment db key already embedded in the recovery UKI; it does not carry
+or replay the registry catalog chain. This makes the same deployment trust root
+usable without networking and does not introduce an ad-hoc recovery signing
+hierarchy. Recovery media may be removable local storage. Network retrieval is
+a later transport over the same authenticated bundle format, not a second
+trust model.
 
-Inactive-slot restoration uses the existing system-image transaction's write,
-read-back verification, ESP temporary-file, sync, and publication primitives.
-Recovery does not invent a second block-writing implementation. The running
-normal slot concept is absent in recovery, so the retained recovery-copy rule
-supplies the safety boundary: by default only the slot opposite the selected
-known-good recovery copy may be overwritten.
+Inactive-slot restoration follows the existing system-image transaction's
+write, read-back verification, ESP temporary-file, sync, and publication
+contract. The dedicated initrd cannot link the full APM/sysroot implementation
+without defeating its closure boundary, so its small dependency-free writer
+implements the same ordered state machine: disarm the inactive normal UKI,
+write and read back root and verity, publish recovery UKI and entry, then
+publish the counted normal UKI last. Both writers share the same crash-cut
+invariants and qualification matrix rather than a process or library
+dependency. The running normal slot concept is absent in recovery, so the
+retained recovery-copy rule supplies the safety boundary: by default only the
+slot opposite the selected known-good recovery copy may be overwritten.
 
 ## Recovery update lifecycle
 
@@ -541,16 +552,31 @@ denial of service is out of scope.
 
 ### Appended `roothash=` or slot device
 
-The early guard detects the duplicate or invalid tuple before verity/root
-activation. The normal initrd remains locked. PCR 12 changes, so `/var` TPM
-unlock also fails.
+For a db-signed addon or SMBIOS source, the AOS EFI stub measures the external
+fragment into PCR 12 but does not append it when the UKI has an embedded signed
+command line. The kernel therefore sees the single signed root identity, while
+the changed PCR 12 denies `/var` TPM unlock. Under enforcing Secure Boot,
+systemd-boot measures Type #1 entry options into PCR 12 and the stub discards
+them when an embedded command line exists. Unsigned addons are rejected by the
+image loader before command-line measurement and leave PCR 12 unchanged. If a
+duplicate or invalid tuple reaches the effective command line by another path,
+the initrd guard rejects it before verity/root activation.
+
+Recovery UKIs have no TPM-authorized degraded mode to preserve. If a db-signed
+addon or SMBIOS source supplies an external command-line fragment, the stub
+measures it and refuses the recovery launch before starting the kernel. A clean
+relaunch remains available from the separately signed recovery entry.
 
 ### Appended `SYSTEMD_SULOGIN_FORCE=1`
 
-The normal-mode guard rejects the token, PCR 12 denies `/var` auto-unseal, and
-the base initrd contains no interactive `sulogin` unit for the token to force.
-Guard failure enters a noninteractive fail-closed target rather than
-`emergency.target`. No persistent state or shell is exposed.
+When supplied by a db-signed addon or SMBIOS, the AOS EFI stub measures but
+does not append the token, so it cannot select an init process or force a
+prompt before userspace validation. PCR 12 denies `/var` auto-unseal, and the
+base initrd contains no interactive `sulogin` unit. EFI LoadOptions and unsigned
+addons follow the separate handling described above. If the token reaches the
+effective command line by another path, the normal-mode guard rejects it into
+the noninteractive fail-closed target rather than `emergency.target`. No
+persistent state or shell is exposed.
 
 ### Tampered recovery UKI
 
@@ -640,11 +666,14 @@ UI. After step 1, ordinary initrd failures intentionally have no interactive
 shell until the signed recovery path lands. Operators of development fixtures
 retain explicit debug autologin.
 
-The recovery initrd publishes a `recovery_abi`. A recovery UKI may inspect
-older/newer slots only when their image metadata version is supported. It must
-report an unsupported version rather than guessing. Format transitions retain
-the previous recovery copy until the new recovery ABI has booted successfully
-in CI and on the candidate machine.
+The recovery initrd publishes a `recovery_abi`. Version 1 accepts only ABI 1;
+the build option is constrained to that value rather than advertising an
+unsupported version. A recovery UKI may inspect slots only when their image
+metadata version is supported and reports an unsupported version rather than
+guessing. A future format transition must add an explicit qualification state
+that retains the previous recovery copy until the new recovery ABI has booted
+successfully in CI and on the candidate machine; the v1 paired-normal commit
+record is not evidence of such a future ABI qualification.
 
 ## Acceptance criteria
 
@@ -676,7 +705,7 @@ The RFC is implemented only when all of the following are automated:
 
 ## Documentation impact
 
-Once implemented, the user recovery guide must distinguish:
+The implemented user recovery guide distinguishes:
 
 - automatic counted-boot fallback;
 - bounded unauthenticated recovery diagnostics;
@@ -685,6 +714,6 @@ Once implemented, the user recovery guide must distinguish:
 - full external reimage when firmware, ESP, both recovery copies, or encrypted
   state is unrecoverable.
 
-Until those gates pass, the current documentation remains authoritative: use a
-known-good image, console or external rescue environment, and independently
-escrowed deployment inputs.
+Deployment procedures must still retain independently escrowed recovery keys,
+trust anchors, accepted configuration, and authenticated external reimage
+inputs outside the host.

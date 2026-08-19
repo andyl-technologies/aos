@@ -879,6 +879,8 @@ pub fn system_image_registry(root: &Path) -> SystemImageFixture {
             sbat: Vec::new(),
             expected_pcr11: None,
             ukis: Vec::new(),
+            recovery_ukis: Vec::new(),
+            recovery_bundle: None,
             root_image: None,
             root_verity: None,
             root_hash: None,
