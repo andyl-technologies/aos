@@ -5,17 +5,6 @@ members = [
     "aos-core",
     "aos-boot-identity",
     "aos-recovery",
-    "aos-nix",
-    "aos-nix-syntax",
-    "aos-nix-compat",
-    "aos-nix-dialect",
-    "ratchet-core",
-    "ratchet-dialect",
-    "ratchet-cache",
-    "ratchet-jit",
-    "ratchet-runtime-ffi",
-    "ratchet-value",
-    "ratchet-oracle",
     "aos-net",
     "aos-proto",
     "aos-proto-types",
@@ -58,28 +47,20 @@ license = "Apache-2.0"
 # Shared dependencies
 anyhow = "1"
 thiserror = "2"
-miette = { version = "7", features = ["fancy"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-bincode = "1.3.3"
 # `application/x-www-form-urlencoded` (de)serialization — the same decoder
 # axum 0.8's `Form` extractor uses, so hand-routing a form body to a shared
 # handler reproduces axum's parsing exactly.
 serde_urlencoded = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "process", "signal", "macros", "net", "io-util", "io-std", "fs", "time"] }
 sha2 = "0.10"
-sha1 = "0.10"
-md-5 = "0.11"
 blake3 = { version = "1", default-features = false, features = ["std", "pure"] }
-ring = "0.17"
 hmac = "0.12"
 base64 = "0.22"
 aes-gcm = "0.10"
 zeroize = "1"
 regex = "1"
-stacker = "0.1.24"
-smallvec = "1"
-crossbeam-deque = "0.8"
 glob = "0.3"
 ignore = "0.4"
 hex = "0.4"
@@ -90,7 +71,6 @@ humantime = "2"
 humantime-serde = "1"
 tracing = "0.1"
 alejandra = "3.1.0"
-xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 # HTTP / networking
 bytes = "1"
@@ -177,8 +157,6 @@ rayon = "1"
 # zlib (de)compression for loose git objects (dumb-HTTP reader + hub indexer);
 # pure-Rust rust_backend so it stays wasm-clean for the Cloudflare Worker.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-bzip2 = { version = "0.5", features = ["static"] }
-xz2 = { version = "0.1", features = ["static"] }
 # Pure-Rust NAR decompressors used by the mirror/pull-through to verify a
 # compressed NAR's *decompressed* bytes against the signed NarHash (sec CR-1).
 # In-process (no subprocess) so the verification path cannot be subverted by a
@@ -189,16 +167,6 @@ bzip2-rs = "0.1"
 # Dev
 tempfile = "3"
 libc = "0.2"
-loom = "0.7"
-proptest = "1"
-
-# Native Nix evaluator code generation and compatibility oracle.
-cranelift-codegen = { version = "=0.127.4", features = ["enable-serde"] }
-cranelift-jit = "=0.127.4"
-cranelift-module = "=0.127.4"
-cranelift-native = "=0.127.4"
-target-lexicon = "=0.13.5"
-nix-compat = { git = "https://git.snix.dev/snix/snix.git", rev = "f9a731021455c402430af1aa1ab749fd2f66293d", package = "nix-compat", default-features = false }
 
 # ConnectRPC
 connectrpc = { version = "0.3", features = ["server", "client", "client-tls", "axum"] }
@@ -220,17 +188,6 @@ rcgen = "0.14"
 crucible-cas = { path = "crucible-cas" }
 aos-core = { path = "aos-core" }
 aos-boot-identity = { path = "aos-boot-identity" }
-aos-nix = { path = "aos-nix" }
-aos-nix-syntax = { path = "aos-nix-syntax" }
-aos-nix-compat = { path = "aos-nix-compat" }
-aos-nix-dialect = { path = "aos-nix-dialect" }
-ratchet-core = { path = "ratchet-core" }
-ratchet-dialect = { path = "ratchet-dialect" }
-ratchet-cache = { path = "ratchet-cache" }
-ratchet-jit = { path = "ratchet-jit" }
-ratchet-runtime-ffi = { path = "ratchet-runtime-ffi" }
-ratchet-value = { path = "ratchet-value" }
-ratchet-oracle = { path = "ratchet-oracle" }
 aos-net = { path = "aos-net" }
 aos-proto = { path = "aos-proto" }
 aos-proto-types = { path = "aos-proto-types" }

@@ -11,7 +11,7 @@
 //! # Module map
 //!
 //! - [`classify`] — the fragile string parse of stock-Nix throw strings into
-//!   the [`EvalClass`] seam (build-spec §2). P2 aos-nix replaces exactly this.
+//!   the [`EvalClass`] seam (build-spec §2).
 //! - [`stock`] — the production [`NixEvaluator`] that renders `entry.nix`,
 //!   shells out to `nix-instantiate --store dummy:// --eval --strict --json
 //!   --pure-eval
@@ -25,11 +25,9 @@
 //!
 //! # The seam
 //!
-//! Everything the P2 evaluator must keep stable is `eval(working_set, host_nix,
-//! base_lib) -> Result<EvalClass>`. The resolver, the registry index, the fetch
-//! order (config output first), the `module_abi` gate, and the manifest
-//! contract are identical on both evaluators; swapping P1↔P2 changes only how
-//! [`EvalClass`] is produced.
+//! The evaluator boundary is `eval(working_set, host_nix, base_lib) ->
+//! Result<EvalClass>`. The resolver, registry index, fetch order (config output
+//! first), `module_abi` gate, and manifest contract remain outside it.
 //!
 //! # Failure-safe
 //!
@@ -43,7 +41,6 @@ pub mod classify;
 pub mod diagnostics;
 pub mod dry_run;
 pub mod materialize;
-pub mod native;
 pub mod runtime;
 pub mod stock;
 pub mod system_roots;
@@ -215,8 +212,6 @@ pub struct IterRecord {
 pub struct FixpointOutcome {
     /// The JSON manifest text the final eval produced.
     pub manifest: String,
-    /// First-class native option access graph for the converged evaluation.
-    pub option_graph: aos_core::nix::native::OptionGraph,
     /// The converged working set (seed plus every fetched provider).
     pub working_set: Vec<WorkingSetMember>,
     /// The causal chain of provider additions.
@@ -525,11 +520,9 @@ pub struct EvalAttempt<'a> {
 
 /// The evaluator seam: render the working set and classify the eval result.
 ///
-/// The P1 implementation ([`stock::StockNixEvaluator`]) renders `entry.nix`,
-/// runs a cold stock-Nix subprocess, and parses stderr via [`classify`]. The P2
-/// [`native::NativeNixEvaluator`] evaluates the same entry expression in
-/// process and fails closed on unsupported language features. Tests inject a
-/// scripted mock.
+/// The production implementation ([`stock::StockNixEvaluator`]) renders
+/// `entry.nix`, runs a cold stock-Nix subprocess, and parses stderr via
+/// [`classify`]. Tests inject a scripted mock at this boundary.
 pub trait NixEvaluator {
     /// Evaluate `attempt` and return its classified outcome.
     ///
@@ -691,19 +684,6 @@ where
             EvalClass::Manifest(manifest) => {
                 return Ok(FixpointOutcome {
                     manifest,
-                    option_graph: aos_core::nix::native::OptionGraph::default(),
-                    working_set,
-                    trace,
-                    iterations: iter,
-                });
-            }
-            EvalClass::NativeManifest {
-                manifest,
-                option_graph,
-            } => {
-                return Ok(FixpointOutcome {
-                    manifest,
-                    option_graph,
                     working_set,
                     trace,
                     iterations: iter,
@@ -1205,7 +1185,7 @@ fn enforce_host_nix_trust_policy(cmd: &EvalCommand) -> Result<()> {
     }
 }
 
-/// Run the on-host fixpoint with the production native evaluator and fetcher.
+/// Runs the on-host fixpoint with the production stock Nix evaluator and fetcher.
 ///
 /// Loads the on-host registries (as the by-name [`ConfigModuleResolver`]) and
 /// seed set from disk, drives [`run_fixpoint`], and — **only on convergence** —
@@ -1270,7 +1250,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
         }
     }
 
-    let evaluator = native::NativeNixEvaluator::new(cmd.eval_root.clone(), cmd.verbose);
+    let evaluator = stock::StockNixEvaluator::new(cmd.eval_root.clone(), cmd.verbose);
     let fetcher = stock::SubstituterFetcher::new(
         cmd.verbose,
         resolver.registries(),
@@ -1354,7 +1334,6 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
         outer_iterations += 1;
     };
 
-    merge_option_graph_edges(&mut runtime.edges, &outcome.option_graph);
     let manifest = enrich_manifest(cmd, &outcome, &runtime)?;
     if let Some(parent) = cmd.out.parent() {
         std::fs::create_dir_all(parent)
@@ -1375,28 +1354,6 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
     Ok(EvalCommandReport {
         resolution_trace: outcome.trace.iter().map(render_iter_record).collect(),
     })
-}
-
-/// Merges cross-package native option reads into the runtime ordering graph.
-fn merge_option_graph_edges(
-    edges: &mut BTreeMap<String, Vec<String>>,
-    graph: &aos_core::nix::native::OptionGraph,
-) {
-    use aos_core::nix::native::OptionAccessKind;
-
-    for access in &graph.accesses {
-        if access.kind != OptionAccessKind::Read {
-            continue;
-        }
-        let Some(provider) = access.provider.as_ref() else {
-            continue;
-        };
-        let dependencies = edges.entry(access.package.clone()).or_default();
-        if !dependencies.contains(provider) {
-            dependencies.push(provider.clone());
-            dependencies.sort();
-        }
-    }
 }
 
 /// Renders one provider-discovery step for the dry-run JSON contract.
@@ -2296,7 +2253,7 @@ pub fn reeval_cross_abi(
     validate_cross_abi_inputs(retained, running_base_lib, &source)?;
 
     let working_set = retained_cross_abi_working_set(&source, retained)?;
-    let evaluator = native::NativeNixEvaluator::new(eval_root, verbose);
+    let evaluator = stock::StockNixEvaluator::new(eval_root, verbose);
     let attempt = EvalAttempt {
         host_nix: Path::new(&retained.host_nix_ref),
         base_lib: running_base_lib,
@@ -2305,7 +2262,7 @@ pub fn reeval_cross_abi(
         iteration: 0,
     };
     let evaluated = match evaluator.evaluate(&attempt)? {
-        EvalClass::Manifest(manifest) | EvalClass::NativeManifest { manifest, .. } => manifest,
+        EvalClass::Manifest(manifest) => manifest,
         other => anyhow::bail!(
             "retained configuration is incompatible with module ABI {}: {other:?}",
             retained.to_module_abi
@@ -2565,6 +2522,20 @@ fn retained_store_path_nar_hash(path: &Path) -> Result<String> {
 /// before their registry config modules can be fetched, while the complete
 /// runtime evaluation needs those modules. Only `aos.apm.desiredPackages` is
 /// declared, so unrelated host definitions remain lazy.
+fn render_host_selection_entry(base_lib: &Path, host_nix: &Path) -> String {
+    format!(
+        "# Generated by aos config eval; do not edit.\n\
+         let\n\
+        \x20 baseLib = import {base};\n\
+        \x20 system = baseLib.evalHostSelection {{\n\
+        \x20   operatorModules = [ (import {host}) ];\n\
+        \x20 }};\n\
+         in {{ packages = system.config.aos.apm.desiredPackages; }}\n",
+        base = stock::nix_path(base_lib),
+        host = stock::nix_path(host_nix),
+    )
+}
+
 fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -2575,34 +2546,26 @@ fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {
     std::fs::create_dir_all(&cmd.eval_root)
         .with_context(|| format!("creating eval root {}", cmd.eval_root.display()))?;
     let entry = cmd.eval_root.join("host-selection-entry.nix");
-    let nix_path = |path: &Path| path.to_string_lossy().replace(' ', "\\ ");
-    let expression = format!(
-        "# Generated by aos config eval; do not edit.\n\
-         let\n\
-        \x20 baseLib = import {base};\n\
-        \x20 system = baseLib.evalHostSelection {{\n\
-        \x20   operatorModules = [ (import {host}) ];\n\
-        \x20 }};\n\
-         in {{ packages = system.config.aos.apm.desiredPackages; }}\n",
-        base = nix_path(&cmd.base_lib),
-        host = nix_path(&cmd.host_nix),
-    );
+    let expression = render_host_selection_entry(&cmd.base_lib, &cmd.host_nix);
     std::fs::write(&entry, expression).with_context(|| format!("writing {}", entry.display()))?;
 
-    let evaluator = native::NativeNixEvaluator::new(&cmd.eval_root, cmd.verbose);
-    let expression = format!("import {}", stock::nix_path(&entry));
+    let mut evaluator = stock::pure_eval_command()
+        .context("resolving the AOS stock evaluator for host package selection")?;
+    stock::admit_pure_eval_input(&mut evaluator, &entry);
+    stock::admit_pure_eval_input(&mut evaluator, &cmd.base_lib);
+    stock::admit_pure_eval_input(&mut evaluator, &cmd.host_nix);
     let output = evaluator
-        .eval_strict_json(
-            &expression,
-            [
-                entry.as_path(),
-                cmd.base_lib.as_path(),
-                cmd.host_nix.as_path(),
-            ],
-        )
-        .context("evaluating host package selection with the native evaluator")?;
+        .arg(&entry)
+        .output()
+        .context("spawning restricted host package-selection evaluation")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "host package-selection evaluation failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
     let selection: HostSelection =
-        serde_json::from_str(&output).context("parsing host package selection")?;
+        serde_json::from_slice(&output.stdout).context("parsing host package selection")?;
     let mut seen = BTreeSet::new();
     Ok(selection
         .packages

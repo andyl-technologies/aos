@@ -2,8 +2,8 @@
 
 This document specifies the two-stage evaluation model, the render/assemble
 split that keeps the "nothing is built on-host" invariant honest, the `config`
-output and the manifest data contract, the evaluator (stock Nix for P1,
-aos-nix for P2), and the boot / first-boot bootstrap ordering.
+output and the manifest data contract, the stock Nix evaluator, and the boot /
+first-boot bootstrap ordering.
 
 ## Two-stage evaluation
 
@@ -37,7 +37,7 @@ This discipline is **mechanically enforced, not left to convention** (review): a
 derivation or forces an `outPath` — the same probe-eval pass that checks the
 provides/requires interface ([`module-system.md`](module-system.md)). An
 accidental derivation reference is a publish failure, not a silent on-host build
-attempt. (P2 aos-nix can additionally refuse instantiation in the engine.)
+attempt.
 
 ### Stage 2 — activation (on-host, eval-only, config-producing)
 
@@ -150,14 +150,12 @@ manifest contains **no secret values** — credentials appear only as handles
 
 ## The evaluator
 
-### P1 — stock C++ Nix (historical parity baseline)
+### AOS-packaged C++ Nix
 
-Stock C++ Nix 2.24.12 is already built from source as an AOS package
-(`pkgs/tools/nix.nix`) with `nix-instantiate --eval` present and tested. P1
-used it directly during the first phase. The completed P2 system keeps this
-invocation only in hermetic differential checks; it is not shipped as a
-production fallback.
-Starting on stock Nix is not a compromise on the model: the module system is
+AOS packages C++ Nix 2.24.12 from source in `pkgs/tools/nix.nix`, with
+`nix-instantiate --eval` present and tested. It is
+the production evaluator and carries the narrow pure-input admission extension
+described below. The module system remains
 *our* Nix code (`lib/modules.nix`) and evaluates identically on either
 evaluator. The seam is exactly `eval entry.nix → JSON manifest`.
 
@@ -165,14 +163,24 @@ Invocation (eval-only by construction; the string-path discipline guarantees no
 instantiation even in a normal evaluator):
 
 ```text
-nix-instantiate --store dummy:// --eval --strict --json \
-  --option restrict-eval true \                  # read only /run/aos-eval + the store
+nix-instantiate --store dummy:// --eval --strict --json --pure-eval \
+  --option restrict-eval true \                  # read only explicitly admitted inputs
   --option allow-import-from-derivation false \  # no IFD ⇒ no build can sneak in
-  -I /run/aos-eval \
+  --option allowed-uris '' \                     # no evaluator network capability
+  --aos-pure-eval-input /run/aos-eval/entry.nix \
+  --aos-pure-eval-input /nix/store/<hash>-aos-base-lib \
+  --aos-pure-eval-input /nix/store/<hash>-host.nix \
+  --aos-pure-eval-input /nix/store/<hash>-package-config \
   -A manifest /run/aos-eval/entry.nix
 ```
 
-Three capabilities stock Nix lacks vs aos-nix, each with a P1 stand-in:
+The repeatable `--aos-pure-eval-input` extension adds only the named canonical
+file or directory to Nix's existing pure-eval allowlist. It does not copy or
+readdress an input, so path equality and `toString` observe the authenticated
+original path. The generated facts module is admitted as an individual file;
+the evaluator never admits `/run` or the complete eval root.
+
+The driver supplies the capabilities needed around stock Nix:
 
 - **Read instrumentation** → not needed for the fixpoint. The strict module
   system already names the missing option when it throws
@@ -187,18 +195,6 @@ Three capabilities stock Nix lacks vs aos-nix, each with a P1 stand-in:
 - **Incremental cache** → full re-eval each activation. Acceptable: activation
   is infrequent and the on-host eval is only base-lib + config modules +
   host.nix, not nixpkgs-scale.
-
-### P2 — aos-nix, behind the same seam
-
-`aos-nix` (RFC-0007, Phase-1 complete) exposes `eval_expr → JSON` that never
-realizes, plus `TreeWalkOptions` with `restrict-eval` path allowlists,
-`pure-eval`, URI allowlists, and an opt-in IFD realizer. P2 swaps it in behind
-the `eval → manifest` seam, upgrading: one-shot read-tracing (no fixpoint loop),
-**in-engine** bounding/timeouts (cleaner than an OOM-kill, and a path to
-totality analysis), an incremental early-cutoff cache (cheap re-eval), and
-first-class graph intrinsics (the option read/write graph exposed directly to
-the resolver instead of reconstructed from AST scans and eval errors). None of
-this touches the registry format, the module contract, or the generations.
 
 ## Boot / first-boot bootstrap ordering
 

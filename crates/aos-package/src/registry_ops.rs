@@ -94,17 +94,17 @@ use crate::types::{
     ConfigOutputMeta, ConfinementClass, ExposeArtifactMeta, ExposeMeta, FEATURE_ATTESTATION_V1,
     FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1,
     FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
-    FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1,
-    FEATURE_RECOVERY_UKIS_V1, FEATURE_REQUIRES_V1, FEATURE_UKI_SLOTS_V1, ModuleAbiCompat,
-    OwnedRoot, PACKAGE_META_FORMAT, PermissionsMeta, RecoveryBundleComponent,
+    FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_PERMISSIONS_V1,
+    FEATURE_RECOVERY_UKIS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, FEATURE_UKI_SLOTS_V1,
+    ModuleAbiCompat, OwnedRoot, PACKAGE_META_FORMAT, PermissionsMeta, RecoveryBundleComponent,
     RecoveryBundleComponentId, RecoveryBundleManifest, RecoveryUkiEntry, RegistryConfig,
     RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig, RootContribution, SbatEntry,
-    SigningKeySource, SigningKeySpec, SysrootUkiEntry, UkiSlot,
-    package_name_bucket, rfc0001_metadata_requires_provenance, validate_attestation_meta,
-    validate_branch_name, validate_channel_name, validate_config_module_meta,
-    validate_config_output_meta, validate_expose_artifact_meta, validate_expose_meta_for_package,
-    validate_git_ref_name, validate_package_name, validate_permissions_meta,
-    validate_platform_name, validate_registry_name,
+    SigningKeySource, SigningKeySpec, SysrootUkiEntry, UkiSlot, package_name_bucket,
+    rfc0001_metadata_requires_provenance, validate_attestation_meta, validate_branch_name,
+    validate_channel_name, validate_config_module_meta, validate_config_output_meta,
+    validate_expose_artifact_meta, validate_expose_meta_for_package, validate_git_ref_name,
+    validate_package_name, validate_permissions_meta, validate_platform_name,
+    validate_registry_name,
 };
 use crate::{
     BranchCommand, CacheCommand, CacheUploadAuthArgs, ChangeCommand, ChannelCommand, KeysCommand,
@@ -3885,12 +3885,8 @@ where
         bail!("image-info UKI measured state does not match its PCR-11 policy");
     }
     sb.ukis = derive_slot_uki_facts(root, db_cert)?;
-    sb.recovery_ukis = derive_recovery_uki_facts(
-        root,
-        producer.recovery.as_ref(),
-        &producer.version,
-        db_cert,
-    )?;
+    sb.recovery_ukis =
+        derive_recovery_uki_facts(root, producer.recovery.as_ref(), &producer.version, db_cert)?;
     if let Some(slot_a) = sb.ukis.iter().find(|uki| uki.slot == UkiSlot::A)
         && (slot_a.sb_signer_cert_sha256 != sb.signer_cert_sha256
             || slot_a.sbat != sb.sbat
@@ -3931,9 +3927,8 @@ where
         if &published_bundle != expected_bundle {
             bail!("recovery-bundle.json disagrees with the authenticated image components");
         }
-        let db_cert = db_cert.context(
-            "publishing a recovery bundle requires the registry db certificate",
-        )?;
+        let db_cert =
+            db_cert.context("publishing a recovery bundle requires the registry db certificate")?;
         verify_detached_db_signature(&bundle_path, &signature_path, db_cert)?;
     }
     let mut canonical_info_file =
@@ -5403,8 +5398,8 @@ fn derive_recovery_uki_facts(
         ),
     ];
     let mut entries = Vec::with_capacity(copies.len());
-    for (copy, copy_name, uki_name, entry_name, esp_path, entry_path, metadata, recorded_entry)
-        in copies
+    for (copy, copy_name, uki_name, entry_name, esp_path, entry_path, metadata, recorded_entry) in
+        copies
     {
         if metadata.esp_path != esp_path || recorded_entry != entry_path {
             bail!("recovery copy {copy_name} uses a noncanonical ESP path");
@@ -5412,7 +5407,10 @@ fn derive_recovery_uki_facts(
         let uki = image_store.join(uki_name);
         let uki_metadata = fs::symlink_metadata(&uki)?;
         if !uki_metadata.file_type().is_file() || uki_metadata.len() == 0 {
-            bail!("recovery UKI {} is not a nonempty regular file", uki.display());
+            bail!(
+                "recovery UKI {} is not a nonempty regular file",
+                uki.display()
+            );
         }
         let mut uki_file = fs::File::open(&uki)?;
         let digest = sha256_open_file(&mut uki_file, &uki)?;
@@ -5421,9 +5419,9 @@ fn derive_recovery_uki_facts(
         }
 
         let facts = derive_sb_facts(&uki, db_cert)?;
-        let signer = facts.signer_cert_sha256.context(
-            "recovery UKIs must carry a db-verifiable Authenticode signature",
-        )?;
+        let signer = facts
+            .signer_cert_sha256
+            .context("recovery UKIs must carry a db-verifiable Authenticode signature")?;
         let cmdline = read_bounded_pe_text(&uki, ".cmdline", 64 * 1024)?;
         if cmdline != recovery.command_line {
             bail!("recovery copy {copy_name} command line disagrees with image-info.json");
@@ -5438,12 +5436,7 @@ fn derive_recovery_uki_facts(
             bail!("recovery copy {copy_name} carries forbidden normal PCR authorization");
         }
         let os_release = read_bounded_pe_text(&uki, ".osrel", 64 * 1024)?;
-        validate_recovery_os_release(
-            &os_release,
-            copy_name,
-            &recovery.release,
-            recovery.abi,
-        )?;
+        validate_recovery_os_release(&os_release, copy_name, &recovery.release, recovery.abi)?;
 
         let entry = image_store.join(entry_name);
         let entry_metadata = fs::symlink_metadata(&entry)?;
@@ -5521,9 +5514,9 @@ fn derive_recovery_bundle_manifest(
     let Some(recovery) = recovery else {
         return Ok(None);
     };
-    let module_abi = module_abi.filter(|abi| *abi != 0).context(
-        "recovery image-info.json must carry a positive moduleAbi",
-    )?;
+    let module_abi = module_abi
+        .filter(|abi| *abi != 0)
+        .context("recovery image-info.json must carry a positive moduleAbi")?;
     let specifications = [
         (RecoveryBundleComponentId::RootImage, "root.img"),
         (RecoveryBundleComponentId::RootVerity, "root.verity"),
@@ -5569,8 +5562,8 @@ pub(crate) fn verify_detached_db_signature(
     signature: &Path,
     db_cert: &Path,
 ) -> Result<()> {
-    let public_key = tempfile::NamedTempFile::new()
-        .context("creating temporary recovery bundle public key")?;
+    let public_key =
+        tempfile::NamedTempFile::new().context("creating temporary recovery bundle public key")?;
     let output = Command::new("openssl")
         .args(["x509", "-pubkey", "-noout", "-in"])
         .arg(db_cert)

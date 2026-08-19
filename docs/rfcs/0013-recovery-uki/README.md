@@ -1,6 +1,6 @@
 # RFC-0013: A/B-aware signed recovery UKIs and initrd fail-closed hardening
 
-- **Status:** Proposed
+- **Status:** Implemented
 - **Date:** 2026-08-17
 - **Audience:** maintainers of `modules/image/`, `modules/base/_initrd-builder.nix`,
   `modules/base/secure-boot.nix`, `modules/services/boot-substrate.nix`,
@@ -705,7 +705,7 @@ The RFC is implemented only when all of the following are automated:
 
 ## Documentation impact
 
-Once implemented, the user recovery guide must distinguish:
+The implemented user recovery guide distinguishes:
 
 - automatic counted-boot fallback;
 - bounded unauthenticated recovery diagnostics;
@@ -714,6 +714,6 @@ Once implemented, the user recovery guide must distinguish:
 - full external reimage when firmware, ESP, both recovery copies, or encrypted
   state is unrecoverable.
 
-Until those gates pass, the current documentation remains authoritative: use a
-known-good image, console or external rescue environment, and independently
-escrowed deployment inputs.
+Deployment procedures must still retain independently escrowed recovery keys,
+trust anchors, accepted configuration, and authenticated external reimage
+inputs outside the host.

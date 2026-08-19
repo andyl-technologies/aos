@@ -1811,7 +1811,10 @@ fn validate_image_entry(image: &SysrootImageEntry) -> Result<()> {
 fn validate_recovery_bundle(image: &SysrootImageEntry) -> Result<()> {
     let Some(bundle) = &image.recovery_bundle else {
         if !image.recovery_ukis.is_empty() {
-            bail!("image '{}' recovery UKIs require a bundle manifest", image.store_path);
+            bail!(
+                "image '{}' recovery UKIs require a bundle manifest",
+                image.store_path
+            );
         }
         return Ok(());
     };
@@ -1827,7 +1830,10 @@ fn validate_recovery_bundle(image: &SysrootImageEntry) -> Result<()> {
             .iter()
             .any(|entry| entry.recovery_abi != bundle.recovery_abi)
     {
-        bail!("image '{}' has an inconsistent recovery bundle identity", image.store_path);
+        bail!(
+            "image '{}' has an inconsistent recovery bundle identity",
+            image.store_path
+        );
     }
     let expected = [
         (RecoveryBundleComponentId::RootImage, "root.img"),
@@ -1842,7 +1848,10 @@ fn validate_recovery_bundle(image: &SysrootImageEntry) -> Result<()> {
         (RecoveryBundleComponentId::ImageMetadata, "image-info.json"),
     ];
     if bundle.components.len() != expected.len() {
-        bail!("image '{}' recovery bundle has an incomplete component set", image.store_path);
+        bail!(
+            "image '{}' recovery bundle has an incomplete component set",
+            image.store_path
+        );
     }
     let mut ids = std::collections::BTreeSet::new();
     for component in &bundle.components {
@@ -1850,14 +1859,20 @@ fn validate_recovery_bundle(image: &SysrootImageEntry) -> Result<()> {
             || component.byte_size == 0
             || !is_lower_sha256(&component.sha256)
         {
-            bail!("image '{}' has malformed recovery bundle components", image.store_path);
+            bail!(
+                "image '{}' has malformed recovery bundle components",
+                image.store_path
+            );
         }
         let expected_path = expected
             .iter()
             .find_map(|(id, path)| (*id == component.id).then_some(*path))
             .context("recovery bundle contains an unknown component identifier")?;
         if component.path != expected_path {
-            bail!("image '{}' recovery bundle uses a noncanonical component path", image.store_path);
+            bail!(
+                "image '{}' recovery bundle uses a noncanonical component path",
+                image.store_path
+            );
         }
     }
     Ok(())
@@ -1889,7 +1904,10 @@ fn validate_recovery_uki_entries(image: &SysrootImageEntry) -> Result<()> {
             UkiSlot::B => ("recovery-b.efi", "recovery-b.conf"),
         };
         if recovery.path != uki_path || recovery.entry_path != entry_path {
-            bail!("image '{}' has noncanonical recovery paths", image.store_path);
+            bail!(
+                "image '{}' has noncanonical recovery paths",
+                image.store_path
+            );
         }
         if recovery.byte_size == 0
             || recovery.recovery_abi == 0
@@ -1898,14 +1916,22 @@ fn validate_recovery_uki_entries(image: &SysrootImageEntry) -> Result<()> {
             || !is_lower_sha256(&recovery.sha256)
             || !is_lower_sha256(&recovery.sb_signer_cert_sha256)
         {
-            bail!("image '{}' has malformed recovery metadata", image.store_path);
+            bail!(
+                "image '{}' has malformed recovery metadata",
+                image.store_path
+            );
         }
-        if abi.replace(recovery.recovery_abi).is_some_and(|old| old != recovery.recovery_abi)
+        if abi
+            .replace(recovery.recovery_abi)
+            .is_some_and(|old| old != recovery.recovery_abi)
             || release
                 .replace(recovery.release.as_str())
                 .is_some_and(|old| old != recovery.release)
         {
-            bail!("image '{}' mixes recovery release identities", image.store_path);
+            bail!(
+                "image '{}' mixes recovery release identities",
+                image.store_path
+            );
         }
     }
     if copies.len() != 2 || !copies.contains(&UkiSlot::A) || !copies.contains(&UkiSlot::B) {
