@@ -172,6 +172,10 @@ effects into arbitrary callbacks.
 - **[CAM-12]** Permit a future multi-host executor to consume the same attempt
   and observation contracts without making network fanout part of the initial
   implementation.
+- **[CAM-13]** Require independent, evidence-backed manual acceptance,
+  destructive recovery drills, and long-running realistic dogfood campaigns in
+  addition to automated conformance before campaigns or hot fork become
+  defaults.
 
 ## Non-goals
 
@@ -226,6 +230,9 @@ effects into arbitrary callbacks.
 12. **Self-contained findings.** Every finding exports the scenario, seed,
     recorded schedule, evidence, and required artifact identities needed for
     single-host reproduction without campaign state.
+13. **Human-operable release.** Green automated gates do not waive a failed
+    operator, recovery, finding-handoff, or dogfood flight. Manual acceptance
+    uses only supported interfaces and retains reviewable evidence.
 
 ## Reading order
 
@@ -269,6 +276,9 @@ effects into arbitrary callbacks.
 14. [`13-worked-network-campaign.md`](13-worked-network-campaign.md) walks one
     network-disruption campaign from scenario authoring through adaptive
     branching, selection, hibernation, and reproduction.
+15. [`14-manual-validation-and-dogfooding.md`](14-manual-validation-and-dogfooding.md)
+    defines independent operator acceptance, realistic dogfood, destructive
+    recovery, evidence bundles, and release-blocking manual gates.
 
 ## Requirement prefixes
 
@@ -285,6 +295,7 @@ effects into arbitrary callbacks.
 | `CMEAS` | Measurement, observability, findings, and debugging |
 | `CSEC` | Security, compatibility, provenance, and operations |
 | `CPERF` | Performance targets and validation gates |
+| `CMAN` | Manual validation, dogfooding, usability, and operator acceptance |
 
 The capitalized words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and
 **MAY** have their RFC-2119/RFC-8174 meanings. All illustrative code and schema

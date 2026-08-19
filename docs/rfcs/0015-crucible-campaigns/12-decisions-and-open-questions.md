@@ -242,6 +242,18 @@ including guest-visible state, protocol epochs, properties, measurements, and
 replay. Unsupported devices or failed quiescence select exact restore instead
 of best-effort forking.
 
+### D-23: Manual real-usage acceptance is release-blocking
+
+Automated equivalence, determinism, ABI, storage, and performance gates remain
+mandatory but do not prove operability. Each phase gains a manual flight, and
+release requires an independent operator, destructive recovery drill,
+finding-to-debug handoff, and long-running realistic product campaign with a
+reviewed evidence bundle.
+
+Rejected: treating the worked example as a demo performed only by the feature
+author, or accepting a green CI result as evidence that retention, recovery,
+explanation, debugging, and cleanup are usable and safe.
+
 ## Deliberately rejected representations
 
 The following patterns are outside the design even if they appear convenient

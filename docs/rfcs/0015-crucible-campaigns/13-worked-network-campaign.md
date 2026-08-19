@@ -7,6 +7,13 @@ widening, cheap local forks, and durable replay compose into one campaign.
 The syntax is illustrative. The normative contracts are the data model and
 protocols in the preceding documents.
 
+The implementation promotes this example into the realistic reference fixture
+for the independent operator, destructive recovery, finding handoff, and
+long-running dogfood flights in
+[`14-manual-validation-and-dogfooding.md`](14-manual-validation-and-dogfooding.md).
+Final acceptance uses the actual supported product build and public interfaces,
+not an echo guest or scripted presentation of these expected results.
+
 ## Question under test
 
 Suppose a routed network has converged and the product receives the fault

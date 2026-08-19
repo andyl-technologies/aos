@@ -181,6 +181,9 @@ under shuffled completion delivery.
 | `gate:campaign-statistics` | `P`/`Q` support and weight rules; biased campaigns cannot emit probability claims |
 | `gate:license-boundary` | Existing process/license closure including all new QEMU patches |
 | `gate:abi-conformance` | Versioned socket/shmem/guest choice/measurement/fork protocols |
+| `gate:campaign-operator-acceptance` | Independent operator completes the public lifecycle and finding handoff with reviewed evidence |
+| `gate:campaign-destructive-recovery` | Documented process, host, storage, credential, pressure, and partial-fork failures preserve authenticated state |
+| `gate:campaign-dogfood` | A realistic long-running campaign sustains scale, steering, handoff, hibernation, and clean resource accounting |
 
 ## 10.8 Equivalence matrix
 
@@ -238,3 +241,23 @@ Benchmark baselines and host profiles are content-addressed repository fixtures.
 Updating a baseline is a reviewed change with rationale. Determinism gates do
 not tolerate a performance variance band; performance gates do not substitute
 for exact equivalence.
+
+## 10.11 Automated and manual acceptance boundary
+
+The gates and fixtures in this file are primarily automated. They establish
+canonical equivalence, deterministic failure behavior, resource scaling, and
+repeatable baselines. They cannot prove that a fresh operator can understand a
+frontier, safely steer or stop a campaign, recover from a partial failure,
+predict retention, or hand a finding to another investigator.
+
+[`14-manual-validation-and-dogfooding.md`](14-manual-validation-and-dogfooding.md)
+therefore defines release-blocking manual flights over the same builds and
+fixtures. Automated results are pinned into each manual evidence bundle. A
+manual observation cannot waive a failing automated gate, and green automation
+cannot waive a failed operator, destructive-recovery, dogfood, or handoff
+flight.
+
+Manual gate manifests are machine-checked for build identity, required steps,
+artifacts, outcomes, defect disposition, and sign-offs. Human judgments about
+clarity, safe recovery, and usefulness remain explicit reviewed evidence rather
+than being reduced to an unaudited CI checkbox.
