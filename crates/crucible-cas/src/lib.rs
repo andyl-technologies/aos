@@ -33,7 +33,9 @@
 //! [`CampaignFreshLineageRoots`], [`CampaignManifest`],
 //! [`CampaignProvenance`], [`CampaignContinuitySeedDecision`], and the
 //! invalidation types [`DependencySnapshot`], [`InvalidationQuery`], and
-//! [`InvalidationDecision`].
+//! [`InvalidationDecision`]. The internal `content_store` module is the
+//! byte-oriented RFC-0015 store substrate; it remains crate-private until its
+//! streaming interface is complete.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -1381,3 +1383,8 @@ use campaign_codec::*;
 pub use campaign_model::*;
 pub use campaign_store::*;
 pub use invalidation::*;
+
+// This substrate is exercised by its conformance tests but remains isolated
+// until its bounded streaming API replaces the temporary byte-buffered trait.
+#[allow(dead_code)]
+pub(crate) mod content_store;
