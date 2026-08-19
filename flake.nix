@@ -70,16 +70,33 @@
     packages = genAttrs systems (
       system: let
         aos = aosFor system;
+        individualPackages = pkgPackages aos;
+        allPackages = aos.pkgs.mkDerivation {
+          pname = "aos-all-packages";
+          version = "0";
+          src = null;
+          buildDeps = builtins.attrValues individualPackages;
+          phases = [
+            {
+              name = "assemble";
+              script = ''
+                mkdir -p $out
+                echo "PASS" > $out/result
+              '';
+            }
+          ];
+        };
       in
         {
           default = aos.pkgs.aos;
           aos = aos.pkgs.aos;
+          all = allPackages;
           crucible-nginx-curl-guest = import ./tests/crucible/_nginx-curl-http-200-guest.nix {
             pkgs = aos.pkgs;
           };
         }
         // systemPackages aos
-        // pkgPackages aos
+        // individualPackages
     );
 
     devShells = genAttrs systems (
