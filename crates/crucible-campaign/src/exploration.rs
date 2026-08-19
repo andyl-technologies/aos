@@ -12,21 +12,23 @@ use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::policy::{MAX_IDENTIFIER_BYTES, validate_identifier};
 use crate::{
     AdmissionOrdinal, AttemptAdmissionId, AttemptId, BranchEdgeId, BranchPathId, BranchPointId,
-    BranchRequestId, CampaignCodecError, CampaignCommandId, CampaignPolicyId, CampaignViewId,
-    CandidateGeneratorSpecId, ChoiceDomain, ChoiceDomainId, ChoiceOpportunity, ChoiceOpportunityId,
-    ChoiceValue, ConfigurationArtifact, ConfigurationArtifactId, DebugSessionId, ExpansionStateId,
-    PlannerEngineId, PlannerInvocationId, PlannerState, PlannerStateId, PlannerStepId,
-    PolicyArtifactId, ProposalId, SelectionId,
+    BranchRequestId, CampaignCodecError, CampaignCommandId, CampaignPolicyId, CampaignSnapshotId,
+    CampaignViewId, CandidateGeneratorSpecId, ChoiceDomain, ChoiceDomainId, ChoiceOpportunity,
+    ChoiceOpportunityId, ChoiceValue, ConfigurationArtifact, ConfigurationArtifactId,
+    DebugSessionId, ExpansionStateId, PlannerEngineId, PlannerInvocationId, PlannerState,
+    PlannerStateId, PlannerStepId, PolicyArtifactId, ProposalId, SelectionId,
 };
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
 const PLANNER_STEP_SCHEMA_VERSION: u32 = 2;
+const EXPANSION_STATE_SCHEMA_VERSION: u32 = 2;
 const MAX_FINITE_VALUES: usize = 4096;
 const MAX_BRANCH_PATH_EDGES: usize = 65_536;
 const MAX_STEP_BRANCH_REQUESTS: usize = 4096;
 const MAX_STEP_PROPOSALS: usize = 4096;
 const MAX_GUIDANCE_TERMS: usize = 4096;
 const MAX_CONTINUATIONS: usize = 65_536;
+const MAX_EXPANSION_PAGE_ITEMS: usize = 10_000;
 const MAX_EXACT_RECORD_BYTES: usize = 32 * 1024 * 1024;
 
 mod attempt;

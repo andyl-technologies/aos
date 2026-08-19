@@ -59,7 +59,7 @@ pub enum ContinuationState {
     Ready,
     /// Requires more completed descendant visits before widening.
     WaitingForFeedback(FeedbackWait),
-    /// Sampling source remains unbounded/open but is not currently ready.
+    /// Source remains open but is not currently eligible to yield.
     Open,
     /// Source has a complete exhaustion proof.
     Exhausted,
@@ -99,7 +99,7 @@ impl Canonical for ContinuationState {
 /// Exact integer statistics projected for one semantic branch point.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ExpansionStatistics {
-    /// Distinct proposed edges.
+    /// Distinct admitted semantic attempts rooted at this branch point.
     pub admitted_children: u64,
     /// Completed descendant visits credited exactly once.
     pub completed_visits: u64,
@@ -135,47 +135,95 @@ impl Canonical for ExpansionStatistics {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExpansionState {
     schema_version: u32,
+    source_snapshot: CampaignSnapshotId,
+    input_view: CampaignViewId,
     branch_point: BranchPointId,
     request_root: ContentId,
     proposal_root: ContentId,
+    admission_root: ContentId,
     observation_root: ContentId,
     statistics: ExpansionStatistics,
+    page_after: Option<BranchRequestId>,
+    page_size: u32,
+    next_after: Option<BranchRequestId>,
     continuations: BTreeMap<BranchRequestId, ContinuationState>,
 }
 
 impl ExpansionState {
-    /// Builds a bounded expansion projection over exact semantic roots.
+    /// Builds one bounded page over snapshot-derived homogeneous roots.
     ///
     /// # Errors
     ///
-    /// Returns [`CampaignCodecError`] when a root is not a Merkle node or the
-    /// continuation map exceeds 65,536 entries.
+    /// Returns [`CampaignCodecError`] when a root is not a Merkle node, the page
+    /// size is outside 1 through 10,000, the continuation map exceeds the page
+    /// size, or the next cursor is not the page's last request.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
+        source_snapshot: CampaignSnapshotId,
+        input_view: CampaignViewId,
         branch_point: BranchPointId,
         request_root: ContentId,
         proposal_root: ContentId,
+        admission_root: ContentId,
         observation_root: ContentId,
         statistics: ExpansionStatistics,
+        page_after: Option<BranchRequestId>,
+        page_size: u32,
+        next_after: Option<BranchRequestId>,
         continuations: BTreeMap<BranchRequestId, ContinuationState>,
     ) -> Result<Self, CampaignCodecError> {
-        if [request_root, proposal_root, observation_root]
-            .iter()
-            .any(|id| id.kind() != crucible_cas::content_store::ObjectKind::MerkleNode)
+        let page_size =
+            usize::try_from(page_size).map_err(|_| CampaignCodecError::InvalidValue {
+                reason: "expansion page size is invalid",
+            })?;
+        if [
+            request_root,
+            proposal_root,
+            admission_root,
+            observation_root,
+        ]
+        .iter()
+        .any(|id| id.kind() != crucible_cas::content_store::ObjectKind::MerkleNode)
+            || page_size == 0
+            || page_size > MAX_EXPANSION_PAGE_ITEMS
+            || continuations.len() > page_size
             || continuations.len() > MAX_CONTINUATIONS
+            || next_after.is_some_and(|next| {
+                continuations.last_key_value().map(|entry| *entry.0) != Some(next)
+            })
+            || (continuations.is_empty() && next_after.is_some())
         {
             return Err(CampaignCodecError::InvalidValue {
-                reason: "expansion state has invalid roots or too many continuations",
+                reason: "expansion state has invalid roots, page bounds, or cursor",
             });
         }
         Ok(Self {
-            schema_version: RECORD_SCHEMA_VERSION,
+            schema_version: EXPANSION_STATE_SCHEMA_VERSION,
+            source_snapshot,
+            input_view,
             branch_point,
             request_root,
             proposal_root,
+            admission_root,
             observation_root,
             statistics,
+            page_after,
+            page_size: page_size as u32,
+            next_after,
             continuations,
         })
+    }
+
+    /// Returns the exact campaign snapshot from which this page was projected.
+    #[must_use]
+    pub const fn source_snapshot(&self) -> CampaignSnapshotId {
+        self.source_snapshot
+    }
+
+    /// Returns the complete planning view derived from the source snapshot.
+    #[must_use]
+    pub const fn input_view(&self) -> CampaignViewId {
+        self.input_view
     }
 
     /// Returns the semantic branch point.
@@ -196,6 +244,12 @@ impl ExpansionState {
         self.proposal_root
     }
 
+    /// Returns the homogeneous attempt-admission projection root.
+    #[must_use]
+    pub const fn admission_root(&self) -> ContentId {
+        self.admission_root
+    }
+
     /// Returns the observation root used to derive this projection.
     #[must_use]
     pub const fn observation_root(&self) -> ContentId {
@@ -206,6 +260,24 @@ impl ExpansionState {
     #[must_use]
     pub const fn statistics(&self) -> ExpansionStatistics {
         self.statistics
+    }
+
+    /// Returns the exclusive request cursor that began this page.
+    #[must_use]
+    pub const fn page_after(&self) -> Option<BranchRequestId> {
+        self.page_after
+    }
+
+    /// Returns the maximum continuation count requested for this page.
+    #[must_use]
+    pub const fn page_size(&self) -> u32 {
+        self.page_size
+    }
+
+    /// Returns the exclusive cursor for the next page, or `None` at EOF.
+    #[must_use]
+    pub const fn next_after(&self) -> Option<BranchRequestId> {
+        self.next_after
     }
 
     /// Returns request continuation states in canonical request-ID order.
@@ -248,10 +320,22 @@ impl ExpansionState {
 
     pub(crate) fn content_children(&self) -> Vec<(String, ContentId)> {
         let mut children = vec![
+            (
+                "source-snapshot".to_owned(),
+                self.source_snapshot.content_id(),
+            ),
+            ("input-view".to_owned(), self.input_view.content_id()),
             ("requests".to_owned(), self.request_root),
             ("proposals".to_owned(), self.proposal_root),
+            ("admissions".to_owned(), self.admission_root),
             ("observations".to_owned(), self.observation_root),
         ];
+        if let Some(after) = self.page_after {
+            children.push(("page-after".to_owned(), after.content_id()));
+        }
+        if let Some(after) = self.next_after {
+            children.push(("next-after".to_owned(), after.content_id()));
+        }
         children.extend(
             self.continuations
                 .keys()
@@ -267,22 +351,34 @@ impl ExpansionState {
 impl Canonical for ExpansionState {
     fn encode(&self, encoder: &mut Encoder) {
         self.schema_version.encode(encoder);
+        self.source_snapshot.encode(encoder);
+        self.input_view.encode(encoder);
         self.branch_point.encode(encoder);
         Canonical::encode(&self.request_root, encoder);
         Canonical::encode(&self.proposal_root, encoder);
+        Canonical::encode(&self.admission_root, encoder);
         Canonical::encode(&self.observation_root, encoder);
         self.statistics.encode(encoder);
+        self.page_after.encode(encoder);
+        self.page_size.encode(encoder);
+        self.next_after.encode(encoder);
         self.continuations.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_schema(u32::decode(decoder)?)?;
+        require_schema_version(u32::decode(decoder)?, EXPANSION_STATE_SCHEMA_VERSION)?;
         Self::new(
+            CampaignSnapshotId::decode(decoder)?,
+            CampaignViewId::decode(decoder)?,
             BranchPointId::decode(decoder)?,
             ContentId::decode(decoder)?,
             ContentId::decode(decoder)?,
             ContentId::decode(decoder)?,
+            ContentId::decode(decoder)?,
             ExpansionStatistics::decode(decoder)?,
+            Option::decode(decoder)?,
+            u32::decode(decoder)?,
+            Option::decode(decoder)?,
             decoder.map_bounded(MAX_CONTINUATIONS, "expansion-continuation-count")?,
         )
     }

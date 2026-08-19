@@ -443,3 +443,70 @@ observation.
   MUST preserve the campaign basis and every unrelated root. The first global
   execution basis has ordinal one; every later basis uses the checked successor
   of the prior sequence entry.
+
+## 04.14 Snapshot-bound finite expansion projection
+
+`ProjectFiniteExpansion(source_snapshot, branch_point, page_after, page_size)`
+publishes one rebuildable `ExpansionState` version 2 cache page. The projector
+first authenticates the complete source snapshot and derives its exact
+`CampaignPlanningView`; it never accepts roots supplied independently by the
+caller. It scans the authoritative exploration and accounting roots in bounded
+10,000-entry chunks and produces three homogeneous branch-point indexes:
+
+```text
+request_root[BranchRequestId digest] = BranchRequest
+proposal_root[ProposalId digest] = Proposal
+admission_root[AttemptAdmissionId digest] = AttemptAdmission
+```
+
+An input record participates only when its authoritative heterogeneous-root key
+equals the exact domain-separated identity key for its record type. The
+homogeneous root then uses the typed content digest directly, making Merkle
+order identical to canonical typed-ID order. The page contains at most
+`page_size` continuation states and `page_size` is limited to 10,000.
+`page_after` must name a request present in the recomputed request root for the
+same snapshot and branch point. `next_after` is present only when another
+request exists and names the last returned request.
+
+Finite continuation state is derived without retaining all request values or
+continuations:
+
+- no proposal at the next canonical ordinal and remaining proposal budget is
+  `Ready`;
+- any issued proposal without its unique admission disposition is `Open`;
+- all finite values proposed and disposed is `Exhausted`;
+- proposal budget reached before all values are disposed is `Closed`.
+
+`admitted_children` counts only distinct `ExecutionBasis` admissions rooted
+at the branch point. A pending proposal contributes zero, and an
+`AdditionalCause` contributes an admission record but no new child. This
+statistic therefore means admitted semantic attempts, not realized temporal
+graph configurations; graph-child accounting begins only after authenticated
+execution results exist.
+
+The current finite owner deliberately rejects any generated request or
+nonempty observation root. Those inputs require generator and observation
+owner folds rather than a permissive approximation. Loading an
+`ExpansionState` repeats the complete source-snapshot validation and owner
+recomputation; a structurally valid cache with an omitted request, proposal, or
+admission is rejected.
+
+- **[LAZY-29]** Every admissible expansion page MUST bind one exact source
+  snapshot and its derived complete planning view. Caller-assembled filtered
+  roots MUST NOT be accepted as authoritative inputs.
+- **[LAZY-30]** Request, proposal, and admission projection roots MUST be
+  rebuilt by bounded scans that authenticate each heterogeneous-root key before
+  inserting it into a homogeneous typed-ID-ordered root.
+- **[LAZY-31]** Expansion cursors MUST be snapshot-bound request identities.
+  The owner MUST reject a cursor absent from the exact branch-point request
+  root, and concatenated pages MUST follow canonical `BranchRequestId` order
+  independently of page size.
+- **[LAZY-32]** Finite readiness and exhaustion MUST derive from canonical
+  source order and proposal admission dispositions. Proposal existence alone
+  MUST NOT count as an admitted child or prove exhaustion.
+- **[LAZY-33]** Expansion admitted-child statistics MUST count distinct
+  `ExecutionBasis` attempts. `AdditionalCause` deduplication MUST NOT create
+  another child or consume another attempt.
+- **[LAZY-34]** A finite-only projector MUST fail closed for generated requests
+  and observation-bearing views until their exact owner folds are implemented.
+  It MUST NOT publish approximated readiness, statistics, or exhaustion.

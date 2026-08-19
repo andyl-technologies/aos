@@ -139,6 +139,78 @@ impl MerkleMap {
             .map(|verified| verified.root)
     }
 
+    /// Authenticates a complete root with memory bounded by trie depth.
+    ///
+    /// Unlike [`Self::verify_closure`], this variant does not retain the set of
+    /// leaf values for an enclosing object-graph walk. It still validates every
+    /// node, ancestor prefix, advertised count, value presence, and the final
+    /// root count, making it suitable for independently rebuildable projection
+    /// caches.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing/corrupt value or node, malformed trie
+    /// shape, count disagreement, or traversal above one million nodes.
+    pub fn verify_closure_streaming(
+        &self,
+        root: ContentId,
+    ) -> Result<MerkleMapRoot, CampaignStoreError> {
+        let root_node = self.read_node(root, 0)?;
+        let expected_entries = root_node.entry_count;
+        // Depth increases on every child and non-root nodes cannot be empty, so
+        // cycles are impossible. Reusing a node at another trie position makes
+        // its eventual nonempty leaf fail the full ancestor-prefix check.
+        let mut stack = vec![(root_node, Vec::<u8>::new())];
+        let mut traversed_nodes = 0_usize;
+        let mut observed_entries = 0_u64;
+
+        while let Some((node, prefix)) = stack.pop() {
+            traversed_nodes = traversed_nodes
+                .checked_add(1)
+                .ok_or(invalid("closure-node-limit"))?;
+            if traversed_nodes > MAX_VERIFIED_NODES {
+                return Err(invalid("closure-node-limit"));
+            }
+            for (slot, entry) in node.entries.iter().rev() {
+                let mut child_prefix = prefix.clone();
+                child_prefix.push(*slot);
+                match entry {
+                    MerkleEntry::Leaf { key, value } => {
+                        if !key_has_prefix(*key, &child_prefix) {
+                            return Err(invalid("leaf-ancestor-prefix-mismatch"));
+                        }
+                        if !self.backend.contains(*value)? {
+                            return Err(crucible_cas::content_store::StoreError::NotFound {
+                                id: *value,
+                            }
+                            .into());
+                        }
+                        observed_entries = observed_entries
+                            .checked_add(1)
+                            .ok_or(invalid("entry-count-overflow"))?;
+                    }
+                    MerkleEntry::Node {
+                        content_id,
+                        entry_count,
+                    } => {
+                        let child = self.read_node(*content_id, node.depth + 1)?;
+                        if child.entry_count != *entry_count {
+                            return Err(invalid("child-entry-count-mismatch"));
+                        }
+                        stack.push((child, child_prefix));
+                    }
+                }
+            }
+        }
+        if observed_entries != expected_entries {
+            return Err(invalid("root-entry-count-mismatch"));
+        }
+        Ok(MerkleMapRoot {
+            content_id: root,
+            entry_count: observed_entries,
+        })
+    }
+
     pub(crate) fn verify_closure_objects(
         &self,
         root: ContentId,
@@ -882,6 +954,11 @@ mod tests {
                 map.verify_closure(root.content_id()).expect("closure"),
                 root
             );
+            assert_eq!(
+                map.verify_closure_streaming(root.content_id())
+                    .expect("streaming closure"),
+                root
+            );
             match expected {
                 None => expected = Some(root),
                 Some(expected) => assert_eq!(root, expected),
@@ -1054,6 +1131,12 @@ mod tests {
                 crucible_cas::content_store::StoreError::NotFound { id }
             )) if id == missing_value
         ));
+        assert!(matches!(
+            map.verify_closure_streaming(incomplete_leaf.content_id()),
+            Err(CampaignStoreError::Store(
+                crucible_cas::content_store::StoreError::NotFound { id }
+            )) if id == missing_value
+        ));
 
         let missing_child = ContentId::for_bytes(ObjectKind::MerkleNode, 1, b"missing");
         let parent = MerkleNode {
@@ -1079,6 +1162,12 @@ mod tests {
         ));
         assert!(matches!(
             map.verify_closure(parent_id),
+            Err(CampaignStoreError::Store(
+                crucible_cas::content_store::StoreError::NotFound { id }
+            )) if id == missing_child
+        ));
+        assert!(matches!(
+            map.verify_closure_streaming(parent_id),
             Err(CampaignStoreError::Store(
                 crucible_cas::content_store::StoreError::NotFound { id }
             )) if id == missing_child

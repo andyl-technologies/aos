@@ -146,7 +146,7 @@ impl CampaignRecordKind {
     #[must_use]
     pub const fn schema_version(self) -> u32 {
         match self {
-            Self::PlannerStep => 2,
+            Self::PlannerStep | Self::ExpansionState => 2,
             _ => RECORD_SCHEMA_VERSION,
         }
     }

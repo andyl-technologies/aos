@@ -213,6 +213,7 @@ pub struct CampaignRepository {
 
 mod ancestry;
 mod closure;
+mod projection;
 mod records;
 mod transactions;
 
@@ -438,9 +439,10 @@ mod tests {
     use crate::{
         BooleanDomain, BranchBudget, BudgetGrant, CampaignFactId, CampaignMode,
         CampaignPlanningView, CampaignSeed, CandidateGeneratorAlgorithm, ChoiceClassContext,
-        ChoiceCoordinate, ChoicePolicy, ChoiceSource, ChoiceValue, ConfigurationId, ExplorerPolicy,
-        FairnessPolicy, PlannerEngine, PlanningBudget, ProgressiveWideningPolicy, PuctPolicy,
-        RetentionPolicy, ScenarioDefId, StopCondition, WeightedGenerator,
+        ChoiceCoordinate, ChoicePolicy, ChoiceSource, ChoiceValue, ConfigurationId,
+        ContinuationState, ExplorerPolicy, FairnessPolicy, PlannerEngine, PlanningBudget,
+        ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy, ScenarioDefId, StopCondition,
+        WeightedGenerator,
     };
 
     fn fixture() -> (CampaignRepository, CampaignLineage, CampaignPolicy) {
@@ -1197,6 +1199,305 @@ mod tests {
     }
 
     #[test]
+    fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomputed() {
+        let (repository, lineage, policy) = fixture();
+        let genesis = repository
+            .create("finite-expansion", &lineage, &policy, &BTreeMap::new())
+            .expect("create");
+        let first_request = branch_request(
+            &repository,
+            &lineage,
+            lineage.genesis_content(),
+            lineage.genesis(),
+            "finite-expansion",
+        );
+        let first_requested = repository
+            .submit_branch_request("finite-expansion", genesis.snapshot_id(), &first_request)
+            .expect("first request");
+        let second_request = BranchRequest::new(
+            first_request.branch_point(),
+            first_request.parent(),
+            first_request.opportunity(),
+            first_request.domain(),
+            first_request.source().clone(),
+            BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(
+                CampaignHash::derive("test", b"finite-expansion-second"),
+            )),
+            first_request.budget(),
+            first_request.stop().clone(),
+        )
+        .expect("second request");
+        let second_requested = repository
+            .submit_branch_request(
+                "finite-expansion",
+                first_requested.new_snapshot,
+                &second_request,
+            )
+            .expect("second request transition");
+
+        let first_page_id = repository
+            .project_finite_expansion(
+                second_requested.new_snapshot,
+                first_request.branch_point(),
+                None,
+                1,
+            )
+            .expect("first projection page");
+        let first_page = repository
+            .load_expansion_state(first_page_id)
+            .expect("load first page");
+        assert_eq!(first_page.continuations().len(), 1);
+        assert_eq!(
+            first_page
+                .continuations()
+                .values()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![ContinuationState::Ready]
+        );
+        assert_eq!(
+            repository
+                .merkle
+                .inspect_shallow(first_page.request_root())
+                .expect("request projection root")
+                .entry_count(),
+            2
+        );
+        let cursor = first_page.next_after().expect("second page cursor");
+        assert_eq!(
+            first_page
+                .continuations()
+                .last_key_value()
+                .map(|entry| *entry.0),
+            Some(cursor)
+        );
+
+        let second_page_id = repository
+            .project_finite_expansion(
+                second_requested.new_snapshot,
+                first_request.branch_point(),
+                Some(cursor),
+                1,
+            )
+            .expect("second projection page");
+        let second_page = repository
+            .load_expansion_state(second_page_id)
+            .expect("load second page");
+        assert_eq!(second_page.continuations().len(), 1);
+        assert_eq!(second_page.next_after(), None);
+        assert_eq!(first_page.request_root(), second_page.request_root());
+        let whole_page_id = repository
+            .project_finite_expansion(
+                second_requested.new_snapshot,
+                first_request.branch_point(),
+                None,
+                10,
+            )
+            .expect("whole projection page");
+        let whole_page = repository
+            .load_expansion_state(whole_page_id)
+            .expect("load whole page");
+        let paged_requests = first_page
+            .continuations()
+            .keys()
+            .chain(second_page.continuations().keys())
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paged_requests,
+            whole_page
+                .continuations()
+                .keys()
+                .copied()
+                .collect::<Vec<_>>()
+        );
+        assert_ne!(
+            first_page
+                .continuations()
+                .first_key_value()
+                .map(|entry| *entry.0),
+            second_page
+                .continuations()
+                .first_key_value()
+                .map(|entry| *entry.0)
+        );
+
+        let foreign = branch_request(
+            &repository,
+            &lineage,
+            lineage.genesis_content(),
+            lineage.genesis(),
+            "finite-expansion-foreign",
+        );
+        assert!(matches!(
+            repository.project_finite_expansion(
+                second_requested.new_snapshot,
+                first_request.branch_point(),
+                Some(foreign.id().expect("foreign request id")),
+                1,
+            ),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "expansion-page-cursor-is-not-in-request-root"
+            })
+        ));
+
+        let request_head = repository.head("finite-expansion").expect("request head");
+        let first_proposal = finite_proposal(
+            &first_request,
+            &policy,
+            &request_head,
+            ChoiceValue::Boolean(false),
+            1,
+        );
+        let first_proposed = repository
+            .issue_proposal(
+                "finite-expansion",
+                request_head.snapshot_id(),
+                &first_proposal,
+            )
+            .expect("first proposal");
+        let pending_id = repository
+            .project_finite_expansion(
+                first_proposed.new_snapshot,
+                first_request.branch_point(),
+                None,
+                10,
+            )
+            .expect("pending projection");
+        let pending = repository
+            .load_expansion_state(pending_id)
+            .expect("load pending projection");
+        assert_eq!(
+            pending
+                .continuations()
+                .get(&first_request.id().expect("first request id")),
+            Some(&ContinuationState::Open)
+        );
+        assert_eq!(pending.statistics().admitted_children, 0);
+
+        let (selection, path, attempt) =
+            branch_attempt(&repository, &first_request, &first_proposal);
+        let first_admitted = repository
+            .admit_proposal(
+                "finite-expansion",
+                first_proposed.new_snapshot,
+                first_proposed.proposal,
+                &selection,
+                &path,
+                &attempt,
+            )
+            .expect("first admission");
+        let ready_id = repository
+            .project_finite_expansion(
+                first_admitted.new_snapshot,
+                first_request.branch_point(),
+                None,
+                10,
+            )
+            .expect("ready projection");
+        let ready = repository
+            .load_expansion_state(ready_id)
+            .expect("load ready projection");
+        assert_eq!(
+            ready
+                .continuations()
+                .get(&first_request.id().expect("first request id")),
+            Some(&ContinuationState::Ready)
+        );
+        assert_eq!(ready.statistics().admitted_children, 1);
+
+        let admitted_head = repository.head("finite-expansion").expect("admitted head");
+        let second_proposal = finite_proposal(
+            &first_request,
+            &policy,
+            &admitted_head,
+            ChoiceValue::Boolean(true),
+            2,
+        );
+        let second_proposed = repository
+            .issue_proposal(
+                "finite-expansion",
+                admitted_head.snapshot_id(),
+                &second_proposal,
+            )
+            .expect("second proposal");
+        let (second_selection, second_path, second_attempt) =
+            branch_attempt(&repository, &first_request, &second_proposal);
+        let second_admitted = repository
+            .admit_proposal(
+                "finite-expansion",
+                second_proposed.new_snapshot,
+                second_proposed.proposal,
+                &second_selection,
+                &second_path,
+                &second_attempt,
+            )
+            .expect("second admission");
+        let exhausted_id = repository
+            .project_finite_expansion(
+                second_admitted.new_snapshot,
+                first_request.branch_point(),
+                None,
+                10,
+            )
+            .expect("exhausted projection");
+        let exhausted = repository
+            .load_expansion_state(exhausted_id)
+            .expect("load exhausted projection");
+        assert_eq!(
+            exhausted
+                .continuations()
+                .get(&first_request.id().expect("first request id")),
+            Some(&ContinuationState::Exhausted)
+        );
+        assert_eq!(exhausted.statistics().admitted_children, 2);
+        assert_eq!(
+            repository
+                .merkle
+                .inspect_shallow(exhausted.proposal_root())
+                .expect("proposal projection root")
+                .entry_count(),
+            2
+        );
+        assert_eq!(
+            repository
+                .merkle
+                .inspect_shallow(exhausted.admission_root())
+                .expect("admission projection root")
+                .entry_count(),
+            2
+        );
+
+        let empty = repository.merkle.empty().expect("empty root").content_id();
+        let forged = ExpansionState::new(
+            exhausted.source_snapshot(),
+            exhausted.input_view(),
+            exhausted.branch_point(),
+            empty,
+            exhausted.proposal_root(),
+            exhausted.admission_root(),
+            exhausted.observation_root(),
+            exhausted.statistics(),
+            exhausted.page_after(),
+            exhausted.page_size(),
+            exhausted.next_after(),
+            exhausted.continuations().clone(),
+        )
+        .expect("structurally valid forged projection");
+        let forged_content = repository
+            .put_expansion_state(&forged)
+            .expect("put forged projection");
+        assert!(matches!(
+            repository.load_expansion_state(
+                ExpansionStateId::from_content_id(forged_content).expect("forged expansion id")
+            ),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "expansion-state-owner-recomputation-mismatch"
+            })
+        ));
+    }
+
+    #[test]
     fn branch_request_staleness_and_campaign_scope_fail_before_ref_advance() {
         let (repository, lineage, policy) = fixture();
         let genesis = repository
@@ -1350,9 +1651,20 @@ mod tests {
             StopCondition::NextChoice,
         )
         .expect("valid generated request");
-        repository
+        let generated = repository
             .submit_branch_request("generators", genesis.snapshot_id(), &valid)
             .expect("accept compatible generator");
+        assert!(matches!(
+            repository.project_finite_expansion(
+                generated.new_snapshot,
+                valid.branch_point(),
+                None,
+                10,
+            ),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "generated-expansion-projector-is-not-implemented"
+            })
+        ));
     }
 
     #[test]

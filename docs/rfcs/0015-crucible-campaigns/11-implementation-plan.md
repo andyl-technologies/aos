@@ -365,7 +365,7 @@ area mapping ensures that no part of the RFC is merely aspirational:
 | `CMOD-1..28` | 1, 2, 4 | campaign model, content address, attempt idempotence, continuity |
 | `SEL-1..21` | 2 | typed choice, ABI conformance, end-to-end determinism |
 | `GUIDE-1..24` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
-| `LAZY-1..28` | 4 | lazy frontier, attempt idempotence, campaign replay |
+| `LAZY-1..34` | 4 | lazy frontier, attempt idempotence, campaign replay |
 | `CCOMP-1..22` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
 | `HFORK-1..24` | 6, 7 | hot-fork equivalence/isolation/scaling, world-fork atomicity, ABI/license |
 | `CSTORE-1..22` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |
