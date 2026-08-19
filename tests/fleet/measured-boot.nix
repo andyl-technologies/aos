@@ -1656,6 +1656,7 @@ in {
           offset = serial_offset()
           target.send_serial(f"""
               set -e
+              mkdir -p /run/aos-recovery/esp
               mount -t vfat -o rw /dev/disk/by-partlabel/ESP /run/aos-recovery/esp
               cp /var/recovery-{copy}.efi.qualified /run/aos-recovery/esp/EFI/AOS/recovery-{copy}.efi
               sync
