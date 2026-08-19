@@ -1123,6 +1123,28 @@ fn schedule_suffix(
 /// Errors returned by QEMU VM realization coordination.
 #[derive(Debug, Error)]
 pub enum QemuVmRealizationError {
+    /// A checkpoint-store operation is temporarily unavailable.
+    #[error("{operation} store operation is temporarily unavailable: {message}")]
+    StoreUnavailable {
+        /// Store operation being attempted.
+        operation: &'static str,
+        /// Availability failure detail.
+        message: String,
+    },
+    /// A QEMU runtime operation is temporarily unavailable.
+    #[error("{operation} executor operation is temporarily unavailable: {message}")]
+    ExecutorUnavailable {
+        /// Runtime operation being attempted.
+        operation: &'static str,
+        /// Availability failure detail.
+        message: String,
+    },
+    /// Attempt-scoped realization was canceled at an operational boundary.
+    #[error("QEMU realization was canceled before {operation}")]
+    Canceled {
+        /// Operation that was prevented by cancellation.
+        operation: &'static str,
+    },
     /// A checkpoint-store operation failed.
     #[error("{operation} store operation failed: {message}")]
     Store {
