@@ -28,3 +28,7 @@ crucible.campaign.attempt-admission	1	crucible-campaign::exploration	campaign-fa
 crucible.campaign.planner-step	3	crucible-campaign::exploration	campaign-fact	gate:component-contract,gate:content-address
 crucible.campaign.planner-step-proposal	1	crucible-campaign::exploration	component-message	gate:component-contract
 crucible.campaign.expansion-state	2	crucible-campaign::exploration	projection	gate:lazy-frontier,gate:content-address
+crucible.campaign.measurement-set	1	crucible-campaign::observation	observation	gate:campaign-replay,gate:content-address
+crucible.campaign.property-verdict-set	1	crucible-campaign::observation	observation	gate:campaign-replay,gate:content-address
+crucible.campaign.coverage-projection	1	crucible-campaign::observation	projection	gate:campaign-replay,gate:content-address
+crucible.campaign.observation	1	crucible-campaign::observation	observation	gate:attempt-idempotence,gate:campaign-replay,gate:content-address

@@ -127,6 +127,9 @@ the campaign proposal sequence can be re-derived. `Streaming` incorporates
 completed observations as they arrive and promises branch/finding
 reproducibility rather than arrival-order-independent campaign evolution.
 `Statistical` enforces the sampling and weighting restrictions in §03.8.
+The mode is fixed for one campaign ref because it selects the observation-fold
+and reproducibility contract. Steering may activate another policy only with
+the same mode; changing mode requires deriving a new campaign.
 
 Resource placement is not policy. Worker count, memory limits, CPU affinity,
 host names, store endpoint, and cache inventory are daemon configuration.
@@ -178,9 +181,9 @@ The roots name immutable canonical maps or sets:
 | --- | --- |
 | `graph_root` | Configurations, branch points, schedule edges, and graph metadata. |
 | `exploration_root` | Branch requests, proposals, and candidate-source specifications. |
-| `observations_root` | Attempt results, measurements, properties, coverage projections, and causal evidence. |
+| `observations_root` | Canonical attempt results, retained determinism conflicts, measurements, properties, coverage projections, paths, and causal evidence. |
 | `corpus_root` | Retained configurations and reproduction artifacts worth further mutation. |
-| `coverage_root` | Grow-only union of canonical coverage identities. |
+| `coverage_root` | Grow-only set of canonical coverage-projection records; their deterministic identity union is derived. |
 | `findings_root` | Failure signatures, clusters, minimization products, and reproduction artifacts. |
 | `pins_root` | User and policy retention decisions for configurations and exact closures. |
 | `accounting_root` | Budget grants, consumed attempts, modeled completion counts, policy activation, pause/resume, and operator commands. |
@@ -465,12 +468,13 @@ pub enum AttemptAdmissionRole {
 pub struct Observation {
     pub attempt: AttemptId,
     pub child: ConfigurationId,
+    pub child_content: ConfigurationArtifactId,
     pub path: BranchPathId,
     pub stop: StopOutcome,
     pub measurements: MeasurementSetId,
     pub properties: PropertyVerdictSetId,
     pub coverage: CoverageProjectionId,
-    pub discovered_choices: Vec<ChoiceOpportunityId>,
+    pub discovered_choices: CanonicalSet<ChoiceOpportunityId>,
 }
 ```
 
@@ -486,6 +490,10 @@ policy generator and an operator's finite request both emit the same value, both
 proposal facts remain visible but they converge on one branch edge and one
 semantic attempt when stop and other execution inputs also match. Requests with
 different stop conditions still share the edge but may admit distinct attempts.
+The semantic child identity and exact child artifact are both present: graph
+deduplication uses the former, while closure validation and replay retain the
+latter. Measurement, property, coverage, path, and discovered-choice records
+are exact children of the observation envelope.
 This is campaign-knowledge deduplication, not a loss of audit history.
 
 A finite source is bounded by the request even when the selectable's legal
@@ -670,3 +678,6 @@ sealed it.
   request causes MUST NOT consume another attempt, change sampling provenance,
   or trigger another execution. Conflicting execution bases or ordinals are a
   campaign-integrity error.
+- **[CMOD-29]** Policy activation on one campaign ref MUST preserve
+  `CampaignMode`. A mode change MUST derive another campaign so existing
+  observation ordering cannot be reinterpreted.

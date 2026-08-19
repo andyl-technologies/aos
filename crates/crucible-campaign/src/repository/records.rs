@@ -3,6 +3,69 @@
 use super::*;
 
 impl CampaignRepository {
+    /// Loads an exact measurement set and verifies its complete evidence closure.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error for missing, malformed, or
+    /// incorrectly typed measurement/evidence objects.
+    pub fn load_measurement_set(
+        &self,
+        id: MeasurementSetId,
+    ) -> Result<MeasurementSet, CampaignRepositoryError> {
+        let value = self.read_measurement_set(id.content_id())?;
+        self.verify_campaign_closure(id.content_id())?;
+        Ok(value)
+    }
+
+    /// Loads an exact property-verdict set and verifies its evidence closure.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error for missing, malformed, or
+    /// incorrectly typed property/evidence objects.
+    pub fn load_property_verdict_set(
+        &self,
+        id: PropertyVerdictSetId,
+    ) -> Result<PropertyVerdictSet, CampaignRepositoryError> {
+        let value = self.read_property_verdict_set(id.content_id())?;
+        self.verify_campaign_closure(id.content_id())?;
+        Ok(value)
+    }
+
+    /// Loads an exact coverage projection and verifies its derivation closure.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error for missing, malformed, or
+    /// incorrectly typed coverage/evidence objects.
+    pub fn load_coverage_projection(
+        &self,
+        id: CoverageProjectionId,
+    ) -> Result<CoverageProjection, CampaignRepositoryError> {
+        let value = self.read_coverage_projection(id.content_id())?;
+        self.verify_campaign_closure(id.content_id())?;
+        Ok(value)
+    }
+
+    /// Loads one exact observation and validates its complete semantic closure.
+    ///
+    /// Standalone loading proves record semantics, not membership in a campaign
+    /// snapshot's canonical attempt-completion index.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error for a missing, malformed, or
+    /// semantically inconsistent observation closure.
+    pub fn load_observation(
+        &self,
+        id: ObservationId,
+    ) -> Result<Observation, CampaignRepositoryError> {
+        let value = self.read_observation(id.content_id())?;
+        self.verify_campaign_closure(id.content_id())?;
+        Ok(value)
+    }
+
     /// Loads an exact proposal and validates its request, domain, policy, and planner basis.
     ///
     /// # Errors
@@ -436,6 +499,50 @@ impl CampaignRepository {
         )?)
     }
 
+    pub(super) fn put_measurement_set(
+        &self,
+        value: &MeasurementSet,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::MeasurementSet,
+            crate::object::content_children(value.content_children())?,
+            value.canonical_bytes(),
+        )?)
+    }
+
+    pub(super) fn put_property_verdict_set(
+        &self,
+        value: &PropertyVerdictSet,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::PropertyVerdictSet,
+            crate::object::content_children(value.content_children())?,
+            value.canonical_bytes(),
+        )?)
+    }
+
+    pub(super) fn put_coverage_projection(
+        &self,
+        value: &CoverageProjection,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::CoverageProjection,
+            crate::object::content_children(value.content_children())?,
+            value.canonical_bytes(),
+        )?)
+    }
+
+    pub(super) fn put_observation(
+        &self,
+        value: &Observation,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::Observation,
+            crate::object::content_children(value.content_children())?,
+            value.canonical_bytes(),
+        )?)
+    }
+
     pub(super) fn put_scenario_artifact(
         &self,
         artifact: &ScenarioArtifact,
@@ -679,7 +786,10 @@ impl CampaignRepository {
             CampaignFact::AttemptClosed { attempt, .. } => {
                 self.require_record_kind(attempt.content_id(), crate::CampaignRecordKind::Attempt)?;
             }
-            CampaignFact::ObservationPublished(_) | CampaignFact::FindingPublished(_) => {
+            CampaignFact::ObservationPublished(id) => {
+                self.require_record_kind(id.content_id(), crate::CampaignRecordKind::Observation)?;
+            }
+            CampaignFact::FindingPublished(_) => {
                 return Err(integrity("campaign-fact-record-type-is-not-implemented"));
             }
             CampaignFact::BudgetGranted(_) | CampaignFact::PinChanged(_) => {}
@@ -989,6 +1099,115 @@ impl CampaignRepository {
             return Err(integrity("proposal-envelope-shape"));
         }
         Ok(proposal)
+    }
+
+    pub(super) fn read_measurement_set(
+        &self,
+        id: ContentId,
+    ) -> Result<MeasurementSet, CampaignRepositoryError> {
+        let envelope = self.require_record_kind(id, crate::CampaignRecordKind::MeasurementSet)?;
+        let value = MeasurementSet::from_canonical_bytes(envelope.body())?;
+        if value.id()?.content_id() != id {
+            return Err(integrity("measurement-set-envelope-shape"));
+        }
+        Ok(value)
+    }
+
+    pub(super) fn read_property_verdict_set(
+        &self,
+        id: ContentId,
+    ) -> Result<PropertyVerdictSet, CampaignRepositoryError> {
+        let envelope =
+            self.require_record_kind(id, crate::CampaignRecordKind::PropertyVerdictSet)?;
+        let value = PropertyVerdictSet::from_canonical_bytes(envelope.body())?;
+        if value.id()?.content_id() != id {
+            return Err(integrity("property-verdict-set-envelope-shape"));
+        }
+        Ok(value)
+    }
+
+    pub(super) fn read_coverage_projection(
+        &self,
+        id: ContentId,
+    ) -> Result<CoverageProjection, CampaignRepositoryError> {
+        let envelope =
+            self.require_record_kind(id, crate::CampaignRecordKind::CoverageProjection)?;
+        let value = CoverageProjection::from_canonical_bytes(envelope.body())?;
+        if value.id()?.content_id() != id {
+            return Err(integrity("coverage-projection-envelope-shape"));
+        }
+        Ok(value)
+    }
+
+    pub(super) fn read_observation(
+        &self,
+        id: ContentId,
+    ) -> Result<Observation, CampaignRepositoryError> {
+        let observation = self.decode_observation(id)?;
+        self.validate_observation_references(&observation)?;
+        Ok(observation)
+    }
+
+    pub(super) fn decode_observation(
+        &self,
+        id: ContentId,
+    ) -> Result<Observation, CampaignRepositoryError> {
+        let envelope = self.require_record_kind(id, crate::CampaignRecordKind::Observation)?;
+        let observation = Observation::from_canonical_bytes(envelope.body())?;
+        if observation.id()?.content_id() != id {
+            return Err(integrity("observation-envelope-shape"));
+        }
+        Ok(observation)
+    }
+
+    pub(super) fn validate_observation_references(
+        &self,
+        observation: &Observation,
+    ) -> Result<(), CampaignRepositoryError> {
+        self.validate_observation_references_cached(
+            observation,
+            &mut ChoiceValidationCache::default(),
+        )
+    }
+
+    pub(super) fn validate_observation_references_cached(
+        &self,
+        observation: &Observation,
+        choice_cache: &mut ChoiceValidationCache,
+    ) -> Result<(), CampaignRepositoryError> {
+        let attempt = self.read_attempt(observation.attempt().content_id())?;
+        let child = self.read_configuration_artifact(observation.child_content().content_id())?;
+        if child.configuration() != observation.child()
+            || attempt.path() != observation.path()
+            || matches!(observation.stop(), StopOutcome::Reached(stop) if stop != attempt.stop())
+        {
+            return Err(integrity("observation-attempt-or-child-mismatch"));
+        }
+        self.read_measurement_set(observation.measurements().content_id())?;
+        let properties = self.read_property_verdict_set(observation.properties().content_id())?;
+        self.read_coverage_projection(observation.coverage().content_id())?;
+        for choice in observation.discovered_choices() {
+            let choice = self.read_opportunity_cached(choice.content_id(), choice_cache)?;
+            if choice.scenario() != child.scenario() {
+                return Err(integrity("observation-choice-scenario-mismatch"));
+            }
+        }
+        if matches!(
+            observation.stop(),
+            StopOutcome::Reached(StopCondition::NextChoice)
+        ) && observation.discovered_choices().is_empty()
+        {
+            return Err(integrity("next-choice-observation-has-no-choice"));
+        }
+        if let StopOutcome::AssertionFailure(property) = observation.stop()
+            && properties
+                .properties()
+                .get(property)
+                .is_none_or(|evidence| evidence.verdict() != PropertyVerdict::Failed)
+        {
+            return Err(integrity("assertion-outcome-has-no-failed-property"));
+        }
+        Ok(())
     }
 
     pub(super) fn read_attempt(&self, id: ContentId) -> Result<Attempt, CampaignRepositoryError> {
@@ -1525,17 +1744,6 @@ impl CampaignRepository {
         Ok(domain)
     }
 
-    pub(super) fn validate_opportunity_references(
-        &self,
-        envelope: &ObjectEnvelope,
-    ) -> Result<(), CampaignRepositoryError> {
-        let opportunity = crate::codec::decode::<ChoiceOpportunity>(envelope.body())?;
-        let declaration = self.read_selectable(required_child(envelope, "declaration")?)?;
-        let domain = self.read_choice_domain(required_child(envelope, "domain")?)?;
-        opportunity.validate_references(&declaration, &domain)?;
-        Ok(())
-    }
-
     pub(super) fn validate_group_references(
         &self,
         envelope: &ObjectEnvelope,
@@ -1563,17 +1771,46 @@ impl CampaignRepository {
         &self,
         id: ContentId,
     ) -> Result<ChoiceOpportunity, CampaignRepositoryError> {
+        self.read_opportunity_cached(id, &mut ChoiceValidationCache::default())
+    }
+
+    pub(super) fn read_opportunity_cached(
+        &self,
+        id: ContentId,
+        cache: &mut ChoiceValidationCache,
+    ) -> Result<ChoiceOpportunity, CampaignRepositoryError> {
         let envelope = self.read_envelope(id)?;
         if envelope.record_kind() != crate::CampaignRecordKind::ChoiceOpportunity {
             return Err(integrity("choice-opportunity-envelope-shape"));
         }
+        self.validate_opportunity_references_cached(&envelope, cache)
+    }
+
+    pub(super) fn validate_opportunity_references_cached(
+        &self,
+        envelope: &ObjectEnvelope,
+        cache: &mut ChoiceValidationCache,
+    ) -> Result<ChoiceOpportunity, CampaignRepositoryError> {
         let opportunity = crate::codec::decode::<ChoiceOpportunity>(envelope.body())?;
-        if opportunity.id()?.content_id() != id {
+        if opportunity.id()?.content_id() != envelope.content_id() {
             return Err(integrity("choice-opportunity-envelope-shape"));
         }
-        let declaration = self.read_selectable(opportunity.declaration().content_id())?;
-        let domain = self.read_choice_domain(opportunity.domain().content_id())?;
+        let key = (
+            opportunity.declaration().content_id(),
+            opportunity.domain().content_id(),
+        );
+        let contract = opportunity.reference_contract_hash();
+        if let Some(validated) = cache.get(&key) {
+            if validated != contract {
+                return Err(integrity("choice-opportunity-cached-reference-mismatch"));
+            }
+            return Ok(opportunity);
+        }
+
+        let declaration = self.read_selectable(key.0)?;
+        let domain = self.read_choice_domain(key.1)?;
         opportunity.validate_references(&declaration, &domain)?;
+        cache.insert(key, contract);
         Ok(opportunity)
     }
 

@@ -197,9 +197,9 @@ never campaign truth, and may be discarded at any time.
   history scans, and deleting every validation checkpoint MUST preserve
   semantics. Relative to exact anchors authenticated by the parent checkpoint,
   incremental closure accounting MUST authenticate and charge the complete
-  newly reachable transition closure, including immutable graphs published
-  before but not reachable from the parent, plus a conservative bound for newly
-  created owner-index nodes.
+  closure newly reachable relative to those parent anchors, including immutable
+  graphs published before but not reachable from the parent, plus a conservative
+  bound for newly created owner-index nodes.
 
 ## 10.7 Correctness gates
 

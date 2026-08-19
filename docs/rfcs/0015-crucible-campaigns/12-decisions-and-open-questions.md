@@ -122,7 +122,10 @@ observations as they arrive and is suitable for maximum throughput. Both
 produce exact replay paths, but only strict mode promises the same explored
 tree from the same inputs and budget.
 
-The mode is campaign policy and is visible in claims and status output.
+The mode is campaign policy and is visible in claims and status output. One
+campaign ref cannot activate a policy with another mode: mode selects the
+observation-fold contract, so such an experiment derives a new campaign rather
+than reinterpreting an existing admission sequence.
 
 ### D-11: Expansion state is lazy and persistent
 
@@ -381,8 +384,8 @@ may prepare a child from that checkpoint without rewalking unchanged closure,
 but promotes it only after the authoritative ref CAS succeeds. Canonical depth
 and closure limits are enforced on both full and incremental paths. Relative to
 exact parent-authenticated roots and owner-index members, every incremental
-child authenticates and charges its complete newly reachable transition
-closure, including pre-published generator, policy, artifact, or other graphs
+child authenticates and charges the complete closure newly reachable relative
+to those parent anchors, including pre-published generator, policy, artifact, or other graphs
 that were not reachable from the parent, plus a conservative upper bound for
 newly constructed owner-index nodes. The cache retains only a bounded current
 frontier; eviction is always semantically safe and any lookup that races with
@@ -409,6 +412,28 @@ validation before promotion. Immutable blob semantics and active-ref GC
 protection are prerequisites: a backend that mutates or removes reachable
 objects violates the storage contract rather than silently invalidating a
 semantic checkpoint.
+
+### D-33: Observation publication is an exact first-result owner transition
+
+One authenticated `ExecutionBasis` admits an `AttemptId`; it does not make a
+caller-provided result authoritative. The coordinator validates the complete
+modeled observation closure and conditionally creates the attempt-to-observation
+mapping. The first canonical mapping owns graph, corpus, coverage, and
+accounting folds. Later distinct results are retained only in a deterministic
+conflict index, while exact replay returns the originally committed transition.
+Strict campaigns fold canonical observations by global admission ordinal.
+Imported transitions recompute all five root deltas without writing, and local
+publication advances the mutable ref last. Before local publication writes any
+observation or owner-index object, one read-only multi-root preflight validates
+all newly supplied evidence and discovered-choice closures. Full choice-domain
+records are transient during that walk; a bounded cache retains only compact
+digests of successfully validated declaration/domain reference contracts and is
+shared across ancestry and closure validation.
+
+Coverage is stored as a grow-only set of immutable projection records rather
+than one mutable union value. The semantic union remains deterministic and
+rebuildable from those records, while each projection preserves its exact
+derivation evidence and content identity.
 
 ## Deliberately rejected representations
 

@@ -510,3 +510,66 @@ admission is rejected.
 - **[LAZY-34]** A finite-only projector MUST fail closed for generated requests
   and observation-bearing views until their exact owner folds are implemented.
   It MUST NOT publish approximated readiness, statistics, or exhaustion.
+
+## 04.15 Atomic observation publication
+
+`PublishObservation(name, expected_snapshot, observation)` is the sole-writer
+transition that records one modeled completion. Before any campaign mutation it
+authenticates the attempt's unique `ExecutionBasis`, exact branch path, semantic
+and exact child configuration, stop condition, measurement set, property-
+verdict set, coverage projection, and discovered choices. A `NextChoice` stop
+requires at least one discovered choice, and every discovered choice must belong
+to the campaign scenario at the observed child.
+
+This authentication is a read-only preflight over the union of newly supplied
+child closures and completes before the observation body or any owner-index
+node is written. Nested campaign records receive their complete semantic
+validation, not only envelope validation. Choice opportunity validation keeps
+full declaration/domain objects transient and shares only a compact digest of
+the copied reference contract. That cache is explicitly bounded and spans
+ancestry-owner replay plus closure traversal, preventing both repeated parsing
+of one large shared domain and retention of schema-sized domain bodies.
+
+The canonical observation owner conditionally maps `AttemptId` to
+`ObservationId`. Repeating the same observation returns the original prior/new
+snapshot pair before checking a stale precondition. A different observation
+for that attempt is retained under a domain-separated conflict key, but it does
+not replace or modify the canonical graph child, corpus entry, coverage,
+accounting, or strict sequence. This makes a determinism defect durable without
+allowing arrival order or last-writer-wins mutation to rewrite campaign truth.
+
+A canonical completion atomically updates five semantic roots. The graph binds
+the semantic configuration and any branch edge to the exact child artifact and
+adds discovered choice/branch-point memberships. The corpus retains the child.
+The observation root indexes the attempt result, observation, path, and exact
+measurement/property/coverage objects. The coverage root adds the immutable
+`CoverageProjectionId`; the grow-only identity union is the deterministic union
+of those records. Accounting binds the attempt and global admission ordinal to
+the observation. In strict mode its sequence entry advances only to the next
+global admission ordinal; streaming and statistical modes accept any completed
+admitted attempt while preserving the exact snapshot basis seen by planning.
+
+Imported successors are accepted only when read-only owner recomputation
+derives those exact upserts, every unrelated root and campaign basis is
+unchanged, and the coordination root has the exact parent-result locator. Local
+publication advances the campaign ref last and promotes an incremental
+validation checkpoint only after successful CAS. A rejected final CAS leaves
+immutable unreachable objects but no trusted child or authoritative state
+change.
+
+- **[LAZY-35]** An observation MUST bind one admitted semantic attempt to its
+  exact path, semantic and exact child configuration, modeled stop outcome,
+  bounded evidence records, and discovered choices. Operational placement and
+  retry data MUST NOT enter these identities.
+- **[LAZY-36]** Canonical observation publication MUST require an authenticated
+  `ExecutionBasis` and apply the exact graph, observation, corpus, coverage, and
+  accounting owner deltas while preserving every unrelated root.
+- **[LAZY-37]** Exact observation replay MUST precede stale-snapshot rejection.
+  A different result for an already observed attempt MUST be retained as
+  determinism-conflict evidence without replacing any canonical semantic fold.
+- **[LAZY-38]** Strict observation publication MUST follow global admission
+  ordinal order. Streaming and statistical publication MAY accept completed
+  attempts out of order but MUST retain each planner's exact observation basis.
+- **[LAZY-39]** Imported observation successors MUST be validated by read-only
+  owner recomputation. Local publication MUST advance the ref last and MUST NOT
+  promote a rejected CAS child as validated acceleration state.

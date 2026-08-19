@@ -124,6 +124,9 @@ Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and
   virtual-time metrics from canonical events.
 - [ ] **T-CAM-3.4** Implement observation, objective-evaluation, Pareto,
   lexicographic, top-`K`, fairness-reserve, and explanation records.
+  The canonical bounded observation, measurement-set, property-verdict-set,
+  and coverage-projection record layer is implemented; aggregate verification,
+  objectives, ranking, explanations, and the Phase 3 flight remain open.
 - [ ] **T-CAM-3.5** Extend finding artifacts and retention policy with exact
   pre/post-failure pins and measurement/evidence closure.
 - [ ] **T-CAM-3.6** Have an independent reviewer cross-check guest convergence
@@ -162,6 +165,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   projection rebuilding; implement snapshot-bound paged planner scans whose
   result is chunk-size independent; reject stale, oversized, timed-out,
   cancelled, and nondeterministic planner invocations.
+  Exact observation publication now covers execution-basis authentication,
+  strict global-admission order, stale-safe replay, deterministic conflict
+  retention, exact root deltas, imported recomputation, and final-CAS safety;
+  supervisor scheduling, non-modeled ordinal closure, and restart reservation
+  recovery remain open.
 - [ ] **T-CAM-4.7** Implement hierarchical per-event promotion and existing
   minimization integration.
 - [ ] **T-CAM-4.8** Complete the §14 Phase 4 local operator flight through lazy
@@ -368,10 +376,10 @@ area mapping ensures that no part of the RFC is merely aspirational:
 | Requirements | Primary phases | Primary gates |
 | --- | --- | --- |
 | `CAM-1..14` | 1–9 | campaign model, replay, continuity, ABI, license boundary, manual acceptance |
-| `CMOD-1..28` | 1, 2, 4 | campaign model, content address, attempt idempotence, continuity |
+| `CMOD-1..29` | 1, 2, 4 | campaign model, content address, attempt idempotence, continuity |
 | `SEL-1..21` | 2 | typed choice, ABI conformance, end-to-end determinism |
 | `GUIDE-1..24` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
-| `LAZY-1..34` | 4 | lazy frontier, attempt idempotence, campaign replay |
+| `LAZY-1..39` | 4 | lazy frontier, attempt idempotence, campaign replay |
 | `CCOMP-1..22` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
 | `HFORK-1..24` | 6, 7 | hot-fork equivalence/isolation/scaling, world-fork atomicity, ABI/license |
 | `CSTORE-1..22` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |

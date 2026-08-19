@@ -17,8 +17,9 @@ use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::{
     Attempt, AttemptAdmission, BranchPath, BranchRequest, CampaignCodecError,
     CampaignControlAction, CampaignFact, CampaignLineage, CampaignPlanningView, CampaignPolicy,
-    CampaignSnapshot, ConfigurationArtifact, ExpansionState, PlannerEngine, PlannerInvocation,
-    PlannerState, PlannerStep, PolicyArtifact, Proposal, ScenarioArtifact,
+    CampaignSnapshot, ConfigurationArtifact, CoverageProjection, ExpansionState, MeasurementSet,
+    Observation, PlannerEngine, PlannerInvocation, PlannerState, PlannerStep, PolicyArtifact,
+    PropertyVerdictSet, Proposal, ScenarioArtifact,
 };
 
 pub use crucible_cas::content_envelope::ContentChild as ChildReference;
@@ -78,11 +79,19 @@ pub enum CampaignRecordKind {
     PlannerStep,
     /// Rebuildable branch-point expansion projection.
     ExpansionState,
+    /// Exact bounded measurement samples and aggregates.
+    MeasurementSet,
+    /// Exact property verdicts and retained evidence.
+    PropertyVerdictSet,
+    /// Grow-only coverage identities and derivation evidence.
+    CoverageProjection,
+    /// Canonical modeled result of one admitted attempt.
+    Observation,
 }
 
 impl CampaignRecordKind {
     /// Every campaign record schema admitted by this crate.
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 29] = [
         Self::Lineage,
         Self::Policy,
         Self::Snapshot,
@@ -108,6 +117,10 @@ impl CampaignRecordKind {
         Self::AttemptAdmission,
         Self::PlannerStep,
         Self::ExpansionState,
+        Self::MeasurementSet,
+        Self::PropertyVerdictSet,
+        Self::CoverageProjection,
+        Self::Observation,
     ];
 
     /// Returns the globally registered canonical schema name.
@@ -139,6 +152,10 @@ impl CampaignRecordKind {
             Self::AttemptAdmission => "crucible.campaign.attempt-admission",
             Self::PlannerStep => "crucible.campaign.planner-step",
             Self::ExpansionState => "crucible.campaign.expansion-state",
+            Self::MeasurementSet => "crucible.campaign.measurement-set",
+            Self::PropertyVerdictSet => "crucible.campaign.property-verdict-set",
+            Self::CoverageProjection => "crucible.campaign.coverage-projection",
+            Self::Observation => "crucible.campaign.observation",
         }
     }
 
@@ -174,7 +191,10 @@ impl CampaignRecordKind {
             Self::MerkleNode => ObjectKind::MerkleNode,
             Self::ScenarioArtifact => ObjectKind::Scenario,
             Self::ConfigurationArtifact => ObjectKind::Configuration,
-            Self::ExpansionState => ObjectKind::Projection,
+            Self::ExpansionState | Self::CoverageProjection => ObjectKind::Projection,
+            Self::MeasurementSet | Self::PropertyVerdictSet | Self::Observation => {
+                ObjectKind::Observation
+            }
             Self::Lineage
             | Self::Fact
             | Self::PlanningView
@@ -221,6 +241,10 @@ impl Canonical for CampaignRecordKind {
             Self::AttemptAdmission => 22,
             Self::PlannerStep => 23,
             Self::ExpansionState => 24,
+            Self::MeasurementSet => 25,
+            Self::PropertyVerdictSet => 26,
+            Self::CoverageProjection => 27,
+            Self::Observation => 28,
         });
     }
 
@@ -251,6 +275,10 @@ impl Canonical for CampaignRecordKind {
             22 => Ok(Self::AttemptAdmission),
             23 => Ok(Self::PlannerStep),
             24 => Ok(Self::ExpansionState),
+            25 => Ok(Self::MeasurementSet),
+            26 => Ok(Self::PropertyVerdictSet),
+            27 => Ok(Self::CoverageProjection),
+            28 => Ok(Self::Observation),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-record-kind",
                 tag,
@@ -525,6 +553,22 @@ fn expected_children(
         }
         CampaignRecordKind::ExpansionState => {
             let value = codec::decode::<ExpansionState>(body)?;
+            content_children(value.content_children())
+        }
+        CampaignRecordKind::MeasurementSet => {
+            let value = MeasurementSet::from_canonical_bytes(body)?;
+            content_children(value.content_children())
+        }
+        CampaignRecordKind::PropertyVerdictSet => {
+            let value = PropertyVerdictSet::from_canonical_bytes(body)?;
+            content_children(value.content_children())
+        }
+        CampaignRecordKind::CoverageProjection => {
+            let value = CoverageProjection::from_canonical_bytes(body)?;
+            content_children(value.content_children())
+        }
+        CampaignRecordKind::Observation => {
+            let value = Observation::from_canonical_bytes(body)?;
             content_children(value.content_children())
         }
         CampaignRecordKind::MerkleNode => Err(CampaignCodecError::InvalidValue {
