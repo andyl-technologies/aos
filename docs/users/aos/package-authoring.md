@@ -120,6 +120,13 @@ Document the upstream data layout and reproduce the actual build-time or
 runtime abort before adding this exception. Do not disable all hardening to
 work around one incompatible flag.
 
+Use `$NIX_BUILD_CORES` for build systems whose parallel graph is safe. Keep a
+legacy bootstrap stage serial when its upstream tool writes shared outputs from
+multiple recursive branches; for example, IcedTea 2.6 must use `make -j1`
+because concurrent boot-javac writers can abort in `ClassWriter.writePool`.
+Record the reproduced failure beside the serialized command so a future
+upgrade can remove the restriction deliberately.
+
 For an upstream release, add `fetchurl` and `fakeHash` to the package function
 arguments, keep `version` beside the source, and replace `src = null` with:
 
