@@ -1,6 +1,6 @@
 # 14 — QEMU fault-mutation patch series
 
-The complete node adapter and its exact-checkpoint handoff require forty new single-purpose patches after the
+The complete node adapter and its exact-checkpoint handoff require forty-one new single-purpose patches after the
 currently carried `0046-crucible-translation-prefetch-helper.patch`. Each patch
 has its own specification in this directory and remains part of the one atomic
 RFC-0014 implementation PR.
@@ -56,6 +56,7 @@ and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-pa
 | [`0087-crucible-deterministic-rcu-quiescence`](38-deterministic-rcu-quiescence.md) | Prevent host-timed forced RCU kicks from changing guest interrupt visibility in sim mode | Determinism-critical scheduler execution |
 | [`0088-crucible-deterministic-host-kick-boundary`](39-deterministic-host-kick-boundary.md) | Defer state-free latency hints while preserving committed control and interrupt progress | Determinism-critical scheduler execution |
 | [`0089-crucible-exact-boundary-vcpu-introspection`](40-exact-boundary-vcpu-introspection.md) | Admit quiescent all-vCPU registers and the committed RR cursor at exact control boundaries | Determinism-critical checkpoint observation |
+| [`0090-crucible-active-tcg-kick-boundary`](41-active-tcg-kick-boundary.md) | Prove active guest execution before deferring generic host kicks | Determinism-critical scheduler execution |
 
 The numbers are reserved by this RFC. If the existing series grows before
 implementation, the PR may renumber the files while preserving this exact order
@@ -114,6 +115,10 @@ all-vCPU exit of the shared RR execution thread.
 Patch `0089` then admits authoritative quiescent all-vCPU registers and the
 committed RR cursor from exact deterministic control boundaries even when the
 main-loop callback has no current vCPU; live unowned contexts remain rejected.
+Patch `0090` replaces the pre-runnable RR pointer approximation in patch
+`0088` with an explicit atomic flag around TCG guest execution, preserving
+startup and between-slice kicks while retaining deterministic active-slice
+boundaries.
 
 ## 14.2 Process and license boundary
 

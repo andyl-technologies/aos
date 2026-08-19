@@ -1,0 +1,49 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index fccb3f282..848949dff 100644
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -47,7 +47,9 @@
+ #include "system/crucible-sim-preemption.h"
+ 
+ static bool rr_crucible_sim_mode(void);
++static bool rr_crucible_sim_single_vcpu(void);
+ static CPUState *rr_current_cpu;
++static bool rr_tcg_exec_active;
+ 
+ /* Kick all RR vCPUs */
+ void rr_kick_vcpu_thread(CPUState *unused)
+@@ -58,7 +60,8 @@ void rr_kick_vcpu_thread(CPUState *unused)
+     if (rr_crucible_sim_mode() &&
+         icount_crucible_rr_switch_quantum() != 0 &&
+         icount_get_raw_observed() > 0 &&
+-        qatomic_read(&rr_current_cpu) != NULL) {
++        !rr_crucible_sim_single_vcpu() &&
++        qatomic_read(&rr_tcg_exec_active)) {
+         /*
+          * Host work and main-loop notifications may request a generic vCPU
+          * kick at host-dependent times.  Do not end a running translation
+@@ -523,11 +526,13 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+             return false;
+         }
+         service_before = qemu_plugin_icount_raw();
++        qatomic_set_mb(&rr_tcg_exec_active, true);
+         bql_unlock();
+         if (icount_enabled()) {
+             icount_prepare_for_run(cpu, *cpu_budget);
+         }
+         r = tcg_cpu_exec(cpu);
++        qatomic_set_mb(&rr_tcg_exec_active, false);
+         if (icount_enabled()) {
+             icount_process_data(cpu);
+         }
+@@ -542,8 +547,10 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+         qemu_plugin_maybe_fire_tcg_exec_cb(cpu);
+         bql_lock();
+         if (r == EXCP_ATOMIC) {
++            qatomic_set_mb(&rr_tcg_exec_active, true);
+             bql_unlock();
+             cpu_exec_step_atomic(cpu);
++            qatomic_set_mb(&rr_tcg_exec_active, false);
+             bql_lock();
+         }
+         service_after = qemu_plugin_icount_raw();

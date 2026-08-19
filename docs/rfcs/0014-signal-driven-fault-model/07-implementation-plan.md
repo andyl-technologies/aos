@@ -413,6 +413,11 @@ produce live patched-QEMU architectural or device evidence.
   admit quiescent all-vCPU register files and the committed serialized RR cursor
   from QEMU-owned exact BQL-held control boundaries without requiring a current
   vCPU, while retaining fail-closed rejection for arbitrary unowned contexts.
+- [x] **T-QEMU-0090** Implement
+  [`crucible-active-tcg-kick-boundary`](14-qemu-fault-patches/41-active-tcg-kick-boundary.md):
+  prove active guest execution with an explicit atomic TCG ownership flag,
+  defer state-free host kicks only while that flag is published, and preserve
+  upstream startup, exact-boundary, and between-slice progress.
 - [x] **T-QEMU-0060** Implement
   [`crucible-block-typed-errors`](14-qemu-fault-patches/14-block-typed-errors.md):
   the closed block result ABI, exact Linux errno translation, malformed-result

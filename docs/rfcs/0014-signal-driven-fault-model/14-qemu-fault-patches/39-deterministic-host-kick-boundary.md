@@ -1,4 +1,4 @@
-# 0088 - Deterministic host-kick boundary
+# 0088/0090 - Deterministic host-kick boundary
 
 ## Purpose
 
@@ -9,7 +9,7 @@ control. Its upstream implementation calls `cpu_exit()` for every RR vCPU as
 soon as the host request arrives. Under load, that arrival coordinate changes
 where a pending guest interrupt becomes architecturally visible.
 
-Patch `0088` prevents generic host latency hints from choosing a guest
+Patch `0088`, refined by patch `0090`, prevents generic host latency hints from choosing a guest
 instruction boundary while a bounded Crucible sim execution slice is active.
 Already-committed stop, unplug, halted, stopped, and interrupt-request states,
 plus an admitted exact terminal-pause request, retain an immediate exit request
@@ -26,15 +26,26 @@ all five predicates hold:
 1. the active accelerator is `sim`;
 2. precise icount is active; and
 3. `icount_crucible_rr_switch_quantum()` is nonzero; and
-4. `icount_get_raw_observed()` reports at least one retired instruction; and
-5. the serialized RR loop has published a non-null `rr_current_cpu`, proving a
-   deterministic execution slice is active.
+4. `icount_get_raw_observed()` reports at least one retired instruction;
+5. more than one vCPU exists, so host timing could select an RR owner; and
+6. the serialized RR loop has atomically published
+   `rr_tcg_exec_active = true` immediately before entering
+   `tcg_cpu_exec()` or `cpu_exec_step_atomic()`.
+
+Patch `0088` originally used a non-null `rr_current_cpu` for the fifth
+predicate. That pointer is published before `cpu_can_run()` is evaluated, so it
+also describes startup and other non-executing RR-loop intervals. Patch `0090`
+removes that approximation. Only the explicit execution flag proves that guest
+code is inside a bounded TCG slice.
 
 The raw observer is mandatory here. `icount_get_observed()` includes QEMU's
 virtual-clock bias and can therefore be nonzero before the first guest
 instruction, which would suppress the startup kick.
 
-Every other configuration executes the upstream loop unchanged. In the guarded
+Every other configuration, including every single-vCPU guest, executes the
+upstream loop unchanged. A single-vCPU loop has no alternate RR owner for a
+host kick to select, while retaining the kick is required for startup and
+main-loop progress. In the guarded
 configuration, the active vCPU does not receive `cpu_exit()` merely because a
 host latency hint arrived. The remaining serialized RR budget is finite and no
 larger than the pinned quantum. Between slices, the RR loop clears
@@ -49,11 +60,15 @@ hot-unplug, terminal observation, and interrupt wakeups thereby preserve their
 established guest-visible semantics.
 
 At icount zero, QEMU retains upstream immediate-kick behavior. `cpu_resume()`
-clears the initial stop flags before issuing the kick that starts the RR thread,
-and a single-vCPU loop has no alternate RR CPU to force that first progress.
+clears the initial stop flags before issuing the kick that starts the RR thread.
 Because no guest instruction has executed, this startup kick cannot select an
-architectural coordinate. During each later active slice, the pinned finite
-quantum supplies the deterministic return boundary for one or many vCPUs.
+architectural coordinate. Single-vCPU execution retains upstream kicks at every
+icount because no alternate guest CPU exists. During each later multi-vCPU
+active slice, the pinned finite quantum supplies the deterministic return
+boundary.
+The execution flag is cleared immediately after TCG returns, before icount
+processing and exact-boundary callbacks, so generic kicks retain upstream
+liveness throughout every between-slice interval.
 
 The host request's arrival time is not recorded and does not alter the RR
 owner, cursor, translation-block endpoint, interrupt window, or architectural
@@ -92,7 +107,8 @@ adds no cross-process field, callback, or shared-memory representation.
    and compare identically, proving startup progress and post-genesis boundary
    determinism are both preserved.
 6. Prove stock QEMU retains the immediate generic kick and that configurations
-   outside the five-part admission predicate, including between-slice waits,
+   outside the six-part admission predicate, including single-vCPU guests and
+   between-slice waits,
    retain that path.
 7. Rebuild every patch prefix and pass regeneration, ABI, license, inertness,
    and corresponding-source gates.

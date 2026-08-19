@@ -1343,8 +1343,10 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 - **Enforces:** [DET-1], [DET-29], [QEMU-43].
 - **Mechanism:** QEMU's generic RR vCPU kick keeps its immediate all-vCPU
   `cpu_exit()` loop unless precise Crucible sim mode has a nonzero pinned RR
-  quantum, guest execution has begun, and the serialized RR loop has published
-  an active current vCPU. In that bounded active slice, host latency hints do
+  quantum, guest execution has begun, more than one vCPU exists, and the
+  serialized RR loop has published the explicit TCG execution flag added by
+  patch 0090. In that bounded active
+  slice, host latency hints do
   not end a running translation block. Between slices, the upstream exit
   request is retained so an idle or waiting RR thread re-enters its run loop.
   Already-committed stop,
@@ -1358,8 +1360,9 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 - **Genesis progress:** the initial `cpu_resume()` clears stop flags before its
   kick starts the RR thread. QEMU therefore retains upstream kick behavior at
   icount zero, where no guest coordinate exists to perturb. After the first
-  instruction, each active slice's finite pinned quantum supplies its
-  deterministic return boundary for both single- and multi-vCPU execution.
+  instruction, each multi-vCPU active slice's finite pinned quantum supplies
+  its deterministic return boundary. Single-vCPU execution retains upstream
+  kicks because host timing cannot select an alternate RR owner.
 - **Micro-test:** the production four-vCPU fingerprint workload compares two
   exact-horizon executions while only the second has sustained host CPU load.
   It requires equal canonical all-vCPU, RR, deterministic-IPI, RAM, and device
@@ -1368,8 +1371,9 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   proves boot, exact-horizon stop, checkpoint, and replay progress with the
   pinned quantum.
 - **Inertness:** [PATCH-3](a), [PATCH-3](c) — zero-icount startup, non-sim
-  accelerators, imprecise icount, configurations without a pinned quantum, and
-  between-slice waits execute the existing kick loop unchanged. The guarded
+  accelerators, imprecise icount, configurations without a pinned quantum,
+  single-vCPU guests, and between-slice waits execute the existing kick loop
+  unchanged. The guarded
   path changes scheduling only during an active slice for which deterministic
   sim already guarantees a finite return. Admitted terminal observation and
   committed control and interrupt state are handled immediately in that
@@ -1394,6 +1398,26 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 - **Inertness:** [PATCH-3](c) — the added path is reachable only inside QEMU's
   existing exact deterministic plugin boundary while the BQL is held. Every
   ordinary QEMU or unowned plugin context executes the prior rejection rules.
+- **Risk:** D.
+
+### crucible-active-tcg-kick-boundary — prove active guest execution
+
+- **Patch:** `0090-crucible-active-tcg-kick-boundary.patch`.
+- **Enforces:** [DET-1], [DET-29], [QEMU-43].
+- **Mechanism:** the RR thread publishes a process-local atomic flag immediately
+  before entering `tcg_cpu_exec()` or `cpu_exec_step_atomic()` and clears it
+  immediately after guest execution returns. The generic-kick guard from patch
+  0088 consumes that flag instead of inferring execution from
+  `rr_current_cpu`, which QEMU publishes before runnable admission.
+- **Micro-test:** the production S1, four-vCPU fingerprint, and live-network
+  gates prove startup, between-slice progress, deterministic active-slice
+  boundaries, terminal pause, and device wake liveness. Structural checks
+  require both TCG entry paths to bracket execution and require the kick
+  predicate to consume the new flag.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — the flag changes kick behavior only
+  inside the existing precise sim-mode, pinned-quantum, post-genesis guard.
+  Startup, exact-boundary work, and every between-slice interval retain the
+  upstream all-vCPU exit path.
 - **Risk:** D.
 
 ### crucible-whitebox-guest-write — return synchronous doorbell replies

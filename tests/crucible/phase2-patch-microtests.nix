@@ -49,7 +49,7 @@
     pname = "crucible-phase2-qemu-genesis-observation-boundary";
     version = "0";
     src = null;
-    buildDeps = [pkgs.coreutils pkgs.gnugrep pkgs.tar pkgs.xz];
+    buildDeps = [pkgs.coreutils pkgs.grep pkgs.tar pkgs.xz];
     phases = [
       {
         name = "verify-genesis-observation-boundary";
@@ -91,7 +91,7 @@
     pname = "crucible-phase2-qemu-deterministic-rcu-quiescence";
     version = "0";
     src = null;
-    buildDeps = [pkgs.coreutils pkgs.gnugrep pkgs.tar pkgs.xz];
+    buildDeps = [pkgs.coreutils pkgs.grep pkgs.tar pkgs.xz];
     phases = [
       {
         name = "verify-deterministic-rcu-quiescence";
@@ -135,7 +135,7 @@
     pname = "crucible-phase2-qemu-deterministic-host-kick-boundary";
     version = "0";
     src = null;
-    buildDeps = [pkgs.coreutils pkgs.gnugrep pkgs.tar pkgs.xz];
+    buildDeps = [pkgs.coreutils pkgs.grep pkgs.tar pkgs.xz];
     phases = [
       {
         name = "verify-deterministic-host-kick-boundary";
@@ -168,11 +168,22 @@
             "${patchDir}/0088-crucible-deterministic-host-kick-boundary.patch"
           grep -q 'qatomic_read(&rr_current_cpu) != NULL' \
             "${patchDir}/0088-crucible-deterministic-host-kick-boundary.patch"
+          grep -q '^+.*qatomic_read(&rr_tcg_exec_active)' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
+          grep -q '^+.*!rr_crucible_sim_single_vcpu()' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
+          test "$(grep -c '^+.*qatomic_set_mb(&rr_tcg_exec_active, true);' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch")" -eq 2
+          test "$(grep -c '^+.*qatomic_set_mb(&rr_tcg_exec_active, false);' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch")" -eq 2
+          grep -q '^-.*qatomic_read(&rr_current_cpu) != NULL' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
 
           cat > "$out/result" <<'RESULT'
           PASS
           gate=gate:patch-microtests
-          patch=0088-crucible-deterministic-host-kick-boundary.patch
+          patch=0090-crucible-active-tcg-kick-boundary.patch
+          refined_patch=0088-crucible-deterministic-host-kick-boundary.patch
           patched_fixture_exercised=true
           stock_negative_control=true
           qemu_package=${qemuPackage}
@@ -187,6 +198,7 @@
           between_slice_upstream_kick_preserved=true
           committed_control_and_interrupt_exit_preserved=true
           admitted_terminal_pause_exit_preserved=true
+          active_tcg_execution_proven_by_explicit_atomic_flag=true
           stateful_transition_exits_shared_rr_thread=true
           ordinary_qemu_generic_kick_preserved=true
           RESULT
@@ -198,7 +210,7 @@
     pname = "crucible-phase2-qemu-exact-boundary-vcpu-introspection";
     version = "0";
     src = null;
-    buildDeps = [pkgs.coreutils pkgs.gnugrep pkgs.tar pkgs.xz];
+    buildDeps = [pkgs.coreutils pkgs.grep pkgs.tar pkgs.xz];
     phases = [
       {
         name = "verify-exact-boundary-vcpu-introspection";
@@ -769,6 +781,10 @@
     {
       patch = "0089-crucible-exact-boundary-vcpu-introspection.patch";
       check = qemuExactBoundaryVcpuIntrospection;
+    }
+    {
+      patch = "0090-crucible-active-tcg-kick-boundary.patch";
+      check = qemuDeterministicHostKickBoundary;
     }
   ];
 
