@@ -431,6 +431,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0090-crucible-active-tcg-kick-boundary.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

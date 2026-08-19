@@ -622,6 +622,13 @@
       enforces = "DET-1,QFP-REG-1,QFP-STATE-2";
       capability = "exact BQL-held main-loop boundaries read every quiescent vCPU register file and the committed RR cursor without a current vCPU, while arbitrary unowned contexts remain rejected";
     }
+    {
+      file = "0090-crucible-active-tcg-kick-boundary.patch";
+      catalogName = "crucible-active-tcg-kick-boundary";
+      class = "D";
+      enforces = "DET-1,DET-29,QEMU-43";
+      capability = "an explicit atomic TCG execution flag defers generic host kicks only during guest execution, preserving startup and between-slice liveness";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
