@@ -168,5 +168,4 @@ impl CampaignRepository {
         }
         Err(integrity("snapshot-ancestry-limit"))
     }
-
 }

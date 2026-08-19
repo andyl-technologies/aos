@@ -2,18 +2,63 @@
 
 use super::*;
 
+/// Validated progress toward a continuation's next widening threshold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FeedbackWait {
+    completed_visits: u64,
+    required_visits: u64,
+}
+
+impl FeedbackWait {
+    /// Builds a wait whose widening threshold has not yet been reached.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when completed visits already meet or
+    /// exceed the required visit count.
+    pub fn new(completed_visits: u64, required_visits: u64) -> Result<Self, CampaignCodecError> {
+        if required_visits <= completed_visits {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "waiting continuation is already eligible",
+            });
+        }
+        Ok(Self {
+            completed_visits,
+            required_visits,
+        })
+    }
+
+    /// Returns visits currently credited.
+    #[must_use]
+    pub const fn completed_visits(self) -> u64 {
+        self.completed_visits
+    }
+
+    /// Returns visits required for the next child.
+    #[must_use]
+    pub const fn required_visits(self) -> u64 {
+        self.required_visits
+    }
+}
+
+impl Canonical for FeedbackWait {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.completed_visits.encode(encoder);
+        self.required_visits.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Self::new(u64::decode(decoder)?, u64::decode(decoder)?)
+    }
+}
+
 /// Derived readiness of one request's suspended continuation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ContinuationState {
     /// Eligible to yield under current feedback and budgets.
     Ready,
     /// Requires more completed descendant visits before widening.
-    WaitingForFeedback {
-        /// Visits currently credited.
-        completed_visits: u64,
-        /// Visits required for the next child.
-        required_visits: u64,
-    },
+    WaitingForFeedback(FeedbackWait),
     /// Sampling source remains unbounded/open but is not currently ready.
     Open,
     /// Source has a complete exhaustion proof.
@@ -26,13 +71,9 @@ impl Canonical for ContinuationState {
     fn encode(&self, encoder: &mut Encoder) {
         match self {
             Self::Ready => encoder.u8(0),
-            Self::WaitingForFeedback {
-                completed_visits,
-                required_visits,
-            } => {
+            Self::WaitingForFeedback(wait) => {
                 encoder.u8(1);
-                completed_visits.encode(encoder);
-                required_visits.encode(encoder);
+                wait.encode(encoder);
             }
             Self::Open => encoder.u8(2),
             Self::Exhausted => encoder.u8(3),
@@ -43,19 +84,7 @@ impl Canonical for ContinuationState {
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         match decoder.u8()? {
             0 => Ok(Self::Ready),
-            1 => {
-                let completed_visits = u64::decode(decoder)?;
-                let required_visits = u64::decode(decoder)?;
-                if required_visits <= completed_visits {
-                    return Err(CampaignCodecError::InvalidValue {
-                        reason: "waiting continuation is already eligible",
-                    });
-                }
-                Ok(Self::WaitingForFeedback {
-                    completed_visits,
-                    required_visits,
-                })
-            }
+            1 => Ok(Self::WaitingForFeedback(FeedbackWait::decode(decoder)?)),
             2 => Ok(Self::Open),
             3 => Ok(Self::Exhausted),
             4 => Ok(Self::Closed),
@@ -189,6 +218,16 @@ impl ExpansionState {
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         codec::encode(self)
+    }
+
+    /// Decodes a strict canonical expansion projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical, invalid, or
+    /// oversized bytes.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_exact_record(bytes, "expansion-state-encoded-bytes")
     }
 
     /// Returns the exact content-derived projection identity.

@@ -60,3 +60,14 @@ fn require_schema(actual: u32) -> Result<(), CampaignCodecError> {
         })
     }
 }
+
+fn decode_exact_record<T: Canonical>(
+    bytes: &[u8],
+    limit: &'static str,
+) -> Result<T, CampaignCodecError> {
+    if bytes.len() > MAX_EXACT_RECORD_BYTES {
+        return Err(CampaignCodecError::LimitExceeded { limit });
+    }
+
+    codec::decode(bytes)
+}

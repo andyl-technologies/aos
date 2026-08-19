@@ -3,6 +3,68 @@
 use super::*;
 
 impl CampaignRepository {
+    /// Loads an exact branch path and authenticates its stored identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error for a missing, corrupt, or
+    /// wrongly typed record.
+    pub fn load_branch_path(
+        &self,
+        id: BranchPathId,
+    ) -> Result<BranchPath, CampaignRepositoryError> {
+        self.read_branch_path(id.content_id())
+    }
+
+    /// Loads an attempt and validates its exact path and start references.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error when the attempt or any exact
+    /// semantic reference is missing, corrupt, or inconsistent.
+    pub fn load_attempt(&self, id: AttemptId) -> Result<Attempt, CampaignRepositoryError> {
+        self.read_attempt(id.content_id())
+    }
+
+    /// Loads an attempt admission and validates its attempt and cause closure.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error when the admission or any
+    /// exact semantic reference is missing, corrupt, or inconsistent.
+    pub fn load_attempt_admission(
+        &self,
+        id: AttemptAdmissionId,
+    ) -> Result<AttemptAdmission, CampaignRepositoryError> {
+        self.read_attempt_admission(id.content_id())
+    }
+
+    /// Loads a planner step through the fail-closed coordinator validator.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error for invalid closure. Planner
+    /// steps remain inadmissible until coordinator recomputation is implemented.
+    pub fn load_planner_step(
+        &self,
+        id: PlannerStepId,
+    ) -> Result<PlannerStep, CampaignRepositoryError> {
+        self.read_planner_step(id.content_id())
+    }
+
+    /// Loads an expansion state through the fail-closed projector validator.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error for invalid closure. Expansion
+    /// states remain inadmissible until projector recomputation is implemented.
+    pub fn load_expansion_state(
+        &self,
+        id: ExpansionStateId,
+    ) -> Result<ExpansionState, CampaignRepositoryError> {
+        self.read_expansion_state(id.content_id())
+    }
+
     /// Loads an exact scenario artifact and authenticates its stored identity.
     ///
     /// # Errors
@@ -130,11 +192,17 @@ impl CampaignRepository {
         Ok(invocation)
     }
 
-    pub(super) fn put_lineage(&self, lineage: &CampaignLineage) -> Result<ContentId, CampaignRepositoryError> {
+    pub(super) fn put_lineage(
+        &self,
+        lineage: &CampaignLineage,
+    ) -> Result<ContentId, CampaignRepositoryError> {
         self.put_envelope(ObjectEnvelope::for_lineage(lineage)?)
     }
 
-    pub(super) fn put_policy(&self, policy: &CampaignPolicy) -> Result<ContentId, CampaignRepositoryError> {
+    pub(super) fn put_policy(
+        &self,
+        policy: &CampaignPolicy,
+    ) -> Result<ContentId, CampaignRepositoryError> {
         self.put_envelope(ObjectEnvelope::for_policy(policy)?)
     }
 
@@ -182,7 +250,10 @@ impl CampaignRepository {
         )?)
     }
 
-    pub(super) fn put_fact(&self, fact: &CampaignFact) -> Result<ContentId, CampaignRepositoryError> {
+    pub(super) fn put_fact(
+        &self,
+        fact: &CampaignFact,
+    ) -> Result<ContentId, CampaignRepositoryError> {
         self.put_envelope(ObjectEnvelope::for_fact(fact)?)
     }
 
@@ -194,7 +265,10 @@ impl CampaignRepository {
         self.put_envelope(envelope)
     }
 
-    pub(super) fn put_envelope(&self, envelope: ObjectEnvelope) -> Result<ContentId, CampaignRepositoryError> {
+    pub(super) fn put_envelope(
+        &self,
+        envelope: ObjectEnvelope,
+    ) -> Result<ContentId, CampaignRepositoryError> {
         let id = envelope.content_id();
         let receipt = self
             .blobs
@@ -205,7 +279,10 @@ impl CampaignRepository {
         Ok(id)
     }
 
-    pub(super) fn read_envelope(&self, id: ContentId) -> Result<ObjectEnvelope, CampaignRepositoryError> {
+    pub(super) fn read_envelope(
+        &self,
+        id: ContentId,
+    ) -> Result<ObjectEnvelope, CampaignRepositoryError> {
         let bytes = self.blobs.read(id, None)?.read_all(MAX_ENVELOPE_BYTES)?;
         let envelope = ObjectEnvelope::from_canonical_bytes(&bytes)?;
         if envelope.content_id() != id {
@@ -214,7 +291,10 @@ impl CampaignRepository {
         Ok(envelope)
     }
 
-    pub(super) fn read_snapshot(&self, id: ContentId) -> Result<LoadedSnapshot, CampaignRepositoryError> {
+    pub(super) fn read_snapshot(
+        &self,
+        id: ContentId,
+    ) -> Result<LoadedSnapshot, CampaignRepositoryError> {
         if id.kind() != ObjectKind::CampaignSnapshot {
             return Err(integrity("snapshot-content-kind"));
         }
@@ -230,7 +310,10 @@ impl CampaignRepository {
         Ok(LoadedSnapshot { envelope, snapshot })
     }
 
-    pub(super) fn read_lineage(&self, id: ContentId) -> Result<CampaignLineage, CampaignRepositoryError> {
+    pub(super) fn read_lineage(
+        &self,
+        id: ContentId,
+    ) -> Result<CampaignLineage, CampaignRepositoryError> {
         let envelope = self.read_envelope(id)?;
         if envelope.record_kind() != crate::CampaignRecordKind::Lineage {
             return Err(integrity("lineage-envelope-shape"));
@@ -286,7 +369,10 @@ impl CampaignRepository {
         Ok(artifact)
     }
 
-    pub(super) fn read_policy(&self, id: ContentId) -> Result<CampaignPolicy, CampaignRepositoryError> {
+    pub(super) fn read_policy(
+        &self,
+        id: ContentId,
+    ) -> Result<CampaignPolicy, CampaignRepositoryError> {
         let envelope = self.read_envelope(id)?;
         if envelope.record_kind() != crate::CampaignRecordKind::Policy {
             return Err(integrity("policy-envelope-shape"));
@@ -337,7 +423,10 @@ impl CampaignRepository {
         Ok(fact)
     }
 
-    pub(super) fn validate_fact_references(&self, fact: &CampaignFact) -> Result<(), CampaignRepositoryError> {
+    pub(super) fn validate_fact_references(
+        &self,
+        fact: &CampaignFact,
+    ) -> Result<(), CampaignRepositoryError> {
         match fact {
             CampaignFact::ChoiceOpportunityDiscovered(id) => {
                 self.require_record_kind(
@@ -390,7 +479,10 @@ impl CampaignRepository {
         Ok(())
     }
 
-    pub(super) fn read_branch_request(&self, id: ContentId) -> Result<BranchRequest, CampaignRepositoryError> {
+    pub(super) fn read_branch_request(
+        &self,
+        id: ContentId,
+    ) -> Result<BranchRequest, CampaignRepositoryError> {
         let envelope = self.require_record_kind(id, crate::CampaignRecordKind::BranchRequest)?;
         let request = BranchRequest::from_canonical_bytes(envelope.body())?;
         if request.id()?.content_id() != id {
@@ -562,7 +654,7 @@ impl CampaignRepository {
 
     pub(super) fn read_attempt(&self, id: ContentId) -> Result<Attempt, CampaignRepositoryError> {
         let envelope = self.require_record_kind(id, crate::CampaignRecordKind::Attempt)?;
-        let attempt = crate::codec::decode::<Attempt>(envelope.body())?;
+        let attempt = Attempt::from_canonical_bytes(envelope.body())?;
         if attempt.id()?.content_id() != id {
             return Err(integrity("attempt-envelope-shape"));
         }
@@ -602,9 +694,12 @@ impl CampaignRepository {
         Ok(attempt)
     }
 
-    pub(super) fn read_branch_path(&self, id: ContentId) -> Result<BranchPath, CampaignRepositoryError> {
+    pub(super) fn read_branch_path(
+        &self,
+        id: ContentId,
+    ) -> Result<BranchPath, CampaignRepositoryError> {
         let envelope = self.require_record_kind(id, crate::CampaignRecordKind::BranchPath)?;
-        let path = crate::codec::decode::<BranchPath>(envelope.body())?;
+        let path = BranchPath::from_canonical_bytes(envelope.body())?;
         if path.id()?.content_id() != id {
             return Err(integrity("branch-path-envelope-shape"));
         }
@@ -642,7 +737,7 @@ impl CampaignRepository {
         id: ContentId,
     ) -> Result<AttemptAdmission, CampaignRepositoryError> {
         let envelope = self.require_record_kind(id, crate::CampaignRecordKind::AttemptAdmission)?;
-        let admission = crate::codec::decode::<AttemptAdmission>(envelope.body())?;
+        let admission = AttemptAdmission::from_canonical_bytes(envelope.body())?;
         if admission.id()?.content_id() != id {
             return Err(integrity("attempt-admission-envelope-shape"));
         }
@@ -673,9 +768,12 @@ impl CampaignRepository {
         Ok(admission)
     }
 
-    pub(super) fn read_planner_step(&self, id: ContentId) -> Result<PlannerStep, CampaignRepositoryError> {
+    pub(super) fn read_planner_step(
+        &self,
+        id: ContentId,
+    ) -> Result<PlannerStep, CampaignRepositoryError> {
         let envelope = self.require_record_kind(id, crate::CampaignRecordKind::PlannerStep)?;
-        let step = crate::codec::decode::<PlannerStep>(envelope.body())?;
+        let step = PlannerStep::from_canonical_bytes(envelope.body())?;
         if step.id()?.content_id() != id {
             return Err(integrity("planner-step-envelope-shape"));
         }
@@ -716,7 +814,7 @@ impl CampaignRepository {
         id: ContentId,
     ) -> Result<ExpansionState, CampaignRepositoryError> {
         let envelope = self.require_record_kind(id, crate::CampaignRecordKind::ExpansionState)?;
-        let state = crate::codec::decode::<ExpansionState>(envelope.body())?;
+        let state = ExpansionState::from_canonical_bytes(envelope.body())?;
         if state.id()?.content_id() != id {
             return Err(integrity("expansion-state-envelope-shape"));
         }
@@ -815,7 +913,10 @@ impl CampaignRepository {
         Ok(selectable)
     }
 
-    pub(super) fn read_choice_domain(&self, id: ContentId) -> Result<ChoiceDomain, CampaignRepositoryError> {
+    pub(super) fn read_choice_domain(
+        &self,
+        id: ContentId,
+    ) -> Result<ChoiceDomain, CampaignRepositoryError> {
         let envelope = self.read_envelope(id)?;
         if envelope.record_kind() != crate::CampaignRecordKind::ChoiceDomain {
             return Err(integrity("choice-domain-envelope-shape"));

@@ -39,6 +39,16 @@ impl BranchPath {
         codec::encode(self)
     }
 
+    /// Decodes a strict canonical branch path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical, invalid, or
+    /// oversized bytes.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_exact_record(bytes, "branch-path-encoded-bytes")
+    }
+
     /// Returns the exact stored path identity.
     ///
     /// # Errors
@@ -180,6 +190,16 @@ impl Attempt {
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         codec::encode(self)
+    }
+
+    /// Decodes a strict canonical attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical, invalid, or
+    /// oversized bytes.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_exact_record(bytes, "attempt-encoded-bytes")
     }
 
     /// Returns the exact semantic attempt identity.
@@ -325,6 +345,16 @@ impl AttemptAdmission {
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         codec::encode(self)
+    }
+
+    /// Decodes a strict canonical attempt admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical, invalid, or
+    /// oversized bytes.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_exact_record(bytes, "attempt-admission-encoded-bytes")
     }
 
     /// Returns the exact admission-record identity.

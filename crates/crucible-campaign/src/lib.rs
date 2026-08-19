@@ -33,8 +33,8 @@ pub use codec::CampaignCodecError;
 pub use exploration::{
     Attempt, AttemptAdmission, AttemptAdmissionRole, AttemptStart, BranchBudget, BranchPath,
     BranchRequest, BranchRequestCause, CandidateSource, ContinuationState, ExpansionState,
-    ExpansionStatistics, FiniteCandidateSource, GuidanceEvidence, PlannerStep, PlanningAccounting,
-    Proposal, StopCondition,
+    ExpansionStatistics, FeedbackWait, FiniteCandidateSource, GuidanceEvidence, PlannerStep,
+    PlanningAccounting, Proposal, StopCondition,
 };
 pub use identity::{
     AlternativeId, AttemptAdmissionId, AttemptId, BranchEdgeId, BranchPathId, BranchPointId,

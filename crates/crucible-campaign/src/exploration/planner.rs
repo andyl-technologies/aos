@@ -221,6 +221,16 @@ impl PlannerStep {
         codec::encode(self)
     }
 
+    /// Decodes a strict canonical planner step.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical, invalid, or
+    /// oversized bytes.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_exact_record(bytes, "planner-step-encoded-bytes")
+    }
+
     /// Returns the exact content-derived planner-step identity.
     ///
     /// # Errors
