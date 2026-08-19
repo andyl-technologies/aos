@@ -8,6 +8,8 @@
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{BufReader, Read};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
@@ -112,6 +114,7 @@ fn run_image(args: &VmRunArgs, printer: &Printer) -> Result<()> {
 
     fs::create_dir_all(&state_dir)
         .with_context(|| format!("creating VM state directory {}", state_dir.display()))?;
+    set_private_directory_permissions(&state_dir)?;
     let base_sha256 = hash_file(&image, printer)?;
     if !disk.exists() {
         if manifest_path.exists() {
@@ -147,6 +150,7 @@ fn run_image(args: &VmRunArgs, printer: &Printer) -> Result<()> {
                 disk.display()
             )
         })?;
+        set_private_file_permissions(&disk)?;
         write_manifest(
             &manifest_path,
             &VmStateManifest {
@@ -160,17 +164,11 @@ fn run_image(args: &VmRunArgs, printer: &Printer) -> Result<()> {
         printer.success("Prepared writable VM disk");
     } else {
         validate_existing_state(&manifest_path, &image, &base_sha256, disk_bytes)?;
+        set_private_file_permissions(&disk)?;
+        set_private_file_permissions(&manifest_path)?;
         printer.info(&format!("Reusing writable disk {}", disk.display()));
     }
-    if !firmware_vars.exists() {
-        fs::copy(&firmware_vars_template, &firmware_vars).with_context(|| {
-            format!(
-                "copying {} to {}",
-                firmware_vars_template.display(),
-                firmware_vars.display()
-            )
-        })?;
-    }
+    prepare_firmware_vars(&firmware_vars_template, &firmware_vars)?;
 
     printer.success(&format!(
         "Starting {name}; SSH forwards from 127.0.0.1:{}",
@@ -275,6 +273,51 @@ fn resolve_firmware(
     bail!(
         "could not find OVMF firmware; set {variable} or pass the corresponding --firmware option"
     )
+}
+
+fn prepare_firmware_vars(template: &Path, destination: &Path) -> Result<()> {
+    if !destination.exists() {
+        fs::copy(template, destination).with_context(|| {
+            format!(
+                "copying {} to {}",
+                template.display(),
+                destination.display()
+            )
+        })?;
+    }
+
+    set_private_file_permissions(destination)
+}
+
+#[cfg(unix)]
+fn set_private_directory_permissions(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("inspecting VM state directory {}", path.display()))?;
+    if !metadata.file_type().is_dir() {
+        bail!("VM state path {} is not a directory", path.display());
+    }
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("securing VM state directory {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_private_directory_permissions(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+fn set_private_file_permissions(path: &Path) -> Result<()> {
+    let metadata =
+        fs::symlink_metadata(path).with_context(|| format!("inspecting {}", path.display()))?;
+    if !metadata.file_type().is_file() {
+        bail!("VM state file {} is not a regular file", path.display());
+    }
+    let mut permissions = metadata.permissions();
+    #[cfg(unix)]
+    permissions.set_mode(0o600);
+    #[cfg(not(unix))]
+    permissions.set_readonly(false);
+    fs::set_permissions(path, permissions)
+        .with_context(|| format!("securing VM state file {}", path.display()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -427,6 +470,7 @@ fn write_manifest(path: &Path, manifest: &VmStateManifest) -> Result<()> {
     let temporary = path.with_extension("json.aos-part");
     let encoded = serde_json::to_vec_pretty(manifest).context("encoding VM state metadata")?;
     fs::write(&temporary, encoded).with_context(|| format!("writing {}", temporary.display()))?;
+    set_private_file_permissions(&temporary)?;
     fs::rename(&temporary, path)
         .with_context(|| format!("installing VM state metadata {}", path.display()))
 }
@@ -589,9 +633,32 @@ mod tests {
         )
         .unwrap();
 
+        #[cfg(unix)]
+        assert_eq!(
+            fs::metadata(&manifest_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
         assert!(validate_existing_state(&manifest_path, &image, "abc123", 16 * GIB).is_ok());
         assert!(validate_existing_state(&manifest_path, &image, "different", 16 * GIB).is_err());
         assert!(validate_existing_state(&manifest_path, &image, "abc123", 32 * GIB).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copied_firmware_state_is_owner_writable() {
+        let directory = tempfile::tempdir().unwrap();
+        let template = directory.path().join("template.fd");
+        let destination = directory.path().join("OVMF_VARS.fd");
+        fs::write(&template, b"firmware state").unwrap();
+        fs::set_permissions(&template, fs::Permissions::from_mode(0o444)).unwrap();
+
+        prepare_firmware_vars(&template, &destination).unwrap();
+
+        assert_eq!(
+            fs::metadata(&destination).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     fn test_args(image: &Path) -> VmRunArgs {
