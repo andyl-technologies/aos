@@ -351,6 +351,26 @@ authenticated planner head derives the only permitted start: `None` for a first
 or changed-view page, or the exact prior same-view continuation cursor. A
 completed same-view scan cannot be reopened.
 
+### D-31: Planner Issue composes existing sole-writer owners atomically
+
+An accepted finite-source `Issue` is one `PlannerAdvanced` snapshot transition,
+not a sequence of separately visible request, proposal, and admission facts.
+The coordinator inserts planner-caused requests and selected-source proposals,
+derives each selection, one-edge genesis path, and semantic attempt, then
+assigns execution-basis or additional-cause admission in proposal order. The
+result updates exploration, accounting, and coordination roots together and
+records exact admitted/deduplicated counts. Imported successors replay the same
+projection from authenticated output IDs and reject any root or invocation
+mismatch. A pure preflight validates the complete batch, accounting, next-state
+engine, and prospective step before local publication. Imported recomputation
+writes nothing. Repeated generator graphs are cached by generator/domain pair
+under an aggregate one-million-record validation budget per projection.
+Generated enumeration and non-genesis path ownership remain
+fail-closed rather than acquiring a planner-only bypass. Because admission and
+deduplication authority lives in snapshot roots rather than the step body,
+standalone loading of an `Issue` step fails closed; authoritative loading names
+the snapshot whose complete ancestry and coordination membership are validated.
+
 ## Deliberately rejected representations
 
 The following patterns are outside the design even if they appear convenient

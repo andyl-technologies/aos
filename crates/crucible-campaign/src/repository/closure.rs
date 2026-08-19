@@ -419,22 +419,17 @@ impl CampaignRepository {
         let prior_roots = parent.snapshot.roots();
         let next_roots = child.snapshot.roots();
         if prior_roots.graph != next_roots.graph
-            || prior_roots.exploration != next_roots.exploration
             || prior_roots.observations != next_roots.observations
             || prior_roots.corpus != next_roots.corpus
             || prior_roots.coverage != next_roots.coverage
             || prior_roots.findings != next_roots.findings
             || prior_roots.pins != next_roots.pins
-            || prior_roots.accounting != next_roots.accounting
         {
             return Err(integrity("planner-step-transition-changed-unrelated-root"));
         }
 
         let step_content = step_id.content_id();
         let step = self.read_planner_step(step_content)?;
-        if matches!(step.disposition(), PlannerDisposition::Issue { .. }) {
-            return Err(integrity("planner-step-issue-owner-is-not-implemented"));
-        }
         let invocation = self.load_planner_invocation(step.invocation())?;
         let expected_view = parent.snapshot.planning_view();
         if expected_view.id()? != step.input_view()
@@ -446,6 +441,7 @@ impl CampaignRepository {
         self.validate_planner_page(&expected_view, &invocation)?;
         self.validate_planner_cursor(parent, step.disposition())?;
         self.validate_planner_disposition_page(&invocation, step.disposition())?;
+        self.validate_planner_selected_source(&expected_view, step.disposition())?;
         let expected_parent =
             self.validate_planner_invocation_start(prior_roots.coordination, &invocation)?;
         if step.parent() != expected_parent {
@@ -472,6 +468,13 @@ impl CampaignRepository {
             return Err(integrity(
                 "planner-step-transition-coordination-root-mismatch",
             ));
+        }
+        if matches!(step.disposition(), PlannerDisposition::Issue { .. }) {
+            self.validate_planner_issue_projection(parent, child, &step)?;
+        } else if prior_roots.exploration != next_roots.exploration
+            || prior_roots.accounting != next_roots.accounting
+        {
+            return Err(integrity("planner-step-transition-changed-semantic-root"));
         }
         Ok(())
     }
@@ -561,16 +564,19 @@ impl CampaignRepository {
                     self.read_configuration_artifact(id)?;
                 }
                 crate::CampaignRecordKind::BranchRequest => {
-                    self.read_branch_request(id)?;
+                    let request = self.decode_branch_request(id)?;
+                    self.validate_branch_request_references_shallow(&request)?;
                 }
                 crate::CampaignRecordKind::Proposal => {
-                    self.read_proposal(id)?;
+                    let proposal = self.decode_proposal(id)?;
+                    self.validate_proposal_references_shallow(&proposal)?;
                 }
                 crate::CampaignRecordKind::Attempt => {
                     self.read_attempt(id)?;
                 }
                 crate::CampaignRecordKind::AttemptAdmission => {
-                    self.read_attempt_admission(id)?;
+                    let admission = self.decode_attempt_admission(id)?;
+                    self.validate_attempt_admission_references_shallow(&admission)?;
                 }
                 crate::CampaignRecordKind::PlannerStep => {
                     self.read_planner_step(id)?;

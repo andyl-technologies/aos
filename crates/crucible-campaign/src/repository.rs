@@ -36,6 +36,7 @@ use crate::{
 const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;
 const MAX_SNAPSHOT_ANCESTRY: usize = 100_000;
 const MAX_CLOSURE_OBJECTS: usize = 1_000_000;
+const MAX_ISSUE_GENERATOR_VALIDATION_OBJECTS: usize = 1_000_000;
 const PLANNER_SCAN_STORAGE_PAGE_ITEMS: usize = 10_000;
 
 /// Authenticated current value of one named campaign ref.
@@ -229,6 +230,7 @@ pub struct CampaignRepository {
 
 mod ancestry;
 mod closure;
+mod planner_issue;
 mod projection;
 mod records;
 mod transactions;
@@ -479,11 +481,21 @@ mod tests {
     };
 
     fn fixture() -> (CampaignRepository, CampaignLineage, CampaignPolicy) {
+        let (repository, lineage, policy, _) = counted_fixture();
+        (repository, lineage, policy)
+    }
+
+    fn counted_fixture() -> (
+        CampaignRepository,
+        CampaignLineage,
+        CampaignPolicy,
+        Arc<MemoryBlobBackend>,
+    ) {
         let scenario = ScenarioDefId::from_hash(CampaignHash::derive("test", b"scenario"));
         let genesis = ConfigurationId::from_hash(CampaignHash::derive("test", b"genesis"));
         let blobs = Arc::new(MemoryBlobBackend::new("campaign", 64 * 1024 * 1024));
         let refs = Arc::new(MemoryRefBackend::new());
-        let repository = CampaignRepository::new(blobs, refs);
+        let repository = CampaignRepository::new(blobs.clone(), refs);
         let scenario_content = repository
             .publish_scenario_artifact(scenario, 1, b"scenario".to_vec())
             .expect("scenario artifact");
@@ -534,7 +546,7 @@ mod tests {
             true,
         )
         .expect("policy");
-        (repository, lineage, policy)
+        (repository, lineage, policy, blobs)
     }
 
     fn command(
@@ -1304,6 +1316,377 @@ mod tests {
                 reason: "planner-invocation-reopens-complete-view"
             })
         ));
+    }
+
+    #[test]
+    fn planner_issue_atomically_admits_attempts_and_deduplicates_replay() {
+        let (repository, lineage, policy, blobs) = counted_fixture();
+        let genesis = repository
+            .create("planner-issue", &lineage, &policy, &BTreeMap::new())
+            .expect("create");
+        let source_request = branch_request(
+            &repository,
+            &lineage,
+            lineage.genesis_content(),
+            lineage.genesis(),
+            "planner-issue-source",
+        );
+        let requested = repository
+            .submit_branch_request("planner-issue", genesis.snapshot_id(), &source_request)
+            .expect("submit source request");
+        let engine =
+            PlannerEngine::new("closed-rust", 1, 1, BTreeSet::new()).expect("planner engine");
+        let initial_state = PlannerState::new(
+            engine.id().expect("engine id"),
+            "closed-rust-state",
+            1,
+            vec![0],
+        )
+        .expect("initial state");
+        let (engine, artifact, invocation) = planner_basis(
+            &repository,
+            "planner-issue",
+            requested.new_snapshot,
+            initial_state,
+        );
+        assert!(invocation.scan_page().complete());
+
+        let planner_request = BranchRequest::new(
+            source_request.branch_point(),
+            source_request.parent(),
+            source_request.opportunity(),
+            source_request.domain(),
+            source_request.source().clone(),
+            BranchRequestCause::Planner(invocation.id().expect("invocation id")),
+            source_request.budget(),
+            source_request.stop().clone(),
+        )
+        .expect("planner request");
+        let first_proposal = Proposal::new(
+            source_request.branch_point(),
+            source_request.id().expect("source request id"),
+            source_request.domain(),
+            ChoiceValue::Boolean(false),
+            policy.id().expect("policy id"),
+            Some(invocation.id().expect("invocation id")),
+            1,
+            invocation.input_view(),
+        )
+        .expect("first proposal");
+        let first_state = PlannerState::new(
+            engine.id().expect("engine id"),
+            "closed-rust-state",
+            1,
+            vec![1],
+        )
+        .expect("first state");
+        let first_usage = PlanningUsage {
+            branch_requests: 1,
+            proposals: 1,
+            input_objects: invocation.scan_page().input_objects(),
+            input_bytes: invocation.scan_page().input_bytes(),
+            fuel: 3,
+        };
+        let first_step = PlannerStepProposal::new(
+            invocation.id().expect("invocation id"),
+            first_state.clone(),
+            first_usage,
+            GuidanceEvidence::new(BTreeMap::from([("score".to_owned(), 7)])).expect("evidence"),
+            PlannerProposalDisposition::Issue {
+                selected: PlanningScanPosition::new(
+                    source_request.branch_point(),
+                    source_request.id().expect("source request id"),
+                ),
+                branch_requests: vec![planner_request.clone()],
+                proposals: vec![first_proposal.clone()],
+            },
+        )
+        .expect("first issue");
+        let skipped_proposal = Proposal::new(
+            source_request.branch_point(),
+            source_request.id().expect("source request id"),
+            source_request.domain(),
+            ChoiceValue::Boolean(true),
+            policy.id().expect("policy id"),
+            Some(invocation.id().expect("invocation id")),
+            3,
+            invocation.input_view(),
+        )
+        .expect("skipped proposal");
+        let invalid_usage = PlanningUsage {
+            branch_requests: 1,
+            proposals: 2,
+            input_objects: invocation.scan_page().input_objects(),
+            input_bytes: invocation.scan_page().input_bytes(),
+            fuel: 4,
+        };
+        let invalid_step = PlannerStepProposal::new(
+            invocation.id().expect("invocation id"),
+            first_state.clone(),
+            invalid_usage,
+            GuidanceEvidence::new(BTreeMap::new()).expect("invalid evidence"),
+            PlannerProposalDisposition::Issue {
+                selected: PlanningScanPosition::new(
+                    source_request.branch_point(),
+                    source_request.id().expect("source request id"),
+                ),
+                branch_requests: vec![planner_request.clone()],
+                proposals: vec![first_proposal.clone(), skipped_proposal],
+            },
+        )
+        .expect("structurally valid late-invalid issue");
+        let objects_before_rejection = blobs.object_count().expect("count before rejection");
+        let rejected = repository.accept_planner_step(
+            "planner-issue",
+            requested.new_snapshot,
+            &invalid_step,
+            invalid_usage,
+        );
+        assert!(
+            matches!(
+                rejected,
+                Err(CampaignRepositoryError::Codec(
+                    CampaignCodecError::InvalidValue {
+                        reason: "proposal disagrees with its request, source, domain, or budget"
+                    }
+                ))
+            ),
+            "unexpected preflight result: {rejected:?}"
+        );
+        assert_eq!(
+            blobs.object_count().expect("count after rejection"),
+            objects_before_rejection,
+            "semantic preflight must reject the complete batch before publication"
+        );
+
+        let wrong_engine =
+            PlannerEngine::new("wrong-engine", 1, 1, BTreeSet::new()).expect("wrong engine");
+        repository
+            .put_planner_engine(&wrong_engine)
+            .expect("publish wrong engine");
+        let wrong_state = PlannerState::new(
+            wrong_engine.id().expect("wrong engine id"),
+            "wrong-engine-state",
+            1,
+            vec![1],
+        )
+        .expect("wrong-engine state");
+        let wrong_state_step = PlannerStepProposal::new(
+            invocation.id().expect("invocation id"),
+            wrong_state,
+            first_usage,
+            GuidanceEvidence::new(BTreeMap::new()).expect("wrong-state evidence"),
+            PlannerProposalDisposition::Issue {
+                selected: PlanningScanPosition::new(
+                    source_request.branch_point(),
+                    source_request.id().expect("source request id"),
+                ),
+                branch_requests: vec![planner_request.clone()],
+                proposals: vec![first_proposal.clone()],
+            },
+        )
+        .expect("wrong-state issue");
+        let objects_before_wrong_state = blobs.object_count().expect("count before wrong state");
+        assert!(matches!(
+            repository.accept_planner_step(
+                "planner-issue",
+                requested.new_snapshot,
+                &wrong_state_step,
+                first_usage,
+            ),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "planner-step-next-state-engine-mismatch"
+            })
+        ));
+        assert_eq!(
+            blobs.object_count().expect("count after wrong state"),
+            objects_before_wrong_state,
+            "complete Issue preflight must validate next-state continuity before publication"
+        );
+
+        let first = repository
+            .accept_planner_step(
+                "planner-issue",
+                requested.new_snapshot,
+                &first_step,
+                first_usage,
+            )
+            .expect("accept first issue");
+        assert!(matches!(
+            repository.load_planner_step(first.step),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "planner-issue-requires-snapshot-owner"
+            })
+        ));
+        let accepted_first = repository
+            .load_planner_step_at(first.new_snapshot, first.step)
+            .expect("load first issue");
+        assert_eq!(accepted_first.accounting().branch_requests, 1);
+        assert_eq!(accepted_first.accounting().proposals, 1);
+        assert_eq!(accepted_first.accounting().attempts, 1);
+        assert_eq!(accepted_first.accounting().deduplicated, 0);
+        assert_eq!(
+            accepted_first.issued_branch_requests(),
+            [planner_request.id().expect("planner request id")]
+        );
+        assert_eq!(
+            accepted_first.issued_proposals(),
+            [first_proposal.id().expect("first proposal id")]
+        );
+        repository
+            .load_proposal(first_proposal.id().expect("first proposal id"))
+            .expect("load first proposal");
+
+        let first_head = repository.head("planner-issue").expect("first issue head");
+        let mut forged_roots = first_head.snapshot().roots();
+        forged_roots.accounting = repository
+            .merkle
+            .insert(
+                forged_roots.accounting,
+                CampaignHash::derive("test", b"extra planner issue accounting"),
+                first.step.content_id(),
+            )
+            .expect("forged accounting root")
+            .content_id();
+        let forged = CampaignSnapshot::successor(
+            requested.new_snapshot,
+            first_head.snapshot().lineage(),
+            first_head.snapshot().active_policy(),
+            forged_roots,
+            first_head
+                .snapshot()
+                .transition()
+                .expect("first issue transition"),
+        )
+        .expect("forged issue successor");
+        let forged_content = repository
+            .put_snapshot(&forged)
+            .expect("put forged issue successor");
+        let objects_before_validation = blobs.object_count().expect("count objects before import");
+        assert!(matches!(
+            repository.validate_complete_head(forged_content),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "planner-issue-root-delta-mismatch"
+            })
+        ));
+        assert_eq!(
+            blobs.object_count().expect("count objects after import"),
+            objects_before_validation,
+            "invalid imported projection validation must be read-only"
+        );
+
+        let (_, _, second_invocation) = planner_basis(
+            &repository,
+            "planner-issue",
+            first.new_snapshot,
+            first_state.clone(),
+        );
+        let ancestry_usage = PlanningUsage {
+            branch_requests: 0,
+            proposals: 0,
+            input_objects: second_invocation.scan_page().input_objects(),
+            input_bytes: second_invocation.scan_page().input_bytes(),
+            fuel: 1,
+        };
+        let ancestry_child = PlannerStep::new(
+            Some(first.step),
+            second_invocation.id().expect("second invocation id"),
+            second_invocation.policy(),
+            second_invocation.engine(),
+            second_invocation.policy_artifact(),
+            second_invocation.input_view(),
+            PlannerDisposition::NoWork,
+            first_state.id().expect("first state id"),
+            ancestry_usage,
+            PlanningAccounting {
+                branch_requests: 0,
+                proposals: 0,
+                attempts: 0,
+                deduplicated: 0,
+                input_objects: ancestry_usage.input_objects,
+                input_bytes: ancestry_usage.input_bytes,
+                fuel: ancestry_usage.fuel,
+            },
+            GuidanceEvidence::new(BTreeMap::new()).expect("ancestry evidence"),
+        )
+        .expect("non-issue ancestry child");
+        let ancestry_child_content = repository
+            .put_planner_step(&ancestry_child)
+            .expect("put non-issue ancestry child");
+        assert!(matches!(
+            repository.load_planner_step(
+                PlannerStepId::from_content_id(ancestry_child_content).expect("ancestry child id")
+            ),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "planner-issue-requires-snapshot-owner"
+            })
+        ));
+
+        let second_proposal = Proposal::new(
+            planner_request.branch_point(),
+            planner_request.id().expect("planner request id"),
+            planner_request.domain(),
+            ChoiceValue::Boolean(false),
+            policy.id().expect("policy id"),
+            Some(second_invocation.id().expect("second invocation id")),
+            1,
+            second_invocation.input_view(),
+        )
+        .expect("second proposal");
+        let second_usage = PlanningUsage {
+            branch_requests: 0,
+            proposals: 1,
+            input_objects: second_invocation.scan_page().input_objects(),
+            input_bytes: second_invocation.scan_page().input_bytes(),
+            fuel: 3,
+        };
+        let second_step = PlannerStepProposal::new(
+            second_invocation.id().expect("second invocation id"),
+            PlannerState::new(
+                engine.id().expect("engine id"),
+                "closed-rust-state",
+                1,
+                vec![2],
+            )
+            .expect("second state"),
+            second_usage,
+            GuidanceEvidence::new(BTreeMap::from([("score".to_owned(), 7)])).expect("evidence"),
+            PlannerProposalDisposition::Issue {
+                selected: PlanningScanPosition::new(
+                    planner_request.branch_point(),
+                    planner_request.id().expect("planner request id"),
+                ),
+                branch_requests: Vec::new(),
+                proposals: vec![second_proposal],
+            },
+        )
+        .expect("second issue");
+        let second = repository
+            .accept_planner_step(
+                "planner-issue",
+                first.new_snapshot,
+                &second_step,
+                second_usage,
+            )
+            .expect("accept deduplicated issue");
+        let accepted_second = repository
+            .load_planner_step_at(second.new_snapshot, second.step)
+            .expect("load second issue");
+        assert_eq!(accepted_second.accounting().attempts, 0);
+        assert_eq!(accepted_second.accounting().deduplicated, 1);
+
+        let replay = repository
+            .accept_planner_step(
+                "planner-issue",
+                requested.new_snapshot,
+                &first_step,
+                first_usage,
+            )
+            .expect("replay first issue");
+        assert!(replay.replayed);
+        assert_eq!(replay.step, first.step);
+        assert_eq!(replay.new_snapshot, first.new_snapshot);
+        assert_eq!(artifact.engine(), engine.id().expect("engine id"));
     }
 
     #[test]
@@ -2367,6 +2750,26 @@ mod tests {
         let all_id = repository
             .publish_generator(&all)
             .expect("publish all generator");
+        let first_domain = repository
+            .load_choice_domain(finite.domain())
+            .expect("first compatible domain");
+        let second_domain =
+            ChoiceDomain::Boolean(BooleanDomain::new(2).expect("second compatible boolean domain"));
+        let mut aggregate_work = 1;
+        repository
+            .validate_generator_for_domain_with_budget(all_id, &first_domain, &mut aggregate_work)
+            .expect("first aggregate validation");
+        assert_eq!(aggregate_work, 0);
+        assert!(matches!(
+            repository.validate_generator_for_domain_with_budget(
+                all_id,
+                &second_domain,
+                &mut aggregate_work,
+            ),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "candidate-generator-validation-limit"
+            })
+        ));
         let valid = BranchRequest::new(
             finite.branch_point(),
             finite.parent(),

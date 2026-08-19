@@ -662,10 +662,9 @@ impl CampaignRepository {
 
     /// Accepts one coordinator-measured, pure planner result.
     ///
-    /// This first owner path accepts `ContinueScan` and `NoWork` results and
-    /// keeps `Issue` fail-closed until its request, proposal, and admission
-    /// transitions can be committed without introducing a second authority
-    /// path. Exact invocation replay is resolved before snapshot staleness.
+    /// `Issue` atomically composes request, proposal, derived attempt/admission,
+    /// accounting, and planner-head ownership in the same snapshot transition.
+    /// Exact invocation replay is resolved before snapshot staleness.
     ///
     /// # Errors
     ///
@@ -690,16 +689,28 @@ impl CampaignRepository {
 
         let invocation = self.load_planner_invocation(proposal.invocation())?;
         let next_state_id = proposal.next_state().id()?;
-        let accounting = self.planner_accounting(proposal, measured_usage, &invocation)?;
         let disposition = match proposal.disposition() {
             PlannerProposalDisposition::ContinueScan { cursor } => {
                 PlannerDisposition::ContinueScan { cursor: *cursor }
             }
             PlannerProposalDisposition::NoWork => PlannerDisposition::NoWork,
-            PlannerProposalDisposition::Issue { .. } => {
-                return Err(integrity("planner-step-issue-owner-is-not-implemented"));
-            }
+            PlannerProposalDisposition::Issue {
+                selected,
+                branch_requests,
+                proposals,
+            } => PlannerDisposition::Issue {
+                selected: *selected,
+                issued_branch_requests: branch_requests
+                    .iter()
+                    .map(BranchRequest::id)
+                    .collect::<Result<Vec<_>, _>>()?,
+                issued_proposals: proposals
+                    .iter()
+                    .map(Proposal::id)
+                    .collect::<Result<Vec<_>, _>>()?,
+            },
         };
+        self.validate_planner_usage(proposal, measured_usage, &invocation, &disposition)?;
 
         let invocation_key = planner_invocation_result_key(proposal.invocation());
         if let Some(existing_content) = self
@@ -708,6 +719,11 @@ impl CampaignRepository {
         {
             let existing_id = PlannerStepId::from_content_id(existing_content)?;
             let existing = self.read_planner_step(existing_content)?;
+            self.validate_replayed_planner_accounting(
+                existing.accounting(),
+                measured_usage,
+                &disposition,
+            )?;
             let expected = PlannerStep::new(
                 existing.parent(),
                 proposal.invocation(),
@@ -718,7 +734,7 @@ impl CampaignRepository {
                 disposition,
                 next_state_id,
                 proposal.usage_claim(),
-                accounting,
+                existing.accounting(),
                 proposal.explanation().clone(),
             )?;
             if expected.id()? != existing_id {
@@ -748,14 +764,50 @@ impl CampaignRepository {
         self.validate_planner_page(&current_view, &invocation)?;
         self.validate_planner_cursor(&current, &disposition)?;
         self.validate_planner_disposition_page(&invocation, &disposition)?;
+        self.validate_planner_selected_source(&current_view, &disposition)?;
         let parent = self.validate_planner_invocation_start(
             current.snapshot.roots().coordination,
             &invocation,
         )?;
 
-        let next_state_content = self.put_planner_state(proposal.next_state())?;
-        if next_state_content != next_state_id.content_id() {
-            return Err(integrity("planner-next-state-publication-id-mismatch"));
+        let (accounting, issue_preflight) = match proposal.disposition() {
+            PlannerProposalDisposition::Issue {
+                branch_requests,
+                proposals,
+                ..
+            } => {
+                let PlannerDisposition::Issue { selected, .. } = &disposition else {
+                    return Err(integrity("planner-issue-disposition-mismatch"));
+                };
+                let projected = self.preflight_planner_issue(
+                    &current,
+                    proposal.invocation(),
+                    *selected,
+                    branch_requests,
+                    proposals,
+                )?;
+                if projected.branch_requests != disposition.issued_branch_requests()
+                    || projected.proposals != disposition.issued_proposals()
+                {
+                    return Err(integrity("planner-issue-output-id-mismatch"));
+                }
+                let accounting = self.planner_accounting(
+                    measured_usage,
+                    &disposition,
+                    projected.attempts,
+                    projected.deduplicated,
+                )?;
+                (accounting, Some(projected))
+            }
+            PlannerProposalDisposition::ContinueScan { .. }
+            | PlannerProposalDisposition::NoWork => (
+                self.planner_accounting(measured_usage, &disposition, 0, 0)?,
+                None,
+            ),
+        };
+
+        if proposal.next_state().engine() != invocation.engine() {
+            return Err(integrity("planner-step-next-state-engine-mismatch"));
         }
         let step = PlannerStep::new(
             parent,
@@ -771,11 +823,6 @@ impl CampaignRepository {
             proposal.explanation().clone(),
         )?;
         let step_id = step.id()?;
-        let step_content = self.put_planner_step(&step)?;
-        if step_content != step_id.content_id() {
-            return Err(integrity("planner-step-publication-id-mismatch"));
-        }
-
         let step_key = planner_step_key(step_id);
         for key in [step_key, invocation_key] {
             if self
@@ -786,6 +833,37 @@ impl CampaignRepository {
                 return Err(integrity("planner-step-index-has-no-ancestry-transition"));
             }
         }
+
+        let issue_projection = match (issue_preflight.as_ref(), proposal.disposition()) {
+            (
+                Some(prepared),
+                PlannerProposalDisposition::Issue {
+                    selected,
+                    branch_requests,
+                    proposals,
+                },
+            ) => Some(self.publish_planner_issue(
+                &current,
+                proposal.invocation(),
+                *selected,
+                branch_requests,
+                proposals,
+                prepared,
+            )?),
+            (None, PlannerProposalDisposition::ContinueScan { .. })
+            | (None, PlannerProposalDisposition::NoWork) => None,
+            _ => return Err(integrity("planner-issue-preflight-shape-mismatch")),
+        };
+
+        let next_state_content = self.put_planner_state(proposal.next_state())?;
+        if next_state_content != next_state_id.content_id() {
+            return Err(integrity("planner-next-state-publication-id-mismatch"));
+        }
+        let step_content = self.put_planner_step(&step)?;
+        if step_content != step_id.content_id() {
+            return Err(integrity("planner-step-publication-id-mismatch"));
+        }
+
         let mut coordination = current.snapshot.roots().coordination;
         for key in [step_key, invocation_key, planner_head_key()] {
             coordination = self
@@ -797,6 +875,10 @@ impl CampaignRepository {
         let fact = CampaignFact::PlannerAdvanced(step_id);
         let transition_content = self.put_fact(&fact)?;
         let mut roots = current.snapshot.roots();
+        if let Some(projected) = issue_projection {
+            roots.exploration = projected.exploration;
+            roots.accounting = projected.accounting;
+        }
         roots.coordination = coordination;
         let next = CampaignSnapshot::successor(
             current_id,
@@ -824,12 +906,13 @@ impl CampaignRepository {
         }
     }
 
-    fn planner_accounting(
+    fn validate_planner_usage(
         &self,
         proposal: &PlannerStepProposal,
         measured: PlanningUsage,
         invocation: &PlannerInvocation,
-    ) -> Result<PlanningAccounting, CampaignRepositoryError> {
+        disposition: &PlannerDisposition,
+    ) -> Result<(), CampaignRepositoryError> {
         let budget = invocation.budget();
         let claimed = proposal.usage_claim();
         if claimed.branch_requests > u64::from(budget.branch_requests())
@@ -840,7 +923,15 @@ impl CampaignRepository {
         {
             return Err(integrity("planner-step-usage-claim-exceeds-budget"));
         }
-        if measured.branch_requests != 0 || measured.proposals != 0 {
+        let branch_requests = u64::try_from(disposition.issued_branch_requests().len())
+            .map_err(|_| integrity("planner-measured-output-count-overflow"))?;
+        let proposals = u64::try_from(disposition.issued_proposals().len())
+            .map_err(|_| integrity("planner-measured-output-count-overflow"))?;
+        if measured.branch_requests != branch_requests
+            || measured.proposals != proposals
+            || measured.branch_requests > u64::from(budget.branch_requests())
+            || measured.proposals > u64::from(budget.proposals())
+        {
             return Err(integrity("planner-measured-output-count-mismatch"));
         }
         if measured.input_objects != invocation.scan_page().input_objects()
@@ -849,21 +940,50 @@ impl CampaignRepository {
         {
             return Err(integrity("planner-step-invocation-budget-exceeded"));
         }
-        if matches!(
-            proposal.disposition(),
-            PlannerProposalDisposition::Issue { .. }
-        ) {
-            return Err(integrity("planner-step-issue-owner-is-not-implemented"));
+        Ok(())
+    }
+
+    fn planner_accounting(
+        &self,
+        measured: PlanningUsage,
+        disposition: &PlannerDisposition,
+        attempts: u64,
+        deduplicated: u64,
+    ) -> Result<PlanningAccounting, CampaignRepositoryError> {
+        let branch_requests = u64::try_from(disposition.issued_branch_requests().len())
+            .map_err(|_| integrity("planner-accounting-output-count-overflow"))?;
+        let proposals = u64::try_from(disposition.issued_proposals().len())
+            .map_err(|_| integrity("planner-accounting-output-count-overflow"))?;
+        if attempts.checked_add(deduplicated) != Some(proposals) {
+            return Err(integrity("planner-accounting-admission-count-mismatch"));
         }
         Ok(PlanningAccounting {
-            branch_requests: 0,
-            proposals: 0,
-            attempts: 0,
-            deduplicated: 0,
+            branch_requests,
+            proposals,
+            attempts,
+            deduplicated,
             input_objects: measured.input_objects,
             input_bytes: measured.input_bytes,
             fuel: measured.fuel,
         })
+    }
+
+    fn validate_replayed_planner_accounting(
+        &self,
+        accounting: PlanningAccounting,
+        measured: PlanningUsage,
+        disposition: &PlannerDisposition,
+    ) -> Result<(), CampaignRepositoryError> {
+        let expected = self.planner_accounting(
+            measured,
+            disposition,
+            accounting.attempts,
+            accounting.deduplicated,
+        )?;
+        if expected != accounting {
+            return Err(integrity("planner-invocation-result-conflict"));
+        }
+        Ok(())
     }
 
     pub(super) fn validate_planner_cursor(
@@ -951,7 +1071,7 @@ impl CampaignRepository {
                     return Err(integrity("planner-invocation-reopens-complete-view"));
                 }
                 PlannerDisposition::Issue { .. } => {
-                    return Err(integrity("planner-step-issue-owner-is-not-implemented"));
+                    return Err(integrity("planner-invocation-reopens-issued-view"));
                 }
             }
         };
@@ -975,13 +1095,35 @@ impl CampaignRepository {
                 Ok(())
             }
             PlannerDisposition::NoWork if invocation.scan_page().complete() => Ok(()),
-            PlannerDisposition::Issue { .. } => {
-                Err(integrity("planner-step-issue-owner-is-not-implemented"))
-            }
-            PlannerDisposition::ContinueScan { .. } | PlannerDisposition::NoWork => Err(integrity(
+            PlannerDisposition::Issue { .. } if invocation.scan_page().complete() => Ok(()),
+            PlannerDisposition::ContinueScan { .. }
+            | PlannerDisposition::Issue { .. }
+            | PlannerDisposition::NoWork => Err(integrity(
                 "planner-step-disposition-does-not-match-served-page",
             )),
         }
+    }
+
+    pub(super) fn validate_planner_selected_source(
+        &self,
+        view: &CampaignPlanningView,
+        disposition: &PlannerDisposition,
+    ) -> Result<(), CampaignRepositoryError> {
+        let PlannerDisposition::Issue { selected, .. } = disposition else {
+            return Ok(());
+        };
+        let content = selected.source().content_id();
+        if self.merkle.get(
+            view.exploration(),
+            map_key_content("exploration.branch-request", content),
+        )? != Some(content)
+            || self.read_branch_request(content)?.branch_point() != selected.branch_point()
+        {
+            return Err(integrity(
+                "planner-step-selected-source-is-not-authoritative",
+            ));
+        }
+        Ok(())
     }
 
     fn planner_scan_page(

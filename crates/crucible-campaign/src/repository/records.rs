@@ -49,7 +49,10 @@ impl CampaignRepository {
         self.read_attempt_admission(id.content_id())
     }
 
-    /// Loads a planner step through its semantic coordinator validator.
+    /// Loads a non-issuing planner step through its semantic coordinator validator.
+    ///
+    /// An `Issue` step requires [`Self::load_planner_step_at`] because its
+    /// admissions and exact root deltas are snapshot-owned.
     ///
     /// # Errors
     ///
@@ -62,7 +65,37 @@ impl CampaignRepository {
         let step = self.read_planner_step(id.content_id())?;
         self.verify_campaign_closure(id.content_id())?;
         self.validate_standalone_planner_ancestry(&step)?;
+        if matches!(step.disposition(), PlannerDisposition::Issue { .. }) {
+            return Err(integrity("planner-issue-requires-snapshot-owner"));
+        }
         Ok(step)
+    }
+
+    /// Loads a planner step through one authoritative snapshot's complete owner validation.
+    ///
+    /// Snapshot context is required for `Issue` because attempt admission,
+    /// deduplication, and exact exploration/accounting roots are not properties
+    /// of the standalone step object.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error when the snapshot ancestry is
+    /// invalid or the step is not an authenticated member of its coordination root.
+    pub fn load_planner_step_at(
+        &self,
+        snapshot: CampaignSnapshotId,
+        id: PlannerStepId,
+    ) -> Result<PlannerStep, CampaignRepositoryError> {
+        self.validate_complete_head(snapshot.content_id())?;
+        let loaded = self.read_snapshot(snapshot.content_id())?;
+        if self
+            .merkle
+            .get(loaded.snapshot.roots().coordination, planner_step_key(id))?
+            != Some(id.content_id())
+        {
+            return Err(integrity("planner-step-is-not-authoritative-at-snapshot"));
+        }
+        self.read_planner_step(id.content_id())
     }
 
     fn validate_standalone_planner_ancestry(
@@ -71,6 +104,9 @@ impl CampaignRepository {
     ) -> Result<(), CampaignRepositoryError> {
         let mut step = first.clone();
         for _ in 0..MAX_SNAPSHOT_ANCESTRY {
+            if matches!(step.disposition(), PlannerDisposition::Issue { .. }) {
+                return Err(integrity("planner-issue-requires-snapshot-owner"));
+            }
             let invocation = self.load_planner_invocation(step.invocation())?;
             let view_envelope = self.require_record_kind(
                 invocation.input_view().content_id(),
@@ -81,6 +117,7 @@ impl CampaignRepository {
                 return Err(integrity("planner-invocation-planning-view-envelope-shape"));
             }
             self.validate_planner_page(&view, &invocation)?;
+            self.validate_planner_selected_source(&view, step.disposition())?;
 
             let parent = step
                 .parent()
@@ -224,16 +261,22 @@ impl CampaignRepository {
         &self,
         id: PlannerInvocationId,
     ) -> Result<PlannerInvocation, CampaignRepositoryError> {
-        let envelope = self.require_record_kind(
-            id.content_id(),
-            crate::CampaignRecordKind::PlannerInvocation,
-        )?;
-        let invocation = crate::codec::decode::<PlannerInvocation>(envelope.body())?;
-        if invocation.id()? != id {
-            return Err(integrity("planner-invocation-envelope-shape"));
-        }
+        let (envelope, invocation) = self.decode_planner_invocation(id.content_id())?;
         self.validate_planner_invocation_references(&envelope)?;
         Ok(invocation)
+    }
+
+    pub(super) fn decode_planner_invocation(
+        &self,
+        id: ContentId,
+    ) -> Result<(ObjectEnvelope, PlannerInvocation), CampaignRepositoryError> {
+        let envelope =
+            self.require_record_kind(id, crate::CampaignRecordKind::PlannerInvocation)?;
+        let invocation = crate::codec::decode::<PlannerInvocation>(envelope.body())?;
+        if invocation.id()?.content_id() != id {
+            return Err(integrity("planner-invocation-envelope-shape"));
+        }
+        Ok((envelope, invocation))
     }
 
     pub(super) fn put_planning_view(
@@ -648,12 +691,20 @@ impl CampaignRepository {
         &self,
         id: ContentId,
     ) -> Result<BranchRequest, CampaignRepositoryError> {
+        let request = self.decode_branch_request(id)?;
+        self.validate_branch_request_references(&request)?;
+        Ok(request)
+    }
+
+    pub(super) fn decode_branch_request(
+        &self,
+        id: ContentId,
+    ) -> Result<BranchRequest, CampaignRepositoryError> {
         let envelope = self.require_record_kind(id, crate::CampaignRecordKind::BranchRequest)?;
         let request = BranchRequest::from_canonical_bytes(envelope.body())?;
         if request.id()?.content_id() != id {
             return Err(integrity("branch-request-envelope-shape"));
         }
-        self.validate_branch_request_references(&request)?;
         Ok(request)
     }
 
@@ -683,20 +734,63 @@ impl CampaignRepository {
         Ok(parent)
     }
 
+    pub(super) fn validate_branch_request_references_shallow(
+        &self,
+        request: &BranchRequest,
+    ) -> Result<(), CampaignRepositoryError> {
+        let parent = self.read_configuration_artifact(request.parent().content_id())?;
+        let opportunity = self.read_opportunity(request.opportunity().content_id())?;
+        let domain = self.read_choice_domain(request.domain().content_id())?;
+        request.validate_resolved(&parent, &opportunity, &domain)?;
+        if let CandidateSource::Generated(generator) = request.source() {
+            self.require_record_kind(
+                generator.content_id(),
+                crate::CampaignRecordKind::CandidateGeneratorSpec,
+            )?;
+        }
+        match request.cause() {
+            BranchRequestCause::Planner(invocation) => {
+                self.require_record_kind(
+                    invocation.content_id(),
+                    crate::CampaignRecordKind::PlannerInvocation,
+                )?;
+            }
+            BranchRequestCause::ExhaustivePolicy(policy) => {
+                self.read_policy(policy.content_id())?;
+            }
+            BranchRequestCause::Operator(_) | BranchRequestCause::Debugger(_) => {}
+        }
+        Ok(())
+    }
+
     pub(super) fn validate_generator_for_domain(
         &self,
         root: CandidateGeneratorSpecId,
         domain: &ChoiceDomain,
     ) -> Result<(), CampaignRepositoryError> {
+        let mut remaining = MAX_CLOSURE_OBJECTS;
+        self.validate_generator_for_domain_with_budget(root, domain, &mut remaining)
+    }
+
+    pub(super) fn validate_generator_for_domain_with_budget(
+        &self,
+        root: CandidateGeneratorSpecId,
+        domain: &ChoiceDomain,
+        remaining: &mut usize,
+    ) -> Result<(), CampaignRepositoryError> {
         let mut stack = vec![(root, 0_usize)];
         let mut visited = BTreeSet::new();
         while let Some((id, depth)) = stack.pop() {
-            if depth > 1024 || visited.len() >= MAX_CLOSURE_OBJECTS {
+            if depth > 1024 {
                 return Err(integrity("candidate-generator-validation-limit"));
             }
             if !visited.insert(id) {
                 continue;
             }
+            if *remaining == 0 {
+                return Err(integrity("candidate-generator-validation-limit"));
+            }
+            *remaining -= 1;
             let generator = self.read_generator(id.content_id())?;
             match generator.algorithm() {
                 CandidateGeneratorAlgorithm::All
@@ -841,12 +935,31 @@ impl CampaignRepository {
         Ok(request)
     }
 
-    pub(super) fn read_proposal(&self, id: ContentId) -> Result<Proposal, CampaignRepositoryError> {
-        let envelope = self.require_record_kind(id, crate::CampaignRecordKind::Proposal)?;
-        let proposal = Proposal::from_canonical_bytes(envelope.body())?;
-        if proposal.id()?.content_id() != id {
-            return Err(integrity("proposal-envelope-shape"));
+    pub(super) fn validate_proposal_references_shallow(
+        &self,
+        proposal: &Proposal,
+    ) -> Result<(), CampaignRepositoryError> {
+        let request = self.decode_branch_request(proposal.request().content_id())?;
+        let domain = self.read_choice_domain(proposal.domain().content_id())?;
+        proposal.validate_resolved(&request, &domain)?;
+        self.read_policy(proposal.policy().content_id())?;
+        self.require_record_kind(
+            proposal.guidance_basis().content_id(),
+            crate::CampaignRecordKind::PlanningView,
+        )?;
+        if let Some(invocation_id) = proposal.planner_invocation() {
+            let (_, invocation) = self.decode_planner_invocation(invocation_id.content_id())?;
+            if invocation.policy() != proposal.policy()
+                || invocation.input_view() != proposal.guidance_basis()
+            {
+                return Err(integrity("proposal-planner-invocation-mismatch"));
+            }
         }
+        Ok(())
+    }
+
+    pub(super) fn read_proposal(&self, id: ContentId) -> Result<Proposal, CampaignRepositoryError> {
+        let proposal = self.decode_proposal(id)?;
         let request = self.read_branch_request(proposal.request().content_id())?;
         let domain = self.read_choice_domain(proposal.domain().content_id())?;
         proposal.validate_resolved(&request, &domain)?;
@@ -862,6 +975,18 @@ impl CampaignRepository {
             {
                 return Err(integrity("proposal-planner-invocation-mismatch"));
             }
+        }
+        Ok(proposal)
+    }
+
+    pub(super) fn decode_proposal(
+        &self,
+        id: ContentId,
+    ) -> Result<Proposal, CampaignRepositoryError> {
+        let envelope = self.require_record_kind(id, crate::CampaignRecordKind::Proposal)?;
+        let proposal = Proposal::from_canonical_bytes(envelope.body())?;
+        if proposal.id()?.content_id() != id {
+            return Err(integrity("proposal-envelope-shape"));
         }
         Ok(proposal)
     }
@@ -926,6 +1051,16 @@ impl CampaignRepository {
         attempt: &Attempt,
     ) -> Result<BranchRequest, CampaignRepositoryError> {
         let request = self.read_branch_request(proposal.request().content_id())?;
+        self.validate_proposal_attempt_equivalence_with_request(proposal, attempt, &request)?;
+        Ok(request)
+    }
+
+    fn validate_proposal_attempt_equivalence_with_request(
+        &self,
+        proposal: &Proposal,
+        attempt: &Attempt,
+        request: &BranchRequest,
+    ) -> Result<(), CampaignRepositoryError> {
         let AttemptStart::Branch {
             edge: _,
             parent,
@@ -943,18 +1078,14 @@ impl CampaignRepository {
         {
             return Err(integrity("proposal-attempt-semantic-mismatch"));
         }
-        Ok(request)
+        Ok(())
     }
 
     pub(super) fn read_attempt_admission(
         &self,
         id: ContentId,
     ) -> Result<AttemptAdmission, CampaignRepositoryError> {
-        let envelope = self.require_record_kind(id, crate::CampaignRecordKind::AttemptAdmission)?;
-        let admission = AttemptAdmission::from_canonical_bytes(envelope.body())?;
-        if admission.id()?.content_id() != id {
-            return Err(integrity("attempt-admission-envelope-shape"));
-        }
+        let admission = self.decode_attempt_admission(id)?;
         let attempt = self.read_attempt(admission.attempt().content_id())?;
         match admission.role() {
             AttemptAdmissionRole::ExecutionBasis {
@@ -982,6 +1113,55 @@ impl CampaignRepository {
         Ok(admission)
     }
 
+    pub(super) fn decode_attempt_admission(
+        &self,
+        id: ContentId,
+    ) -> Result<AttemptAdmission, CampaignRepositoryError> {
+        let envelope = self.require_record_kind(id, crate::CampaignRecordKind::AttemptAdmission)?;
+        let admission = AttemptAdmission::from_canonical_bytes(envelope.body())?;
+        if admission.id()?.content_id() != id {
+            return Err(integrity("attempt-admission-envelope-shape"));
+        }
+        Ok(admission)
+    }
+
+    pub(super) fn validate_attempt_admission_references_shallow(
+        &self,
+        admission: &AttemptAdmission,
+    ) -> Result<(), CampaignRepositoryError> {
+        let attempt = self.read_attempt(admission.attempt().content_id())?;
+        match admission.role() {
+            AttemptAdmissionRole::ExecutionBasis {
+                proposal: Some(proposal),
+                cause,
+                ..
+            } => {
+                let proposal = self.decode_proposal(proposal.content_id())?;
+                let request = self.decode_branch_request(proposal.request().content_id())?;
+                self.validate_proposal_attempt_equivalence_with_request(
+                    &proposal, &attempt, &request,
+                )?;
+                if request.cause() != cause {
+                    return Err(integrity("attempt-execution-basis-mismatch"));
+                }
+            }
+            AttemptAdmissionRole::ExecutionBasis { proposal: None, .. }
+                if !matches!(attempt.start(), AttemptStart::Discover { .. }) =>
+            {
+                return Err(integrity("branch-attempt-execution-basis-has-no-proposal"));
+            }
+            AttemptAdmissionRole::ExecutionBasis { .. } => {}
+            AttemptAdmissionRole::AdditionalCause { proposal } => {
+                let proposal = self.decode_proposal(proposal.content_id())?;
+                let request = self.decode_branch_request(proposal.request().content_id())?;
+                self.validate_proposal_attempt_equivalence_with_request(
+                    &proposal, &attempt, &request,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn count_request_execution_bases(
         &self,
         accounting_root: ContentId,
@@ -995,7 +1175,7 @@ impl CampaignRepository {
                 if *key != map_key_content("accounting.attempt-admission", *value) {
                     continue;
                 }
-                let admission = self.read_attempt_admission(*value)?;
+                let admission = self.decode_attempt_admission(*value)?;
                 let AttemptAdmissionRole::ExecutionBasis {
                     proposal: Some(proposal),
                     ..
@@ -1003,7 +1183,7 @@ impl CampaignRepository {
                 else {
                     continue;
                 };
-                if self.read_proposal(proposal.content_id())?.request() == request {
+                if self.decode_proposal(proposal.content_id())?.request() == request {
                     count = count
                         .checked_add(1)
                         .ok_or_else(|| integrity("request-attempt-count-overflow"))?;
@@ -1023,7 +1203,7 @@ impl CampaignRepository {
         let Some(latest) = self.merkle.get(accounting_root, admission_sequence_key())? else {
             return Ok(AdmissionOrdinal::new(1));
         };
-        let admission = self.read_attempt_admission(latest)?;
+        let admission = self.decode_attempt_admission(latest)?;
         let AttemptAdmissionRole::ExecutionBasis {
             admission_ordinal, ..
         } = admission.role()
@@ -1044,9 +1224,26 @@ impl CampaignRepository {
         attempt: AttemptId,
     ) -> Result<AttemptAdmission, CampaignRepositoryError> {
         let roots = snapshot.snapshot.roots();
+        self.expected_proposal_admission_at(
+            snapshot,
+            roots.exploration,
+            roots.accounting,
+            proposal,
+            attempt,
+        )
+    }
+
+    pub(super) fn expected_proposal_admission_at(
+        &self,
+        snapshot: &LoadedSnapshot,
+        exploration_root: ContentId,
+        accounting_root: ContentId,
+        proposal: ProposalId,
+        attempt: AttemptId,
+    ) -> Result<AttemptAdmission, CampaignRepositoryError> {
         let proposal_content = proposal.content_id();
         if self.merkle.get(
-            roots.exploration,
+            exploration_root,
             map_key_content("exploration.proposal", proposal_content),
         )? != Some(proposal_content)
         {
@@ -1055,7 +1252,7 @@ impl CampaignRepository {
         if self
             .merkle
             .get(
-                roots.accounting,
+                accounting_root,
                 map_key_content("accounting.proposal-admission", proposal_content),
             )?
             .is_some()
@@ -1079,13 +1276,12 @@ impl CampaignRepository {
         }
         let attempt_key = map_key_content("accounting.attempt", attempt.content_id());
         let basis_key = map_key_content("accounting.attempt-execution-basis", attempt.content_id());
-        let indexed_attempt = self.merkle.get(roots.accounting, attempt_key)?;
-        let indexed_basis = self.merkle.get(roots.accounting, basis_key)?;
+        let indexed_attempt = self.merkle.get(accounting_root, attempt_key)?;
+        let indexed_basis = self.merkle.get(accounting_root, basis_key)?;
 
         match (indexed_attempt, indexed_basis) {
             (None, None) => {
-                if self
-                    .count_request_execution_bases(roots.accounting, proposal_record.request())?
+                if self.count_request_execution_bases(accounting_root, proposal_record.request())?
                     >= request.budget().maximum_attempts()
                 {
                     return Err(integrity("branch-request-attempt-budget-exhausted"));
@@ -1095,7 +1291,7 @@ impl CampaignRepository {
                     AttemptAdmissionRole::ExecutionBasis {
                         proposal: Some(proposal),
                         cause: request.cause(),
-                        admission_ordinal: self.next_admission_ordinal(roots.accounting)?,
+                        admission_ordinal: self.next_admission_ordinal(accounting_root)?,
                     },
                 ))
             }
@@ -1289,7 +1485,7 @@ impl CampaignRepository {
             .into_iter()
             .chain(invocation.scan_page().positions().iter().copied())
         {
-            let request = self.read_branch_request(position.source().content_id())?;
+            let request = self.decode_branch_request(position.source().content_id())?;
             if request.branch_point() != position.branch_point() {
                 return Err(integrity(
                     "planner-invocation-scan-position-branch-point-mismatch",

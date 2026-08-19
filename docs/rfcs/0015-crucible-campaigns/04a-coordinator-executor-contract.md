@@ -219,8 +219,21 @@ the next invocation resumes the byte-identical planning view. The transition is
 an exact three-index update: step identity, invocation result, and current
 planner head. Reusing an invocation with different result bytes is a
 determinism failure; importing extra or missing coordination entries fails
-closed. `Issue` remains disabled until the same transaction can preserve the
-existing sole-writer request, proposal, and admission contracts.
+closed. `Issue` is accepted only at EOF for an authoritative selected source.
+One snapshot transition then preserves the existing sole-writer contracts by
+inserting exact planner-caused requests, finite proposals, deterministically
+derived selections/paths/attempts, execution-basis or additional-cause
+admissions, coordinator accounting, and the three coordination indexes. Local
+publication and imported-snapshot validation use the same owner projection;
+extra, missing, cross-invocation, or selection-mismatched facts fail closed.
+Local acceptance MUST complete a read-only semantic preflight of the output,
+coordinator accounting, next-state engine continuity, and prospective step
+before publishing any output body or Merkle node; imported validation MUST
+remain read-only. Repeated generated requests share validation by
+generator/domain pair, and all cache misses together MUST visit at most
+1,000,000 generator records in one projection pass.
+Loading an accepted `Issue` requires its authoritative snapshot;
+the standalone step object cannot prove admission or deduplication roots.
 Planner code cannot issue commands directly. A future engine implemented in
 another language is a supervised replaceable component identified by its
 artifact, engine, protocol, and parameter versions.
