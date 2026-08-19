@@ -81,10 +81,10 @@ pub use policy::{
 };
 pub use repository::{
     AttemptAdmissionResult, AttemptQueue, AttemptQueueCursor, AttemptQueueError,
-    AttemptReservation, BranchRequestResult, CampaignCommandResult, CampaignHead,
-    CampaignRepository, CampaignRepositoryError, ChoiceDiscoveryResult, ClaimableAttemptPage,
-    ObservationDisposition, ObservationResult, PlannerStepResult, ProposalResult,
-    ResolvedSelection, WorkerSlotId,
+    AttemptReservation, BranchRequestResult, CampaignCommandResult, CampaignExecutorStore,
+    CampaignHead, CampaignRepository, CampaignRepositoryError, ChoiceDiscoveryResult,
+    ClaimableAttemptPage, ObservationCandidate, ObservationDisposition, ObservationResult,
+    PlannerStepResult, ProposalResult, ResolvedSelection, WorkerSlotId,
 };
 
 #[cfg(test)]

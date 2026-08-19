@@ -3,6 +3,19 @@
 use super::*;
 
 impl CampaignRepository {
+    /// Loads an exact campaign lineage and authenticates its scenario/genesis closure.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error for a missing, corrupt, or
+    /// semantically inconsistent lineage.
+    pub fn load_lineage(
+        &self,
+        id: CampaignLineageId,
+    ) -> Result<CampaignLineage, CampaignRepositoryError> {
+        self.read_lineage(id.content_id())
+    }
+
     /// Loads an exact measurement set and verifies its complete evidence closure.
     ///
     /// # Errors

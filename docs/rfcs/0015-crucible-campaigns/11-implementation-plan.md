@@ -171,8 +171,13 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   single-host `LocalExecutorSupervisor` are implemented. The latter enforces
   exact assignment replay, aggregate slot/CPU/memory/disk capacity, a bounded
   pending queue, durable completion/cancellation races, and restart replacement
-  of stale executions. Campaign-level supervisor ownership, the QEMU worker,
-  canonical completion handoff, and responsive scheduling remain open.
+  of stale executions. The local worker now resolves repository-authenticated
+  attempt inputs behind an execution-model trait, publishes a completely
+  preflighted immutable observation-candidate bundle without advancing campaign
+  state, and returns results to the supervisor actor for durable completion or
+  bounded retry without holding supervisor state during guest execution.
+  Campaign-level supervisor ownership, the concrete QEMU/session adapter, and
+  responsive multi-slot scheduling remain open.
 - [ ] **T-CAM-4.6** Implement strict and streaming commit modes, restart
   recovery, duplicate/conflict handling, backpressure, pagination, and
   projection rebuilding; implement snapshot-bound paged planner scans whose
@@ -218,9 +223,17 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   admission/completion adapter with an exact immutable executor profile, and a
   strict 4-KiB versioned Unix-loopback binding with finite deadlines,
   close-on-error behavior, direct/loopback equivalence, and hostile/partial
-  frame tests. The QEMU
-  execution/completion worker, capability service, full out-of-process campaign
-  flight, and complete component conformance gate remain open.
+  frame tests. The repository candidate handoff and generic worker driver now
+  use non-cloneable dispatch and phase tokens, keep semantic model input free
+  of assignment and daemon identities, preflight the complete candidate before
+  writes, persist a lineage-qualified `publishing` root before immutable
+  publication, stream publishing/completed roots to GC, recover exact expected
+  results across restart, keep cancellation resources charged until worker
+  exit, and reconcile publication without holding the supervisor actor or
+  rerunning the guest. Snapshot incorporation remains coordinator-only. The
+  concrete QEMU execution adapter, capability
+  service, full out-of-process campaign flight, and complete component
+  conformance gate remain open.
 - [x] **T-CAM-4.10** Replace repeated full-history validation on local owner
   mutations with bounded immutable validated-head/lifecycle checkpoints and
   authenticated membership and result-locator indexes; promote only after ref

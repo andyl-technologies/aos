@@ -12,6 +12,50 @@ struct ObservationProjection {
 }
 
 impl CampaignRepository {
+    /// Publishes one fully validated immutable executor result without advancing a campaign.
+    ///
+    /// This is the executor-to-coordinator handoff. Validation authenticates
+    /// the attempt, child scenario binding, modeled evidence, and discovered
+    /// choices before the first bundle object is stored. The coordinator later
+    /// incorporates the returned observation through [`Self::publish_observation`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without writing a bundle member when the candidate or
+    /// an already-published dependency is missing, corrupt, or inconsistent.
+    /// Storage failure during publication may leave harmless content-addressed
+    /// bundle members for ordinary garbage collection.
+    pub fn publish_observation_candidate(
+        &self,
+        candidate: &ObservationCandidate,
+    ) -> Result<ObservationId, CampaignRepositoryError> {
+        self.validate_observation_candidate(candidate)?;
+
+        let child = self.put_configuration_artifact(candidate.child())?;
+        let measurements = self.put_measurement_set(candidate.measurements())?;
+        let properties = self.put_property_verdict_set(candidate.properties())?;
+        let coverage = self.put_coverage_projection(candidate.coverage())?;
+        for choice in candidate.discovered_choices() {
+            self.put_envelope(ObjectEnvelope::for_record(
+                crate::CampaignRecordKind::ChoiceOpportunity,
+                crate::object::content_children(choice.content_children())?,
+                crate::codec::encode(choice),
+            )?)?;
+        }
+        let observation = self.put_observation(candidate.observation())?;
+
+        if child != candidate.observation().child_content().content_id()
+            || measurements != candidate.observation().measurements().content_id()
+            || properties != candidate.observation().properties().content_id()
+            || coverage != candidate.observation().coverage().content_id()
+            || observation != candidate.observation().id()?.content_id()
+        {
+            return Err(integrity("observation-candidate-publication-id-mismatch"));
+        }
+        self.verify_campaign_closure(observation)?;
+        ObservationId::from_content_id(observation).map_err(Into::into)
+    }
+
     /// Publishes a canonical exact measurement set without advancing a campaign.
     ///
     /// # Errors
@@ -516,6 +560,144 @@ impl CampaignRepository {
             &BTreeSet::new(),
             &mut ChoiceValidationCache::default(),
         )?;
+        Ok(())
+    }
+
+    pub(super) fn validate_observation_candidate(
+        &self,
+        candidate: &ObservationCandidate,
+    ) -> Result<(), CampaignRepositoryError> {
+        let observation = candidate.observation();
+        let child = candidate.child();
+        let attempt = self.read_attempt(observation.attempt().content_id())?;
+
+        let start = match attempt.start() {
+            AttemptStart::Discover { configuration } => {
+                self.read_configuration_artifact(configuration.content_id())?
+            }
+            AttemptStart::Branch {
+                parent, selection, ..
+            } => {
+                let parent = self.read_configuration_artifact(parent.content_id())?;
+                let selection = self.resolve_selection(selection)?;
+                if selection.opportunity().scenario() != parent.scenario() {
+                    return Err(integrity(
+                        "observation-attempt-opportunity-scenario-mismatch",
+                    ));
+                }
+                parent
+            }
+        };
+
+        if child.id()? != observation.child_content()
+            || child.configuration() != observation.child()
+            || candidate.measurements().id()? != observation.measurements()
+            || candidate.properties().id()? != observation.properties()
+            || candidate.coverage().id()? != observation.coverage()
+            || attempt.path() != observation.path()
+            || child.scenario() != start.scenario()
+            || child.scenario_artifact() != start.scenario_artifact()
+            || matches!(observation.stop(), StopOutcome::Reached(stop) if stop != attempt.stop())
+        {
+            return Err(integrity("observation-candidate-bundle-mismatch"));
+        }
+
+        let scenario = self.read_scenario_artifact(child.scenario_artifact().content_id())?;
+        if scenario.scenario() != child.scenario() {
+            return Err(integrity("observation-candidate-scenario-mismatch"));
+        }
+
+        let mut choice_bodies = BTreeMap::new();
+        for choice in candidate.discovered_choices() {
+            if choice_bodies.insert(choice.id()?, choice).is_some() {
+                return Err(integrity("observation-candidate-choice-bundle-mismatch"));
+            }
+        }
+        if choice_bodies.keys().copied().collect::<BTreeSet<_>>()
+            != *observation.discovered_choices()
+        {
+            return Err(integrity("observation-candidate-choice-bundle-mismatch"));
+        }
+        let mut choice_cache = ChoiceValidationCache::default();
+        for choice in choice_bodies.values() {
+            let envelope = ObjectEnvelope::for_record(
+                crate::CampaignRecordKind::ChoiceOpportunity,
+                crate::object::content_children(choice.content_children())?,
+                crate::codec::encode(*choice),
+            )?;
+            self.validate_opportunity_references_cached(&envelope, &mut choice_cache)?;
+            if choice.scenario() != child.scenario() {
+                return Err(integrity("observation-choice-scenario-mismatch"));
+            }
+        }
+        if matches!(
+            observation.stop(),
+            StopOutcome::Reached(StopCondition::NextChoice)
+        ) && observation.discovered_choices().is_empty()
+        {
+            return Err(integrity("next-choice-observation-has-no-choice"));
+        }
+        if let StopOutcome::AssertionFailure(property) = observation.stop()
+            && candidate
+                .properties()
+                .properties()
+                .get(property)
+                .is_none_or(|evidence| evidence.verdict() != PropertyVerdict::Failed)
+        {
+            return Err(integrity("assertion-outcome-has-no-failed-property"));
+        }
+
+        // The final observation closure contains five fixed not-yet-published
+        // records plus every newly discovered opportunity body.
+        // records. Traverse every already-published dependency in one shared
+        // walk so independently valid evidence trees cannot exceed the global
+        // closure bound only after writes begin.
+        let roots = std::iter::once(observation.attempt().content_id())
+            .chain(child.content_children().into_iter().map(|(_, id)| id))
+            .chain(
+                candidate
+                    .measurements()
+                    .content_children()
+                    .into_iter()
+                    .map(|(_, id)| id),
+            )
+            .chain(
+                candidate
+                    .properties()
+                    .content_children()
+                    .into_iter()
+                    .map(|(_, id)| id),
+            )
+            .chain(
+                candidate
+                    .coverage()
+                    .content_children()
+                    .into_iter()
+                    .map(|(_, id)| id),
+            )
+            .chain(
+                candidate
+                    .discovered_choices()
+                    .iter()
+                    .flat_map(ChoiceOpportunity::content_children)
+                    .map(|(_, id)| id),
+            );
+        let dependency_objects = self.verify_campaign_closures_anchored_cached(
+            roots,
+            &BTreeSet::new(),
+            &mut choice_cache,
+        )?;
+        let virtual_records = candidate
+            .discovered_choices()
+            .len()
+            .checked_add(5)
+            .ok_or_else(|| integrity("campaign-closure-object-limit"))?;
+        if dependency_objects
+            .checked_add(virtual_records)
+            .is_none_or(|objects| objects > MAX_CLOSURE_OBJECTS)
+        {
+            return Err(integrity("campaign-closure-object-limit"));
+        }
         Ok(())
     }
 
