@@ -50,6 +50,11 @@ fn run_image(args: &VmRunArgs, printer: &Printer) -> Result<()> {
         .as_deref()
         .map(|path| canonical_regular_file(path, "host configuration"))
         .transpose()?;
+    let host_config_signature = args
+        .host_config_signature
+        .as_deref()
+        .map(|path| canonical_regular_file(path, "host configuration signature"))
+        .transpose()?;
     let name = resolve_name(args, &image)?;
     let state_dir = resolve_state_dir(args, &name)?;
     let acceleration = resolve_acceleration(args.accel, printer)?;
@@ -91,6 +96,7 @@ fn run_image(args: &VmRunArgs, printer: &Printer) -> Result<()> {
         &firmware_code,
         &firmware_vars,
         host_config.as_deref(),
+        host_config_signature.as_deref(),
         acceleration,
         printer,
     );
@@ -171,6 +177,7 @@ fn run_image(args: &VmRunArgs, printer: &Printer) -> Result<()> {
         &firmware_code,
         &firmware_vars,
         host_config.as_deref(),
+        host_config_signature.as_deref(),
         acceleration,
     );
     let status = command.status().context("starting QEMU")?;
@@ -273,6 +280,7 @@ fn print_plan(
     firmware_code: &Path,
     firmware_vars: &Path,
     host_config: Option<&Path>,
+    host_config_signature: Option<&Path>,
     acceleration: &str,
     printer: &Printer,
 ) {
@@ -289,6 +297,7 @@ fn print_plan(
             "firmware_vars": firmware_vars,
             "ssh": { "host": "127.0.0.1", "host_port": args.ssh_port, "guest_port": 22 },
             "host_config": host_config,
+            "host_config_signature": host_config_signature,
             "dry_run": args.dry_run,
         }));
         return;
@@ -309,6 +318,9 @@ fn print_plan(
     if let Some(host_config) = host_config {
         printer.kv("Configuration", &host_config.display().to_string());
     }
+    if let Some(signature) = host_config_signature {
+        printer.kv("Configuration signature", &signature.display().to_string());
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -319,6 +331,7 @@ fn qemu_command(
     firmware_code: &Path,
     firmware_vars: &Path,
     host_config: Option<&Path>,
+    host_config_signature: Option<&Path>,
     acceleration: &str,
 ) -> Command {
     let mut command = Command::new(qemu);
@@ -360,6 +373,12 @@ fn qemu_command(
         command.arg("-fw_cfg").arg(format!(
             "name=opt/org.andyl/host-nix,file={}",
             host_config.display()
+        ));
+    }
+    if let Some(signature) = host_config_signature {
+        command.arg("-fw_cfg").arg(format!(
+            "name=opt/org.andyl/host-nix.sig,file={}",
+            signature.display()
         ));
     }
     command
@@ -505,6 +524,7 @@ mod tests {
             Path::new("OVMF_CODE.fd"),
             Path::new("OVMF_VARS.fd"),
             Some(Path::new("host.nix")),
+            Some(Path::new("host.nix.sig")),
             "kvm",
         );
         let arguments = command
@@ -522,6 +542,11 @@ mod tests {
             arguments
                 .iter()
                 .any(|argument| argument.contains("opt/org.andyl/host-nix"))
+        );
+        assert!(
+            arguments
+                .iter()
+                .any(|argument| argument.contains("opt/org.andyl/host-nix.sig"))
         );
     }
 
@@ -552,6 +577,7 @@ mod tests {
             image: image.to_path_buf(),
             name: None,
             host_config: None,
+            host_config_signature: None,
             disk_size_gib: 16,
             memory_mib: 4096,
             cpus: 2,
