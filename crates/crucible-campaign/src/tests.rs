@@ -190,17 +190,23 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         assert_eq!(row[2], expected_owner);
         assert_eq!(row[3], kind.object_kind().as_str());
     }
-    let owned_campaign_schemas = CampaignRecordKind::ALL
+    let mut owned_campaign_schemas = CampaignRecordKind::ALL
         .into_iter()
         .map(CampaignRecordKind::schema_name)
         .collect::<BTreeSet<_>>();
-    for (schema, row) in &rows {
+    let planner_result = rows
+        .get("crucible.campaign.planner-step-proposal")
+        .expect("missing planner result component schema");
+    assert_eq!(planner_result[1], "1");
+    assert_eq!(planner_result[2], "crucible-campaign::exploration");
+    assert_eq!(planner_result[3], "component-message");
+    owned_campaign_schemas.insert("crucible.campaign.planner-step-proposal");
+    for schema in rows.keys() {
         if schema.starts_with("crucible.campaign.") {
             assert!(
                 owned_campaign_schemas.contains(schema),
                 "registry contains an unowned campaign schema {schema}"
             );
-            assert_eq!(row[1], "1", "campaign schema version drift for {schema}");
         }
     }
     for (schema, owner) in [
@@ -1068,6 +1074,7 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
         basis
     );
 
+    let planner_view = stored_id!(CampaignViewId, ObjectKind::CampaignFact, "planner-view");
     let planner_step = PlannerStep::new(
         None,
         stored_id!(
@@ -1078,12 +1085,15 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
         stored_id!(CampaignPolicyId, ObjectKind::Policy, "planner-step-policy"),
         stored_id!(PlannerEngineId, ObjectKind::Policy, "planner-engine"),
         stored_id!(PolicyArtifactId, ObjectKind::Policy, "policy-artifact"),
-        stored_id!(CampaignViewId, ObjectKind::CampaignFact, "planner-view"),
-        branch_point,
-        request.id().expect("request id"),
-        vec![proposal.id().expect("proposal id")],
+        planner_view,
+        PlannerDisposition::Issue {
+            selected: PlanningScanPosition::new(branch_point, request.id().expect("request id")),
+            issued_branch_requests: Vec::new(),
+            issued_proposals: vec![proposal.id().expect("proposal id")],
+        },
         stored_id!(PlannerStateId, ObjectKind::Policy, "next-planner-state"),
         PlanningAccounting {
+            branch_requests: 0,
             proposals: 1,
             attempts: 1,
             deduplicated: 0,
@@ -1096,6 +1106,247 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
         PlannerStep::from_canonical_bytes(&planner_step.canonical_bytes())
             .expect("canonical planner step"),
         planner_step
+    );
+    assert_eq!(
+        &planner_step.canonical_bytes()[..std::mem::size_of::<u32>()],
+        &2_u32.to_be_bytes()
+    );
+    let planner_step_children =
+        super::object::content_children(planner_step.content_children()).expect("step children");
+    let planner_step_envelope = ObjectEnvelope::for_record(
+        CampaignRecordKind::PlannerStep,
+        planner_step_children.clone(),
+        planner_step.canonical_bytes(),
+    )
+    .expect("planner step envelope");
+    let stored_planner_step =
+        crucible_cas::content_envelope::ContentEnvelope::from_canonical_bytes(
+            &planner_step_envelope.canonical_bytes(),
+        )
+        .expect("stored planner step envelope");
+    assert_eq!(stored_planner_step.schema_version(), 2);
+    let legacy_envelope = crucible_cas::content_envelope::ContentEnvelope::new(
+        CampaignRecordKind::PlannerStep.schema_name(),
+        1,
+        planner_step_children,
+        planner_step.canonical_bytes(),
+    )
+    .expect("legacy planner step envelope");
+    assert!(ObjectEnvelope::from_canonical_bytes(&legacy_envelope.canonical_bytes()).is_err());
+
+    let continue_scan = PlannerStep::new(
+        Some(planner_step.id().expect("parent planner step")),
+        planner_step.invocation(),
+        planner_step.policy(),
+        planner_step.engine(),
+        planner_step.policy_artifact(),
+        planner_view,
+        PlannerDisposition::ContinueScan {
+            cursor: PlanningScanCursor::new(
+                planner_view,
+                Some(PlanningScanPosition::new(
+                    branch_point,
+                    request.id().expect("request id"),
+                )),
+            ),
+        },
+        planner_step.next_state(),
+        PlanningAccounting {
+            branch_requests: 0,
+            proposals: 0,
+            attempts: 0,
+            deduplicated: 0,
+            fuel: 4,
+        },
+        GuidanceEvidence::new(BTreeMap::new()).expect("scan evidence"),
+    )
+    .expect("continue scan");
+    assert!(continue_scan.selected_source().is_none());
+    assert!(continue_scan.issued_proposals().is_empty());
+    assert_eq!(
+        PlannerStep::from_canonical_bytes(&continue_scan.canonical_bytes())
+            .expect("canonical continue scan"),
+        continue_scan
+    );
+    let no_work = PlannerStep::new(
+        Some(continue_scan.id().expect("continue-scan step id")),
+        planner_step.invocation(),
+        planner_step.policy(),
+        planner_step.engine(),
+        planner_step.policy_artifact(),
+        planner_view,
+        PlannerDisposition::NoWork,
+        planner_step.next_state(),
+        PlanningAccounting {
+            branch_requests: 0,
+            proposals: 0,
+            attempts: 0,
+            deduplicated: 0,
+            fuel: 1,
+        },
+        GuidanceEvidence::new(BTreeMap::new()).expect("no-work evidence"),
+    )
+    .expect("no-work step");
+    assert!(no_work.selected_branch_point().is_none());
+    assert_eq!(
+        PlannerStep::from_canonical_bytes(&no_work.canonical_bytes())
+            .expect("canonical no-work step"),
+        no_work
+    );
+
+    assert!(
+        continue_scan
+            .content_children()
+            .iter()
+            .any(|(role, id)| role == "scan-after-source"
+                && *id == request.id().expect("request id").content_id())
+    );
+
+    assert!(
+        PlannerStep::new(
+            None,
+            planner_step.invocation(),
+            planner_step.policy(),
+            planner_step.engine(),
+            planner_step.policy_artifact(),
+            planner_view,
+            PlannerDisposition::ContinueScan {
+                cursor: PlanningScanCursor::new(
+                    stored_id!(CampaignViewId, ObjectKind::CampaignFact, "another-view"),
+                    None,
+                ),
+            },
+            planner_step.next_state(),
+            PlanningAccounting {
+                branch_requests: 0,
+                proposals: 0,
+                attempts: 0,
+                deduplicated: 0,
+                fuel: 1,
+            },
+            GuidanceEvidence::new(BTreeMap::new()).expect("invalid scan evidence"),
+        )
+        .is_err()
+    );
+
+    let planner_request = BranchRequest::new(
+        branch_point,
+        parent.id().expect("parent id"),
+        opportunity.id().expect("opportunity id"),
+        domain.id().expect("domain id"),
+        CandidateSource::finite(BTreeSet::from([ChoiceValue::Integer(
+            IntegerValue::Unsigned(10),
+        )]))
+        .expect("planner finite source"),
+        BranchRequestCause::Planner(planner_step.invocation()),
+        BranchBudget::new(1, 1).expect("planner branch budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("planner request");
+    let planner_proposal = Proposal::new(
+        branch_point,
+        planner_request.id().expect("planner request id"),
+        domain.id().expect("domain id"),
+        ChoiceValue::Integer(IntegerValue::Unsigned(10)),
+        planner_step.policy(),
+        Some(planner_step.invocation()),
+        1,
+        planner_view,
+    )
+    .expect("planner proposal");
+    let proposed_step = PlannerStepProposal::new(
+        planner_step.invocation(),
+        PlannerState::new(planner_step.engine(), "scan-state", 1, vec![1, 2, 3])
+            .expect("next planner state"),
+        PlanningUsage {
+            branch_requests: 1,
+            proposals: 1,
+            input_objects: 8,
+            input_bytes: 4096,
+            fuel: 4,
+        },
+        GuidanceEvidence::new(BTreeMap::from([("score".to_owned(), 1_000)]))
+            .expect("proposal evidence"),
+        PlannerProposalDisposition::Issue {
+            selected: PlanningScanPosition::new(
+                branch_point,
+                planner_request.id().expect("planner request id"),
+            ),
+            branch_requests: vec![planner_request.clone()],
+            proposals: vec![planner_proposal.clone()],
+        },
+    )
+    .expect("pure planner result");
+    assert_eq!(
+        PlannerStepProposal::from_canonical_bytes(&proposed_step.canonical_bytes())
+            .expect("canonical pure planner result"),
+        proposed_step
+    );
+    assert!(matches!(
+        PlannerStepProposal::new_with_encoded_limit(
+            planner_step.invocation(),
+            PlannerState::new(planner_step.engine(), "scan-state", 1, Vec::new())
+                .expect("bounded result state"),
+            PlanningUsage {
+                branch_requests: 0,
+                proposals: 0,
+                input_objects: 1,
+                input_bytes: 1,
+                fuel: 1,
+            },
+            GuidanceEvidence::new(BTreeMap::new()).expect("bounded result evidence"),
+            PlannerProposalDisposition::NoWork,
+            1,
+        ),
+        Err(CampaignCodecError::LimitExceeded {
+            limit: "planner-step-proposal-encoded-bytes"
+        })
+    ));
+
+    let proposed_no_work = PlannerStepProposal::new(
+        planner_step.invocation(),
+        PlannerState::new(planner_step.engine(), "scan-state", 1, Vec::new())
+            .expect("no-work result state"),
+        PlanningUsage {
+            branch_requests: 0,
+            proposals: 0,
+            input_objects: 8,
+            input_bytes: 4096,
+            fuel: 1,
+        },
+        GuidanceEvidence::new(BTreeMap::new()).expect("no-work result evidence"),
+        PlannerProposalDisposition::NoWork,
+    )
+    .expect("pure no-work result");
+    assert_eq!(
+        PlannerStepProposal::from_canonical_bytes(&proposed_no_work.canonical_bytes())
+            .expect("canonical pure no-work result"),
+        proposed_no_work
+    );
+
+    assert!(
+        PlannerStepProposal::new(
+            planner_step.invocation(),
+            PlannerState::new(planner_step.engine(), "scan-state", 1, Vec::new())
+                .expect("duplicate result state"),
+            PlanningUsage {
+                branch_requests: 1,
+                proposals: 2,
+                input_objects: 8,
+                input_bytes: 4096,
+                fuel: 4,
+            },
+            GuidanceEvidence::new(BTreeMap::new()).expect("duplicate result evidence"),
+            PlannerProposalDisposition::Issue {
+                selected: PlanningScanPosition::new(
+                    branch_point,
+                    planner_request.id().expect("planner request id"),
+                ),
+                branch_requests: vec![planner_request],
+                proposals: vec![planner_proposal.clone(), planner_proposal],
+            },
+        )
+        .is_err()
     );
 
     let illegal = BranchRequest::new(

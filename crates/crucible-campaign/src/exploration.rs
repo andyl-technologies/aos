@@ -15,13 +15,15 @@ use crate::{
     BranchRequestId, CampaignCodecError, CampaignCommandId, CampaignPolicyId, CampaignViewId,
     CandidateGeneratorSpecId, ChoiceDomain, ChoiceDomainId, ChoiceOpportunity, ChoiceOpportunityId,
     ChoiceValue, ConfigurationArtifact, ConfigurationArtifactId, DebugSessionId, ExpansionStateId,
-    PlannerEngineId, PlannerInvocationId, PlannerStateId, PlannerStepId, PolicyArtifactId,
-    ProposalId, SelectionId,
+    PlannerEngineId, PlannerInvocationId, PlannerState, PlannerStateId, PlannerStepId,
+    PolicyArtifactId, ProposalId, SelectionId,
 };
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
+const PLANNER_STEP_SCHEMA_VERSION: u32 = 2;
 const MAX_FINITE_VALUES: usize = 4096;
 const MAX_BRANCH_PATH_EDGES: usize = 65_536;
+const MAX_STEP_BRANCH_REQUESTS: usize = 4096;
 const MAX_STEP_PROPOSALS: usize = 4096;
 const MAX_GUIDANCE_TERMS: usize = 4096;
 const MAX_CONTINUATIONS: usize = 65_536;
@@ -52,7 +54,11 @@ fn add_cause_child(children: &mut Vec<(String, ContentId)>, cause: BranchRequest
 }
 
 fn require_schema(actual: u32) -> Result<(), CampaignCodecError> {
-    if actual == RECORD_SCHEMA_VERSION {
+    require_schema_version(actual, RECORD_SCHEMA_VERSION)
+}
+
+fn require_schema_version(actual: u32, expected: u32) -> Result<(), CampaignCodecError> {
+    if actual == expected {
         Ok(())
     } else {
         Err(CampaignCodecError::InvalidValue {

@@ -785,24 +785,68 @@ impl CampaignRepository {
         {
             return Err(integrity("planner-step-invocation-mismatch"));
         }
-        let source = self.read_branch_request(step.selected_source().content_id())?;
-        if source.branch_point() != step.selected_branch_point() {
-            return Err(integrity("planner-step-source-branch-point-mismatch"));
-        }
-        for proposal in step.issued_proposals() {
-            let proposal = self.read_proposal(proposal.content_id())?;
-            if proposal.request() != step.selected_source()
-                || proposal.planner_invocation() != Some(step.invocation())
-            {
-                return Err(integrity("planner-step-proposal-mismatch"));
+        match step.disposition() {
+            PlannerDisposition::ContinueScan { cursor } => {
+                if let Some(after) = cursor.after() {
+                    let source = self.read_branch_request(after.source().content_id())?;
+                    if source.branch_point() != after.branch_point() {
+                        return Err(integrity("planner-step-scan-cursor-branch-point-mismatch"));
+                    }
+                }
             }
+            PlannerDisposition::Issue {
+                selected,
+                issued_branch_requests,
+                issued_proposals,
+            } => {
+                let source = self.read_branch_request(selected.source().content_id())?;
+                if source.branch_point() != selected.branch_point() {
+                    return Err(integrity("planner-step-source-branch-point-mismatch"));
+                }
+                for request in issued_branch_requests {
+                    let request = self.read_branch_request(request.content_id())?;
+                    if request.cause() != BranchRequestCause::Planner(step.invocation()) {
+                        return Err(integrity("planner-step-branch-request-cause-mismatch"));
+                    }
+                }
+                for proposal in issued_proposals {
+                    let proposal = self.read_proposal(proposal.content_id())?;
+                    if proposal.request() != selected.source()
+                        || proposal.planner_invocation() != Some(step.invocation())
+                    {
+                        return Err(integrity("planner-step-proposal-mismatch"));
+                    }
+                }
+            }
+            PlannerDisposition::NoWork => {}
         }
-        self.require_record_kind(
+
+        let next_state_envelope = self.require_record_kind(
             step.next_state().content_id(),
             crate::CampaignRecordKind::PlannerState,
         )?;
+        let next_state = crate::codec::decode::<PlannerState>(next_state_envelope.body())?;
+        if next_state.id()? != step.next_state() || next_state.engine() != step.engine() {
+            return Err(integrity("planner-step-next-state-engine-mismatch"));
+        }
+
+        let accounting = step.accounting();
+        let budget = invocation.budget();
+        if accounting.branch_requests > u64::from(budget.branch_requests())
+            || accounting.proposals > u64::from(budget.proposals())
+            || accounting.fuel > budget.fuel()
+        {
+            return Err(integrity("planner-step-invocation-budget-exceeded"));
+        }
+
         if let Some(parent) = step.parent() {
-            self.require_record_kind(parent.content_id(), crate::CampaignRecordKind::PlannerStep)?;
+            let parent_envelope = self
+                .require_record_kind(parent.content_id(), crate::CampaignRecordKind::PlannerStep)?;
+            let parent_step = PlannerStep::from_canonical_bytes(parent_envelope.body())?;
+            if parent_step.id()? != parent || parent_step.next_state() != invocation.planner_state()
+            {
+                return Err(integrity("planner-step-parent-state-discontinuity"));
+            }
         }
         Err(integrity(
             "planner-step-coordinator-validation-is-not-implemented",

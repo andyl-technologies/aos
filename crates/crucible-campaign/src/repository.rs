@@ -25,9 +25,9 @@ use crate::{
     CandidateSource, ChoiceDomain, ChoiceDomainId, ChoiceGroup, ChoiceGroupId, ChoiceOpportunity,
     ChoiceOpportunityId, ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId,
     ControlRequest, ExpansionState, ExpansionStateId, MerkleMap, MerkleMapRoot, ObjectEnvelope,
-    PlannerInvocation, PlannerInvocationId, PlannerState, PlannerStep, PlannerStepId,
-    PolicyActivation, PolicyArtifact, Proposal, ScenarioArtifact, ScenarioArtifactId,
-    ScenarioDefId, SelectableDeclaration, SelectableId, Selection, SelectionId,
+    PlannerDisposition, PlannerInvocation, PlannerInvocationId, PlannerState, PlannerStep,
+    PlannerStepId, PolicyActivation, PolicyArtifact, Proposal, ScenarioArtifact,
+    ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, SelectableId, Selection, SelectionId,
 };
 
 const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;

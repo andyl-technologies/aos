@@ -183,16 +183,18 @@ pub struct PlannerRequest {
 pub struct PlannerStepProposal {
     pub invocation: PlannerInvocationId,
     pub next_state: PlannerState,
-    pub branch_requests: Vec<BranchRequest>,
-    pub proposals: Vec<Proposal>,
     pub usage_claim: PlanningUsage,
     pub explanation: GuidanceEvidence,
-    pub disposition: PlannerDisposition,
+    pub disposition: PlannerProposalDisposition,
 }
 
-pub enum PlannerDisposition {
+pub enum PlannerProposalDisposition {
     ContinueScan { cursor: PlanningScanCursor },
-    Issue,
+    Issue {
+        selected: PlanningScanPosition,
+        branch_requests: Vec<BranchRequest>,
+        proposals: Vec<Proposal>,
+    },
     NoWork,
 }
 ```
@@ -204,7 +206,11 @@ language-neutral data needed to interpret it. The bundle contains only objects
 reachable through the declared planning view and is limited by object count,
 bytes, depth, and planner fuel. The coordinator evaluates or invokes the engine,
 validates every returned domain/value/reference and budget, computes accounting
-itself, then records the accepted `PlannerStep`.
+itself, then records the accepted `PlannerStep`. `PlanningUsage` is retained as
+diagnostic planner output but never substitutes for coordinator accounting.
+The accepted step replaces by-value outputs with authenticated IDs and uses the
+corresponding closed `PlannerDisposition`; only its `Issue` variant names a
+selected source or semantic outputs.
 Planner code cannot issue commands directly. A future engine implemented in
 another language is a supervised replaceable component identified by its
 artifact, engine, protocol, and parameter versions.
