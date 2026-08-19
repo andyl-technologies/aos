@@ -15,6 +15,7 @@ mod authority;
 mod choice;
 mod codec;
 mod execution;
+mod executor_capability;
 mod exploration;
 mod identity;
 mod merkle;
@@ -41,6 +42,11 @@ pub use execution::{
     ExecutorClient, ExecutorClientError, ExecutorCompatibilityProfile, ExecutorRejection,
     ExecutorService, MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES, SubmitAttemptDisposition,
     SubmitAttemptRequest, SubmitAttemptResponse,
+};
+pub use executor_capability::{
+    DescribeExecutorRequest, ExecutorCapabilityService, ExecutorCapabilitySet,
+    ExecutorCapacityReport, ExecutorDescription, ExecutorMaterializationCapability,
+    ExecutorMaterializationLocality, WatchExecutorCapacityRequest,
 };
 pub use exploration::{
     Attempt, AttemptAdmission, AttemptAdmissionRole, AttemptStart, BranchBudget, BranchPath,

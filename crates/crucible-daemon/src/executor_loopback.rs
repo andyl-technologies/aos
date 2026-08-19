@@ -6,7 +6,9 @@
 //! ```text
 //! ExecutorLoopbackFrameV1 = magic[8] | kind:u8 | reserved[3] |
 //!                           body_length:u32be | canonical_body[body_length]
-//! kind = 1 (SubmitAttemptRequestV1) | 2 (SubmitAttemptResponseV1)
+//! kind = 1 (SubmitAttemptRequestV1) | 2 (SubmitAttemptResponseV1) |
+//!        3 (DescribeExecutorRequestV1) | 4 (ExecutorDescriptionV1) |
+//!        5 (WatchExecutorCapacityRequestV1) | 6 (ExecutorCapacityReportV1)
 //! ```
 //!
 //! Both sides enforce the same 4-KiB component-message bound before allocation.
@@ -20,14 +22,19 @@ use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
 use crucible_campaign::{
-    CampaignCodecError, ExecutorService, MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
-    SubmitAttemptRequest, SubmitAttemptResponse,
+    CampaignCodecError, DescribeExecutorRequest, ExecutorCapabilityService, ExecutorCapacityReport,
+    ExecutorDescription, ExecutorService, MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
+    SubmitAttemptRequest, SubmitAttemptResponse, WatchExecutorCapacityRequest,
 };
 
 const FRAME_MAGIC: &[u8; 8] = b"CRUCEX01";
 const FRAME_HEADER_BYTES: usize = 16;
 const SUBMIT_ATTEMPT_REQUEST_KIND: u8 = 1;
 const SUBMIT_ATTEMPT_RESPONSE_KIND: u8 = 2;
+const DESCRIBE_EXECUTOR_REQUEST_KIND: u8 = 3;
+const EXECUTOR_DESCRIPTION_KIND: u8 = 4;
+const WATCH_CAPACITY_REQUEST_KIND: u8 = 5;
+const EXECUTOR_CAPACITY_REPORT_KIND: u8 = 6;
 const DEFAULT_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
@@ -142,6 +149,53 @@ impl ExecutorService for LoopbackExecutorService {
     }
 }
 
+impl ExecutorCapabilityService for LoopbackExecutorService {
+    fn describe_executor(&mut self) -> Result<ExecutorDescription, Self::Error> {
+        let result = (|| {
+            write_frame(
+                &mut self.stream,
+                DESCRIBE_EXECUTOR_REQUEST_KIND,
+                &DescribeExecutorRequest::new().canonical_bytes(),
+                self.timeouts.write,
+            )?;
+            let response = read_frame(
+                &mut self.stream,
+                EXECUTOR_DESCRIPTION_KIND,
+                self.timeouts.read,
+            )?;
+            ExecutorDescription::from_canonical_bytes(&response).map_err(Into::into)
+        })();
+        if result.is_err() {
+            let _ = self.stream.shutdown(Shutdown::Both);
+        }
+        result
+    }
+
+    fn watch_capacity(
+        &mut self,
+        request: &WatchExecutorCapacityRequest,
+    ) -> Result<ExecutorCapacityReport, Self::Error> {
+        let result = (|| {
+            write_frame(
+                &mut self.stream,
+                WATCH_CAPACITY_REQUEST_KIND,
+                &request.canonical_bytes(),
+                self.timeouts.write,
+            )?;
+            let response = read_frame(
+                &mut self.stream,
+                EXECUTOR_CAPACITY_REPORT_KIND,
+                self.timeouts.read,
+            )?;
+            ExecutorCapacityReport::from_canonical_bytes(&response).map_err(Into::into)
+        })();
+        if result.is_err() {
+            let _ = self.stream.shutdown(Shutdown::Both);
+        }
+        result
+    }
+}
+
 /// Serves one strict executor request/response exchange on a Unix stream.
 ///
 /// A long-lived daemon calls this once per request on the same connection, or
@@ -199,6 +253,93 @@ fn serve_loopback_executor_inner<S: ExecutorService>(
         &response.canonical_bytes(),
         timeouts.write,
     )?;
+    Ok(())
+}
+
+/// Serves one submit, description, or capacity exchange on a Unix stream.
+///
+/// This is the general executor component dispatcher used after capability
+/// negotiation is enabled. The submit-only entry point remains available for
+/// narrow conformance tests.
+///
+/// # Errors
+///
+/// Returns [`LoopbackExecutorServerError::Protocol`] for an unknown operation,
+/// malformed request, invalid service response, or bounded socket failure.
+/// Returns [`LoopbackExecutorServerError::Service`] when the executor cannot
+/// produce the selected protocol response. Every error shuts down the stream.
+pub fn serve_loopback_executor_component_once<S: ExecutorCapabilityService>(
+    stream: &mut UnixStream,
+    service: &mut S,
+    timeouts: LoopbackExecutorTimeouts,
+) -> Result<(), LoopbackExecutorServerError<S::Error>> {
+    let result = serve_loopback_executor_component_inner(stream, service, timeouts);
+    if result.is_err() {
+        let _ = stream.shutdown(Shutdown::Both);
+    }
+    result
+}
+
+fn serve_loopback_executor_component_inner<S: ExecutorCapabilityService>(
+    stream: &mut UnixStream,
+    service: &mut S,
+    timeouts: LoopbackExecutorTimeouts,
+) -> Result<(), LoopbackExecutorServerError<S::Error>> {
+    configure_stream(stream, timeouts)?;
+    let (kind, body) = read_frame_any(stream, timeouts.read)?;
+    let (response_kind, response) = match kind {
+        SUBMIT_ATTEMPT_REQUEST_KIND => {
+            let request = SubmitAttemptRequest::from_canonical_bytes(&body)?;
+            let response = service
+                .submit_attempt(&request)
+                .map_err(LoopbackExecutorServerError::Service)?;
+            response.validate_for(&request)?;
+            (SUBMIT_ATTEMPT_RESPONSE_KIND, response.canonical_bytes())
+        }
+        DESCRIBE_EXECUTOR_REQUEST_KIND => {
+            DescribeExecutorRequest::from_canonical_bytes(&body)?;
+            let response = service
+                .describe_executor()
+                .map_err(LoopbackExecutorServerError::Service)?;
+            (EXECUTOR_DESCRIPTION_KIND, response.canonical_bytes())
+        }
+        WATCH_CAPACITY_REQUEST_KIND => {
+            let request = WatchExecutorCapacityRequest::from_canonical_bytes(&body)?;
+            let description = service
+                .describe_executor()
+                .map_err(LoopbackExecutorServerError::Service)?;
+            validate_capacity_request(&request, &description)?;
+            let response = service
+                .watch_capacity(&request)
+                .map_err(LoopbackExecutorServerError::Service)?;
+            response.validate_for(&description, request.after_sequence())?;
+            (EXECUTOR_CAPACITY_REPORT_KIND, response.canonical_bytes())
+        }
+        _ => {
+            return Err(LoopbackExecutorProtocolError::InvalidFrame {
+                reason: "unknown-executor-component-request-kind",
+            }
+            .into());
+        }
+    };
+    write_frame(stream, response_kind, &response, timeouts.write)?;
+    Ok(())
+}
+
+fn validate_capacity_request(
+    request: &WatchExecutorCapacityRequest,
+    description: &ExecutorDescription,
+) -> Result<(), CampaignCodecError> {
+    if request.daemon_epoch() != description.daemon_epoch() {
+        return Err(CampaignCodecError::InvalidValue {
+            reason: "watch capacity request daemon epoch is stale",
+        });
+    }
+    if request.capability_digest() != description.capabilities().digest() {
+        return Err(CampaignCodecError::InvalidValue {
+            reason: "watch capacity request capability digest is stale",
+        });
+    }
     Ok(())
 }
 
@@ -285,17 +426,25 @@ fn read_frame(
     expected_kind: u8,
     timeout: Duration,
 ) -> Result<Vec<u8>, LoopbackExecutorProtocolError> {
+    let (kind, body) = read_frame_any(stream, timeout)?;
+    if kind != expected_kind {
+        return Err(LoopbackExecutorProtocolError::InvalidFrame {
+            reason: "unexpected-message-kind",
+        });
+    }
+    Ok(body)
+}
+
+fn read_frame_any(
+    stream: &mut UnixStream,
+    timeout: Duration,
+) -> Result<(u8, Vec<u8>), LoopbackExecutorProtocolError> {
     let mut header = [0_u8; FRAME_HEADER_BYTES];
     let deadline = operation_deadline(timeout)?;
     read_exact_until(stream, &mut header, deadline)?;
     if &header[..FRAME_MAGIC.len()] != FRAME_MAGIC {
         return Err(LoopbackExecutorProtocolError::InvalidFrame {
             reason: "unsupported-frame-version",
-        });
-    }
-    if header[8] != expected_kind {
-        return Err(LoopbackExecutorProtocolError::InvalidFrame {
-            reason: "unexpected-message-kind",
         });
     }
     if header[9..12] != [0; 3] {
@@ -315,7 +464,7 @@ fn read_frame(
     }
     let mut body = vec![0; length];
     read_exact_until(stream, &mut body, deadline)?;
-    Ok(body)
+    Ok((header[8], body))
 }
 
 fn operation_deadline(timeout: Duration) -> Result<Instant, LoopbackExecutorProtocolError> {

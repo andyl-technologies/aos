@@ -186,6 +186,41 @@ pub enum ExecutorCapacityError {
     ZeroExecutionQuanta,
 }
 
+/// Process-local aggregate capacity remaining after active reservations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExecutorAvailability {
+    slots: u32,
+    vcpus: u32,
+    resident_bytes: u64,
+    disk_bytes: u64,
+}
+
+impl ExecutorAvailability {
+    /// Returns available concurrent-attempt slots.
+    #[must_use]
+    pub const fn slots(self) -> u32 {
+        self.slots
+    }
+
+    /// Returns available virtual CPUs.
+    #[must_use]
+    pub const fn vcpus(self) -> u32 {
+        self.vcpus
+    }
+
+    /// Returns available resident-memory bytes.
+    #[must_use]
+    pub const fn resident_bytes(self) -> u64 {
+        self.resident_bytes
+    }
+
+    /// Returns available writable-materialization bytes.
+    #[must_use]
+    pub const fn disk_bytes(self) -> u64 {
+        self.disk_bytes
+    }
+}
+
 /// One accepted assignment ready for the local execution worker.
 #[derive(Debug)]
 pub struct QueuedAttempt {
@@ -387,6 +422,27 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
     #[must_use]
     pub fn active_count(&self) -> usize {
         self.active.len()
+    }
+
+    /// Returns aggregate capacity remaining after current reservations.
+    #[must_use]
+    pub fn availability(&self) -> ExecutorAvailability {
+        let active = u32::try_from(self.active.len()).unwrap_or(u32::MAX);
+        ExecutorAvailability {
+            slots: self
+                .capacity
+                .maximum_concurrent_executions
+                .saturating_sub(active),
+            vcpus: self.capacity.maximum_vcpus.saturating_sub(self.used.vcpus),
+            resident_bytes: self
+                .capacity
+                .maximum_resident_bytes
+                .saturating_sub(self.used.resident_bytes),
+            disk_bytes: self
+                .capacity
+                .maximum_disk_bytes
+                .saturating_sub(self.used.disk_bytes),
+        }
     }
 
     /// Returns the number of accepted executions not yet taken by a worker.

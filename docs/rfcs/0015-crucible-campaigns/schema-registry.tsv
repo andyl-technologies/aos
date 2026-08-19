@@ -31,6 +31,10 @@ crucible.campaign.planner-submission	1	crucible-campaign::authority	component-me
 crucible.campaign.debugger-submission	1	crucible-campaign::authority	component-message	gate:component-contract
 crucible.campaign.submit-attempt-request	1	crucible-campaign::execution	component-message	gate:component-contract
 crucible.campaign.submit-attempt-response	1	crucible-campaign::execution	component-message	gate:component-contract
+crucible.campaign.describe-executor-request	1	crucible-campaign::executor_capability	component-message	gate:component-contract
+crucible.campaign.executor-description	1	crucible-campaign::executor_capability	component-message	gate:component-contract
+crucible.campaign.watch-executor-capacity-request	1	crucible-campaign::executor_capability	component-message	gate:component-contract
+crucible.campaign.executor-capacity-report	1	crucible-campaign::executor_capability	component-message	gate:component-contract
 crucible.executor.assignment-record	1	crucible-daemon::assignment_ledger	operational-record	gate:component-contract
 crucible.executor.attempt-state-record	2	crucible-daemon::assignment_ledger	operational-record	gate:component-contract
 crucible.executor.loopback-frame	1	crucible-daemon::executor_loopback	component-message	gate:component-contract

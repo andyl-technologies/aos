@@ -94,6 +94,36 @@ impl ExecutorCompatibilityProfile {
         }
     }
 
+    /// Returns the exact Crucible build/version identity.
+    #[must_use]
+    pub fn crucible_version(&self) -> &str {
+        &self.crucible_version
+    }
+
+    /// Returns the exact QEMU build identity.
+    #[must_use]
+    pub fn qemu_build(&self) -> &str {
+        &self.qemu_build
+    }
+
+    /// Returns the exact component protocol-version map.
+    #[must_use]
+    pub const fn protocol_versions(&self) -> &BTreeMap<String, u32> {
+        &self.protocol_versions
+    }
+
+    /// Returns the admitted scenario schema version.
+    #[must_use]
+    pub const fn scenario_schema(&self) -> u32 {
+        self.scenario_schema
+    }
+
+    /// Returns the admitted exact-closure schema version.
+    #[must_use]
+    pub const fn exact_closure_schema(&self) -> u32 {
+        self.exact_closure_schema
+    }
+
     /// Returns whether all compatibility fields exactly match a lineage.
     #[must_use]
     pub fn admits(&self, lineage: &CampaignLineage) -> bool {
@@ -102,6 +132,26 @@ impl ExecutorCompatibilityProfile {
             && self.protocol_versions == *lineage.protocol_versions()
             && self.scenario_schema == lineage.scenario_schema()
             && self.exact_closure_schema == lineage.exact_closure_schema()
+    }
+}
+
+impl Canonical for ExecutorCompatibilityProfile {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.crucible_version.encode(encoder);
+        self.qemu_build.encode(encoder);
+        self.protocol_versions.encode(encoder);
+        self.scenario_schema.encode(encoder);
+        self.exact_closure_schema.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Self::new(
+            String::decode(decoder)?,
+            String::decode(decoder)?,
+            decoder.map_bounded(256, "executor-protocol-version-count")?,
+            u32::decode(decoder)?,
+            u32::decode(decoder)?,
+        )
     }
 }
 
@@ -792,6 +842,47 @@ impl<S: ExecutorService> ExecutorClient<S> {
             .validate_for(request)
             .map_err(ExecutorClientError::InvalidResponse)?;
         Ok(response)
+    }
+}
+
+impl<S: crate::executor_capability::ExecutorCapabilityService> ExecutorClient<S> {
+    /// Fetches immutable capabilities and the current daemon epoch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecutorClientError::Service`] when the implementation cannot
+    /// produce a description.
+    pub fn describe_executor(
+        &mut self,
+    ) -> Result<crate::ExecutorDescription, ExecutorClientError<S::Error>> {
+        self.service
+            .describe_executor()
+            .map_err(ExecutorClientError::Service)
+    }
+
+    /// Fetches and validates the next volatile capacity report.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecutorClientError::Service`] when the implementation cannot
+    /// produce a report, or [`ExecutorClientError::InvalidResponse`] when the
+    /// report belongs to another daemon/capability set, fails to advance the
+    /// cursor, exceeds immutable ceilings, or advertises unsupported locality.
+    pub fn watch_capacity(
+        &mut self,
+        description: &crate::ExecutorDescription,
+        after_sequence: Option<u64>,
+    ) -> Result<crate::ExecutorCapacityReport, ExecutorClientError<S::Error>> {
+        let request = crate::WatchExecutorCapacityRequest::new(description, after_sequence)
+            .map_err(ExecutorClientError::InvalidResponse)?;
+        let report = self
+            .service
+            .watch_capacity(&request)
+            .map_err(ExecutorClientError::Service)?;
+        report
+            .validate_for(description, after_sequence)
+            .map_err(ExecutorClientError::InvalidResponse)?;
+        Ok(report)
     }
 }
 

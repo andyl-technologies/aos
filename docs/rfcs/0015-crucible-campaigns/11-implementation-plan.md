@@ -204,8 +204,8 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   The repository checkpoint now provides strict canonical planner/debugger
   submission messages with separate operational keys, public authority-specific
   direct adapters, zero-write authentication failure, and an exact replayable
-  choice-discovery owner required before branching. Loopback RPC, service-level
-  principal plumbing, and capability negotiation remain open. The executor
+  choice-discovery owner required before branching. Campaign/planner loopback
+  RPC and service-level principal plumbing remain open. The executor
   checkpoint now provides strict 4-KiB canonical `SubmitAttempt` request and
   response messages, nonzero operational assignment/execution/epoch IDs,
   explicit resource and retention fields, exact-request digest binding, stable
@@ -246,8 +246,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   selection/stop/candidate work through the session's live-backend capability,
   and tears the session down on every exit. Only explicitly typed availability
   failures retry; deterministic realization failures terminate.
-  The concrete driver, hot-fork realization, capability
-  service, full out-of-process campaign flight, and complete component
+  Canonical `DescribeExecutor` and cursor-bound `WatchCapacity` messages now
+  separate immutable compatibility/ceiling facts from daemon-epoch-scoped
+  availability and exact/hot locality. Checked direct and Unix-loopback clients
+  reject stale epochs, capability drift, non-advancing sequences, capacity
+  above immutable ceilings, and unsupported locality. The local supervisor
+  facade refuses startup unless advertised ceilings exactly equal enforced
+  slots, CPU, memory, disk, and execution-quanta limits. The concrete driver,
+  hot-fork realization, full out-of-process campaign flight, and complete component
   conformance gate remain open.
 - [x] **T-CAM-4.10** Replace repeated full-history validation on local owner
   mutations with bounded immutable validated-head/lifecycle checkpoints and

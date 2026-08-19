@@ -2,6 +2,7 @@
 
 #![allow(clippy::expect_used)]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
 use std::io::Write;
 use std::thread;
@@ -9,7 +10,9 @@ use std::time::Duration;
 
 use crucible_campaign::{
     AssignmentId, AttemptId, AttemptResourceLimits, CampaignLineageId, DaemonEpoch,
-    ExecutionRetentionIntent, ExecutorClient, ExecutorRejection, SubmitAttemptDisposition,
+    ExecutionRetentionIntent, ExecutorCapabilitySet, ExecutorClient, ExecutorCompatibilityProfile,
+    ExecutorDescription, ExecutorMaterializationCapability, ExecutorRejection,
+    SubmitAttemptDisposition,
 };
 
 use super::*;
@@ -30,6 +33,35 @@ impl ExecutorService for RejectingExecutor {
             },
         )
         .expect("bounded response"))
+    }
+}
+
+struct CapabilityExecutor {
+    description: ExecutorDescription,
+    report: ExecutorCapacityReport,
+}
+
+impl ExecutorService for CapabilityExecutor {
+    type Error = Infallible;
+
+    fn submit_attempt(
+        &mut self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<SubmitAttemptResponse, Self::Error> {
+        RejectingExecutor.submit_attempt(request)
+    }
+}
+
+impl ExecutorCapabilityService for CapabilityExecutor {
+    fn describe_executor(&mut self) -> Result<ExecutorDescription, Self::Error> {
+        Ok(self.description.clone())
+    }
+
+    fn watch_capacity(
+        &mut self,
+        _request: &WatchExecutorCapacityRequest,
+    ) -> Result<ExecutorCapacityReport, Self::Error> {
+        Ok(self.report.clone())
     }
 }
 
@@ -69,6 +101,52 @@ fn direct_and_loopback_services_return_identical_checked_responses() {
     server.join().expect("server thread");
 
     assert_eq!(loopback, direct);
+}
+
+#[test]
+fn direct_and_loopback_capability_negotiation_are_identical() {
+    let (description, report) = capability_fixture();
+    let mut direct = ExecutorClient::new(CapabilityExecutor {
+        description: description.clone(),
+        report: report.clone(),
+    });
+    let direct_description = direct.describe_executor().expect("direct description");
+    let direct_report = direct
+        .watch_capacity(&direct_description, Some(10))
+        .expect("direct capacity");
+
+    let (client_stream, mut server_stream) = UnixStream::pair().expect("loopback pair");
+    let server_description = description.clone();
+    let server_report = report.clone();
+    let server = thread::spawn(move || {
+        let mut service = CapabilityExecutor {
+            description: server_description,
+            report: server_report,
+        };
+        serve_loopback_executor_component_once(
+            &mut server_stream,
+            &mut service,
+            LoopbackExecutorTimeouts::default(),
+        )
+        .expect("serve description");
+        serve_loopback_executor_component_once(
+            &mut server_stream,
+            &mut service,
+            LoopbackExecutorTimeouts::default(),
+        )
+        .expect("serve capacity");
+    });
+    let mut loopback = ExecutorClient::new(
+        LoopbackExecutorService::new(client_stream).expect("configure client deadlines"),
+    );
+    let loopback_description = loopback.describe_executor().expect("loopback description");
+    let loopback_report = loopback
+        .watch_capacity(&loopback_description, Some(10))
+        .expect("loopback capacity");
+    server.join().expect("server thread");
+
+    assert_eq!(loopback_description, direct_description);
+    assert_eq!(loopback_report, direct_report);
 }
 
 #[test]
@@ -298,6 +376,47 @@ fn request(assignment_byte: u8) -> SubmitAttemptRequest {
         ExecutionRetentionIntent::RetainOnFailure,
     )
     .expect("request")
+}
+
+fn capability_fixture() -> (ExecutorDescription, ExecutorCapacityReport) {
+    let epoch = DaemonEpoch::from_bytes([0x71; 16]).expect("epoch");
+    let compatibility = ExecutorCompatibilityProfile::new(
+        "crucible-v1",
+        "qemu-build-v1",
+        BTreeMap::from([(String::from("control"), 1)]),
+        1,
+        1,
+    )
+    .expect("compatibility");
+    let capabilities = ExecutorCapabilitySet::new(
+        compatibility,
+        "x86_64",
+        BTreeSet::from([String::from("deterministic-tcg-v1")]),
+        BTreeSet::from([
+            ExecutorMaterializationCapability::ThinReplay,
+            ExecutorMaterializationCapability::ExactRestore,
+        ]),
+        4,
+        AttemptResourceLimits::new(4, 4096, 8192, 64).expect("resource ceiling"),
+        BTreeSet::from([crucible_campaign::CampaignHash::derive(
+            "crucible.test.executor-loopback-namespace.v1",
+            b"local",
+        )]),
+    )
+    .expect("capabilities");
+    let description = ExecutorDescription::new(epoch, capabilities).expect("description");
+    let report = ExecutorCapacityReport::new(
+        epoch,
+        description.capabilities().digest(),
+        11,
+        2,
+        2,
+        2048,
+        4096,
+        BTreeSet::new(),
+    )
+    .expect("capacity");
+    (description, report)
 }
 
 fn typed_id(tag: &str, kind: &str, byte: u8) -> String {
