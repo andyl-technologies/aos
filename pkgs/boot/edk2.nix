@@ -22,14 +22,13 @@
 ##!    bootstrap gcc (read from nix-support/orig-cc) plus binutils
 ##!    resolved from the bootstrap PATH.
 ##!
-##! Source comes from builtins.fetchGit with submodules=true (pinned
-##! rev, pure): OVMF compiles vendored submodule sources directly
-##! (openssl for BaseCryptLib, brotli for BaseTools' compressor, ...),
-##! so a release tarball — which omits submodules — is not sufficient,
-##! and pinning each submodule separately duplicates what the rev pin
-##! already guarantees. Precedent: fetchCargoDeps' gitDeps.
+##! Source comes from fixed-output archives for the pinned EDK2 revision and
+##! each top-level gitlink. OVMF compiles vendored submodule sources directly,
+##! while archive downloads avoid both evaluation-time Git access and the
+##! irrelevant nested Git histories included by a recursive clone.
 {
   mkDerivation,
+  fetchurl,
   bootstrapTools,
   gnumake,
   python3,
@@ -38,13 +37,128 @@
   util-linux,
 }: let
   version = "edk2-stable202602";
-  src = builtins.fetchGit {
-    url = "https://github.com/tianocore/edk2.git";
-    ref = "refs/tags/${version}";
-    rev = "b7a715f7c03c45c6b4575bf88596bfd79658b8ce";
-    submodules = true;
-    shallow = true;
+  src = fetchurl {
+    urls = [
+      "https://github.com/tianocore/edk2/archive/b7a715f7c03c45c6b4575bf88596bfd79658b8ce.tar.gz"
+    ];
+    hash = "sha256-pd+cG+mxfePYMY/SgAN4DPZ56yujyuM6ahiQ1/YNJ90=";
   };
+  brotliSrc = fetchurl {
+    urls = [
+      "https://github.com/google/brotli/archive/e230f474b87134e8c6c85b630084c612057f253e.tar.gz"
+    ];
+    hash = "sha256-qbo5QCZ95d1zWBpHwugbPrHh32pwQTjFmQINZvNnepI=";
+  };
+  submoduleSources = [
+    {
+      path = "BaseTools/Source/C/BrotliCompress/brotli";
+      src = brotliSrc;
+    }
+    {
+      path = "CryptoPkg/Library/MbedTlsLib/mbedtls";
+      src = fetchurl {
+        urls = [
+          "https://github.com/ARMmbed/mbedtls/archive/e185d7fd85499c8ce5ca2a54f5cf8fe7dbe3f8df.tar.gz"
+        ];
+        hash = "sha256-BS3M86QE3OJaRnxv4ESwyFjWCazo6IO1np39R5/dRSg=";
+      };
+    }
+    {
+      path = "CryptoPkg/Library/OpensslLib/openssl";
+      src = fetchurl {
+        urls = [
+          "https://github.com/openssl/openssl/archive/aea7aaf2abb04789f5868cbabec406ea43aa84bf.tar.gz"
+        ];
+        hash = "sha256-DbLFiI54s+4Q31mRyb0Emiyg62k7PESgXzB4qQrdNJo=";
+      };
+    }
+    {
+      path = "MdeModulePkg/Library/BrotliCustomDecompressLib/brotli";
+      src = brotliSrc;
+    }
+    {
+      path = "MdeModulePkg/Universal/RegularExpressionDxe/oniguruma";
+      src = fetchurl {
+        urls = [
+          "https://github.com/kkos/oniguruma/archive/4ef89209a239c1aea328cf13c05a2807e5c146d1.tar.gz"
+        ];
+        hash = "sha256-cL/tl+6DkPWsCP6ijj6TCjsz34ccb8GIjI1DbGxrdV0=";
+      };
+    }
+    {
+      path = "MdePkg/Library/BaseFdtLib/libfdt";
+      src = fetchurl {
+        urls = [
+          "https://github.com/devicetree-org/pylibfdt/archive/cfff805481bdea27f900c32698171286542b8d3c.tar.gz"
+        ];
+        hash = "sha256-EZORD0df3gfzzU/hwaNT1puM7bV0lnE0g4/NyCCNIk4=";
+      };
+    }
+    {
+      path = "MdePkg/Library/MipiSysTLib/mipisyst";
+      src = fetchurl {
+        urls = [
+          "https://github.com/MIPI-Alliance/public-mipi-sys-t/archive/370b5944c046bab043dd8b133727b2135af7747a.tar.gz"
+        ];
+        hash = "sha256-n9o7mng0OrK+bwbOY5ZTbn4GWrrCm0fI6y5Cy7TE8As=";
+      };
+    }
+    {
+      path = "RedfishPkg/Library/JsonLib/jansson";
+      src = fetchurl {
+        urls = [
+          "https://github.com/akheron/jansson/archive/e9ebfa7e77a6bee77df44e096b100e7131044059.tar.gz"
+        ];
+        hash = "sha256-55NcDZHW0i9t7nEKJrI+Io7MT+jvfo91ZVjDWZ9ow7Q=";
+      };
+    }
+    {
+      path = "SecurityPkg/DeviceSecurity/SpdmLib/libspdm";
+      src = fetchurl {
+        urls = [
+          "https://github.com/DMTF/libspdm/archive/1be116c7b7713fa9003e1bd53b53a34758549eb9.tar.gz"
+        ];
+        hash = "sha256-WSde3G+1bGKTBebwH+Fz3fnwZc3plfGLiaZOEo6uhgQ=";
+      };
+    }
+    {
+      path = "UnitTestFrameworkPkg/Library/CmockaLib/cmocka";
+      src = fetchurl {
+        urls = [
+          "https://github.com/tianocore/edk2-cmocka/archive/1cc9cde3448cdd2e000886a26acf1caac2db7cf1.tar.gz"
+        ];
+        hash = "sha256-Wc1LgauvrjXZSsXZHPSuWwUSLmiHE81ttR5eTO9HHY8=";
+      };
+    }
+    {
+      path = "UnitTestFrameworkPkg/Library/GoogleTestLib/googletest";
+      src = fetchurl {
+        urls = [
+          "https://github.com/google/googletest/archive/86add13493e5c881d7e4ba77fb91c1f57752b3a4.tar.gz"
+        ];
+        hash = "sha256-PDCVSIuTaxRTjcpk1+aLzeCaihjSoypHtZh37/A0BAM=";
+      };
+    }
+    {
+      path = "UnitTestFrameworkPkg/Library/SubhookLib/subhook";
+      src = fetchurl {
+        urls = [
+          "https://github.com/tianocore/edk2-subhook/archive/83d4e1ebef3588fae48b69a7352cc21801cb70bc.tar.gz"
+        ];
+        hash = "sha256-9lsubdME4ZGF11FlK9XrxyqB1QO/VCA3rLNFDkOrwJU=";
+      };
+    }
+  ];
+  unpackSubmodules = builtins.concatStringsSep "\n" (
+    builtins.map (
+      source: ''
+        rm -rf "${source.path}"
+        mkdir -p "${source.path}"
+        tar xf "${source.src}" --strip-components=1 -C "${source.path}"
+      ''
+    )
+    submoduleSources
+  );
 in
   mkDerivation {
     pname = "edk2";
@@ -64,9 +178,11 @@ in
       {
         name = "unpack";
         script = ''
-          cp -r $src edk2
-          chmod -R u+w edk2
+          mkdir edk2
+          tar xf "$src" --strip-components=1 -C edk2
           cd edk2
+          ${unpackSubmodules}
+          chmod -R u+w .
         '';
       }
       {
