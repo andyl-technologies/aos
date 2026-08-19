@@ -1684,10 +1684,13 @@ in {
       ).strip()
       target.succeed(f"""
           set -eu
+          mkdir -p /run/aos-uki-b-media
+          {MOUNT} -t ext4 -o ro /dev/disk/by-label/aos-uki-b /run/aos-uki-b-media
           {MOUNT} -o remount,rw /boot
-          cp /boot/EFI/Linux/{stable_name} /boot/EFI/Linux/aos-corrupt-slot-b+1.efi
+          cp /run/aos-uki-b-media/uki-b.efi /boot/EFI/Linux/aos-corrupt-slot-b+1.efi
           sync /boot
           {MOUNT} -o remount,ro /boot
+          {UMOUNT} /run/aos-uki-b-media
           printf X | dd of=/dev/disk/by-partlabel/root-b bs=1 seek=4096 conv=notrunc
           sync /dev/disk/by-partlabel/root-b
           {BOOTCTL} set-oneshot aos-corrupt-slot-b.efi
