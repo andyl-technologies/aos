@@ -627,7 +627,14 @@
       catalogName = "crucible-active-tcg-kick-boundary";
       class = "D";
       enforces = "DET-1,DET-29,QEMU-43";
-      capability = "an explicit atomic TCG execution flag defers generic host kicks only during guest execution, preserving startup and between-slice liveness";
+      capability = "state-free sim kicks request exit at the next deterministic translation-block boundary while committed transitions preserve immediate liveness";
+    }
+    {
+      file = "0091-crucible-canonical-rr-genesis-cursor.patch";
+      catalogName = "crucible-canonical-rr-genesis-cursor";
+      class = "D";
+      enforces = "DET-1,QFP-REG-1,QFP-STATE-2";
+      capability = "exact raw-zero observers read the unique next RR coordinate without mutating scheduler state while every later invalid cursor remains rejected";
     }
   ];
 

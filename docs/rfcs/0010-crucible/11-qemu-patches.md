@@ -1343,12 +1343,11 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 - **Enforces:** [DET-1], [DET-29], [QEMU-43].
 - **Mechanism:** QEMU's generic RR vCPU kick keeps its immediate all-vCPU
   `cpu_exit()` loop unless precise Crucible sim mode has a nonzero pinned RR
-  quantum, guest execution has begun, more than one vCPU exists, and the
-  serialized RR loop has published the explicit TCG execution flag added by
-  patch 0090. In that bounded active
-  slice, host latency hints do
-  not end a running translation block. Between slices, the upstream exit
-  request is retained so an idle or waiting RR thread re-enters its run loop.
+  quantum. In that mode, patch 0090 converts state-free latency hints into a
+  soft all-vCPU `exit_request`: the current translation block completes at its
+  deterministic endpoint and `cpu_exec` observes the request before starting
+  another block. The host arrival therefore cannot asynchronously select an
+  instruction endpoint, while QEMU still services the requested work promptly.
   Already-committed stop,
   unplug, halted, stopped, and
   interrupt-request states and an admitted exact terminal pause retain an
@@ -1357,12 +1356,13 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   Native control, wakeup, terminal observation, and published interrupt
   semantics remain live without allowing a state-free host arrival to choose a
   guest coordinate.
-- **Genesis progress:** the initial `cpu_resume()` clears stop flags before its
-  kick starts the RR thread. QEMU therefore retains upstream kick behavior at
-  icount zero, where no guest coordinate exists to perturb. After the first
-  instruction, each multi-vCPU active slice's finite pinned quantum supplies
-  its deterministic return boundary. Single-vCPU execution retains upstream
-  kicks because host timing cannot select an alternate RR owner.
+- **Genesis progress:** `qemu_cpu_kick()` broadcasts the halt condition before
+  calling the accelerator hook. Until the RR thread records that its initial
+  stopped wait is complete, the hook does not treat the initialization-time
+  `stopped` bit as a committed lifecycle transition. The condition broadcast
+  still starts the thread, and the soft request is normalized before first
+  execution. Raw observed icount, QEMU runstate, and `rr_current_cpu` are not
+  used as execution proxies.
 - **Micro-test:** the production four-vCPU fingerprint workload compares two
   exact-horizon executions while only the second has sustained host CPU load.
   It requires equal canonical all-vCPU, RR, deterministic-IPI, RAM, and device
@@ -1370,14 +1370,11 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   negative control. The production single-vCPU fingerprint gate separately
   proves boot, exact-horizon stop, checkpoint, and replay progress with the
   pinned quantum.
-- **Inertness:** [PATCH-3](a), [PATCH-3](c) — zero-icount startup, non-sim
-  accelerators, imprecise icount, configurations without a pinned quantum,
-  single-vCPU guests, and between-slice waits execute the existing kick loop
-  unchanged. The guarded
-  path changes scheduling only during an active slice for which deterministic
-  sim already guarantees a finite return. Admitted terminal observation and
-  committed control and interrupt state are handled immediately in that
-  guarded mode.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — non-sim accelerators, imprecise
+  icount, and configurations without a pinned quantum execute the existing
+  kick loop unchanged. In bounded sim mode, only state-free generic kicks use
+  the soft between-TB exit; admitted terminal observation and committed
+  control, halt, unplug, stop, and interrupt state are handled immediately.
 - **Risk:** D.
 
 ### crucible-exact-boundary-vcpu-introspection — observe checkpoint CPU state
@@ -1400,24 +1397,46 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   ordinary QEMU or unowned plugin context executes the prior rejection rules.
 - **Risk:** D.
 
-### crucible-active-tcg-kick-boundary — prove active guest execution
+### crucible-active-tcg-kick-boundary — defer kicks to deterministic TB exits
 
 - **Patch:** `0090-crucible-active-tcg-kick-boundary.patch`.
 - **Enforces:** [DET-1], [DET-29], [QEMU-43].
-- **Mechanism:** the RR thread publishes a process-local atomic flag immediately
-  before entering `tcg_cpu_exec()` or `cpu_exec_step_atomic()` and clears it
-  immediately after guest execution returns. The generic-kick guard from patch
-  0088 consumes that flag instead of inferring execution from
-  `rr_current_cpu`, which QEMU publishes before runnable admission.
+- **Mechanism:** state-free generic kicks in precise bounded sim mode set each
+  RR vCPU's atomic `exit_request` without setting `icount_decr.high`. A running
+  vCPU therefore finishes the current deterministic translation block and
+  exits before another block begins; an idle RR thread is already awakened by
+  `qemu_cpu_kick()`'s condition broadcast. The RR thread separately publishes
+  completion of its initial stopped wait so initialization state cannot be
+  mistaken for a committed stop. Stateful transitions retain `cpu_exit()`.
 - **Micro-test:** the production S1, four-vCPU fingerprint, and live-network
   gates prove startup, between-slice progress, deterministic active-slice
   boundaries, terminal pause, and device wake liveness. Structural checks
-  require both TCG entry paths to bracket execution and require the kick
-  predicate to consume the new flag.
-- **Inertness:** [PATCH-3](a), [PATCH-3](c) — the flag changes kick behavior only
-  inside the existing precise sim-mode, pinned-quantum, post-genesis guard.
-  Startup, exact-boundary work, and every between-slice interval retain the
-  upstream all-vCPU exit path.
+  require the soft atomic request, forbid an asynchronous decrementer write,
+  and require the initial-wait completion proof.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — the soft exit applies only inside
+  the existing precise sim-mode, pinned-quantum guard. Every other accelerator
+  and icount configuration retains the upstream all-vCPU `cpu_exit()` path;
+  committed lifecycle and interrupt transitions retain it within the guard.
+- **Risk:** D.
+
+### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
+
+- **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
+- **Enforces:** [DET-1], [QFP-REG-1], [QFP-STATE-2].
+- **Mechanism:** at the exact deterministic raw-zero boundary before QEMU's
+  first runnable selection, `qemu_plugin_rr_cursor()` maps the intentionally
+  unowned serialized cursor to its unique next scheduler coordinate: vCPU 0,
+  position 0. The read does not mutate `TimersState`. An invalid owner at any
+  later coordinate or outside the exact boundary remains rejected.
+- **Micro-test:** the production live-world lifecycle captures canonical
+  genesis state in a fresh QEMU process, executes the selected lossy-network
+  branch, and requires its decisions to match the branch found before a durable
+  checkpoint and exact next-quantum restore. Structural checks pin the raw-zero
+  and position-zero conjunction and retain the non-genesis negative control.
+- **Inertness:** [PATCH-3](c) — the new success case requires the existing
+  exact-boundary scope, invalid serialized owner, raw icount zero, and cursor
+  position zero simultaneously. Every post-genesis and ordinary unowned read
+  follows the prior fail-closed path.
 - **Risk:** D.
 
 ### crucible-whitebox-guest-write — return synchronous doorbell replies

@@ -403,11 +403,10 @@ produce live patched-QEMU architectural or device evidence.
   path outside sim mode.
 - [x] **T-QEMU-0088** Implement
   [`crucible-deterministic-host-kick-boundary`](14-qemu-fault-patches/39-deterministic-host-kick-boundary.md):
-  prevent host latency hints from ending a running translation block in bounded
-  sim mode while an RR execution slice is active, retain immediate exits for
-  admitted exact terminal observation and committed control and interrupt
-  state, and retain upstream kicks at zero icount and between slices for RR
-  progress.
+  prevent host latency hints from asynchronously ending a running translation
+  block in bounded sim mode, defer state-free exits to the next deterministic
+  block boundary, and retain immediate exits for admitted exact terminal
+  observation and committed control and interrupt state.
 - [x] **T-QEMU-0089** Implement
   [`crucible-exact-boundary-vcpu-introspection`](14-qemu-fault-patches/40-exact-boundary-vcpu-introspection.md):
   admit quiescent all-vCPU register files and the committed serialized RR cursor
@@ -415,9 +414,16 @@ produce live patched-QEMU architectural or device evidence.
   vCPU, while retaining fail-closed rejection for arbitrary unowned contexts.
 - [x] **T-QEMU-0090** Implement
   [`crucible-active-tcg-kick-boundary`](14-qemu-fault-patches/41-active-tcg-kick-boundary.md):
-  prove active guest execution with an explicit atomic TCG ownership flag,
-  defer state-free host kicks only while that flag is published, and preserve
-  upstream startup, exact-boundary, and between-slice progress.
+  convert state-free generic kicks into soft exit requests observed between
+  deterministic translation blocks, preserve the initial condition-variable
+  wake, and distinguish pre-start `stopped` state from committed lifecycle
+  transitions without using runstate, raw icount, or scheduler pointers as
+  execution proxies.
+- [x] **T-QEMU-0091** Implement
+  [`crucible-canonical-rr-genesis-cursor`](14-qemu-fault-patches/42-canonical-rr-genesis-cursor.md):
+  expose the unique vCPU-zero, position-zero scheduler coordinate at the exact
+  raw-zero preselection boundary without mutating serialized scheduler state,
+  while rejecting every later invalid or arbitrarily unowned cursor.
 - [x] **T-QEMU-0060** Implement
   [`crucible-block-typed-errors`](14-qemu-fault-patches/14-block-typed-errors.md):
   the closed block result ABI, exact Linux errno translation, malformed-result

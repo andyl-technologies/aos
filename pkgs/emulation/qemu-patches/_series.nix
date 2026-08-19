@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "b402b7a13009bd85882862be4cf96338e917cc0650ef1ff87f9427f3f0a9fba7";
+  patchBranchBundleSha256 = "5df5662b377b33c5eca2a0872f0a2593a834a4567f88b1fa492ab9c4ea83eaf7";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "eb062df8c94afc5c82a0931e5f52bef42890a495";
+  patchBranchHeadCommit = "4f708a7c350df4205317fa3586f51b54728f4de7";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -828,13 +828,23 @@ let
     }
     {
       file = "0090-crucible-active-tcg-kick-boundary.patch";
-      branchSubject = "crucible: prove active TCG kick boundary";
-      branchCommit = "eb062df8c94afc5c82a0931e5f52bef42890a495";
-      branchTree = "6322c0d5fce2365d7fd75d7bb653c4c938018824";
+      branchSubject = "crucible: defer generic kicks to TCG boundaries";
+      branchCommit = "bf887eacb23cd2694e0c5dd6f69b1bb1fbc12820";
+      branchTree = "6bbc6b736a157cbbc62092c925ac4a4ef3e16bd9";
       catalogName = "crucible-active-tcg-kick-boundary";
       class = "D";
       enforces = "DET-1,DET-29,QEMU-43";
-      capability = "an explicit atomic TCG execution flag defers generic host kicks only during multi-vCPU guest execution, preserving single-vCPU, startup, and between-slice liveness";
+      capability = "state-free sim kicks request exit at the next deterministic translation-block boundary while committed transitions preserve immediate liveness";
+    }
+    {
+      file = "0091-crucible-canonical-rr-genesis-cursor.patch";
+      branchSubject = "crucible: expose the canonical RR genesis cursor";
+      branchCommit = "4f708a7c350df4205317fa3586f51b54728f4de7";
+      branchTree = "4762a69a59020bf84d761d6f2a1e18d3df4856e9";
+      catalogName = "crucible-canonical-rr-genesis-cursor";
+      class = "D";
+      enforces = "DET-1,QFP-REG-1,QFP-STATE-2";
+      capability = "exact raw-zero observers read the unique next RR coordinate without mutating scheduler state while every later invalid cursor remains rejected";
     }
   ];
   catalogOnlyCapabilities = [
