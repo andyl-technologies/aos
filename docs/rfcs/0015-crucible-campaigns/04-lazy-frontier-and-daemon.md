@@ -383,3 +383,63 @@ budget, create a graph child, or count as an admitted continuation value.
   source-value order. Generated proposal issuance MUST fail closed unless the
   named deterministic generator owner reproduces the value from authenticated
   campaign facts.
+
+## 04.13 Atomic attempt admission
+
+`AdmitProposal(name, expected_snapshot, proposal, selection, path, attempt)` is
+the sole-writer transition that gives one authoritative proposal exactly one
+admission disposition. Exact replay by `ProposalId` precedes stale-precondition
+rejection. The coordinator authenticates the proposal's exploration membership,
+selection, branch path, semantic attempt, request, and stop condition, then
+recomputes the role rather than accepting a caller-supplied role or ordinal.
+
+During the transaction-first implementation stage, only a genesis-parent path
+of exactly one selected edge is admitted. Non-genesis branch paths remain
+fail-closed until observation incorporation maintains the authoritative parent
+configuration-to-path index used to authenticate the prefix.
+
+If no execution basis exists for `AttemptId`, the transition spends one unit of
+the proposal request's `maximum_attempts`, assigns the next one-based global
+`AdmissionOrdinal`, and publishes `ExecutionBasis`. The request-local count is
+computed with a bounded page scan that counts only entries whose Merkle key is
+the canonical `accounting.attempt-admission[AttemptAdmissionId]` key. Repeated
+values stored under other accounting indexes therefore cannot inflate the
+count. If an execution basis already exists, the transition publishes
+`AdditionalCause` and spends no attempt budget or ordinal.
+
+Every admission adds these two canonical accounting entries:
+
+```text
+accounting.attempt-admission[AttemptAdmissionId] = AttemptAdmission
+accounting.proposal-admission[ProposalId] = AttemptAdmission
+```
+
+A new execution basis additionally adds:
+
+```text
+accounting.attempt[AttemptId] = Attempt
+accounting.attempt-execution-basis[AttemptId] = AttemptAdmission
+accounting.admission-ordinal[AdmissionOrdinal] = AttemptAdmission
+accounting.admission-sequence[] = AttemptAdmission
+```
+
+The sequence entry is the only replacement: it points to the latest execution
+basis. Every other admission key is insertion-only. An imported successor is
+valid only when owner recomputation derives the identical admission bytes and
+its accounting root equals exactly these upserts over the parent. Exploration,
+graph, observations, and every other root remain unchanged. Admission does not
+create a graph child; that still requires an authenticated execution result and
+observation.
+
+- **[LAZY-25]** One proposal MUST have exactly one immutable admission
+  disposition. Replay with another `AttemptId` is an integrity error.
+- **[LAZY-26]** One semantic attempt MUST have exactly one `ExecutionBasis` and
+  one global ordinal. Later convergent proposals MUST be `AdditionalCause` and
+  MUST NOT spend attempt budget or advance the admission sequence.
+- **[LAZY-27]** Attempt-budget projection MUST stream bounded Merkle pages and
+  authenticate canonical admission keys; it MUST NOT infer counts from repeated
+  values under heterogeneous accounting indexes.
+- **[LAZY-28]** Admission successors MUST be exact accounting-root deltas and
+  MUST preserve the campaign basis and every unrelated root. The first global
+  execution basis has ordinal one; every later basis uses the checked successor
+  of the prior sequence entry.

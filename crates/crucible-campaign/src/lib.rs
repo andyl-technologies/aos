@@ -63,8 +63,8 @@ pub use policy::{
     RetentionPolicy, WeightedGenerator,
 };
 pub use repository::{
-    BranchRequestResult, CampaignCommandResult, CampaignHead, CampaignRepository,
-    CampaignRepositoryError, ProposalResult, ResolvedSelection,
+    AttemptAdmissionResult, BranchRequestResult, CampaignCommandResult, CampaignHead,
+    CampaignRepository, CampaignRepositoryError, ProposalResult, ResolvedSelection,
 };
 
 #[cfg(test)]

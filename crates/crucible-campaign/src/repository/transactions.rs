@@ -351,6 +351,140 @@ impl CampaignRepository {
         }
     }
 
+    /// Admits or deduplicates one proposal-backed semantic attempt.
+    ///
+    /// The coordinator derives the immutable admission role from authoritative
+    /// indexes: the first semantic attempt receives the next global ordinal and
+    /// spends request attempt budget; a later convergent proposal becomes an
+    /// additional cause and spends no attempt budget. Exact replay precedes stale
+    /// precondition rejection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale input, an unauthoritative or already-disposed
+    /// proposal, invalid selection/path/attempt closure, exhausted attempt budget,
+    /// inconsistent dedup indexes, publication failure, or final ref conflict.
+    #[allow(clippy::too_many_arguments)]
+    pub fn admit_proposal(
+        &self,
+        name: &str,
+        expected_snapshot: CampaignSnapshotId,
+        proposal: ProposalId,
+        selection: &Selection,
+        path: &BranchPath,
+        attempt: &Attempt,
+    ) -> Result<AttemptAdmissionResult, CampaignRepositoryError> {
+        let _guard = self.lock_mutation()?;
+        let campaign_ref = campaign_ref(name)?;
+        let current_content = self
+            .refs
+            .read_ref(&campaign_ref)?
+            .ok_or(CampaignRepositoryError::NotFound)?;
+        let current = self.read_snapshot(current_content)?;
+        self.validate_complete_head(current_content)?;
+
+        let selection_id = selection.id()?;
+        let path_id = path.id()?;
+        let AttemptStart::Branch {
+            selection: attempt_selection,
+            ..
+        } = attempt.start()
+        else {
+            return Err(integrity("proposal-admission-attempt-is-discovery"));
+        };
+        if attempt_selection != selection_id || attempt.path() != path_id {
+            return Err(integrity("proposal-admission-input-closure-mismatch"));
+        }
+        let attempt_id = attempt.id()?;
+        if let Some(result) = self.find_attempt_admission_result(current_content, proposal)? {
+            if result.attempt != attempt_id {
+                return Err(integrity("proposal-admission-replay-attempt-mismatch"));
+            }
+            return Ok(result);
+        }
+
+        let current_id = CampaignSnapshotId::from_content_id(current_content)?;
+        if expected_snapshot != current_id {
+            return Err(CampaignRepositoryError::Stale {
+                expected: expected_snapshot,
+                current: current_id,
+            });
+        }
+
+        let selection_content = self.put_selection(selection)?;
+        if selection_content != selection_id.content_id() {
+            return Err(integrity("selection-publication-id-mismatch"));
+        }
+        let path_content = self.put_branch_path(path)?;
+        if path_content != path_id.content_id() {
+            return Err(integrity("branch-path-publication-id-mismatch"));
+        }
+        let attempt_content = self.put_attempt(attempt)?;
+        if attempt_content != attempt_id.content_id() {
+            return Err(integrity("attempt-publication-id-mismatch"));
+        }
+
+        let admission = self.expected_proposal_admission(&current, proposal, attempt_id)?;
+        let admission_id = admission.id()?;
+        let admission_content = self.put_attempt_admission(&admission)?;
+        if admission_content != admission_id.content_id() {
+            return Err(integrity("attempt-admission-publication-id-mismatch"));
+        }
+        self.read_attempt_admission(admission_content)?;
+
+        let upserts = attempt_admission_upserts(admission_content, admission)?;
+        for key in upserts
+            .keys()
+            .copied()
+            .filter(|key| *key != admission_sequence_key())
+        {
+            if self
+                .merkle
+                .get(current.snapshot.roots().accounting, key)?
+                .is_some()
+            {
+                return Err(integrity(
+                    "attempt-admission-index-has-no-ancestry-transition",
+                ));
+            }
+        }
+        let mut accounting = current.snapshot.roots().accounting;
+        for (key, value) in &upserts {
+            accounting = self.merkle.insert(accounting, *key, *value)?.content_id();
+        }
+
+        let fact = CampaignFact::AttemptAdmitted(admission_id);
+        let transition_content = self.put_fact(&fact)?;
+        let mut roots = current.snapshot.roots();
+        roots.accounting = accounting;
+        let next = CampaignSnapshot::successor(
+            current_id,
+            current.snapshot.lineage(),
+            current.snapshot.active_policy(),
+            roots,
+            crate::CampaignFactId::from_content_id(transition_content)?,
+        )?;
+        let next_content = self.put_snapshot(&next)?;
+        self.validate_complete_head(next_content)?;
+
+        match self
+            .refs
+            .compare_exchange(&campaign_ref, Some(current_content), next_content)?
+        {
+            RefCasOutcome::Advanced { .. } => Ok(AttemptAdmissionResult {
+                prior_snapshot: current_id,
+                new_snapshot: CampaignSnapshotId::from_content_id(next_content)?,
+                proposal,
+                attempt: attempt_id,
+                admission: admission_id,
+                replayed: false,
+            }),
+            RefCasOutcome::Conflict { current, .. } => {
+                Err(CampaignRepositoryError::RefConflict { current })
+            }
+        }
+    }
+
     /// Applies one idempotent lifecycle, policy, or budget command.
     ///
     /// Command lookup happens before stale-precondition checking. Replaying the
