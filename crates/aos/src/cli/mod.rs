@@ -25,6 +25,7 @@ mod package;
 mod prefetch;
 mod server;
 mod test;
+mod vm;
 
 pub use cache::*;
 pub use hub::*;
@@ -33,6 +34,7 @@ pub use image::*;
 pub use package::*;
 pub use server::*;
 pub use test::*;
+pub use vm::*;
 
 use std::path::PathBuf;
 
@@ -235,6 +237,11 @@ pub enum Commands {
     Image {
         #[command(subcommand)]
         command: ImageCommand,
+    },
+    /// Run downloaded AOS images locally with QEMU
+    Vm {
+        #[command(subcommand)]
+        command: VmCommand,
     },
     /// Profile a closure for leaked build/dev artifacts
     Profile {
