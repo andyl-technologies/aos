@@ -479,6 +479,14 @@ may recover publication under a new execution identity, but the committed
 observation ID remains fixed. Version 2 readers accept legacy version 1
 running/completed/canceled records; new writes use version 2.
 
+The local Crucible execution adapter owns two nested payload schemas. Scenario
+payload version 1 is the strict `ScenarioDefForm` compact-binary V5 encoding;
+configuration payload version 1 is the strict `Schedule` compact-binary V1
+encoding. Before VM launch the adapter decodes both, authenticates the exact
+scenario-artifact reference, reconstructs `Configuration`, and requires its
+re-derived `ScenarioDefId` and `ConfigurationId` to equal the campaign record.
+Unsupported nested schemas and identity drift fail before execution.
+
 A mutable compare-and-swap error may be commit-indeterminate because rename
 precedes directory fsync. The supervisor reloads the exact state, and a
 successful directory reload re-fsyncs its containing directory before it can

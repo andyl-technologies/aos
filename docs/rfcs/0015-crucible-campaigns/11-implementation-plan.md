@@ -230,8 +230,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   publication, stream publishing/completed roots to GC, recover exact expected
   results across restart, keep cancellation resources charged until worker
   exit, and reconcile publication without holding the supervisor actor or
-  rerunning the guest. Snapshot incorporation remains coordinator-only. The
-  concrete QEMU execution adapter, capability
+  rerunning the guest. Snapshot incorporation remains coordinator-only. A
+  strict Crucible execution adapter now decodes versioned scenario/schedule
+  payloads, re-derives semantic IDs before runner invocation, and exposes a
+  typed runner boundary for operational hot/exact/thin selection. The concrete
+  production-QEMU runner, capability
   service, full out-of-process campaign flight, and complete component
   conformance gate remain open.
 - [x] **T-CAM-4.10** Replace repeated full-history validation on local owner
