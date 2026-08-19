@@ -180,6 +180,12 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   `CampaignService`, pure `PlannerEngine`, and local `ExecutorService` schemas;
   provide direct and loopback-RPC adapters, golden vectors, fake components,
   capability negotiation, idempotent assignment, and component conformance.
+  The repository checkpoint now provides strict canonical planner/debugger
+  submission messages with separate operational keys, public authority-specific
+  direct adapters, zero-write authentication failure, and an exact replayable
+  choice-discovery owner required before branching. Loopback RPC, service-level
+  principal plumbing, capability negotiation, executor assignment, and the
+  complete component conformance gate remain open.
 - [x] **T-CAM-4.10** Replace repeated full-history validation on local owner
   mutations with bounded immutable validated-head/lifecycle checkpoints and
   authenticated membership and result-locator indexes; promote only after ref
@@ -376,17 +382,17 @@ area mapping ensures that no part of the RFC is merely aspirational:
 | Requirements | Primary phases | Primary gates |
 | --- | --- | --- |
 | `CAM-1..14` | 1–9 | campaign model, replay, continuity, ABI, license boundary, manual acceptance |
-| `CMOD-1..29` | 1, 2, 4 | campaign model, content address, attempt idempotence, continuity |
+| `CMOD-1..30` | 1, 2, 4 | campaign model, content address, attempt idempotence, continuity |
 | `SEL-1..21` | 2 | typed choice, ABI conformance, end-to-end determinism |
 | `GUIDE-1..24` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
 | `LAZY-1..39` | 4 | lazy frontier, attempt idempotence, campaign replay |
-| `CCOMP-1..22` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
+| `CCOMP-1..24` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
 | `HFORK-1..24` | 6, 7 | hot-fork equivalence/isolation/scaling, world-fork atomicity, ABI/license |
 | `CSTORE-1..22` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |
 | `CAPI-1..13` | 8 | CLI/API contracts, continuity, campaign replay |
 | `CMEAS-1..14` | 3, 8 | campaign model, replay, ABI conformance |
 | `CSEC-1..12` | 1–9 | license boundary, ABI conformance, isolation, store equivalence |
-| `CPERF-1..8` | 4–7, 9 | branch-point model, lazy frontier, hot-fork scaling/equivalence, exact-closure streaming |
+| `CPERF-1..9` | 4–7, 9 | branch-point model, lazy frontier, hot-fork scaling/equivalence, exact-closure streaming |
 | `CMAN-1..22` | 0–9 | operator acceptance, destructive recovery, dogfood, campaign replay |
 
 The executable traceability check required by T-CAM-0.4 must expand every range,

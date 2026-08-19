@@ -220,7 +220,11 @@ codec remains responsible for the stronger record-specific correspondence.
 
 ```rust,illustrative
 pub enum CampaignFact {
-    ChoiceOpportunityDiscovered(ChoiceOpportunityId),
+    ChoiceOpportunityDiscovered {
+        parent: ConfigurationArtifactId,
+        branch_point: BranchPointId,
+        opportunity: ChoiceOpportunityId,
+    },
     BranchRequestIssued(BranchRequestId),
     PlannerAdvanced(PlannerStepId),
     ProposalIssued(ProposalId),
@@ -238,6 +242,18 @@ pub enum CampaignFact {
     PinChanged(PinChange),
 }
 ```
+
+Publishing a valid `ChoiceOpportunity` body does not make it campaign
+knowledge. The graph owner admits it only through an exact
+`ChoiceOpportunityDiscovered` transition or as a discovered choice in a
+canonical observation. Both paths authenticate the complete declaration and
+domain closure and bind the opportunity to the campaign scenario and exact
+parent-derived branch point. A branch request must find the exact opportunity
+under its domain-separated `(BranchPointId, ChoiceOpportunityId)` graph key;
+backing-store presence, global opportunity membership, an arbitrary Merkle key,
+or a caller-supplied subset root is insufficient. Campaign-fact schema v2 makes
+the explicit discovery parent and branch point part of the fact rather than
+reinterpreting the former layout.
 
 Facts are immutable and carry causal references. They may be represented in
 persistent Merkle maps rather than replayed from a flat log. A projection cache
@@ -681,3 +697,7 @@ sealed it.
 - **[CMOD-29]** Policy activation on one campaign ref MUST preserve
   `CampaignMode`. A mode change MUST derive another campaign so existing
   observation ordering cannot be reinterpreted.
+- **[CMOD-30]** A choice opportunity MUST become authoritative campaign
+  knowledge only through the exact discovery owner or a canonical observation
+  owner. Branch-request acceptance MUST require its canonical graph membership
+  and MUST NOT infer authority from immutable-object presence alone.

@@ -743,9 +743,17 @@ impl CampaignRepository {
         fact: &CampaignFact,
     ) -> Result<(), CampaignRepositoryError> {
         match fact {
-            CampaignFact::ChoiceOpportunityDiscovered(id) => {
+            CampaignFact::ChoiceOpportunityDiscovered {
+                parent,
+                opportunity,
+                ..
+            } => {
                 self.require_record_kind(
-                    id.content_id(),
+                    parent.content_id(),
+                    crate::CampaignRecordKind::ConfigurationArtifact,
+                )?;
+                self.require_record_kind(
+                    opportunity.content_id(),
                     crate::CampaignRecordKind::ChoiceOpportunity,
                 )?;
             }
@@ -955,6 +963,15 @@ impl CampaignRepository {
         )?;
         if expected_parent != Some(request.parent().content_id()) {
             return Err(integrity("branch-request-parent-is-not-in-campaign-graph"));
+        }
+        if self.merkle.get(
+            snapshot.snapshot.roots().graph,
+            branch_point_opportunity_key(request.branch_point(), request.opportunity()),
+        )? != Some(request.opportunity().content_id())
+        {
+            return Err(integrity(
+                "branch-request-opportunity-is-not-authoritative-campaign-knowledge",
+            ));
         }
 
         match request.cause() {

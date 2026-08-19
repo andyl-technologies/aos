@@ -209,6 +209,18 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
     assert_eq!(planner_result[2], "crucible-campaign::exploration");
     assert_eq!(planner_result[3], "component-message");
     owned_campaign_schemas.insert("crucible.campaign.planner-step-proposal");
+    for schema in [
+        "crucible.campaign.planner-submission",
+        "crucible.campaign.debugger-submission",
+    ] {
+        let submission = rows
+            .get(schema)
+            .unwrap_or_else(|| panic!("missing component schema {schema}"));
+        assert_eq!(submission[1], "1");
+        assert_eq!(submission[2], "crucible-campaign::authority");
+        assert_eq!(submission[3], "component-message");
+        owned_campaign_schemas.insert(schema);
+    }
     for schema in rows.keys() {
         if schema.starts_with("crucible.campaign.") {
             assert!(
@@ -1787,7 +1799,7 @@ fn snapshot_envelope_exposes_every_child_and_authenticates_logical_identity() {
         2,
         "parent-snapshot"
     );
-    let transition = stored_id!(CampaignFactId, ObjectKind::CampaignFact, "transition");
+    let transition = stored_id!(CampaignFactId, ObjectKind::CampaignFact, 2, "transition");
     let snapshot = CampaignSnapshot::successor(
         parent,
         stored_id!(CampaignLineageId, ObjectKind::CampaignFact, "lineage"),

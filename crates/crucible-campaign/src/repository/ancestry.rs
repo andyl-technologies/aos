@@ -3,6 +3,42 @@
 use super::*;
 
 impl CampaignRepository {
+    pub(super) fn find_choice_discovery_result(
+        &self,
+        content_id: ContentId,
+        parent: ConfigurationArtifactId,
+        opportunity: ChoiceOpportunityId,
+    ) -> Result<Option<ChoiceDiscoveryResult>, CampaignRepositoryError> {
+        let key = choice_discovery_result_key(parent, opportunity);
+        let Ok((result_content, loaded, fact)) = self.mutation_result_snapshot(content_id, key)
+        else {
+            return Ok(None);
+        };
+        let CampaignFact::ChoiceOpportunityDiscovered {
+            parent: fact_parent,
+            branch_point,
+            opportunity: fact_opportunity,
+        } = fact
+        else {
+            return Err(integrity("choice-discovery-result-index-type-mismatch"));
+        };
+        if fact_parent != parent || fact_opportunity != opportunity {
+            return Err(integrity("choice-discovery-result-index-input-mismatch"));
+        }
+        let prior_snapshot = loaded
+            .snapshot
+            .parent()
+            .ok_or_else(|| integrity("choice-discovery-transition-has-no-parent"))?;
+        Ok(Some(ChoiceDiscoveryResult {
+            prior_snapshot,
+            new_snapshot: CampaignSnapshotId::from_content_id(result_content)?,
+            parent,
+            branch_point,
+            opportunity,
+            replayed: true,
+        }))
+    }
+
     pub(super) fn insert_fact(
         &self,
         root: MerkleMapRoot,
@@ -299,6 +335,11 @@ impl CampaignRepository {
             CampaignFact::ObservationPublished(observation) => {
                 mutation_result_content_key("observation", observation.content_id())
             }
+            CampaignFact::ChoiceOpportunityDiscovered {
+                parent,
+                opportunity,
+                ..
+            } => choice_discovery_result_key(*parent, *opportunity),
             _ => return Ok(None),
         };
         Ok(Some(key))

@@ -418,6 +418,7 @@ content_object_id!(
 content_object_id!(
     CampaignFactId,
     ObjectKind::CampaignFact,
+    2,
     "crucible.campaign.fact",
     "Identifies one immutable campaign fact."
 );

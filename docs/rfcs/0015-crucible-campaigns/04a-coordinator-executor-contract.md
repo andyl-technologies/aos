@@ -138,6 +138,46 @@ defines it.
 - **[CCOMP-9]** Compatibility MUST be negotiated by explicit versions and
   capabilities. Version ordering alone MUST NOT imply compatibility.
 
+Planner and debugger submission authorization uses strict, bounded canonical
+component messages in the initial direct adapter and the future loopback RPC:
+
+```text
+PlannerSubmissionV1 = version | expected_snapshot | proposal |
+                      measured_usage | planner_tag
+DebuggerSubmissionV1 = version | expected_snapshot | debug_session |
+                       branch_request | debugger_tag
+```
+
+Each tag is keyed BLAKE3 over all preceding canonical fields with a distinct
+message domain. Planner and debugger keys are separate nonzero 256-bit
+operational credentials: possessing one never permits producing the other's
+tag. Configuration fails closed if both roles are supplied the same key
+material. The keys are coordinator configuration and MUST NOT enter campaign
+objects, snapshots, exports, logs, or the messages themselves. The coordinator
+strictly decodes and authenticates a submission before any immutable-object write, then
+independently applies the ordinary planner or branch owner validation. The tag
+therefore proves which supervised component supplied exact bytes; it does not
+make their semantic claims authoritative.
+
+The operator direct adapter runs inside an already authenticated
+`CampaignService` principal context. It accepts only operator-caused requests;
+the debugger adapter accepts only a request whose cause names the authenticated
+debug session. The raw repository owner mutations are coordinator-internal.
+Explicit operator choice discovery and canonical observations are the only
+paths that can add the graph membership required before any authority submits a
+branch request. An RPC adapter must decode these same canonical messages and
+call the same public authority adapter, rather than translating into a more
+privileged internal mutation.
+
+- **[CCOMP-23]** Planner, debugger, and operator submissions MUST enter through
+  authority-specific adapters. Planner and debugger messages MUST use distinct
+  operational keys, bind the exact expected snapshot and payload, and fail
+  authentication before publishing any object or changing the campaign ref.
+- **[CCOMP-24]** Direct and RPC adapters MUST strictly decode and authenticate
+  the same canonical submission bytes before invoking the same semantic owner
+  path. Component authentication MUST NOT grant authority over accounting,
+  campaign facts, refs, execution, or choice-knowledge membership.
+
 ## 04a.4 Campaign service
 
 `CampaignService` is the sole user-facing campaign API and is equally usable by
