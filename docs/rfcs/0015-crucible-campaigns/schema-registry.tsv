@@ -4,13 +4,13 @@ crucible.content-id-text	1	crucible-cas::content_store	identity	gate:content-add
 crucible.directory-ref	1	crucible-cas::content_store	mutable-ref	gate:campaign-store-composition
 crucible.campaign.lineage	1	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.policy	1	crucible-campaign::object	policy	gate:campaign-model,gate:content-address
-crucible.campaign.snapshot	1	crucible-campaign::object	campaign-snapshot	gate:campaign-model,gate:content-address
+crucible.campaign.snapshot	2	crucible-campaign::object	campaign-snapshot	gate:campaign-model,gate:content-address
 crucible.campaign.fact	1	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.planning-view	1	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.planner-engine	1	crucible-campaign::object	policy	gate:campaign-model,gate:content-address
 crucible.campaign.policy-artifact	1	crucible-campaign::object	policy	gate:campaign-model,gate:content-address
 crucible.campaign.planner-state	1	crucible-campaign::object	policy	gate:campaign-model,gate:content-address
-crucible.campaign.planner-invocation	1	crucible-campaign::object	policy	gate:campaign-model,gate:content-address
+crucible.campaign.planner-invocation	2	crucible-campaign::object	policy	gate:campaign-model,gate:content-address
 crucible.campaign.choice-domain	1	crucible-campaign::object	campaign-fact	gate:typed-choice,gate:content-address
 crucible.campaign.selectable-declaration	1	crucible-campaign::object	campaign-fact	gate:typed-choice,gate:content-address
 crucible.campaign.choice-opportunity	1	crucible-campaign::object	campaign-fact	gate:typed-choice,gate:content-address
@@ -25,6 +25,6 @@ crucible.campaign.proposal	1	crucible-campaign::exploration	campaign-fact	gate:l
 crucible.campaign.branch-path	1	crucible-campaign::exploration	campaign-fact	gate:campaign-replay,gate:content-address
 crucible.campaign.attempt	1	crucible-campaign::exploration	campaign-fact	gate:attempt-idempotence,gate:content-address
 crucible.campaign.attempt-admission	1	crucible-campaign::exploration	campaign-fact	gate:attempt-idempotence,gate:content-address
-crucible.campaign.planner-step	2	crucible-campaign::exploration	campaign-fact	gate:component-contract,gate:content-address
+crucible.campaign.planner-step	3	crucible-campaign::exploration	campaign-fact	gate:component-contract,gate:content-address
 crucible.campaign.planner-step-proposal	1	crucible-campaign::exploration	component-message	gate:component-contract
 crucible.campaign.expansion-state	2	crucible-campaign::exploration	projection	gate:lazy-frontier,gate:content-address

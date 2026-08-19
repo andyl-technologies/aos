@@ -39,6 +39,7 @@ CampaignRef -> immutable CampaignSnapshot
                     +-- branch points and lazy expansion state
                     +-- observations, corpus, coverage, and findings
                     +-- retention pins and accounting
+                    +-- non-semantic coordination progress
 ```
 
 Every object under the named campaign reference is immutable and content-

@@ -88,6 +88,9 @@ impl CampaignRepository {
                                 admission,
                             )?;
                         }
+                        CampaignFact::PlannerAdvanced(step) => {
+                            self.validate_planner_step_successor(&parent_snapshot, &loaded, step)?;
+                        }
                         _ => {
                             return Err(integrity("snapshot-transition-type-is-not-implemented"));
                         }
@@ -129,6 +132,7 @@ impl CampaignRepository {
             roots.findings,
             roots.pins,
             roots.accounting,
+            roots.coordination,
         ];
         for root in empty_roots {
             if self.merkle.inspect_shallow(root)?.entry_count() != 0 {
@@ -169,6 +173,7 @@ impl CampaignRepository {
             || prior_roots.coverage != next_roots.coverage
             || prior_roots.findings != next_roots.findings
             || prior_roots.pins != next_roots.pins
+            || prior_roots.coordination != next_roots.coordination
         {
             return Err(integrity("control-transition-changed-nonaccounting-root"));
         }
@@ -226,6 +231,7 @@ impl CampaignRepository {
             || prior_roots.findings != next_roots.findings
             || prior_roots.pins != next_roots.pins
             || prior_roots.accounting != next_roots.accounting
+            || prior_roots.coordination != next_roots.coordination
         {
             return Err(integrity(
                 "branch-request-transition-changed-unrelated-root",
@@ -283,6 +289,7 @@ impl CampaignRepository {
             || prior_roots.findings != next_roots.findings
             || prior_roots.pins != next_roots.pins
             || prior_roots.accounting != next_roots.accounting
+            || prior_roots.coordination != next_roots.coordination
         {
             return Err(integrity("proposal-transition-changed-unrelated-root"));
         }
@@ -351,6 +358,7 @@ impl CampaignRepository {
             || prior_roots.coverage != next_roots.coverage
             || prior_roots.findings != next_roots.findings
             || prior_roots.pins != next_roots.pins
+            || prior_roots.coordination != next_roots.coordination
         {
             return Err(integrity(
                 "attempt-admission-transition-changed-unrelated-root",
@@ -392,6 +400,77 @@ impl CampaignRepository {
         )? {
             return Err(integrity(
                 "attempt-admission-transition-accounting-root-mismatch",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_planner_step_successor(
+        &self,
+        parent: &LoadedSnapshot,
+        child: &LoadedSnapshot,
+        step_id: PlannerStepId,
+    ) -> Result<(), CampaignRepositoryError> {
+        if child.snapshot.lineage() != parent.snapshot.lineage()
+            || child.snapshot.active_policy() != parent.snapshot.active_policy()
+        {
+            return Err(integrity("planner-step-transition-changed-campaign-basis"));
+        }
+        let prior_roots = parent.snapshot.roots();
+        let next_roots = child.snapshot.roots();
+        if prior_roots.graph != next_roots.graph
+            || prior_roots.exploration != next_roots.exploration
+            || prior_roots.observations != next_roots.observations
+            || prior_roots.corpus != next_roots.corpus
+            || prior_roots.coverage != next_roots.coverage
+            || prior_roots.findings != next_roots.findings
+            || prior_roots.pins != next_roots.pins
+            || prior_roots.accounting != next_roots.accounting
+        {
+            return Err(integrity("planner-step-transition-changed-unrelated-root"));
+        }
+
+        let step_content = step_id.content_id();
+        let step = self.read_planner_step(step_content)?;
+        if matches!(step.disposition(), PlannerDisposition::Issue { .. }) {
+            return Err(integrity("planner-step-issue-owner-is-not-implemented"));
+        }
+        let invocation = self.load_planner_invocation(step.invocation())?;
+        let expected_view = parent.snapshot.planning_view();
+        if expected_view.id()? != step.input_view()
+            || invocation.input_view() != step.input_view()
+            || step.policy() != parent.snapshot.active_policy()
+        {
+            return Err(integrity("planner-step-transition-input-basis-mismatch"));
+        }
+        self.validate_planner_page(&expected_view, &invocation)?;
+        self.validate_planner_cursor(parent, step.disposition())?;
+        self.validate_planner_disposition_page(&invocation, step.disposition())?;
+        let expected_parent =
+            self.validate_planner_invocation_start(prior_roots.coordination, &invocation)?;
+        if step.parent() != expected_parent {
+            return Err(integrity("planner-step-transition-parent-mismatch"));
+        }
+
+        let step_key = planner_step_key(step_id);
+        let invocation_key = planner_invocation_result_key(step.invocation());
+        for key in [step_key, invocation_key] {
+            if self.merkle.get(prior_roots.coordination, key)?.is_some() {
+                return Err(integrity("planner-step-transition-reused-index"));
+            }
+        }
+        let upserts = BTreeMap::from([
+            (step_key, step_content),
+            (invocation_key, step_content),
+            (planner_head_key(), step_content),
+        ]);
+        if !self.merkle.equals_after_upserts(
+            prior_roots.coordination,
+            next_roots.coordination,
+            &upserts,
+        )? {
+            return Err(integrity(
+                "planner-step-transition-coordination-root-mismatch",
             ));
         }
         Ok(())

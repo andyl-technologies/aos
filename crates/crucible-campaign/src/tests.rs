@@ -8,6 +8,10 @@ use crucible_cas::content_store::{ContentId, ObjectKind};
 use std::collections::{BTreeMap, BTreeSet};
 
 macro_rules! stored_id {
+    ($type:ty, $kind:expr, $schema:expr, $label:expr) => {
+        <$type>::from_content_id(ContentId::for_bytes($kind, $schema, $label.as_bytes()))
+            .expect("typed content id")
+    };
     ($type:ty, $kind:expr, $label:expr) => {
         <$type>::from_content_id(content_kind($label, $kind)).expect("typed content id")
     };
@@ -285,7 +289,7 @@ fn campaign_policy_identity_is_order_independent_and_strictly_decoded() {
 }
 
 #[test]
-fn snapshot_planning_view_excludes_pins_but_snapshot_identity_does_not() {
+fn snapshot_planning_view_excludes_pins_and_coordination_but_snapshot_identity_does_not() {
     let roots = CampaignRoots {
         graph: content("graph"),
         exploration: content("exploration"),
@@ -295,6 +299,7 @@ fn snapshot_planning_view_excludes_pins_but_snapshot_identity_does_not() {
         findings: content("findings"),
         pins: content("pins-a"),
         accounting: content("accounting"),
+        coordination: content("coordination"),
     };
     let snapshot = CampaignSnapshot::genesis(
         stored_id!(CampaignLineageId, ObjectKind::CampaignFact, "lineage"),
@@ -315,6 +320,25 @@ fn snapshot_planning_view_excludes_pins_but_snapshot_identity_does_not() {
     assert_eq!(
         snapshot.planning_view().id().expect("view id"),
         changed.planning_view().id().expect("changed view id")
+    );
+    let mut coordinated_roots = roots;
+    coordinated_roots.coordination = content("coordination-b");
+    let coordinated = CampaignSnapshot::genesis(
+        snapshot.lineage(),
+        snapshot.active_policy(),
+        coordinated_roots,
+    )
+    .expect("coordinated genesis snapshot");
+    assert_ne!(
+        snapshot.id().expect("snapshot id"),
+        coordinated.id().expect("coordinated snapshot id")
+    );
+    assert_eq!(
+        snapshot.planning_view().id().expect("view id"),
+        coordinated
+            .planning_view()
+            .id()
+            .expect("coordinated view id")
     );
     assert_eq!(
         CampaignSnapshot::from_canonical_bytes(&snapshot.canonical_bytes())
@@ -378,6 +402,7 @@ fn lineage_and_invocation_identities_name_every_compatibility_input() {
         stored_id!(CampaignPolicyId, ObjectKind::Policy, "policy"),
         stored_id!(PlannerStateId, ObjectKind::Policy, "state"),
         stored_id!(CampaignViewId, ObjectKind::CampaignFact, "view"),
+        PlanningScanPage::new(None, 1, Vec::new(), true, 0).expect("scan page"),
         budget,
     )
     .expect("invocation");
@@ -387,6 +412,7 @@ fn lineage_and_invocation_identities_name_every_compatibility_input() {
         invocation.policy(),
         invocation.planner_state(),
         invocation.input_view(),
+        invocation.scan_page().clone(),
         PlanningBudget::new(
             budget.branch_requests(),
             budget.proposals(),
@@ -416,8 +442,12 @@ fn lineage_and_invocation_identities_name_every_compatibility_input() {
 #[test]
 fn command_and_fact_identities_bind_payload_and_admission_order() {
     let command = CampaignCommandId::from_hash(hash("command"));
-    let expected_snapshot =
-        stored_id!(CampaignSnapshotId, ObjectKind::CampaignSnapshot, "snapshot");
+    let expected_snapshot = stored_id!(
+        CampaignSnapshotId,
+        ObjectKind::CampaignSnapshot,
+        2,
+        "snapshot"
+    );
     let request = ControlRequest {
         command,
         expected_snapshot,
@@ -1080,6 +1110,7 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
         stored_id!(
             PlannerInvocationId,
             ObjectKind::Policy,
+            2,
             "planner-invocation"
         ),
         stored_id!(CampaignPolicyId, ObjectKind::Policy, "planner-step-policy"),
@@ -1092,11 +1123,20 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
             issued_proposals: vec![proposal.id().expect("proposal id")],
         },
         stored_id!(PlannerStateId, ObjectKind::Policy, "next-planner-state"),
+        PlanningUsage {
+            branch_requests: 0,
+            proposals: 1,
+            input_objects: 8,
+            input_bytes: 4096,
+            fuel: 1,
+        },
         PlanningAccounting {
             branch_requests: 0,
             proposals: 1,
             attempts: 1,
             deduplicated: 0,
+            input_objects: 8,
+            input_bytes: 4096,
             fuel: 1,
         },
         GuidanceEvidence::new(BTreeMap::new()).expect("guidance evidence"),
@@ -1109,7 +1149,7 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
     );
     assert_eq!(
         &planner_step.canonical_bytes()[..std::mem::size_of::<u32>()],
-        &2_u32.to_be_bytes()
+        &3_u32.to_be_bytes()
     );
     let planner_step_children =
         super::object::content_children(planner_step.content_children()).expect("step children");
@@ -1124,10 +1164,10 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
             &planner_step_envelope.canonical_bytes(),
         )
         .expect("stored planner step envelope");
-    assert_eq!(stored_planner_step.schema_version(), 2);
+    assert_eq!(stored_planner_step.schema_version(), 3);
     let legacy_envelope = crucible_cas::content_envelope::ContentEnvelope::new(
         CampaignRecordKind::PlannerStep.schema_name(),
-        1,
+        2,
         planner_step_children,
         planner_step.canonical_bytes(),
     )
@@ -1151,11 +1191,20 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
             ),
         },
         planner_step.next_state(),
+        PlanningUsage {
+            branch_requests: 0,
+            proposals: 0,
+            input_objects: 8,
+            input_bytes: 4096,
+            fuel: 4,
+        },
         PlanningAccounting {
             branch_requests: 0,
             proposals: 0,
             attempts: 0,
             deduplicated: 0,
+            input_objects: 8,
+            input_bytes: 4096,
             fuel: 4,
         },
         GuidanceEvidence::new(BTreeMap::new()).expect("scan evidence"),
@@ -1177,11 +1226,20 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
         planner_view,
         PlannerDisposition::NoWork,
         planner_step.next_state(),
+        PlanningUsage {
+            branch_requests: 0,
+            proposals: 0,
+            input_objects: 1,
+            input_bytes: 64,
+            fuel: 1,
+        },
         PlanningAccounting {
             branch_requests: 0,
             proposals: 0,
             attempts: 0,
             deduplicated: 0,
+            input_objects: 1,
+            input_bytes: 64,
             fuel: 1,
         },
         GuidanceEvidence::new(BTreeMap::new()).expect("no-work evidence"),
@@ -1217,11 +1275,20 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
                 ),
             },
             planner_step.next_state(),
+            PlanningUsage {
+                branch_requests: 0,
+                proposals: 0,
+                input_objects: 1,
+                input_bytes: 64,
+                fuel: 1,
+            },
             PlanningAccounting {
                 branch_requests: 0,
                 proposals: 0,
                 attempts: 0,
                 deduplicated: 0,
+                input_objects: 1,
+                input_bytes: 64,
                 fuel: 1,
             },
             GuidanceEvidence::new(BTreeMap::new()).expect("invalid scan evidence"),
@@ -1379,6 +1446,7 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
     let source_snapshot = stored_id!(
         CampaignSnapshotId,
         ObjectKind::CampaignSnapshot,
+        2,
         "expansion-source-snapshot"
     );
     let input_view = stored_id!(CampaignViewId, ObjectKind::CampaignFact, "expansion-view");
@@ -1707,10 +1775,12 @@ fn snapshot_envelope_exposes_every_child_and_authenticates_logical_identity() {
         findings: content("findings"),
         pins: content("pins"),
         accounting: content("accounting"),
+        coordination: content("coordination"),
     };
     let parent = stored_id!(
         CampaignSnapshotId,
         ObjectKind::CampaignSnapshot,
+        2,
         "parent-snapshot"
     );
     let transition = stored_id!(CampaignFactId, ObjectKind::CampaignFact, "transition");
@@ -1725,7 +1795,7 @@ fn snapshot_envelope_exposes_every_child_and_authenticates_logical_identity() {
     let envelope = ObjectEnvelope::for_snapshot(&snapshot).expect("snapshot envelope");
 
     assert_eq!(envelope.record_kind(), CampaignRecordKind::Snapshot);
-    assert_eq!(envelope.children().len(), 12);
+    assert_eq!(envelope.children().len(), 13);
     assert!(
         envelope
             .children()
@@ -1749,7 +1819,7 @@ fn snapshot_envelope_exposes_every_child_and_authenticates_logical_identity() {
     );
     let extra = crucible_cas::content_envelope::ContentEnvelope::new(
         "crucible.campaign.snapshot",
-        1,
+        2,
         extra_children,
         snapshot.canonical_bytes(),
     )
@@ -1758,6 +1828,14 @@ fn snapshot_envelope_exposes_every_child_and_authenticates_logical_identity() {
         ObjectEnvelope::from_canonical_bytes(&extra.canonical_bytes()),
         Err(CampaignCodecError::InvalidValue { .. })
     ));
+    let legacy = crucible_cas::content_envelope::ContentEnvelope::new(
+        "crucible.campaign.snapshot",
+        1,
+        envelope.children().clone(),
+        snapshot.canonical_bytes(),
+    )
+    .expect("legacy snapshot envelope");
+    assert!(ObjectEnvelope::from_canonical_bytes(&legacy.canonical_bytes()).is_err());
 }
 
 #[test]

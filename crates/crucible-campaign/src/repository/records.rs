@@ -49,17 +49,50 @@ impl CampaignRepository {
         self.read_attempt_admission(id.content_id())
     }
 
-    /// Loads a planner step through the fail-closed coordinator validator.
+    /// Loads a planner step through its semantic coordinator validator.
     ///
     /// # Errors
     ///
-    /// Returns a store, codec, or integrity error for invalid closure. Planner
-    /// steps remain inadmissible until coordinator recomputation is implemented.
+    /// Returns a store, codec, or integrity error for invalid closure,
+    /// invocation linkage, output accounting, budget, or state continuity.
     pub fn load_planner_step(
         &self,
         id: PlannerStepId,
     ) -> Result<PlannerStep, CampaignRepositoryError> {
-        self.read_planner_step(id.content_id())
+        let step = self.read_planner_step(id.content_id())?;
+        self.verify_campaign_closure(id.content_id())?;
+        self.validate_standalone_planner_ancestry(&step)?;
+        Ok(step)
+    }
+
+    fn validate_standalone_planner_ancestry(
+        &self,
+        first: &PlannerStep,
+    ) -> Result<(), CampaignRepositoryError> {
+        let mut step = first.clone();
+        for _ in 0..MAX_SNAPSHOT_ANCESTRY {
+            let invocation = self.load_planner_invocation(step.invocation())?;
+            let view_envelope = self.require_record_kind(
+                invocation.input_view().content_id(),
+                crate::CampaignRecordKind::PlanningView,
+            )?;
+            let view = crate::codec::decode::<CampaignPlanningView>(view_envelope.body())?;
+            if view.id()? != invocation.input_view() {
+                return Err(integrity("planner-invocation-planning-view-envelope-shape"));
+            }
+            self.validate_planner_page(&view, &invocation)?;
+
+            let parent = step
+                .parent()
+                .map(|parent| self.read_planner_step(parent.content_id()))
+                .transpose()?;
+            self.validate_planner_invocation_parent(parent.as_ref(), &invocation)?;
+            let Some(parent) = parent else {
+                return Ok(());
+            };
+            step = parent;
+        }
+        Err(integrity("planner-step-ancestry-limit"))
     }
 
     /// Loads an expansion state through the fail-closed projector validator.
@@ -211,6 +244,61 @@ impl CampaignRepository {
             crate::CampaignRecordKind::PlanningView,
             crate::object::content_children(view.content_children())?,
             view.canonical_bytes(),
+        )?)
+    }
+
+    pub(super) fn put_planner_engine(
+        &self,
+        engine: &PlannerEngine,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::PlannerEngine,
+            BTreeSet::new(),
+            crate::codec::encode(engine),
+        )?)
+    }
+
+    pub(super) fn put_policy_artifact(
+        &self,
+        artifact: &PolicyArtifact,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::PolicyArtifact,
+            crate::object::content_children(artifact.content_children())?,
+            crate::codec::encode(artifact),
+        )?)
+    }
+
+    pub(super) fn put_planner_state(
+        &self,
+        state: &PlannerState,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::PlannerState,
+            crate::object::content_children([("engine", state.engine().content_id())])?,
+            crate::codec::encode(state),
+        )?)
+    }
+
+    pub(super) fn put_planner_invocation(
+        &self,
+        invocation: &PlannerInvocation,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::PlannerInvocation,
+            crate::object::content_children(invocation.content_children())?,
+            crate::codec::encode(invocation),
+        )?)
+    }
+
+    pub(super) fn put_planner_step(
+        &self,
+        step: &PlannerStep,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::PlannerStep,
+            crate::object::content_children(step.content_children())?,
+            step.canonical_bytes(),
         )?)
     }
 
@@ -1046,41 +1134,7 @@ impl CampaignRepository {
         {
             return Err(integrity("planner-step-invocation-mismatch"));
         }
-        match step.disposition() {
-            PlannerDisposition::ContinueScan { cursor } => {
-                if let Some(after) = cursor.after() {
-                    let source = self.read_branch_request(after.source().content_id())?;
-                    if source.branch_point() != after.branch_point() {
-                        return Err(integrity("planner-step-scan-cursor-branch-point-mismatch"));
-                    }
-                }
-            }
-            PlannerDisposition::Issue {
-                selected,
-                issued_branch_requests,
-                issued_proposals,
-            } => {
-                let source = self.read_branch_request(selected.source().content_id())?;
-                if source.branch_point() != selected.branch_point() {
-                    return Err(integrity("planner-step-source-branch-point-mismatch"));
-                }
-                for request in issued_branch_requests {
-                    let request = self.read_branch_request(request.content_id())?;
-                    if request.cause() != BranchRequestCause::Planner(step.invocation()) {
-                        return Err(integrity("planner-step-branch-request-cause-mismatch"));
-                    }
-                }
-                for proposal in issued_proposals {
-                    let proposal = self.read_proposal(proposal.content_id())?;
-                    if proposal.request() != selected.source()
-                        || proposal.planner_invocation() != Some(step.invocation())
-                    {
-                        return Err(integrity("planner-step-proposal-mismatch"));
-                    }
-                }
-            }
-            PlannerDisposition::NoWork => {}
-        }
+        self.validate_planner_disposition_page(&invocation, step.disposition())?;
 
         let next_state_envelope = self.require_record_kind(
             step.next_state().content_id(),
@@ -1095,9 +1149,22 @@ impl CampaignRepository {
         let budget = invocation.budget();
         if accounting.branch_requests > u64::from(budget.branch_requests())
             || accounting.proposals > u64::from(budget.proposals())
+            || accounting.input_objects != invocation.scan_page().input_objects()
+            || accounting.input_bytes != invocation.scan_page().input_bytes()
+            || accounting.input_objects > u64::from(budget.input_objects())
+            || accounting.input_bytes > budget.input_bytes()
             || accounting.fuel > budget.fuel()
         {
             return Err(integrity("planner-step-invocation-budget-exceeded"));
+        }
+        let usage_claim = step.usage_claim();
+        if usage_claim.branch_requests > u64::from(budget.branch_requests())
+            || usage_claim.proposals > u64::from(budget.proposals())
+            || usage_claim.input_objects > u64::from(budget.input_objects())
+            || usage_claim.input_bytes > budget.input_bytes()
+            || usage_claim.fuel > budget.fuel()
+        {
+            return Err(integrity("planner-step-usage-claim-exceeds-budget"));
         }
 
         if let Some(parent) = step.parent() {
@@ -1109,9 +1176,7 @@ impl CampaignRepository {
                 return Err(integrity("planner-step-parent-state-discontinuity"));
             }
         }
-        Err(integrity(
-            "planner-step-coordinator-validation-is-not-implemented",
-        ))
+        Ok(step)
     }
 
     pub(super) fn read_expansion_state(
@@ -1217,6 +1282,19 @@ impl CampaignRepository {
         )?;
         if artifact.engine() != invocation.engine() || state.engine() != invocation.engine() {
             return Err(integrity("planner-invocation-engine-mismatch"));
+        }
+        for position in invocation
+            .scan_page()
+            .after()
+            .into_iter()
+            .chain(invocation.scan_page().positions().iter().copied())
+        {
+            let request = self.read_branch_request(position.source().content_id())?;
+            if request.branch_point() != position.branch_point() {
+                return Err(integrity(
+                    "planner-invocation-scan-position-branch-point-mismatch",
+                ));
+            }
         }
         Ok(())
     }

@@ -41,6 +41,7 @@ PlannerInvocationId = H(
   CampaignPolicyId,
   PlannerStateId,
   CampaignViewId,
+  PlanningScanPage,
   PlanningBudget
 )
 ```
@@ -148,6 +149,7 @@ pub struct CampaignSnapshot {
     pub findings_root: ContentId,
     pub pins_root: ContentId,
     pub accounting_root: ContentId,
+    pub coordination_root: ContentId,
     pub transition: Option<CampaignFactId>,
 }
 ```
@@ -175,13 +177,20 @@ The roots name immutable canonical maps or sets:
 | Root | Contents |
 | --- | --- |
 | `graph_root` | Configurations, branch points, schedule edges, and graph metadata. |
-| `exploration_root` | Branch requests, proposals, planner-step facts, and candidate-source specifications. |
+| `exploration_root` | Branch requests, proposals, and candidate-source specifications. |
 | `observations_root` | Attempt results, measurements, properties, coverage projections, and causal evidence. |
 | `corpus_root` | Retained configurations and reproduction artifacts worth further mutation. |
 | `coverage_root` | Grow-only union of canonical coverage identities. |
 | `findings_root` | Failure signatures, clusters, minimization products, and reproduction artifacts. |
 | `pins_root` | User and policy retention decisions for configurations and exact closures. |
 | `accounting_root` | Budget grants, consumed attempts, modeled completion counts, policy activation, pause/resume, and operator commands. |
+| `coordination_root` | Durable coordinator progress, planner-step identity/replay indexes, and other authenticated control-plane state excluded from semantic planner input. |
+
+The nine-root layout is `crucible.campaign.snapshot` schema v2. Schema-v1
+snapshot bodies and envelopes are rejected rather than reinterpreted with a
+different root order. `coordination_root` exists so recording a paginated
+planner step does not change the immutable planning view that the next page
+must resume.
 
 Expansion-state, frontier, statistics, and status objects are rebuildable
 projections over these authoritative roots. A snapshot may name an optional
@@ -253,12 +262,31 @@ pub struct CampaignPlanningView {
 ```
 
 The planning view contains every canonical input permitted to affect proposal
-order. It deliberately excludes pins, physical retention, materializations,
-store placement, and operational state. A policy that uses finding retention or
-debugging state must first model the relevant semantic fact in one of the
-included roots; it cannot observe a physical pin implicitly.
+order. It deliberately excludes pins, coordinator bookkeeping, physical
+retention, materializations, store placement, and operational state. A policy
+that uses finding retention or debugging state must first model the relevant
+semantic fact in one of the included roots; it cannot observe a physical pin or
+coordination index implicitly.
 
 ```rust,illustrative
+pub struct PlannerInvocation {
+    pub engine: PlannerEngineId,
+    pub policy_artifact: PolicyArtifactId,
+    pub policy: CampaignPolicyId,
+    pub planner_state: PlannerStateId,
+    pub input_view: CampaignViewId,
+    pub scan_page: PlanningScanPage,
+    pub budget: PlanningBudget,
+}
+
+pub struct PlanningScanPage {
+    pub after: Option<PlanningScanPosition>,
+    pub limit: u32,
+    pub positions: Vec<PlanningScanPosition>,
+    pub complete: bool,
+    pub input_bytes: u64,
+}
+
 pub struct PlannerStep {
     pub parent: Option<PlannerStepId>,
     pub invocation: PlannerInvocationId,
@@ -268,6 +296,7 @@ pub struct PlannerStep {
     pub input_view: CampaignViewId,
     pub disposition: PlannerDisposition,
     pub next_state: PlannerStateId,
+    pub usage_claim: PlanningUsage,
     pub coordinator_accounting: PlanningAccounting,
     pub score_evidence: GuidanceEvidence,
 }
@@ -287,9 +316,19 @@ pub struct PlanningAccounting {
     pub proposals: u64,
     pub attempts: u64,
     pub deduplicated: u64,
+    pub input_objects: u64,
+    pub input_bytes: u64,
     pub fuel: u64,
 }
 ```
+
+`PlannerInvocation` schema v2 binds the exact coordinator-served continuation
+page. Positions are strictly increasing after the authenticated `after`
+position and name canonical branch-request bodies in `input_view`. A
+non-complete page contains exactly `limit` positions; `complete` is true only
+when owner recomputation reaches EOF. `input_objects` is the position count and
+`input_bytes` is the checked sum of canonical served request-body bytes. Schema
+v1 invocations are rejected rather than interpreted as having an implicit page.
 
 `input_view` is the complete immutable semantic pre-step basis. Naming only the
 observation root is insufficient because fairness, prior proposals, stop
@@ -302,10 +341,22 @@ records a completed scan without inventing a selected source. `Issue` alone
 names a selected continuation and accepted output IDs. Output IDs are unique,
 `attempts + deduplicated == proposals`, and the branch-request/proposal counts
 match the accepted lists. Accounting is recomputed by the coordinator from
-accepted outputs and the input view; a planner's resource-usage report is
-diagnostic only. This disposition/accounting layout is registered as
-`crucible.campaign.planner-step` schema v2; v1 envelopes are rejected rather
-than reinterpreted under the new field order.
+accepted outputs and measured bounded input execution; a planner's retained
+`usage_claim` is diagnostic only. The coordinator records planner-step,
+invocation-result, and current-head indexes as one exact `coordination_root`
+delta. This complete disposition/claim/accounting layout is registered as
+`crucible.campaign.planner-step` schema v3; v1 and v2 envelopes are rejected
+rather than reinterpreted under the new field order.
+
+`ContinueScan` is accepted only for a non-complete served page and its cursor
+must equal that page's last position. `NoWork` is accepted only for a complete
+page. A first scan, or a scan after the semantic view changes, starts at
+`None`; a same-view page after `ContinueScan` starts at exactly the prior
+accepted cursor. A same-view `NoWork` closes that scan and cannot be reopened.
+The coordinator derives this start from the authenticated planner head and
+recomputes the entire page from the named view at acceptance and on
+imported-snapshot validation; therefore a result cannot skip an authoritative
+key, invent EOF, or substitute different input accounting.
 
 - **[CMOD-15]** Every adaptive proposal MUST be reachable from a planner step
   that names the complete planning view, engine and policy artifact, policy,
@@ -558,9 +609,13 @@ Landing a structural canonical codec does not make a derived record admissible.
 The repository owner now recomputes finite, observation-empty
 `ExpansionState` pages from their source snapshot. Generated requests and
 observation-bearing views remain fail-closed until their owners land.
-`PlannerStep` remains fail-closed until the coordinator can recompute planner
-accounting and planner-state continuity. This prevents a structurally valid
-cache from becoming canonical evidence before its semantic owner validator
+The repository owner now accepts snapshot-bound `ContinueScan` and `NoWork`
+planner results, retains the planner claim, independently accounts bounded
+inputs and fuel, derives the parent from the authenticated planner-head index,
+and validates exact replay and imported-root deltas. `Issue` remains fail-closed
+until the coordinator can compose request, proposal, and admission ownership
+without introducing a second authority path. This prevents a structurally valid
+result from becoming canonical evidence before its semantic owner validator
 exists.
 
 ## 01.7 Lifecycle

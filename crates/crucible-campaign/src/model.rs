@@ -14,17 +14,17 @@ use super::policy::{MAX_IDENTIFIER_BYTES, validate_identifier};
 use super::{
     CampaignCodecError, CampaignFactId, CampaignLineageId, CampaignPolicyId, CampaignSnapshotId,
     CampaignViewId, ConfigurationArtifactId, ConfigurationId, PlannerEngineId, PlannerInvocationId,
-    PlannerStateId, PolicyArtifactId, ScenarioArtifactId, ScenarioDefId,
+    PlannerStateId, PlanningScanPage, PolicyArtifactId, ScenarioArtifactId, ScenarioDefId,
 };
 use crucible_cas::content_store::ContentId;
 
 const LINEAGE_SCHEMA_VERSION: u32 = 1;
-const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 const PLANNING_VIEW_SCHEMA_VERSION: u32 = 1;
 const PLANNER_ENGINE_SCHEMA_VERSION: u32 = 1;
 const POLICY_ARTIFACT_SCHEMA_VERSION: u32 = 1;
 const PLANNER_STATE_SCHEMA_VERSION: u32 = 1;
-const PLANNER_INVOCATION_SCHEMA_VERSION: u32 = 1;
+const PLANNER_INVOCATION_SCHEMA_VERSION: u32 = 2;
 const MAX_PLANNER_STATE_BYTES: usize = 1024 * 1024;
 const MAX_VERSION_COMPONENTS: usize = 256;
 const MAX_ARTIFACT_ARGUMENTS: usize = 1024;
@@ -265,12 +265,12 @@ impl Canonical for CampaignLineage {
     }
 }
 
-/// Eight authoritative immutable roots named by a campaign snapshot.
+/// Nine authoritative immutable roots named by a campaign snapshot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CampaignRoots {
     /// Configuration graph, branch points, and semantic edges.
     pub graph: ContentId,
-    /// Branch requests, proposals, candidate sources, and planner steps.
+    /// Branch requests, proposals, and candidate sources.
     pub exploration: ContentId,
     /// Canonical observations and modeled evidence.
     pub observations: ContentId,
@@ -284,6 +284,8 @@ pub struct CampaignRoots {
     pub pins: ContentId,
     /// Budgets, control intent, commands, and admissions.
     pub accounting: ContentId,
+    /// Durable coordinator progress excluded from semantic planner input.
+    pub coordination: ContentId,
 }
 
 impl Canonical for CampaignRoots {
@@ -296,6 +298,7 @@ impl Canonical for CampaignRoots {
         Canonical::encode(&self.findings, encoder);
         Canonical::encode(&self.pins, encoder);
         Canonical::encode(&self.accounting, encoder);
+        Canonical::encode(&self.coordination, encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
@@ -308,6 +311,7 @@ impl Canonical for CampaignRoots {
             findings: ContentId::decode(decoder)?,
             pins: ContentId::decode(decoder)?,
             accounting: ContentId::decode(decoder)?,
+            coordination: ContentId::decode(decoder)?,
         })
     }
 }
@@ -1126,7 +1130,7 @@ impl Canonical for PlannerState {
 }
 
 /// Complete immutable basis for one pure planner invocation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PlannerInvocation {
     schema_version: u32,
     engine: PlannerEngineId,
@@ -1134,6 +1138,7 @@ pub struct PlannerInvocation {
     policy: CampaignPolicyId,
     planner_state: PlannerStateId,
     input_view: CampaignViewId,
+    scan_page: PlanningScanPage,
     budget: PlanningBudget,
 }
 
@@ -1149,6 +1154,7 @@ impl PlannerInvocation {
         policy: CampaignPolicyId,
         planner_state: PlannerStateId,
         input_view: CampaignViewId,
+        scan_page: PlanningScanPage,
         budget: PlanningBudget,
     ) -> Result<Self, CampaignCodecError> {
         budget.validate()?;
@@ -1159,6 +1165,7 @@ impl PlannerInvocation {
             policy,
             planner_state,
             input_view,
+            scan_page,
             budget,
         })
     }
@@ -1193,6 +1200,12 @@ impl PlannerInvocation {
         self.input_view
     }
 
+    /// Returns the exact bounded continuation page served by the coordinator.
+    #[must_use]
+    pub const fn scan_page(&self) -> &PlanningScanPage {
+        &self.scan_page
+    }
+
     /// Returns the explicit bounded resource allowance.
     #[must_use]
     pub const fn budget(&self) -> PlanningBudget {
@@ -1213,14 +1226,33 @@ impl PlannerInvocation {
         PlannerInvocationId::from_content_id(envelope.content_id())
     }
 
-    pub(crate) fn content_children(&self) -> Vec<(&'static str, ContentId)> {
-        vec![
-            ("engine", self.engine.content_id()),
-            ("policy-artifact", self.policy_artifact.content_id()),
-            ("policy", self.policy.content_id()),
-            ("planner-state", self.planner_state.content_id()),
-            ("input-view", self.input_view.content_id()),
-        ]
+    pub(crate) fn content_children(&self) -> Vec<(String, ContentId)> {
+        let mut children = vec![
+            ("engine".to_owned(), self.engine.content_id()),
+            (
+                "policy-artifact".to_owned(),
+                self.policy_artifact.content_id(),
+            ),
+            ("policy".to_owned(), self.policy.content_id()),
+            ("planner-state".to_owned(), self.planner_state.content_id()),
+            ("input-view".to_owned(), self.input_view.content_id()),
+        ];
+        if let Some(after) = self.scan_page.after() {
+            children.push(("scan-after-source".to_owned(), after.source().content_id()));
+        }
+        children.extend(
+            self.scan_page
+                .positions()
+                .iter()
+                .enumerate()
+                .map(|(index, position)| {
+                    (
+                        format!("scan-source.{index:04x}"),
+                        position.source().content_id(),
+                    )
+                }),
+        );
+        children
     }
 }
 
@@ -1232,6 +1264,7 @@ impl Canonical for PlannerInvocation {
         self.policy.encode(encoder);
         self.planner_state.encode(encoder);
         self.input_view.encode(encoder);
+        self.scan_page.encode(encoder);
         self.budget.encode(encoder);
     }
 
@@ -1247,6 +1280,7 @@ impl Canonical for PlannerInvocation {
             CampaignPolicyId::decode(decoder)?,
             PlannerStateId::decode(decoder)?,
             CampaignViewId::decode(decoder)?,
+            PlanningScanPage::decode(decoder)?,
             PlanningBudget::decode(decoder)?,
         )
     }
@@ -1276,6 +1310,7 @@ fn validate_roots(roots: CampaignRoots) -> Result<(), CampaignCodecError> {
         roots.findings,
         roots.pins,
         roots.accounting,
+        roots.coordination,
     ])
 }
 

@@ -146,7 +146,10 @@ impl CampaignRecordKind {
     #[must_use]
     pub const fn schema_version(self) -> u32 {
         match self {
-            Self::PlannerStep | Self::ExpansionState => 2,
+            Self::Snapshot => 2,
+            Self::PlannerInvocation => 2,
+            Self::PlannerStep => 3,
+            Self::ExpansionState => 2,
             _ => RECORD_SCHEMA_VERSION,
         }
     }
@@ -545,6 +548,7 @@ fn snapshot_children(
         ("root.findings", roots.findings),
         ("root.pins", roots.pins),
         ("root.accounting", roots.accounting),
+        ("root.coordination", roots.coordination),
     ];
     if let Some(parent) = snapshot.parent() {
         children.push(("parent", parent.content_id()));

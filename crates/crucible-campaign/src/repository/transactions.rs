@@ -87,6 +87,7 @@ impl CampaignRepository {
                 findings: empty,
                 pins: empty,
                 accounting: empty,
+                coordination: empty,
             },
         )?;
         let content_id = self.put_snapshot(&snapshot)?;
@@ -594,6 +595,468 @@ impl CampaignRepository {
                 Err(CampaignRepositoryError::RefConflict { current })
             }
         }
+    }
+
+    /// Publishes a complete immutable basis for one snapshot-bound planner call.
+    ///
+    /// The returned invocation names the current campaign policy and planning
+    /// view. Publishing it does not advance the campaign ref; acceptance later
+    /// rejects it if that snapshot is no longer current.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a stale snapshot, an engine/artifact/state mismatch,
+    /// a missing artifact dependency, or failed immutable publication.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_planner_invocation(
+        &self,
+        name: &str,
+        expected_snapshot: CampaignSnapshotId,
+        engine: &PlannerEngine,
+        artifact: &PolicyArtifact,
+        state: &PlannerState,
+        scan_after: Option<PlanningScanPosition>,
+        scan_limit: u32,
+        budget: PlanningBudget,
+    ) -> Result<PlannerInvocation, CampaignRepositoryError> {
+        let head = self.head(name)?;
+        if head.snapshot_id() != expected_snapshot {
+            return Err(CampaignRepositoryError::Stale {
+                expected: expected_snapshot,
+                current: head.snapshot_id(),
+            });
+        }
+
+        let engine_content = self.put_planner_engine(engine)?;
+        let engine_id = crate::PlannerEngineId::from_content_id(engine_content)?;
+        if artifact.engine() != engine_id || state.engine() != engine_id {
+            return Err(integrity("planner-basis-engine-mismatch"));
+        }
+        let artifact_content = self.put_policy_artifact(artifact)?;
+        let artifact_id = crate::PolicyArtifactId::from_content_id(artifact_content)?;
+        let state_content = self.put_planner_state(state)?;
+        let state_id = crate::PlannerStateId::from_content_id(state_content)?;
+        let view = head.snapshot().planning_view();
+        let view_content = self.put_planning_view(&view)?;
+        let view_id = crate::CampaignViewId::from_content_id(view_content)?;
+        let scan_page = self.planner_scan_page(&view, scan_after, scan_limit)?;
+        if scan_page.input_objects() > u64::from(budget.input_objects())
+            || scan_page.input_bytes() > budget.input_bytes()
+        {
+            return Err(integrity("planner-scan-page-exceeds-input-budget"));
+        }
+        let invocation = PlannerInvocation::new(
+            engine_id,
+            artifact_id,
+            head.snapshot().active_policy(),
+            state_id,
+            view_id,
+            scan_page,
+            budget,
+        )?;
+        self.validate_planner_invocation_start(head.snapshot().roots().coordination, &invocation)?;
+        let invocation_content = self.put_planner_invocation(&invocation)?;
+        self.verify_campaign_closure(invocation_content)?;
+        Ok(invocation)
+    }
+
+    /// Accepts one coordinator-measured, pure planner result.
+    ///
+    /// This first owner path accepts `ContinueScan` and `NoWork` results and
+    /// keeps `Issue` fail-closed until its request, proposal, and admission
+    /// transitions can be committed without introducing a second authority
+    /// path. Exact invocation replay is resolved before snapshot staleness.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale or mismatched invocation input, an invalid
+    /// scan cursor, output or resource-budget overflow, conflicting replay,
+    /// issuing output, invalid state continuity, or failed ref advancement.
+    pub fn accept_planner_step(
+        &self,
+        name: &str,
+        expected_snapshot: CampaignSnapshotId,
+        proposal: &PlannerStepProposal,
+        measured_usage: PlanningUsage,
+    ) -> Result<PlannerStepResult, CampaignRepositoryError> {
+        let _guard = self.lock_mutation()?;
+        let campaign_ref = campaign_ref(name)?;
+        let current_content = self
+            .refs
+            .read_ref(&campaign_ref)?
+            .ok_or(CampaignRepositoryError::NotFound)?;
+        let current = self.read_snapshot(current_content)?;
+        self.validate_complete_head(current_content)?;
+
+        let invocation = self.load_planner_invocation(proposal.invocation())?;
+        let next_state_id = proposal.next_state().id()?;
+        let accounting = self.planner_accounting(proposal, measured_usage, &invocation)?;
+        let disposition = match proposal.disposition() {
+            PlannerProposalDisposition::ContinueScan { cursor } => {
+                PlannerDisposition::ContinueScan { cursor: *cursor }
+            }
+            PlannerProposalDisposition::NoWork => PlannerDisposition::NoWork,
+            PlannerProposalDisposition::Issue { .. } => {
+                return Err(integrity("planner-step-issue-owner-is-not-implemented"));
+            }
+        };
+
+        let invocation_key = planner_invocation_result_key(proposal.invocation());
+        if let Some(existing_content) = self
+            .merkle
+            .get(current.snapshot.roots().coordination, invocation_key)?
+        {
+            let existing_id = PlannerStepId::from_content_id(existing_content)?;
+            let existing = self.read_planner_step(existing_content)?;
+            let expected = PlannerStep::new(
+                existing.parent(),
+                proposal.invocation(),
+                invocation.policy(),
+                invocation.engine(),
+                invocation.policy_artifact(),
+                invocation.input_view(),
+                disposition,
+                next_state_id,
+                proposal.usage_claim(),
+                accounting,
+                proposal.explanation().clone(),
+            )?;
+            if expected.id()? != existing_id {
+                return Err(integrity("planner-invocation-result-conflict"));
+            }
+            return self
+                .find_planner_step_result(current_content, proposal.invocation())?
+                .ok_or_else(|| integrity("planner-step-index-has-no-ancestry-transition"));
+        }
+
+        let current_id = CampaignSnapshotId::from_content_id(current_content)?;
+        if expected_snapshot != current_id {
+            return Err(CampaignRepositoryError::Stale {
+                expected: expected_snapshot,
+                current: current_id,
+            });
+        }
+        let current_view = current.snapshot.planning_view();
+        let current_view_content = self.put_planning_view(&current_view)?;
+        if invocation.input_view().content_id() != current_view_content
+            || invocation.policy() != current.snapshot.active_policy()
+        {
+            return Err(integrity(
+                "planner-invocation-is-not-current-campaign-basis",
+            ));
+        }
+        self.validate_planner_page(&current_view, &invocation)?;
+        self.validate_planner_cursor(&current, &disposition)?;
+        self.validate_planner_disposition_page(&invocation, &disposition)?;
+        let parent = self.validate_planner_invocation_start(
+            current.snapshot.roots().coordination,
+            &invocation,
+        )?;
+
+        let next_state_content = self.put_planner_state(proposal.next_state())?;
+        if next_state_content != next_state_id.content_id() {
+            return Err(integrity("planner-next-state-publication-id-mismatch"));
+        }
+        let step = PlannerStep::new(
+            parent,
+            proposal.invocation(),
+            invocation.policy(),
+            invocation.engine(),
+            invocation.policy_artifact(),
+            invocation.input_view(),
+            disposition,
+            next_state_id,
+            proposal.usage_claim(),
+            accounting,
+            proposal.explanation().clone(),
+        )?;
+        let step_id = step.id()?;
+        let step_content = self.put_planner_step(&step)?;
+        if step_content != step_id.content_id() {
+            return Err(integrity("planner-step-publication-id-mismatch"));
+        }
+
+        let step_key = planner_step_key(step_id);
+        for key in [step_key, invocation_key] {
+            if self
+                .merkle
+                .get(current.snapshot.roots().coordination, key)?
+                .is_some()
+            {
+                return Err(integrity("planner-step-index-has-no-ancestry-transition"));
+            }
+        }
+        let mut coordination = current.snapshot.roots().coordination;
+        for key in [step_key, invocation_key, planner_head_key()] {
+            coordination = self
+                .merkle
+                .insert(coordination, key, step_content)?
+                .content_id();
+        }
+
+        let fact = CampaignFact::PlannerAdvanced(step_id);
+        let transition_content = self.put_fact(&fact)?;
+        let mut roots = current.snapshot.roots();
+        roots.coordination = coordination;
+        let next = CampaignSnapshot::successor(
+            current_id,
+            current.snapshot.lineage(),
+            current.snapshot.active_policy(),
+            roots,
+            crate::CampaignFactId::from_content_id(transition_content)?,
+        )?;
+        let next_content = self.put_snapshot(&next)?;
+        self.validate_complete_head(next_content)?;
+
+        match self
+            .refs
+            .compare_exchange(&campaign_ref, Some(current_content), next_content)?
+        {
+            RefCasOutcome::Advanced { .. } => Ok(PlannerStepResult {
+                prior_snapshot: current_id,
+                new_snapshot: CampaignSnapshotId::from_content_id(next_content)?,
+                step: step_id,
+                replayed: false,
+            }),
+            RefCasOutcome::Conflict { current, .. } => {
+                Err(CampaignRepositoryError::RefConflict { current })
+            }
+        }
+    }
+
+    fn planner_accounting(
+        &self,
+        proposal: &PlannerStepProposal,
+        measured: PlanningUsage,
+        invocation: &PlannerInvocation,
+    ) -> Result<PlanningAccounting, CampaignRepositoryError> {
+        let budget = invocation.budget();
+        let claimed = proposal.usage_claim();
+        if claimed.branch_requests > u64::from(budget.branch_requests())
+            || claimed.proposals > u64::from(budget.proposals())
+            || claimed.input_objects > u64::from(budget.input_objects())
+            || claimed.input_bytes > budget.input_bytes()
+            || claimed.fuel > budget.fuel()
+        {
+            return Err(integrity("planner-step-usage-claim-exceeds-budget"));
+        }
+        if measured.branch_requests != 0 || measured.proposals != 0 {
+            return Err(integrity("planner-measured-output-count-mismatch"));
+        }
+        if measured.input_objects != invocation.scan_page().input_objects()
+            || measured.input_bytes != invocation.scan_page().input_bytes()
+            || measured.fuel > budget.fuel()
+        {
+            return Err(integrity("planner-step-invocation-budget-exceeded"));
+        }
+        if matches!(
+            proposal.disposition(),
+            PlannerProposalDisposition::Issue { .. }
+        ) {
+            return Err(integrity("planner-step-issue-owner-is-not-implemented"));
+        }
+        Ok(PlanningAccounting {
+            branch_requests: 0,
+            proposals: 0,
+            attempts: 0,
+            deduplicated: 0,
+            input_objects: measured.input_objects,
+            input_bytes: measured.input_bytes,
+            fuel: measured.fuel,
+        })
+    }
+
+    pub(super) fn validate_planner_cursor(
+        &self,
+        current: &LoadedSnapshot,
+        disposition: &PlannerDisposition,
+    ) -> Result<(), CampaignRepositoryError> {
+        let PlannerDisposition::ContinueScan { cursor } = disposition else {
+            return Ok(());
+        };
+        let Some(after) = cursor.after() else {
+            return Ok(());
+        };
+        let request_content = after.source().content_id();
+        if self.merkle.get(
+            current.snapshot.roots().exploration,
+            map_key_content("exploration.branch-request", request_content),
+        )? != Some(request_content)
+        {
+            return Err(integrity("planner-step-scan-cursor-is-not-authoritative"));
+        }
+        let request = self.read_branch_request(request_content)?;
+        if request.branch_point() != after.branch_point() {
+            return Err(integrity("planner-step-scan-cursor-branch-point-mismatch"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_planner_page(
+        &self,
+        view: &CampaignPlanningView,
+        invocation: &PlannerInvocation,
+    ) -> Result<(), CampaignRepositoryError> {
+        let expected = self.planner_scan_page(
+            view,
+            invocation.scan_page().after(),
+            invocation.scan_page().limit(),
+        )?;
+        if expected != *invocation.scan_page() {
+            return Err(integrity("planner-invocation-scan-page-mismatch"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_planner_invocation_start(
+        &self,
+        coordination: ContentId,
+        invocation: &PlannerInvocation,
+    ) -> Result<Option<PlannerStepId>, CampaignRepositoryError> {
+        let parent = self
+            .merkle
+            .get(coordination, planner_head_key())?
+            .map(PlannerStepId::from_content_id)
+            .transpose()?;
+        let Some(parent_id) = parent else {
+            self.validate_planner_invocation_parent(None, invocation)?;
+            return Ok(None);
+        };
+
+        let parent_step = self.read_planner_step(parent_id.content_id())?;
+        self.validate_planner_invocation_parent(Some(&parent_step), invocation)?;
+        Ok(Some(parent_id))
+    }
+
+    pub(super) fn validate_planner_invocation_parent(
+        &self,
+        parent: Option<&PlannerStep>,
+        invocation: &PlannerInvocation,
+    ) -> Result<(), CampaignRepositoryError> {
+        let Some(parent_step) = parent else {
+            if invocation.scan_page().after().is_some() {
+                return Err(integrity("planner-invocation-scan-start-mismatch"));
+            }
+            return Ok(());
+        };
+        if parent_step.next_state() != invocation.planner_state() {
+            return Err(integrity("planner-step-parent-state-discontinuity"));
+        }
+        let expected_after = if parent_step.input_view() != invocation.input_view() {
+            None
+        } else {
+            match parent_step.disposition() {
+                PlannerDisposition::ContinueScan { cursor } => cursor.after(),
+                PlannerDisposition::NoWork => {
+                    return Err(integrity("planner-invocation-reopens-complete-view"));
+                }
+                PlannerDisposition::Issue { .. } => {
+                    return Err(integrity("planner-step-issue-owner-is-not-implemented"));
+                }
+            }
+        };
+        if invocation.scan_page().after() != expected_after {
+            return Err(integrity("planner-invocation-scan-start-mismatch"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_planner_disposition_page(
+        &self,
+        invocation: &PlannerInvocation,
+        disposition: &PlannerDisposition,
+    ) -> Result<(), CampaignRepositoryError> {
+        match disposition {
+            PlannerDisposition::ContinueScan { cursor }
+                if !invocation.scan_page().complete()
+                    && cursor.input_view() == invocation.input_view()
+                    && cursor.after() == invocation.scan_page().last() =>
+            {
+                Ok(())
+            }
+            PlannerDisposition::NoWork if invocation.scan_page().complete() => Ok(()),
+            PlannerDisposition::Issue { .. } => {
+                Err(integrity("planner-step-issue-owner-is-not-implemented"))
+            }
+            PlannerDisposition::ContinueScan { .. } | PlannerDisposition::NoWork => Err(integrity(
+                "planner-step-disposition-does-not-match-served-page",
+            )),
+        }
+    }
+
+    fn planner_scan_page(
+        &self,
+        view: &CampaignPlanningView,
+        after: Option<PlanningScanPosition>,
+        limit: u32,
+    ) -> Result<PlanningScanPage, CampaignRepositoryError> {
+        let limit_usize =
+            usize::try_from(limit).map_err(|_| integrity("planner-scan-page-limit-is-invalid"))?;
+        if limit_usize == 0 || limit_usize > 10_000 {
+            return Err(integrity("planner-scan-page-limit-is-invalid"));
+        }
+        if let Some(after) = after {
+            let source_content = after.source().content_id();
+            if self.merkle.get(
+                view.exploration(),
+                map_key_content("exploration.branch-request", source_content),
+            )? != Some(source_content)
+                || self.read_branch_request(source_content)?.branch_point() != after.branch_point()
+            {
+                return Err(integrity("planner-scan-page-after-is-not-authoritative"));
+            }
+        }
+
+        let retained_limit = limit_usize
+            .checked_add(1)
+            .ok_or_else(|| integrity("planner-scan-page-limit-is-invalid"))?;
+        let mut retained = BTreeMap::<PlanningScanPosition, u64>::new();
+        let mut storage_after = None;
+        loop {
+            let page = self.merkle.scan(
+                view.exploration(),
+                storage_after,
+                PLANNER_SCAN_STORAGE_PAGE_ITEMS,
+            )?;
+            for (key, value) in page.entries() {
+                if *key != map_key_content("exploration.branch-request", *value) {
+                    continue;
+                }
+                let request = self.read_branch_request(*value)?;
+                let position = PlanningScanPosition::new(request.branch_point(), request.id()?);
+                if after.is_some_and(|after| position <= after) {
+                    continue;
+                }
+                let input_bytes = u64::try_from(request.canonical_bytes().len())
+                    .map_err(|_| integrity("planner-scan-page-input-byte-overflow"))?;
+                retained.insert(position, input_bytes);
+                if retained.len() > retained_limit {
+                    retained.pop_last();
+                }
+            }
+            let Some(next) = page.next_after() else {
+                break;
+            };
+            storage_after = Some(next);
+        }
+
+        let complete = retained.len() <= limit_usize;
+        if !complete {
+            retained.pop_last();
+        }
+        let input_bytes = retained.values().try_fold(0_u64, |total, bytes| {
+            total
+                .checked_add(*bytes)
+                .ok_or_else(|| integrity("planner-scan-page-input-byte-overflow"))
+        })?;
+        PlanningScanPage::new(
+            after,
+            limit,
+            retained.into_keys().collect(),
+            complete,
+            input_bytes,
+        )
+        .map_err(Into::into)
     }
 
     /// Publishes a policy object so a later activation command can name it.
