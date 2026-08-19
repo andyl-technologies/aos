@@ -252,11 +252,12 @@ in {
           except OSError:
               return ""
 
-      def relaunch_recovery_console(smbios_values=None):
+      def reboot_recovery_console():
           offset = serial_offset()
-          target.relaunch_with_smbios_oem_strings(
-              smbios_values or [], expect_agent=False, settle=45
+          target.execute(
+              "(sleep 1; systemctl reboot) >/dev/null 2>&1 &", timeout=30
           )
+          target.agent.close()
           return wait_serial("AOS recovery>", offset)
 
       def assert_external_cmdline_absent(transcript, fragment):
@@ -1509,7 +1510,7 @@ in {
       # shell exit. Exercise a valid authenticated restore while recovery A is
       # running; it may replace only B.
       target.succeed(f"{BOOTCTL} set-oneshot recovery-a.conf && sync")
-      transcript = relaunch_recovery_console()
+      transcript = reboot_recovery_console()
       assert "AOS signed recovery environment" in transcript, transcript[-12000:]
 
       offset = serial_offset()
@@ -1578,7 +1579,7 @@ in {
           {BOOTCTL} set-oneshot recovery-a.conf
           sync
       """)
-      transcript = relaunch_recovery_console()
+      transcript = reboot_recovery_console()
       assert "AOS signed recovery environment" in transcript, transcript[-12000:]
       offset = serial_offset()
       target.send_serial("6\n")
@@ -1598,7 +1599,7 @@ in {
       )
       for copy in ["a", "b"]:
           target.succeed(f"{BOOTCTL} set-oneshot recovery-{copy}.conf && sync")
-          transcript = relaunch_recovery_console()
+          transcript = reboot_recovery_console()
           assert "AOS signed recovery environment" in transcript, transcript[-12000:]
           assert "Persistent state is locked. Networking is disabled." in transcript, transcript[-12000:]
           assert "unlocking /var via TPM2" not in transcript, transcript[-12000:]
@@ -1634,7 +1635,7 @@ in {
               {BOOTCTL} set-oneshot recovery-{copy}.conf
               sync
           """)
-          transcript = relaunch_recovery_console()
+          transcript = reboot_recovery_console()
           assert "AOS signed recovery environment" in transcript, transcript[-12000:]
 
           offset = serial_offset()
