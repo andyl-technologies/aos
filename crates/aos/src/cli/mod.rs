@@ -53,6 +53,17 @@ pub enum ProgressChoice {
     Off,
 }
 
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum ColorChoice {
+    /// Use color only when standard error is an interactive terminal.
+    #[default]
+    Auto,
+    /// Always emit terminal colors.
+    Always,
+    /// Never emit terminal colors.
+    Never,
+}
+
 #[derive(Parser)]
 #[command(name = "aos", about = "AOS build tool", version)]
 pub struct Cli {
@@ -74,6 +85,10 @@ pub struct Cli {
     /// Control progress rendering.
     #[arg(long, global = true, value_enum, default_value_t)]
     pub progress: ProgressChoice,
+
+    /// Control terminal color output.
+    #[arg(long, global = true, value_enum, default_value_t)]
+    pub color: ColorChoice,
 }
 
 #[derive(Subcommand)]

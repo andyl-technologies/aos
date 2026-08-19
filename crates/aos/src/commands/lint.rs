@@ -8,7 +8,7 @@
 use anyhow::{Context, Result};
 
 use aos_core::nix::NixRunner;
-use aos_core::output::{Printer, create_spinner};
+use aos_core::output::Printer;
 
 /// `aos lint [package]` — validate package definitions.
 ///
@@ -27,7 +27,7 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: Option<&str>) -> Result<
 
     printer.info(&format!("Running {label}..."));
 
-    let spinner = create_spinner(&format!("running {label}"));
+    let spinner = printer.activity(&format!("running {label}"));
     let result = nix
         .build(&attr, None)
         .with_context(|| format!("running {label}"));

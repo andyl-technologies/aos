@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use indicatif::{HumanBytes, MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::HumanBytes;
 use tokio::sync::Semaphore;
 
 use aos_core::nar::info as narinfo;
@@ -108,15 +108,7 @@ pub async fn run_pull(
     }
 
     // 4. Download missing paths.
-    let mp = MultiProgress::new();
-    let overall = mp.add(ProgressBar::new(missing.len() as u64));
-    overall.set_style(
-        ProgressStyle::default_bar()
-            .template("{msg} [{bar:30.cyan/dim}] {pos}/{len}")
-            .expect("valid template")
-            .progress_chars("=> "),
-    );
-    overall.set_message("Downloading");
+    let overall = printer.items("Downloading cache paths", missing.len() as u64);
 
     let effective_jobs = if jobs == 0 { 1 } else { jobs };
     let semaphore = Arc::new(Semaphore::new(effective_jobs));

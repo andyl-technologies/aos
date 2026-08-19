@@ -181,6 +181,9 @@ Global output modes are explicit:
 | `--progress tty` | Force an updating terminal display |
 | `--progress plain` | Emit stable newline-delimited progress updates |
 | `--progress off` | Suppress progress while retaining final results and errors |
+| `--color auto` | Use color on an interactive terminal and honor `NO_COLOR` |
+| `--color always` | Force terminal colors |
+| `--color never` | Disable terminal colors |
 | `-vv` | Also stream Nix subprocess standard error |
 | `-vvv` | Also print the Nix command line |
 

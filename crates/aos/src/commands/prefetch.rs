@@ -18,14 +18,14 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use base64::Engine;
 use glob::glob;
-use indicatif::{HumanBytes, MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::HumanBytes;
 use regex::Regex;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 
 use aos_core::nix::NixRunner;
-use aos_core::output::{OutputMode, Printer};
+use aos_core::output::{OutputMode, Printer, TransferProgress};
 
 // -----------------------------------------------------------------------
 // Nix-evaluated source metadata
@@ -82,7 +82,7 @@ struct FetchOk {
 async fn try_one_url(
     client: &reqwest::Client,
     url: &str,
-    pb: &ProgressBar,
+    progress: &mut TransferProgress,
     min_speed: u64,
     speed_window: Duration,
 ) -> Result<FetchOk> {
@@ -97,13 +97,7 @@ async fn try_one_url(
         .with_context(|| format!("HTTP error {url}"))?;
 
     if let Some(len) = response.content_length() {
-        pb.set_length(len);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("    {spinner:.cyan} {msg} [{bar:20.cyan/dim}] {bytes}/{total_bytes} ({bytes_per_sec})")
-                .expect("valid template")
-                .progress_chars("=> "),
-        );
+        progress.set_total(len);
     }
 
     let mut hasher = Sha256::new();
@@ -119,7 +113,7 @@ async fn try_one_url(
         hasher.update(&chunk);
         downloaded += chunk.len() as u64;
         window_bytes += chunk.len() as u64;
-        pb.set_position(downloaded);
+        progress.set_position(downloaded);
 
         // Check minimum speed after the window elapses.
         let window_elapsed = window_start.elapsed();
@@ -154,13 +148,13 @@ async fn try_one_url(
 async fn fetch_hash(
     client: &reqwest::Client,
     urls: &[String],
-    pb: ProgressBar,
+    mut progress: TransferProgress,
     name: &str,
     min_speed: u64,
     speed_window: Duration,
 ) -> Result<FetchOk> {
     if urls.is_empty() {
-        pb.finish_and_clear();
+        progress.finish();
         anyhow::bail!("no URLs provided for {name}");
     }
 
@@ -168,21 +162,14 @@ async fn fetch_hash(
 
     for (i, url) in urls.iter().enumerate() {
         if i > 0 {
-            pb.set_message(format!("{name} (mirror {}/{})", i + 1, urls.len()));
-            pb.set_position(0);
-            pb.set_length(0);
-            // Reset to spinner style for new attempt.
-            pb.set_style(
-                ProgressStyle::default_spinner()
-                    .template("    {spinner:.cyan} {msg} ({bytes}, {elapsed})")
-                    .expect("valid template")
-                    .tick_chars("-\\|/ "),
-            );
+            progress.phase(&format!("{name} (mirror {}/{})", i + 1, urls.len()));
+            progress.set_position(0);
+            progress.set_total(0);
         }
 
-        match try_one_url(client, url, &pb, min_speed, speed_window).await {
+        match try_one_url(client, url, &mut progress, min_speed, speed_window).await {
             Ok(ok) => {
-                pb.finish_and_clear();
+                progress.finish();
                 return Ok(ok);
             }
             Err(err) => {
@@ -192,8 +179,8 @@ async fn fetch_hash(
         }
     }
 
-    pb.finish_and_clear();
-    Err(last_err.unwrap())
+    progress.finish();
+    Err(last_err.context("all source mirrors failed without reporting an error")?)
 }
 
 // -----------------------------------------------------------------------
@@ -348,31 +335,16 @@ pub fn run(
         .build()
         .context("creating tokio runtime")?;
 
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(connect_timeout))
+        .timeout(Duration::from_secs(600))
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .context("building prefetch HTTP client")?;
     let results: Vec<(String, Result<FetchOk>)> = rt.block_on(async {
-        let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(connect_timeout))
-            .timeout(Duration::from_secs(600))
-            .redirect(reqwest::redirect::Policy::limited(10))
-            .build()
-            .expect("valid HTTP client");
-
         let semaphore = Arc::new(Semaphore::new(jobs));
         let client = Arc::new(client);
-
-        let mp = MultiProgress::new();
-        let overall = mp.add(ProgressBar::new(entries.len() as u64));
-        overall.set_style(
-            ProgressStyle::default_bar()
-                .template("  [{bar:30.cyan/dim}] {pos}/{len}  {msg}")
-                .expect("valid template")
-                .progress_chars("=> "),
-        );
-        overall.set_message("sources");
-
-        let spinner_style = ProgressStyle::default_spinner()
-            .template("    {spinner:.cyan} {msg} ({bytes}, {elapsed})")
-            .expect("valid template")
-            .tick_chars("-\\|/ ");
+        let overall = Arc::new(printer.items("Prefetching sources", entries.len() as u64));
 
         let mut handles = Vec::new();
 
@@ -381,19 +353,16 @@ pub fn run(
                 .clone()
                 .acquire_owned()
                 .await
-                .expect("prefetch semaphore closed unexpectedly");
+                .context("prefetch concurrency controller closed unexpectedly")?;
             let client = client.clone();
             let urls = info.urls.clone();
             let name = name.clone();
             let overall = overall.clone();
-
-            let pb = mp.insert_before(&overall, ProgressBar::new_spinner());
-            pb.set_style(spinner_style.clone());
-            pb.set_message(name.clone());
-            pb.enable_steady_tick(Duration::from_millis(120));
+            let progress = printer.transfer(&name, 0);
 
             handles.push(tokio::spawn(async move {
-                let result = fetch_hash(&client, &urls, pb, &name, min_speed, speed_window).await;
+                let result =
+                    fetch_hash(&client, &urls, progress, &name, min_speed, speed_window).await;
                 drop(permit);
                 overall.inc(1);
                 (name, result)
@@ -416,8 +385,8 @@ pub fn run(
         }
 
         overall.finish_and_clear();
-        results
-    });
+        Ok::<_, anyhow::Error>(results)
+    })?;
 
     let wall_elapsed = wall_start.elapsed();
 
