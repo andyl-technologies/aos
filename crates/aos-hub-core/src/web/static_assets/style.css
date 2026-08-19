@@ -653,7 +653,7 @@ button:disabled { color: var(--dim); border-color: var(--rule); cursor: default;
 /* Every text-like input plus selects — matched by exclusion so a new field
  * type (url, number, tel, …) is styled automatically and never slips through
  * looking like an unstyled browser default. Buttons/checkboxes/radios opt out. */
-input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="file"]),
+input:where(:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="file"])),
 textarea,
 select {
   font: inherit;
