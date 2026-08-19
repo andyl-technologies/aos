@@ -13,8 +13,7 @@
 //! - [`classify`] — the fragile string parse of stock-Nix throw strings into
 //!   the [`EvalClass`] seam (build-spec §2).
 //! - [`stock`] — the production [`NixEvaluator`] that renders `entry.nix`,
-//!   shells out to `nix-instantiate --store dummy:// --eval --strict --json
-//!   --pure-eval
+//!   shells out to `nix-instantiate --eval --strict --json --pure-eval
 //!   --option restrict-eval true
 //!   --option allow-import-from-derivation false` with an empty environment,
 //!   and classifies the result, plus the registry-backed
