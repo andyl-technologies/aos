@@ -334,16 +334,62 @@ RetainExactClosure    EvictMaterialization
 GetHealth
 ```
 
-`SubmitAttempt` names an immutable `AttemptSpecId`, canonical `AttemptId`,
-idempotent operational `AssignmentId`, coordinator epoch, bounded resource
-requirements, and retention intent. It returns one of:
+The first bounded assignment messages are:
+
+```text
+SubmitAttemptRequestV1 = version | assignment_id | daemon_epoch | lineage_id |
+                         attempt_id | resource_limits | retention_intent
+
+resource_limits = maximum_vcpus | maximum_resident_bytes |
+                  maximum_disk_bytes | maximum_execution_quanta
+
+SubmitAttemptResponseV1 = version | assignment_id | daemon_epoch | attempt_id |
+                          request_digest | disposition
+```
+
+The canonical `AttemptId` names the immutable `Attempt` record and is itself
+the execution specification; the protocol deliberately does not create a
+second `AttemptSpecId` semantic authority. `CampaignLineageId` supplies the
+compatibility basis the executor must authenticate. CPU, resident-memory, and
+execution-quantum ceilings are nonzero; a zero writable-disk allowance is
+valid. Retention is one of discard, retain on modeled failure, or retain
+always. These fixed-field messages are strictly decoded and limited to 4 KiB.
+
+`AssignmentId` and the daemon epoch are nonzero 128-bit operational values.
+The response repeats the assignment, epoch, and attempt and carries a
+domain-separated digest over every canonical request field. An untrusted
+adapter must reject a response whose digest does not match its exact request,
+including resource and retention fields. `SubmitAttempt` returns one of:
 
 ```text
 accepted(execution ID)
 already-running(execution ID)
-already-completed(execution-result ID)
-rejected(incompatible | backpressure | unavailable-input | unauthorized)
+already-completed(observation ID)
+rejected(incompatible | backpressure | unavailable-input | unauthorized |
+         conflicting-assignment)
 ```
+
+Exact retry of one assignment ID and byte-identical request reproduces its
+original response. Reusing that ID with any changed canonical field returns
+`conflicting-assignment`; it is never a transport error or a cached response
+from the prior request. Retrying transient backpressure or unavailable input
+uses a fresh assignment ID. Incompatible, unauthorized, and conflicting
+assignments require changed compatibility, authority, or caller state rather
+than a blind retry.
+
+The implementor-facing Rust `ExecutorService` trait implements this same vocabulary.
+Incompatibility, backpressure, unavailable input, and authorization are normal
+protocol outcomes rather than transport errors. A coordinator-facing
+`ExecutorClient` wraps both direct and future RPC services and rejects a
+response that does not bind the complete request; raw service invocation is not
+a coordinator path. The repository then authenticates the named lineage and
+attempt closure for every outcome. Before accepting `already-completed`, it
+also loads the full observation closure, requires its `AttemptId` to equal the
+request, and requires the attempt start and observed child to belong to the
+named lineage's exact `ScenarioArtifactId`, not merely the same semantic
+`ScenarioDefId`. The loopback transport, executor capability validation, and
+production daemon execution ledger remain subsequent implementation checkpoints
+and must consume these exact canonical bytes and validators.
 
 An `AssignmentId`, `ExecutionId`, executor identity, coordinator epoch, retry
 count, PID, materialization tier, and wall time are operational. They never

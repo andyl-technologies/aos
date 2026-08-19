@@ -25,7 +25,7 @@ use crate::{
     CandidateGeneratorAlgorithm, CandidateGeneratorSpec, CandidateGeneratorSpecId, CandidateSource,
     ChoiceDomain, ChoiceDomainId, ChoiceGroup, ChoiceGroupId, ChoiceOpportunity,
     ChoiceOpportunityId, ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId,
-    ControlRequest, CoverageProjection, CoverageProjectionId, DebuggerAuthorityKey,
+    ControlRequest, CoverageProjection, CoverageProjectionId, DaemonEpoch, DebuggerAuthorityKey,
     DebuggerSubmission, ExpansionState, ExpansionStateId, MeasurementSet, MeasurementSetId,
     MerkleMap, MerkleMapRoot, ObjectEnvelope, Observation, ObservationId, PlannerAuthorityKey,
     PlannerDisposition, PlannerEngine, PlannerInvocation, PlannerInvocationId,
@@ -34,7 +34,7 @@ use crate::{
     PlanningUsage, PolicyActivation, PolicyArtifact, PropertyVerdict, PropertyVerdictSet,
     PropertyVerdictSetId, Proposal, ProposalId, ScenarioArtifact, ScenarioArtifactId,
     ScenarioDefId, SelectableDeclaration, SelectableId, Selection, SelectionId, StopCondition,
-    StopOutcome,
+    StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
 };
 
 const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;
@@ -298,6 +298,7 @@ pub struct CampaignRepository {
 
 mod ancestry;
 mod closure;
+mod execution;
 mod observation;
 mod planner_issue;
 mod projection;
@@ -307,7 +308,7 @@ mod transactions;
 
 pub use queue::{
     AttemptQueue, AttemptQueueCursor, AttemptQueueError, AttemptReservation, ClaimableAttemptPage,
-    DaemonEpoch, WorkerSlotId,
+    WorkerSlotId,
 };
 
 struct LoadedSnapshot {
@@ -637,10 +638,11 @@ mod tests {
     use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
 
     use crate::{
-        AlternativeId, BooleanDomain, BranchBudget, BudgetGrant, CampaignFactId, CampaignMode,
-        CampaignPlanningView, CampaignSeed, CandidateGeneratorAlgorithm, ChoiceClassContext,
-        ChoiceCoordinate, ChoicePolicy, ChoiceSource, ChoiceValue, ConfigurationId,
-        ContinuationState, DebugSessionId, DiscreteAlternative, DiscreteDomain, ExplorerPolicy,
+        AlternativeId, AssignmentId, AttemptResourceLimits, BooleanDomain, BranchBudget,
+        BudgetGrant, CampaignFactId, CampaignMode, CampaignPlanningView, CampaignSeed,
+        CandidateGeneratorAlgorithm, ChoiceClassContext, ChoiceCoordinate, ChoicePolicy,
+        ChoiceSource, ChoiceValue, ConfigurationId, ContinuationState, DebugSessionId,
+        DiscreteAlternative, DiscreteDomain, ExecutionId, ExecutionRetentionIntent, ExplorerPolicy,
         FairnessPolicy, GuidanceEvidence, MeasurementSeries, MetricValue, PlannerEngine,
         PlannerProposalDisposition, PlannerState, PlannerStepProposal, PlanningBudget,
         PlanningUsage, PolicyArtifact, ProgressiveWideningPolicy, PropertyEvidence, PuctPolicy,
@@ -3893,7 +3895,9 @@ mod tests {
 
         assert_eq!(
             DaemonEpoch::from_bytes([0; 16]),
-            Err(AttemptQueueError::ZeroDaemonEpoch)
+            Err(CampaignCodecError::InvalidValue {
+                reason: "daemon epoch is all zero"
+            })
         );
         let first_epoch = DaemonEpoch::from_bytes([1; 16]).expect("first daemon epoch");
         assert!(matches!(
@@ -3987,6 +3991,138 @@ mod tests {
                 .expect("post-completion reservation attempt"),
             None
         );
+    }
+
+    #[test]
+    fn executor_responses_authenticate_request_attempt_and_lineage() {
+        let (repository, lineage, policy) = fixture();
+        let (_, admitted, observation) = admitted_observation_fixture(
+            &repository,
+            &lineage,
+            &policy,
+            "executor-response-validation",
+        );
+        let observed = repository
+            .publish_observation(
+                "executor-response-validation",
+                admitted.new_snapshot,
+                &observation,
+            )
+            .expect("publish executor observation");
+        let resources =
+            AttemptResourceLimits::new(2, 512 * 1024 * 1024, 0, 50_000).expect("executor limits");
+        let request = SubmitAttemptRequest::new(
+            AssignmentId::from_bytes([0x81; 16]).expect("assignment"),
+            DaemonEpoch::from_bytes([0x82; 16]).expect("daemon epoch"),
+            lineage.id().expect("lineage id"),
+            admitted.attempt,
+            resources,
+            ExecutionRetentionIntent::RetainOnFailure,
+        )
+        .expect("executor request");
+        let completed = SubmitAttemptResponse::new(
+            &request,
+            SubmitAttemptDisposition::AlreadyCompleted {
+                observation: observed.observation,
+            },
+        )
+        .expect("completed response");
+        repository
+            .validate_executor_response(&request, &completed)
+            .expect("valid completed response");
+
+        let (_, other_admitted, other_observation) = admitted_observation_fixture(
+            &repository,
+            &lineage,
+            &policy,
+            "executor-response-other-attempt",
+        );
+        let other_observed = repository
+            .publish_observation(
+                "executor-response-other-attempt",
+                other_admitted.new_snapshot,
+                &other_observation,
+            )
+            .expect("publish other observation");
+        let wrong_attempt = SubmitAttemptResponse::new(
+            &request,
+            SubmitAttemptDisposition::AlreadyCompleted {
+                observation: other_observed.observation,
+            },
+        )
+        .expect("wrong-attempt response");
+        assert!(matches!(
+            repository.validate_executor_response(&request, &wrong_attempt),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "executor-completion-attempt-mismatch"
+            })
+        ));
+
+        let wrong_scenario = lineage.scenario();
+        let wrong_genesis =
+            ConfigurationId::from_hash(CampaignHash::derive("test", b"wrong-executor-genesis"));
+        let wrong_scenario_content = repository
+            .publish_scenario_artifact(wrong_scenario, 1, b"different scenario content".to_vec())
+            .expect("wrong scenario artifact");
+        let wrong_genesis_content = repository
+            .publish_configuration_artifact(
+                wrong_scenario,
+                wrong_scenario_content,
+                wrong_genesis,
+                1,
+                b"wrong genesis".to_vec(),
+            )
+            .expect("wrong genesis artifact");
+        let wrong_lineage = CampaignLineage::new(
+            wrong_scenario,
+            wrong_scenario_content,
+            wrong_genesis,
+            wrong_genesis_content,
+            "crucible-test",
+            "qemu-test",
+            BTreeMap::from([("control".to_owned(), 1)]),
+            1,
+            1,
+        )
+        .expect("wrong lineage");
+        repository
+            .put_lineage(&wrong_lineage)
+            .expect("publish wrong lineage");
+        let wrong_lineage_request = SubmitAttemptRequest::new(
+            AssignmentId::from_bytes([0x83; 16]).expect("wrong-lineage assignment"),
+            request.daemon_epoch(),
+            wrong_lineage.id().expect("wrong lineage id"),
+            request.attempt(),
+            resources,
+            request.retention(),
+        )
+        .expect("wrong-lineage request");
+        let wrong_lineage_response = SubmitAttemptResponse::new(
+            &wrong_lineage_request,
+            SubmitAttemptDisposition::Accepted {
+                execution: ExecutionId::from_bytes([0x84; 16]).expect("execution"),
+            },
+        )
+        .expect("wrong-lineage response");
+        assert!(matches!(
+            repository.validate_executor_response(&wrong_lineage_request, &wrong_lineage_response),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "executor-attempt-lineage-mismatch"
+            })
+        ));
+        let wrong_lineage_completed = SubmitAttemptResponse::new(
+            &wrong_lineage_request,
+            SubmitAttemptDisposition::AlreadyCompleted {
+                observation: observed.observation,
+            },
+        )
+        .expect("wrong-lineage completed response");
+        assert!(matches!(
+            repository.validate_executor_response(&wrong_lineage_request, &wrong_lineage_completed),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "executor-attempt-lineage-mismatch"
+            })
+        ));
     }
 
     #[test]

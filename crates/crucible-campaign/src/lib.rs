@@ -14,6 +14,7 @@ mod artifact;
 mod authority;
 mod choice;
 mod codec;
+mod execution;
 mod exploration;
 mod identity;
 mod merkle;
@@ -35,6 +36,11 @@ pub use choice::{
     ModelSampleVerifier, SelectableDeclaration, Selection, SelectionOrigin,
 };
 pub use codec::CampaignCodecError;
+pub use execution::{
+    AssignmentId, AttemptResourceLimits, DaemonEpoch, ExecutionId, ExecutionRetentionIntent,
+    ExecutorClient, ExecutorClientError, ExecutorRejection, ExecutorService,
+    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
+};
 pub use exploration::{
     Attempt, AttemptAdmission, AttemptAdmissionRole, AttemptStart, BranchBudget, BranchPath,
     BranchRequest, BranchRequestCause, CandidateSource, ContinuationState, ExpansionState,
@@ -76,7 +82,7 @@ pub use repository::{
     AttemptAdmissionResult, AttemptQueue, AttemptQueueCursor, AttemptQueueError,
     AttemptReservation, BranchRequestResult, CampaignCommandResult, CampaignHead,
     CampaignRepository, CampaignRepositoryError, ChoiceDiscoveryResult, ClaimableAttemptPage,
-    DaemonEpoch, ObservationDisposition, ObservationResult, PlannerStepResult, ProposalResult,
+    ObservationDisposition, ObservationResult, PlannerStepResult, ProposalResult,
     ResolvedSelection, WorkerSlotId,
 };
 

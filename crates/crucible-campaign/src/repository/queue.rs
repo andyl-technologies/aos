@@ -8,30 +8,6 @@
 
 use super::*;
 
-/// Process-local daemon incarnation attached only to volatile reservations.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DaemonEpoch([u8; 16]);
-
-impl DaemonEpoch {
-    /// Builds a nonzero caller-generated daemon epoch.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for the all-zero sentinel.
-    pub fn from_bytes(bytes: [u8; 16]) -> Result<Self, AttemptQueueError> {
-        if bytes == [0; 16] {
-            return Err(AttemptQueueError::ZeroDaemonEpoch);
-        }
-        Ok(Self(bytes))
-    }
-
-    /// Returns the exact operational epoch bytes.
-    #[must_use]
-    pub const fn as_bytes(self) -> [u8; 16] {
-        self.0
-    }
-}
-
 /// Process-local worker slot identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WorkerSlotId(u32);
@@ -195,9 +171,6 @@ impl AttemptQueue {
 /// Failure while managing bounded local attempt reservations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 pub enum AttemptQueueError {
-    /// The all-zero daemon epoch sentinel was supplied.
-    #[error("daemon epoch must be nonzero")]
-    ZeroDaemonEpoch,
     /// A queue was configured without any reservation capacity.
     #[error("attempt queue reservation capacity must be nonzero")]
     ZeroCapacity,
