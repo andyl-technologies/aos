@@ -59,7 +59,7 @@ pub fn emit_link_frame_with_injected_draws_at_position(
 ) -> Result<LinkEmitDecisionRecord, DeviceError> {
     let faults = link.faults().clone();
     if draws.additional_loss.len() != faults.additional_loss.len()
-        || draws.corrupt_bits.len() != faults.corrupt_bit_draws() as usize
+        || draws.corruption_selectors.len() != faults.corruption_selector_draws() as usize
     {
         return Err(DeviceError::InvalidInjectedDraws {
             message: String::from(
@@ -69,7 +69,7 @@ pub fn emit_link_frame_with_injected_draws_at_position(
     }
     let consumed = 5_u64
         .saturating_add(draws.additional_loss.len() as u64)
-        .saturating_add(draws.corrupt_bits.len() as u64);
+        .saturating_add(draws.corruption_selectors.len() as u64);
     let outcome = link.emit(frame, &draws, policy)?;
     link.set_rng_position_for_branch(rng_position.saturating_add(consumed));
     let decisions = link_rng_draw_decisions(stream, &draws);

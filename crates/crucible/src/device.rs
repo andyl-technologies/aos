@@ -42,7 +42,7 @@ fn link_rng_draw_decisions(stream: &RngStreamId, draws: &FrameDraws) -> Vec<Deci
         .into_iter()
         .chain(draws.additional_loss.iter().copied())
         .chain([draws.duplicate, draws.corrupt])
-        .chain(draws.corrupt_bits.iter().copied())
+        .chain(draws.corruption_selectors.iter().copied())
         .map(|value| {
             Decision::RngDraw(RngDecision {
                 stream: stream.clone(),

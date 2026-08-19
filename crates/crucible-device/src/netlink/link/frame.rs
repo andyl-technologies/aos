@@ -317,7 +317,7 @@ pub struct ResolveOutcome {
 ///
 /// Each probabilistic effect draws from this struct in the order the model
 /// applies them: jitter, reorder, loss rates, duplicate, corrupt (with
-/// `corrupt_bits` supplying selectors for payload corruption strategies).
+/// `corruption_selectors` supplying draws for payload corruption strategies).
 /// Supplying the same draws and the same frame yields byte-identical deliveries
 /// ([IO-4], [IO-22]).
 ///
@@ -340,11 +340,10 @@ pub struct FrameDraws {
     pub corrupt: u64,
     /// Corruption selector draws.
     ///
-    /// Legacy bit-flip-only faults interpret each draw as a bit position.
-    /// Strategy-based corruption consumes these in strategy order: bit flips use
+    /// Strategies consume these in declaration order: bit flips use
     /// bit-position selectors, field mutation uses one byte selector, and
     /// truncation uses one truncation-length selector.
-    pub corrupt_bits: Vec<u64>,
+    pub corruption_selectors: Vec<u64>,
 }
 
 impl FrameDraws {
@@ -371,7 +370,7 @@ impl FrameDraws {
     pub fn from_rng_for_faults(rng: &mut DeviceRng, faults: &LinkFaults) -> Self {
         Self::from_rng_parts(
             rng,
-            faults.corrupt_bit_draws(),
+            faults.corruption_selector_draws(),
             faults.additional_loss.len(),
         )
     }
@@ -390,9 +389,9 @@ impl FrameDraws {
         }
         let duplicate = rng.next_u64();
         let corrupt = rng.next_u64();
-        let mut corrupt_bits = Vec::with_capacity(selector_draws as usize);
+        let mut corruption_selectors = Vec::with_capacity(selector_draws as usize);
         for _ in 0..selector_draws {
-            corrupt_bits.push(rng.next_u64());
+            corruption_selectors.push(rng.next_u64());
         }
         Self {
             jitter,
@@ -401,7 +400,7 @@ impl FrameDraws {
             additional_loss,
             duplicate,
             corrupt,
-            corrupt_bits,
+            corruption_selectors,
         }
     }
 }

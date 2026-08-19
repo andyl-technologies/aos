@@ -261,7 +261,7 @@ impl NetLink {
         // --- corrupt (IO-20): mutate payload bytes deterministically ---
         let mut payload = frame.payload.clone();
         if self.faults.corrupt.fires(draws.corrupt) {
-            corrupt_link_payload(&self.faults, &mut payload, &draws.corrupt_bits);
+            corrupt_link_payload(&self.faults, &mut payload, &draws.corruption_selectors);
         }
 
         let mut planned = vec![(delivery_icount, payload.clone())];

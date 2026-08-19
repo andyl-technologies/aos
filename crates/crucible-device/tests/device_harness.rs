@@ -464,7 +464,7 @@ fn link_script() -> Script<LinkRequest> {
                     additional_loss: Vec::new(),
                     duplicate: 0,
                     corrupt: 0,
-                    corrupt_bits: vec![3],
+                    corruption_selectors: vec![3],
                 },
             ),
         )
@@ -479,7 +479,7 @@ fn link_script() -> Script<LinkRequest> {
                     additional_loss: Vec::new(),
                     duplicate: 1,
                     corrupt: 1,
-                    corrupt_bits: vec![17],
+                    corruption_selectors: vec![17],
                 },
             ),
         )
@@ -494,7 +494,7 @@ fn link_script() -> Script<LinkRequest> {
                     additional_loss: Vec::new(),
                     duplicate: 1,
                     corrupt: 0,
-                    corrupt_bits: vec![0],
+                    corruption_selectors: vec![0],
                 },
             ),
         )
@@ -538,7 +538,7 @@ fn link_divergence_localizes_first_differing_payload() {
                     duplicate: 0,
                     corrupt: 0,
                     // Perturb only the corrupt bit position (3 -> 4).
-                    corrupt_bits: vec![4],
+                    corruption_selectors: vec![4],
                 },
             ),
         )
@@ -553,7 +553,7 @@ fn link_divergence_localizes_first_differing_payload() {
                     additional_loss: Vec::new(),
                     duplicate: 1,
                     corrupt: 1,
-                    corrupt_bits: vec![17],
+                    corruption_selectors: vec![17],
                 },
             ),
         )
@@ -568,7 +568,7 @@ fn link_divergence_localizes_first_differing_payload() {
                     additional_loss: Vec::new(),
                     duplicate: 1,
                     corrupt: 0,
-                    corrupt_bits: vec![0],
+                    corruption_selectors: vec![0],
                 },
             ),
         )
