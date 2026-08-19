@@ -34,6 +34,97 @@
   };
   qemuDoorbellNoPatch = import ./phase1-qemu-doorbell-no-patch.nix {inherit pkgs lib qemuPackage;};
   qemuDiagnosticPatchesDevOnly = import ./phase1-qemu-diagnostic-patches-dev-only.nix {inherit pkgs lib qemuPackage;};
+  qemuNvcpuFingerprint = import ./phase2-qemu-nvcpu-fingerprint.nix {
+    inherit pkgs lib;
+    attrPath = "${attrPath}.genesisObservationBoundary";
+    taskIds = ["T-QEMU-0086"];
+  };
+  qemuGenesisObservationBoundary = pkgs.mkDerivation {
+    pname = "crucible-phase2-qemu-genesis-observation-boundary";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.gnugrep pkgs.tar pkgs.xz];
+    phases = [
+      {
+        name = "verify-genesis-observation-boundary";
+        script = ''
+          set -eu
+          mkdir -p "$out" "$TMPDIR/stock-qemu"
+
+          grep -q '^PASS$' "${qemuNvcpuFingerprint}/result"
+          grep -q '"kind":"definition"' "${qemuNvcpuFingerprint}/qemu-nvcpu-definition.jsonl"
+          grep -q '"definition_pause_requested":true' "${qemuNvcpuFingerprint}/qemu-nvcpu-definition.jsonl"
+          grep -q '"definition_callback_completed":true' "${qemuNvcpuFingerprint}/qemu-nvcpu-definition.jsonl"
+          grep -q '"definition_pause_status":0' "${qemuNvcpuFingerprint}/qemu-nvcpu-definition.jsonl"
+          grep -q '"observed_icount":0' "${qemuNvcpuFingerprint}/qemu-nvcpu-definition.jsonl"
+          grep -q '"sample_register_failures":0' "${qemuNvcpuFingerprint}/qemu-nvcpu-definition.jsonl"
+          grep -q '"register_read_failures":0' "${qemuNvcpuFingerprint}/qemu-nvcpu-definition.jsonl"
+
+          tar -xf ${qemuPackage.src} -C "$TMPDIR/stock-qemu"
+          ! grep -q 'qemu_plugin_crucible_request_terminal_pause' \
+            "$TMPDIR/stock-qemu/qemu-${qemuPackage.version}/include/qemu/qemu-plugin.h"
+
+          cat > "$out/result" <<'RESULT'
+          PASS
+          gate=gate:patch-microtests
+          patch=0086-crucible-genesis-observation-boundary.patch
+          patched_fixture_exercised=true
+          stock_negative_control=true
+          qemu_package=${qemuPackage}
+          qemu_package_version=${qemuPackage.version}
+          genesis_callback_completed_before_qmp_quit=true
+          genesis_boundary_bql_prelaunch_icount_zero=true
+          all_vcpu_register_observation_complete=true
+          plugin_exit_sampling_fallback=false
+          RESULT
+        '';
+      }
+    ];
+  };
+  qemuDeterministicRcuQuiescence = pkgs.mkDerivation {
+    pname = "crucible-phase2-qemu-deterministic-rcu-quiescence";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.gnugrep pkgs.tar pkgs.xz];
+    phases = [
+      {
+        name = "verify-deterministic-rcu-quiescence";
+        script = ''
+          set -eu
+          mkdir -p "$out" "$TMPDIR/stock-qemu"
+
+          grep -q '^PASS$' "${qemuNvcpuFingerprint}/result"
+          grep -q '^real_qemu_adversary=second-run-host-cpu-load$' \
+            "${qemuNvcpuFingerprint}/result"
+          grep -q '^real_qemu_comparison=canonical-rust-stream$' \
+            "${qemuNvcpuFingerprint}/result"
+          grep -q '^PASS$' \
+            "${qemuNvcpuFingerprint}/fingerprint-compare.result"
+
+          tar -xf ${qemuPackage.src} -C "$TMPDIR/stock-qemu"
+          stock_rr="$TMPDIR/stock-qemu/qemu-${qemuPackage.version}/accel/tcg/tcg-accel-ops-rr.c"
+          grep -q 'rr_kick_next_cpu();' "$stock_rr"
+          ! grep -q 'if (rr_crucible_sim_mode())' "$stock_rr"
+
+          cat > "$out/result" <<'RESULT'
+          PASS
+          gate=gate:patch-microtests
+          patch=0087-crucible-deterministic-rcu-quiescence.patch
+          patched_fixture_exercised=true
+          stock_negative_control=true
+          qemu_package=${qemuPackage}
+          qemu_package_version=${qemuPackage.version}
+          real_smp_vcpus=4
+          host_load_adversary=true
+          canonical_trace_byte_identical=true
+          deterministic_ipi_evidence=true
+          rcu_quiescence_bounded_by_rr_quantum=true
+          ordinary_qemu_forced_kick_preserved=true
+          RESULT
+        '';
+      }
+    ];
+  };
   patchFiles =
     builtins.sort builtins.lessThan
     (builtins.filter
@@ -551,6 +642,14 @@
         taskIds = ["T-QEMU-0085"];
         rejectionAtomicity = true;
       };
+    }
+    {
+      patch = "0086-crucible-genesis-observation-boundary.patch";
+      check = qemuGenesisObservationBoundary;
+    }
+    {
+      patch = "0087-crucible-deterministic-rcu-quiescence.patch";
+      check = qemuDeterministicRcuQuiescence;
     }
   ];
 

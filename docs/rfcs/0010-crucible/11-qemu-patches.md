@@ -1296,6 +1296,47 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   not read or branch on the counters.
 - **Risk:** D.
 
+### crucible-genesis-observation-boundary — sample the exact prelaunch state
+
+- **Patch:** `0086-crucible-genesis-observation-boundary.patch`.
+- **Enforces:** [DET-1], [QFP-REG-1], [QFP-STATE-2].
+- **Mechanism:** extends the BQL-held observation callback to admit exactly one
+  additional run state: prelaunch while raw icount is zero. The independent
+  definition process uses that boundary to read every realized vCPU, RAM, and
+  registered device section after machine initialization but before any guest
+  instruction. Running and terminal-pause behavior is unchanged; prelaunch
+  after execution and every other stopped state fail closed.
+- **Micro-test:** launches a real four-vCPU QEMU process with `-S`, waits for
+  exactly one complete callback-authorized definition record before QMP quit,
+  and requires zero icount, all-vCPU register manifests, and complete nonzero
+  RAM and device digests. Stock QEMU is the negative API control.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — the new branch is reachable only
+  from the additive Crucible callback at exact prelaunch genesis and performs
+  observation only. Ordinary QEMU launch and plugin exit retain their existing
+  paths.
+- **Risk:** D.
+
+### crucible-deterministic-rcu-quiescence — remove host-timed sim exits
+
+- **Patch:** `0087-crucible-deterministic-rcu-quiescence.patch`.
+- **Enforces:** [DET-1], [DET-29], [QEMU-43].
+- **Mechanism:** the single-threaded TCG forced-RCU notifier retains its
+  ordinary `rr_kick_next_cpu()` behavior except when precise Crucible sim mode
+  has a nonzero pinned RR quantum. In that bounded mode it does not let a host
+  RCU worker asynchronously choose a translation-block exit, because doing so
+  can change the guest instruction at which a pending interrupt is observed.
+  The finite remaining RR budget provides the next natural RCU quiescent state.
+- **Micro-test:** runs the real four-vCPU deterministic fingerprint workload
+  twice through a non-cadence terminal horizon, adds sustained host CPU load to
+  only the second run, and requires the canonical all-vCPU, RR-switch,
+  deterministic-IPI, RAM, and device evidence to compare equal. The stock
+  source proves the forced-kick path remains the default outside the guarded
+  mode.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — accelerators other than sim,
+  imprecise icount, and sim configurations without a pinned quantum execute the
+  prior forced-kick statement unchanged.
+- **Risk:** D.
+
 ### crucible-whitebox-guest-write — return synchronous doorbell replies
 
 - **Enforces:** [PLUG-34], [PLUG-51], [GHC-32], [GHC-37].
