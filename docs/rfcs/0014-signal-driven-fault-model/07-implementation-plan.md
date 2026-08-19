@@ -424,6 +424,12 @@ produce live patched-QEMU architectural or device evidence.
   expose the unique vCPU-zero, position-zero scheduler coordinate at the exact
   raw-zero preselection boundary without mutating serialized scheduler state,
   while rejecting every later invalid or arbitrarily unowned cursor.
+- [x] **T-QEMU-0092** Implement
+  [`crucible-canonical-terminal-rr-cursor`](14-qemu-fault-patches/43-canonical-terminal-rr-cursor.md):
+  project a live current-owner observation at the exact terminal quantum
+  position onto the next scheduler-owned vCPU at position zero without
+  mutating serialized scheduler state, while retaining every other cursor
+  rejection.
 - [x] **T-QEMU-0060** Implement
   [`crucible-block-typed-errors`](14-qemu-fault-patches/14-block-typed-errors.md):
   the closed block result ABI, exact Linux errno translation, malformed-result

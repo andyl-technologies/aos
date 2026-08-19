@@ -1439,6 +1439,23 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   follows the prior fail-closed path.
 - **Risk:** D.
 
+### crucible-canonical-terminal-rr-cursor — project terminal live observations
+
+- **Patch:** `0092-crucible-canonical-terminal-rr-cursor.patch`.
+- **Enforces:** [DET-1], [DET-29], [QFP-STATE-2].
+- **Mechanism:** when the current serialized owner observes the transient live
+  position equal to `rr_switch_quantum`, `qemu_plugin_rr_cursor()` reports the
+  scheduler's next vCPU at position zero. This is the coordinate RR accounting
+  commits when the translation block returns; the projection does not mutate
+  scheduler state or admit any other out-of-range cursor.
+- **Micro-test:** the full production instruction and exception mutation matrix
+  exercises fingerprint capture at instruction completion, while structural
+  checks pin terminal equality, next-vCPU selection, and position-zero output.
+- **Inertness:** [PATCH-3](c) — the projection requires sim's pinned quantum,
+  a live current owner, and exact terminal equality. Exact-boundary, genesis,
+  non-sim, and invalid-owner behavior remains unchanged.
+- **Risk:** D.
+
 ### crucible-whitebox-guest-write — return synchronous doorbell replies
 
 - **Enforces:** [PLUG-34], [PLUG-51], [GHC-32], [GHC-37].

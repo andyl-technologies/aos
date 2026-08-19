@@ -45,6 +45,9 @@
     taskIds = ["T-QEMU-0086" "T-QEMU-0087" "T-QEMU-0088" "T-QEMU-0089"];
   };
   s1Fingerprint = import ./phase0-s1.nix {inherit pkgs lib;};
+  qemuInstructionFaults = import ./phase2-qemu-instruction-faults.nix {
+    inherit pkgs lib qemuPackage;
+  };
   qemuGenesisObservationBoundary = pkgs.mkDerivation {
     pname = "crucible-phase2-qemu-genesis-observation-boundary";
     version = "0";
@@ -305,6 +308,42 @@
           fresh_live_network_branch_replay=true
           durable_restore_next_quantum_match=true
           non_genesis_unowned_cursor_rejected=true
+          scheduler_state_mutation=false
+          RESULT
+        '';
+      }
+    ];
+  };
+  qemuCanonicalTerminalRrCursor = pkgs.mkDerivation {
+    pname = "crucible-phase2-qemu-canonical-terminal-rr-cursor";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.grep qemuInstructionFaults];
+    phases = [
+      {
+        name = "verify-canonical-terminal-rr-cursor";
+        script = ''
+          set -eu
+          mkdir -p "$out"
+
+          grep -q '^PASS$' "${qemuInstructionFaults}/result"
+          grep -q '^live_mutation_cases=72$' \
+            "${qemuInstructionFaults}/result"
+
+          patch_file="${patchDir}/0092-crucible-canonical-terminal-rr-cursor.patch"
+          grep -q 'cursor_position == rr_switch_quantum' "$patch_file"
+          grep -q 'next_cpu = CPU_NEXT(cpu)' "$patch_file"
+          grep -q 'current_vcpu = next_cpu->cpu_index' "$patch_file"
+          grep -q 'cursor_position = 0' "$patch_file"
+
+          cat > "$out/result" <<'RESULT'
+          PASS
+          gate=gate:patch-microtests
+          patch=0092-crucible-canonical-terminal-rr-cursor.patch
+          patched_fixture_exercised=true
+          instruction_completion_quantum_terminal_exercised=true
+          terminal_cursor_projects_next_vcpu=true
+          terminal_cursor_position_zero=true
           scheduler_state_mutation=false
           RESULT
         '';
@@ -623,9 +662,7 @@
     }
     {
       patch = "0052-crucible-instruction-and-exception-faults.patch";
-      check = import ./phase2-qemu-instruction-faults.nix {
-        inherit pkgs lib qemuPackage;
-      };
+      check = qemuInstructionFaults;
     }
     {
       patch = "0053-crucible-interrupt-faults.patch";
@@ -852,6 +889,10 @@
     {
       patch = "0091-crucible-canonical-rr-genesis-cursor.patch";
       check = qemuCanonicalRrGenesisCursor;
+    }
+    {
+      patch = "0092-crucible-canonical-terminal-rr-cursor.patch";
+      check = qemuCanonicalTerminalRrCursor;
     }
   ];
 

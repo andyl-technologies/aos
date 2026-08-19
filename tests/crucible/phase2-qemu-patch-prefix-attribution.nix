@@ -439,6 +439,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0092-crucible-canonical-terminal-rr-cursor.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
