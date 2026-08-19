@@ -19,7 +19,7 @@ use anyhow::{Context, Result};
 
 use crate::cli::TestCmd;
 use aos_core::nix::NixRunner;
-use aos_core::output::{Printer, create_spinner};
+use aos_core::output::Printer;
 
 /// Resolve the concurrency cap for `aos test`.
 ///
@@ -176,7 +176,7 @@ fn run_all(nix: &NixRunner, printer: &Printer, jobs: usize) -> Result<()> {
     for (i, (attr, label)) in layers.iter().enumerate() {
         printer.step(i + 1, total, &format!("Running {label} tests..."));
 
-        let spinner = create_spinner(&format!("testing {label}"));
+        let spinner = printer.activity(&format!("testing {label}"));
         let result = nix
             .build_with_max_jobs(attr, None, jobs)
             .with_context(|| format!("test layer '{label}'"));
@@ -255,7 +255,7 @@ fn run_fleet_interactive(
     );
 
     printer.info(&format!("Building interactive driver for fleet/{suite}..."));
-    let spinner = create_spinner(&format!("building fleet/{suite} driverInteractive"));
+    let spinner = printer.activity(&format!("building fleet/{suite} driverInteractive"));
     let store_path = nix
         .build_expr(&expr)
         .with_context(|| format!("build fleet/{suite} driverInteractive"));
@@ -305,7 +305,7 @@ fn run_layer(
 ) -> Result<()> {
     printer.info(&format!("Running {label} tests (max-jobs={jobs})..."));
 
-    let spinner = create_spinner(&format!("testing {label}"));
+    let spinner = printer.activity(&format!("testing {label}"));
     let result = nix
         .build_with_max_jobs(attr, None, jobs)
         .with_context(|| format!("test layer '{label}'"));

@@ -16,7 +16,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use futures::stream::{StreamExt, TryStreamExt};
-use indicatif::{HumanBytes, MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::HumanBytes;
 use sha2::{Digest, Sha256};
 
 use aos_core::nar::info as narinfo;
@@ -142,15 +142,7 @@ pub async fn run_push(
             .unwrap_or(0),
     );
 
-    let mp = MultiProgress::new();
-    let overall = mp.add(ProgressBar::new(missing_hashes.len() as u64));
-    overall.set_style(
-        ProgressStyle::default_bar()
-            .template("{msg} [{bar:30.cyan/dim}] {pos}/{len}")
-            .expect("valid template")
-            .progress_chars("=> "),
-    );
-    overall.set_message("Uploading");
+    let overall = printer.items("Uploading cache paths", missing_hashes.len() as u64);
 
     let effective_jobs = if jobs == 0 { 1 } else { jobs };
     let mut total_bytes: u64 = 0;

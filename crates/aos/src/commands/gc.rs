@@ -16,7 +16,7 @@
 use anyhow::{Context, Result, bail};
 
 use aos_core::nix::NixRunner;
-use aos_core::output::{Printer, create_spinner};
+use aos_core::output::Printer;
 use aos_remote::AosClient;
 
 /// Default retention period for local garbage collection.
@@ -85,11 +85,11 @@ async fn run_remote(
     let view_name = view.unwrap_or("default");
     let token = token.context("--token (or AOS_TOKEN) is required for remote GC")?;
 
-    let spinner = create_spinner("authenticating with remote server");
+    let spinner = printer.activity("authenticating with remote server");
     let client = AosClient::connect(url, view_name, token).await?;
     spinner.finish_and_clear();
 
-    let spinner = create_spinner(&format!("running GC on view '{view_name}'"));
+    let spinner = printer.activity(&format!("running GC on view '{view_name}'"));
     let resp = client.gc(dry_run, collect, None).await?;
     spinner.finish_and_clear();
 
@@ -165,7 +165,7 @@ fn run_view_gc(
     let view_mgr = ViewManager::new(root.clone(), vec![view_config]);
 
     // Step 1: Expire TTL roots
-    let spinner = create_spinner("checking TTL expiry");
+    let spinner = printer.activity("checking TTL expiry");
     let expired = evict::expire_ttl_roots(&view_mgr, view)?;
     spinner.finish_and_clear();
 
@@ -216,7 +216,7 @@ fn run_view_gc(
         }
     } else {
         // Step 2: Score and report eviction candidates
-        let spinner = create_spinner("scoring eviction candidates");
+        let spinner = printer.activity("scoring eviction candidates");
         let roots = evict::scan_roots(&view_mgr, view)?;
         let candidates = evict::score_candidates(&store, &roots)?;
         spinner.finish_and_clear();
@@ -238,7 +238,7 @@ fn run_view_gc(
     // Step 3: Run nix-store --gc if requested
     if collect && !dry_run {
         printer.info("Running nix-store --gc...");
-        let spinner = create_spinner("collecting garbage");
+        let spinner = printer.activity("collecting garbage");
         nix.collect_garbage(None)?;
         spinner.finish_and_clear();
         printer.success("Garbage collection complete");
@@ -253,7 +253,7 @@ fn collect_default(nix: &NixRunner, printer: &Printer) -> Result<()> {
         "Collecting garbage (deleting generations older than {DEFAULT_GC_RETENTION})..."
     ));
 
-    let spinner = create_spinner("collecting garbage");
+    let spinner = printer.activity("collecting garbage");
     nix.collect_garbage(Some(DEFAULT_GC_RETENTION))
         .context("garbage collection")?;
     spinner.finish_and_clear();

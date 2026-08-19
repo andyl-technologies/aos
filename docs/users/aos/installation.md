@@ -41,6 +41,24 @@ AOS_TOKEN=REPLACE_WITH_TOKEN aos image list \
   --channel stable
 ```
 
+To boot a downloaded raw or QCOW2 image locally without modifying the verified
+artifact, install the opt-in `pkgs.aos-vm` host package and use its packaged
+QEMU workflow:
+
+```sh
+nix-build -A pkgs.aos-vm -o result-aos-vm
+./result-aos-vm/bin/aos vm run ./aos-server.qcow2 \
+  --host-config ./host.nix \
+  --disk-size-gib 16 \
+  --ssh-port 2222
+```
+
+The command prepares a persistent writable disk and UEFI variable store, fixes
+the enlarged disk's backup GPT, and reports the exact launch configuration
+before starting QEMU. Use `--dry-run` to inspect the plan. The default chooses
+KVM when accessible and warns before falling back to TCG emulation; use
+`--accel kvm` when the absence of hardware acceleration should be an error.
+
 Use `aos --json image list` or `aos --json image show` for automation. The
 record includes the immutable download URL, format, target compatibility,
 media type, compression, exact size, SHA-256, release-signature and boot

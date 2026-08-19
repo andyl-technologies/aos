@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail};
 
 use aos_core::error::AosError;
 use aos_core::nix::NixRunner;
-use aos_core::output::{Printer, create_spinner};
+use aos_core::output::Printer;
 use aos_remote::AosClient;
 
 /// `aos build <package>` or `aos build --all`.
@@ -36,7 +36,7 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: Option<&str>, all: bool)
 
     printer.info(&format!("Building package '{package}'..."));
 
-    let spinner = create_spinner(&format!("building {package}"));
+    let spinner = printer.activity(&format!("building {package}"));
     let store_path = nix
         .build(&attr, None)
         .with_context(|| format!("building package '{package}'"))?;
@@ -88,7 +88,7 @@ pub async fn run_remote(
     ));
 
     // Step 1: Evaluate locally to get the .drv path.
-    let spinner = create_spinner(&format!("evaluating {package}"));
+    let spinner = printer.activity(&format!("evaluating {package}"));
     let attr = format!("pkgs.{package}");
     let drv_path = nix
         .instantiate(&attr)
@@ -98,14 +98,14 @@ pub async fn run_remote(
     printer.info(&format!("Derivation: {drv_str}"));
 
     // Step 2: Authenticate with the remote server.
-    let spinner = create_spinner("authenticating");
+    let spinner = printer.activity("authenticating");
     let client = AosClient::connect(remote_url, view, token)
         .await
         .context("authenticating with remote server")?;
     spinner.finish_and_clear();
 
     // Step 3: Query runtime closure and find missing paths.
-    let spinner = create_spinner("querying closure");
+    let spinner = printer.activity("querying closure");
     let closure_output = nix.store_query(&drv_path, &["-qR"])?;
     let closure: Vec<String> = closure_output
         .lines()
@@ -115,7 +115,7 @@ pub async fn run_remote(
     spinner.finish_and_clear();
     printer.info(&format!("Closure: {} paths", closure.len()));
 
-    let spinner = create_spinner("querying missing paths");
+    let spinner = printer.activity("querying missing paths");
     let missing = client.query_missing(&closure).await?;
     spinner.finish_and_clear();
 
@@ -158,31 +158,38 @@ pub async fn run_remote(
             }
         }
 
+        let pack_data =
+            (!pack_paths.is_empty()).then(|| aos_core::nar::pack::create_pack(&pack_paths));
+        let upload_bytes = pack_data
+            .as_ref()
+            .map_or(0, |pack| pack.len() as u64)
+            .checked_add(large_paths.iter().map(|(_, data)| data.len() as u64).sum())
+            .context("remote build upload byte total overflow")?;
+        let progress = printer.transfer("Uploading remote build inputs", upload_bytes);
+
         // Upload small .drv files as a pack.
         if !pack_paths.is_empty() {
-            let spinner = create_spinner(&format!(
-                "uploading {} small paths as pack",
-                pack_paths.len()
-            ));
-            let pack_data = aos_core::nar::pack::create_pack(&pack_paths);
+            let pack_data = pack_data
+                .as_ref()
+                .context("remote build path pack was not prepared")?;
             client
-                .upload_pack(&pack_data)
+                .upload_pack(pack_data)
                 .await
                 .context("uploading path pack")?;
-            spinner.finish_and_clear();
+            progress.inc(pack_data.len() as u64);
         }
 
         // Upload large sources individually.
         if !large_paths.is_empty() {
-            let spinner = create_spinner(&format!("uploading {} large paths", large_paths.len()));
             for (hash, data) in &large_paths {
                 client
                     .upload(hash, data)
                     .await
                     .with_context(|| format!("uploading {hash}"))?;
+                progress.inc(data.len() as u64);
             }
-            spinner.finish_and_clear();
         }
+        progress.finish();
     }
 
     // Step 5: Request remote build and stream events via ConnectRPC.
@@ -220,7 +227,7 @@ pub async fn run_remote(
 fn build_all(nix: &NixRunner, printer: &Printer) -> Result<()> {
     printer.info("Building all packages...");
 
-    let spinner = create_spinner("building all packages");
+    let spinner = printer.activity("building all packages");
     let paths = nix.build_all("pkgs").context("building all packages")?;
     spinner.finish_and_clear();
 
