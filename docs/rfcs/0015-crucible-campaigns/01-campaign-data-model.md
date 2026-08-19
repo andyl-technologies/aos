@@ -609,14 +609,15 @@ Landing a structural canonical codec does not make a derived record admissible.
 The repository owner now recomputes finite, observation-empty
 `ExpansionState` pages from their source snapshot. Generated requests and
 observation-bearing views remain fail-closed until their owners land.
-The repository owner now accepts snapshot-bound `ContinueScan` and `NoWork`
-planner results, retains the planner claim, independently accounts bounded
-inputs and fuel, derives the parent from the authenticated planner-head index,
-and validates exact replay and imported-root deltas. `Issue` remains fail-closed
-until the coordinator can compose request, proposal, and admission ownership
-without introducing a second authority path. This prevents a structurally valid
-result from becoming canonical evidence before its semantic owner validator
-exists.
+The repository owner accepts snapshot-bound `ContinueScan`, `NoWork`, and
+finite-source `Issue` results, retains the planner claim, independently accounts
+bounded inputs and fuel, derives the parent from the authenticated planner-head
+index, and validates exact replay and imported-root deltas. `Issue` atomically
+composes the sole-writer request, proposal, deterministic attempt, admission,
+accounting, and coordination projections. Generated proposal enumeration and
+non-genesis branch-path admission remain fail-closed until their dedicated
+owners land. This prevents a structurally valid result from becoming canonical
+evidence before its semantic owner validator exists.
 
 ## 01.7 Lifecycle
 
