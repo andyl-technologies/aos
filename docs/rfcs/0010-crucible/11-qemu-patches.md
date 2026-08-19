@@ -1343,19 +1343,57 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 - **Enforces:** [DET-1], [DET-29], [QEMU-43].
 - **Mechanism:** QEMU's generic RR vCPU kick keeps its immediate all-vCPU
   `cpu_exit()` loop unless precise Crucible sim mode has a nonzero pinned RR
-  quantum. In that bounded mode, host work and main-loop notifications remain
-  level triggered and wait for the next finite deterministic RR return to the
-  BQL. Their host arrival time therefore cannot choose a translation-block
-  endpoint or change where a pending architectural interrupt becomes visible.
+  quantum, guest execution has begun, and the serialized RR loop has published
+  an active current vCPU. In that bounded active slice, host latency hints do
+  not end a running translation block. Between slices, the upstream exit
+  request is retained so an idle or waiting RR thread re-enters its run loop.
+  Already-committed stop,
+  unplug, halted, stopped, and
+  interrupt-request states and an admitted exact terminal pause retain an
+  immediate all-vCPU exit request for the shared RR execution thread, so a
+  transition targeting a non-current vCPU still returns the active TCG slice.
+  Native control, wakeup, terminal observation, and published interrupt
+  semantics remain live without allowing a state-free host arrival to choose a
+  guest coordinate.
+- **Genesis progress:** the initial `cpu_resume()` clears stop flags before its
+  kick starts the RR thread. QEMU therefore retains upstream kick behavior at
+  icount zero, where no guest coordinate exists to perturb. After the first
+  instruction, each active slice's finite pinned quantum supplies its
+  deterministic return boundary for both single- and multi-vCPU execution.
 - **Micro-test:** the production four-vCPU fingerprint workload compares two
   exact-horizon executions while only the second has sustained host CPU load.
   It requires equal canonical all-vCPU, RR, deterministic-IPI, RAM, and device
   evidence and bounded QMP stop/teardown. Stock QEMU supplies the immediate-kick
-  negative control.
-- **Inertness:** [PATCH-3](a), [PATCH-3](c) — non-sim accelerators, imprecise
-  icount, and configurations without a pinned quantum execute the existing kick
-  loop unchanged. The guarded path changes scheduling only for the deterministic
-  sim configuration that already guarantees a finite return.
+  negative control. The production single-vCPU fingerprint gate separately
+  proves boot, exact-horizon stop, checkpoint, and replay progress with the
+  pinned quantum.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — zero-icount startup, non-sim
+  accelerators, imprecise icount, configurations without a pinned quantum, and
+  between-slice waits execute the existing kick loop unchanged. The guarded
+  path changes scheduling only during an active slice for which deterministic
+  sim already guarantees a finite return. Admitted terminal observation and
+  committed control and interrupt state are handled immediately in that
+  guarded mode.
+- **Risk:** D.
+
+### crucible-exact-boundary-vcpu-introspection — observe checkpoint CPU state
+
+- **Patch:** `0089-crucible-exact-boundary-vcpu-introspection.patch`.
+- **Enforces:** [DET-1], [QFP-REG-1], [QFP-STATE-2].
+- **Mechanism:** all-vCPU register reads retain live serialized-owner and
+  stopped-BQL admission, and add the exact main-loop case where no vCPU is
+  current, QEMU's exact-boundary scope is active, and the BQL makes every vCPU
+  quiescent. `qemu_plugin_rr_cursor()` likewise reads the authoritative committed
+  `TimersState` cursor at that boundary. Quantum, owner, and range checks remain
+  mandatory.
+- **Micro-test:** production World networking captures an exact checkpoint from
+  the main-loop control callback, restores it in fresh QEMU processes, and
+  requires the next complete live quantum to match. The four-vCPU horizon gate
+  retains live-owner cursor coverage, while plugin-install cursor reads retain
+  the unowned-context negative control.
+- **Inertness:** [PATCH-3](c) — the added path is reachable only inside QEMU's
+  existing exact deterministic plugin boundary while the BQL is held. Every
+  ordinary QEMU or unowned plugin context executes the prior rejection rules.
 - **Risk:** D.
 
 ### crucible-whitebox-guest-write — return synchronous doorbell replies

@@ -767,7 +767,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     `checks.crucible.phase2.gates.patchMicrotests`. The former compares the
     unpatched pinned QEMU with patched sim-off QEMU over raw boot serial,
     device-I/O execution output, QMP, migration, and snapshot/restore surfaces;
-    the latter gives every one of the 40 carried patches prefix provenance and
+    the latter gives every one of the 86 carried patches prefix provenance and
     exactly one live drop-one attribution. The aggregate rejects composition and
     structural fallback classifications. The async virtio-rng delivery-timing
     residual is closed structurally by `phase2-qemu-rng-delivery-inert.nix`,

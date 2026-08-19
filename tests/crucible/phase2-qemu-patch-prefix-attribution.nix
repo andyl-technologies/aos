@@ -415,6 +415,22 @@
       kind = "recorded";
       symbols = [];
     };
+    "0086-crucible-genesis-observation-boundary.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0087-crucible-deterministic-rcu-quiescence.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0088-crucible-deterministic-host-kick-boundary.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0089-crucible-exact-boundary-vcpu-introspection.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

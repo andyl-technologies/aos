@@ -1958,6 +1958,21 @@ on_sim_observe_icount(uint64_t current_icount, void *userdata)
     return;
   }
 
+  uint64_t boundary_rr_current_vcpu;
+  uint64_t boundary_rr_cursor_position;
+  uint64_t boundary_rr_switch_quantum;
+  const bool boundary_rr_cursor_valid = read_rr_cursor_snapshot(
+      &boundary_rr_current_vcpu,
+      &boundary_rr_cursor_position,
+      &boundary_rr_switch_quantum);
+
+  if (boundary_rr_cursor_valid) {
+    last_valid_rr_current_vcpu = boundary_rr_current_vcpu;
+    last_valid_rr_cursor_position = boundary_rr_cursor_position;
+    last_valid_rr_switch_quantum = boundary_rr_switch_quantum;
+    last_valid_rr_cursor_available = true;
+  }
+
   if (post_boundary_samples) {
     const struct register_digest_summary register_digests =
         compute_register_digests();
@@ -1986,7 +2001,7 @@ on_sim_observe_icount(uint64_t current_icount, void *userdata)
 
   const bool rr_cursor_required =
       tracked_vcpus > 1 || qemu_plugin_crucible_rr_switch_quantum() != 0;
-  if (!last_valid_rr_cursor_available && rr_cursor_required) {
+  if (!boundary_rr_cursor_valid && rr_cursor_required) {
     qemu_plugin_outs(
         "crucible-qemu-trace-plugin: missing exact-boundary RR cursor\n");
     stop_requested = true;
