@@ -11,7 +11,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use aos_core::error::AosError;
@@ -212,8 +212,16 @@ async fn download(args: &ImageDownloadArgs, printer: &Printer) -> Result<()> {
         .unwrap_or_else(|| PathBuf::from(&image.filename));
     print_download_summary(&image, &output, printer)?;
 
+    let existing_check_started = Instant::now();
     if existing_final_matches(&output, &image, printer)? {
-        print_download_result(&output, &image, 0, Duration::ZERO, true, printer)?;
+        print_download_result(
+            &output,
+            &image,
+            0,
+            existing_check_started.elapsed(),
+            true,
+            printer,
+        )?;
         return Ok(());
     }
 
