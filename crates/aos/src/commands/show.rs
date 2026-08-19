@@ -9,7 +9,7 @@
 use anyhow::{Context, Result};
 
 use aos_core::nix::NixRunner;
-use aos_core::output::{Printer, create_spinner};
+use aos_core::output::Printer;
 
 /// `aos show <package>` — display package metadata.
 ///
@@ -29,7 +29,7 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: &str) -> Result<()> {
 
     printer.info(&format!("Fetching metadata for '{package}'..."));
 
-    let spinner = create_spinner(&format!("evaluating {package}.meta"));
+    let spinner = printer.activity(&format!("evaluating {package}.meta"));
     let mut meta = nix
         .eval_json(&attr)
         .with_context(|| format!("evaluating metadata for '{package}'"))?;
