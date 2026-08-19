@@ -67,7 +67,9 @@ running host. Use `apm install zlib` for that operation.
 The flake output `packages.<system>.all` is the remote-build equivalent of
 `aos build --all`: build it when one submitted derivation must realize every
 individual `pkg-*` output for that system. For example, submit
-`packages.x86_64-linux.all` to an x86_64 Linux builder.
+`packages.x86_64-linux.all` to an x86_64 Linux builder. Git-backed package
+sources use pinned fixed-output archives so restricted remote evaluators create
+ordinary fetch derivations instead of requiring evaluation-time network access.
 
 System image production currently uses Nix directly. See
 [Build and customize release images](../../maintainers/system-images.md). Do
