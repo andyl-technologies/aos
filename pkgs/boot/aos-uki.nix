@@ -156,6 +156,17 @@ in
             --output="$uki"
 
           ${
+            if signing
+            then ''
+              # Signing success alone is not sufficient evidence that the
+              # emitted PE carries the configured db identity. Verify the
+              # completed UKI before publishing it to the image builder.
+              ${sbsigntools}/bin/sbverify --cert ${secureBootCert} "$uki"
+            ''
+            else ""
+          }
+
+          ${
             if measuring
             then ''
               # Publish the stable ready-phase PCR-11 prediction beside the

@@ -118,9 +118,21 @@ package set explicitly:
 nix build .#packages.x86_64-linux.acme-server-image-qcow2
 ```
 
-The raw output contains `aos-<system>.img` and `image-info.json`. Converted
-outputs contain the corresponding disk file. Preserve the raw image metadata
-with every distributed format until the converter emits a per-format manifest.
+The raw output contains `aos-<system>.img` and `image-info.json`. Secure Boot
+plus dm-verity systems also expose `system.build.recoveryUkiA`,
+`system.build.recoveryUkiB`, and `system.build.recoveryBundle`. The bundle has a
+fixed `aos/recovery/` layout containing the ten cataloged payload components,
+the db-signed manifest, and its detached signature. Preserve it with the
+release if removable-media recovery is supported. Converted outputs contain
+the corresponding disk file. Preserve the raw image metadata with every
+distributed format until the converter emits a per-format manifest.
+
+The raw-image builder calculates ESP capacity from the installed normal and
+recovery set plus one complete inactive-slot transaction. Inspect
+`espBudget.installedBytes`, `espBudget.transactionBytes`,
+`espBudget.requiredBytes`, and `espBudget.partitionBytes` in `image-info.json`
+when changing UKI contents or recovery tooling; a build fails instead of
+silently producing an ESP that cannot stage the transaction.
 
 ## Validate the release artifact
 

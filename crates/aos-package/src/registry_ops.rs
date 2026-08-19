@@ -94,15 +94,17 @@ use crate::types::{
     ConfigOutputMeta, ConfinementClass, ExposeArtifactMeta, ExposeMeta, FEATURE_ATTESTATION_V1,
     FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1,
     FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
-    FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1,
-    FEATURE_REQUIRES_V1, FEATURE_UKI_SLOTS_V1, ModuleAbiCompat, OwnedRoot, PACKAGE_META_FORMAT,
-    PermissionsMeta, RegistryConfig, RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig,
-    RootContribution, SbatEntry, SigningKeySource, SigningKeySpec, SysrootUkiEntry, UkiSlot,
-    package_name_bucket, rfc0001_metadata_requires_provenance, validate_attestation_meta,
-    validate_branch_name, validate_channel_name, validate_config_module_meta,
-    validate_config_output_meta, validate_expose_artifact_meta, validate_expose_meta_for_package,
-    validate_git_ref_name, validate_package_name, validate_permissions_meta,
-    validate_platform_name, validate_registry_name,
+    FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_PERMISSIONS_V1,
+    FEATURE_RECOVERY_UKIS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, FEATURE_UKI_SLOTS_V1,
+    ModuleAbiCompat, OwnedRoot, PACKAGE_META_FORMAT, PermissionsMeta, RecoveryBundleComponent,
+    RecoveryBundleComponentId, RecoveryBundleManifest, RecoveryUkiEntry, RegistryConfig,
+    RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig, RootContribution, SbatEntry,
+    SigningKeySource, SigningKeySpec, SysrootUkiEntry, UkiSlot, package_name_bucket,
+    rfc0001_metadata_requires_provenance, validate_attestation_meta, validate_branch_name,
+    validate_channel_name, validate_config_module_meta, validate_config_output_meta,
+    validate_expose_artifact_meta, validate_expose_meta_for_package, validate_git_ref_name,
+    validate_package_name, validate_permissions_meta, validate_platform_name,
+    validate_registry_name,
 };
 use crate::{
     BranchCommand, CacheCommand, CacheUploadAuthArgs, ChangeCommand, ChannelCommand, KeysCommand,
@@ -2058,6 +2060,8 @@ pub async fn publish(
                     })).collect::<Vec<_>>(),
                     "expected_pcr11": image.sb.expected_pcr11,
                     "ukis": image.sb.ukis,
+                    "recovery_ukis": image.sb.recovery_ukis,
+                    "recovery_bundle": image.sb.recovery_bundle,
                 })
             })
             .collect::<Vec<_>>();
@@ -2134,6 +2138,13 @@ fn apply_publish_sb_policy(
                     .iter()
                     .filter_map(|uki| uki.sb_signer_cert_sha256.as_deref()),
             );
+        let signers = signers.chain(
+            image
+                .sb
+                .recovery_ukis
+                .iter()
+                .map(|uki| uki.sb_signer_cert_sha256.as_str()),
+        );
         for signer in signers {
             if let Some(catalog) = catalog {
                 if !catalog.accepts_signer(signer) {
@@ -3314,6 +3325,10 @@ struct SbFacts {
     expected_pcr11: Option<String>,
     /// Deterministically identified per-slot facts for an A/B image payload.
     ukis: Vec<SysrootUkiEntry>,
+    /// Independently verified signed recovery copies for an A/B image payload.
+    recovery_ukis: Vec<RecoveryUkiEntry>,
+    /// Complete catalog-authenticated offline recovery bundle manifest.
+    recovery_bundle: Option<RecoveryBundleManifest>,
 }
 
 /// A fully validated disk-image publication input.
@@ -3390,12 +3405,16 @@ struct ProducerImageInfo {
     sha256: String,
     logical_disk_sha256: String,
     rootfs_sha256: String,
+    #[serde(default)]
+    module_abi: Option<u32>,
     compatible_targets: Vec<ImageTarget>,
     uki: PortableUkiInfo,
     #[serde(default)]
     disk_size_mi_b: Option<u64>,
     #[serde(default)]
     esp_size_mi_b: Option<u64>,
+    #[serde(default)]
+    esp_budget: Option<ProducerEspBudget>,
     #[serde(default)]
     root_size_mi_b: Option<u64>,
     #[serde(default)]
@@ -3406,6 +3425,8 @@ struct ProducerImageInfo {
     partitions: Vec<ProducerPartitionInfo>,
     #[serde(default)]
     esp: Option<ProducerEspInfo>,
+    #[serde(default)]
+    recovery: Option<ProducerRecoveryInfo>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -3417,6 +3438,42 @@ struct PortableUkiInfo {
     sha256: String,
     signed: bool,
     measured: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProducerRecoveryInfo {
+    abi: u32,
+    release: String,
+    command_line: String,
+    copies: ProducerRecoveryCopies,
+    entries: ProducerRecoveryEntries,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProducerRecoveryCopies {
+    #[serde(rename = "A")]
+    a: ProducerRecoveryCopy,
+    #[serde(rename = "B")]
+    b: ProducerRecoveryCopy,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProducerRecoveryCopy {
+    esp_path: String,
+    byte_size: u64,
+    sha256: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProducerRecoveryEntries {
+    #[serde(rename = "A")]
+    a: String,
+    #[serde(rename = "B")]
+    b: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -3437,6 +3494,15 @@ struct ProducerPartitionInfo {
 struct ProducerEspInfo {
     uki: String,
     sd_boot: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProducerEspBudget {
+    installed_bytes: u64,
+    transaction_bytes: u64,
+    required_bytes: u64,
+    partition_bytes: u64,
 }
 
 const MAX_IMAGE_INFO_BYTES: u64 = 1024 * 1024;
@@ -3613,12 +3679,12 @@ where
     {
         bail!("image-info ESP UKI path disagrees with the signed UKI identity");
     }
-    let esp_offset_bytes = producer
+    let esp_partition = producer
         .partitions
         .iter()
         .find(|partition| partition.kind == "esp" && partition.filesystem == "vfat")
-        .map(|partition| partition.offset_bytes)
         .context("image-info must identify exactly one vfat ESP partition")?;
+    let esp_offset_bytes = esp_partition.offset_bytes;
     if producer
         .partitions
         .iter()
@@ -3648,6 +3714,23 @@ where
     {
         bail!("image-info MiB summaries disagree with the exact logical layout");
     }
+    if let Some(budget) = &producer.esp_budget {
+        let calculated = budget
+            .installed_bytes
+            .checked_add(budget.transaction_bytes)
+            .and_then(|bytes| bytes.checked_add(32 * 1024 * 1024))
+            .context("image-info ESP budget overflows")?;
+        if budget.installed_bytes == 0
+            || budget.transaction_bytes == 0
+            || budget.required_bytes != calculated
+            || budget.partition_bytes != esp_partition.size_bytes
+            || budget.required_bytes > budget.partition_bytes
+        {
+            bail!("image-info ESP budget disagrees with the exact partition layout");
+        }
+    } else if producer.recovery.is_some() {
+        bail!("recovery image-info must include the ESP transaction budget");
+    }
 
     let mut entry_count = 0_u8;
     let mut auxiliary_names = HashSet::new();
@@ -3674,6 +3757,12 @@ where
                     | "root.roothash.p7s"
                     | "uki-a.efi"
                     | "uki-b.efi"
+                    | "recovery-a.efi"
+                    | "recovery-b.efi"
+                    | "recovery-a.conf"
+                    | "recovery-b.conf"
+                    | "recovery-bundle.json"
+                    | "recovery-bundle.json.sig"
             )
         });
         if !is_primary && !is_auxiliary {
@@ -3696,6 +3785,18 @@ where
     let has_uki_b = auxiliary_names.contains(std::ffi::OsStr::new("uki-b.efi"));
     if has_uki_a != has_uki_b {
         bail!("A/B image output must carry both uki-a.efi and uki-b.efi");
+    }
+    let recovery_count = [
+        "recovery-a.efi",
+        "recovery-b.efi",
+        "recovery-a.conf",
+        "recovery-b.conf",
+    ]
+    .iter()
+    .filter(|name| auxiliary_names.contains(std::ffi::OsStr::new(name)))
+    .count();
+    if recovery_count != 0 && recovery_count != 4 {
+        bail!("recovery image output must carry both UKIs and both loader entries");
     }
     if !auxiliary_names.is_empty() && !auxiliary_names.contains(std::ffi::OsStr::new("root.img")) {
         bail!("runtime-update image output must carry root.img");
@@ -3764,6 +3865,7 @@ where
         "kernelParams": &producer.kernel_params,
         "partitions": &producer.partitions,
         "uki": &producer.uki,
+        "recovery": &producer.recovery,
     });
     let logical_image_id = sha256_hex(&serde_json::to_vec(&logical_identity)?);
     let producer_uki_signed = producer.uki.signed;
@@ -3783,6 +3885,8 @@ where
         bail!("image-info UKI measured state does not match its PCR-11 policy");
     }
     sb.ukis = derive_slot_uki_facts(root, db_cert)?;
+    sb.recovery_ukis =
+        derive_recovery_uki_facts(root, producer.recovery.as_ref(), &producer.version, db_cert)?;
     if let Some(slot_a) = sb.ukis.iter().find(|uki| uki.slot == UkiSlot::A)
         && (slot_a.sb_signer_cert_sha256 != sb.signer_cert_sha256
             || slot_a.sbat != sb.sbat
@@ -3795,6 +3899,38 @@ where
         serde_json::to_vec(&producer).context("serializing canonical public image-info.json")?;
     canonical_info_bytes.push(b'\n');
     let info_sha256 = sha256_hex(&canonical_info_bytes);
+    sb.recovery_bundle = derive_recovery_bundle_manifest(
+        root,
+        producer.recovery.as_ref(),
+        producer.module_abi,
+        &producer.version,
+        &producer.architecture,
+        &producer.platform,
+    )?;
+    if let Some(expected_bundle) = &sb.recovery_bundle {
+        let bundle_path = root.join("recovery-bundle.json");
+        let signature_path = root.join("recovery-bundle.json.sig");
+        let bundle_metadata = fs::symlink_metadata(&bundle_path)?;
+        let signature_metadata = fs::symlink_metadata(&signature_path)?;
+        if !bundle_metadata.file_type().is_file()
+            || bundle_metadata.len() == 0
+            || bundle_metadata.len() > 256 * 1024
+            || !signature_metadata.file_type().is_file()
+            || signature_metadata.len() == 0
+            || signature_metadata.len() > 16 * 1024
+        {
+            bail!("recovery bundle manifest or signature is outside its size bound");
+        }
+        let published_bundle: RecoveryBundleManifest =
+            serde_json::from_slice(&fs::read(&bundle_path)?)
+                .context("parsing recovery-bundle.json")?;
+        if &published_bundle != expected_bundle {
+            bail!("recovery-bundle.json disagrees with the authenticated image components");
+        }
+        let db_cert =
+            db_cert.context("publishing a recovery bundle requires the registry db certificate")?;
+        verify_detached_db_signature(&bundle_path, &signature_path, db_cert)?;
+    }
     let mut canonical_info_file =
         tempfile::tempfile().context("creating pinned canonical image-info.json")?;
     canonical_info_file
@@ -5211,6 +5347,258 @@ fn derive_slot_uki_facts(
     Ok(entries)
 }
 
+fn derive_recovery_uki_facts(
+    image_store: &Path,
+    recovery: Option<&ProducerRecoveryInfo>,
+    release: &str,
+    db_cert: Option<&Path>,
+) -> Result<Vec<RecoveryUkiEntry>> {
+    let paths = [
+        image_store.join("recovery-a.efi"),
+        image_store.join("recovery-b.efi"),
+        image_store.join("recovery-a.conf"),
+        image_store.join("recovery-b.conf"),
+    ];
+    let present = paths.iter().filter(|path| path.is_file()).count();
+    let Some(recovery) = recovery else {
+        if present != 0 {
+            bail!("recovery artifacts require recovery metadata in image-info.json");
+        }
+        return Ok(Vec::new());
+    };
+    if present != paths.len() {
+        bail!("recovery image output must carry two UKIs and two loader entries");
+    }
+    if recovery.abi == 0 || recovery.release != release {
+        bail!("recovery ABI or release identity disagrees with the image release");
+    }
+    aos_boot_identity::parse_recovery(&recovery.command_line)
+        .context("recovery image-info command line is not canonical")?;
+
+    let copies = [
+        (
+            UkiSlot::A,
+            "A",
+            "recovery-a.efi",
+            "recovery-a.conf",
+            "EFI/AOS/recovery-a.efi",
+            "loader/entries/recovery-a.conf",
+            &recovery.copies.a,
+            recovery.entries.a.as_str(),
+        ),
+        (
+            UkiSlot::B,
+            "B",
+            "recovery-b.efi",
+            "recovery-b.conf",
+            "EFI/AOS/recovery-b.efi",
+            "loader/entries/recovery-b.conf",
+            &recovery.copies.b,
+            recovery.entries.b.as_str(),
+        ),
+    ];
+    let mut entries = Vec::with_capacity(copies.len());
+    for (copy, copy_name, uki_name, entry_name, esp_path, entry_path, metadata, recorded_entry) in
+        copies
+    {
+        if metadata.esp_path != esp_path || recorded_entry != entry_path {
+            bail!("recovery copy {copy_name} uses a noncanonical ESP path");
+        }
+        let uki = image_store.join(uki_name);
+        let uki_metadata = fs::symlink_metadata(&uki)?;
+        if !uki_metadata.file_type().is_file() || uki_metadata.len() == 0 {
+            bail!(
+                "recovery UKI {} is not a nonempty regular file",
+                uki.display()
+            );
+        }
+        let mut uki_file = fs::File::open(&uki)?;
+        let digest = sha256_open_file(&mut uki_file, &uki)?;
+        if metadata.byte_size != uki_metadata.len() || metadata.sha256 != digest {
+            bail!("recovery copy {copy_name} size or digest disagrees with image-info.json");
+        }
+
+        let facts = derive_sb_facts(&uki, db_cert)?;
+        let signer = facts
+            .signer_cert_sha256
+            .context("recovery UKIs must carry a db-verifiable Authenticode signature")?;
+        let cmdline = read_bounded_pe_text(&uki, ".cmdline", 64 * 1024)?;
+        if cmdline != recovery.command_line {
+            bail!("recovery copy {copy_name} command line disagrees with image-info.json");
+        }
+        aos_boot_identity::parse_recovery(&cmdline)
+            .with_context(|| format!("recovery copy {copy_name} command line is not canonical"))?;
+        if dump_pe_section(&uki, ".pcrsig")?.is_some_and(|file| {
+            file.as_file()
+                .metadata()
+                .is_ok_and(|metadata| metadata.len() != 0)
+        }) {
+            bail!("recovery copy {copy_name} carries forbidden normal PCR authorization");
+        }
+        let os_release = read_bounded_pe_text(&uki, ".osrel", 64 * 1024)?;
+        validate_recovery_os_release(&os_release, copy_name, &recovery.release, recovery.abi)?;
+
+        let entry = image_store.join(entry_name);
+        let entry_metadata = fs::symlink_metadata(&entry)?;
+        if !entry_metadata.file_type().is_file() || entry_metadata.len() > 4096 {
+            bail!("recovery loader entry {entry_name} is not a bounded regular file");
+        }
+        let expected_entry = format!(
+            "title AOS Recovery {copy_name} ({})\nefi /{esp_path}\n",
+            recovery.release
+        );
+        if fs::read_to_string(&entry)? != expected_entry {
+            bail!("recovery loader entry {entry_name} is not canonical");
+        }
+
+        entries.push(RecoveryUkiEntry {
+            copy,
+            path: uki_name.to_string(),
+            entry_path: entry_name.to_string(),
+            byte_size: metadata.byte_size,
+            sha256: digest,
+            release: recovery.release.clone(),
+            recovery_abi: recovery.abi,
+            sb_signer_cert_sha256: signer,
+            sbat: facts.sbat,
+        });
+    }
+    Ok(entries)
+}
+
+fn read_bounded_pe_text(uki: &Path, section: &str, maximum: u64) -> Result<String> {
+    let extracted = dump_pe_section(uki, section)?
+        .with_context(|| format!("recovery UKI {} has no {section} section", uki.display()))?;
+    let metadata = extracted.as_file().metadata()?;
+    if metadata.len() == 0 || metadata.len() > maximum {
+        bail!("recovery UKI {section} section is outside its size bound");
+    }
+    let bytes = fs::read(extracted.path())?;
+    let text = String::from_utf8(bytes)
+        .with_context(|| format!("recovery UKI {section} section is not UTF-8"))?;
+    Ok(text.trim_end_matches('\0').to_string())
+}
+
+fn validate_recovery_os_release(
+    os_release: &str,
+    copy: &str,
+    release: &str,
+    recovery_abi: u32,
+) -> Result<()> {
+    let expected = [
+        ("AOS_RELEASE_ID", release.to_string()),
+        ("AOS_RECOVERY_ABI", recovery_abi.to_string()),
+        ("AOS_RECOVERY_COPY", copy.to_string()),
+    ];
+    for (key, expected_value) in expected {
+        let values = os_release
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .filter_map(|(found, value)| (found == key).then_some(value.trim_matches('"')))
+            .collect::<Vec<_>>();
+        if values.as_slice() != [expected_value.as_str()] {
+            bail!("recovery signed os-release has invalid {key}");
+        }
+    }
+    Ok(())
+}
+
+fn derive_recovery_bundle_manifest(
+    image_store: &Path,
+    recovery: Option<&ProducerRecoveryInfo>,
+    module_abi: Option<u32>,
+    release: &str,
+    architecture: &str,
+    platform: &str,
+) -> Result<Option<RecoveryBundleManifest>> {
+    let Some(recovery) = recovery else {
+        return Ok(None);
+    };
+    let module_abi = module_abi
+        .filter(|abi| *abi != 0)
+        .context("recovery image-info.json must carry a positive moduleAbi")?;
+    let specifications = [
+        (RecoveryBundleComponentId::RootImage, "root.img"),
+        (RecoveryBundleComponentId::RootVerity, "root.verity"),
+        (RecoveryBundleComponentId::RootHash, "root.roothash"),
+        (RecoveryBundleComponentId::NormalUkiA, "uki-a.efi"),
+        (RecoveryBundleComponentId::NormalUkiB, "uki-b.efi"),
+        (RecoveryBundleComponentId::RecoveryUkiA, "recovery-a.efi"),
+        (RecoveryBundleComponentId::RecoveryUkiB, "recovery-b.efi"),
+        (RecoveryBundleComponentId::RecoveryEntryA, "recovery-a.conf"),
+        (RecoveryBundleComponentId::RecoveryEntryB, "recovery-b.conf"),
+        (RecoveryBundleComponentId::ImageMetadata, "image-info.json"),
+    ];
+    let mut components = Vec::with_capacity(specifications.len());
+    for (id, path) in specifications {
+        let artifact = image_store.join(path);
+        let metadata = fs::symlink_metadata(&artifact)
+            .with_context(|| format!("reading recovery bundle component {path}"))?;
+        if !metadata.file_type().is_file() || metadata.len() == 0 {
+            bail!("recovery bundle component {path} is not a nonempty regular file");
+        }
+        let mut file = fs::File::open(&artifact)?;
+        let digest = sha256_open_file(&mut file, &artifact)?;
+        components.push(RecoveryBundleComponent {
+            id,
+            path: path.to_string(),
+            byte_size: metadata.len(),
+            sha256: digest,
+        });
+    }
+    Ok(Some(RecoveryBundleManifest {
+        schema: "aos.recovery-bundle/v1".to_string(),
+        release: release.to_string(),
+        architecture: architecture.to_string(),
+        platform: platform.to_string(),
+        module_abi,
+        recovery_abi: recovery.abi,
+        components,
+    }))
+}
+
+pub(crate) fn verify_detached_db_signature(
+    manifest: &Path,
+    signature: &Path,
+    db_cert: &Path,
+) -> Result<()> {
+    let public_key =
+        tempfile::NamedTempFile::new().context("creating temporary recovery bundle public key")?;
+    let output = Command::new("openssl")
+        .args(["x509", "-pubkey", "-noout", "-in"])
+        .arg(db_cert)
+        .output()
+        .context("extracting the recovery bundle verification key")?;
+    if !output.status.success() {
+        bail!(
+            "extracting recovery bundle verification key failed: {}",
+            combine_output(
+                &String::from_utf8_lossy(&output.stdout),
+                &String::from_utf8_lossy(&output.stderr)
+            )
+        );
+    }
+    fs::write(public_key.path(), output.stdout)?;
+    let output = Command::new("openssl")
+        .args(["dgst", "-sha256", "-verify"])
+        .arg(public_key.path())
+        .arg("-signature")
+        .arg(signature)
+        .arg(manifest)
+        .output()
+        .context("verifying the recovery bundle manifest signature")?;
+    if !output.status.success() {
+        bail!(
+            "recovery bundle manifest signature rejected: {}",
+            combine_output(
+                &String::from_utf8_lossy(&output.stdout),
+                &String::from_utf8_lossy(&output.stderr)
+            )
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 fn find_ukis_in_store_path(store_path: &str) -> Result<Vec<(Option<UkiSlot>, PathBuf)>> {
     let root = Path::new(store_path);
@@ -5301,6 +5689,8 @@ fn derive_sb_facts(uki: &Path, db_cert: Option<&Path>) -> Result<SbFacts> {
         sbat: extract_sbat_entries(uki)?,
         expected_pcr11: extract_expected_pcr11(uki)?,
         ukis: Vec::new(),
+        recovery_ukis: Vec::new(),
+        recovery_bundle: None,
     })
 }
 
@@ -7425,12 +7815,76 @@ fn package_platform_table(
                             .context("serializing slot-specific UKI facts")?,
                     );
                 }
+                if !image.sb.recovery_ukis.is_empty() {
+                    entry.insert(
+                        "recovery_ukis".into(),
+                        toml::Value::try_from(&image.sb.recovery_ukis)
+                            .context("serializing recovery UKI facts")?,
+                    );
+                }
+                if let Some(bundle) = &image.sb.recovery_bundle {
+                    entry.insert(
+                        "recovery_bundle".into(),
+                        toml::Value::try_from(bundle)
+                            .context("serializing recovery bundle manifest")?,
+                    );
+                }
+                let root_image = image.directory.path.join("root.img");
+                let root_verity = image.directory.path.join("root.verity");
+                let root_hash = image.directory.path.join("root.roothash");
+                let root_hash_sig = image.directory.path.join("root.roothash.p7s");
+                let verity_count = [&root_image, &root_verity, &root_hash, &root_hash_sig]
+                    .iter()
+                    .filter(|path| path.is_file())
+                    .count();
+                if verity_count != 0 && verity_count != 4 {
+                    bail!("published image has an incomplete dm-verity artifact set");
+                }
+                if verity_count == 4 {
+                    let hash = fs::read_to_string(&root_hash)?;
+                    let hash = hash.trim();
+                    if hash.len() != 64
+                        || !hash
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                    {
+                        bail!("published image has a malformed root.roothash");
+                    }
+                    entry.insert("root_image".into(), toml::Value::String("root.img".into()));
+                    entry.insert(
+                        "root_verity".into(),
+                        toml::Value::String("root.verity".into()),
+                    );
+                    entry.insert("root_hash".into(), toml::Value::String(hash.to_string()));
+                    entry.insert(
+                        "root_hash_sig".into(),
+                        toml::Value::String("root.roothash.p7s".into()),
+                    );
+                }
                 Ok(toml::Value::Table(entry))
             })
             .collect::<Result<Vec<_>>>()?;
         table.insert("images".into(), toml::Value::Array(images));
         if image_infos.iter().any(|image| !image.sb.ukis.is_empty()) {
             let feature = toml::Value::String(FEATURE_UKI_SLOTS_V1.to_string());
+            let features = table
+                .entry("requires-features")
+                .or_insert_with(|| toml::Value::Array(Vec::new()))
+                .as_array_mut()
+                .context("platform requires-features metadata is not an array")?;
+            if !features.contains(&feature) {
+                features.push(feature);
+            }
+            table.insert(
+                "min-format".into(),
+                toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
+            );
+        }
+        if image_infos
+            .iter()
+            .any(|image| !image.sb.recovery_ukis.is_empty())
+        {
+            let feature = toml::Value::String(FEATURE_RECOVERY_UKIS_V1.to_string());
             let features = table
                 .entry("requires-features")
                 .or_insert_with(|| toml::Value::Array(Vec::new()))
@@ -15651,6 +16105,8 @@ mod tests {
                     sbat: Vec::new(),
                     expected_pcr11: None,
                     ukis: Vec::new(),
+                    recovery_ukis: Vec::new(),
+                    recovery_bundle: None,
                     root_image: Some("root.img".into()),
                     root_verity: Some("root.verity".into()),
                     root_hash: Some(root_hash.into()),

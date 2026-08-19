@@ -144,12 +144,13 @@ in
               --pure-eval \
               --option restrict-eval true \
               --option allow-import-from-derivation false \
-              -I "$entry" \
-              -I "$base_v1_store" \
-              -I "$base_v2_store" \
-              -I "$host_store" \
-              -I "$facts_store" \
-              -I "$config_module_store" \
+              --option allowed-uris "" \
+              --aos-pure-eval-input "$entry" \
+              --aos-pure-eval-input "$base_v1_store" \
+              --aos-pure-eval-input "$base_v2_store" \
+              --aos-pure-eval-input "$host_store" \
+              --aos-pure-eval-input "$facts_store" \
+              --aos-pure-eval-input "$config_module_store" \
               "$entry" \
               > "$destination"
           }

@@ -157,12 +157,17 @@ in {
 
     maskedUnits = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [];
+      default = [
+        "emergency.service"
+        "rescue.service"
+      ];
       description = ''
         Unit names to mask (symlink to /dev/null) in the initrd.
         Needed because the initrd's /usr→. symlink collapses systemd's
         unit search priority, making kernel-cmdline systemd.mask=
-        ineffective.
+        ineffective. The interactive emergency and rescue services are
+        masked by default so normal initrds fail closed without exposing a
+        password prompt. Explicit debug gettys are separate opt-in units.
       '';
     };
   };
@@ -207,6 +212,90 @@ in {
         overrideStrategy = "asDropin";
         serviceConfig.RemainAfterExit = false;
       })
+      // lib.optionalAttrs config.aos.security.verity.enable {
+        "aos-boot-identity-success" = {
+          description = "Validate normal boot identity and generated verity unit";
+          before = ["aos-boot-identity-guard.service"];
+          after = ["aos-repart.service" "systemd-udev-settle.service"];
+          unitConfig.DefaultDependencies = "no";
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            StandardOutput = "journal+console";
+            StandardError = "journal+console";
+          };
+          script = ''
+            set -eu
+            ${pkgs.aos-boot-identity}/bin/aos-boot-identity /proc/cmdline
+
+            ${pkgs.coreutils}/bin/mkdir -p /run/aos
+            staging=/run/aos/verity-generator.$$
+            trap '${pkgs.coreutils}/bin/rm -rf "$staging"' EXIT
+            ${pkgs.coreutils}/bin/mkdir -p \
+              "$staging/normal" "$staging/early" "$staging/late"
+            /lib/systemd/aos-systemd-veritysetup-generator \
+              "$staging/normal" "$staging/early" "$staging/late"
+
+            generated_verity_unit="$staging/normal/systemd-veritysetup@root.service"
+            if test ! -s "$generated_verity_unit"; then
+              echo "AOS boot identity: upstream verity generator produced no root unit" >&2
+              exit 1
+            fi
+
+            # daemon-reload recreates /run/systemd/generator, so publish the
+            # validated runtime unit in /run/systemd/system instead.
+            ${pkgs.coreutils}/bin/mkdir -p /run/systemd/system
+            ${pkgs.coreutils}/bin/cp "$generated_verity_unit" \
+              /run/systemd/system/systemd-veritysetup@root.service
+            ${pkgs.systemd}/bin/systemctl daemon-reload
+            ${pkgs.systemd}/bin/systemctl start --no-block systemd-veritysetup@root.service
+            ${pkgs.coreutils}/bin/touch /run/aos/boot-identity-valid
+          '';
+        };
+
+        "aos-boot-identity-guard" = {
+          description = "Require a validated normal boot identity";
+          requiredBy = ["initrd-fs.target"];
+          before = ["initrd-fs.target"];
+          unitConfig = {
+            DefaultDependencies = "no";
+            OnFailure = "aos-boot-identity-failure.target";
+            OnFailureJobMode = "isolate";
+          };
+          wants = ["aos-boot-identity-success.service"];
+          after = ["aos-boot-identity-success.service"];
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+          };
+          script = ''
+            test -f /run/aos/boot-identity-valid
+          '';
+        };
+
+        "aos-boot-identity-failure-report" = {
+          description = "Confirm rejected boot identity left storage closed";
+          requiredBy = ["aos-boot-identity-failure.target"];
+          before = ["aos-boot-identity-failure.target"];
+          unitConfig.DefaultDependencies = "no";
+          serviceConfig = {
+            Type = "oneshot";
+            StandardOutput = "journal+console";
+            StandardError = "journal+console";
+          };
+          script = ''
+            ! ${pkgs.util-linux}/bin/mountpoint -q /sysroot/var
+            if test -f /run/aos/boot-identity-valid; then
+              test -e /dev/mapper/root
+              test ! -f /run/aos/verity-root-valid
+              echo "AOS root verification failure: corrupt root rejected; /var unmounted"
+            else
+              test ! -e /dev/mapper/root
+              echo "AOS boot identity failure: verity root absent; /var unmounted"
+            fi
+          '';
+        };
+      }
       // {
         # modules-load already ignores
         # missing (-ENOENT) and hardware-absent (-ENODEV) modules; it exits
@@ -222,6 +311,15 @@ in {
         };
       };
 
+    boot.initrd.systemd.targets."aos-boot-identity-failure" = lib.mkIf config.aos.security.verity.enable {
+      description = "AOS boot identity rejected";
+      unitConfig = {
+        DefaultDependencies = "no";
+        AllowIsolate = true;
+        Conflicts = "initrd-fs.target initrd-root-fs.target initrd-switch-root.target emergency.target rescue.target";
+      };
+    };
+
     system.build.systemdInitrdUnits = systemdLib.materializeUnits {
       type = "initrd";
       etc = systemdLib.unitsToEtc pureInitrdUnits;
@@ -235,7 +333,14 @@ in {
       initrdUnits = config.system.build.systemdInitrdUnits;
       initrdExtraPackages = config.aos.boot.initrd.extraPackages;
       inherit initrdNetworkDir;
-      maskedUnits = cfg.maskedUnits;
+      maskedUnits =
+        cfg.maskedUnits
+        ++ lib.optionals config.aos.security.verity.enable [
+          "emergency.target"
+          "rescue.target"
+        ];
+      validateBootIdentity = config.aos.security.verity.enable;
+      keepBinutils = config.aos.boot.recovery.enable;
     };
   };
 }

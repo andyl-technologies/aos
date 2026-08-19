@@ -12,15 +12,17 @@
 //!
 //! ```text
 //! nix-instantiate --store dummy:// --eval --strict --json --pure-eval \
-//!   --option restrict-eval true \                  # read only the eval root + store
+//!   --option restrict-eval true \                  # read only explicitly admitted inputs
 //!   --option allow-import-from-derivation false \  # no IFD ⇒ no build sneaks in
-//!   -I <root> \
-//!   -f <root>/entry.nix manifest
+//!   --option allowed-uris '' \                     # no evaluator network capability
+//!   --aos-pure-eval-input <authenticated-path> \
+//!   -A manifest <root>/entry.nix
 //! ```
 //!
 //! `--pure-eval` removes ambient evaluator inputs such as `currentTime`,
 //! `currentSystem`, and environment variables. `restrict-eval` independently
-//! confines filesystem reads to the explicit store/eval roots, while
+//! confines filesystem reads to the individually admitted files and directory
+//! roots, while
 //! `allow-import-from-derivation = false` prevents evaluation from triggering a
 //! build. The base library, host module, facts module, and package modules are
 //! all explicit paths admitted below.
@@ -60,7 +62,7 @@ pub const DEFAULT_FACTS_PATH: &str = "/run/aos-metadata/facts.json";
 /// `aos-eval.service`; this type does not create the scope, it only invokes the
 /// evaluator and classifies.
 pub struct StockNixEvaluator {
-    /// The eval root (`-I` search path and `entry.nix` location).
+    /// The directory where generated evaluator input files are written.
     root: PathBuf,
     /// `verbose > 0` adds `--show-trace`.
     verbose: u8,
@@ -238,17 +240,19 @@ impl NixEvaluator for StockNixEvaluator {
 
         let mut cmd = pure_eval_command()?;
 
-        // Every path `entry.nix` imports must be an allowed restrict-eval root,
-        // otherwise the import faults with "access to path … is forbidden in
-        // restricted mode". The eval root holds `entry.nix`; the base-lib, the
-        // verified `host.nix`, and each provider's config-output are imported by
-        // store path and so must each be added as an `-I` root.
-        cmd.arg("-I").arg(&self.root);
-        cmd.arg("-I").arg(attempt.base_lib);
-        cmd.arg("-I").arg(attempt.host_nix);
+        // Pure evaluation ignores `-I`, so admit only the exact generated files
+        // and authenticated roots that this expression imports. This preserves
+        // their original path identity while the evaluator's allowlist rejects
+        // every ambient or neighboring path.
+        admit_pure_eval_input(&mut cmd, &entry);
+        admit_pure_eval_input(&mut cmd, attempt.base_lib);
+        admit_pure_eval_input(&mut cmd, attempt.host_nix);
+        if attempt.facts_json.is_some() {
+            admit_pure_eval_input(&mut cmd, &self.root.join("host-facts.nix"));
+        }
         for member in attempt.working_set {
             if let Some(config_output) = member.config_output.as_deref() {
-                cmd.arg("-I").arg(config_output);
+                admit_pure_eval_input(&mut cmd, config_output);
             }
         }
 
@@ -284,11 +288,16 @@ fn command_from_path(name: &str) -> Result<Command> {
 /// passes.
 ///
 /// The executable is resolved before the environment is cleared. Callers add
-/// only explicit `-I` inputs and the expression/attribute they need.
+/// only exact authenticated inputs and the expression/attribute they need.
 pub(super) fn pure_eval_command() -> Result<Command> {
     let mut command = command_from_path("nix-instantiate")?;
     configure_pure_eval_command(&mut command);
     Ok(command)
+}
+
+/// Admits one exact file or directory through the AOS Nix pure-eval extension.
+pub(super) fn admit_pure_eval_input(command: &mut Command, path: impl AsRef<Path>) {
+    command.arg("--aos-pure-eval-input").arg(path.as_ref());
 }
 
 fn configure_pure_eval_command(command: &mut Command) {
@@ -303,7 +312,8 @@ fn configure_pure_eval_command(command: &mut Command) {
             "--pure-eval",
         ])
         .args(["--option", "restrict-eval", "true"])
-        .args(["--option", "allow-import-from-derivation", "false"]);
+        .args(["--option", "allow-import-from-derivation", "false"])
+        .args(["--option", "allowed-uris", ""]);
 }
 
 /// Infer a [`KillReason`] when the subprocess was terminated by a signal.
@@ -394,7 +404,13 @@ fn render_package_module_list(members: &[WorkingSetMember]) -> String {
 
 /// Renders a Rust string as a quoted Nix string literal.
 fn nix_string(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    format!(
+        "\"{}\"",
+        value
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace("${", "\\${")
+    )
 }
 
 /// Render a path as a bare Nix path literal when it is an absolute store-style
@@ -407,7 +423,7 @@ fn nix_path_str(path: &str) -> String {
     if path.starts_with('/') && path.bytes().all(is_nix_path_byte) {
         path.to_string()
     } else {
-        format!("\"{}\"", path.replace('\\', "\\\\").replace('"', "\\\""))
+        nix_string(path)
     }
 }
 
@@ -1134,10 +1150,27 @@ mod tests {
                 .any(|args| { args == ["--option", "allow-import-from-derivation", "false"] })
         );
         assert!(
+            args.windows(3)
+                .any(|args| { args == ["--option", "allowed-uris", ""] })
+        );
+        assert!(
             command
                 .get_envs()
                 .all(|(name, _)| name != "AOS_AMBIENT_SENTINEL")
         );
+    }
+
+    #[test]
+    fn pure_eval_inputs_use_exact_path_admission_instead_of_search_paths() {
+        let mut command = Command::new("nix-instantiate");
+        admit_pure_eval_input(&mut command, Path::new("/nix/store/example-config"));
+
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(args, ["--aos-pure-eval-input", "/nix/store/example-config"]);
+        assert!(!args.iter().any(|arg| arg == "-I"));
     }
 
     #[test]

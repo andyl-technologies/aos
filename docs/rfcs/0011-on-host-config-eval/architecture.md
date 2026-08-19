@@ -150,12 +150,12 @@ manifest contains **no secret values** — credentials appear only as handles
 
 ## The evaluator
 
-### Stock C++ Nix
+### AOS-packaged C++ Nix
 
-Stock C++ Nix 2.24.12 is already built from source as an AOS package
-(`pkgs/tools/nix.nix`) with `nix-instantiate --eval` present and tested. It is
-the production evaluator.
-Starting on stock Nix is not a compromise on the model: the module system is
+AOS packages C++ Nix 2.24.12 from source in `pkgs/tools/nix.nix`, with
+`nix-instantiate --eval` present and tested. It is
+the production evaluator and carries the narrow pure-input admission extension
+described below. The module system remains
 *our* Nix code (`lib/modules.nix`) and evaluates identically on either
 evaluator. The seam is exactly `eval entry.nix → JSON manifest`.
 
@@ -163,12 +163,22 @@ Invocation (eval-only by construction; the string-path discipline guarantees no
 instantiation even in a normal evaluator):
 
 ```text
-nix-instantiate --store dummy:// --eval --strict --json \
-  --option restrict-eval true \                  # read only /run/aos-eval + the store
+nix-instantiate --store dummy:// --eval --strict --json --pure-eval \
+  --option restrict-eval true \                  # read only explicitly admitted inputs
   --option allow-import-from-derivation false \  # no IFD ⇒ no build can sneak in
-  -I /run/aos-eval \
+  --option allowed-uris '' \                     # no evaluator network capability
+  --aos-pure-eval-input /run/aos-eval/entry.nix \
+  --aos-pure-eval-input /nix/store/<hash>-aos-base-lib \
+  --aos-pure-eval-input /nix/store/<hash>-host.nix \
+  --aos-pure-eval-input /nix/store/<hash>-package-config \
   -A manifest /run/aos-eval/entry.nix
 ```
+
+The repeatable `--aos-pure-eval-input` extension adds only the named canonical
+file or directory to Nix's existing pure-eval allowlist. It does not copy or
+readdress an input, so path equality and `toString` observe the authenticated
+original path. The generated facts module is admitted as an individual file;
+the evaluator never admits `/run` or the complete eval root.
 
 The driver supplies the capabilities needed around stock Nix:
 
