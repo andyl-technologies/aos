@@ -6,8 +6,8 @@
 //! bandwidth limiting, and progress tracking happen per-chunk during the
 //! transfer rather than after it completes.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -20,7 +20,7 @@ use crate::hash::StreamingHasher;
 use crate::pool::{ConnectionPool, PoolConfig};
 use crate::progress::{BatchProgressHandler, NoopProgress, ProgressHandler};
 use crate::protocol;
-use crate::retry::{self, ErrorClass, RetryConfig, classify_error};
+use crate::retry::{self, classify_error, ErrorClass, RetryConfig};
 use crate::types::{Method, TransferOutput, TransferRequest, TransferResult};
 
 /// Configuration for the transfer engine.

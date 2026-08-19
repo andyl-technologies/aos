@@ -368,7 +368,11 @@ in
           cat > "$out/share/licenses/${pname}/AOS-MODIFICATIONS" <<'MODIFICATIONS'
           AOS package: ${pname}
           Upstream version: ${version}
-          Modified QEMU: ${if applyCruciblePatches then "yes" else "no"}
+          Modified QEMU: ${
+            if applyCruciblePatches
+            then "yes"
+            else "no"
+          }
           Ordered patch count: ${toString patchCount}
           Patch series identity: ${patchSeriesHash}
           Corresponding source package: qemu-crucible-source

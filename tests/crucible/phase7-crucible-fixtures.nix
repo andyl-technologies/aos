@@ -48,7 +48,8 @@
     {
       "x86_64-linux" = "ttyS0";
       "aarch64-linux" = "ttyAMA0";
-    }.${pkgs.stdenv.hostPlatform.system}
+    }
+    .${pkgs.stdenv.hostPlatform.system}
     or (throw "crucible phase7 fixture check does not support ${pkgs.stdenv.hostPlatform.system}");
   fixtureThirdPartyPath =
     if fixturesProbe ? passthru && fixturesProbe.passthru ? crucibleFixtureThirdPartyGuestPath

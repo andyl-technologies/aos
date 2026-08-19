@@ -122,6 +122,49 @@
   # for every ext4/VM-test system). When false, every verity branch below is
   # gated off and the image build is unchanged.
   verityEnabled = system.config.aos.security.verity.enable;
+  recovery = system.config.aos.boot.recovery;
+  recoveryEnabled = recovery.enable;
+  activeRegistryDbCerts = lib.concatLists (
+    map
+    (registry: registry.sbDbCerts)
+    (builtins.attrValues system.config.aos.apm.registries)
+  );
+  activeRegistryDbCertFiles =
+    lib.imap
+    (index: certificate:
+      pkgs.writeTextFile {
+        name = "aos-recovery-active-db-${toString index}";
+        destination = "/certificate.pem";
+        text = certificate;
+      })
+    activeRegistryDbCerts;
+  activeRecoveryDbCerts =
+    if recoveryEnabled
+    then
+      pkgs.mkDerivation {
+        pname = "aos-recovery-active-db-certs";
+        version = "1";
+        src = null;
+        buildDeps = [pkgs.coreutils];
+        runtimeDeps = [];
+        propagatedDeps = [];
+        phases = [
+          {
+            name = "install";
+            script = ''
+              mkdir -p $out
+              cp ${sb.dbCert} $out/active-db-certs.pem
+              chmod u+w $out/active-db-certs.pem
+              ${lib.concatMapStringsSep "\n" (certificate: ''
+                  printf '\n' >> $out/active-db-certs.pem
+                  cat ${certificate}/certificate.pem >> $out/active-db-certs.pem
+                '')
+                activeRegistryDbCertFiles}
+            '';
+          }
+        ];
+      }
+    else null;
 
   rootfs = mkRootfs ({
       inherit pkgs lib system;
@@ -185,10 +228,135 @@
 
   ukiA = mkUki "a" kernelParams;
   ukiB = mkUki "b" kernelParamsB;
-  # Preserve the public passthru as the slot-A/first-install UKI.
-  uki = ukiA;
   ukiAStoreFilename = "aos-${name}-slot-a-${version}.efi";
   ukiBStoreFilename = "aos-${name}-slot-b-${version}.efi";
+
+  recoveryCmdline = "console=ttyS0,115200 rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0";
+  recoverySlotManifest =
+    if recoveryEnabled
+    then
+      pkgs.mkDerivation {
+        pname = "aos-recovery-slot-manifest";
+        inherit version;
+        src = null;
+        buildDeps = [pkgs.coreutils pkgs.jq pkgs.openssl];
+        runtimeDeps = [];
+        propagatedDeps = [];
+        phases = [
+          {
+            name = "install";
+            script = ''
+              mkdir -p $out
+              root_hash=$(cat ${rootfs}/root.roothash)
+              uki_a_sha256=$(sha256sum ${ukiA}/${ukiAStoreFilename} | cut -d ' ' -f1)
+              uki_b_sha256=$(sha256sum ${ukiB}/${ukiBStoreFilename} | cut -d ' ' -f1)
+              ${pkgs.jq}/bin/jq -S -n \
+                --arg schema "aos.recovery-slot-manifest/v1" \
+                --arg release "${version}" \
+                --argjson recoveryAbi ${toString recovery.abi} \
+                --arg rootHash "$root_hash" \
+                --arg ukiASha256 "$uki_a_sha256" \
+                --arg ukiBSha256 "$uki_b_sha256" \
+                '{
+                  schema: $schema,
+                  release: $release,
+                  recoveryAbi: $recoveryAbi,
+                  slots: {
+                    A: {
+                      rootData: "/dev/disk/by-partlabel/root-a",
+                      rootHashDevice: "/dev/disk/by-partlabel/root-a-hash",
+                      rootHash: $rootHash,
+                      ukiSha256: $ukiASha256
+                    },
+                    B: {
+                      rootData: "/dev/disk/by-partlabel/root-b",
+                      rootHashDevice: "/dev/disk/by-partlabel/root-b-hash",
+                      rootHash: $rootHash,
+                      ukiSha256: $ukiBSha256
+                    }
+                  }
+                }' > $out/slot-manifest.json
+              ${pkgs.openssl}/bin/openssl dgst -sha256 \
+                -sign ${sb.dbKey} \
+                -out $out/slot-manifest.json.sig \
+                $out/slot-manifest.json
+              ${pkgs.openssl}/bin/openssl x509 -pubkey -noout \
+                -in ${sb.dbCert} > db-public.pem
+              ${pkgs.openssl}/bin/openssl dgst -sha256 \
+                -verify db-public.pem \
+                -signature $out/slot-manifest.json.sig \
+                $out/slot-manifest.json
+            '';
+          }
+        ];
+      }
+    else null;
+  mkRecoveryInitrd = copy:
+    import ../base/_recovery-initrd-builder.nix {
+      inherit pkgs lib;
+      kernel = system.config.system.build.kernel;
+      loadModules = system.config.aos.boot.initrd.loadModules;
+      dbCert = sb.dbCert;
+      authorizedDbCerts = "${activeRecoveryDbCerts}/active-db-certs.pem";
+      slotManifest = recoverySlotManifest;
+      recoveryCopy = lib.toUpper copy;
+      recoveryAbi = recovery.abi;
+      platform = lib.system;
+      moduleAbi = system.config.aos.system.moduleAbi;
+    };
+  recoveryInitrdA =
+    if recoveryEnabled
+    then mkRecoveryInitrd "a"
+    else null;
+  recoveryInitrdB =
+    if recoveryEnabled
+    then mkRecoveryInitrd "b"
+    else null;
+  mkRecoveryOsRelease = copy:
+    pkgs.writeTextFile {
+      name = "aos-recovery-${copy}-os-release";
+      destination = "/os-release";
+      text = ''
+        NAME="AOS Recovery"
+        ID=aos-recovery
+        VERSION="${version}"
+        VERSION_ID="${version}"
+        PRETTY_NAME="AOS Recovery ${lib.toUpper copy} (${version})"
+        AOS_RELEASE_ID="${version}"
+        AOS_RECOVERY_ABI=${toString recovery.abi}
+        AOS_RECOVERY_COPY=${lib.toUpper copy}
+      '';
+    };
+  mkRecoveryUki = copy:
+    pkgs.aos-uki {
+      name = "${name}-recovery-${copy}";
+      inherit version;
+      cmdline = recoveryCmdline;
+      kernel = system.config.system.build.kernel;
+      initrd =
+        if copy == "a"
+        then recoveryInitrdA
+        else recoveryInitrdB;
+      osRelease = "${mkRecoveryOsRelease copy}/os-release";
+      secureBootKey = sb.dbKey;
+      secureBootCert = sb.dbCert;
+      # Recovery is db-signed code, not an authorization to unseal normal
+      # persistent state. It therefore carries neither a PCR-policy signature
+      # nor a normal root hash.
+      pcrPrivateKey = null;
+      pcrPublicKey = null;
+      rootHashFile = null;
+    };
+  recoveryUkiA =
+    if recoveryEnabled
+    then mkRecoveryUki "a"
+    else null;
+  recoveryUkiB =
+    if recoveryEnabled
+    then mkRecoveryUki "b"
+    else null;
+  # Preserve the public passthru as the slot-A/first-install UKI.
+  uki = ukiA;
 
   ukiFilename = "aos-generation-0000000001.efi";
 
@@ -208,6 +376,7 @@
       PRETTY_NAME="${name} ${version}"
       HOME_URL="https://aos.dev"
       BUG_REPORT_URL="https://aos.dev/issues"
+      AOS_RELEASE_ID="${version}"
       AOS_STATE_VERSION=${system.config.aos.system.stateVersion}
       AOS_MODULE_ABI=${toString system.config.aos.system.moduleAbi}
       AOS_BASELIB_DIGEST=sha256:${builtins.hashString "sha256" (toString system.config.aos.config.evalAtBoot.baseLib)}
@@ -251,13 +420,22 @@
           pkgs.jq
           pkgs.zstd
         ]
-        ++ lib.optional sb.enable pkgs.sbsigntools; # sbsign for sd-boot
+        ++ lib.optional sb.enable pkgs.sbsigntools
+        ++ lib.optionals recoveryEnabled [pkgs.binutils pkgs.openssl]; # recovery audit + bundle signature
 
       ROOT_IMG = "${rootfs}/root.img";
       ROOT_SIZE_FILE = "${rootfs}/rootfs-size-bytes";
       INITRD = "${system.config.system.build.initrd}/initrd.img";
       UKI_PATH = "${ukiA}/${ukiAStoreFilename}";
       UKI_B_PATH = "${ukiB}/${ukiBStoreFilename}";
+      RECOVERY_A_PATH =
+        if recoveryEnabled
+        then "${recoveryUkiA}/aos-${name}-recovery-a-${version}.efi"
+        else "";
+      RECOVERY_B_PATH =
+        if recoveryEnabled
+        then "${recoveryUkiB}/aos-${name}-recovery-b-${version}.efi"
+        else "";
       UKI_MEASUREMENT_PATH = "${ukiA}/${ukiAStoreFilename}.measurement";
       UKI_MEASUREMENT_SIG_PATH = "${ukiA}/${ukiAStoreFilename}.measurement.sig";
       SDBOOT_DIR = "${pkgs.systemd}/lib/systemd/boot/efi";
@@ -275,6 +453,10 @@
       MAX_ESP_MIB = toString budgets.maxEspMiB;
       MAX_RUNTIME_CLOSURE_MIB = toString budgets.maxRuntimeClosureMiB;
       MAX_DOWNLOAD_MIB = toString budgets.maxDownloadMiB;
+      IMAGE_MODULE_ABI = toString system.config.aos.system.moduleAbi;
+      RECOVERY_ENABLE = lib.optionalString recoveryEnabled "1";
+      RECOVERY_ABI = toString recovery.abi;
+      RECOVERY_CMDLINE = recoveryCmdline;
       IMAGE_UKI_PATH = "EFI/Linux/${espUkiFilename}";
       IMAGE_UKI_FILENAME = espUkiFilename;
       IMAGE_SDBOOT_PATH = "EFI/systemd/${efiName.systemd}";
@@ -334,9 +516,10 @@
             # ── 2. ESP tree ─────────────────────────────────────────────
             echo "==> Populating ESP tree"
             mkdir -p esp/EFI/BOOT
+            mkdir -p esp/EFI/AOS
             mkdir -p esp/EFI/systemd
             mkdir -p esp/EFI/Linux
-            mkdir -p esp/loader
+            mkdir -p esp/loader/entries
 
             # sd-boot at both canonical and UEFI fallback paths. Firmware
             # that isn't told about a specific EFI application falls back
@@ -364,6 +547,37 @@
                 esp/EFI/Linux/${espUkiFilename}.measurement.sig
             ''}
 
+            ${lib.optionalString recoveryEnabled ''
+              # Recovery entries are explicit Type-1 entries. Their filenames
+              # never match the normal `aos-*.efi` default selector and carry
+              # no sd-boot tries suffix, so entering recovery cannot consume
+              # or reset a normal candidate's attempt counter.
+              cp "$RECOVERY_A_PATH" esp/EFI/AOS/recovery-a.efi
+              cp "$RECOVERY_B_PATH" esp/EFI/AOS/recovery-b.efi
+              for recovery_uki in "$RECOVERY_A_PATH" "$RECOVERY_B_PATH"; do
+                objcopy -O binary --only-section=.cmdline "$recovery_uki" recovery.cmdline
+                recovery_cmdline=$(tr -d '\000' < recovery.cmdline)
+                if [ "$recovery_cmdline" != "$RECOVERY_CMDLINE" ]; then
+                  echo "recovery UKI carries a noncanonical command line" >&2
+                  exit 1
+                fi
+                rm -f recovery.pcrsig
+                objcopy -O binary --only-section=.pcrsig "$recovery_uki" recovery.pcrsig 2>/dev/null || true
+                if [ -s recovery.pcrsig ]; then
+                  echo "recovery UKI must not carry normal PCR authorization" >&2
+                  exit 1
+                fi
+              done
+              cat > esp/loader/entries/recovery-a.conf <<RECOVERY_A_ENTRY
+              title AOS Recovery A ($IMAGE_VERSION)
+              efi /EFI/AOS/recovery-a.efi
+              RECOVERY_A_ENTRY
+              cat > esp/loader/entries/recovery-b.conf <<RECOVERY_B_ENTRY
+              title AOS Recovery B ($IMAGE_VERSION)
+              efi /EFI/AOS/recovery-b.efi
+              RECOVERY_B_ENTRY
+            ''}
+
             # sd-boot configuration. The `default aos-*.efi` pattern selects
             # the newest live counted image while sorting an exhausted image
             # behind the known-good slot. Staging clears any exact persistent
@@ -383,13 +597,31 @@
             # mount needed. MTOOLS_SKIP_CHECK=1 is required because mcopy
             # otherwise refuses to write to a plain file with no
             # ~/.mtoolsrc entry.
-            # The declared ESP capacity is stable across generations. Validate
-            # that it can hold two copies of the observed payload plus FAT and
-            # bootloader headroom before creating partition geometry.
+            # Size the ESP from the installed set plus one complete inactive
+            # publication transaction. At peak that transaction retains the
+            # known-good normal UKI and both recovery copies while temporary
+            # bytes hold the new normal UKI, inactive recovery copy, loader
+            # entry, and measured-boot sidecars. Add 32 MiB for FAT metadata,
+            # round up to MiB, and keep a 128 MiB FAT32 comfort floor.
+            # Use apparent bytes rather than allocated blocks. UKIs may contain
+            # sparse padding between PE sections, but FAT must store every
+            # logical byte when the file is copied onto the ESP.
             esp_content_bytes=$(du -sb esp | cut -f1)
+            transaction_bytes=$(stat -c %s "$UKI_B_PATH")
+            ${lib.optionalString sb.measuredBoot.enable ''
+              transaction_bytes=$(( transaction_bytes + $(stat -c %s "$UKI_MEASUREMENT_PATH") ))
+              transaction_bytes=$(( transaction_bytes + $(stat -c %s "$UKI_MEASUREMENT_SIG_PATH") ))
+            ''}
+            ${lib.optionalString recoveryEnabled ''
+              transaction_bytes=$(( transaction_bytes + $(stat -c %s "$RECOVERY_B_PATH") ))
+              transaction_bytes=$(( transaction_bytes + $(stat -c %s esp/loader/entries/recovery-b.conf) ))
+            ''}
+            esp_required_bytes=$(( esp_content_bytes + transaction_bytes + 33554432 + ${toString system.config.aos.image.espExtraFreeMiB} * 1048576 ))
+            echo "$esp_content_bytes" > esp-content-bytes
+            echo "$transaction_bytes" > esp-transaction-bytes
+            echo "$esp_required_bytes" > esp-required-bytes
             uki_bytes=$(stat -c %s "$UKI_PATH")
-            required_esp_bytes=$(( esp_content_bytes + uki_bytes + 33554432 ))
-            if [ "$required_esp_bytes" -gt $(( MAX_ESP_MIB * 1048576 )) ]; then
+            if [ "$esp_required_bytes" -gt $(( MAX_ESP_MIB * 1048576 )) ]; then
               echo "ESP payload exceeds its $MAX_ESP_MIB MiB artifact contract" >&2
               exit 1
             fi
@@ -397,6 +629,8 @@
               echo "UKI exceeds its $MAX_UKI_MIB MiB artifact contract" >&2
               exit 1
             fi
+            # Preserve stable partition geometry while recording the observed
+            # peak transaction requirement in image-info.json.
             esp_mib=$MAX_ESP_MIB
             esp_bytes=$(( esp_mib * 1048576 ))
             esp_sectors=$(( esp_bytes / 512 ))
@@ -493,6 +727,12 @@
             mv root.img $out/root.img
             cp "$UKI_PATH" $out/uki-a.efi
             cp "$UKI_B_PATH" $out/uki-b.efi
+            ${lib.optionalString recoveryEnabled ''
+              cp "$RECOVERY_A_PATH" $out/recovery-a.efi
+              cp "$RECOVERY_B_PATH" $out/recovery-b.efi
+              cp esp/loader/entries/recovery-a.conf $out/recovery-a.conf
+              cp esp/loader/entries/recovery-b.conf $out/recovery-b.conf
+            ''}
             ${lib.optionalString verityEnabled ''
               cp "$VERITY_IMG" $out/root.verity
               cp "$ROOT_HASH_FILE" $out/root.roothash
@@ -509,9 +749,18 @@
             logical_disk_sha256=$(sha256sum image.raw | cut -d ' ' -f1)
             uki_size_bytes=$(stat -c %s "$UKI_PATH")
             uki_sha256=$(sha256sum "$UKI_PATH" | cut -d ' ' -f1)
+            ${lib.optionalString recoveryEnabled ''
+              recovery_a_size_bytes=$(stat -c %s "$RECOVERY_A_PATH")
+              recovery_b_size_bytes=$(stat -c %s "$RECOVERY_B_PATH")
+              recovery_a_sha256=$(sha256sum "$RECOVERY_A_PATH" | cut -d ' ' -f1)
+              recovery_b_sha256=$(sha256sum "$RECOVERY_B_PATH" | cut -d ' ' -f1)
+            ''}
             if [ -n "$SB_ENABLE" ]; then uki_signed=true; else uki_signed=false; fi
             if [ -n "$UKI_MEASURED" ]; then uki_measured=true; else uki_measured=false; fi
             esp_size_mib=$(cat esp-size-mib)
+            esp_content_bytes=$(cat esp-content-bytes)
+            esp_transaction_bytes=$(cat esp-transaction-bytes)
+            esp_required_bytes=$(cat esp-required-bytes)
             esp_offset_bytes=$(cat esp-offset-bytes)
             esp_partition_size_bytes=$(cat esp-partition-size-bytes)
             root_offset_bytes=$(cat root-offset-bytes)
@@ -556,12 +805,17 @@
               --arg ukiSha256 "$uki_sha256" \
               --arg kernelParams "$IMAGE_KERNEL_PARAMS" \
               --arg rootFsType "$IMAGE_ROOT_FS_TYPE" \
+              --arg recoveryRelease "$IMAGE_VERSION" \
+              --arg recoveryCmdline "$RECOVERY_CMDLINE" \
               --arg uki "$IMAGE_UKI_PATH" \
               --arg sdBoot "$IMAGE_SDBOOT_PATH" \
               --argjson diskSizeMiB "$disk_size_mib" \
               --argjson diskSizeBytes "$virtual_size_bytes" \
               --argjson byteSize "$disk_size_bytes" \
               --argjson espSizeMiB "$esp_size_mib" \
+              --argjson espContentBytes "$esp_content_bytes" \
+              --argjson espTransactionBytes "$esp_transaction_bytes" \
+              --argjson espRequiredBytes "$esp_required_bytes" \
               --argjson rootSizeMiB "$root_size_mib" \
               --argjson rootPartitionSizeMiB "$MAX_ROOT_MIB" \
               --argjson espOffsetBytes "$esp_offset_bytes" \
@@ -580,7 +834,13 @@
               --argjson maxEspMiB "$MAX_ESP_MIB" \
               --argjson maxRuntimeClosureMiB "$MAX_RUNTIME_CLOSURE_MIB" \
               --argjson maxDownloadMiB "$MAX_DOWNLOAD_MIB" \
-              ${lib.optionalString verityEnabled ''              --argjson hashSizeMiB "$hash_size_mib" \
+              --argjson moduleAbi "$IMAGE_MODULE_ABI" \
+              ${lib.optionalString recoveryEnabled ''              --argjson recoveryAbi "$RECOVERY_ABI" \
+                            --argjson recoveryASizeBytes "$recovery_a_size_bytes" \
+                            --argjson recoveryBSizeBytes "$recovery_b_size_bytes" \
+                            --arg recoveryASha256 "$recovery_a_sha256" \
+                            --arg recoveryBSha256 "$recovery_b_sha256" \
+            ''}${lib.optionalString verityEnabled ''              --argjson hashSizeMiB "$hash_size_mib" \
                             --argjson hashOffsetBytes "$hash_offset_bytes" \
                             --argjson hashPartitionSizeBytes "$hash_partition_size_bytes" \
                             --argjson hashBOffsetBytes "$hash_b_offset_bytes" \
@@ -610,6 +870,7 @@
                   runtimeClosure: $maxRuntimeClosureMiB,
                   download: $maxDownloadMiB
                 },
+                moduleAbi: $moduleAbi,
                 compatibleTargets: ["bare-metal"],
                 uki: {
                   filename: $ukiFilename,
@@ -621,6 +882,12 @@
                 },
                 diskSizeMiB: $diskSizeMiB,
                 espSizeMiB: $espSizeMiB,
+                espBudget: {
+                  installedBytes: $espContentBytes,
+                  transactionBytes: $espTransactionBytes,
+                  requiredBytes: $espRequiredBytes,
+                  partitionBytes: $espPartitionSizeBytes
+                },
                 rootSizeMiB: $rootSizeMiB,
                 partitionTable: "gpt",
                 kernelParams: $kernelParams,
@@ -634,12 +901,74 @@
             }, label: "root-b", type: "root", filesystem: $rootFsType, sizeMiB: $rootPartitionSizeMiB, offsetBytes: $rootBOffsetBytes, sizeBytes: $rootBPartitionSizeBytes}
                 ],
                 esp: {uki: $uki, sdBoot: $sdBoot}
-              }${lib.optionalString verityEnabled ''
+              }${lib.optionalString recoveryEnabled ''
+              | .recovery = {
+                  abi: $recoveryAbi,
+                  release: $recoveryRelease,
+                  commandLine: $recoveryCmdline,
+                  copies: {
+                    A: {espPath: "EFI/AOS/recovery-a.efi", byteSize: $recoveryASizeBytes, sha256: $recoveryASha256},
+                    B: {espPath: "EFI/AOS/recovery-b.efi", byteSize: $recoveryBSizeBytes, sha256: $recoveryBSha256}
+                  },
+                  entries: {
+                    A: "loader/entries/recovery-a.conf",
+                    B: "loader/entries/recovery-b.conf"
+                  }
+                }''}${lib.optionalString verityEnabled ''
               | .partitions += [
                   {number: 3, label: "root-a-hash", type: "verity", filesystem: "dm-verity", sizeMiB: $hashSizeMiB, offsetBytes: $hashOffsetBytes, sizeBytes: $hashPartitionSizeBytes},
                   {number: 5, label: "root-b-hash", type: "verity", filesystem: "dm-verity", sizeMiB: $hashSizeMiB, offsetBytes: $hashBOffsetBytes, sizeBytes: $hashBPartitionSizeBytes}
                 ]''}' \
               > $out/image-info.json
+
+            ${lib.optionalString recoveryEnabled ''
+              component() {
+                id=$1
+                path=$2
+                size=$(stat -c %s "$out/$path")
+                digest=$(sha256sum "$out/$path" | cut -d ' ' -f1)
+                ${pkgs.jq}/bin/jq -n \
+                  --arg id "$id" --arg path "$path" \
+                  --argjson byteSize "$size" --arg sha256 "$digest" \
+                  '{id: $id, path: $path, byte_size: $byteSize, sha256: $sha256}'
+              }
+              components=$(
+                {
+                  component root-image root.img
+                  component root-verity root.verity
+                  component root-hash root.roothash
+                  component normal-uki-a uki-a.efi
+                  component normal-uki-b uki-b.efi
+                  component recovery-uki-a recovery-a.efi
+                  component recovery-uki-b recovery-b.efi
+                  component recovery-entry-a recovery-a.conf
+                  component recovery-entry-b recovery-b.conf
+                  component image-metadata image-info.json
+                } | ${pkgs.jq}/bin/jq -s .
+              )
+              ${pkgs.jq}/bin/jq -S -n \
+                --arg schema aos.recovery-bundle/v1 \
+                --arg release "$IMAGE_VERSION" \
+                --arg architecture "$IMAGE_ARCHITECTURE" \
+                --arg platform "$IMAGE_PLATFORM" \
+                --argjson module_abi "$IMAGE_MODULE_ABI" \
+                --argjson recovery_abi "$RECOVERY_ABI" \
+                --argjson components "$components" \
+                '{schema: $schema, release: $release, architecture: $architecture,
+                  platform: $platform, module_abi: $module_abi,
+                  recovery_abi: $recovery_abi, components: $components}' \
+                > $out/recovery-bundle.json
+              ${pkgs.openssl}/bin/openssl dgst -sha256 \
+                -sign ${sb.dbKey} \
+                -out $out/recovery-bundle.json.sig \
+                $out/recovery-bundle.json
+              ${pkgs.openssl}/bin/openssl x509 -pubkey -noout \
+                -in ${sb.dbCert} > recovery-bundle-public.pem
+              ${pkgs.openssl}/bin/openssl dgst -sha256 \
+                -verify recovery-bundle-public.pem \
+                -signature $out/recovery-bundle.json.sig \
+                $out/recovery-bundle.json
+            ''}
           '';
         }
       ];
@@ -652,6 +981,35 @@
       ROOT_HASH_FILE = "${rootfs}/root.roothash";
       ROOT_HASH_SIG_FILE = "${rootfs}/root.roothash.p7s";
     });
+  recoveryBundle =
+    if recoveryEnabled
+    then
+      pkgs.mkDerivation {
+        pname = "aos-recovery-bundle";
+        inherit version;
+        src = null;
+        buildDeps = [pkgs.coreutils];
+        runtimeDeps = [];
+        propagatedDeps = [];
+        phases = [
+          {
+            name = "install";
+            script = ''
+              destination=$out/aos/recovery
+              mkdir -p "$destination"
+              for component in \
+                root.img root.verity root.roothash \
+                uki-a.efi uki-b.efi \
+                recovery-a.efi recovery-b.efi \
+                recovery-a.conf recovery-b.conf \
+                image-info.json recovery-bundle.json recovery-bundle.json.sig; do
+                cp "${imageDrv}/$component" "$destination/$component"
+              done
+            '';
+          }
+        ];
+      }
+    else null;
 in
   # Expose the assembled UKI (the exact `.efi` written to the ESP) as a
   # passthru attribute so callers can publish or measure it directly
@@ -660,4 +1018,10 @@ in
   imageDrv
   // {
     inherit rootfs uki ukiA ukiB ukiAStoreFilename ukiBStoreFilename;
+    recoveryInitrdA = recoveryInitrdA;
+    recoveryInitrdB = recoveryInitrdB;
+    recoverySlotManifest = recoverySlotManifest;
+    recoveryUkiA = recoveryUkiA;
+    recoveryUkiB = recoveryUkiB;
+    recoveryBundle = recoveryBundle;
   }

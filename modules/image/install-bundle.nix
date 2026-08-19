@@ -64,64 +64,66 @@ in {
       buildDeps =
         [pkgs.coreutils pkgs.findutils config.system.build.checks.image-budget]
         ++ lib.optionals config.aos.boot.secureBoot.enable [pkgs.perl pkgs.sbsigntools];
-      phases = [{
-        name = "install";
-        script = ''
-          mkdir -p "$out/bin" "$out/payload/esp/EFI/BOOT" \
-            "$out/payload/esp/EFI/systemd" "$out/payload/esp/EFI/Linux" \
-            "$out/payload/esp/loader"
-          ln -s ${image.rootfs}/root.img "$out/payload/root.img"
-          ln -s ${image.rootfs}/root.verity "$out/payload/root.verity"
-          uki=$(find ${image.ukiA} -maxdepth 1 -type f -name '*.efi' -print)
-          [ "$(printf '%s\n' "$uki" | wc -l)" -eq 1 ]
-          ln -s "$uki" "$out/payload/esp/EFI/Linux/${ukiName}"
-          ${lib.optionalString config.aos.boot.secureBoot.measuredBoot.enable ''
-            ln -s ${image.ukiA}/*.measurement "$out/payload/esp/EFI/Linux/${ukiName}.measurement"
-            ln -s ${image.ukiA}/*.measurement.sig "$out/payload/esp/EFI/Linux/${ukiName}.measurement.sig"
-          ''}
-          ${lib.optionalString config.aos.boot.secureBoot.enable ''
-            sbsign --key ${config.aos.boot.secureBoot.dbKey} \
-              --cert ${config.aos.boot.secureBoot.dbCert} \
-              --output "$out/payload/esp/EFI/BOOT/${efiName.fallback}" \
-              ${pkgs.systemd}/lib/systemd/boot/efi/${efiName.systemd}
-          ''}
-          ${lib.optionalString (!config.aos.boot.secureBoot.enable) ''
-            ln -s ${pkgs.systemd}/lib/systemd/boot/efi/${efiName.systemd} \
-              "$out/payload/esp/EFI/BOOT/${efiName.fallback}"
-          ''}
-          ln -s "$out/payload/esp/EFI/BOOT/${efiName.fallback}" \
-            "$out/payload/esp/EFI/systemd/${efiName.systemd}"
-          cat > "$out/payload/esp/loader/loader.conf" <<'LOADER'
-          default aos-*.efi
-          timeout 3
-          console-mode max
-          editor no
-          LOADER
-          cp ${pcrPublicKey} "$out/payload/pcr-public.pem"
-          cp ${./install-zfs.sh.in} "$out/bin/aos-install-zfs"
-          substituteInPlace "$out/bin/aos-install-zfs" \
-            --replace-fail '@bash@' '${pkgs.bash}/bin/bash' \
-            --replace-fail '@coreutils@' '${pkgs.coreutils}' \
-            --replace-fail '@dosfstools@' '${pkgs.dosfstools}' \
-            --replace-fail '@gptfdisk@' '${pkgs.gptfdisk}' \
-            --replace-fail '@mtools@' '${pkgs.mtools}' \
-            --replace-fail '@systemd@' '${pkgs.systemd}' \
-            --replace-fail '@util_linux@' '${pkgs.util-linux}' \
-            --replace-fail '@zfs@' '${zfs}' \
-            --replace-fail '@pool@' '${cfg.zfs.poolName}' \
-            --replace-fail '@dataset@' '${cfg.zfs.dataset}' \
-            --replace-fail '@sealed_key_path@' '${cfg.zfs.sealedKeyPath}' \
-            --replace-fail '@signed_pcrs@' '${config.aos.boot.secureBoot.measuredBoot.signedPcrs}' \
-            --replace-fail '@pinned_pcrs@' '${config.aos.boot.secureBoot.measuredBoot.pinnedPcrs}' \
-            --replace-fail '@esp_devices@' '${lib.concatStringsSep " " cfg.espDevices}' \
-            --replace-fail '@esp_count@' '${toString (builtins.length cfg.espDevices)}' \
-            --replace-fail '@root_slot_size@' '${toString cfg.zfs.rootSlotSizeMiB}' \
-            --replace-fail '@verity_slot_size@' '${toString cfg.zfs.veritySlotSizeMiB}' \
-            --replace-fail '@esp_size@' '${toString config.aos.image.budgets.maxEspMiB}'
-          ${pkgs.bash}/bin/bash -n "$out/bin/aos-install-zfs"
-          chmod 0755 "$out/bin/aos-install-zfs"
-        '';
-      }];
+      phases = [
+        {
+          name = "install";
+          script = ''
+            mkdir -p "$out/bin" "$out/payload/esp/EFI/BOOT" \
+              "$out/payload/esp/EFI/systemd" "$out/payload/esp/EFI/Linux" \
+              "$out/payload/esp/loader"
+            ln -s ${image.rootfs}/root.img "$out/payload/root.img"
+            ln -s ${image.rootfs}/root.verity "$out/payload/root.verity"
+            uki=$(find ${image.ukiA} -maxdepth 1 -type f -name '*.efi' -print)
+            [ "$(printf '%s\n' "$uki" | wc -l)" -eq 1 ]
+            ln -s "$uki" "$out/payload/esp/EFI/Linux/${ukiName}"
+            ${lib.optionalString config.aos.boot.secureBoot.measuredBoot.enable ''
+              ln -s ${image.ukiA}/*.measurement "$out/payload/esp/EFI/Linux/${ukiName}.measurement"
+              ln -s ${image.ukiA}/*.measurement.sig "$out/payload/esp/EFI/Linux/${ukiName}.measurement.sig"
+            ''}
+            ${lib.optionalString config.aos.boot.secureBoot.enable ''
+              sbsign --key ${config.aos.boot.secureBoot.dbKey} \
+                --cert ${config.aos.boot.secureBoot.dbCert} \
+                --output "$out/payload/esp/EFI/BOOT/${efiName.fallback}" \
+                ${pkgs.systemd}/lib/systemd/boot/efi/${efiName.systemd}
+            ''}
+            ${lib.optionalString (!config.aos.boot.secureBoot.enable) ''
+              ln -s ${pkgs.systemd}/lib/systemd/boot/efi/${efiName.systemd} \
+                "$out/payload/esp/EFI/BOOT/${efiName.fallback}"
+            ''}
+            ln -s "$out/payload/esp/EFI/BOOT/${efiName.fallback}" \
+              "$out/payload/esp/EFI/systemd/${efiName.systemd}"
+            cat > "$out/payload/esp/loader/loader.conf" <<'LOADER'
+            default aos-*.efi
+            timeout 3
+            console-mode max
+            editor no
+            LOADER
+            cp ${pcrPublicKey} "$out/payload/pcr-public.pem"
+            cp ${./install-zfs.sh.in} "$out/bin/aos-install-zfs"
+            substituteInPlace "$out/bin/aos-install-zfs" \
+              --replace-fail '@bash@' '${pkgs.bash}/bin/bash' \
+              --replace-fail '@coreutils@' '${pkgs.coreutils}' \
+              --replace-fail '@dosfstools@' '${pkgs.dosfstools}' \
+              --replace-fail '@gptfdisk@' '${pkgs.gptfdisk}' \
+              --replace-fail '@mtools@' '${pkgs.mtools}' \
+              --replace-fail '@systemd@' '${pkgs.systemd}' \
+              --replace-fail '@util_linux@' '${pkgs.util-linux}' \
+              --replace-fail '@zfs@' '${zfs}' \
+              --replace-fail '@pool@' '${cfg.zfs.poolName}' \
+              --replace-fail '@dataset@' '${cfg.zfs.dataset}' \
+              --replace-fail '@sealed_key_path@' '${cfg.zfs.sealedKeyPath}' \
+              --replace-fail '@signed_pcrs@' '${config.aos.boot.secureBoot.measuredBoot.signedPcrs}' \
+              --replace-fail '@pinned_pcrs@' '${config.aos.boot.secureBoot.measuredBoot.pinnedPcrs}' \
+              --replace-fail '@esp_devices@' '${lib.concatStringsSep " " cfg.espDevices}' \
+              --replace-fail '@esp_count@' '${toString (builtins.length cfg.espDevices)}' \
+              --replace-fail '@root_slot_size@' '${toString cfg.zfs.rootSlotSizeMiB}' \
+              --replace-fail '@verity_slot_size@' '${toString cfg.zfs.veritySlotSizeMiB}' \
+              --replace-fail '@esp_size@' '${toString config.aos.image.budgets.maxEspMiB}'
+            ${pkgs.bash}/bin/bash -n "$out/bin/aos-install-zfs"
+            chmod 0755 "$out/bin/aos-install-zfs"
+          '';
+        }
+      ];
       meta.description = "Guarded redundant-ESP and encrypted-ZFS installer bundle";
     };
   };

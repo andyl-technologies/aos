@@ -27,7 +27,8 @@
     hasVersion = pkg ? version && builtins.isString pkg.version && pkg.version != "";
     hasDescription = pkg.meta ? description && builtins.isString pkg.meta.description && pkg.meta.description != "";
     hasLicense =
-      pkg.meta ? license
+      pkg.meta
+      ? license
       && (
         (builtins.isString pkg.meta.license && pkg.meta.license != "")
         || (

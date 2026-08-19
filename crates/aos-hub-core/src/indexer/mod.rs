@@ -1868,9 +1868,9 @@ mod tests {
     #[tokio::test]
     async fn transient_surface_error_records_pending_not_failed() {
         let db = Database::open_in_memory().await.unwrap();
-        let org = db.create_org("acme", "Acme").await.unwrap();
+        let org_id = db.create_org("acme", "Acme").await.unwrap();
         let id = db
-            .create_managed_registry(org, "", "app", "public", &[], false)
+            .create_managed_registry(org_id, "", "app", "public", &[], false)
             .await
             .unwrap();
         let registry = db.registry_by_slug("acme/app").await.unwrap().unwrap();
@@ -1910,8 +1910,8 @@ mod tests {
     #[tokio::test]
     async fn permanent_surface_error_still_fails() {
         let db = Database::open_in_memory().await.unwrap();
-        let org = db.create_org("acme", "Acme").await.unwrap();
-        db.create_managed_registry(org, "", "bad", "public", &[], false)
+        let org_id = db.create_org("acme", "Acme").await.unwrap();
+        db.create_managed_registry(org_id, "", "bad", "public", &[], false)
             .await
             .unwrap();
         let registry = db.registry_by_slug("acme/bad").await.unwrap().unwrap();

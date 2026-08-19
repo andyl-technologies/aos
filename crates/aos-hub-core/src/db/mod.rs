@@ -8298,9 +8298,11 @@ impl Database {
         for presence_chunk in presences.chunks(MAX_PLACEMENT_SCAN_DELETE_IDS) {
             let mut delete_params = Vec::with_capacity(presence_chunk.len() + 1);
             delete_params.push(crate::value::ToValue::to_value(&placement_id));
-            delete_params.extend(presence_chunk.iter().map(|(_, presence)| {
-                crate::value::ToValue::to_value(&presence.surface_object_id)
-            }));
+            delete_params.extend(
+                presence_chunk.iter().map(|(_, presence)| {
+                    crate::value::ToValue::to_value(&presence.surface_object_id)
+                }),
+            );
             let object_placeholders = (0..presence_chunk.len())
                 .map(|index| format!("?{}", index + 2))
                 .collect::<Vec<_>>()
@@ -10728,11 +10730,7 @@ impl Database {
                        WHERE delivery_route_id = ?1
                          AND configuration_generation = ?2
                          AND configuration_digest = ?3)",
-                    vals![
-                        id,
-                        requested.generation_key,
-                        requested.configuration_digest
-                    ],
+                    vals![id, requested.generation_key, requested.configuration_digest],
                 )),
                 _ => None,
             };
@@ -10743,28 +10741,30 @@ impl Database {
                 statements.push(guard.expecting(1));
             }
         }
-        statements.push(Statement::new(
-            "INSERT INTO topology_operations (operation_id, operation_kind,
+        statements.push(
+            Statement::new(
+                "INSERT INTO topology_operations (operation_id, operation_kind,
                 authorization_scope_key, control_permission, primary_target_kind,
                 primary_target_stable_id, primary_target_generation_key,
                 primary_target_configuration_digest, state, progress_total,
                 detail_json, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', ?9, ?10, ?11)",
-            vals![
-                input.operation_id,
-                input.operation_kind,
-                authorization_scope_key,
-                input.control_permission.as_str(),
-                primary_target_kind,
-                primary_target_stable_id,
-                primary_requested.generation_key,
-                primary_requested.configuration_digest,
-                input.progress_total,
-                input.detail_json,
-                now
-            ],
-        )
-        .expecting(1));
+                vals![
+                    input.operation_id,
+                    input.operation_kind,
+                    authorization_scope_key,
+                    input.control_permission.as_str(),
+                    primary_target_kind,
+                    primary_target_stable_id,
+                    primary_requested.generation_key,
+                    primary_requested.configuration_digest,
+                    input.progress_total,
+                    input.detail_json,
+                    now
+                ],
+            )
+            .expecting(1),
+        );
         for ((target, target_kind, stable_id, target_scope), requested) in
             resolved.into_iter().zip(&input.targets)
         {
@@ -28088,7 +28088,13 @@ source_nar_hash = ""
                       actual_artifact_count, started_at, completed_at)
                      VALUES ('retired-snapshot', 9001, ?1, ?2, ?3,
                        'retired-verification', ?4, 'complete', 1, 1, 1, ?5, ?5)",
-                    vals![id, "f".repeat(64), "e".repeat(64), "1".repeat(64), unix_now()],
+                    vals![
+                        id,
+                        "f".repeat(64),
+                        "e".repeat(64),
+                        "1".repeat(64),
+                        unix_now()
+                    ],
                 ),
                 Statement::new(
                     "INSERT INTO release_artifacts
@@ -28201,7 +28207,10 @@ source_nar_hash = ""
     #[tokio::test]
     async fn registry_delete_rejects_active_publication_without_partial_history() {
         let db = Database::open_in_memory().await.unwrap();
-        let id = db.register_registry("publishing", &[], false).await.unwrap();
+        let id = db
+            .register_registry("publishing", &[], false)
+            .await
+            .unwrap();
         let registry = db.registry_by_id(id).await.unwrap().unwrap();
         db.create_registry_publication(&NewRegistryPublication {
             publication_id: "active-publication".into(),
@@ -29831,12 +29840,7 @@ source_nar_hash = ""
             .await
             .unwrap();
         let error = db
-            .convert_registry_object_to_mutable(
-                registry_id,
-                nar.id,
-                &nar_key,
-                publication_id,
-            )
+            .convert_registry_object_to_mutable(registry_id, nar.id, &nar_key, publication_id)
             .await
             .unwrap_err();
         assert!(error.to_string().contains("not replaceable metadata"));

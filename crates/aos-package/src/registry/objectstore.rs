@@ -162,9 +162,7 @@ fn write_loose_object_file(path: &Path, kind: git2::ObjectType, data: &[u8]) -> 
     let mut content = format!("{type_str} {}\0", data.len()).into_bytes();
     content.extend_from_slice(data);
     let compressed = canonical_zlib(&content);
-    if compressed.len() as u64
-        > aos_registry_surface::object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES
-    {
+    if compressed.len() as u64 > aos_registry_surface::object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES {
         bail!(
             "loose object exceeds the {}-byte publication limit",
             aos_registry_surface::object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES
@@ -618,17 +616,12 @@ mod tests {
     #[test]
     fn loose_object_writer_rejects_bytes_above_the_whole_upload_limit() {
         let tmp = TempDir::new().unwrap();
-        let data = vec![
-            0_u8;
-            aos_registry_surface::object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES as usize
-        ];
+        let data =
+            vec![0_u8; aos_registry_surface::object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES as usize];
 
-        let error = write_loose_object_file(
-            &tmp.path().join("oversized"),
-            git2::ObjectType::Blob,
-            &data,
-        )
-        .unwrap_err();
+        let error =
+            write_loose_object_file(&tmp.path().join("oversized"), git2::ObjectType::Blob, &data)
+                .unwrap_err();
         assert!(format!("{error:#}").contains("publication limit"));
     }
 

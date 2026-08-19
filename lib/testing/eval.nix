@@ -52,41 +52,76 @@
     };
     baseline = {
       etc = {
-        ${hostnamePath} = {kind = "text"; text = "candidate unit"; mode = "0644";};
-        ${firewallPath} = {kind = "text"; text = "firewall"; mode = "0644";};
-        ${firewallWant} = {kind = "symlink"; target = "../${firewallUnit}";};
+        ${hostnamePath} = {
+          kind = "text";
+          text = "candidate unit";
+          mode = "0644";
+        };
+        ${firewallPath} = {
+          kind = "text";
+          text = "firewall";
+          mode = "0644";
+        };
+        ${firewallWant} = {
+          kind = "symlink";
+          target = "../${firewallUnit}";
+        };
       };
       units = {
         ${hostnameUnit} = {action = "restart";};
         ${firewallUnit} = {action = "restart";};
       };
-      jobScripts.${hostnameScript} = {text = "hostname aos"; mode = "0755"; name = "hostname";};
+      jobScripts.${hostnameScript} = {
+        text = "hostname aos";
+        mode = "0755";
+        name = "hostname";
+      };
       users = [];
       presets = [];
       storePaths = [];
-      ownership = emptyOwnership // {
-        etc = builtins.mapAttrs (_: _: "@base") baseline.etc;
-        units = builtins.mapAttrs (_: _: "@base") baseline.units;
-        jobScripts.${hostnameScript} = "@base";
-      };
+      ownership =
+        emptyOwnership
+        // {
+          etc = builtins.mapAttrs (_: _: "@base") baseline.etc;
+          units = builtins.mapAttrs (_: _: "@base") baseline.units;
+          jobScripts.${hostnameScript} = "@base";
+        };
     };
-    imageManifest = baseline // {
-      etc = baseline.etc // {
-        ${hostnamePath} = {kind = "text"; text = "image unit"; mode = "0644";};
+    imageManifest =
+      baseline
+      // {
+        etc =
+          baseline.etc
+          // {
+            ${hostnamePath} = {
+              kind = "text";
+              text = "image unit";
+              mode = "0644";
+            };
+          };
+        units =
+          baseline.units
+          // {
+            ${hostnameUnit} = {action = "image";};
+          };
       };
-      units = baseline.units // {
-        ${hostnameUnit} = {action = "image";};
+    candidate =
+      baseline
+      // {
+        etc = builtins.removeAttrs baseline.etc [firewallPath firewallWant];
+        units = builtins.removeAttrs baseline.units [firewallUnit];
+        jobScripts.${hostnameScript} = {
+          text = "hostname node-1";
+          mode = "0755";
+          name = "hostname";
+        };
+        ownership =
+          baseline.ownership
+          // {
+            etc = builtins.removeAttrs baseline.ownership.etc [firewallPath firewallWant];
+            units = builtins.removeAttrs baseline.ownership.units [firewallUnit];
+          };
       };
-    };
-    candidate = baseline // {
-      etc = builtins.removeAttrs baseline.etc [firewallPath firewallWant];
-      units = builtins.removeAttrs baseline.units [firewallUnit];
-      jobScripts.${hostnameScript} = {text = "hostname node-1"; mode = "0755"; name = "hostname";};
-      ownership = baseline.ownership // {
-        etc = builtins.removeAttrs baseline.ownership.etc [firewallPath firewallWant];
-        units = builtins.removeAttrs baseline.ownership.units [firewallUnit];
-      };
-    };
     merged = mergeImageManifest {inherit imageManifest baseline candidate;};
   in
     if merged.etc.${hostnamePath}.text != "candidate unit"
@@ -121,10 +156,34 @@
       storePaths = [];
       ownership = ownershipFor etc;
     };
-    oldFile = {"service" = {kind = "text"; text = "old"; mode = "0644";};};
-    newSubtree = {"service/config" = {kind = "text"; text = "new"; mode = "0644";};};
-    oldSubtree = {"service/config" = {kind = "text"; text = "old"; mode = "0644";};};
-    newFile = {"service" = {kind = "text"; text = "new"; mode = "0644";};};
+    oldFile = {
+      "service" = {
+        kind = "text";
+        text = "old";
+        mode = "0644";
+      };
+    };
+    newSubtree = {
+      "service/config" = {
+        kind = "text";
+        text = "new";
+        mode = "0644";
+      };
+    };
+    oldSubtree = {
+      "service/config" = {
+        kind = "text";
+        text = "old";
+        mode = "0644";
+      };
+    };
+    newFile = {
+      "service" = {
+        kind = "text";
+        text = "new";
+        mode = "0644";
+      };
+    };
     fileToDirectory = mergeImageManifest {
       imageManifest = manifestWithEtc oldFile;
       baseline = manifestWithEtc oldFile;
@@ -349,10 +408,12 @@
     then throw "the stock system must restore its last fully evaluated host input"
     else if !(builtins.hasAttr "aos-host-config-cache" system.config.systemd.services)
     then throw "the stock system must cache fully evaluated host input"
-    else if system.config.boot.initrd.systemd.services."aos-metadata-fetch".unitConfig
+    else if
+      system.config.boot.initrd.systemd.services."aos-metadata-fetch".unitConfig
       ? ConditionPathExists
     then throw "metadata acquisition must run on provisioned boots"
-    else if system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
+    else if
+      system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
       ? ConditionPathExists
     then throw "the restricted storage projection must remain available as a post-commit advisory check"
     else if

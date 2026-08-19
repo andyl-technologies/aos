@@ -6,9 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
-use aos_core::nar::cache::{
-    NarCompression, StaticNarInfoInput, nar_url, render_static_narinfo,
-};
+use aos_core::nar::cache::{NarCompression, StaticNarInfoInput, nar_url, render_static_narinfo};
 use aos_core::nar::export::ExportTrailer;
 use aos_package::security::parse_signing_key;
 use serde_json::Value;
@@ -1015,10 +1013,7 @@ fn apr_origin_upload_uploads_cache_and_git_origin() -> Result<()> {
         "missing nix-cache-info"
     );
     assert!(dest.join("abc123.narinfo").is_file(), "missing narinfo");
-    assert!(
-        dest.join(&payload_url).is_file(),
-        "missing NAR under nar/",
-    );
+    assert!(dest.join(&payload_url).is_file(), "missing NAR under nar/",);
     // Git origin surface landed in the same upload.
     assert!(dest.join("HEAD").is_file(), "missing git HEAD");
     assert!(dest.join("info/refs").is_file(), "missing git info/refs");

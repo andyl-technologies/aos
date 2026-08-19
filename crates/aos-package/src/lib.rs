@@ -3077,7 +3077,7 @@ enum AttestationQuoteTrust {
     IdentityPinned { anchor: String, ak_ek_trusted: bool },
 }
 
-const GENERATION_VERIFIER_POLICY_SCHEMA: &str = "aos.gen-attestation-policy/v1";
+const GENERATION_VERIFIER_POLICY_SCHEMA: &str = "aos.gen-attestation-policy/v2";
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -3085,6 +3085,7 @@ struct GenerationVerifierPolicyFile {
     schema: String,
     expected_pcr7: String,
     expected_pcr11: String,
+    expected_pcr12: String,
     expected_root_roothash: String,
     #[serde(default)]
     expected_facts_hash: Option<String>,
@@ -3208,6 +3209,7 @@ fn run_verify_package_attestation(
             let pcrs = attestation::QuotedPcrs {
                 pcr7: quote.quoted_pcr7,
                 pcr11: quote.quoted_pcr11,
+                pcr12: quote.quoted_pcr12,
                 pcr15: quote.quoted_pcr15.clone(),
             };
             let checker = PreverifiedGenerationQuote {
@@ -3411,6 +3413,7 @@ where
     let verifier_policy = attestation::VerifierPolicy {
         expected_pcr7: policy_file.expected_pcr7,
         expected_pcr11: policy_file.expected_pcr11,
+        expected_pcr12: policy_file.expected_pcr12,
         expected_root_roothash: policy_file.expected_root_roothash,
         expected_facts_hash: policy_file.expected_facts_hash,
         pcr15_baseline: cel.pcr15_baseline.clone(),
@@ -3508,14 +3511,18 @@ fn verify_local_boot_commit(
     }
     let live_pcr7 = package_attestation::current_pcr7()?;
     let live_pcr11 = package_attestation::current_pcr11()?;
+    let live_pcr12 = package_attestation::current_pcr12()?;
     if !verified
         .quoted_pcr7
         .eq_ignore_ascii_case(live_pcr7.trim_start_matches("sha256:"))
         || !verified
             .quoted_pcr11
             .eq_ignore_ascii_case(live_pcr11.trim_start_matches("sha256:"))
+        || !verified
+            .quoted_pcr12
+            .eq_ignore_ascii_case(live_pcr12.trim_start_matches("sha256:"))
     {
-        bail!("generation quote does not bind the live PCR 7/11 state");
+        bail!("generation quote does not bind the live PCR 7/11/12 state");
     }
     Ok(())
 }
@@ -5356,6 +5363,7 @@ mod tests {
                 pcrs: attestation::QuotedPcrs {
                     pcr7: "11".repeat(32),
                     pcr11: "22".repeat(32),
+                    pcr12: "00".repeat(32),
                     pcr15: "33".repeat(32),
                 },
                 bundle: package_attestation::PackageQuoteBundleBinding {
@@ -5405,6 +5413,7 @@ mod tests {
             pcrs: attestation::QuotedPcrs {
                 pcr7: "11".repeat(32),
                 pcr11: "22".repeat(32),
+                pcr12: "00".repeat(32),
                 pcr15,
             },
             bundle: package_attestation::PackageQuoteBundleBinding {
@@ -5959,6 +5968,7 @@ contributable = ["allowedTCPPorts"]
                 "schema": GENERATION_VERIFIER_POLICY_SCHEMA,
                 "expected_pcr7": "11".repeat(32),
                 "expected_pcr11": format!("sha256:{}", "22".repeat(32)),
+                "expected_pcr12": "00".repeat(32),
                 "expected_root_roothash": "55".repeat(32),
                 "trusted_platforms": ["aws"]
             }))

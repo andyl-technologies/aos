@@ -1088,13 +1088,12 @@ in rec {
     # legacy renderer below: its omitted-vs-present distinctions are part of
     # the signed RFC-0001 manifest contract (notably credential source fields).
     typedExposeContract = builtins.deepSeq (exposeModule.eval expose) true;
-    checkedExpose =
-      builtins.seq typedExposeContract (
-        throwIfNot
-        (builtins.isAttrs expose)
-        "mkDerivation expose for package '${packageName}' must be an attrset"
-        expose
-      );
+    checkedExpose = builtins.seq typedExposeContract (
+      throwIfNot
+      (builtins.isAttrs expose)
+      "mkDerivation expose for package '${packageName}' must be an attrset"
+      expose
+    );
     allowedExposeKeys = [
       "target"
       "units"

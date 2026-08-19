@@ -9,18 +9,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{bail, Context as _, Result};
 use base64::Engine as _;
 
 use crate::clock;
 use crate::db::{
-    Database, MAX_PLACEMENT_SCAN_PRESENCE_BATCH, PlacementScanPresence, ReusablePlacementEvidence,
-    SurfaceObjectRecord, SurfacePlacementRecord, SurfaceTarget, TopologyOperationRecord,
+    Database, PlacementScanPresence, ReusablePlacementEvidence, SurfaceObjectRecord,
+    SurfacePlacementRecord, SurfaceTarget, TopologyOperationRecord,
+    MAX_PLACEMENT_SCAN_PRESENCE_BATCH,
 };
 use crate::fetch::{
-    MAX_SURFACE_LIST_PAGE_OBJECTS, MAX_SURFACE_LIST_PAGES, SurfaceListedEvidence,
-    SurfaceListingBudget, SurfaceProvider, WORKER_MAX_SURFACE_LIST_PAGE_OBJECTS,
-    WORKER_MAX_SURFACE_LIST_PAGES,
+    SurfaceListedEvidence, SurfaceListingBudget, SurfaceProvider, MAX_SURFACE_LIST_PAGES,
+    MAX_SURFACE_LIST_PAGE_OBJECTS, WORKER_MAX_SURFACE_LIST_PAGES,
+    WORKER_MAX_SURFACE_LIST_PAGE_OBJECTS,
 };
 
 const CLAIM_LEASE_SECONDS: i64 = 600;
@@ -1017,12 +1018,11 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(
-            db.due_surface_placement_scan_operations(heartbeat_at + 599, 1)
-                .await
-                .unwrap()
-                .is_empty()
-        );
+        assert!(db
+            .due_surface_placement_scan_operations(heartbeat_at + 599, 1)
+            .await
+            .unwrap()
+            .is_empty());
         assert_eq!(
             db.due_surface_placement_scan_operations(heartbeat_at + 600, 1)
                 .await
@@ -1030,8 +1030,8 @@ mod tests {
                 .len(),
             1
         );
-        assert!(
-            db.heartbeat_surface_placement_scan_operation(
+        assert!(db
+            .heartbeat_surface_placement_scan_operation(
                 &claimed.operation_id,
                 claimed.resource_version,
                 "wrong-scan-claim",
@@ -1039,8 +1039,7 @@ mod tests {
                 600,
             )
             .await
-            .is_err()
-        );
+            .is_err());
     }
 
     #[tokio::test]
@@ -1114,8 +1113,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(
-            db.finish_surface_placement_scan(
+        assert!(db
+            .finish_surface_placement_scan(
                 placement.id,
                 placement.resource_version,
                 scanning.observation_version.unwrap(),
@@ -1126,8 +1125,7 @@ mod tests {
                 "complete",
             )
             .await
-            .is_err()
-        );
+            .is_err());
         let placement = db.surface_placement(placement.id).await.unwrap().unwrap();
         assert_eq!(placement.state, "syncing");
         assert_eq!(placement.completeness, "unknown");
@@ -1153,8 +1151,8 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(
-            db.finish_surface_placement_scan(
+        assert!(db
+            .finish_surface_placement_scan(
                 placement.id,
                 placement.resource_version,
                 scanning.observation_version.unwrap(),
@@ -1165,8 +1163,7 @@ mod tests {
                 "complete",
             )
             .await
-            .is_err()
-        );
+            .is_err());
         let placement = db.surface_placement(placement.id).await.unwrap().unwrap();
         assert_eq!(placement.state, "syncing");
         db.finish_surface_placement_scan(
@@ -1220,14 +1217,13 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(
-            db.tombstone_surface_object(object.id, object.resource_version, clock::now_unix_secs())
-                .await
-                .unwrap()
-        );
+        assert!(db
+            .tombstone_surface_object(object.id, object.resource_version, clock::now_unix_secs())
+            .await
+            .unwrap());
 
-        assert!(
-            db.record_surface_placement_scan_presences(
+        assert!(db
+            .record_surface_placement_scan_presences(
                 placement.id,
                 placement.resource_version,
                 scanning.observation_version.unwrap(),
@@ -1247,8 +1243,7 @@ mod tests {
                 clock::now_unix_secs(),
             )
             .await
-            .is_err()
-        );
+            .is_err());
     }
 
     #[tokio::test]
@@ -1300,15 +1295,14 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(
-            db.tombstone_surface_object(
+        assert!(db
+            .tombstone_surface_object(
                 superseded.id,
                 superseded.resource_version,
                 clock::now_unix_secs(),
             )
             .await
-            .unwrap()
-        );
+            .unwrap());
 
         let presences = vec![
             (
@@ -1332,8 +1326,8 @@ mod tests {
                 },
             ),
         ];
-        assert!(
-            db.record_surface_placement_scan_presences(
+        assert!(db
+            .record_surface_placement_scan_presences(
                 placement.id,
                 placement.resource_version,
                 scanning.observation_version.unwrap(),
@@ -1344,14 +1338,12 @@ mod tests {
                 clock::now_unix_secs(),
             )
             .await
-            .is_err()
-        );
-        assert!(
-            db.reusable_placement_scan_evidence(placement.id)
-                .await
-                .unwrap()
-                .is_empty()
-        );
+            .is_err());
+        assert!(db
+            .reusable_placement_scan_evidence(placement.id)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]

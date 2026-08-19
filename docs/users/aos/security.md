@@ -13,6 +13,55 @@ particular compliance profile. The module presets configure mechanisms; the
 operator still owns identity policy, key custody, logging, monitoring, and
 verification on the deployed hardware.
 
+Normal initrds fail closed without an interactive root login: the initrd root
+password is locked and the upstream emergency and rescue login services are
+masked. Do not introduce a shared installer or image password as a recovery
+mechanism; a credential present in every public image provides no
+authentication. Secure Boot plus dm-verity images instead carry two separately
+signed recovery environments. Their unauthenticated interface is bounded;
+access to persistent state, a maintenance shell, or restore writes requires
+the per-machine off-host LUKS recovery key.
+
+On dm-verity images, the initrd also validates the complete root identity
+before systemd can generate the verity mapper or touch `/var`. The data and
+hash devices must identify the same A/B slot, the root hash must be canonical,
+and every scalar must occur exactly once. Alternate initrd targets, recovery
+selectors, debug/break/run controls, unit injection, verity options, and their
+`rd.` aliases fail into a passive target with no shell. AOS does not ship the
+upstream debug or transient-command generators in its initrd.
+
+After creating the mapper, the initrd reads it completely before it may unlock
+or mount `/var`. This turns dm-verity's normal on-demand block authentication
+into an early boot gate: corruption anywhere in a counted immutable root keeps
+persistent state sealed and lets boot counting select a known-good image.
+
+Before PID 1 starts, the AOS EFI stub keeps the UKI's embedded signed command
+line authoritative. Command-line fragments supplied by db-signed PE addons or
+SMBIOS are measured into PCR 12 but not appended, so an external `rdinit=` or
+target selector cannot preempt the initrd validator. Their changed PCR 12
+denies automatic `/var` unseal even though the discarded fragment never
+becomes part of `/proc/cmdline`. Under enforcing Secure Boot, systemd-boot
+measures Type #1 entry options into PCR 12 and the stub discards them when an
+embedded command line exists. Unsigned addons are rejected by the image loader
+before command-line measurement and therefore leave PCR 12 unchanged.
+
+Recovery UKIs additionally refuse the launch after measuring a db-signed addon
+or SMBIOS command-line fragment. No recovery kernel or console starts until the
+external input is removed.
+
+This early validation establishes an unambiguous tuple, but PCR 12 remains the
+authorization boundary for appended boot input. Until the documented PCR-12
+migration is complete, do not describe the tuple guard alone as preventing an
+attacker from substituting one otherwise valid A/B tuple for the other.
+
+Recovery UKIs use the deployment db signature but deliberately omit the
+normal signed PCR-11 authorization section, so entering recovery cannot
+automatically unseal `/var`. The same db trust hierarchy authenticates the
+copy-specific recovery UKIs, embedded slot manifest, signed release catalog,
+and removable-media bundle manifest; it does not authenticate the person at
+the console. The per-machine recovery key is the operator authorization
+boundary. Its escrow and exercise remain deployment responsibilities.
+
 ## Start with a production baseline
 
 `systems/server.nix` and `systems/edge.nix` define immutable roots and
@@ -243,7 +292,8 @@ The mechanisms currently demonstrated are:
 
 - Authenticode-signed UKIs and systemd-boot;
 - optional kernel lockdown with enforced module signing and signed kexec;
-- TPM2 sealing of `/var` to a signed PCR 11 policy and pinned PCR 7 value;
+- TPM2 sealing of `/var` to a signed PCR 11 policy and pinned PCR 7 and 12
+  values;
 - dm-verity verification of the read-only EROFS root.
 
 The bare-metal ZFS profile extends this model with native ZFS encryption. Its
@@ -259,9 +309,10 @@ Durable upgrades preserve those bindings per image generation: APM validates
 the signed catalog, writes the inactive root/hash slot and slot-specific UKI,
 and selects the counted entry. A boot is blessed only after the TPM reaches the
 ready PCR phase, configuration has been rebound to the running image, and the
-boot-commit verifier confirms the stored quote's signature, nonce, and PCR 7/11
-values against both the live TPM and published image record. This mechanism
-does not supply production signing keys, enrollment, or key custody.
+boot-commit verifier confirms the stored quote's signature, nonce, and PCR
+7/11/12 values against the live TPM, with PCR 11 also checked against the
+published image record. This mechanism does not supply production signing
+keys, enrollment, or key custody.
 
 The seed image gets its expected ready-phase PCR 11 from build-produced UKI
 measurement metadata. That metadata is signed by the PCR-policy key and bound
@@ -290,8 +341,9 @@ cat "$current/gen-attestation.json"
 
 For a remote trust decision, use the public verifier with an enrolled quote
 identity, the host CEL and quote bundle, and a policy populated from the
-verifier's image catalog. It validates the exact embedded quote bytes, PCR
-7/11/15, dm-verity root, authorized host-input source, signed release receipt,
+verifier's fleet authorization and signed image catalog. It validates the
+exact embedded quote bytes, PCR
+7/11/12/15, dm-verity root, authorized host-input source, signed release receipt,
 active key roster, signed module/store graph, and optional independent manifest
 re-derivation. See [Verify runtime attestation evidence](cli.md#verify-runtime-attestation-evidence).
 
@@ -300,6 +352,14 @@ Measured boot writes a generated LUKS recovery key to a configured path under
 before it disappears. Until key generation, external signing, enrollment,
 escrow, rotation, and recovery are integrated and exercised together, treat
 these variants as validation fixtures rather than production images.
+
+Existing PCR-7-only enrollments are never rewritten unattended. From a clean,
+signed boot, an operator supplies the off-machine recovery key to
+`aos-var-policy-migrate` together with the deployment PCR public key and the
+current UKI PCR signature. The tool proves the recovery key, enrolls a new
+PCR-7+12 token, tests that exact token through cryptsetup's token ID, and only
+then removes older TPM slots. It preserves the recovery slot throughout and
+atomically writes a non-secret evidence record under `/var`.
 
 ## Verify a deployed host
 
