@@ -27,4 +27,4 @@ crucible.campaign.attempt	1	crucible-campaign::exploration	campaign-fact	gate:at
 crucible.campaign.attempt-admission	1	crucible-campaign::exploration	campaign-fact	gate:attempt-idempotence,gate:content-address
 crucible.campaign.planner-step	2	crucible-campaign::exploration	campaign-fact	gate:component-contract,gate:content-address
 crucible.campaign.planner-step-proposal	1	crucible-campaign::exploration	component-message	gate:component-contract
-crucible.campaign.expansion-state	1	crucible-campaign::exploration	projection	gate:lazy-frontier,gate:content-address
+crucible.campaign.expansion-state	2	crucible-campaign::exploration	projection	gate:lazy-frontier,gate:content-address

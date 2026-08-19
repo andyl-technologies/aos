@@ -555,6 +555,7 @@ content_object_id!(
 content_object_id!(
     ExpansionStateId,
     ObjectKind::Projection,
+    2,
     "crucible.campaign.expansion-state",
     "Identifies one derived branch expansion-state snapshot."
 );

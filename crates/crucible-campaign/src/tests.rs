@@ -1376,12 +1376,24 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
     assert!(FeedbackWait::new(4, 3).is_err());
 
     let request_id = request.id().expect("request id");
+    let source_snapshot = stored_id!(
+        CampaignSnapshotId,
+        ObjectKind::CampaignSnapshot,
+        "expansion-source-snapshot"
+    );
+    let input_view = stored_id!(CampaignViewId, ObjectKind::CampaignFact, "expansion-view");
     let expansion = ExpansionState::new(
+        source_snapshot,
+        input_view,
         branch_point,
         content("request-root"),
         content("proposal-root"),
+        content("admission-root"),
         content("observation-root"),
         ExpansionStatistics::default(),
+        None,
+        1,
+        None,
         BTreeMap::from([(request_id, ContinuationState::WaitingForFeedback(wait))]),
     )
     .expect("expansion state");
@@ -1403,6 +1415,22 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
         expansion.canonical_bytes(),
     )
     .expect("expansion envelope");
+    assert_eq!(
+        &expansion.canonical_bytes()[..std::mem::size_of::<u32>()],
+        &2_u32.to_be_bytes()
+    );
+    let mut legacy_body = expansion.canonical_bytes();
+    legacy_body[..std::mem::size_of::<u32>()].copy_from_slice(&1_u32.to_be_bytes());
+    assert!(ExpansionState::from_canonical_bytes(&legacy_body).is_err());
+    assert_eq!(expansion_envelope.content_id().schema_version(), 2);
+    let legacy_expansion = crucible_cas::content_envelope::ContentEnvelope::new(
+        CampaignRecordKind::ExpansionState.schema_name(),
+        1,
+        expansion_envelope.children().clone(),
+        expansion.canonical_bytes(),
+    )
+    .expect("legacy expansion envelope");
+    assert!(ObjectEnvelope::from_canonical_bytes(&legacy_expansion.canonical_bytes()).is_err());
     assert!(
         expansion_envelope
             .children()

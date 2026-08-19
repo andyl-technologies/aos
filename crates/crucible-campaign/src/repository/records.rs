@@ -66,8 +66,9 @@ impl CampaignRepository {
     ///
     /// # Errors
     ///
-    /// Returns a store, codec, or integrity error for invalid closure. Expansion
-    /// states remain inadmissible until projector recomputation is implemented.
+    /// Returns a store, codec, or integrity error when the source snapshot,
+    /// planning view, homogeneous projection roots, cursor, statistics, or
+    /// continuation page fails owner recomputation.
     pub fn load_expansion_state(
         &self,
         id: ExpansionStateId,
@@ -1122,15 +1123,33 @@ impl CampaignRepository {
         if state.id()?.content_id() != id {
             return Err(integrity("expansion-state-envelope-shape"));
         }
-        for request in state.continuations().keys() {
-            let request = self.read_branch_request(request.content_id())?;
-            if request.branch_point() != state.branch_point() {
-                return Err(integrity("expansion-state-request-branch-point-mismatch"));
-            }
+        let view_envelope = self.require_record_kind(
+            state.input_view().content_id(),
+            crate::CampaignRecordKind::PlanningView,
+        )?;
+        let stored_view = crate::codec::decode::<CampaignPlanningView>(view_envelope.body())?;
+        if stored_view.id()? != state.input_view() {
+            return Err(integrity("expansion-state-planning-view-envelope-shape"));
         }
-        Err(integrity(
-            "expansion-state-projector-validation-is-not-implemented",
-        ))
+        for root in [
+            state.request_root(),
+            state.proposal_root(),
+            state.admission_root(),
+            state.observation_root(),
+        ] {
+            self.merkle.verify_closure_streaming(root)?;
+        }
+        self.validate_complete_head(state.source_snapshot().content_id())?;
+        let expected = self.recompute_finite_expansion(
+            state.source_snapshot(),
+            state.branch_point(),
+            state.page_after(),
+            state.page_size(),
+        )?;
+        if state != expected {
+            return Err(integrity("expansion-state-owner-recomputation-mismatch"));
+        }
+        Ok(state)
     }
 
     pub(super) fn require_record_kind(

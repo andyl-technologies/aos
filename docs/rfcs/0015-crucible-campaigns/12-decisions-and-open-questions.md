@@ -126,11 +126,13 @@ The mode is campaign policy and is visible in claims and status output.
 
 ### D-11: Expansion state is lazy and persistent
 
-Each branch point has campaign-local expansion state containing requests,
-proposals, observations, statistics, and compact source continuations:
-generator kind and version, finite-source cursor, deterministic seed, widening
-counters, and policy-local statistics. Candidates become proposals only when
-demanded by capacity or feedback.
+Each branch point has snapshot-bound, paged campaign-local expansion state
+containing owner-derived request, proposal, admission, and observation roots,
+statistics, and compact source continuations: generator kind and version,
+finite-source cursor, deterministic seed, widening counters, and policy-local
+statistics. Candidates become proposals only when demanded by capacity or
+feedback, and proposals become admitted children only through authenticated
+admission dispositions.
 
 These continuations are serializable state machines, not language closures or
 native function pointers. They can be resumed after coordinator restart and

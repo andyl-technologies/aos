@@ -490,11 +490,17 @@ For one `BranchPointId`, the campaign projects an `ExpansionState`:
 
 ```rust,illustrative
 pub struct ExpansionState {
+    pub source_snapshot: CampaignSnapshotId,
+    pub input_view: CampaignViewId,
     pub branch_point: BranchPointId,
     pub request_root: ContentId,
     pub proposal_root: ContentId,
+    pub admission_root: ContentId,
     pub observation_root: ContentId,
     pub statistics: ExpansionStatistics,
+    pub page_after: Option<BranchRequestId>,
+    pub page_size: u32,
+    pub next_after: Option<BranchRequestId>,
     pub continuations: CanonicalMap<BranchRequestId, ContinuationState>,
 }
 
@@ -517,25 +523,45 @@ its fields are private and strict decoding enforces the same invariant. Reaching
 the threshold produces `Ready` rather than an already-eligible waiting value.
 This changes no canonical wire bytes.
 
-This object may be cached, but it is derived from branch requests, policy,
-choice opportunity, proposals, and observations. A finite source's next cursor
-is the first unissued value in canonical request order. A generated source
-additionally derives its interval tree, per-arm rewards, and widening
-eligibility from observations. Adding a finite operator request does not close,
-replace, or reset any generated continuation already attached to the branch
-point.
+Schema version 2 binds every page to an authenticated campaign snapshot and its
+complete planning view. The request, proposal, and admission roots are
+homogeneous branch-point projections rebuilt by the owner from the view's
+authoritative exploration and accounting roots. They are not caller-selected
+subsets. The observation root is the exact view observation root. Schema
+version 1 has no compatibility interpretation after admission became a
+required derivation input and is rejected at both the record body and envelope
+layers.
 
-The canonical map embedded in one expansion-state page is bounded. A projector
-with more continuations emits a paged Merkle projection rather than constructing
-an unbounded in-memory value; page boundaries are excluded from planning
-semantics.
+A finite source's next cursor is the first unissued value in canonical request
+order. A proposal without an admission disposition leaves the continuation
+`Open`; it does not increase admitted-child statistics. When every issued
+proposal has a disposition, another value is `Ready` while proposal budget
+remains, the source is `Exhausted` only after every finite value is admitted
+or deduplicated, and it is `Closed` when proposal budget ends first. Distinct
+`ExecutionBasis` attempts contribute admitted children; `AdditionalCause`
+records do not.
+
+A generated source additionally derives its interval tree, per-arm rewards,
+and widening eligibility from observations. Adding a finite operator request
+does not close, replace, or reset any generated continuation already attached
+to the branch point.
+
+The canonical map embedded in one expansion-state page is bounded to the
+requested size, which is itself limited to 10,000. Homogeneous request indexes
+use the request content digest as their ordering key, so Merkle scan order and
+canonical `BranchRequestId` order agree. `page_after` must be authenticated as
+a member of the exact request root; a fabricated or cross-branch cursor is
+rejected. `next_after` is the last returned request only when another request
+exists. Page boundaries are excluded from planning semantics.
 
 Landing a structural canonical codec does not make a derived record admissible.
-Until the coordinator owner can recompute planner accounting, planner-state
-continuity, request-root membership, statistics, and readiness from the named
-input roots, repository closure validation fails closed for `PlannerStep` and
-`ExpansionState`. This prevents a structurally valid cache from becoming
-canonical evidence before its semantic owner validator exists.
+The repository owner now recomputes finite, observation-empty
+`ExpansionState` pages from their source snapshot. Generated requests and
+observation-bearing views remain fail-closed until their owners land.
+`PlannerStep` remains fail-closed until the coordinator can recompute planner
+accounting and planner-state continuity. This prevents a structurally valid
+cache from becoming canonical evidence before its semantic owner validator
+exists.
 
 ## 01.7 Lifecycle
 
