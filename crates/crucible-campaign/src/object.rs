@@ -145,7 +145,10 @@ impl CampaignRecordKind {
     /// Returns the canonical schema version supported for this record.
     #[must_use]
     pub const fn schema_version(self) -> u32 {
-        RECORD_SCHEMA_VERSION
+        match self {
+            Self::PlannerStep => 2,
+            _ => RECORD_SCHEMA_VERSION,
+        }
     }
 
     fn parse_schema_name(value: &str) -> Option<Self> {
@@ -328,7 +331,7 @@ impl ObjectEnvelope {
     ) -> Result<Self, CampaignCodecError> {
         let envelope = ContentEnvelope::new(
             record_kind.schema_name(),
-            RECORD_SCHEMA_VERSION,
+            record_kind.schema_version(),
             children,
             body,
         )?;
@@ -397,16 +400,16 @@ impl ObjectEnvelope {
 
     fn decode_structural(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
         let envelope = ContentEnvelope::from_canonical_bytes(bytes)?;
-        if envelope.schema_version() != RECORD_SCHEMA_VERSION {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "unsupported campaign record schema version",
-            });
-        }
         let record_kind = CampaignRecordKind::parse_schema_name(envelope.schema_name()).ok_or(
             CampaignCodecError::InvalidValue {
                 reason: "unknown campaign record schema name",
             },
         )?;
+        if envelope.schema_version() != record_kind.schema_version() {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported campaign record schema version",
+            });
+        }
         Ok(Self {
             record_kind,
             envelope,
@@ -514,7 +517,7 @@ fn expected_children(
             content_children(value.content_children())
         }
         CampaignRecordKind::PlannerStep => {
-            let value = codec::decode::<PlannerStep>(body)?;
+            let value = PlannerStep::from_canonical_bytes(body)?;
             content_children(value.content_children())
         }
         CampaignRecordKind::ExpansionState => {

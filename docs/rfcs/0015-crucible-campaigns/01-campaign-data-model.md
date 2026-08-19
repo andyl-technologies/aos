@@ -266,12 +266,28 @@ pub struct PlannerStep {
     pub engine: PlannerEngineId,
     pub policy_artifact: PolicyArtifactId,
     pub input_view: CampaignViewId,
-    pub selected_branch_point: BranchPointId,
-    pub selected_source: BranchRequestId,
-    pub issued_proposals: Vec<ProposalId>,
+    pub disposition: PlannerDisposition,
     pub next_state: PlannerStateId,
     pub coordinator_accounting: PlanningAccounting,
     pub score_evidence: GuidanceEvidence,
+}
+
+pub enum PlannerDisposition {
+    ContinueScan { cursor: PlanningScanCursor },
+    Issue {
+        selected: PlanningScanPosition,
+        issued_branch_requests: Vec<BranchRequestId>,
+        issued_proposals: Vec<ProposalId>,
+    },
+    NoWork,
+}
+
+pub struct PlanningAccounting {
+    pub branch_requests: u64,
+    pub proposals: u64,
+    pub attempts: u64,
+    pub deduplicated: u64,
+    pub fuel: u64,
 }
 ```
 
@@ -280,9 +296,16 @@ observation root is insufficient because fairness, prior proposals, stop
 conditions, and budget consumption can all affect the next proposal. Naming the
 whole snapshot would be too broad because a storage-tier or pin change must not
 perturb strict proposal order. The post-step snapshot includes the accepted
-planner step, preserving an acyclic history. Accounting is recomputed by the
-coordinator from accepted outputs and the input view; a planner's resource-usage
-report is diagnostic only.
+planner step, preserving an acyclic history. `ContinueScan` is bound to the
+same immutable `input_view` and emits no semantic outputs; `NoWork` likewise
+records a completed scan without inventing a selected source. `Issue` alone
+names a selected continuation and accepted output IDs. Output IDs are unique,
+`attempts + deduplicated == proposals`, and the branch-request/proposal counts
+match the accepted lists. Accounting is recomputed by the coordinator from
+accepted outputs and the input view; a planner's resource-usage report is
+diagnostic only. This disposition/accounting layout is registered as
+`crucible.campaign.planner-step` schema v2; v1 envelopes are rejected rather
+than reinterpreted under the new field order.
 
 - **[CMOD-15]** Every adaptive proposal MUST be reachable from a planner step
   that names the complete planning view, engine and policy artifact, policy,

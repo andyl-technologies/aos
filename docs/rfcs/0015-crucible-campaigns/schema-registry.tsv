@@ -25,5 +25,6 @@ crucible.campaign.proposal	1	crucible-campaign::exploration	campaign-fact	gate:l
 crucible.campaign.branch-path	1	crucible-campaign::exploration	campaign-fact	gate:campaign-replay,gate:content-address
 crucible.campaign.attempt	1	crucible-campaign::exploration	campaign-fact	gate:attempt-idempotence,gate:content-address
 crucible.campaign.attempt-admission	1	crucible-campaign::exploration	campaign-fact	gate:attempt-idempotence,gate:content-address
-crucible.campaign.planner-step	1	crucible-campaign::exploration	campaign-fact	gate:component-contract,gate:content-address
+crucible.campaign.planner-step	2	crucible-campaign::exploration	campaign-fact	gate:component-contract,gate:content-address
+crucible.campaign.planner-step-proposal	1	crucible-campaign::exploration	component-message	gate:component-contract
 crucible.campaign.expansion-state	1	crucible-campaign::exploration	projection	gate:lazy-frontier,gate:content-address
