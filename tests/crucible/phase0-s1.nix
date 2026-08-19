@@ -11,6 +11,7 @@
 }: let
   cadence = 100000000;
   horizon = cadence * sampleCount;
+  rrSwitchQuantum = 4096;
 
   workload = pkgs.mkDerivation {
     pname = "crucible-phase0-s1-workload";
@@ -263,6 +264,7 @@ in
     PLUGIN = "${pkgs.crucible-qemu-trace-plugin}/lib/qemu/plugins/crucible-qemu-trace-plugin.so";
     CADENCE = builtins.toString cadence;
     HORIZON = builtins.toString horizon;
+    RR_SWITCH_QUANTUM = builtins.toString rrSwitchQuantum;
     ENABLE_JITTER =
       if enableJitter
       then "1"
@@ -465,7 +467,7 @@ in
               -monitor none \
               -machine q35 \
               -accel sim,thread=single \
-              -icount shift=0,sleep=off,align=off \
+              -icount shift=0,sleep=off,align=off,rr_switch_quantum="$RR_SWITCH_QUANTUM" \
               -cpu qemu64,-rdrand,-rdseed \
               -m 256 \
               -smp 1 \
@@ -515,13 +517,18 @@ in
           stop_jitter
 
           for label in a b; do
-            jq --argjson horizon "$HORIZON" -e -s '
+            jq --argjson horizon "$HORIZON" \
+              --argjson rr_switch_quantum "$RR_SWITCH_QUANTUM" -e -s '
               length >= 2
               and all(.[]; (
                 .tracked_vcpus == 1
                 and .stop_at == $horizon
                 and .sample_register_failures == 0
                 and .register_read_failures == 0
+                and .rr_current_vcpu == 0
+                and .rr_switch_quantum == $rr_switch_quantum
+                and .rr_cursor_valid == true
+                and .rr_cursor_position < .rr_switch_quantum
                 and .ram_bytes > 0
                 and .memory_events_enabled == true
                 and .device_event_capture == true
