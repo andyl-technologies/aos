@@ -805,9 +805,9 @@ class QemuMachine(Machine):
             self.agent.wait_ready(time.monotonic() + settle)
         except RuntimeError:
             try:
-                with open(self.serial_log_path, "r", errors="replace") as serial:
+                with open(self.serial_log_path, "rb") as serial:
                     serial.seek(serial_offset)
-                    return serial.read()
+                    return serial.read().decode("utf-8", errors="replace")
             except OSError:
                 return ""
         raise RuntimeError(
