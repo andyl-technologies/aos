@@ -1,9 +1,11 @@
 # 11 — Implementation plan and merge gates
 
-This RFC is initially published for review without implementation. After design
-approval, implementation is intended to continue in the same draft pull request
-so requirements, gates, and code evolve together. No partial phase becomes the
-default campaign path until its listed gates pass.
+This RFC was initially published for review without implementation. Its
+implementation now continues in the same draft pull request so requirements,
+gates, and code evolve together. Checked tasks have executable evidence in the
+tree; manual and production gates remain unchecked until their recorded flights
+are accepted. No partial phase becomes the default campaign path until its
+listed gates pass.
 
 ## 11.1 Sequencing principles
 
@@ -34,7 +36,7 @@ default campaign path until its listed gates pass.
   weakening the fail-closed capability contract.
 - [ ] **T-CAM-0.3** Freeze requirement-to-gate mapping and assign every new wire
   format a schema/version owner.
-- [ ] **T-CAM-0.4** Add a repository traceability check ensuring every
+- [x] **T-CAM-0.4** Add a repository traceability check ensuring every
   `CAM`/`CMOD`/`SEL`/`GUIDE`/`LAZY`/`CCOMP`/`HFORK`/`CSTORE`/`CAPI`/`CMEAS`/`CSEC`/`CPERF`/`CMAN`
   requirement is covered by a task and gate.
 - [ ] **T-CAM-0.5** Tabletop the realistic lifecycle, finding handoff,
@@ -168,8 +170,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   provide direct and loopback-RPC adapters, golden vectors, fake components,
   capability negotiation, idempotent assignment, and component conformance.
 
-**Gates:** `gate:branch-point-model`, `gate:lazy-frontier`, `gate:attempt-idempotence`,
-`gate:campaign-replay`, `gate:campaign-statistics`, `gate:harness-lint`.
+**Gates:** `gate:branch-point-model`, `gate:lazy-frontier`,
+`gate:attempt-idempotence`, `gate:campaign-replay`,
+`gate:campaign-statistics`, `gate:component-contract`,
+`gate:control-responsiveness`, `gate:harness-lint`.
 
 **Manual gate:** accepted §14 Phase 4 local campaign flight.
 
