@@ -17,6 +17,11 @@
   qemuDetIpi = import ./phase2-qemu-det-ipi.nix {inherit pkgs lib;};
   qemuVcpuIntrospect = import ./phase2-qemu-vcpu-introspect.nix {inherit pkgs lib;};
   qemuPreemptionInject = import ./phase2-qemu-preemption-inject.nix {inherit pkgs lib;};
+  qemuLiveNetworkIo = import ./phase2-qemu-live-network-io.nix {
+    inherit pkgs lib;
+    attrPath = "${attrPath}.exactBoundaryVcpuIntrospection.liveNetwork";
+    taskIds = ["T-QEMU-0089"];
+  };
   qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix {
     inherit pkgs lib qemuPackage;
   };
@@ -37,8 +42,9 @@
   qemuNvcpuFingerprint = import ./phase2-qemu-nvcpu-fingerprint.nix {
     inherit pkgs lib;
     attrPath = "${attrPath}.genesisObservationBoundary";
-    taskIds = ["T-QEMU-0086"];
+    taskIds = ["T-QEMU-0086" "T-QEMU-0087" "T-QEMU-0088" "T-QEMU-0089"];
   };
+  s1Fingerprint = import ./phase0-s1.nix {inherit pkgs lib;};
   qemuGenesisObservationBoundary = pkgs.mkDerivation {
     pname = "crucible-phase2-qemu-genesis-observation-boundary";
     version = "0";
@@ -120,6 +126,111 @@
           deterministic_ipi_evidence=true
           rcu_quiescence_bounded_by_rr_quantum=true
           ordinary_qemu_forced_kick_preserved=true
+          RESULT
+        '';
+      }
+    ];
+  };
+  qemuDeterministicHostKickBoundary = pkgs.mkDerivation {
+    pname = "crucible-phase2-qemu-deterministic-host-kick-boundary";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.gnugrep pkgs.tar pkgs.xz];
+    phases = [
+      {
+        name = "verify-deterministic-host-kick-boundary";
+        script = ''
+          set -eu
+          mkdir -p "$out" "$TMPDIR/stock-qemu"
+
+          grep -q '^PASS$' "${qemuNvcpuFingerprint}/result"
+          grep -q '^real_qemu_adversary=second-run-host-cpu-load$' \
+            "${qemuNvcpuFingerprint}/result"
+          grep -q '^real_qemu_comparison=canonical-rust-stream$' \
+            "${qemuNvcpuFingerprint}/result"
+          grep -q '^PASS$' \
+            "${qemuNvcpuFingerprint}/fingerprint-compare.result"
+          grep -q '^PASS$' "${s1Fingerprint}/result"
+          grep -q '^vcpus=1$' "${s1Fingerprint}/result"
+          grep -q '^horizon_fingerprint_match=true$' "${s1Fingerprint}/result"
+
+          tar -xf ${qemuPackage.src} -C "$TMPDIR/stock-qemu"
+          stock_rr="$TMPDIR/stock-qemu/qemu-${qemuPackage.version}/accel/tcg/tcg-accel-ops-rr.c"
+          grep -q 'void rr_kick_vcpu_thread(CPUState \*unused)' "$stock_rr"
+          ! grep -q 'static bool rr_crucible_sim_mode(void);' "$stock_rr"
+          grep -q 'qatomic_read(&cpu->interrupt_request)' \
+            "${patchDir}/0088-crucible-deterministic-host-kick-boundary.patch"
+          grep -q 'if (stateful_exit)' \
+            "${patchDir}/0088-crucible-deterministic-host-kick-boundary.patch"
+          grep -q 'qemu_plugin_crucible_terminal_pause_pending()' \
+            "${patchDir}/0088-crucible-deterministic-host-kick-boundary.patch"
+          grep -q 'icount_get_raw_observed() > 0' \
+            "${patchDir}/0088-crucible-deterministic-host-kick-boundary.patch"
+          grep -q 'qatomic_read(&rr_current_cpu) != NULL' \
+            "${patchDir}/0088-crucible-deterministic-host-kick-boundary.patch"
+
+          cat > "$out/result" <<'RESULT'
+          PASS
+          gate=gate:patch-microtests
+          patch=0088-crucible-deterministic-host-kick-boundary.patch
+          patched_fixture_exercised=true
+          stock_negative_control=true
+          qemu_package=${qemuPackage}
+          qemu_package_version=${qemuPackage.version}
+          real_smp_vcpus=4
+          host_load_adversary=true
+          canonical_trace_byte_identical=true
+          deterministic_ipi_evidence=true
+          zero_icount_startup_kick_preserved=true
+          post_genesis_single_vcpu_boundary_determinism=true
+          running_vcpu_host_latency_hint_deferred=true
+          between_slice_upstream_kick_preserved=true
+          committed_control_and_interrupt_exit_preserved=true
+          admitted_terminal_pause_exit_preserved=true
+          stateful_transition_exits_shared_rr_thread=true
+          ordinary_qemu_generic_kick_preserved=true
+          RESULT
+        '';
+      }
+    ];
+  };
+  qemuExactBoundaryVcpuIntrospection = pkgs.mkDerivation {
+    pname = "crucible-phase2-qemu-exact-boundary-vcpu-introspection";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.gnugrep pkgs.tar pkgs.xz];
+    phases = [
+      {
+        name = "verify-exact-boundary-vcpu-introspection";
+        script = ''
+          set -eu
+          mkdir -p "$out" "$TMPDIR/stock-qemu"
+
+          grep -q '^PASS$' "${qemuLiveNetworkIo}/live-world-network.result"
+          grep -q '^exact_restore_next_quantum_match=true$' \
+            "${qemuLiveNetworkIo}/live-world-network.result"
+          grep -q '^PASS$' "${qemuNvcpuFingerprint}/result"
+          grep -q '^real_qemu_comparison=canonical-rust-stream$' \
+            "${qemuNvcpuFingerprint}/result"
+
+          tar -xf ${qemuPackage.src} -C "$TMPDIR/stock-qemu"
+          stock_api="$TMPDIR/stock-qemu/qemu-${qemuPackage.version}/plugins/api.c"
+          ! grep -q 'qemu_plugin_crucible_exact_boundary_active' "$stock_api"
+
+          cat > "$out/result" <<'RESULT'
+          PASS
+          gate=gate:patch-microtests
+          patch=0089-crucible-exact-boundary-vcpu-introspection.patch
+          patched_fixture_exercised=true
+          stock_negative_control=true
+          qemu_package=${qemuPackage}
+          qemu_package_version=${qemuPackage.version}
+          live_world_checkpoint_capture=true
+          exact_restore_next_quantum_match=true
+          exact_boundary_all_vcpu_registers=true
+          exact_boundary_committed_rr_cursor=true
+          live_owner_rr_cursor=true
+          arbitrary_unowned_context_rejected=true
           RESULT
         '';
       }
@@ -650,6 +761,14 @@
     {
       patch = "0087-crucible-deterministic-rcu-quiescence.patch";
       check = qemuDeterministicRcuQuiescence;
+    }
+    {
+      patch = "0088-crucible-deterministic-host-kick-boundary.patch";
+      check = qemuDeterministicHostKickBoundary;
+    }
+    {
+      patch = "0089-crucible-exact-boundary-vcpu-introspection.patch";
+      check = qemuExactBoundaryVcpuIntrospection;
     }
   ];
 

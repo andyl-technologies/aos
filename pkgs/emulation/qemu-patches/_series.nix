@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "44aafd380ee0eaed12a7baf3f9fb98d87bb0d1f60c078ed1e867aa7d3f5ec595";
+  patchBranchBundleSha256 = "ff765c47e3876b8ce0e813bdde9d2dc8ecbf9a3f05612494da05664a027df0ac";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "eae515e268ec284f1773e72d926860d1178962c1";
+  patchBranchHeadCommit = "7e622d4d0a71e524fac5cf5a9a56f4a396ced77a";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -805,6 +805,26 @@ let
       class = "D";
       enforces = "DET-1,DET-29,QEMU-43";
       capability = "sim mode reaches RCU quiescence at its bounded deterministic RR execution boundaries without host-timed translation-block exits";
+    }
+    {
+      file = "0088-crucible-deterministic-host-kick-boundary.patch";
+      branchSubject = "crucible: defer generic host kicks in active sim slices";
+      branchCommit = "3561cc760370e03fec2f7be7d6d25d6971936a0b";
+      branchTree = "e6dd34d7a989df6352ed4a6f6aad38098832a3f9";
+      catalogName = "crucible-deterministic-host-kick-boundary";
+      class = "D";
+      enforces = "DET-1,DET-29,QEMU-43";
+      capability = "during an active bounded sim slice, state-free host latency hints cannot choose a guest boundary, while between-slice, zero-icount startup, admitted terminal pause, stop, unplug, halted, stopped, and interrupt-request kicks retain immediate exits";
+    }
+    {
+      file = "0089-crucible-exact-boundary-vcpu-introspection.patch";
+      branchSubject = "crucible: admit vCPU introspection at exact boundaries";
+      branchCommit = "7e622d4d0a71e524fac5cf5a9a56f4a396ced77a";
+      branchTree = "1bdcbb1934ac36da79f25d7e78bec7b911a3dc65";
+      catalogName = "crucible-exact-boundary-vcpu-introspection";
+      class = "D";
+      enforces = "DET-1,QFP-REG-1,QFP-STATE-2";
+      capability = "exact BQL-held main-loop boundaries read every quiescent vCPU register file and the committed RR cursor without a current vCPU, while arbitrary unowned contexts remain rejected";
     }
   ];
   catalogOnlyCapabilities = [

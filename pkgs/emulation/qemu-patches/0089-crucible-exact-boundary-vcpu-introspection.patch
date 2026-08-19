@@ -1,0 +1,82 @@
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index b6357df07..c5d110133 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -2162,10 +2162,10 @@ int qemu_plugin_crucible_fault_register_bindings_seal(void);
+  * Returns 0 on success and nonzero on failure. The byte stream is a stable
+  * canonicalization of each named architectural register descriptor and value
+  * for @vcpu_index. The read is admitted either while a deterministic
+- * single-thread RR callback owns one active vCPU (all other vCPUs are
+- * quiescent), or while the VM is stopped and the caller holds the BQL. It is
+- * side-effect-free with respect to guest state and fails in every concurrent
+- * or unowned context.
++ * single-thread RR callback owns one active vCPU, from an exact deterministic
++ * main-loop boundary that holds the BQL after every vCPU is quiescent, or while
++ * the VM is stopped and the caller holds the BQL. It is side-effect-free with
++ * respect to guest state and fails in every concurrent or unowned context.
+  */
+ QEMU_PLUGIN_API
+ int qemu_plugin_read_vcpu_regs(unsigned int vcpu_index,
+@@ -2190,8 +2190,10 @@ struct qemu_plugin_rr_cursor {
+  * qemu_plugin_rr_cursor() - read the current round-robin cursor
+  * @out: plugin-owned cursor output
+  *
+- * Returns 0 on success. It returns nonzero if the caller is not executing in
+- * the active serialized RR owner context, if no pinned rr_switch_quantum is
++ * Returns 0 on success. The read is admitted either from the active serialized
++ * RR owner or from an exact deterministic plugin boundary, where QEMU reads
++ * the authoritative committed cursor even if no vCPU is current. It returns
++ * nonzero in every other unowned context, if no pinned rr_switch_quantum is
+  * active, or if the cursor is not inside that quantum. The read is
+  * side-effect-free with respect to guest state.
+  */
+diff --git a/plugins/api.c b/plugins/api.c
+index 592d85f46..70e40aed3 100644
+--- a/plugins/api.c
++++ b/plugins/api.c
+@@ -511,14 +511,18 @@ static bool qemu_plugin_crucible_vcpu_register_read_allowed(void)
+     uint64_t owner = qemu_plugin_crucible_rr_current_vcpu();
+ 
+     /*
+-     * An exact deterministic RR callback must prove that current_cpu is the
+-     * serialized owner; the execution mode alone is not ownership. Terminal
+-     * state capture instead stops the VM and holds the BQL while inspecting
+-     * all vCPUs. Refuse every concurrent, stale, or unowned context.
++     * A live exact RR callback must prove that current_cpu is the serialized
++     * owner. An exact main-loop control callback has no current vCPU, but holds
++     * the BQL after the preceding TCG slice committed, so every vCPU register
++     * file is quiescent there as well. Terminal state capture separately stops
++     * the VM and holds the BQL. Refuse every concurrent, stale, or unowned
++     * context.
+      */
+-    return (qemu_plugin_crucible_single_threaded_rr() && current_cpu &&
++    return (qemu_plugin_crucible_single_threaded_rr() &&
+             qemu_plugin_crucible_exact_boundary_active() &&
+-            owner != UINT64_MAX && current_cpu->cpu_index == owner) ||
++            ((current_cpu && owner != UINT64_MAX &&
++              current_cpu->cpu_index == owner) ||
++             (!current_cpu && bql_locked()))) ||
+         (bql_locked() && !runstate_is_running());
+ }
+ 
+@@ -690,14 +694,17 @@ int qemu_plugin_read_vcpu_regs(unsigned int vcpu_index,
+ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
+ {
+     CPUState *cpu = current_cpu;
++    bool exact_boundary = qemu_plugin_crucible_exact_boundary_active();
+     uint64_t current_vcpu = icount_crucible_rr_current_vcpu();
+-    uint64_t cursor_position =
++    uint64_t cursor_position = exact_boundary ?
++        icount_crucible_rr_cursor_position() :
+         icount_crucible_rr_cursor_position_observed(cpu);
+     uint64_t rr_switch_quantum = icount_crucible_rr_switch_quantum();
+     int num_vcpus = qemu_plugin_num_vcpus();
+ 
+-    if (!out || !cpu || current_vcpu == UINT64_MAX ||
+-        cpu->cpu_index != current_vcpu || num_vcpus <= 0 ||
++    if (!out || (!cpu && !exact_boundary) || current_vcpu == UINT64_MAX ||
++        (cpu && cpu->cpu_index != current_vcpu && !exact_boundary) ||
++        num_vcpus <= 0 ||
+         current_vcpu >= (uint64_t)num_vcpus || rr_switch_quantum == 0 ||
+         cursor_position >= rr_switch_quantum) {
+         return -1;
