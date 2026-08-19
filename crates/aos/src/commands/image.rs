@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use aos_core::error::AosError;
-use aos_core::output::{OutputMode, Printer, TransferProgress};
+use aos_core::output::{ActivityProgress, OutputMode, Printer, TransferProgress};
 use aos_remote::hub::{HubClient, hub_rpc};
 use aos_remote::hub_types::{ListImagesRequest, ResolveImageRequest, SystemImage};
 use futures_util::StreamExt as _;
@@ -28,6 +28,7 @@ use crate::cli::{ImageCommand, ImageDownloadArgs, ImageSelectionArgs};
 const IMAGE_PAGE_SIZE: u32 = 1_000;
 const MAX_IMAGE_RESULTS: usize = 100_000;
 const MAX_IMAGE_PAGES: usize = 1_000;
+const DEFAULT_DISCOVERY_RETRIES: u32 = 2;
 const RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
 
 /// Runs an `aos image` command.
@@ -39,8 +40,12 @@ const RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
 pub async fn run(command: &ImageCommand, printer: &Printer) -> Result<()> {
     match command {
         ImageCommand::List(args) => {
-            printer.info(&format!("Resolving images from {}...", args.selection.hub));
-            let images = request_images(&args.selection, false).await?;
+            let activity =
+                printer.activity(&format!("Resolving images from {}", args.selection.hub));
+            let images =
+                request_images(&args.selection, false, DEFAULT_DISCOVERY_RETRIES, &activity)
+                    .await?;
+            activity.finish();
             if printer.json_if_active(&serde_json::to_value(&images)?) {
                 return Ok(());
             }
@@ -48,8 +53,11 @@ pub async fn run(command: &ImageCommand, printer: &Printer) -> Result<()> {
             Ok(())
         }
         ImageCommand::Show(args) => {
-            printer.info(&format!("Resolving image from {}...", args.selection.hub));
-            let image = resolve_image(&args.selection).await?;
+            let activity =
+                printer.activity(&format!("Resolving image from {}", args.selection.hub));
+            let image =
+                resolve_image(&args.selection, DEFAULT_DISCOVERY_RETRIES, &activity).await?;
+            activity.finish();
             if !printer.json_if_active(&serde_json::to_value(&image)?) {
                 print_image_details(&image);
             }
@@ -59,7 +67,37 @@ pub async fn run(command: &ImageCommand, printer: &Printer) -> Result<()> {
     }
 }
 
-async fn request_images(selection: &ImageSelectionArgs, resolve: bool) -> Result<Vec<SystemImage>> {
+async fn request_images(
+    selection: &ImageSelectionArgs,
+    resolve: bool,
+    retries: u32,
+    activity: &ActivityProgress,
+) -> Result<Vec<SystemImage>> {
+    let mut attempt = 0_u32;
+    loop {
+        match request_images_once(selection, resolve).await {
+            Ok(images) => return Ok(images),
+            Err(error) if attempt < retries => {
+                attempt += 1;
+                let exponent = attempt.saturating_sub(1).min(3);
+                let delay = RETRY_BASE_DELAY.saturating_mul(2_u32.pow(exponent));
+                activity.warning(&format!(
+                    "image catalog request failed ({error:#}); retrying in {}s (attempt {}/{})",
+                    delay.as_secs(),
+                    attempt + 1,
+                    retries + 1,
+                ));
+                tokio::time::sleep(delay).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+async fn request_images_once(
+    selection: &ImageSelectionArgs,
+    resolve: bool,
+) -> Result<Vec<SystemImage>> {
     reject_insecure_bearer(&selection.hub, selection.token.as_deref())?;
     let client = match selection.token.as_deref() {
         Some(token) => HubClient::connect_with_token(&selection.hub, token)?,
@@ -153,14 +191,19 @@ impl ImagePagination {
     }
 }
 
-async fn resolve_image(selection: &ImageSelectionArgs) -> Result<SystemImage> {
-    let mut images = request_images(selection, true).await?;
+async fn resolve_image(
+    selection: &ImageSelectionArgs,
+    retries: u32,
+    activity: &ActivityProgress,
+) -> Result<SystemImage> {
+    let mut images = request_images(selection, true, retries, activity).await?;
     images.pop().context("Hub returned no resolved image")
 }
 
 async fn download(args: &ImageDownloadArgs, printer: &Printer) -> Result<()> {
-    printer.info(&format!("Resolving image from {}...", args.selection.hub));
-    let image = resolve_image(&args.selection).await?;
+    let activity = printer.activity(&format!("Resolving image from {}", args.selection.hub));
+    let image = resolve_image(&args.selection, args.retries, &activity).await?;
+    activity.finish();
     validate_filename(&image.filename)?;
     validate_sha256(&image.sha256)?;
     let output = args
