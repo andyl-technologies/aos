@@ -64,6 +64,11 @@ aos doc
 `aos build zlib` builds `pkgs.zlib`; it does not install a package on the
 running host. Use `apm install zlib` for that operation.
 
+The flake output `packages.<system>.all` is the remote-build equivalent of
+`aos build --all`: build it when one submitted derivation must realize every
+individual `pkg-*` output for that system. For example, submit
+`packages.x86_64-linux.all` to an x86_64 Linux builder.
+
 System image production currently uses Nix directly. See
 [Build and customize release images](../../maintainers/system-images.md). Do
 not use `aos system build`, `aos system image`, or `aos system eval` with the
