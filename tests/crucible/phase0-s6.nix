@@ -4,6 +4,7 @@
 }: let
   cadence = 200000000;
   horizon = 3600000000;
+  rrSwitchQuantum = 4096;
   probeSource = builtins.readFile ./phase0-s6-probe.c;
 
   probe = pkgs.mkDerivation {
@@ -204,6 +205,7 @@ in
     PLUGIN = "${pkgs.crucible-qemu-trace-plugin}/lib/qemu/plugins/crucible-qemu-trace-plugin.so";
     CADENCE = builtins.toString cadence;
     HORIZON = builtins.toString horizon;
+    RR_SWITCH_QUANTUM = builtins.toString rrSwitchQuantum;
 
     phases = [
       {
@@ -399,7 +401,7 @@ in
               -monitor none \
               -machine q35 \
               -accel sim,thread=single \
-              -icount shift=0,sleep=off,align=off \
+              -icount shift=0,sleep=off,align=off,rr_switch_quantum="$RR_SWITCH_QUANTUM" \
               -cpu qemu64 \
               -m 256 \
               -smp 1 \
@@ -603,7 +605,8 @@ in
           run_pair kaslr
 
           for label in control-a control-b kaslr-a kaslr-b; do
-            if ! jq -e -s --argjson horizon "$HORIZON" '
+            if ! jq -e -s --argjson horizon "$HORIZON" \
+              --argjson rr_switch_quantum "$RR_SWITCH_QUANTUM" '
               length >= 2
               and all(.[]; (
                 .schema == "crucible.qemu.trace-fingerprint.v6"
@@ -611,6 +614,10 @@ in
                 and .stop_at == $horizon
                 and .sample_register_failures == 0
                 and .register_read_failures == 0
+                and .rr_current_vcpu == 0
+                and .rr_switch_quantum == $rr_switch_quantum
+                and .rr_cursor_valid == true
+                and .rr_cursor_position < .rr_switch_quantum
                 and .process_argv_attestation_version == 2
                 and .process_argv_encoding == "raw-unix-argv-v2"
                 and .process_argv_argc > 0
@@ -843,6 +850,7 @@ in
             echo final_memory_events="$final_memory_events"
             echo final_io_events="$final_io_events"
             echo register_read_failures="$final_register_read_failures"
+            echo rr_switch_quantum="$RR_SWITCH_QUANTUM"
             echo device_event_capture=false
             echo block_device_assertion=launch_argv_scan
             echo first_differing_line=$(cat "$TMPDIR/first-differing-line-kaslr")
