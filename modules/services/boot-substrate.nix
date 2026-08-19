@@ -50,6 +50,8 @@
   # /etc lower; subsequent generations are rendered by the stage-2 config-eval
   # fixpoint and switched in by `activate`.
   filesUnit = "aos-config-seed.service";
+  zfsState = config.aos.filesystems.zfs.enable;
+  zfsPackage = config.aos.filesystems.zfs.package;
   recoveryEnabledJson =
     if config.aos.boot.recovery.enable
     then "true"
@@ -96,17 +98,19 @@
         ["sysroot.mount"]
         ++ lib.optional config.aos.security.verity.enable "aos-boot-identity-guard.service"
         ++ lib.optional config.aos.security.verity.enable "aos-verity-root-verify.service"
-        ++ lib.optional (disksUnit != null) disksUnit;
+        ++ lib.optional (!zfsState && disksUnit != null) disksUnit
+        ++ lib.optional zfsState "aos-zfs-unlock.service";
       after =
         ["sysroot.mount"]
         ++ lib.optional config.aos.security.verity.enable "aos-boot-identity-guard.service"
         ++ lib.optional config.aos.security.verity.enable "aos-verity-root-verify.service"
-        ++ lib.optional (disksUnit != null) disksUnit
+        ++ lib.optional (!zfsState && disksUnit != null) disksUnit
+        ++ lib.optional zfsState "aos-zfs-unlock.service"
         ++ ["systemd-udev-settle.service"];
-      unitConfig = {
+      unitConfig = lib.optionalAttrs (!zfsState) {
         ConditionPathExists = "/dev/disk/by-partlabel/var";
       };
-      environment.PATH = bootPath;
+      environment.PATH = bootPath + lib.optionalString zfsState ":${zfsPackage}/bin:${zfsPackage}/sbin";
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -121,7 +125,19 @@
           # aos-var-crypt service runs first and exposes the unlocked
           # LUKS volume as /dev/mapper/var; mount that. Otherwise the
           # raw partition is mounted directly (unchanged behaviour).
-          if [ -e /dev/mapper/var ]; then
+          if ${
+          if zfsState
+          then "true"
+          else "false"
+        }; then
+            mount -t zfs -o zfsutil,nosuid,nodev \
+              ${lib.escapeShellArg "${config.aos.filesystems.zfs.poolName}/var"} /sysroot/var
+            mkdir -p /sysroot/var/log /sysroot/var/lib
+            mount -t zfs -o zfsutil,nosuid,nodev \
+              ${lib.escapeShellArg "${config.aos.filesystems.zfs.poolName}/var/log"} /sysroot/var/log
+            mount -t zfs -o zfsutil,nosuid,nodev \
+              ${lib.escapeShellArg "${config.aos.filesystems.zfs.poolName}/var/lib"} /sysroot/var/lib
+          elif [ -e /dev/mapper/var ]; then
             mount -o nosuid,nodev /dev/mapper/var /sysroot/var
           else
             mount -o nosuid,nodev /dev/disk/by-partlabel/var /sysroot/var
@@ -232,10 +248,10 @@
         ${pkgs.util-linux}/bin/mount -t erofs -o ro,nodev,nosuid \
           "/sysroot$metadata" "$sys/metadata"
 
-        # /sysroot/var/etc keeps its /sysroot prefix because /var is
-        # mounted on /sysroot/var in stage-1; the overlay records
-        # vfsmount refs at mount time, so the literal source string
-        # in the option line never gets re-resolved post-pivot.
+        # /var is mounted on /sysroot/var in stage-1. Overlayfs keeps
+        # references to those mounts across switch_root. The initial mount
+        # can report /sysroot/var/etc; a stage-2 activation rebuild reports
+        # the same persistent lower layer as /var/etc.
         ${pkgs.util-linux}/bin/mount -t overlay overlay -o \
           nodev,nosuid,metacopy=on,redirect_dir=on,lowerdir+=/sysroot/var/etc,lowerdir+=$config_lower/etc,lowerdir+=$sys/metadata,datadir+=$sys/content,upperdir=$upper_root/dir,workdir=$upper_root/work \
           /sysroot/etc
@@ -462,13 +478,19 @@
           || fail_image_identity "kernel command line has ambiguous verity data device"
         slot_device=$verity_data
         [ -n "$slot_device" ] || slot_device=$root_device
+        root_a_device=$(${pkgs.jq}/bin/jq -er '.devices.rootA' \
+          "/sysroot$toplevel/meta/boot-storage.json") \
+          || fail_image_identity "immutable image has no slot-A storage device"
+        root_b_device=$(${pkgs.jq}/bin/jq -er '.devices.rootB' \
+          "/sysroot$toplevel/meta/boot-storage.json") \
+          || fail_image_identity "immutable image has no slot-B storage device"
         case "$slot_device" in
-          /dev/disk/by-partlabel/root-a) boot_slot=A ;;
-          /dev/disk/by-partlabel/root-b) boot_slot=B ;;
+          "$root_a_device") boot_slot=A ;;
+          "$root_b_device") boot_slot=B ;;
           *)
             slot_real=$(readlink -f "$slot_device" 2>/dev/null || true)
-            root_a_real=$(readlink -f /dev/disk/by-partlabel/root-a 2>/dev/null || true)
-            root_b_real=$(readlink -f /dev/disk/by-partlabel/root-b 2>/dev/null || true)
+            root_a_real=$(readlink -f "$root_a_device" 2>/dev/null || true)
+            root_b_real=$(readlink -f "$root_b_device" 2>/dev/null || true)
             if [ -n "$slot_real" ] && [ "$slot_real" = "$root_a_real" ]; then
               boot_slot=A
             elif [ -n "$slot_real" ] && [ "$slot_real" = "$root_b_real" ]; then

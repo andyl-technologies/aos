@@ -45,3 +45,4 @@ rayon = { workspace = true }
 rustix = { workspace = true }
 
 [dev-dependencies]
+crc32fast = { workspace = true }

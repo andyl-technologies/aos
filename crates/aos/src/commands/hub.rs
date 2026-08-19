@@ -9,6 +9,7 @@
 //! reviewed plan id and confirmation hash are supplied.
 
 use anyhow::{Context as _, Result};
+use futures_util::stream::{self, StreamExt as _, TryStreamExt as _};
 
 use aos_core::output::{OutputMode, Printer};
 use aos_remote::hub_rpc as HubTopologyMethod;
@@ -17,27 +18,28 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{
-    HubAccessPolicyArgs, HubAccessTokenCmd, HubAccessTokenIssueCmd, HubAccessTokenRetireCmd,
-    HubAuditCmd, HubCacheCmd, HubCacheCoverageCmd, HubCacheGcCmd, HubCacheGcFirstSweepCmd,
-    HubCacheGcJobsCmd, HubCacheGcPlanCmd, HubCacheGcPolicyCmd, HubCacheGcRunsCmd,
-    HubCacheIntegrationCmd, HubCacheLeaseCmd, HubCachePopulationCmd, HubCacheRetentionCmd,
-    HubCacheRootCmd, HubChannelCmd, HubCmd, HubConfigCmd, HubDomainCertificateCmd, HubDomainCmd,
-    HubDomainDnsCmd, HubEndpointCmd, HubGatewayCmd, HubIdentityProviderCmd,
-    HubIdentityProviderRemoveCmd, HubIdentityProviderSetCmd, HubInstanceCmd,
-    HubInstanceSettingsMutationCmd, HubInstanceSettingsSectionCmd, HubInstanceTopologyDefaultsCmd,
-    HubInvitationCancelCmd, HubInvitationCmd, HubInvitationCreateCmd, HubMembershipRemoveCmd,
-    HubMembershipSetRoleCmd, HubMutationArgs, HubNetworkBoundaryCmd, HubNetworkBoundaryRevisionCmd,
-    HubOperationArgs, HubOperationCmd, HubOrgCmd, HubOrgMemberCmd, HubOrgTopologyDefaultsCmd,
-    HubOrganizationDomainClaimCmd, HubOrganizationDomainCmd, HubOrganizationDomainReleaseCmd,
-    HubOrganizationDomainVerifyCmd, HubPackageCmd, HubPlacementCmd, HubPlacementDrainCmd,
-    HubPlacementEquivalenceCmd, HubPlacementEvictionCmd, HubPlacementPolicyCmd,
-    HubPlacementPromotionCmd, HubProjectCmd, HubPublishCmd, HubRegistryCacheStackCmd,
-    HubRegistryCmd, HubRegistryMirrorCmd, HubReviewedApplyArgs, HubRouteCmd, HubRouteSpecArgs,
-    HubServiceAccountCmd, HubServiceAccountCreateCmd, HubServiceAccountDeleteCmd,
-    HubServiceAccountUpdateCmd, HubSigningKeyCmd, HubSigningKeyEnrollCmd, HubSigningKeyRetireCmd,
-    HubSigningKeyRotateCmd, HubSigningKeyUsageCmd, HubStorageBindingCmd,
-    HubStorageBindingCredentialCmd, HubStorageBindingWriteRevisionCmd, HubSurfaceCmd,
-    HubTopologyCmd, HubTopologyCutoverCmd, HubWebhookCmd,
+    HubAccessArgs, HubAccessPolicyArgs, HubAccessTokenCmd, HubAccessTokenIssueCmd,
+    HubAccessTokenRetireCmd, HubAuditCmd, HubCacheCmd, HubCacheCoverageCmd, HubCacheGcCmd,
+    HubCacheGcFirstSweepCmd, HubCacheGcJobsCmd, HubCacheGcPlanCmd, HubCacheGcPolicyCmd,
+    HubCacheGcRunsCmd, HubCacheIntegrationCmd, HubCacheLeaseCmd, HubCachePopulationCmd,
+    HubCacheRetentionCmd, HubCacheRootCmd, HubChannelCmd, HubCmd, HubConfigCmd,
+    HubDomainCertificateCmd, HubDomainCmd, HubDomainDnsCmd, HubEndpointCmd, HubGatewayCmd,
+    HubIdentityProviderCmd, HubIdentityProviderRemoveCmd, HubIdentityProviderSetCmd,
+    HubInstanceCmd, HubInstanceSettingsMutationCmd, HubInstanceSettingsSectionCmd,
+    HubInstanceTopologyDefaultsCmd, HubInvitationCancelCmd, HubInvitationCmd,
+    HubInvitationCreateCmd, HubMembershipRemoveCmd, HubMembershipSetRoleCmd, HubMutationArgs,
+    HubNetworkBoundaryCmd, HubNetworkBoundaryRevisionCmd, HubOperationArgs, HubOperationCmd,
+    HubOrgCmd, HubOrgMemberCmd, HubOrgTopologyDefaultsCmd, HubOrganizationDomainClaimCmd,
+    HubOrganizationDomainCmd, HubOrganizationDomainReleaseCmd, HubOrganizationDomainVerifyCmd,
+    HubPackageCmd, HubPlacementCmd, HubPlacementDrainCmd, HubPlacementEquivalenceCmd,
+    HubPlacementEvictionCmd, HubPlacementPolicyCmd, HubPlacementPromotionCmd, HubProjectCmd,
+    HubPublishCmd, HubRegistryCacheStackCmd, HubRegistryCmd, HubRegistryMirrorCmd,
+    HubReviewedApplyArgs, HubRouteCmd, HubRouteSpecArgs, HubServiceAccountCmd,
+    HubServiceAccountCreateCmd, HubServiceAccountDeleteCmd, HubServiceAccountUpdateCmd,
+    HubSigningKeyCmd, HubSigningKeyEnrollCmd, HubSigningKeyRetireCmd, HubSigningKeyRotateCmd,
+    HubSigningKeyUsageCmd, HubStorageBindingCmd, HubStorageBindingCredentialCmd,
+    HubStorageBindingWriteRevisionCmd, HubSurfaceCmd, HubTopologyCmd, HubTopologyCutoverCmd,
+    HubWebhookCmd,
 };
 
 const PIN_RESOLUTION_DOCUMENT_SCHEMA: &str = "aos.hub.pin-resolutions.v1";
@@ -135,6 +137,35 @@ fn endpoint_ingress_kind(value: &str) -> Result<i32> {
     Ok(kind as i32)
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EndpointProbeIdentity<'a> {
+    provider: &'a str,
+    signer_secret_ref: &'a str,
+    public_key: &'a str,
+}
+
+fn endpoint_probe_configuration(
+    provider: Option<&str>,
+    signer_secret_ref: Option<&str>,
+    public_key: Option<&str>,
+) -> Result<Option<String>> {
+    match (provider, signer_secret_ref, public_key) {
+        (Some(provider), Some(signer_secret_ref), Some(public_key)) => {
+            let provider = provider.replace('-', "_");
+            Ok(Some(serde_json::to_string(&EndpointProbeIdentity {
+                provider: &provider,
+                signer_secret_ref,
+                public_key,
+            })?))
+        }
+        (None, None, None) => Ok(None),
+        _ => anyhow::bail!(
+            "--probe-provider, --probe-signer-secret-ref, and --probe-public-key must be supplied together"
+        ),
+    }
+}
+
 /// Handles `aos hub login` through device authorization or explicit bootstrap.
 async fn login(
     printer: &Printer,
@@ -202,6 +233,70 @@ mod tests {
     use aos_remote::{HashRangeV1, PlacementObservation, PlacementSpec, PlacementStatus};
 
     use super::*;
+
+    #[test]
+    fn topology_stable_ids_preserve_overrides_and_generate_typed_ids() {
+        assert_eq!(
+            topology_stable_id(Some("endpoint:operator-chosen"), "delivery-endpoint"),
+            "endpoint:operator-chosen"
+        );
+
+        let generated = topology_stable_id(None, "delivery-endpoint");
+        let suffix = generated
+            .strip_prefix("delivery-endpoint:")
+            .expect("generated endpoint identity has its resource prefix");
+        assert_eq!(suffix.len(), 32);
+        assert!(suffix.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn network_boundary_kinds_use_wire_spelling() {
+        assert_eq!(
+            canonical_network_boundary_kind("source-allowlist"),
+            "source_allowlist"
+        );
+        assert_eq!(
+            canonical_network_boundary_kind("trusted-ingress"),
+            "trusted_ingress"
+        );
+        assert_eq!(canonical_network_boundary_kind("vpc"), "vpc");
+    }
+
+    #[test]
+    fn network_boundaries_start_with_an_explicit_untrusted_revision() {
+        use hub_types::trusted_ingress_configuration::Configuration;
+
+        let revision = initial_network_boundary_revision("required", "edge-probe");
+        assert!(revision.protected_transport_required);
+        assert_eq!(revision.probe_location_configuration_ref, "edge-probe");
+        assert!(matches!(
+            revision
+                .trusted_ingress
+                .and_then(|trusted| trusted.configuration),
+            Some(Configuration::None(true))
+        ));
+    }
+
+    #[test]
+    fn endpoint_probe_configuration_is_complete_and_canonical() {
+        assert_eq!(
+            endpoint_probe_configuration(
+                Some("worker-secret"),
+                Some("endpoint-v1"),
+                Some("public-key"),
+            )
+            .unwrap()
+            .as_deref(),
+            Some(
+                r#"{"provider":"worker_secret","signerSecretRef":"endpoint-v1","publicKey":"public-key"}"#
+            )
+        );
+        assert!(endpoint_probe_configuration(Some("external"), None, None).is_err());
+        assert_eq!(
+            endpoint_probe_configuration(None, None, None).unwrap(),
+            None
+        );
+    }
 
     #[test]
     fn pin_resolution_document_is_versioned_and_strict() {
@@ -434,6 +529,242 @@ mod tests {
         assert!(canonical_cidr("10.0.0.1/8").is_err());
         assert!(canonical_cidr("2001:db8::1/32").is_err());
         assert_eq!(canonical_cidr("2001:db8::/32").unwrap(), "2001:db8::/32");
+    }
+
+    #[test]
+    fn publication_surface_derives_a_complete_stable_request() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        std::fs::create_dir_all(root.join("info")).unwrap();
+        std::fs::create_dir_all(root.join("objects/aa")).unwrap();
+        std::fs::create_dir_all(root.join("channels/stable")).unwrap();
+        let commit = "a".repeat(64);
+        std::fs::write(root.join("HEAD"), "ref: refs/heads/stable\n").unwrap();
+        std::fs::write(
+            root.join("info/refs"),
+            format!("{commit}\trefs/heads/stable\n"),
+        )
+        .unwrap();
+        std::fs::write(root.join("objects/aa/object"), b"object").unwrap();
+        std::fs::write(root.join("channels/stable/00"), b"pointer").unwrap();
+
+        let pinned = publication_from_root(root, "andyl/main").unwrap();
+        let first_generation = pinned.request.generation.clone();
+        let first_refs_digest = pinned.request.refs_digest.clone();
+        let request = pinned.request;
+        assert_eq!(request.registry, "andyl/main");
+        assert_eq!(request.default_commit, commit);
+        assert_ne!(request.generation, request.refs_digest);
+        assert_eq!(request.generation.len(), 64);
+        assert_eq!(request.objects.len(), 4);
+        assert_eq!(request.objects[0].path, "HEAD");
+        assert_eq!(request.objects[0].kind, "mutable_pointer");
+        assert_eq!(request.objects[2].path, "info/refs");
+        assert_eq!(request.objects[2].kind, "mutable_pointer");
+        assert_eq!(request.objects[3].path, "objects/aa/object");
+        assert_eq!(request.objects[3].kind, "immutable");
+
+        std::fs::write(root.join("objects/aa/object"), b"replacement object").unwrap();
+        let replacement = publication_from_root(root, "andyl/main").unwrap();
+        assert_eq!(replacement.request.refs_digest, first_refs_digest);
+        assert_ne!(replacement.request.generation, first_generation);
+    }
+
+    #[test]
+    fn publication_object_contract_matches_delivery_path_contract() {
+        use sha2::Digest as _;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        std::fs::create_dir_all(root.join("info")).unwrap();
+        std::fs::create_dir_all(root.join("objects/info")).unwrap();
+        std::fs::create_dir_all(root.join("web/packages")).unwrap();
+        std::fs::create_dir_all(root.join("nar")).unwrap();
+        let commit = "e".repeat(64);
+        std::fs::write(root.join("HEAD"), format!("{commit}\n")).unwrap();
+        std::fs::write(root.join("info/refs"), b"").unwrap();
+        for path in [
+            "nix-cache-info",
+            "index.html",
+            "objects/info/packs",
+            "web/config.json",
+            "web/index.json",
+            "web/packages/aos.json",
+        ] {
+            std::fs::write(root.join(path), path.as_bytes()).unwrap();
+        }
+        let nar = b"compressed-nar";
+        let file_hash = format!("sha256:{:x}", sha2::Sha256::digest(nar));
+        let nar_url = aos_core::nar::cache::nar_url(
+            "/nix/store/hash-package",
+            &file_hash,
+            aos_core::nar::cache::NarCompression::Zstd,
+        )
+        .unwrap();
+        std::fs::write(root.join(&nar_url), nar).unwrap();
+        std::fs::write(
+            root.join("hash.narinfo"),
+            format!(
+                "StorePath: /nix/store/hash-package\nURL: {nar_url}\nCompression: zstd\nFileHash: {file_hash}\nFileSize: {}\nNarHash: sha256:nar\nNarSize: 99\n",
+                nar.len()
+            ),
+        )
+        .unwrap();
+
+        let pinned = publication_from_root(root, "andyl/main").unwrap();
+        for object in &pinned.request.objects {
+            let expected = if aos_package::registry::surface_keymap::cache_control(&object.path)
+                == aos_package::registry::surface_keymap::MUTABLE_CACHE_CONTROL
+            {
+                "mutable_pointer"
+            } else {
+                "immutable"
+            };
+            assert_eq!(object.kind, expected, "{}", object.path);
+            assert_eq!(
+                object.media_type,
+                aos_package::registry::surface_keymap::content_type(&object.path),
+                "{}",
+                object.path
+            );
+        }
+        assert_eq!(
+            pinned
+                .request
+                .objects
+                .iter()
+                .find(|object| object.path == "hash.narinfo")
+                .unwrap()
+                .kind,
+            "mutable_pointer"
+        );
+    }
+
+    #[test]
+    fn publication_rejects_nar_urls_that_do_not_identify_file_hash() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        std::fs::create_dir_all(root.join("info")).unwrap();
+        std::fs::create_dir_all(root.join("objects/aa")).unwrap();
+        std::fs::create_dir_all(root.join("nar")).unwrap();
+        let commit = "a".repeat(64);
+        std::fs::write(root.join("HEAD"), format!("{commit}\n")).unwrap();
+        std::fs::write(root.join("info/refs"), b"").unwrap();
+        std::fs::write(root.join("objects/aa/object"), b"object").unwrap();
+        std::fs::write(root.join("nar/hash-sha256-nar.nar.zst"), b"payload").unwrap();
+        std::fs::write(
+            root.join("hash.narinfo"),
+            "StorePath: /nix/store/hash-package\nURL: nar/hash-sha256-nar.nar.zst\nCompression: zstd\nFileHash: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nFileSize: 7\nNarHash: sha256:nar\nNarSize: 9\n",
+        )
+        .unwrap();
+
+        let error = publication_from_root(root, "andyl/main").err().unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("does not identify its compressed FileHash")
+        );
+    }
+
+    #[test]
+    fn publication_uploads_immutable_objects_before_pointers() {
+        let object = |path: &str, kind: &str| hub_types::RegistryPublicationObject {
+            path: path.into(),
+            kind: kind.into(),
+            ..Default::default()
+        };
+        let publication = hub_types::RegistryPublication {
+            objects: vec![
+                object("HEAD", "mutable_pointer"),
+                object("objects/aa/object", "immutable"),
+                object("info/refs", "mutable_pointer"),
+                object("nar/package.nar.zst", "immutable"),
+            ],
+            ..Default::default()
+        };
+
+        let paths = publication_objects_in_upload_order(&publication)
+            .into_iter()
+            .map(|object| object.path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            [
+                "objects/aa/object",
+                "nar/package.nar.zst",
+                "HEAD",
+                "info/refs"
+            ]
+        );
+    }
+
+    #[test]
+    fn publication_upload_snapshot_rejects_post_inventory_changes() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        std::fs::create_dir_all(root.join("info")).unwrap();
+        let commit = "c".repeat(64);
+        std::fs::write(root.join("HEAD"), format!("{commit}\n")).unwrap();
+        std::fs::write(root.join("info/refs"), b"").unwrap();
+        std::fs::write(root.join("index.html"), b"reviewed").unwrap();
+        let pinned = publication_from_root(root, "andyl/main").unwrap();
+        let expected = pinned
+            .request
+            .objects
+            .iter()
+            .find(|object| object.path == "index.html")
+            .unwrap();
+
+        std::fs::write(root.join("index.html"), b"changed").unwrap();
+
+        assert!(snapshot_publication_object(&pinned.root, expected).is_err());
+    }
+
+    #[test]
+    fn publication_copy_is_bounded_by_the_declared_size() {
+        let mut excess = std::io::Cursor::new(b"reviewed-extra");
+        assert!(copy_and_hash_exact(&mut excess, &mut std::io::sink(), 8, "excess").is_err());
+
+        let mut short = std::io::Cursor::new(b"short");
+        assert!(copy_and_hash_exact(&mut short, &mut std::io::sink(), 8, "short").is_err());
+    }
+
+    #[test]
+    fn publication_surface_rejects_excessive_directory_depth() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        std::fs::create_dir_all(root.join("info")).unwrap();
+        let commit = "d".repeat(64);
+        std::fs::write(root.join("HEAD"), format!("{commit}\n")).unwrap();
+        std::fs::write(root.join("info/refs"), b"").unwrap();
+
+        let mut directory = root.join("web");
+        for _ in 0..=MAX_PUBLICATION_DIRECTORY_DEPTH {
+            directory.push("nested");
+        }
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("index.html"), b"too deep").unwrap();
+
+        assert!(publication_from_root(root, "andyl/main").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publication_surface_rejects_symlinks_and_unknown_paths() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        std::fs::create_dir_all(root.join("info")).unwrap();
+        let commit = "b".repeat(64);
+        std::fs::write(root.join("HEAD"), format!("{commit}\n")).unwrap();
+        std::fs::write(root.join("info/refs"), b"").unwrap();
+        std::fs::write(root.join("operator-notes"), b"private").unwrap();
+        assert!(publication_from_root(root, "andyl/main").is_err());
+
+        std::fs::remove_file(root.join("operator-notes")).unwrap();
+        symlink(root.join("HEAD"), root.join("index.html")).unwrap();
+        assert!(publication_from_root(root, "andyl/main").is_err());
     }
 }
 
@@ -3239,10 +3570,7 @@ async fn cache(printer: &Printer, command: &HubCacheCmd) -> Result<()> {
                 &client,
                 HubTopologyMethod::ListBinaryCaches,
                 &hub_types::ListBinaryCachesRequest {
-                    owner_scope_key: org
-                        .as_ref()
-                        .map(|org| format!("org:{org}"))
-                        .unwrap_or_default(),
+                    owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
                 },
@@ -3506,6 +3834,27 @@ fn qualified_cache_owner(cache: &str) -> Result<&str> {
         anyhow::bail!("cache refs are qualified as <org>/<cache>");
     }
     Ok(org)
+}
+
+async fn organization_scope_key(client: &HubClient, org: Option<&str>) -> Result<String> {
+    let Some(slug) = org else {
+        return Ok(String::new());
+    };
+    let response: hub_types::OrganizationResponse = client
+        .call_topology(
+            HubTopologyMethod::GetOrganization,
+            &hub_types::GetOrganizationRequest { slug: slug.into() },
+        )
+        .await
+        .with_context(|| format!("resolving organization '{slug}'"))?;
+    let organization = response
+        .organization
+        .with_context(|| format!("Hub returned no organization for '{slug}'"))?;
+    anyhow::ensure!(
+        !organization.stable_id.is_empty(),
+        "Hub returned organization '{slug}' without a stable identity"
+    );
+    Ok(organization.stable_id)
 }
 
 /// Handles `aos hub org …`.
@@ -3931,6 +4280,36 @@ fn new_idempotency_key() -> String {
     format!("aos-cli-{:032x}", rand::random::<u128>())
 }
 
+fn topology_stable_id(explicit: Option<&str>, kind: &str) -> String {
+    explicit
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{kind}:{:032x}", rand::random::<u128>()))
+}
+
+fn canonical_network_boundary_kind(kind: &str) -> &str {
+    match kind {
+        "source-allowlist" => "source_allowlist",
+        "trusted-ingress" => "trusted_ingress",
+        other => other,
+    }
+}
+
+fn initial_network_boundary_revision(
+    protected_transport: &str,
+    probe_location: &str,
+) -> hub_types::NetworkBoundaryRevisionSpec {
+    hub_types::NetworkBoundaryRevisionSpec {
+        protected_transport_required: protected_transport == "required",
+        trusted_ingress: Some(hub_types::TrustedIngressConfiguration {
+            configuration: Some(
+                hub_types::trusted_ingress_configuration::Configuration::None(true),
+            ),
+        }),
+        probe_location_configuration_ref: probe_location.into(),
+        ..Default::default()
+    }
+}
+
 /// Adapts one explicit retained-control plan subcommand to the shared RPC
 /// executor without reintroducing the overloaded mutation flags in clap.
 fn retained_plan_mutation(idempotency_key: &str, if_version: Option<&str>) -> HubMutationArgs {
@@ -4207,10 +4586,7 @@ async fn storage_binding(printer: &Printer, command: &HubStorageBindingCmd) -> R
                 &client,
                 HubTopologyMethod::ListStorageBindings,
                 &hub_types::ListStorageBindingsRequest {
-                    owner_scope_key: org
-                        .as_ref()
-                        .map(|org| format!("org:{org}"))
-                        .unwrap_or_default(),
+                    owner_scope_key: organization_scope_key(&client, Some(org)).await?,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
                 },
@@ -4237,6 +4613,7 @@ async fn storage_binding(printer: &Printer, command: &HubStorageBindingCmd) -> R
             token,
             org,
             name,
+            stable_id,
             kind,
             root,
             endpoint,
@@ -4366,10 +4743,10 @@ async fn storage_binding(printer: &Printer, command: &HubStorageBindingCmd) -> R
                 HubTopologyMethod::PlanCreateStorageBinding,
                 HubTopologyMethod::CreateStorageBinding,
                 &hub_types::PlanStorageBindingMutationRequest {
-                    owner_scope_key: format!("org:{org}"),
+                    stable_id: topology_stable_id(stable_id.as_deref(), "storage-binding"),
+                    owner_scope_key: organization_scope_key(&client, Some(org)).await?,
                     spec: Some(spec),
                     idempotency_key: new_idempotency_key(),
-                    update_mask: vec!["spec".into()],
                     ..Default::default()
                 },
                 mutation,
@@ -4794,10 +5171,7 @@ async fn domain(printer: &Printer, command: &HubDomainCmd) -> Result<()> {
                 &client,
                 HubTopologyMethod::ListDomains,
                 &hub_types::ListDomainsRequest {
-                    owner_scope_key: org
-                        .as_ref()
-                        .map(|org| format!("org:{org}"))
-                        .unwrap_or_default(),
+                    owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
                 },
@@ -4846,10 +5220,7 @@ async fn domain(printer: &Printer, command: &HubDomainCmd) -> Result<()> {
                 HubTopologyMethod::PlanCreateDomain,
                 HubTopologyMethod::CreateDomain,
                 &hub_types::PlanDomainMutationRequest {
-                    owner_scope_key: org
-                        .as_ref()
-                        .map(|org| format!("org:{org}"))
-                        .unwrap_or_default(),
+                    owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     hostname: hostname.clone(),
                     idempotency_key: new_idempotency_key(),
                     expected_resource_version: mutation.if_version.clone().unwrap_or_default(),
@@ -4910,6 +5281,21 @@ async fn domain(printer: &Printer, command: &HubDomainCmd) -> Result<()> {
     }
 }
 
+async fn domain_stable_id(client: &HubClient, domain_ref: &str) -> Result<String> {
+    let response: hub_types::DomainResponse = client
+        .call_topology(
+            HubTopologyMethod::GetDomain,
+            &hub_types::GetTopologyResourceRequest {
+                stable_id: domain_ref.into(),
+            },
+        )
+        .await?;
+    response
+        .domain
+        .map(|domain| domain.stable_id)
+        .context("the Hub returned a domain response without a domain")
+}
+
 async fn domain_dns(printer: &Printer, command: &HubDomainDnsCmd) -> Result<()> {
     let HubDomainDnsCmd::Configure {
         access,
@@ -4922,6 +5308,7 @@ async fn domain_dns(printer: &Printer, command: &HubDomainDnsCmd) -> Result<()> 
         mutation,
     } = command;
     let client = hub_client(&access.hub, access.token.as_deref())?;
+    let domain_id = domain_stable_id(&client, hostname).await?;
     let configuration = if mode == "external" {
         if provider.is_some() || zone_id.is_some() || record_ttl.is_some() {
             anyhow::bail!("external DNS rejects Hub-managed DNS options");
@@ -4955,7 +5342,7 @@ async fn domain_dns(printer: &Printer, command: &HubDomainDnsCmd) -> Result<()> 
         HubTopologyMethod::PlanConfigureDomainDns,
         HubTopologyMethod::ConfigureDomainDns,
         &hub_types::PlanDomainDnsRequest {
-            stable_id: hostname.clone(),
+            stable_id: domain_id,
             configuration: Some(hub_types::DnsConfiguration {
                 configuration: Some(configuration),
             }),
@@ -4981,6 +5368,7 @@ async fn domain_certificate(printer: &Printer, command: &HubDomainCertificateCmd
         mutation,
     } = command;
     let client = hub_client(&access.hub, access.token.as_deref())?;
+    let domain_id = domain_stable_id(&client, hostname).await?;
     let configuration = if mode == "external" {
         hub_types::certificate_configuration::Configuration::External(
             hub_types::ExternalCertificateConfiguration {
@@ -5003,7 +5391,7 @@ async fn domain_certificate(printer: &Printer, command: &HubDomainCertificateCmd
         HubTopologyMethod::PlanConfigureDomainCertificate,
         HubTopologyMethod::ConfigureDomainCertificate,
         &hub_types::PlanDomainCertificateRequest {
-            stable_id: hostname.clone(),
+            stable_id: domain_id,
             configuration: Some(hub_types::CertificateConfiguration {
                 configuration: Some(configuration),
             }),
@@ -5049,10 +5437,7 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
                 &client,
                 HubTopologyMethod::ListNetworkBoundaries,
                 &hub_types::ListTopologyResourcesRequest {
-                    owner_scope_key: org
-                        .as_ref()
-                        .map(|org| format!("org:{org}"))
-                        .unwrap_or_default(),
+                    owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
                 },
@@ -5075,6 +5460,7 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
         HubNetworkBoundaryCmd::Add {
             access,
             name,
+            stable_id,
             kind,
             org,
             provider,
@@ -5082,6 +5468,8 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
             resource_id,
             allowlist_id,
             listener_id,
+            protected_transport,
+            probe_location,
             mutation,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
@@ -5106,6 +5494,12 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
             let kind = kind
                 .as_deref()
                 .context("network-boundary add requires --kind when creating a plan")?;
+            let protected_transport = protected_transport.as_deref().context(
+                "network-boundary add requires --protected-transport when creating a plan",
+            )?;
+            let probe_location = probe_location
+                .as_deref()
+                .context("network-boundary add requires --probe-location when creating a plan")?;
             match kind {
                 "vpn" | "vpc" | "tunnel" if allowlist_id.is_some() || listener_id.is_some() => {
                     anyhow::bail!("provider network boundaries reject allowlist/listener options");
@@ -5185,6 +5579,7 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
                 }
                 _ => anyhow::bail!("unsupported network boundary kind '{kind}'"),
             };
+            let canonical_kind = canonical_network_boundary_kind(kind);
             topology_mutation::<
                 _,
                 hub_types::ApplyNetworkBoundaryMutationRequest,
@@ -5196,16 +5591,17 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
                 HubTopologyMethod::PlanCreateNetworkBoundary,
                 HubTopologyMethod::CreateNetworkBoundary,
                 &hub_types::PlanNetworkBoundaryMutationRequest {
-                    owner_scope_key: org
-                        .as_ref()
-                        .map(|org| format!("org:{org}"))
-                        .unwrap_or_default(),
+                    stable_id: topology_stable_id(stable_id.as_deref(), "network-boundary"),
+                    owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     name: name.clone(),
-                    kind: kind.into(),
+                    kind: canonical_kind.into(),
                     identity: Some(hub_types::NetworkBoundaryIdentity {
                         identity: Some(identity),
                     }),
-                    initial_revision: Some(hub_types::NetworkBoundaryRevisionSpec::default()),
+                    initial_revision: Some(initial_network_boundary_revision(
+                        protected_transport,
+                        probe_location,
+                    )),
                     idempotency_key: new_idempotency_key(),
                     expected_resource_version: mutation.if_version.clone().unwrap_or_default(),
                     ..Default::default()
@@ -5639,10 +6035,7 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                 &client,
                 HubTopologyMethod::ListDeliveryEndpoints,
                 &hub_types::ListTopologyResourcesRequest {
-                    owner_scope_key: org
-                        .as_ref()
-                        .map(|org| format!("org:{org}"))
-                        .unwrap_or_default(),
+                    owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
                 },
@@ -5699,16 +6092,49 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
         HubEndpointCmd::Add {
             access,
             origin,
+            stable_id,
             org,
             acknowledge_cleartext,
             network_boundary,
             ingress,
+            listener_provider,
+            listener_resource_id,
+            tls_provider,
+            certificate_ref,
+            probe_provider,
+            probe_signer_secret_ref,
+            probe_public_key,
             mutation,
         } => {
             let (scheme, mut host, effective_port) = parse_delivery_origin(origin)?;
             if scheme == "http" && !acknowledge_cleartext {
                 anyhow::bail!("http endpoints require --acknowledge-cleartext");
             }
+            if scheme == "http" && (tls_provider.is_some() || certificate_ref.is_some()) {
+                anyhow::bail!("http endpoints reject TLS options");
+            }
+            if scheme == "https" && tls_provider.is_none() {
+                anyhow::bail!("https endpoints require --tls-provider");
+            }
+            if certificate_ref.is_some() && tls_provider.is_none() {
+                anyhow::bail!("--certificate-ref requires --tls-provider");
+            }
+            if tls_provider.as_deref() == Some("external") && certificate_ref.is_none() {
+                anyhow::bail!("external TLS requires --certificate-ref");
+            }
+            let tls = tls_provider
+                .as_ref()
+                .map(|provider| hub_types::TlsConfiguration {
+                    provider: provider.clone(),
+                    certificate_ref: certificate_ref.clone().unwrap_or_default(),
+                    ..Default::default()
+                });
+            let probe_configuration_ref = endpoint_probe_configuration(
+                Some(probe_provider),
+                Some(probe_signer_secret_ref),
+                Some(probe_public_key),
+            )?
+            .context("endpoint creation requires probe signing identity")?;
             let (boundary_id, boundary_revision) = network_boundary
                 .rsplit_once('@')
                 .map(|(id, revision)| {
@@ -5743,10 +6169,8 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                 HubTopologyMethod::PlanCreateDeliveryEndpoint,
                 HubTopologyMethod::CreateDeliveryEndpoint,
                 &hub_types::PlanDeliveryEndpointMutationRequest {
-                    owner_scope_key: org
-                        .as_ref()
-                        .map(|org| format!("org:{org}"))
-                        .unwrap_or_default(),
+                    stable_id: topology_stable_id(stable_id.as_deref(), "delivery-endpoint"),
+                    owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     scheme,
                     host: Some(host),
                     effective_port,
@@ -5754,7 +6178,11 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                     revision: Some(hub_types::DeliveryEndpointRevisionSpec {
                         boundary_revision,
                         ingress_kind: endpoint_ingress_kind(ingress)?,
-                        ..Default::default()
+                        listener_configuration_ref: format!(
+                            "{listener_provider}:{listener_resource_id}"
+                        ),
+                        tls,
+                        probe_configuration_ref,
                     }),
                     idempotency_key: new_idempotency_key(),
                     ..Default::default()
@@ -5779,8 +6207,9 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
             listener_resource_id,
             tls_provider,
             certificate_ref,
-            probe_location,
-            clear_probe_location,
+            probe_provider,
+            probe_signer_secret_ref,
+            probe_public_key,
             mutation,
         } => {
             if mutation.plan_id.is_some() {
@@ -5808,8 +6237,9 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                 && listener_resource_id.is_none()
                 && tls_provider.is_none()
                 && certificate_ref.is_none()
-                && probe_location.is_none()
-                && !clear_probe_location
+                && probe_provider.is_none()
+                && probe_signer_secret_ref.is_none()
+                && probe_public_key.is_none()
             {
                 anyhow::bail!("endpoint stage requires at least one changed field");
             }
@@ -5833,6 +6263,11 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                     certificate_ref: certificate_ref.clone().unwrap_or_default(),
                     ..Default::default()
                 });
+            let probe_configuration_ref = endpoint_probe_configuration(
+                probe_provider.as_deref(),
+                probe_signer_secret_ref.as_deref(),
+                probe_public_key.as_deref(),
+            )?;
             let client = hub_client(&access.hub, access.token.as_deref())?;
             topology_mutation::<
                 _,
@@ -5858,11 +6293,9 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                             .unwrap_or_default(),
                         listener_configuration_ref,
                         tls,
-                        probe_configuration_ref: if *clear_probe_location {
-                            String::new()
-                        } else {
-                            probe_location.clone().unwrap_or_default()
-                        },
+                        probe_configuration_ref: probe_configuration_ref
+                            .clone()
+                            .unwrap_or_default(),
                     }),
                     expected_resource_version: mutation.if_version.clone().unwrap_or_default(),
                     idempotency_key: new_idempotency_key(),
@@ -5875,8 +6308,9 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                             .as_ref()
                             .map(|_| "revision.listener_configuration_ref"),
                         tls_provider.as_ref().map(|_| "revision.tls"),
-                        ((probe_location.is_some() || *clear_probe_location)
-                            .then_some("revision.probe_configuration_ref")),
+                        probe_configuration_ref
+                            .as_ref()
+                            .map(|_| "revision.probe_configuration_ref"),
                     ]
                     .into_iter()
                     .flatten()
@@ -6194,6 +6628,7 @@ async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Result<()> {
         }
         HubGatewayCmd::Add {
             access,
+            stable_id,
             binding,
             endpoint,
             client_base_path,
@@ -6217,6 +6652,7 @@ async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Result<()> {
                 HubTopologyMethod::PlanCreateStorageGateway,
                 HubTopologyMethod::CreateStorageGateway,
                 hub_types::PlanStorageGatewayMutationRequest {
+                    stable_id: topology_stable_id(stable_id.as_deref(), "storage-gateway"),
                     revision: Some(hub_types::StorageGatewayRevisionSpec {
                         storage_binding_id: binding.clone(),
                         endpoint_id,
@@ -6802,6 +7238,7 @@ async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
         HubRouteCmd::Add {
             access,
             surface_ref,
+            stable_id,
             spec,
             mutation,
         } => {
@@ -6822,10 +7259,9 @@ async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
                 HubTopologyMethod::PlanCreateRoute,
                 HubTopologyMethod::CreateRoute,
                 hub_types::PlanRouteMutationRequest {
+                    stable_id: topology_stable_id(stable_id.as_deref(), "delivery-route"),
                     spec: Some(route_spec(Some(surface_ref), spec, true)?),
-                    expected_resource_version: mutation.if_version.clone().unwrap_or_default(),
                     idempotency_key: new_idempotency_key(),
-                    update_mask: vec!["spec".into()],
                     ..Default::default()
                 },
                 mutation,
@@ -6945,6 +7381,7 @@ async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
             access,
             route,
             path,
+            access_class,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
             topology_read::<_, hub_types::ExplainRouteResponse>(
@@ -6954,6 +7391,7 @@ async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
                 &hub_types::ExplainRouteRequest {
                     route_id: route.clone(),
                     machine_path: path.clone().unwrap_or_default(),
+                    access_class: access_class.clone(),
                     ..Default::default()
                 },
             )
@@ -7006,6 +7444,7 @@ async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
         }
         HubRouteCmd::Canonical {
             access,
+            surface_ref,
             route,
             audience,
             mutation,
@@ -7022,6 +7461,7 @@ async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
                 HubTopologyMethod::PlanSetCanonicalRoute,
                 HubTopologyMethod::SetCanonicalRoute,
                 &hub_types::PlanCanonicalRouteRequest {
+                    surface: Some(surface_message(surface_ref)?),
                     audience: audience.clone(),
                     route_id: route.clone(),
                     expected_resource_version: mutation.if_version.clone().unwrap_or_default(),
@@ -8165,65 +8605,72 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
             manifest,
             root,
         } => {
-            let request = publication_manifest_request(manifest, registry)?;
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let mut pinned = match manifest {
+                Some(manifest) => {
+                    let request = publication_manifest_request(manifest, registry)?;
+                    pinned_publication_from_root(root, request)?
+                }
+                None => publication_from_root(root, registry)?,
+            };
+            let client = publication_client(access).await?;
+            bind_publication_parent(&client, &mut pinned.request).await?;
             let publication: hub_types::RegistryPublication = client
-                .call_topology(HubTopologyMethod::BeginRegistryPublication, &request)
+                .call_topology(HubTopologyMethod::BeginRegistryPublication, &pinned.request)
                 .await?;
             let publication_id = publication.publication_id.clone();
             let result: Result<hub_types::RegistryPublication> = async {
                 anyhow::ensure!(
-                    publication.objects.len() == request.objects.len(),
+                    publication.objects.len() == pinned.request.objects.len(),
                     "Hub publication response changed the declared object count"
                 );
-                for object in &publication.objects {
-                    let declared = request
-                        .objects
-                        .iter()
-                        .find(|declared| declared.path == object.path)
-                        .context("Hub publication response introduced an undeclared path")?;
-                    anyhow::ensure!(
-                        declared.sha256 == object.sha256
-                            && declared.byte_size == object.byte_size
-                            && declared.kind == object.kind
-                            && declared.media_type == object.media_type,
-                        "Hub publication response changed the identity of {}",
-                        object.path
-                    );
-                    let path = root.join(&object.path);
-                    verify_publication_file(&path, object)?;
-                    client
-                        .upload_publication_object(&object.upload_url, &path)
-                        .await
-                        .with_context(|| format!("uploading publication path {}", object.path))?;
-                }
-                client
+                let objects = publication_objects_in_upload_order(&publication);
+                let pointer_start =
+                    objects.partition_point(|object| object.kind != "mutable_pointer");
+                let (immutable_objects, pointer_objects) = objects.split_at(pointer_start);
+
+                // The response is an inventory, not an execution order. The
+                // Hub independently verifies each immutable object and opens
+                // the pointer gate only after the entire class is complete.
+                upload_publication_object_class(
+                    &client,
+                    access,
+                    &publication_id,
+                    &pinned.root,
+                    &pinned.request.objects,
+                    immutable_objects,
+                )
+                .await?;
+
+                // Mutable pointers are independent paths, and the Hub has
+                // already closed their write gate over the complete immutable
+                // set, so the same bounded uploader can publish this class.
+                upload_publication_object_class(
+                    &client,
+                    access,
+                    &publication_id,
+                    &pinned.root,
+                    &pinned.request.objects,
+                    pointer_objects,
+                )
+                .await?;
+                publication_client(access)
+                    .await?
                     .call_topology(
                         HubTopologyMethod::CommitRegistryPublication,
                         &hub_types::CommitRegistryPublicationRequest {
-                            publication_id: publication_id.clone(),
+                            publication_id: publication_id.to_string(),
                         },
                     )
                     .await
             }
             .await;
-            match result {
-                Ok(committed) => print_topology_message(printer, &committed),
-                Err(error) => {
-                    let abort = client
-                        .call_topology(
-                            HubTopologyMethod::AbortRegistryPublication,
-                            &hub_types::AbortRegistryPublicationRequest { publication_id },
-                        )
-                        .await;
-                    match abort {
-                        Ok(_) => Err(error.context("the incomplete publication was aborted")),
-                        Err(abort_error) => Err(error.context(format!(
-                            "aborting the incomplete publication also failed: {abort_error:#}"
-                        ))),
-                    }
-                }
-            }
+            result
+                .with_context(|| {
+                    format!(
+                        "publication {publication_id} remains resumable; rerun this exact upload or abort it explicitly"
+                    )
+                })
+                .and_then(|committed| print_topology_message(printer, &committed))
         }
         HubPublishCmd::Begin {
             access,
@@ -8288,6 +8735,757 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
     }
 }
 
+/// Uploads one publication class with bounded request concurrency.
+async fn upload_publication_object_class(
+    client: &HubClient,
+    access: &HubAccessArgs,
+    publication_id: &str,
+    root: &std::os::fd::OwnedFd,
+    inputs: &[hub_types::RegistryPublicationObjectInput],
+    objects: &[&hub_types::RegistryPublicationObject],
+) -> Result<()> {
+    const CONCURRENT_UPLOADS: usize = 32;
+    const SNAPSHOT_PERMIT_BYTES: u64 = 1024 * 1024;
+    const SNAPSHOT_BUDGET_PERMITS: u32 = 128;
+    const CONCURRENT_MULTIPART_UPLOADS: usize = 1;
+
+    let snapshot_budget = std::sync::Arc::new(tokio::sync::Semaphore::new(
+        SNAPSHOT_BUDGET_PERMITS as usize,
+    ));
+    let multipart_budget =
+        std::sync::Arc::new(tokio::sync::Semaphore::new(CONCURRENT_MULTIPART_UPLOADS));
+
+    stream::iter(objects.iter().copied().map(move |object| {
+        let declared = inputs.iter().find(|declared| declared.path == object.path);
+        let snapshot_budget = std::sync::Arc::clone(&snapshot_budget);
+        let multipart_budget = std::sync::Arc::clone(&multipart_budget);
+        async move {
+            let declared =
+                declared.context("Hub publication response introduced an undeclared path")?;
+            anyhow::ensure!(
+                declared.sha256 == object.sha256
+                    && declared.byte_size == object.byte_size
+                    && declared.kind == object.kind
+                    && declared.media_type == object.media_type,
+                "Hub publication response changed the identity of {}",
+                object.path
+            );
+            if object.verified {
+                return Ok(());
+            }
+
+            let byte_size = u64::try_from(object.byte_size)
+                .context("Hub publication response returned a negative object size")?;
+            let snapshot_permits = u32::try_from(
+                byte_size
+                    .div_ceil(SNAPSHOT_PERMIT_BYTES)
+                    .max(1)
+                    .min(u64::from(SNAPSHOT_BUDGET_PERMITS)),
+            )
+            .context("publication snapshot permit count overflowed")?;
+            // The permit is held across snapshotting and upload. Objects larger
+            // than the aggregate budget run exclusively; smaller snapshots can
+            // overlap only while their declared sizes fit the byte budget.
+            let _snapshot_permit = snapshot_budget
+                .acquire_many_owned(snapshot_permits)
+                .await
+                .context("publication snapshot budget closed unexpectedly")?;
+            // Multipart requests carry one bounded part buffer and load the
+            // publication coordinator's durable state. Serialize them so a
+            // large manifest cannot amplify coordinator memory use.
+            let _multipart_permit = if object.upload_url.is_empty() {
+                Some(
+                    multipart_budget
+                        .acquire_owned()
+                        .await
+                        .context("publication multipart budget closed unexpectedly")?,
+                )
+            } else {
+                None
+            };
+            upload_declared_publication_object(
+                client,
+                access,
+                publication_id,
+                root,
+                declared,
+                object,
+            )
+            .await
+        }
+    }))
+    .buffer_unordered(CONCURRENT_UPLOADS)
+    .try_collect::<Vec<()>>()
+    .await?;
+    Ok(())
+}
+
+async fn upload_declared_publication_object(
+    client: &HubClient,
+    access: &HubAccessArgs,
+    publication_id: &str,
+    root: &std::os::fd::OwnedFd,
+    declared: &hub_types::RegistryPublicationObjectInput,
+    object: &hub_types::RegistryPublicationObject,
+) -> Result<()> {
+    let file = snapshot_publication_object(root, declared)?;
+    if object.upload_url.is_empty() {
+        upload_publication_multipart(access, publication_id, object, file)
+            .await
+            .with_context(|| format!("uploading publication path {}", object.path))
+    } else {
+        client
+            .upload_publication_object(&object.upload_url, file, &object.path)
+            .await
+            .with_context(|| format!("uploading publication path {}", object.path))
+    }
+}
+
+async fn publication_client(access: &HubAccessArgs) -> Result<HubClient> {
+    if access.token.is_none() {
+        crate::commands::hub_auth::prepare_active_profile().await?;
+    }
+    hub_client(&access.hub, access.token.as_deref())
+}
+
+fn publication_objects_in_upload_order(
+    publication: &hub_types::RegistryPublication,
+) -> Vec<&hub_types::RegistryPublicationObject> {
+    let mut objects = publication.objects.iter().collect::<Vec<_>>();
+    objects.sort_by_key(|object| object.kind == "mutable_pointer");
+    objects
+}
+
+async fn upload_publication_multipart(
+    access: &HubAccessArgs,
+    publication_id: &str,
+    object: &hub_types::RegistryPublicationObject,
+    mut file: std::fs::File,
+) -> Result<()> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    const MAX_CLIENT_PART_BYTES: u64 = 20 * 1024 * 1024;
+    const MAX_CLIENT_PARTS: u64 = 10_000;
+
+    let admission: hub_types::BeginRegistryPublicationMultipartUploadResponse =
+        publication_client(access)
+            .await?
+            .call_topology(
+                HubTopologyMethod::BeginRegistryPublicationMultipartUpload,
+                &hub_types::BeginRegistryPublicationMultipartUploadRequest {
+                    publication_id: publication_id.into(),
+                    object_id: object.object_id,
+                },
+            )
+            .await?;
+    anyhow::ensure!(
+        admission.part_size > 0 && admission.part_size <= MAX_CLIENT_PART_BYTES,
+        "Hub returned an invalid publication multipart part size"
+    );
+    let expected_size = u64::try_from(object.byte_size)
+        .context("publication object has a negative declared size")?;
+    let part_count = expected_size.div_ceil(admission.part_size);
+    anyhow::ensure!(
+        part_count > 0 && part_count <= MAX_CLIENT_PARTS,
+        "publication object exceeds the client multipart part-count limit"
+    );
+    anyhow::ensure!(
+        matches!(admission.state.as_str(), "active" | "completing"),
+        "Hub returned an invalid publication multipart state"
+    );
+
+    if admission.state == "completing" {
+        let _: hub_types::RegistryPublicationMultipartUploadResponse = publication_client(access)
+            .await?
+            .complete_registry_publication_multipart_upload(
+                &hub_types::CompleteRegistryPublicationMultipartUploadRequest {
+                    upload_id: admission.upload_id,
+                    parts: Vec::new(),
+                },
+            )
+            .await
+            .context("resuming publication multipart completion")?;
+        return Ok(());
+    }
+    anyhow::ensure!(
+        admission.next_part_number > 0 && u64::from(admission.next_part_number) <= part_count + 1,
+        "Hub returned invalid multipart progress"
+    );
+    let first_part = admission.next_part_number;
+    let offset = if u64::from(first_part) == part_count + 1 {
+        expected_size
+    } else {
+        u64::from(first_part - 1)
+            .checked_mul(admission.part_size)
+            .context("publication multipart resume offset overflowed")?
+    };
+    file.seek(SeekFrom::Start(offset))?;
+
+    let result: Result<()> = async {
+        let mut remaining = expected_size - offset;
+        for part_number in first_part..=u32::try_from(part_count)? {
+            let size = remaining.min(admission.part_size);
+            let mut bytes = vec![0_u8; usize::try_from(size)?];
+            file.read_exact(&mut bytes).with_context(|| {
+                format!(
+                    "reading publication multipart part {part_number} for {}",
+                    object.path
+                )
+            })?;
+            let part = publication_client(access)
+                .await?
+                .upload_publication_part(
+                    &admission.part_upload_url,
+                    &admission.upload_id,
+                    part_number,
+                    bytes,
+                )
+                .await?;
+            anyhow::ensure!(
+                part.part_number == part_number,
+                "Hub returned a mismatched publication multipart part number"
+            );
+            remaining -= size;
+        }
+        anyhow::ensure!(remaining == 0, "publication multipart upload is incomplete");
+        Ok(())
+    }
+    .await;
+    result.context("multipart progress remains resumable")?;
+    publication_client(access)
+        .await?
+        .complete_registry_publication_multipart_upload(
+            &hub_types::CompleteRegistryPublicationMultipartUploadRequest {
+                upload_id: admission.upload_id.clone(),
+                parts: Vec::new(),
+            },
+        )
+        .await
+        .context("completing publication multipart upload")?;
+    Ok(())
+}
+
+async fn bind_publication_parent(
+    client: &HubClient,
+    request: &mut hub_types::BeginRegistryPublicationRequest,
+) -> Result<()> {
+    if !request.parent_publication_id.is_empty() {
+        return Ok(());
+    }
+    let publications: hub_types::ListRegistryPublicationsResponse = client
+        .call_topology(
+            HubTopologyMethod::ListRegistryPublications,
+            &hub_types::ListRegistryPublicationsRequest {
+                registry: request.registry.clone(),
+                state: "ready".into(),
+                page_size: 100,
+                page_token: String::new(),
+            },
+        )
+        .await?;
+    if let Some(existing) = publications
+        .publications
+        .iter()
+        .find(|publication| publication.generation == request.generation)
+    {
+        request.parent_publication_id = existing.parent_publication_id.clone();
+    } else if let Some(current) = publications.publications.first() {
+        request.parent_publication_id = current.publication_id.clone();
+    }
+    Ok(())
+}
+
+struct PinnedPublication {
+    request: hub_types::BeginRegistryPublicationRequest,
+    root: std::os::fd::OwnedFd,
+}
+
+const MAX_PUBLICATION_OBJECTS: usize = 10_000;
+const MAX_PUBLICATION_ENTRIES: usize = 20_000;
+const MAX_PUBLICATION_PATH_BYTES: usize = 512;
+const MAX_PUBLICATION_DIRECTORY_DEPTH: usize = 32;
+
+fn publication_from_root(root: &std::path::Path, registry: &str) -> Result<PinnedPublication> {
+    use sha2::{Digest as _, Sha256};
+
+    let mut objects = std::collections::BTreeMap::new();
+    let mut entries = 0;
+    let root = open_publication_root(root)?;
+    collect_publication_objects(&root, "", 0, &mut entries, &mut objects)?;
+    validate_publication_pack_indexes(&root, &objects)?;
+    validate_publication_nar_urls(&root, &objects)?;
+    let refs_object = objects
+        .get("info/refs")
+        .context("publication surface has no info/refs")?;
+    anyhow::ensure!(
+        refs_object.byte_size <= 4 * 1024 * 1024,
+        "publication info/refs exceeds its 4194304 byte limit"
+    );
+    let refs_file = snapshot_publication_object(&root, refs_object)?;
+    let refs = read_pinned_publication_file(refs_file, "info/refs", 4 * 1024 * 1024)?;
+    let refs_digest = format!("{:x}", Sha256::digest(&refs));
+    let head_object = objects
+        .get("HEAD")
+        .context("publication surface has no HEAD")?;
+    anyhow::ensure!(
+        head_object.byte_size <= 4096,
+        "publication HEAD exceeds its 4096 byte limit"
+    );
+    let head_file = snapshot_publication_object(&root, head_object)?;
+    let head = read_pinned_publication_file(head_file, "HEAD", 4096)?;
+    let default_commit = publication_default_commit(&head, &refs)?;
+    let objects = publication_inputs(&objects)?;
+    let generation = publication_generation(&objects)?;
+
+    Ok(PinnedPublication {
+        request: hub_types::BeginRegistryPublicationRequest {
+            registry: registry.into(),
+            generation,
+            refs_digest,
+            default_commit,
+            parent_publication_id: String::new(),
+            objects,
+        },
+        root,
+    })
+}
+
+fn validate_publication_pack_indexes(
+    root: &std::os::fd::OwnedFd,
+    objects: &std::collections::BTreeMap<String, hub_types::RegistryPublicationObjectInput>,
+) -> Result<()> {
+    for path in objects
+        .keys()
+        .filter(|path| aos_package::registry::surface_keymap::is_git_pack_index_path(path))
+    {
+        let companion = aos_package::registry::pack_index::companion_pack_path(path)
+            .with_context(|| format!("deriving companion pack path for {path}"))?;
+        anyhow::ensure!(
+            objects.contains_key(&companion),
+            "publication pack index has no companion pack: {path}"
+        );
+        let index_file = snapshot_publication_object(root, &objects[path])?;
+        let index = read_pinned_publication_file(
+            index_file,
+            path,
+            aos_package::registry::pack_index::MAX_PUBLISHED_PACK_INDEX_BYTES,
+        )?;
+        let pack_object = &objects[&companion];
+        let pack_file = snapshot_publication_object(root, pack_object)?;
+        let pack = read_pinned_publication_file(
+            pack_file,
+            &companion,
+            aos_package::registry::pack_index::MAX_PUBLISHED_PACK_BYTES,
+        )?;
+        aos_package::registry::pack_index::validate_against_pack(path, &index, &pack)
+            .with_context(|| format!("validating publication pack/index pair {path}"))?;
+    }
+    Ok(())
+}
+
+fn validate_publication_nar_urls(
+    root: &std::os::fd::OwnedFd,
+    objects: &std::collections::BTreeMap<String, hub_types::RegistryPublicationObjectInput>,
+) -> Result<()> {
+    for (path, object) in objects
+        .iter()
+        .filter(|(path, _)| path.ends_with(".narinfo"))
+    {
+        anyhow::ensure!(
+            object.byte_size <= 1024 * 1024,
+            "publication narinfo exceeds its 1048576 byte limit: {path}"
+        );
+        let file = snapshot_publication_object(root, object)?;
+        let bytes = read_pinned_publication_file(file, path, 1024 * 1024)?;
+        let text = std::str::from_utf8(&bytes)
+            .with_context(|| format!("publication narinfo is not UTF-8: {path}"))?;
+        let narinfo = aos_core::nar::info::parse(text)
+            .with_context(|| format!("parsing publication narinfo {path}"))?;
+        let file_hash = narinfo
+            .file_hash
+            .as_deref()
+            .with_context(|| format!("publication narinfo has no FileHash: {path}"))?;
+        let compression = match narinfo.compression.as_str() {
+            "none" => aos_core::nar::cache::NarCompression::None,
+            "zstd" => aos_core::nar::cache::NarCompression::Zstd,
+            "xz" => aos_core::nar::cache::NarCompression::Xz,
+            value => {
+                anyhow::bail!("publication narinfo uses unsupported compression '{value}': {path}")
+            }
+        };
+        let expected_url =
+            aos_core::nar::cache::nar_url(&narinfo.store_path, file_hash, compression)
+                .with_context(|| format!("publication narinfo FileHash is not SHA-256: {path}"))?;
+        anyhow::ensure!(
+            narinfo.url == expected_url,
+            "publication narinfo URL does not identify its compressed FileHash: {path}"
+        );
+        let nar_object = objects.get(&expected_url).with_context(|| {
+            format!("publication narinfo names missing NAR object {expected_url}: {path}")
+        })?;
+        let expected_sha256 = aos_core::nar::cache::canonical_sha256_hex(file_hash)
+            .with_context(|| format!("publication narinfo FileHash is not SHA-256: {path}"))?;
+        let expected_size = i64::try_from(
+            narinfo
+                .file_size
+                .with_context(|| format!("publication narinfo has no FileSize: {path}"))?,
+        )
+        .with_context(|| format!("publication narinfo FileSize is too large: {path}"))?;
+        anyhow::ensure!(
+            nar_object.sha256 == expected_sha256 && nar_object.byte_size == expected_size,
+            "publication NAR object does not match narinfo FileHash/FileSize: {path}"
+        );
+    }
+    Ok(())
+}
+
+fn collect_publication_objects(
+    directory: &std::os::fd::OwnedFd,
+    relative_directory: &str,
+    depth: usize,
+    entries: &mut usize,
+    objects: &mut std::collections::BTreeMap<String, hub_types::RegistryPublicationObjectInput>,
+) -> Result<()> {
+    let mut names = Vec::new();
+    for entry in rustix::fs::Dir::read_from(directory)? {
+        let entry = entry?;
+        let name = entry
+            .file_name()
+            .to_str()
+            .context("publication path is not valid UTF-8")?
+            .to_string();
+        if name != "." && name != ".." {
+            *entries = entries
+                .checked_add(1)
+                .context("publication entry count overflowed")?;
+            anyhow::ensure!(
+                *entries <= MAX_PUBLICATION_ENTRIES,
+                "publication surface exceeds the {MAX_PUBLICATION_ENTRIES} entry limit"
+            );
+            names.push(name);
+        }
+    }
+    names.sort();
+    for name in names {
+        let descriptor = rustix::fs::openat(
+            directory,
+            name.as_str(),
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC | rustix::fs::OFlags::NOFOLLOW,
+            rustix::fs::Mode::empty(),
+        )
+        .with_context(|| format!("opening publication path {name} without following links"))?;
+        let file = std::fs::File::from(descriptor);
+        let metadata = file
+            .metadata()
+            .with_context(|| format!("reading publication metadata {name}"))?;
+        let relative = if relative_directory.is_empty() {
+            name.clone()
+        } else {
+            format!("{relative_directory}/{name}")
+        };
+        anyhow::ensure!(
+            relative.len() <= MAX_PUBLICATION_PATH_BYTES,
+            "publication path exceeds the {MAX_PUBLICATION_PATH_BYTES} byte limit: {relative}"
+        );
+        if metadata.is_dir() {
+            anyhow::ensure!(
+                depth < MAX_PUBLICATION_DIRECTORY_DEPTH,
+                "publication surface exceeds the {MAX_PUBLICATION_DIRECTORY_DEPTH} directory depth limit"
+            );
+            let descriptor = file.into();
+            collect_publication_objects(&descriptor, &relative, depth + 1, entries, objects)?;
+            continue;
+        }
+        anyhow::ensure!(
+            metadata.is_file(),
+            "publication surface contains non-file {relative}"
+        );
+        anyhow::ensure!(
+            aos_package::registry::surface_keymap::is_machine_path(&relative),
+            "publication surface contains unsupported path {relative}"
+        );
+        anyhow::ensure!(
+            objects.len() < MAX_PUBLICATION_OBJECTS,
+            "publication surface exceeds the {MAX_PUBLICATION_OBJECTS} object limit"
+        );
+        anyhow::ensure!(
+            objects
+                .insert(relative.clone(), publication_input(&relative, file)?)
+                .is_none(),
+            "publication surface contains duplicate path {relative}"
+        );
+    }
+    Ok(())
+}
+
+fn open_publication_root(path: &std::path::Path) -> Result<std::os::fd::OwnedFd> {
+    let descriptor = rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::DIRECTORY,
+        rustix::fs::Mode::empty(),
+    )
+    .with_context(|| {
+        format!(
+            "opening publication root {} without following links",
+            path.display()
+        )
+    })?;
+    let metadata = std::fs::File::from(descriptor.try_clone()?).metadata()?;
+    anyhow::ensure!(metadata.is_dir(), "publication root is not a directory");
+    Ok(descriptor)
+}
+
+fn publication_inputs(
+    objects: &std::collections::BTreeMap<String, hub_types::RegistryPublicationObjectInput>,
+) -> Result<Vec<hub_types::RegistryPublicationObjectInput>> {
+    anyhow::ensure!(!objects.is_empty(), "publication surface is empty");
+    Ok(objects.values().cloned().collect())
+}
+
+fn publication_input(
+    relative: &str,
+    mut file: std::fs::File,
+) -> Result<hub_types::RegistryPublicationObjectInput> {
+    use std::io::{Seek as _, SeekFrom};
+
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("reading pinned publication object {relative}"))?;
+    if aos_package::registry::surface_keymap::is_loose_git_object_path(relative) {
+        anyhow::ensure!(
+            metadata.len() <= aos_package::registry::MAX_PUBLISHED_LOOSE_OBJECT_BYTES,
+            "loose Git object {relative} exceeds the {}-byte publication limit",
+            aos_package::registry::MAX_PUBLISHED_LOOSE_OBJECT_BYTES
+        );
+    }
+    if aos_package::registry::surface_keymap::is_git_pack_index_path(relative) {
+        let bytes = read_pinned_publication_file(
+            file.try_clone()?,
+            relative,
+            aos_package::registry::pack_index::MAX_PUBLISHED_PACK_INDEX_BYTES,
+        )?;
+        aos_package::registry::pack_index::validate(relative, &bytes)
+            .with_context(|| format!("validating publication pack index {relative}"))?;
+    }
+    if aos_package::registry::surface_keymap::is_git_pack_path(relative) {
+        anyhow::ensure!(
+            metadata.len() <= aos_package::registry::pack_index::MAX_PUBLISHED_PACK_BYTES,
+            "Git pack {relative} exceeds the {}-byte publication limit",
+            aos_package::registry::pack_index::MAX_PUBLISHED_PACK_BYTES
+        );
+    }
+    file.seek(SeekFrom::Start(0))?;
+    let digest = copy_and_hash_exact(&mut file, &mut std::io::sink(), metadata.len(), relative)?;
+    let after = file
+        .metadata()
+        .with_context(|| format!("rechecking pinned publication object {relative}"))?;
+    anyhow::ensure!(
+        metadata.len() == after.len() && metadata.modified().ok() == after.modified().ok(),
+        "publication object changed while it was hashed: {relative}"
+    );
+    Ok(hub_types::RegistryPublicationObjectInput {
+        path: relative.to_string(),
+        sha256: digest,
+        byte_size: i64::try_from(metadata.len()).context("publication object is too large")?,
+        kind: if aos_package::registry::surface_keymap::cache_control(relative)
+            == aos_package::registry::surface_keymap::MUTABLE_CACHE_CONTROL
+        {
+            "mutable_pointer"
+        } else {
+            "immutable"
+        }
+        .into(),
+        media_type: aos_package::registry::surface_keymap::content_type(relative).into(),
+    })
+}
+
+fn publication_generation(objects: &[hub_types::RegistryPublicationObjectInput]) -> Result<String> {
+    use sha2::{Digest as _, Sha256};
+
+    let canonical = objects
+        .iter()
+        .map(|object| {
+            (
+                &object.path,
+                &object.sha256,
+                object.byte_size,
+                &object.kind,
+                &object.media_type,
+            )
+        })
+        .collect::<Vec<_>>();
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&canonical)?)
+    ))
+}
+
+fn pinned_publication_from_root(
+    root: &std::path::Path,
+    mut request: hub_types::BeginRegistryPublicationRequest,
+) -> Result<PinnedPublication> {
+    let mut objects = std::collections::BTreeMap::new();
+    let mut entries = 0;
+    let root = open_publication_root(root)?;
+    collect_publication_objects(&root, "", 0, &mut entries, &mut objects)?;
+    let actual = publication_inputs(&objects)?;
+    request
+        .objects
+        .sort_by(|left, right| left.path.cmp(&right.path));
+    anyhow::ensure!(
+        request
+            .objects
+            .windows(2)
+            .all(|objects| objects[0].path != objects[1].path),
+        "publication manifest contains duplicate paths"
+    );
+    let declared = serde_json::to_vec(&request.objects)?;
+    let actual = serde_json::to_vec(&actual)?;
+    anyhow::ensure!(
+        declared == actual,
+        "publication manifest does not exactly match the pinned surface"
+    );
+    Ok(PinnedPublication { request, root })
+}
+
+fn read_pinned_publication_file(
+    mut file: std::fs::File,
+    label: &str,
+    maximum_size: u64,
+) -> Result<Vec<u8>> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    let size = file.metadata()?.len();
+    anyhow::ensure!(
+        size <= maximum_size,
+        "publication control object exceeds its {maximum_size} byte limit: {label}"
+    );
+    file.seek(SeekFrom::Start(0))?;
+    let mut bytes = vec![0_u8; usize::try_from(size)?];
+    file.read_exact(&mut bytes)
+        .with_context(|| format!("reading pinned publication object {label}"))?;
+    let mut excess = [0_u8; 1];
+    anyhow::ensure!(
+        file.read(&mut excess)? == 0,
+        "publication control object grew while it was read: {label}"
+    );
+    Ok(bytes)
+}
+
+fn open_publication_object(root: &std::os::fd::OwnedFd, relative: &str) -> Result<std::fs::File> {
+    let mut directory = root.try_clone()?;
+    let mut components = relative.split('/').peekable();
+    while let Some(component) = components.next() {
+        anyhow::ensure!(
+            !component.is_empty() && component != "." && component != "..",
+            "publication path is not a portable relative path: {relative}"
+        );
+        let mut flags =
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC | rustix::fs::OFlags::NOFOLLOW;
+        if components.peek().is_some() {
+            flags |= rustix::fs::OFlags::DIRECTORY;
+        }
+        let descriptor =
+            rustix::fs::openat(&directory, component, flags, rustix::fs::Mode::empty())
+                .with_context(|| {
+                    format!("opening publication path {relative} without following links")
+                })?;
+        if components.peek().is_some() {
+            directory = descriptor;
+        } else {
+            let file = std::fs::File::from(descriptor);
+            anyhow::ensure!(
+                file.metadata()?.is_file(),
+                "publication object is not a file"
+            );
+            return Ok(file);
+        }
+    }
+    anyhow::bail!("publication object path is empty")
+}
+
+fn snapshot_publication_object(
+    root: &std::os::fd::OwnedFd,
+    expected: &hub_types::RegistryPublicationObjectInput,
+) -> Result<std::fs::File> {
+    use std::io::{Seek as _, SeekFrom};
+
+    let mut source = open_publication_object(root, &expected.path)?;
+    let mut snapshot = tempfile::tempfile().context("creating publication object snapshot")?;
+    let expected_size = u64::try_from(expected.byte_size)
+        .context("publication object has a negative declared size")?;
+    let digest = copy_and_hash_exact(&mut source, &mut snapshot, expected_size, &expected.path)?;
+    anyhow::ensure!(
+        digest == expected.sha256,
+        "publication object changed after inventory: {}",
+        expected.path
+    );
+    snapshot.seek(SeekFrom::Start(0))?;
+    Ok(snapshot)
+}
+
+fn copy_and_hash_exact(
+    source: &mut impl std::io::Read,
+    destination: &mut impl std::io::Write,
+    expected_size: u64,
+    label: &str,
+) -> Result<String> {
+    use sha2::{Digest as _, Sha256};
+
+    let mut digest = Sha256::new();
+    let mut remaining = expected_size;
+    let mut buffer = [0_u8; 64 * 1024];
+    while remaining > 0 {
+        let limit = usize::try_from(remaining.min(buffer.len() as u64))?;
+        let count = source
+            .read(&mut buffer[..limit])
+            .with_context(|| format!("reading publication object {label}"))?;
+        anyhow::ensure!(
+            count != 0,
+            "publication object is shorter than its declared size: {label}"
+        );
+        destination
+            .write_all(&buffer[..count])
+            .with_context(|| format!("copying publication object {label}"))?;
+        digest.update(&buffer[..count]);
+        remaining -= u64::try_from(count)?;
+    }
+    anyhow::ensure!(
+        source
+            .read(&mut buffer[..1])
+            .with_context(|| format!("checking publication object size {label}"))?
+            == 0,
+        "publication object is longer than its declared size: {label}"
+    );
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn publication_default_commit(head: &[u8], refs: &[u8]) -> Result<String> {
+    let head = std::str::from_utf8(head)
+        .context("HEAD is not UTF-8")?
+        .trim();
+    let commit = if let Some(reference) = head.strip_prefix("ref: ") {
+        let refs = std::str::from_utf8(refs).context("info/refs is not UTF-8")?;
+        refs.lines()
+            .filter_map(|line| line.split_once('\t'))
+            .find_map(|(oid, name)| (name == reference).then_some(oid))
+            .with_context(|| format!("HEAD reference {reference} is absent from info/refs"))?
+    } else {
+        head
+    };
+    anyhow::ensure!(
+        commit.len() == 64
+            && commit
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "publication HEAD does not resolve to a lowercase SHA-256 commit"
+    );
+    Ok(commit.into())
+}
+
 fn publication_manifest_request(
     manifest: &std::path::Path,
     registry: &str,
@@ -8301,48 +9499,6 @@ fn publication_manifest_request(
     }
     request.registry = registry.to_string();
     Ok(request)
-}
-
-fn verify_publication_file(
-    path: &std::path::Path,
-    object: &hub_types::RegistryPublicationObject,
-) -> Result<()> {
-    use sha2::{Digest as _, Sha256};
-    use std::io::Read as _;
-
-    let mut file = std::fs::File::open(path)
-        .with_context(|| format!("opening publication object {}", path.display()))?;
-    let size = file
-        .metadata()
-        .with_context(|| format!("reading publication object metadata {}", path.display()))?
-        .len();
-    anyhow::ensure!(
-        i64::try_from(size).ok() == Some(object.byte_size),
-        "publication object {} has size {}, expected {}",
-        object.path,
-        size,
-        object.byte_size
-    );
-    let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 1024 * 1024];
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .with_context(|| format!("hashing publication object {}", path.display()))?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
-    }
-    let actual = format!("{:x}", digest.finalize());
-    anyhow::ensure!(
-        actual == object.sha256,
-        "publication object {} has SHA-256 {}, expected {}",
-        object.path,
-        actual,
-        object.sha256
-    );
-    Ok(())
 }
 
 async fn config(printer: &Printer, command: &HubConfigCmd) -> Result<()> {

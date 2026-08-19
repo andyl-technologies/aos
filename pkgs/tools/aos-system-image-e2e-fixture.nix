@@ -18,6 +18,7 @@
   sbsigntools,
   secure-boot-test-keys,
   systemd,
+  zstd,
 }: let
   ukiImage = mkDerivation {
     pname = "aos-hub-e2e-uki";
@@ -49,19 +50,19 @@
     pname = "aos-hub-e2e-image-raw";
     version = "2026.3.0";
     src = null;
-    buildDeps = [coreutils dosfstools gptfdisk jq mtools ukiImage];
+    buildDeps = [coreutils dosfstools gptfdisk jq mtools ukiImage zstd];
     phases = [
       {
         name = "build";
         script = ''
           mkdir -p "$out"
-          filename=aos-e2e.img
-          truncate -s 32M "$out/$filename"
+          filename=aos-e2e.img.zst
+          truncate -s 64M image.raw
           ${gptfdisk}/sbin/sgdisk \
-            --new=1:2048:18431 --typecode=1:ef00 --change-name=1:esp \
-            --new=2:18432:65502 --typecode=2:8304 --change-name=2:root-a \
-            "$out/$filename"
-          truncate -s 8M esp.fat
+            --new=1:2048:71679 --typecode=1:ef00 --change-name=1:esp \
+            --new=2:71680:129023 --typecode=2:8304 --change-name=2:root-a \
+            image.raw
+          truncate -s 34M esp.fat
           ${dosfstools}/sbin/mkfs.fat esp.fat
           ${mtools}/bin/mmd -i esp.fat ::/EFI ::/EFI/Linux ::/EFI/systemd
           ${mtools}/bin/mcopy -i esp.fat \
@@ -70,10 +71,12 @@
           ${mtools}/bin/mcopy -i esp.fat \
             '${ukiImage}/systemd-bootx64.efi' \
             ::/EFI/systemd/systemd-bootx64.efi
-          dd if=esp.fat of="$out/$filename" bs=512 seek=2048 conv=notrunc 2>/dev/null
+          dd if=esp.fat of=image.raw bs=512 seek=2048 conv=notrunc 2>/dev/null
+          logical_sha256=$(sha256sum image.raw | cut -d ' ' -f1)
+          rootfs_sha256=$(dd if=image.raw bs=512 skip=71680 count=57344 2>/dev/null | sha256sum | cut -d ' ' -f1)
+          zstd -19 -T1 --no-progress image.raw -o "$out/$filename"
           image_sha256=$(sha256sum "$out/$filename" | cut -d ' ' -f1)
           image_size=$(stat -c %s "$out/$filename")
-          rootfs_sha256=$(dd if="$out/$filename" bs=512 skip=18432 count=47071 2>/dev/null | sha256sum | cut -d ' ' -f1)
           uki='${ukiImage}/systemd-bootx64.efi'
           uki_sha256=$(sha256sum "$uki" | cut -d ' ' -f1)
           uki_size=$(stat -c %s "$uki")
@@ -82,8 +85,8 @@
             --arg filename "$filename" \
             --arg sha256 "$image_sha256" \
             --arg objectKey "images/sha256/$image_sha256/$filename" \
-            --arg mediaType application/vnd.aos.disk-image.raw \
-            --arg logicalDiskSha256 "$image_sha256" \
+            --arg mediaType application/vnd.aos.disk-image.raw+zstd \
+            --arg logicalDiskSha256 "$logical_sha256" \
             --arg rootfsSha256 "$rootfs_sha256" \
             --arg ukiSha256 "$uki_sha256" \
             --argjson byteSize "$image_size" \
@@ -92,17 +95,18 @@
             '{schemaVersion: 1, name: "aos-system", version: "2026.3.0",
               architecture: "x86_64", platform: "x86_64-linux",
               format: $format, filename: $filename, objectKey: $objectKey,
-              mediaType: $mediaType, compression: "none", byteSize: $byteSize,
-              virtualSizeBytes: $byteSize, sha256: $sha256,
+              mediaType: $mediaType, compression: "zstd", byteSize: $byteSize,
+              virtualSizeBytes: 67108864, sha256: $sha256,
               logicalDiskSha256: $logicalDiskSha256,
               rootfsSha256: $rootfsSha256,
               compatibleTargets: $targets, partitionTable: "gpt",
+              artifactBudgetsMiB: {root: 28, verity: 1, initrd: 1, uki: 1, esp: 34, runtimeClosure: 1, download: 64},
               kernelParams: "",
               partitions: [
                 {number: 1, label: "esp", type: "esp", filesystem: "vfat",
-                  sizeMiB: 8, offsetBytes: 1048576, sizeBytes: 8388608},
+                  sizeMiB: 34, offsetBytes: 1048576, sizeBytes: 35651584},
                 {number: 2, label: "root-a", type: "root", filesystem: "fake",
-                  sizeMiB: 22, offsetBytes: 9437184, sizeBytes: 24100352}],
+                  sizeMiB: 28, offsetBytes: 36700160, sizeBytes: 29360128}],
               esp: {uki: "EFI/Linux/systemd-bootx64.efi",
                 sdBoot: "EFI/systemd/systemd-bootx64.efi"},
               uki: {filename: "systemd-bootx64.efi",
@@ -117,18 +121,19 @@
     pname = "aos-hub-e2e-image-qcow2";
     version = "2026.3.0";
     src = null;
-    buildDeps = [coreutils jq qemu rawImage ukiImage];
+    buildDeps = [coreutils jq qemu rawImage ukiImage zstd];
     phases = [
       {
         name = "build";
         script = ''
           mkdir -p "$out"
           filename=aos-e2e.qcow2
-          ${qemu}/bin/qemu-img convert -f raw -O qcow2 '${rawImage}/aos-e2e.img' "$out/$filename"
+          zstd -d --no-progress '${rawImage}/aos-e2e.img.zst' -o image.raw
+          ${qemu}/bin/qemu-img convert -f raw -O qcow2 image.raw "$out/$filename"
           image_sha256=$(sha256sum "$out/$filename" | cut -d ' ' -f1)
           image_size=$(stat -c %s "$out/$filename")
-          logical_sha256=$(sha256sum '${rawImage}/aos-e2e.img' | cut -d ' ' -f1)
-          rootfs_sha256=$(dd if='${rawImage}/aos-e2e.img' bs=512 skip=18432 count=47071 2>/dev/null | sha256sum | cut -d ' ' -f1)
+          logical_sha256=$(sha256sum image.raw | cut -d ' ' -f1)
+          rootfs_sha256=$(dd if=image.raw bs=512 skip=71680 count=57344 2>/dev/null | sha256sum | cut -d ' ' -f1)
           uki='${ukiImage}/systemd-bootx64.efi'
           uki_sha256=$(sha256sum "$uki" | cut -d ' ' -f1)
           uki_size=$(stat -c %s "$uki")
@@ -143,14 +148,15 @@
               architecture: "x86_64", platform: "x86_64-linux", format: "qcow2",
               filename: $filename, objectKey: $objectKey,
               mediaType: "application/vnd.aos.disk-image.qcow2", compression: "none",
-              byteSize: $byteSize, virtualSizeBytes: 33554432, sha256: $sha256,
+              byteSize: $byteSize, virtualSizeBytes: 67108864, sha256: $sha256,
               logicalDiskSha256: $logicalDiskSha256, rootfsSha256: $rootfsSha256,
               compatibleTargets: ["qemu-kvm", "openstack"], partitionTable: "gpt",
+              artifactBudgetsMiB: {root: 28, verity: 1, initrd: 1, uki: 1, esp: 34, runtimeClosure: 1, download: 64},
               kernelParams: "", partitions: [
                 {number: 1, label: "esp", type: "esp", filesystem: "vfat",
-                  sizeMiB: 8, offsetBytes: 1048576, sizeBytes: 8388608},
+                  sizeMiB: 34, offsetBytes: 1048576, sizeBytes: 35651584},
                 {number: 2, label: "root-a", type: "root", filesystem: "fake",
-                  sizeMiB: 22, offsetBytes: 9437184, sizeBytes: 24100352}],
+                  sizeMiB: 28, offsetBytes: 36700160, sizeBytes: 29360128}],
               esp: {uki: "EFI/Linux/systemd-bootx64.efi",
                 sdBoot: "EFI/systemd/systemd-bootx64.efi"},
               uki: {filename: "systemd-bootx64.efi",
@@ -234,7 +240,7 @@ in
             --cache-url http://127.0.0.1/aos-image-e2e-cache \
             --upload-url "file://$destination/surface"
           printf '%s\n' "$public_key" > "$destination/trust-key"
-          printf '%s\n' '${rawImage}/aos-e2e.img' > "$destination/raw-path"
+          printf '%s\n' '${rawImage}/aos-e2e.img.zst' > "$destination/raw-path"
           printf '%s\n' '${qcow2Image}/aos-e2e.qcow2' > "$destination/qcow2-path"
           test -s "$destination/surface/info/refs"
           test -s "$destination/surface/HEAD"
@@ -251,4 +257,8 @@ in
         '';
       }
     ];
+    meta = {
+      description = "End-to-end system image publication fixture";
+      license = "Apache-2.0";
+    };
   }

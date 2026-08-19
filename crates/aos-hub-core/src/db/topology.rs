@@ -4516,12 +4516,21 @@ mod tests {
             tls_configuration: "{\"provider\":\"external\",\"certificate_ref\":\"secret:test\",\"require_client_certificate\":false}".to_string(),
             probe_configuration: "{\"provider\":\"native_file\",\"signerSecretRef\":\"test-probe-key\",\"publicKey\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}".to_string(),
         };
+        let domain = db
+            .create_delivery_domain(
+                &org.stable_id,
+                Some(org_id),
+                "route-probes.example.test",
+                "plan:route-probe-domain",
+            )
+            .await
+            .unwrap();
         db.create_delivery_endpoint(
             "endpoint:route-probes",
             &org.stable_id,
             Some(org_id),
             "https",
-            &crate::db::DeliveryEndpointHostInput::Ipv4([192, 0, 2, 44]),
+            &crate::db::DeliveryEndpointHostInput::Domain(domain.stable_id),
             443,
             "instance:public",
             &endpoint_spec,
@@ -4563,7 +4572,7 @@ mod tests {
             db,
             registry_id,
             spec,
-            "https://192.0.2.44/cache".to_string(),
+            "https://route-probes.example.test/cache".to_string(),
             [7_u8; 32],
         )
     }
@@ -4748,6 +4757,201 @@ mod tests {
             .get::<i64>(0)
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn domain_probe_completion_promotes_endpoint_and_requeues_routes_atomically() {
+        let (db, registry_id, spec, url, reservation_digest) = route_fixture().await;
+        let route = db
+            .create_delivery_route(
+                "route:endpoint-ready",
+                SurfaceTarget::Registry(registry_id),
+                &spec,
+                &url,
+                1,
+                &reservation_digest,
+                &[(1, reservation_digest.to_vec())],
+                None,
+                "test",
+            )
+            .await
+            .unwrap();
+        let route_digest = route.configuration_digest.clone().unwrap();
+        let initial_route_operation =
+            automatic_route_probe_operation_id("create", &route.id, 1, &route_digest);
+        let now = unix_now();
+        let initial_route_operation = db
+            .topology_operation(&initial_route_operation)
+            .await
+            .unwrap()
+            .unwrap();
+        let claimed_route_operation = db
+            .claim_delivery_route_probe_operation(
+                &initial_route_operation.operation_id,
+                initial_route_operation.resource_version,
+                120,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed_route_operation.state, "running");
+
+        let domain = db
+            .delivery_domain_by_hostname("route-probes.example.test")
+            .await
+            .unwrap()
+            .unwrap();
+        let domain_operation_id = "domain-probe:endpoint-ready";
+        let operation = db
+            .create_topology_operation(&crate::db::NewTopologyOperation {
+                operation_id: domain_operation_id.to_string(),
+                operation_kind: "domain_probe".to_string(),
+                control_permission: crate::domain::Permission::DomainManage,
+                targets: vec![crate::db::NewTopologyOperationTarget {
+                    role: "primary".to_string(),
+                    target: crate::db::NewTopologyOperationTargetRef::Domain(
+                        domain.stable_id.clone(),
+                    ),
+                    generation_key: domain.resource_version,
+                    configuration_digest: String::new(),
+                }],
+                detail_json: "{}".to_string(),
+                progress_total: Some(1),
+            })
+            .await
+            .unwrap();
+        let claimed = db
+            .claim_domain_probe_operation(&operation.operation_id, operation.resource_version, 120)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let retry_operation_id = sha256_hex(format!(
+            "delivery-route-endpoint-ready-v1\0{}\0{}\0{}\0{}",
+            domain_operation_id, route.id, 1, route_digest
+        ));
+        db.create_topology_operation(&crate::db::NewTopologyOperation {
+            operation_id: retry_operation_id.clone(),
+            operation_kind: "test_collision".to_string(),
+            control_permission: crate::domain::Permission::DomainManage,
+            targets: vec![crate::db::NewTopologyOperationTarget {
+                role: "primary".to_string(),
+                target: crate::db::NewTopologyOperationTargetRef::Domain(domain.stable_id.clone()),
+                generation_key: domain.resource_version,
+                configuration_digest: String::new(),
+            }],
+            detail_json: "{}".to_string(),
+            progress_total: Some(1),
+        })
+        .await
+        .unwrap();
+        db.complete_delivery_domain_probe(
+            &claimed.operation_id,
+            claimed.resource_version,
+            &domain.stable_id,
+            "unconfigured",
+            "unconfigured",
+            None,
+            domain.resource_version,
+            "{}",
+            &"a".repeat(64),
+            "test-controller",
+            now,
+            &spec.endpoint_id,
+            spec.endpoint_generation,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            db.delivery_domain(&domain.stable_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .resource_version,
+            domain.resource_version
+        );
+        assert_eq!(
+            db.delivery_endpoint(&spec.endpoint_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .resource_version,
+            1
+        );
+        db.backend
+            .execute(
+                "DELETE FROM topology_operations WHERE operation_id = ?1",
+                &vals![retry_operation_id],
+            )
+            .await
+            .unwrap();
+
+        let completed = db
+            .complete_delivery_domain_probe(
+                &claimed.operation_id,
+                claimed.resource_version,
+                &domain.stable_id,
+                "unconfigured",
+                "unconfigured",
+                None,
+                domain.resource_version,
+                "{}",
+                &"a".repeat(64),
+                "test-controller",
+                now,
+                &spec.endpoint_id,
+                spec.endpoint_generation,
+            )
+            .await
+            .unwrap();
+        assert_eq!(completed.resource_version, domain.resource_version + 1);
+        let endpoint = db
+            .delivery_endpoint(&spec.endpoint_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(endpoint.resource_version, 2);
+        let observation = db
+            .delivery_endpoint_observation(&spec.endpoint_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(observation.state, "healthy");
+        assert_eq!(
+            observation.observed_generation,
+            Some(spec.endpoint_generation)
+        );
+        assert_eq!(
+            db.backend
+                .execute(
+                    "UPDATE topology_operations
+                     SET state = 'failed', finished_at = ?2,
+                         error = 'probe used the pre-promotion endpoint observation'
+                     WHERE operation_id = ?1 AND state = 'running'",
+                    &vals![claimed_route_operation.operation_id, now],
+                )
+                .await
+                .unwrap(),
+            1
+        );
+
+        let pending = db
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM topology_operations
+                 WHERE operation_kind = 'delivery_route_probe'
+                   AND primary_target_stable_id = ?1
+                   AND primary_target_generation_key = ?2
+                   AND primary_target_configuration_digest = ?3
+                   AND state = 'pending'",
+                &vals![route.id, 1, route_digest],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get::<i64>(0)
+            .unwrap();
+        assert_eq!(pending, 1);
     }
 
     #[tokio::test]

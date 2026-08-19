@@ -13,8 +13,7 @@
 //! - [`classify`] — the fragile string parse of stock-Nix throw strings into
 //!   the [`EvalClass`] seam (build-spec §2).
 //! - [`stock`] — the production [`NixEvaluator`] that renders `entry.nix`,
-//!   shells out to `nix-instantiate --store dummy:// --eval --strict --json
-//!   --pure-eval
+//!   shells out to `nix-instantiate --eval --strict --json --pure-eval
 //!   --option restrict-eval true
 //!   --option allow-import-from-derivation false` with an empty environment,
 //!   and classifies the result, plus the registry-backed
@@ -1232,6 +1231,17 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
     // runs before the fixpoint so failures cannot emit a manifest.
     enforce_host_nix_trust_policy(cmd)?;
 
+    // Pure Nix evaluation may import only immutable store inputs. Metadata is
+    // delivered under /run, so pin the already-authorized bytes as a closed
+    // source directory before either the package-selection projection or the
+    // complete option fixpoint sees them. The cloned command also makes every
+    // later manifest identity refer to the exact bytes evaluated, rather than
+    // reopening a mutable path.
+    let mut pinned_cmd = cmd.clone();
+    pinned_cmd.host_nix = add_fixed_eval_host_source(&cmd.host_nix, &cmd.eval_root)
+        .context("pinning authorized host.nix before pure evaluation")?;
+    let cmd = &pinned_cmd;
+
     // The by-name config-module resolver is the on-host registry set: it reads
     // each package's `config_module` block from `registry.toml`. This replaces
     // the removed registry-wide provides index. When apm config is
@@ -2178,27 +2188,81 @@ fn json_desired_package(
 }
 
 fn add_fixed_input_to_store(path: &Path) -> Result<PathBuf> {
-    if path.starts_with("/nix/store") {
-        return Ok(path.to_path_buf());
+    if let Some(root) = manifest_store_root(path.to_string_lossy().as_ref()) {
+        let root = Path::new(root);
+        if path == root {
+            return Ok(path.to_path_buf());
+        }
     }
     let output = std::process::Command::new("nix-store")
         .args(["--add-fixed", "sha256"])
         .arg(path)
         .output()
-        .with_context(|| format!("adding fixed host input {} to the store", path.display()))?;
+        .with_context(|| {
+            format!(
+                "adding fixed evaluator input {} to the store",
+                path.display()
+            )
+        })?;
     if !output.status.success() {
         anyhow::bail!(
-            "adding fixed host input to the store failed: {}",
+            "adding fixed evaluator input to the store failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
     let store_path = String::from_utf8(output.stdout)
-        .context("nix-store returned a non-UTF-8 host input path")?;
+        .context("nix-store returned a non-UTF-8 evaluator input path")?;
     let store_path = PathBuf::from(store_path.trim());
     if !store_path.starts_with("/nix/store") {
         anyhow::bail!("nix-store returned invalid path {}", store_path.display());
     }
     Ok(store_path)
+}
+
+fn add_fixed_eval_host_source(path: &Path, eval_root: &Path) -> Result<PathBuf> {
+    if let Some(root) = manifest_store_root(path.to_string_lossy().as_ref()) {
+        if Path::new(root)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.split_once('-'))
+            .is_some_and(|(_, name)| name == "source")
+        {
+            return Ok(path.to_path_buf());
+        }
+    }
+
+    let source = eval_root.join("host-input/source");
+    match std::fs::remove_dir_all(&source) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("removing stale host evaluator source"),
+    }
+    std::fs::create_dir_all(&source)
+        .with_context(|| format!("creating host evaluator source {}", source.display()))?;
+    std::fs::copy(path, source.join("host.nix"))
+        .with_context(|| format!("copying authorized host input {}", path.display()))?;
+
+    let output = std::process::Command::new("nix-store")
+        .args(["--add-fixed", "--recursive", "sha256"])
+        .arg(&source)
+        .output()
+        .context("adding host evaluator source to the store")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "adding host evaluator source to the store failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let store_root = String::from_utf8(output.stdout)
+        .context("nix-store returned a non-UTF-8 host evaluator source path")?;
+    let store_root = PathBuf::from(store_root.trim());
+    if !store_root.starts_with("/nix/store") || store_root.file_name().is_none() {
+        anyhow::bail!(
+            "nix-store returned invalid host evaluator source {}",
+            store_root.display()
+        );
+    }
+    Ok(store_root.join("host.nix"))
 }
 
 fn manifest_store_root(target: &str) -> Option<&str> {
@@ -2522,20 +2586,6 @@ fn retained_store_path_nar_hash(path: &Path) -> Result<String> {
 /// before their registry config modules can be fetched, while the complete
 /// runtime evaluation needs those modules. Only `aos.apm.desiredPackages` is
 /// declared, so unrelated host definitions remain lazy.
-fn render_host_selection_entry(base_lib: &Path, host_nix: &Path) -> String {
-    format!(
-        "# Generated by aos config eval; do not edit.\n\
-         let\n\
-        \x20 baseLib = import {base};\n\
-        \x20 system = baseLib.evalHostSelection {{\n\
-        \x20   operatorModules = [ (import {host}) ];\n\
-        \x20 }};\n\
-         in {{ packages = system.config.aos.apm.desiredPackages; }}\n",
-        base = stock::nix_path(base_lib),
-        host = stock::nix_path(host_nix),
-    )
-}
-
 fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -2543,20 +2593,36 @@ fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {
         packages: Vec<String>,
     }
 
-    std::fs::create_dir_all(&cmd.eval_root)
-        .with_context(|| format!("creating eval root {}", cmd.eval_root.display()))?;
-    let entry = cmd.eval_root.join("host-selection-entry.nix");
-    let expression = render_host_selection_entry(&cmd.base_lib, &cmd.host_nix);
-    std::fs::write(&entry, expression).with_context(|| format!("writing {}", entry.display()))?;
+    anyhow::ensure!(
+        cmd.host_nix.starts_with("/nix/store"),
+        "host package-selection input must be pinned in /nix/store"
+    );
 
+    let source_root = cmd.eval_root.join("host-selection-source");
+    std::fs::create_dir_all(&source_root)
+        .with_context(|| format!("creating host-selection source {}", source_root.display()))?;
+    let staged_entry = source_root.join("entry.nix");
+    let base = stock::locked_store_input(&cmd.base_lib, None)
+        .context("locking the base library for host package selection")?;
+    let host = stock::locked_store_input(&cmd.host_nix, None)
+        .context("locking host.nix for host package selection")?;
+    let expression = format!(
+        "# Generated by aos config eval; do not edit.\n\
+         let\n\
+        \x20 baseLib = import {base};\n\
+        \x20 system = baseLib.evalHostSelection {{\n\
+        \x20   operatorModules = [ (import {host}) ];\n\
+        \x20 }};\n\
+         in {{ packages = system.config.aos.apm.desiredPackages; }}\n",
+        base = base,
+        host = host,
+    );
+    std::fs::write(&staged_entry, &expression)
+        .with_context(|| format!("writing {}", staged_entry.display()))?;
     let mut evaluator = stock::pure_eval_command()
         .context("resolving the AOS stock evaluator for host package selection")?;
-    stock::admit_pure_eval_input(&mut evaluator, &entry);
-    stock::admit_pure_eval_input(&mut evaluator, &cmd.base_lib);
-    stock::admit_pure_eval_input(&mut evaluator, &cmd.host_nix);
-    let output = evaluator
-        .arg(&entry)
-        .output()
+    evaluator.arg("-");
+    let output = stock::output_with_expression(&mut evaluator, &expression)
         .context("spawning restricted host package-selection evaluation")?;
     if !output.status.success() {
         anyhow::bail!(

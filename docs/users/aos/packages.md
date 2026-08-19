@@ -23,6 +23,29 @@ apm info nginx --system --permissions
 apm policy nginx --system
 ```
 
+When a registry's package closures are served from a separate binary-cache
+route, declare that bootstrap endpoint with the registry in image policy or
+authenticated `host.nix`. This makes the cache available during the same
+configuration transaction that first selects packages from the registry:
+
+```nix
+{
+  aos.apm.registries.acme = {
+    url = "https://packages.example.com/index";
+    trustKeys = ["acme:Ed25519:BASE64_KEY"];
+    caches = [
+      {
+        url = "https://cache.example.com";
+        priority = 100;
+      }
+    ];
+  };
+}
+```
+
+The bootstrap list supplements the signed `[caches]` stack committed in
+`registry.toml`; normal cache selection merges and de-duplicates both sources.
+
 Signature verification fails closed by default. `--no-verify` exists for local
 registry development; do not use it in normal installation or upgrade
 procedures.

@@ -250,9 +250,12 @@
       "cli_families": ["registry publish"],
       "web_workflows": ["registry-publication"],
       "web_method_exceptions": [
-        {"method": "GetRegistryPublication", "reason": "ListRegistryPublications returns the complete publication state rendered by the browser workflow."}
+        {"method": "GetRegistryPublication", "reason": "ListRegistryPublications returns the complete publication state rendered by the browser workflow."},
+        {"method": "BeginRegistryPublicationMultipartUpload", "reason": "The browser observes publication state; the CLI alone streams local release artifacts into bounded multipart transactions."},
+        {"method": "CompleteRegistryPublicationMultipartUpload", "reason": "The browser observes publication state; the CLI alone completes multipart transactions for local release artifacts."},
+        {"method": "AbortRegistryPublicationMultipartUpload", "reason": "The browser observes publication state; the CLI alone cleans up failed multipart transactions for local release artifacts."}
       ],
-      "methods": ["BeginRegistryPublication", "ListRegistryPublications", "GetRegistryPublication", "CommitRegistryPublication", "AbortRegistryPublication"]
+      "methods": ["BeginRegistryPublication", "BeginRegistryPublicationMultipartUpload", "CompleteRegistryPublicationMultipartUpload", "AbortRegistryPublicationMultipartUpload", "ListRegistryPublications", "GetRegistryPublication", "CommitRegistryPublication", "AbortRegistryPublication"]
     },
     {
       "service": "GitService",

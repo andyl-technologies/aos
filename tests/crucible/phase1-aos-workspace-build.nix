@@ -29,7 +29,8 @@
     {
       "x86_64-linux" = "qemu-system-x86_64";
       "aarch64-linux" = "qemu-system-aarch64";
-    }.${
+    }
+    .${
       pkgs.stdenv.hostPlatform.system
     }
     or (throw "crucible phase1 AOS workspace build does not support ${pkgs.stdenv.hostPlatform.system}");
@@ -37,7 +38,8 @@
     {
       "x86_64-linux" = "x86_64";
       "aarch64-linux" = "aarch64";
-    }.${
+    }
+    .${
       pkgs.stdenv.hostPlatform.system
     }
     or (throw "crucible phase1 AOS workspace build does not support ${pkgs.stdenv.hostPlatform.system}");

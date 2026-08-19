@@ -30,8 +30,9 @@
     name = "unspecified";
     description = "any value";
   };
-  diskSourceType = types.addCheck unspecifiedType (value:
-    builtins.isString value || builtins.isFunction value);
+  diskSourceType =
+    types.addCheck unspecifiedType (value:
+      builtins.isString value || builtins.isFunction value);
 
   positiveInt = types.addCheck types.int (v: v > 0);
   extraDiskType = types.submodule {

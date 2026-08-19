@@ -63,7 +63,7 @@
 {
   lib,
   mkDerivation,
-  fetchCargoDeps,
+  fetchCargoVendor,
   rust,
   wasm-bindgen-cli,
   miniflare,
@@ -89,10 +89,12 @@
       pathString = toString path;
       base = baseNameOf path;
     in
-      base != "target"
+      base
+      != "target"
       && base != ".git"
       && (
-        pathString == repoRootString
+        pathString
+        == repoRootString
         || lib.hasPrefix "${repoRootString}/crates" pathString
         || pathString == "${repoRootString}/docs"
         || pathString == "${repoRootString}/docs/rfcs"
@@ -115,10 +117,11 @@ in
 
     # The workspace's vendored dependency set, fetched offline. Same shape as
     # `aos.nix`/`aos-hub.nix` but its own fixed-output derivation.
-    cargoDeps = fetchCargoDeps {
+    cargoDeps = fetchCargoVendor {
       inherit src;
+      name = "aos-vendor-${version}";
       sourceRoot = "source/crates";
-      hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
+      hash = "sha256-HpIXteO0Adw3+VmLING6Fd5vDHrGHUt+KQ8gZ312bkU=";
     };
 
     phases = [
@@ -139,10 +142,10 @@ in
         script = ''
           export CARGO_HOME="$TMPDIR/cargo"
           mkdir -p "$CARGO_HOME" .cargo
-          # fetchCargoDeps layout: a raw vendor directory. Wire it as the
-          # crates.io replacement so the offline build resolves every dep.
-          printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "%s"\n\n' \
-            "$cargoDeps" > .cargo/config.toml
+          # The lockfile-aware vendor output includes replacement entries for
+          # both crates.io and pinned Git sources.
+          sed "s|@vendor@|$cargoDeps|g" "$cargoDeps/.cargo/config.toml" \
+            > .cargo/config.toml
         '';
       }
       {

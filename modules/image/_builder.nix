@@ -3,12 +3,12 @@
 ##! Produces a UEFI-bootable GPT disk image from an evaluated AOS system
 ##! configuration. The image contains:
 ##!
-##!   Partition 1 (ESP)    — vfat, sized to its contents x2 (A/B headroom)
+##!   Partition 1 (ESP)    — vfat, sized by the image artifact contract
 ##!                          EFI/BOOT/BOOT<ARCH>.EFI           (UEFI fallback)
 ##!                          EFI/systemd/systemd-boot<arch>.efi (sd-boot canonical)
 ##!                          EFI/Linux/aos-<version>.efi       (UKI)
 ##!                          loader/loader.conf                (sd-boot config)
-##!   Partition 2 (root-a) — rootFsType (erofs/ext4), sized to the rootfs image
+##!   Partition 2 (root-a) — rootFsType (erofs/ext4), fixed contract capacity
 ##!
 ##! systemd-repart creates swap and /var partitions on first boot
 ##! in the unallocated space after root-a.
@@ -26,7 +26,7 @@
 ##!   system — evaluated system configuration (from evalModules)
 ##!   name   — image name slug
 ##!
-##! Output: disk bytes + portable public image-info.json
+##! Output: zstd-compressed disk bytes + portable public image-info.json
 {
   pkgs,
   lib,
@@ -40,16 +40,19 @@
   # DPS data/hash device hints differ.
   kernelParamsB =
     builtins.replaceStrings
-    ["/dev/disk/by-partlabel/root-a-hash" "/dev/disk/by-partlabel/root-a"]
-    ["/dev/disk/by-partlabel/root-b-hash" "/dev/disk/by-partlabel/root-b"]
+    [
+      system.config.aos.boot.storage.resolvedDevices.rootAHash
+      system.config.aos.boot.storage.resolvedDevices.rootA
+    ]
+    [
+      system.config.aos.boot.storage.resolvedDevices.rootBHash
+      system.config.aos.boot.storage.resolvedDevices.rootB
+    ]
     kernelParams;
 
   version = system.config.aos.system.version;
 
-  # The ESP is sized at build time to its actual contents (the UKI + sd-boot)
-  # times two — headroom for a sysupdate A/B flow that stages a second UKI
-  # during upgrades — plus FAT overhead, floored at 128 MiB. See the build
-  # script's "Create vfat ESP" step. Only the start sector is fixed here.
+  budgets = system.config.aos.image.budgets;
   espStartSector = 2048; # 1 MiB GPT + alignment
 
   # UEFI ESP partition GUID.
@@ -170,6 +173,8 @@
       fsType = rootFsType;
       erofsCompressionLevel = system.config.aos.image.erofsCompressionLevel;
       extraClosures = system.config.aos.image.hostConfigClosures;
+      kernelModulePackages = system.config.aos.kernel.modulePackages;
+      firmwarePackages = system.config.aos.kernel.firmwarePackages;
       shrinkToFit = true;
       headroomMiB = 64;
     }
@@ -399,6 +404,12 @@
       name = "aos-image-${name}";
       src = null;
 
+      # Make the runtime closure available to the builder itself. The raw
+      # image is the publication root, so it independently enforces every
+      # release budget even when callers do not build the focused check.
+      outputChecks = {};
+      exportReferencesGraph.runtime = [system.config.system.build.toplevel];
+
       buildDeps =
         [
           pkgs.util-linux # sfdisk
@@ -407,12 +418,14 @@
           pkgs.mtools # mcopy
           pkgs.coreutils
           pkgs.jq
+          pkgs.zstd
         ]
         ++ lib.optional sb.enable pkgs.sbsigntools
         ++ lib.optionals recoveryEnabled [pkgs.binutils pkgs.openssl]; # recovery audit + bundle signature
 
       ROOT_IMG = "${rootfs}/root.img";
       ROOT_SIZE_FILE = "${rootfs}/rootfs-size-bytes";
+      INITRD = "${system.config.system.build.initrd}/initrd.img";
       UKI_PATH = "${ukiA}/${ukiAStoreFilename}";
       UKI_B_PATH = "${ukiB}/${ukiBStoreFilename}";
       RECOVERY_A_PATH =
@@ -427,12 +440,19 @@
       UKI_MEASUREMENT_SIG_PATH = "${ukiA}/${ukiAStoreFilename}.measurement.sig";
       SDBOOT_DIR = "${pkgs.systemd}/lib/systemd/boot/efi";
       IMAGE_NAME = name;
-      IMAGE_FILENAME = "aos-${name}.img";
+      IMAGE_FILENAME = "aos-${name}.img.zst";
       IMAGE_VERSION = version;
       IMAGE_ARCHITECTURE = lib.platform.constraints.cpu;
       IMAGE_PLATFORM = lib.system;
       IMAGE_KERNEL_PARAMS = kernelParams;
       IMAGE_ROOT_FS_TYPE = rootFsType;
+      MAX_ROOT_MIB = toString budgets.maxRootMiB;
+      MAX_VERITY_MIB = toString budgets.maxVerityMiB;
+      MAX_INITRD_MIB = toString budgets.maxInitrdMiB;
+      MAX_UKI_MIB = toString budgets.maxUkiMiB;
+      MAX_ESP_MIB = toString budgets.maxEspMiB;
+      MAX_RUNTIME_CLOSURE_MIB = toString budgets.maxRuntimeClosureMiB;
+      MAX_DOWNLOAD_MIB = toString budgets.maxDownloadMiB;
       IMAGE_MODULE_ABI = toString system.config.aos.system.moduleAbi;
       RECOVERY_ENABLE = lib.optionalString recoveryEnabled "1";
       RECOVERY_ABI = toString recovery.abi;
@@ -475,6 +495,20 @@
             root_bytes=$(cat "$ROOT_SIZE_FILE")
             if [ $(( root_bytes % 512 )) -ne 0 ]; then
               echo "root image size must be sector-aligned" >&2
+              exit 1
+            fi
+            if [ "$root_bytes" -gt $(( MAX_ROOT_MIB * 1048576 )) ]; then
+              echo "root image exceeds its $MAX_ROOT_MIB MiB artifact contract" >&2
+              exit 1
+            fi
+            initrd_bytes=$(stat -c %s "$INITRD")
+            if [ "$initrd_bytes" -gt $(( MAX_INITRD_MIB * 1048576 )) ]; then
+              echo "initrd exceeds its $MAX_INITRD_MIB MiB artifact contract" >&2
+              exit 1
+            fi
+            runtime_closure_bytes=$(jq '[.runtime[].narSize] | add // 0' "$NIX_ATTRS_JSON_FILE")
+            if [ "$runtime_closure_bytes" -gt $(( MAX_RUNTIME_CLOSURE_MIB * 1048576 )) ]; then
+              echo "runtime closure exceeds its $MAX_RUNTIME_CLOSURE_MIB MiB artifact contract" >&2
               exit 1
             fi
             echo "    root image: $(( root_bytes / 1048576 )) MiB"
@@ -586,8 +620,18 @@
             echo "$esp_content_bytes" > esp-content-bytes
             echo "$transaction_bytes" > esp-transaction-bytes
             echo "$esp_required_bytes" > esp-required-bytes
-            esp_mib=$(( (esp_required_bytes + 1048575) / 1048576 ))
-            if [ "$esp_mib" -lt 128 ]; then esp_mib=128; fi
+            uki_bytes=$(stat -c %s "$UKI_PATH")
+            if [ "$esp_required_bytes" -gt $(( MAX_ESP_MIB * 1048576 )) ]; then
+              echo "ESP payload exceeds its $MAX_ESP_MIB MiB artifact contract" >&2
+              exit 1
+            fi
+            if [ "$uki_bytes" -gt $(( MAX_UKI_MIB * 1048576 )) ]; then
+              echo "UKI exceeds its $MAX_UKI_MIB MiB artifact contract" >&2
+              exit 1
+            fi
+            # Preserve stable partition geometry while recording the observed
+            # peak transaction requirement in image-info.json.
+            esp_mib=$MAX_ESP_MIB
             esp_bytes=$(( esp_mib * 1048576 ))
             esp_sectors=$(( esp_bytes / 512 ))
             root_start_sector=$(( ${toString espStartSector} + esp_sectors ))
@@ -601,7 +645,7 @@
             done
 
             # ── 4. Assemble final GPT image ─────────────────────────────
-            root_sectors=$(( root_bytes / 512 ))
+            root_sectors=$(( MAX_ROOT_MIB * 2048 ))
             # The dm-verity hash tree rides in a `root-a-hash`
             # partition immediately after root-a, sized from the build-time
             # root-verity-size-bytes and rounded up to a 1 MiB (2048-sector)
@@ -614,8 +658,11 @@
             hash_sectors=0
             ${lib.optionalString verityEnabled ''
               verity_bytes=$(cat "$VERITY_SIZE_FILE")
-              hash_sectors=$(( (verity_bytes + 511) / 512 ))
-              hash_sectors=$(( (hash_sectors + 2047) / 2048 * 2048 ))
+              if [ "$verity_bytes" -gt $(( MAX_VERITY_MIB * 1048576 )) ]; then
+                echo "verity tree exceeds its $MAX_VERITY_MIB MiB artifact contract" >&2
+                exit 1
+              fi
+              hash_sectors=$(( MAX_VERITY_MIB * 2048 ))
               echo "    root-a-hash: $(( hash_sectors / 2048 )) MiB verity tree"
             ''}
             # 1 MiB (2048 sectors) at the start for GPT header + alignment,
@@ -674,7 +721,6 @@
           name = "install";
           script = ''
             mkdir -p $out
-            mv image.raw $out/aos-${name}.img
             # OTA payloads: the imported raw-image store path is also the
             # authenticated source for inactive-slot staging. These files are
             # copied to block devices/ESP without parsing the enclosing GPT.
@@ -698,10 +744,9 @@
             # can validate both before committing the catalog entry.
             root_size_bytes=$(cat root-size-bytes)
             root_size_mib=$(( root_size_bytes / 1048576 ))
-            disk_size_bytes=$(stat -c %s "$out/aos-${name}.img")
-            disk_size_mib=$(( disk_size_bytes / 1048576 ))
-            disk_sha256=$(sha256sum "$out/aos-${name}.img" | cut -d ' ' -f1)
-            rootfs_sha256=$(sha256sum "$ROOT_IMG" | cut -d ' ' -f1)
+            virtual_size_bytes=$(stat -c %s image.raw)
+            disk_size_mib=$(( virtual_size_bytes / 1048576 ))
+            logical_disk_sha256=$(sha256sum image.raw | cut -d ' ' -f1)
             uki_size_bytes=$(stat -c %s "$UKI_PATH")
             uki_sha256=$(sha256sum "$UKI_PATH" | cut -d ' ' -f1)
             ${lib.optionalString recoveryEnabled ''
@@ -720,6 +765,10 @@
             esp_partition_size_bytes=$(cat esp-partition-size-bytes)
             root_offset_bytes=$(cat root-offset-bytes)
             root_partition_size_bytes=$(cat root-partition-size-bytes)
+            rootfs_sha256=$(dd if=image.raw \
+              iflag=skip_bytes,count_bytes \
+              skip="$root_offset_bytes" count="$root_partition_size_bytes" \
+              status=none | sha256sum | cut -d ' ' -f1)
             root_b_offset_bytes=$(cat root-b-offset-bytes)
             root_b_partition_size_bytes=$(cat root-b-partition-size-bytes)
             ${lib.optionalString verityEnabled ''hash_size_mib=$(cat hash-size-mib)''}
@@ -727,15 +776,28 @@
             ${lib.optionalString verityEnabled ''hash_partition_size_bytes=$(cat hash-partition-size-bytes)''}
             ${lib.optionalString verityEnabled ''hash_b_offset_bytes=$(cat hash-b-offset-bytes)''}
             ${lib.optionalString verityEnabled ''hash_b_partition_size_bytes=$(cat hash-b-partition-size-bytes)''}
+
+            # The direct-delivery object is compressed as a whole so empty
+            # inactive slots and fixed partition headroom cost almost nothing
+            # on the wire. The logical disk digest below still authenticates
+            # the exact bytes reconstructed before writing physical media.
+            zstd --ultra -22 --long=27 -T1 --no-progress \
+              image.raw -o "$out/$IMAGE_FILENAME"
+            disk_size_bytes=$(stat -c %s "$out/$IMAGE_FILENAME")
+            if [ "$disk_size_bytes" -gt $(( MAX_DOWNLOAD_MIB * 1048576 )) ]; then
+              echo "compressed raw image exceeds its $MAX_DOWNLOAD_MIB MiB download contract" >&2
+              exit 1
+            fi
+            disk_sha256=$(sha256sum "$out/$IMAGE_FILENAME" | cut -d ' ' -f1)
             ${pkgs.jq}/bin/jq -S -n \
               --arg name "$IMAGE_NAME" \
               --arg version "$IMAGE_VERSION" \
               --arg architecture "$IMAGE_ARCHITECTURE" \
               --arg platform "$IMAGE_PLATFORM" \
               --arg filename "$IMAGE_FILENAME" \
-              --arg mediaType 'application/vnd.aos.disk-image.raw' \
+              --arg mediaType 'application/vnd.aos.disk-image.raw+zstd' \
               --arg sha256 "$disk_sha256" \
-              --arg logicalDiskSha256 "$disk_sha256" \
+              --arg logicalDiskSha256 "$logical_disk_sha256" \
               --arg rootfsSha256 "$rootfs_sha256" \
               --arg objectKey "images/sha256/$disk_sha256/$IMAGE_FILENAME" \
               --arg ukiFilename "$IMAGE_UKI_FILENAME" \
@@ -748,12 +810,14 @@
               --arg uki "$IMAGE_UKI_PATH" \
               --arg sdBoot "$IMAGE_SDBOOT_PATH" \
               --argjson diskSizeMiB "$disk_size_mib" \
-              --argjson diskSizeBytes "$disk_size_bytes" \
+              --argjson diskSizeBytes "$virtual_size_bytes" \
+              --argjson byteSize "$disk_size_bytes" \
               --argjson espSizeMiB "$esp_size_mib" \
               --argjson espContentBytes "$esp_content_bytes" \
               --argjson espTransactionBytes "$esp_transaction_bytes" \
               --argjson espRequiredBytes "$esp_required_bytes" \
               --argjson rootSizeMiB "$root_size_mib" \
+              --argjson rootPartitionSizeMiB "$MAX_ROOT_MIB" \
               --argjson espOffsetBytes "$esp_offset_bytes" \
               --argjson espPartitionSizeBytes "$esp_partition_size_bytes" \
               --argjson rootOffsetBytes "$root_offset_bytes" \
@@ -763,6 +827,13 @@
               --argjson ukiSizeBytes "$uki_size_bytes" \
               --argjson ukiSigned "$uki_signed" \
               --argjson ukiMeasured "$uki_measured" \
+              --argjson maxRootMiB "$MAX_ROOT_MIB" \
+              --argjson maxVerityMiB "$MAX_VERITY_MIB" \
+              --argjson maxInitrdMiB "$MAX_INITRD_MIB" \
+              --argjson maxUkiMiB "$MAX_UKI_MIB" \
+              --argjson maxEspMiB "$MAX_ESP_MIB" \
+              --argjson maxRuntimeClosureMiB "$MAX_RUNTIME_CLOSURE_MIB" \
+              --argjson maxDownloadMiB "$MAX_DOWNLOAD_MIB" \
               --argjson moduleAbi "$IMAGE_MODULE_ABI" \
               ${lib.optionalString recoveryEnabled ''              --argjson recoveryAbi "$RECOVERY_ABI" \
                             --argjson recoveryASizeBytes "$recovery_a_size_bytes" \
@@ -784,12 +855,21 @@
                 filename: $filename,
                 objectKey: $objectKey,
                 mediaType: $mediaType,
-                compression: "none",
-                byteSize: $diskSizeBytes,
+                compression: "zstd",
+                byteSize: $byteSize,
                 virtualSizeBytes: $diskSizeBytes,
                 sha256: $sha256,
                 logicalDiskSha256: $logicalDiskSha256,
                 rootfsSha256: $rootfsSha256,
+                artifactBudgetsMiB: {
+                  root: $maxRootMiB,
+                  verity: $maxVerityMiB,
+                  initrd: $maxInitrdMiB,
+                  uki: $maxUkiMiB,
+                  esp: $maxEspMiB,
+                  runtimeClosure: $maxRuntimeClosureMiB,
+                  download: $maxDownloadMiB
+                },
                 moduleAbi: $moduleAbi,
                 compatibleTargets: ["bare-metal"],
                 uki: {
@@ -813,12 +893,12 @@
                 kernelParams: $kernelParams,
                 partitions: [
                   {number: 1, label: "ESP", type: "esp", filesystem: "vfat", sizeMiB: $espSizeMiB, offsetBytes: $espOffsetBytes, sizeBytes: $espPartitionSizeBytes},
-                  {number: 2, label: "root-a", type: "root", filesystem: $rootFsType, sizeMiB: $rootSizeMiB, offsetBytes: $rootOffsetBytes, sizeBytes: $rootPartitionSizeBytes},
+                  {number: 2, label: "root-a", type: "root", filesystem: $rootFsType, sizeMiB: $rootPartitionSizeMiB, offsetBytes: $rootOffsetBytes, sizeBytes: $rootPartitionSizeBytes},
                   {number: ${
               if verityEnabled
               then "4"
               else "3"
-            }, label: "root-b", type: "root", filesystem: $rootFsType, sizeMiB: $rootSizeMiB, offsetBytes: $rootBOffsetBytes, sizeBytes: $rootBPartitionSizeBytes}
+            }, label: "root-b", type: "root", filesystem: $rootFsType, sizeMiB: $rootPartitionSizeMiB, offsetBytes: $rootBOffsetBytes, sizeBytes: $rootBPartitionSizeBytes}
                 ],
                 esp: {uki: $uki, sdBoot: $sdBoot}
               }${lib.optionalString recoveryEnabled ''
@@ -937,7 +1017,7 @@ in
   # facts from this signed binary).
   imageDrv
   // {
-    inherit uki ukiA ukiB;
+    inherit rootfs uki ukiA ukiB ukiAStoreFilename ukiBStoreFilename;
     recoveryInitrdA = recoveryInitrdA;
     recoveryInitrdB = recoveryInitrdB;
     recoverySlotManifest = recoverySlotManifest;

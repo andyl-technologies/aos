@@ -307,6 +307,11 @@ in {
     postFreeze = ''
       find . \( -name '*.1' -o -name '*.info' \) -exec touch -t 200001010200.00 {} + 2>/dev/null || true
     '';
+    # This release does not declare the generated helper executables as
+    # prerequisites of every consumer that invokes them.
+    buildScript = ''
+      make -j1
+    '';
     postInstall = ''
       [ -f "$out/bin/bash" ] && [ ! -f "$out/bin/sh" ] && ln -sf bash "$out/bin/sh"
     '';

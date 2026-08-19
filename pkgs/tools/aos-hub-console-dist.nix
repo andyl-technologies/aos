@@ -7,7 +7,7 @@
 {
   lib,
   mkDerivation,
-  fetchCargoDeps,
+  fetchCargoVendor,
   rust,
   wasm-bindgen-cli,
   protobuf,
@@ -23,10 +23,12 @@
       pathString = toString path;
       base = baseNameOf path;
     in
-      base != "target"
+      base
+      != "target"
       && base != ".git"
       && (
-        pathString == repoRootString
+        pathString
+        == repoRootString
         || lib.hasPrefix "${repoRootString}/crates" pathString
         || pathString == "${repoRootString}/docs"
         || pathString == "${repoRootString}/docs/rfcs"
@@ -39,10 +41,11 @@ in
     inherit version src;
 
     buildDeps = [rust wasm-bindgen-cli protobuf stdenv.cc];
-    cargoDeps = fetchCargoDeps {
+    cargoDeps = fetchCargoVendor {
       inherit src;
+      name = "aos-vendor-${version}";
       sourceRoot = "source/crates";
-      hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
+      hash = "sha256-HpIXteO0Adw3+VmLING6Fd5vDHrGHUt+KQ8gZ312bkU=";
     };
 
     phases = [
@@ -59,8 +62,8 @@ in
         script = ''
           export CARGO_HOME="$TMPDIR/cargo"
           mkdir -p "$CARGO_HOME" .cargo
-          printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "%s"\n\n' \
-            "$cargoDeps" > .cargo/config.toml
+          sed "s|@vendor@|$cargoDeps|g" "$cargoDeps/.cargo/config.toml" \
+            > .cargo/config.toml
           export PROTOC="${protobuf}/bin/protoc"
         '';
       }

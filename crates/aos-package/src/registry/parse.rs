@@ -663,8 +663,8 @@ nar_size = 10
         let info_sha256 = "b".repeat(64);
         let (extension, media_type, targets) = match format {
             "raw" => (
-                "img",
-                "application/vnd.aos.disk-image.raw",
+                "img.zst",
+                "application/vnd.aos.disk-image.raw+zstd",
                 "\"bare-metal\"",
             ),
             "qcow2" => (
@@ -679,6 +679,7 @@ nar_size = 10
         let filename = format!("aos-server.{extension}");
         let object_key = immutable_image_object_key(&image_sha256, &filename);
         let info_key = immutable_image_info_object_key(&image_sha256, &info_sha256);
+        let compression = if format == "raw" { "zstd" } else { "none" };
         format!(
             r#"
 [package]
@@ -714,7 +715,7 @@ rootfs_sha256 = "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 filename = "{filename}"
 object_key = "{object_key}"
 media_type = "{media_type}"
-compression = "none"
+compression = "{compression}"
 byte_size = 10
 sha256 = "{image_sha256}"
 compatible_targets = [{targets}]
@@ -762,19 +763,32 @@ sha256 = "{info_sha256}"
     #[test]
     fn signed_image_entry_rejects_tamper_and_path_traversal() {
         let base = direct_image_toml("raw");
-        for tampered in [
-            base.replace("release = \"2026.08\"", "release = \"2026.07\""),
-            base.replace("sha256 = \"aaaaaaaa", "sha256 = \"Aaaaaaaa"),
-            base.replace(
-                "filename = \"aos-server.img\"",
-                "filename = \"../server.img\"",
+        for (name, tampered) in [
+            (
+                "release mismatch",
+                base.replace("release = \"2026.08\"", "release = \"2026.07\""),
             ),
-            base.replace(
-                "compatible_targets = [\"bare-metal\"]",
-                "compatible_targets = [\"vmware\"]",
+            (
+                "invalid digest",
+                base.replace("sha256 = \"aaaaaaaa", "sha256 = \"Aaaaaaaa"),
+            ),
+            (
+                "path traversal",
+                base.replace(
+                    "filename = \"aos-server.img.zst\"",
+                    "filename = \"../server.img.zst\"",
+                ),
+            ),
+            (
+                "incompatible target",
+                base.replace(
+                    "compatible_targets = [\"bare-metal\"]",
+                    "compatible_targets = [\"vmware\"]",
+                ),
             ),
         ] {
-            assert!(parse_package_file(&tampered).is_err());
+            assert_ne!(tampered, base, "{name} fixture mutation must change input");
+            assert!(parse_package_file(&tampered).is_err(), "{name}");
         }
     }
 

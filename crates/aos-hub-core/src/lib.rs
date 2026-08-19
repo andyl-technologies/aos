@@ -98,6 +98,7 @@ pub mod lease;
 pub mod migrate;
 pub mod nix_sign;
 pub mod placement_read;
+pub mod placement_scan;
 pub mod ratelimit;
 pub mod reindex;
 pub mod retention;

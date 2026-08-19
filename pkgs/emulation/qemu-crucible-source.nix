@@ -9,8 +9,7 @@
   qemu = qemu-crucible.passthru;
   series = qemu.series;
   version = series.qemuVersion;
-  patchCopyCommand = file:
-    "cp ${./qemu-patches + "/${file}"} \"$source_root/patches/${file}\"";
+  patchCopyCommand = file: "cp ${./qemu-patches + "/${file}"} \"$source_root/patches/${file}\"";
   patchCopyCommands = builtins.concatStringsSep "\n" (map patchCopyCommand series.patchFiles);
   crucibleSource = import ../tools/crucible/_source.nix {inherit lib;};
   repoRoot = ../..;
@@ -22,7 +21,8 @@
       base = baseNameOf path;
       pathString = toString path;
     in
-      base != ".git"
+      base
+      != ".git"
       && base != ".worktrees"
       && base != "target"
       && base != "result"

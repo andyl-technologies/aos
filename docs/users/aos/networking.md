@@ -4,7 +4,8 @@ AOS uses systemd-networkd for links and addresses and systemd-resolved for
 name resolution. These options can be baked into an image or supplied through
 authenticated runtime `host.nix`; stage-2 activation writes the networkd and
 resolved configuration into a numbered `/etc` generation and reconciles the
-units.
+units. The same activation applies `aos.networking.hostName` to the running
+kernel, so a hostname change does not require a reboot.
 
 Keep console access while changing static addressing. An incorrect interface
 name, gateway, VLAN, or bond can make an otherwise healthy image unreachable.
@@ -86,7 +87,9 @@ facts describe the platform and do not override explicit authorization policy.
 
 Global resolvers and search domains are written to `resolved.conf`.
 DNS-over-TLS is opportunistic, multicast DNS and LLMNR are disabled, and the
-default DNSSEC mode is `allow-downgrade`.
+default DNSSEC mode is `allow-downgrade`. When systemd-resolved is enabled,
+`/etc/resolv.conf` follows its local stub resolver so package tools and other
+applications use the same live DNS configuration.
 
 Require DNSSEC only when every deployment network supports it:
 

@@ -26,6 +26,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use sha2::Digest as _;
+use tokio::sync::Semaphore;
 
 use aos_net::{TransferEngine, TransferRequest};
 
@@ -33,6 +34,28 @@ use super::{
     AuthOptions, CacheBackend, IMMUTABLE_CACHE_CONTROL, MUTABLE_CACHE_CONTROL,
     add_static_metadata_headers,
 };
+
+/// Multipart request bodies admitted concurrently to one Hub origin.
+///
+/// Workers buffer each request before the service can authenticate and hash
+/// it, and the R2 binding then owns a second JavaScript-side view while the
+/// part is written. Keeping this budget on the shared backend prevents
+/// per-NAR and path-level concurrency from multiplying those allocations past
+/// the Worker's isolate memory limit.
+const HUB_MULTIPART_PART_CONCURRENCY: usize = 2;
+
+/// Marks a request as Connect-JSON before it reaches the Hub control plane.
+fn add_connect_json_headers(req: &mut TransferRequest) {
+    req.headers
+        .push(("Content-Type".to_string(), "application/json".to_string()));
+    req.headers
+        .push(("Connect-Protocol-Version".to_string(), "1".to_string()));
+}
+
+/// Encodes a 64-bit integer using the protobuf JSON wire representation.
+fn connect_json_u64(value: u64) -> String {
+    value.to_string()
+}
 
 /// HTTP(S) cache backend.
 ///
@@ -54,6 +77,8 @@ pub struct HttpBackend {
     is_hub: AtomicBool,
     /// Whether authentication or typed upload admission enabled multipart upload v1.
     multipart_v1: AtomicBool,
+    /// Aggregate in-flight multipart body budget for this Hub origin.
+    multipart_part_permits: Semaphore,
 }
 
 /// OAuth2 token-endpoint response, including explicitly negotiated features.
@@ -114,6 +139,7 @@ impl HttpBackend {
             is_aos,
             is_hub: AtomicBool::new(false),
             multipart_v1: AtomicBool::new(false),
+            multipart_part_permits: Semaphore::new(HUB_MULTIPART_PART_CONCURRENCY),
         };
 
         // If we have an AOS token, authenticate to get a JWT.
@@ -344,11 +370,13 @@ impl CacheBackend for HttpBackend {
     async fn put_nar(&self, filename: &str, data: &[u8]) -> Result<()> {
         if self.is_hub.load(Ordering::Relaxed) {
             let path = format!("nar/{filename}");
-            let upload_url = self
-                .create_object_upload(&path, data.len() as u64)
-                .await?
-                .context("Hub requires multipart for this NAR upload")?;
-            return self.upload_to_admitted_url(&upload_url, data).await;
+            return match self.create_object_upload(&path, data.len() as u64).await? {
+                Some(upload_url) => self.upload_to_admitted_url(&upload_url, data).await,
+                None if self.supports_multipart() => {
+                    crate::push::upload_nar_multipart(self, filename, data).await
+                }
+                None => anyhow::bail!("Hub requires unsupported multipart for this NAR upload"),
+            };
         }
         // TODO(aos-cache push >1MB): when is_aos == true, this path is
         // broken on two axes:
@@ -402,12 +430,11 @@ impl CacheBackend for HttpBackend {
         let body = serde_json::json!({
             "deliveryUrl": self.base_url,
             "path": path,
-            "size": size
+            "size": connect_json_u64(size)
         })
         .to_string();
         let mut req = TransferRequest::post(&url, body.into_bytes());
-        req.headers
-            .push(("Content-Type".to_string(), "application/json".to_string()));
+        add_connect_json_headers(&mut req);
         let req = self.add_headers(req);
         let result = self.engine.execute(req).await?;
         anyhow::ensure!(
@@ -484,7 +511,10 @@ impl CacheBackend for HttpBackend {
             self.origin
         );
         let paths: Vec<&str> = uploads.iter().map(|(path, _)| path.as_str()).collect();
-        let sizes: Vec<u64> = uploads.iter().map(|(_, size)| *size).collect();
+        let sizes: Vec<String> = uploads
+            .iter()
+            .map(|(_, size)| connect_json_u64(*size))
+            .collect();
         let body = serde_json::json!({
             "deliveryUrl": self.base_url,
             "paths": paths,
@@ -492,8 +522,7 @@ impl CacheBackend for HttpBackend {
         })
         .to_string();
         let mut req = TransferRequest::post(&url, body.into_bytes());
-        req.headers
-            .push(("Content-Type".to_string(), "application/json".to_string()));
+        add_connect_json_headers(&mut req);
         let req = self.add_headers(req);
         let result = self.engine.execute(req).await?;
         anyhow::ensure!(
@@ -557,15 +586,15 @@ impl CacheBackend for HttpBackend {
             "{}/aos.hub.v1.BinaryCacheService/BeginCacheMultipartUpload",
             self.origin
         );
-        let body = serde_json::json!({
-            "deliveryUrl": self.base_url,
-            "path": nar_path,
-            "byteSize": size,
-            "sha256": sha256.unwrap_or_default(),
-        });
+        let body = aos_proto_types::BeginCacheMultipartUploadRequest {
+            cache_id: String::new(),
+            delivery_url: self.base_url.clone(),
+            path: nar_path.to_string(),
+            byte_size: size,
+            sha256: sha256.unwrap_or_default().to_string(),
+        };
         let mut req = TransferRequest::post(&url, serde_json::to_vec(&body)?);
-        req.headers
-            .push(("Content-Type".to_string(), "application/json".to_string()));
+        add_connect_json_headers(&mut req);
         let req = self.add_headers(req);
         let result = self
             .engine
@@ -581,14 +610,7 @@ impl CacheBackend for HttpBackend {
         let body = result
             .body
             .ok_or_else(|| anyhow::anyhow!("empty initiate-multipart response"))?;
-        #[derive(serde::Deserialize)]
-        struct InitiateResp {
-            #[serde(rename = "uploadId")]
-            upload_id: String,
-            #[serde(rename = "partSize")]
-            part_size: u64,
-        }
-        let resp: InitiateResp =
+        let resp: aos_proto_types::BeginCacheMultipartUploadResponse =
             serde_json::from_slice(&body).context("parsing initiate-multipart response")?;
         Ok((resp.upload_id, resp.part_size))
     }
@@ -600,6 +622,11 @@ impl CacheBackend for HttpBackend {
         part_number: u32,
         data: &[u8],
     ) -> Result<(u32, String)> {
+        let _permit = self
+            .multipart_part_permits
+            .acquire()
+            .await
+            .context("acquiring Hub multipart request budget")?;
         let _ = nar_path;
         let url = format!(
             "{}/aos.hub.v1.BinaryCacheService/UploadPart/{upload_id}/{part_number}",
@@ -652,8 +679,7 @@ impl CacheBackend for HttpBackend {
             })).collect::<Vec<_>>(),
         }))?;
         let mut req = TransferRequest::post(&url, payload);
-        req.headers
-            .push(("Content-Type".to_string(), "application/json".to_string()));
+        add_connect_json_headers(&mut req);
         let req = self.add_headers(req);
         let result = self
             .engine
@@ -679,8 +705,7 @@ impl CacheBackend for HttpBackend {
             &url,
             serde_json::to_vec(&serde_json::json!({ "uploadId": upload_id }))?,
         );
-        req.headers
-            .push(("Content-Type".to_string(), "application/json".to_string()));
+        add_connect_json_headers(&mut req);
         let req = self.add_headers(req);
         let result = self
             .engine
@@ -776,7 +801,6 @@ impl CacheBackend for HttpBackend {
         content_disposition: Option<&str>,
         sha256: Option<&str>,
     ) -> Result<()> {
-        const MULTIPART_THRESHOLD: u64 = 16 * 1024 * 1024;
         let size = std::fs::metadata(source)
             .with_context(|| format!("stat static file {}", source.display()))?
             .len();
@@ -794,7 +818,41 @@ impl CacheBackend for HttpBackend {
         } else {
             None
         };
-        if self.is_hub.load(Ordering::Relaxed) && size > MULTIPART_THRESHOLD {
+
+        if self.is_hub.load(Ordering::Relaxed) {
+            let admitted_url = match admitted_url {
+                Some(url) => Some(url),
+                None => self.create_object_upload(relative_path, size).await?,
+            };
+            if let Some(url) = admitted_url {
+                let mut req = TransferRequest::put_file(&url, source.to_path_buf());
+                add_static_metadata_headers(
+                    &mut req,
+                    content_type,
+                    cache_control,
+                    content_disposition,
+                    sha256,
+                );
+                let req = if url.starts_with(&format!(
+                    "{}/aos.hub.v1.BinaryCacheService/UploadObject/",
+                    self.origin
+                )) {
+                    self.add_headers(req)
+                } else {
+                    req
+                };
+                let result =
+                    self.engine.execute(req).await.with_context(|| {
+                        format!("uploading admitted static file {relative_path}")
+                    })?;
+                anyhow::ensure!(
+                    result.status < 400,
+                    "uploading admitted static file {relative_path} failed with HTTP {}",
+                    result.status
+                );
+                return Ok(());
+            }
+
             if !self.supports_multipart() {
                 anyhow::bail!(
                     "AOS server did not negotiate multipart support for large static file {relative_path}"
@@ -854,18 +912,7 @@ impl CacheBackend for HttpBackend {
             }
             return Ok(());
         }
-        if self.is_hub.load(Ordering::Relaxed) {
-            let bytes = std::fs::read(source)
-                .with_context(|| format!("reading static file {}", source.display()))?;
-            let upload_url = match admitted_url {
-                Some(url) => url,
-                None => self
-                    .create_object_upload(relative_path, size)
-                    .await?
-                    .context("Hub did not admit the static-file upload")?,
-            };
-            return self.upload_to_admitted_url(&upload_url, &bytes).await;
-        }
+
         let url = self.static_file_url(relative_path);
         let mut req = TransferRequest::put_file(&url, source.to_path_buf());
         add_static_metadata_headers(
@@ -962,5 +1009,41 @@ mod tests {
             backend.nar_url("nar/x.nar.zst"),
             "http://127.0.0.1:15000/default/nar/x.nar.zst"
         );
+    }
+
+    #[test]
+    fn connect_json_requests_carry_protocol_version() {
+        let mut request = TransferRequest::post("https://hub.example/rpc", Vec::new());
+        add_connect_json_headers(&mut request);
+
+        assert!(request.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("content-type") && value == "application/json"
+        }));
+        assert!(request.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("connect-protocol-version") && value == "1"
+        }));
+    }
+
+    #[test]
+    fn connect_json_encodes_u64_values_as_decimal_strings() {
+        let size = u64::MAX;
+        let single = serde_json::json!({ "size": connect_json_u64(size) });
+        let batch = serde_json::json!({ "sizes": [connect_json_u64(size)] });
+
+        assert_eq!(single["size"], size.to_string());
+        assert_eq!(batch["sizes"][0], size.to_string());
+    }
+
+    #[test]
+    fn multipart_admission_decodes_proto_json_u64_strings() {
+        let response: aos_proto_types::BeginCacheMultipartUploadResponse =
+            serde_json::from_value(serde_json::json!({
+                "uploadId": "upload-one",
+                "partSize": "8388608",
+                "partUploadUrl": "https://hub.example/upload/one",
+            }))
+            .unwrap();
+
+        assert_eq!(response.part_size, 8 * 1024 * 1024);
     }
 }

@@ -21,6 +21,7 @@
 //!     "systemd/system/getty.target.wants/getty@tty1.service":
 //!         { "kind": "symlink", "target": "../getty@tty1.service" }
 //!   },
+//!   "removedEtc": ["systemd/system/obsolete.service"],
 //!   "jobScripts": {
 //!     "aos-attest.service:ExecStart.0": { "mode": "0755", "name": "…", "text": "#!/…/bash\n…" }
 //!   }
@@ -34,6 +35,8 @@
 //! - `symlink` / `store-symlink` — a symlink to `target` (relative install
 //!   symlinks and absolute `/nix/store` links respectively; both are created
 //!   verbatim with `symlink(2)`).
+//! - `removedEtc` paths are unlinked through the mounted candidate overlay so
+//!   image-authored lower entries remain absent in that generation.
 //!
 //! Every job script is written under `<root>/aos-job-scripts/<key>` (mode
 //! `0755`), and the placeholder rewrite points unit `Exec*=` lines at
@@ -41,9 +44,9 @@
 //! lower is mounted as `/etc`.
 //!
 //! `users`, `presets`, and `units` are carried by the manifest too, but the
-//! `/etc` materialization here consumes only `etc` + `jobScripts`; the others
-//! are applied by their own reconcilers (users via the passwd path, presets are
-//! already `etc` entries under `systemd/system-preset/`).
+//! `/etc` materialization here consumes `etc`, `removedEtc`, and `jobScripts`;
+//! the others are applied by their own reconcilers (users via the passwd path,
+//! presets are already `etc` entries under `systemd/system-preset/`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
@@ -104,6 +107,9 @@ pub struct ConfigManifest {
     pub schema: String,
     /// The `/etc` tree keyed by target path (relative to `/etc`).
     pub etc: BTreeMap<String, EtcEntry>,
+    /// Image-authored `/etc` paths intentionally absent from this generation.
+    #[serde(rename = "removedEtc", default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_etc: Vec<String>,
     /// Per-unit activation actions.
     pub units: BTreeMap<String, UnitAction>,
     /// Job-script bodies keyed by `<unit>:<slot>.<index>`.
@@ -351,6 +357,34 @@ impl ConfigManifest {
                         }
                     }
                 }
+            }
+        }
+        let mut removed_etc: BTreeSet<String> = BTreeSet::new();
+        for path in &self.removed_etc {
+            validate_relative_path(path, "removedEtc")?;
+            if let Some(rendered) = self.etc.keys().find(|rendered| {
+                *rendered == path
+                    || rendered
+                        .strip_prefix(path)
+                        .is_some_and(|suffix| suffix.starts_with('/'))
+                    || path
+                        .strip_prefix(rendered.as_str())
+                        .is_some_and(|suffix| suffix.starts_with('/'))
+            }) {
+                bail!("removedEtc path {path:?} conflicts structurally with etc path {rendered:?}");
+            }
+            if let Some(existing) = removed_etc.iter().find(|existing| {
+                existing
+                    .strip_prefix(path)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+                    || path
+                        .strip_prefix(existing.as_str())
+                        .is_some_and(|suffix| suffix.starts_with('/'))
+            }) {
+                bail!("removedEtc paths {existing:?} and {path:?} conflict structurally");
+            }
+            if !removed_etc.insert(path.clone()) {
+                bail!("removedEtc contains duplicate path {path:?}");
             }
         }
         let pinned_store_paths: BTreeSet<&str> =
@@ -1655,6 +1689,48 @@ pub fn materialize_manifest(
     apply(&manifest, etc_root, job_scripts_runtime_dir)
 }
 
+/// Removes image-authored `/etc` leaves omitted by a configuration generation.
+///
+/// `etc_root` must be the mounted candidate overlay, not its immutable
+/// configuration lower. Unlinking a lower-only leaf through that mount creates
+/// the upper-layer whiteout which keeps the image copy absent after the live
+/// `/etc` swap.
+///
+/// # Errors
+///
+/// Returns an error if the manifest or overlay root is invalid, a parent path
+/// crosses a symlink, or an intended leaf cannot be removed.
+pub fn apply_manifest_removals(manifest_path: &Path, etc_root: &Path) -> Result<()> {
+    let raw = std::fs::read_to_string(manifest_path)
+        .with_context(|| format!("reading manifest {}", manifest_path.display()))?;
+    let manifest: ConfigManifest = serde_json::from_str(&raw)
+        .with_context(|| format!("parsing manifest {}", manifest_path.display()))?;
+    manifest.validate()?;
+
+    let root = openat(
+        rustix::fs::CWD,
+        etc_root,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .with_context(|| format!("opening candidate overlay root {}", etc_root.display()))?;
+
+    for path in &manifest.removed_etc {
+        let (parent, name) = open_parent_beneath(&root, path)
+            .with_context(|| format!("opening parent of removed /etc path {path:?}"))?;
+        match unlinkat(&parent, &name, AtFlags::empty()) {
+            Ok(()) => {}
+            Err(error) if error == rustix::io::Errno::NOENT => {}
+            Err(error) => {
+                return Err(anyhow::Error::from(error))
+                    .with_context(|| format!("removing image-authored /etc path {path:?}"));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Materializes and atomically publishes a configuration generation's EROFS
 /// lower.
 ///
@@ -2402,6 +2478,53 @@ mod tests {
         let error = serde_json::from_value::<ConfigManifest>(value)
             .expect_err("config is a mandatory manifest field");
         assert!(error.to_string().contains("missing field `config`"));
+    }
+
+    #[test]
+    fn removed_etc_must_be_absent_from_rendered_etc() {
+        let mut manifest = manifest_from(
+            r#"{ "schema": "aos.config-manifest/v1",
+                 "etc": { "hostname": { "kind": "text", "mode": "0644", "text": "aos\n" } },
+                 "jobScripts": {} }"#,
+        );
+        manifest.removed_etc.push("hostname".to_string());
+
+        let error = manifest
+            .validate()
+            .expect_err("a path cannot be both rendered and removed");
+        assert!(error.to_string().contains("conflicts structurally"));
+    }
+
+    #[test]
+    fn removed_etc_must_not_cross_a_rendered_subtree() {
+        let mut manifest = manifest_from(
+            r#"{ "schema": "aos.config-manifest/v1",
+                 "etc": { "service/config": { "kind": "text", "mode": "0644", "text": "new\n" } },
+                 "jobScripts": {} }"#,
+        );
+        manifest.removed_etc.push("service".to_string());
+
+        let error = manifest
+            .validate()
+            .expect_err("a removal cannot mask a rendered subtree");
+        assert!(error.to_string().contains("conflicts structurally"));
+    }
+
+    #[test]
+    fn applies_manifest_removals_beneath_candidate_root() {
+        let root = tempdir();
+        std::fs::create_dir_all(root.join("systemd/system")).unwrap();
+        std::fs::write(root.join("systemd/system/old.service"), b"old").unwrap();
+
+        let mut manifest =
+            manifest_from(r#"{ "schema": "aos.config-manifest/v1", "etc": {}, "jobScripts": {} }"#);
+        manifest.removed_etc = vec!["systemd/system/old.service".to_string()];
+        let manifest_path = root.join("manifest.json");
+        std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+        apply_manifest_removals(&manifest_path, &root).unwrap();
+        assert!(!root.join("systemd/system/old.service").exists());
+        apply_manifest_removals(&manifest_path, &root).unwrap();
     }
 
     #[test]

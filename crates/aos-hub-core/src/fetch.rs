@@ -20,6 +20,8 @@
 //! ([`BackendBounds`]): `Send + Sync` natively, unbounded on the single-threaded
 //! wasm32 Worker (whose R2 futures are `?Send`).
 
+use std::collections::BTreeMap;
+
 use anyhow::{bail, Context as _, Result};
 use futures_util::TryStreamExt as _;
 use sha2::{Digest as _, Sha256};
@@ -70,8 +72,22 @@ pub const WORKER_MAX_SURFACE_LIST_CURSOR_BYTES: usize = 1024;
 pub struct SurfaceListPage {
     /// Strictly increasing surface-relative object keys.
     pub paths: Vec<String>,
+    /// Provider-observed metadata keyed by a listed path.
+    ///
+    /// Backends may omit this map. Entries are reusable only when their strong
+    /// version identifiers match earlier byte-verified placement evidence.
+    pub evidence: BTreeMap<String, SurfaceListedEvidence>,
     /// Opaque continuation cursor, or `None` when enumeration is complete.
     pub next_cursor: Option<String>,
+}
+
+/// Provider metadata returned atomically with one listing entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceListedEvidence {
+    /// Length of the listed representation in bytes.
+    pub size: i64,
+    /// Provider-issued strong entity tag for the listed representation.
+    pub strong_etag: String,
 }
 
 impl SurfaceListPage {
@@ -89,6 +105,13 @@ impl SurfaceListPage {
         };
         if requested_limit == 0 || self.paths.len() > requested_limit {
             bail!("surface listing returned more keys than requested");
+        }
+        if self.evidence.iter().any(|(path, evidence)| {
+            self.paths.binary_search(path).is_err()
+                || evidence.size < 0
+                || crate::surface_write::strong_if_match_etag(&evidence.strong_etag).is_err()
+        }) {
+            bail!("surface listing returned invalid provider evidence");
         }
         if self
             .next_cursor
@@ -399,6 +422,19 @@ pub trait SurfaceFetch: BackendBounds {
         Ok(None)
     }
 
+    /// Returns the backend-observed object size without consuming its body.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for metadata transport failure or a size too large to
+    /// represent in the shared database contract.
+    async fn inventory_size(&self, path: &str) -> Result<Option<i64>> {
+        self.fetch_stream(path, None)
+            .await?
+            .map(|read| i64::try_from(read.total).context("surface object size exceeds i64"))
+            .transpose()
+    }
+
     /// Streams one object and derives placement-scoped inventory evidence.
     ///
     /// The default deliberately hashes the streamed bytes and separately asks
@@ -409,11 +445,34 @@ pub trait SurfaceFetch: BackendBounds {
     ///
     /// Returns an error for transport failure or an object too large to model.
     async fn inventory_evidence(&self, path: &str) -> Result<Option<SurfaceObjectEvidence>> {
+        self.inventory_evidence_bounded(path, u64::MAX).await
+    }
+
+    /// Streams one object without reading beyond an accepted byte ceiling.
+    ///
+    /// Implementations reject an oversized declaration before consuming the
+    /// body and abort as soon as a broken transport exceeds either its declared
+    /// length or `maximum_bytes`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for transport failure, an oversized declaration or
+    /// stream, a length mismatch, or an object too large to model.
+    async fn inventory_evidence_bounded(
+        &self,
+        path: &str,
+        maximum_bytes: u64,
+    ) -> Result<Option<SurfaceObjectEvidence>> {
         let before_etag = self.inventory_strong_etag(path).await?;
         let Some(read) = self.fetch_stream(path, None).await? else {
             return Ok(None);
         };
         let expected_size = read.total;
+        if expected_size > maximum_bytes {
+            anyhow::bail!(
+                "surface object '{path}' declares {expected_size} bytes, exceeding the {maximum_bytes}-byte inventory limit"
+            );
+        }
         let mut stream = read.body.into_data_stream();
         let mut hasher = Sha256::new();
         let mut observed_size = 0_u64;
@@ -421,6 +480,11 @@ pub trait SurfaceFetch: BackendBounds {
             observed_size = observed_size
                 .checked_add(chunk.len() as u64)
                 .ok_or_else(|| anyhow::anyhow!("surface object '{path}' size overflowed"))?;
+            if observed_size > expected_size || observed_size > maximum_bytes {
+                anyhow::bail!(
+                    "surface object '{path}' exceeded its bounded inventory length while streaming"
+                );
+            }
             hasher.update(&chunk);
         }
         if observed_size != expected_size {
@@ -510,6 +574,11 @@ mod tests {
         body_reads: AtomicUsize,
     }
 
+    struct InconsistentStream {
+        declared: u64,
+        body: Vec<u8>,
+    }
+
     #[async_trait::async_trait]
     impl SurfaceFetch for DeclaredFetch {
         async fn fetch(&self, _path: &str) -> Result<Option<Vec<u8>>> {
@@ -523,6 +592,31 @@ mod tests {
 
         fn describe(&self) -> String {
             "declared-test".into()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for InconsistentStream {
+        async fn fetch(&self, _path: &str) -> Result<Option<Vec<u8>>> {
+            Ok(Some(self.body.clone()))
+        }
+
+        async fn fetch_stream(
+            &self,
+            _path: &str,
+            _range: Option<(u64, u64)>,
+        ) -> Result<Option<StreamedRead>> {
+            Ok(Some(StreamedRead {
+                body: axum::body::Body::from(self.body.clone()),
+                total: self.declared,
+                range: None,
+                strong_etag: Some("stream-version".into()),
+                snapshot_lease_id: None,
+            }))
+        }
+
+        fn describe(&self) -> String {
+            "inconsistent-stream-test".into()
         }
     }
 
@@ -548,20 +642,33 @@ mod tests {
     fn listing_page_rejects_oversized_repeated_and_unordered_state() {
         let valid = SurfaceListPage {
             paths: vec!["a".into(), "b".into()],
+            evidence: Default::default(),
             next_cursor: Some("cursor-2".into()),
         };
         assert!(valid.validate(2, Some("cursor-1")).is_ok());
         assert!(valid.validate(1, Some("cursor-1")).is_err());
         assert!(valid.validate(2, Some("cursor-2")).is_err());
 
+        let mut invalid_evidence = valid.clone();
+        invalid_evidence.evidence.insert(
+            "outside-page".into(),
+            SurfaceListedEvidence {
+                size: 1,
+                strong_etag: "version-1".into(),
+            },
+        );
+        assert!(invalid_evidence.validate(2, Some("cursor-1")).is_err());
+
         let unordered = SurfaceListPage {
             paths: vec!["b".into(), "a".into()],
+            evidence: Default::default(),
             next_cursor: None,
         };
         assert!(unordered.validate(2, None).is_err());
 
         let empty_non_terminal = SurfaceListPage {
             paths: Vec::new(),
+            evidence: Default::default(),
             next_cursor: Some("cursor".into()),
         };
         assert!(empty_non_terminal.validate(2, None).is_err());
@@ -591,5 +698,33 @@ mod tests {
             body_reads: AtomicUsize::new(0),
         };
         assert_eq!(exact.fetch_bounded("x", 4).await.unwrap(), Some(vec![7; 4]));
+    }
+
+    #[tokio::test]
+    async fn bounded_inventory_rejects_declared_and_streamed_oversize() {
+        let declared = InconsistentStream {
+            declared: 5,
+            body: vec![0; 5],
+        };
+        assert!(declared.inventory_evidence_bounded("x", 4).await.is_err());
+
+        let streamed = InconsistentStream {
+            declared: 4,
+            body: vec![0; 5],
+        };
+        assert!(streamed.inventory_evidence_bounded("x", 4).await.is_err());
+
+        let exact = InconsistentStream {
+            declared: 4,
+            body: vec![7; 4],
+        };
+        let evidence = exact
+            .inventory_evidence_bounded("x", 4)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(evidence.size, 4);
+        let expected: [u8; 32] = Sha256::digest([7; 4]).into();
+        assert_eq!(evidence.sha256, expected);
     }
 }

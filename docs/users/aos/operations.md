@@ -100,6 +100,22 @@ du -x -h -d 2 /var | sort -h
 journalctl --disk-usage
 ```
 
+For a ZFS-backed bare-metal installation, also inspect pool and encryption
+state and schedule scrubs through deployment policy:
+
+```sh
+zpool status
+zpool get autotrim
+zfs get encryption,keystatus,mountpoint rpool
+zfs list -t filesystem,volume
+zpool scrub rpool
+```
+
+The immutable EROFS and dm-verity payloads live in fixed-size A/B zvols; they
+are replaced only by authenticated image staging. Mutable state lives in
+separate encrypted datasets. Do not snapshot, clone, resize, or write an active
+immutable slot outside the image updater.
+
 Do not delete APM profile directories or generation links by hand. Use
 `apm clean --generations --keep N` for the invoking user's package generations,
 or add `--system` to prune both machine-wide package and configuration

@@ -446,7 +446,7 @@ pub struct Fixture {
 pub struct SystemImageFixture {
     /// Signed registry fixture and trust anchor.
     pub registry: Fixture,
-    /// Canonical raw disk bytes.
+    /// Zstandard-compressed canonical raw disk delivery bytes.
     pub raw: Vec<u8>,
     /// QCOW2 encoding bytes.
     pub qcow2: Vec<u8>,
@@ -812,18 +812,20 @@ pub fn system_image_registry(root: &Path) -> SystemImageFixture {
     let fixture = Fixture::new(root);
     let release = "1.0.0";
     let platform = "x86_64-linux";
-    let raw = b"AOS fake raw disk image bytes\n".to_vec();
+    let logical_raw = b"AOS fake raw disk image bytes\n".to_vec();
+    let raw = zstd::stream::encode_all(logical_raw.as_slice(), 1).unwrap();
     let qcow2 = b"QFI\xfbAOS fake qcow2 disk image bytes\n".to_vec();
     let raw_info = br#"{"schemaVersion":1,"format":"raw","target":"bare-metal"}"#.to_vec();
     let qcow2_info =
         br#"{"schemaVersion":1,"format":"qcow2","targets":["qemu-kvm","openstack"]}"#.to_vec();
-    let raw_sha = hex::encode(sha2::Sha256::digest(&raw));
+    let raw_sha = hex::encode(sha2::Sha256::digest(&logical_raw));
+    let raw_transfer_sha = hex::encode(sha2::Sha256::digest(&raw));
     let qcow2_sha = hex::encode(sha2::Sha256::digest(&qcow2));
     let raw_info_sha = hex::encode(sha2::Sha256::digest(&raw_info));
     let qcow2_info_sha = hex::encode(sha2::Sha256::digest(&qcow2_info));
-    let raw_key = immutable_image_object_key(&raw_sha, "aos-1.0.0-x86_64.img");
+    let raw_key = immutable_image_object_key(&raw_transfer_sha, "aos-1.0.0-x86_64.img.zst");
     let qcow2_key = immutable_image_object_key(&qcow2_sha, "aos-1.0.0-x86_64.qcow2");
-    let raw_info_key = immutable_image_info_object_key(&raw_sha, &raw_info_sha);
+    let raw_info_key = immutable_image_info_object_key(&raw_transfer_sha, &raw_info_sha);
     let qcow2_info_key = immutable_image_info_object_key(&qcow2_sha, &qcow2_info_sha);
     let uki = ImageUkiIdentity {
         filename: "aos.efi".to_string(),
@@ -862,7 +864,11 @@ pub fn system_image_registry(root: &Path) -> SystemImageFixture {
                 filename: filename.to_string(),
                 object_key: object_key.to_string(),
                 media_type: media_type.to_string(),
-                compression: ImageCompression::None,
+                compression: if format == "raw" {
+                    ImageCompression::Zstd
+                } else {
+                    ImageCompression::None
+                },
                 byte_size: bytes.len() as u64,
                 sha256: sha256.to_string(),
                 compatible_targets: targets,
@@ -890,14 +896,14 @@ pub fn system_image_registry(root: &Path) -> SystemImageFixture {
     let images = vec![
         make_image(
             "raw",
-            "aos-1.0.0-x86_64.img",
+            "aos-1.0.0-x86_64.img.zst",
             &raw,
-            &raw_sha,
+            &raw_transfer_sha,
             &raw_key,
             &raw_info,
             &raw_info_sha,
             &raw_info_key,
-            "application/vnd.aos.disk-image.raw",
+            "application/vnd.aos.disk-image.raw+zstd",
             vec![ImageTarget::BareMetal],
         ),
         make_image(

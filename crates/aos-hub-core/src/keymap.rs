@@ -22,139 +22,11 @@
 //! key       "demo/channels/stable/00"             (prefix + machine path)
 //! ```
 
-/// The machine-surface directory prefixes (also valid as bare paths).
-const MACHINE_DIRS: [&str; 7] = [
-    "info", "objects", "channels", "releases", "nar", "web", "browse",
-];
-
-/// Cache-control for content-addressed (immutable) payloads.
-pub const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
-/// Cache-control for mutable pointers.
-pub const MUTABLE_CACHE_CONTROL: &str = "public, max-age=60, must-revalidate";
-
-/// Whether a relative path belongs to the machine surface.
-///
-/// The registry-root machine paths (`HEAD`, `nix-cache-info`, `index.html`,
-/// `*.narinfo`) plus every file and directory under the machine prefixes.
-/// Anything else under a registry URL is either the human `/-/` namespace or
-/// not found.
-#[must_use]
-pub fn is_machine_path(path: &str) -> bool {
-    path == "HEAD"
-        || path == "nix-cache-info"
-        || path == "index.html"
-        || path.ends_with(".narinfo")
-        || is_image_object_path(path)
-        || MACHINE_DIRS
-            .iter()
-            .any(|dir| path == *dir || path.starts_with(&format!("{dir}/")))
-}
-
-/// Classify a machine path into its `Cache-Control` header.
-///
-/// Follows `classify_git_path` in `apr`'s `static_upload.rs`: under `objects/`
-/// only `objects/info/**` is mutable; `releases/**` and `nar/**` are
-/// content-addressed; under `web/` only `config.json`, `index.json`, and
-/// `packages/**` are mutable; everything else (refs, channel partitions,
-/// narinfos, server-info) revalidates.
-#[must_use]
-pub fn cache_control(path: &str) -> &'static str {
-    let immutable = if let Some(rest) = path.strip_prefix("objects/") {
-        !rest.starts_with("info/")
-    } else if let Some(rest) = path.strip_prefix("web/") {
-        rest != "config.json" && rest != "index.json" && !rest.starts_with("packages/")
-    } else {
-        path.starts_with("releases/") || path.starts_with("nar/") || is_image_object_path(path)
-    };
-    if immutable {
-        IMMUTABLE_CACHE_CONTROL
-    } else {
-        MUTABLE_CACHE_CONTROL
-    }
-}
-
-/// The `Content-Type` for a machine path.
-#[must_use]
-pub fn content_type(path: &str) -> &'static str {
-    if path.ends_with(".narinfo") {
-        "text/x-nix-narinfo"
-    } else if path.ends_with(".nar.zst") || path.ends_with(".zst") {
-        "application/zstd"
-    } else if path.ends_with(".nar.xz") || path.ends_with(".xz") {
-        "application/x-xz"
-    } else if path.starts_with("images/") && path.ends_with("image-info.json") {
-        "application/vnd.aos.image-info+json"
-    } else if path.starts_with("images/") && path.ends_with(".img") {
-        "application/vnd.aos.disk-image.raw"
-    } else if path.starts_with("images/") && path.ends_with(".qcow2") {
-        "application/vnd.aos.disk-image.qcow2"
-    } else if path.starts_with("images/") && path.ends_with(".vmdk") {
-        "application/x-vmdk"
-    } else if path.starts_with("images/") && path.ends_with(".vhd") {
-        "application/vnd.aos.disk-image.vhd"
-    } else if path.ends_with(".json") {
-        "application/json"
-    } else if path.ends_with(".html") {
-        "text/html; charset=utf-8"
-    } else if path.ends_with(".css") {
-        "text/css"
-    } else if path.ends_with(".js") {
-        "text/javascript"
-    } else if path.ends_with(".wasm") {
-        "application/wasm"
-    } else if path == "HEAD" || path == "nix-cache-info" || path.starts_with("info/") {
-        "text/plain; charset=utf-8"
-    } else {
-        "application/octet-stream"
-    }
-}
-
-fn is_image_object_path(path: &str) -> bool {
-    image_object_sha256(path).is_some()
-}
-
-/// Returns the content digest encoded by a canonical immutable image path.
-///
-/// Disk paths encode the disk digest; per-format `image-info.json` paths
-/// encode the metadata digest. Non-canonical paths return `None`.
-#[must_use]
-pub fn image_object_sha256(path: &str) -> Option<&str> {
-    let Some(rest) = path.strip_prefix("images/sha256/") else {
-        return None;
-    };
-    let parts = rest.split('/').collect::<Vec<_>>();
-    let digest = |value: &str| {
-        value.len() == 64
-            && value
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    };
-    let filename = |value: &str| {
-        !value.is_empty()
-            && value.is_ascii()
-            && !value.starts_with('.')
-            && !value.contains("..")
-            && value
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-    };
-    match parts.as_slice() {
-        [sha256, name] if digest(sha256) && filename(name) => Some(*sha256),
-        [disk_sha256, "metadata", info_sha256, "image-info.json"] => {
-            (digest(disk_sha256) && digest(info_sha256)).then_some(*info_sha256)
-        }
-        _ => None,
-    }
-}
-
-/// Whether a machine path is producer-controlled executable document content.
-///
-/// These paths must be served with a sandbox CSP and attachment disposition so
-/// uploaded HTML or JavaScript cannot execute in the authenticated Hub origin.
-#[must_use]
-pub fn is_producer_document(path: &str) -> bool {
-    path.ends_with(".html") || path.ends_with(".js")
-}
+pub use aos_registry_surface::keymap::{
+    cache_control, content_type, image_object_sha256, is_git_pack_index_path, is_git_pack_path,
+    is_loose_git_object_path, is_machine_path, is_mutable_path, is_producer_document,
+    is_release_object_info_path, IMMUTABLE_CACHE_CONTROL, MUTABLE_CACHE_CONTROL,
+};
 
 /// Map a registry prefix and a machine path to its R2 object key.
 ///
@@ -234,7 +106,10 @@ mod tests {
             "index.html",
             "web/index.json",
             "browse/curl.html",
-            "images/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aos.img",
+            "objects/pack/pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.idx",
+            "releases/1/2/3/objects/pack/pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.idx",
+            "publication-receipts/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+            "images/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aos.img.zst",
         ] {
             assert!(is_machine_path(path), "{path}");
         }
@@ -256,6 +131,25 @@ mod tests {
         assert!(!is_machine_path("objectstore"), "prefixes must not bleed");
         assert!(!is_machine_path("images/latest/aos.img"));
         assert!(!is_machine_path("images/sha256/not-a-digest/aos.img"));
+    }
+
+    #[test]
+    fn publication_receipts_are_immutable_json_objects() {
+        let path =
+            "publication-receipts/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json";
+        assert_eq!(cache_control(path), IMMUTABLE_CACHE_CONTROL);
+        assert_eq!(content_type(path), "application/json");
+    }
+
+    #[test]
+    fn compressed_raw_images_keep_their_specific_media_type() {
+        assert_eq!(
+            content_type(
+                "images/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aos.img.zst"
+            ),
+            "application/vnd.aos.disk-image.raw+zstd"
+        );
+        assert_eq!(content_type("nar/a.nar.zst"), "application/zstd");
     }
 
     #[test]

@@ -83,6 +83,8 @@
   # key-independent).
   secureBootKey ? null,
   secureBootCert ? null,
+  kernelModulePackages ? [],
+  firmwarePackages ? [],
 }: let
   toplevel = system.config.system.build.toplevel;
   kernel = system.config.system.build.kernel;
@@ -105,6 +107,9 @@
   # the running rootfs references store paths the closure reachability
   # scanner wouldn't otherwise catch (e.g. the VM agent shell script
   # referencing `/nix/store/...-socat-*` verbatim).
+  # Module and firmware trees are copied into /usr below. Their source package
+  # closures are build inputs, not runtime roots; retaining both forms would
+  # duplicate the payload and can pull kernel SDKs into the immutable image.
   allClosures = [toplevel kernel] ++ extraClosures;
 
   regInfo = import ./closure-info.nix {inherit pkgs lib;} {
@@ -289,6 +294,30 @@ in
               # kmod looks up modules at /lib/modules/$(uname -r); the
               # /lib → usr/lib symlink makes this resolve to usr/lib/modules.
               ln -sfn "$KERNEL/lib/modules" rootfs/usr/lib/modules
+              ${lib.optionalString (kernelModulePackages != []) ''
+                rm rootfs/usr/lib/modules
+                mkdir -p rootfs/usr/lib/modules
+                cp -a "$KERNEL/lib/modules/." rootfs/usr/lib/modules/
+                chmod -R u+w rootfs/usr/lib/modules
+                ${lib.concatMapStringsSep "\n" (package: ''
+                    chmod -R u+w rootfs/usr/lib/modules
+                    cp -a ${package}/lib/modules/. rootfs/usr/lib/modules/
+                  '')
+                  kernelModulePackages}
+                for module_dir in rootfs/usr/lib/modules/*; do
+                  # An external package can restore the copied release
+                  # directory's read-only store mode while merging modules.
+                  chmod u+w rootfs/usr/lib/modules "$module_dir"
+                  rm -f "$module_dir/build" "$module_dir/source"
+                  ${pkgs.kmod}/sbin/depmod -b rootfs "$(basename "$module_dir")"
+                done
+              ''}
+
+              mkdir -p rootfs/usr/lib/firmware
+              ${lib.concatMapStringsSep "\n" (package: ''
+                  cp -a ${package}/lib/firmware/. rootfs/usr/lib/firmware/
+                '')
+                firmwarePackages}
 
               # ── 5. /var/run → /run ──────────────────────────────────────────
               # Modern-Linux convention: /run is tmpfs, /var/run is a back-

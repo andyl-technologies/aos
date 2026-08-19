@@ -197,19 +197,13 @@ name = "aos-boot-identity"
 version = "0.1.0"
 
 [[package]]
-name = "aos-recovery"
-version = "0.1.0"
-dependencies = [
- "aos-boot-identity",
-]
-
-[[package]]
 name = "aos-cache"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-core",
  "aos-net",
+ "aos-proto-types",
  "async-trait",
  "base64 0.22.1",
  "console",
@@ -368,6 +362,7 @@ dependencies = [
  "hmac 0.12.1",
  "js-sys",
  "jwt-rustcrypto",
+ "md-5 0.11.0",
  "p256",
  "password-hash",
  "rand 0.9.4",
@@ -466,6 +461,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "console",
+ "crc32fast",
  "ed25519-dalek",
  "flate2",
  "futures-util",
@@ -534,6 +530,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-recovery"
+version = "0.1.0"
+dependencies = [
+ "aos-boot-identity",
+]
+
+[[package]]
 name = "aos-registry-spa"
 version = "0.1.0"
 dependencies = [
@@ -556,6 +559,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "crc32fast",
  "ed25519-dalek",
  "flate2",
  "hex",

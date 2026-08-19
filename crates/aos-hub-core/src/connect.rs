@@ -2489,6 +2489,21 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     );
     r = rpc_route!(
         r,
+        "/aos.hub.v1.PublishService/BeginRegistryPublicationMultipartUpload",
+        begin_registry_publication_multipart_upload
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/CompleteRegistryPublicationMultipartUpload",
+        complete_registry_publication_multipart_upload
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/AbortRegistryPublicationMultipartUpload",
+        abort_registry_publication_multipart_upload
+    );
+    r = rpc_route!(
+        r,
         "/aos.hub.v1.PublishService/ListRegistryPublications",
         list_registry_publications
     );
@@ -2526,6 +2541,31 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
                         .await
                     {
                         Ok(()) => StatusCode::CREATED.into_response(),
+                        Err(error) => error_response(&error),
+                    }
+                })
+            },
+        ),
+    );
+    r = r.route(
+        "/aos.hub.v1.PublishService/UploadPart/{upload_id}/{part_number}",
+        put(
+            |State(state): State<SharedState>,
+             Path((upload_id, part_number)): Path<(String, u32)>,
+             headers: HeaderMap,
+             body: Bytes| {
+                let svc = from_state(state);
+                send_bridge(async move {
+                    match svc
+                        .upload_registry_publication_multipart_part(
+                            auth_header(&headers).as_deref(),
+                            &upload_id,
+                            part_number,
+                            &body,
+                        )
+                        .await
+                    {
+                        Ok(part) => Json(part).into_response(),
                         Err(error) => error_response(&error),
                     }
                 })
