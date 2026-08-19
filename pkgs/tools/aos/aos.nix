@@ -24,9 +24,6 @@
   sbsigntools,
   systemd,
   mtools,
-  edk2,
-  gptfdisk,
-  qemu,
   qemu-img,
   tpm2-tools,
   util-linux,
@@ -60,11 +57,10 @@
   # scrubPhase keeps their store-path references in the wrappers and pulls them
   # into the runtime closure; without that, nuke-refs would rewrite these paths
   # to placeholders and the wrappers would point at nonexistent stores.
-  runtimeTools = [bash nix sbsigntools systemd mtools qemu qemu-img util-linux zstd which];
+  runtimeTools = [bash nix sbsigntools systemd mtools qemu-img util-linux zstd which];
   runtimeBinPath = lib.concatStringsSep ":" [
     (lib.makeBinPath runtimeTools)
     "${systemd}/lib/systemd"
-    "${gptfdisk}/sbin"
   ];
   src = import ./_workspace-source.nix {inherit lib;};
   applicationTestPackages = [
@@ -134,8 +130,6 @@ in
       export AOS_SYSTEMD_PCREXTEND="${systemd}/lib/systemd/systemd-pcrextend"
       export AOS_MCOPY="${mtools}/bin/mcopy"
       export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
-      export AOS_OVMF_CODE="${edk2}/FV/OVMF_CODE.fd"
-      export AOS_OVMF_VARS="${edk2}/FV/OVMF_VARS.fd"
       export AOS_TPM2_CREATEEK="${tpm2-tools}/bin/tpm2_createek"
       export AOS_TPM2_CREATEAK="${tpm2-tools}/bin/tpm2_createak"
       export AOS_TPM2_READPUBLIC="${tpm2-tools}/bin/tpm2_readpublic"
@@ -201,8 +195,6 @@ in
       export AOS_SYSTEMD_PCREXTEND="${systemd}/lib/systemd/systemd-pcrextend"
       export AOS_MCOPY="${mtools}/bin/mcopy"
       export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
-      export AOS_OVMF_CODE="${edk2}/FV/OVMF_CODE.fd"
-      export AOS_OVMF_VARS="${edk2}/FV/OVMF_VARS.fd"
       export AOS_TPM2_CREATEEK="${tpm2-tools}/bin/tpm2_createek"
       export AOS_TPM2_CREATEAK="${tpm2-tools}/bin/tpm2_createak"
       export AOS_TPM2_READPUBLIC="${tpm2-tools}/bin/tpm2_readpublic"

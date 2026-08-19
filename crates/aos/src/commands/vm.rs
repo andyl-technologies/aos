@@ -44,6 +44,9 @@ pub fn run(command: &VmCommand, printer: &Printer) -> Result<()> {
 
 fn run_image(args: &VmRunArgs, printer: &Printer) -> Result<()> {
     validate_args(args)?;
+    if printer.mode() == OutputMode::Json && !args.dry_run {
+        bail!("--json requires --dry-run because an interactive guest console is not JSON");
+    }
     let image = canonical_regular_file(&args.image, "image")?;
     let host_config = args
         .host_config
@@ -58,9 +61,9 @@ fn run_image(args: &VmRunArgs, printer: &Printer) -> Result<()> {
     let name = resolve_name(args, &image)?;
     let state_dir = resolve_state_dir(args, &name)?;
     let acceleration = resolve_acceleration(args.accel, printer)?;
-    let qemu = find_executable("qemu-system-x86_64")?;
-    let qemu_img = find_executable("qemu-img")?;
-    let sgdisk = find_executable("sgdisk")?;
+    let qemu = resolve_executable(args.qemu.as_deref(), "qemu-system-x86_64")?;
+    let qemu_img = resolve_executable(args.qemu_img.as_deref(), "qemu-img")?;
+    let sgdisk = resolve_executable(args.sgdisk.as_deref(), "sgdisk")?;
     let firmware_code = resolve_firmware(
         args.firmware_code.as_deref(),
         "AOS_OVMF_CODE",
@@ -93,6 +96,9 @@ fn run_image(args: &VmRunArgs, printer: &Printer) -> Result<()> {
         &image,
         &state_dir,
         &disk,
+        &qemu,
+        &qemu_img,
+        &sgdisk,
         &firmware_code,
         &firmware_vars,
         host_config.as_deref(),
@@ -277,6 +283,9 @@ fn print_plan(
     image: &Path,
     state_dir: &Path,
     disk: &Path,
+    qemu: &Path,
+    qemu_img: &Path,
+    sgdisk: &Path,
     firmware_code: &Path,
     firmware_vars: &Path,
     host_config: Option<&Path>,
@@ -293,6 +302,9 @@ fn print_plan(
             "cpus": args.cpus,
             "memory_mib": args.memory_mib,
             "acceleration": acceleration,
+            "qemu": qemu,
+            "qemu_img": qemu_img,
+            "sgdisk": sgdisk,
             "firmware_code": firmware_code,
             "firmware_vars": firmware_vars,
             "ssh": { "host": "127.0.0.1", "host_port": args.ssh_port, "guest_port": 22 },
@@ -312,6 +324,9 @@ fn print_plan(
     printer.kv("CPUs", &args.cpus.to_string());
     printer.kv("Memory", &format!("{} MiB", args.memory_mib));
     printer.kv("Acceleration", acceleration);
+    printer.kv("QEMU", &qemu.display().to_string());
+    printer.kv("Disk converter", &qemu_img.display().to_string());
+    printer.kv("GPT tool", &sgdisk.display().to_string());
     printer.kv("Firmware code", &firmware_code.display().to_string());
     printer.kv("Firmware state", &firmware_vars.display().to_string());
     printer.kv("SSH", &format!("127.0.0.1:{} -> guest:22", args.ssh_port));
@@ -465,6 +480,13 @@ fn find_executable(name: &str) -> Result<PathBuf> {
     bail!("required host tool '{name}' was not found on PATH")
 }
 
+fn resolve_executable(explicit: Option<&Path>, name: &str) -> Result<PathBuf> {
+    match explicit {
+        Some(path) => canonical_regular_file(path, name),
+        None => find_executable(name),
+    }
+}
+
 fn canonical_regular_file(path: &Path, label: &str) -> Result<PathBuf> {
     let canonical = path
         .canonicalize()
@@ -586,6 +608,9 @@ mod tests {
             state_dir: None,
             firmware_code: None,
             firmware_vars: None,
+            qemu: None,
+            qemu_img: None,
+            sgdisk: None,
             dry_run: false,
         }
     }
