@@ -88,12 +88,13 @@ impl StockNixEvaluator {
     /// only guarantees a syntactically valid, deterministic expression.
     pub fn render_entry_nix(&self, attempt: &EvalAttempt<'_>) -> String {
         let package_modules = render_package_module_list(attempt.working_set);
-        let facts_binding = attempt.facts_json.map_or_else(String::new, |_| {
-            format!(
-                "\x20 factsModule = import {};\n",
-                nix_path(&self.root.join("host-facts.nix"))
-            )
-        });
+        // `entry.nix` and the rendered facts module share one directory. A
+        // relative import keeps the generated source inside the evaluator's
+        // pure source root; importing its absolute /run path is forbidden by
+        // `nix-instantiate --pure-eval` on a live host.
+        let facts_binding = attempt
+            .facts_json
+            .map_or_else(String::new, |_| "\x20 factsModule = import ./host-facts.nix;\n".into());
         let facts_modules = if attempt.facts_json.is_some() {
             "[ factsModule ]"
         } else {
@@ -1002,6 +1003,11 @@ mod tests {
         let entry = std::fs::read_to_string(entry).unwrap();
         let facts = std::fs::read_to_string(root.join("host-facts.nix")).unwrap();
         assert!(entry.contains("factsModules = [ factsModule ]"), "{entry}");
+        assert!(
+            entry.contains("factsModule = import ./host-facts.nix"),
+            "{entry}"
+        );
+        assert!(!entry.contains(root.to_string_lossy().as_ref()), "{entry}");
         assert!(facts.contains("hostname = \"node-1\";"), "{facts}");
         assert!(
             facts.contains("\"aa:bb:cc:dd:ee:ff\" = { names = [ \"ens5\" ]"),
