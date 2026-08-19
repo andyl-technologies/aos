@@ -18,7 +18,8 @@
 //! publishes immutable observation candidates; [`crucible_artifact`] strictly
 //! translates opaque campaign payloads into Crucible execution-model values;
 //! [`crucible_execution`] supplies the typed runner boundary used by the local
-//! QEMU/session adapter.
+//! QEMU/session adapter; [`crucible_qemu_runner`] connects that boundary to the
+//! exact-restore/thin-replay QEMU realization path.
 //! Future modules split session hosting, API transport, and diagnostics.
 
 #![forbid(unsafe_code)]
@@ -29,6 +30,7 @@ pub mod assignment_ledger;
 pub mod control_responsiveness;
 pub mod crucible_artifact;
 pub mod crucible_execution;
+pub mod crucible_qemu_runner;
 pub mod executor_loopback;
 pub mod executor_supervisor;
 pub mod executor_worker;
@@ -53,6 +55,10 @@ pub use crucible_execution::{
     CrucibleAttemptExecution, CrucibleExecutionModel, CrucibleExecutionModelError,
     CrucibleExecutionOutcome, CrucibleExecutionRunner, CrucibleMaterializationTier,
     CrucibleResolvedAttemptStart,
+};
+pub use crucible_qemu_runner::{
+    QemuCrucibleAttemptSession, QemuCrucibleRealizationStore, QemuCrucibleSessionFactory,
+    QemuExactThinExecutionRunner, QemuExactThinRunnerError,
 };
 pub use executor_loopback::{
     LoopbackExecutorProtocolError, LoopbackExecutorServerError, LoopbackExecutorService,

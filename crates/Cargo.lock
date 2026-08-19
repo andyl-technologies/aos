@@ -2164,6 +2164,7 @@ dependencies = [
  "crucible-api",
  "crucible-campaign",
  "crucible-protocol",
+ "crucible-qemu",
  "crucible-session",
  "rustix 1.1.4",
  "tempfile",

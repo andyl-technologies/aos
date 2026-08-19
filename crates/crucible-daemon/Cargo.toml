@@ -12,6 +12,7 @@ workspace = true
 crucible = { path = "../crucible" }
 crucible-api = { path = "../crucible-api" }
 crucible-campaign = { path = "../crucible-campaign" }
+crucible-qemu = { path = "../crucible-qemu" }
 rustix = { workspace = true, features = ["net"] }
 thiserror = { workspace = true }
 

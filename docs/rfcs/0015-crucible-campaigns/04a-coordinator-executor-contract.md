@@ -624,6 +624,26 @@ candidate separately from `hot-fork`, `exact-restore`, or `thin-replay`
 telemetry; the adapter strips that telemetry before canonical candidate
 publication.
 
+The first production-facing QEMU adapter realizes the authenticated starting
+configuration through the existing single `instantiate_qemu_vm` path. Exact
+snapshot admission reports `exact-restore`; ancestor or baked-genesis replay
+reports `thin-replay`. It can be instantiated only with an attempt-scoped live
+session created from the admitted CPU, resident-memory, writable-disk, and
+execution-quantum ceilings plus the cancellation signal. That session owns the
+live backend capability used by the typed post-materialization driver, checks
+cancellation during blocking operations and between bounded quanta, and runs a
+mandatory kill-and-reap cleanup path after success, failure, or cancellation.
+Checkpoint-store lookups receive the same cancellation signal, must bound their
+blocking work, and are cancellation-checked before, during, and after each
+call.
+Only errors explicitly classified as store or executor unavailability are
+retryable; coarse store/executor failures and invalid checkpoints, ancestry,
+authorization, replay-oracle evidence, or ready-point policy fail terminally.
+The driver owns selection application, stop-boundary execution, and candidate
+construction but never assignment or daemon-epoch identity. This adapter cannot
+report `hot-fork`; only the future QEMU-owned fork protocol may do so after its
+conformance gates pass.
+
 - **[CCOMP-20]** Capability reports MUST distinguish immutable compatibility
   facts from volatile capacity and locality hints, and consumers MUST treat
   stale hints as rejection/retry rather than semantic failure.

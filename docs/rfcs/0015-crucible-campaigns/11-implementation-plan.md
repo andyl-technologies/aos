@@ -239,8 +239,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   telemetry outside immutable candidate bytes. The execution
   model now retains a validated campaign `Selection` as one canonical Schedule
   V2 decision with strict binary/serde decoding, content-address participation,
-  event-log projection, and conservative reduction semantics. The concrete
-  production-QEMU runner, capability
+  event-log projection, and conservative reduction semantics. The daemon's
+  exact/thin QEMU runner now invokes the existing authenticated realization
+  coordinator through a mandatory attempt-scoped resource/cancellation session,
+  classifies exact versus replay telemetry, delegates typed
+  selection/stop/candidate work through the session's live-backend capability,
+  and tears the session down on every exit. Only explicitly typed availability
+  failures retry; deterministic realization failures terminate.
+  The concrete driver, hot-fork realization, capability
   service, full out-of-process campaign flight, and complete component
   conformance gate remain open.
 - [x] **T-CAM-4.10** Replace repeated full-history validation on local owner
