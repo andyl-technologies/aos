@@ -6,7 +6,7 @@
 //! hot-fork, exact-restore, and thin-replay selection remain operational runner
 //! policy and cannot alter the canonical attempt.
 
-use crucible::{Configuration, ScenarioDefForm};
+use crucible::{Configuration, Decision, ScenarioDefForm, SelectionDecision, step};
 use crucible_campaign::{
     Attempt, BranchPath, CampaignExecutorStore, CampaignLineage, ExecutorRejection,
     ObservationCandidate, ResolvedSelection,
@@ -32,7 +32,59 @@ pub enum CrucibleResolvedAttemptStart {
         parent: Configuration,
         /// Campaign selection, opportunity, and effective domain authenticated together.
         selection: Box<ResolvedSelection>,
+        /// Exact canonical prefix after recording the selected branch edge.
+        selected: Configuration,
     },
+}
+
+/// Operational realization tier used for one local Crucible attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CrucibleMaterializationTier {
+    /// A QEMU-owned immutable fork template produced a copy-on-write child.
+    HotFork,
+    /// An authenticated exact checkpoint restored the requested configuration.
+    ExactRestore,
+    /// Deterministic replay reconstructed the requested configuration.
+    ThinReplay,
+}
+
+/// Complete runner result with non-canonical materialization telemetry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CrucibleExecutionOutcome {
+    candidate: ObservationCandidate,
+    materialization: CrucibleMaterializationTier,
+}
+
+impl CrucibleExecutionOutcome {
+    /// Binds one canonical candidate to the operational tier that realized it.
+    #[must_use]
+    pub const fn new(
+        candidate: ObservationCandidate,
+        materialization: CrucibleMaterializationTier,
+    ) -> Self {
+        Self {
+            candidate,
+            materialization,
+        }
+    }
+
+    /// Returns the canonical immutable candidate.
+    #[must_use]
+    pub const fn candidate(&self) -> &ObservationCandidate {
+        &self.candidate
+    }
+
+    /// Returns the operational realization tier.
+    #[must_use]
+    pub const fn materialization(&self) -> CrucibleMaterializationTier {
+        self.materialization
+    }
+
+    /// Consumes the outcome into its canonical candidate and operational tier.
+    #[must_use]
+    pub fn into_parts(self) -> (ObservationCandidate, CrucibleMaterializationTier) {
+        (self.candidate, self.materialization)
+    }
 }
 
 /// Fully decoded input supplied to a concrete Crucible execution runner.
@@ -95,20 +147,25 @@ pub trait CrucibleExecutionRunner {
         &mut self,
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
-    ) -> Result<ObservationCandidate, AttemptWorkerFailure<Self::Error>>;
+    ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>>;
 }
 
 /// Execution-model adapter that authenticates artifacts before invoking a runner.
 pub struct CrucibleExecutionModel<R> {
     store: CampaignExecutorStore,
     runner: R,
+    last_materialization: Option<CrucibleMaterializationTier>,
 }
 
 impl<R> CrucibleExecutionModel<R> {
     /// Creates the strict Crucible adapter over one concrete runner.
     #[must_use]
     pub const fn new(store: CampaignExecutorStore, runner: R) -> Self {
-        Self { store, runner }
+        Self {
+            store,
+            runner,
+            last_materialization: None,
+        }
     }
 
     /// Returns the concrete runner for diagnostics and configuration.
@@ -127,6 +184,12 @@ impl<R> CrucibleExecutionModel<R> {
     #[must_use]
     pub fn into_runner(self) -> R {
         self.runner
+    }
+
+    /// Returns the last successful operational materialization tier.
+    #[must_use]
+    pub const fn last_materialization(&self) -> Option<CrucibleMaterializationTier> {
+        self.last_materialization
     }
 }
 
@@ -152,6 +215,7 @@ where
         input: &AttemptExecutionInput,
         context: &AttemptExecutionContext,
     ) -> Result<ObservationCandidate, AttemptWorkerFailure<Self::Error>> {
+        self.last_materialization = None;
         let scenario = decode_crucible_scenario_artifact(input.scenario()).map_err(|error| {
             AttemptWorkerFailure::Terminal(CrucibleExecutionModelError::Artifact(error))
         })?;
@@ -174,9 +238,28 @@ where
                     &self.store,
                 )
                 .map_err(map_artifact_failure)?;
+                let recorded = selection.selection();
+                recorded
+                    .validate_branch_replay(
+                        selection.opportunity(),
+                        selection.domain(),
+                        selection.opportunity().branch_point_id(
+                            crucible_campaign::ConfigurationId::from_hash(
+                                crucible_campaign::CampaignHash::from_bytes(parent.id().bytes),
+                            ),
+                        ),
+                    )
+                    .map_err(|error| {
+                        map_artifact_failure(CrucibleArtifactError::Campaign(error))
+                    })?;
+                let selected = step(
+                    &parent,
+                    Decision::Selection(SelectionDecision::new(recorded)),
+                );
                 CrucibleResolvedAttemptStart::Branch {
                     parent,
                     selection: selection.clone(),
+                    selected,
                 }
             }
         };
@@ -187,9 +270,13 @@ where
             path: input.path().clone(),
             start,
         };
-        self.runner
+        let outcome = self
+            .runner
             .execute(&decoded, context)
-            .map_err(map_runner_failure)
+            .map_err(map_runner_failure)?;
+        let (candidate, materialization) = outcome.into_parts();
+        self.last_materialization = Some(materialization);
+        Ok(candidate)
     }
 }
 
