@@ -452,6 +452,21 @@ published choice body is not branchable merely because it exists. It becomes
 authoritative only through an exact discovery fact or canonical observation,
 and branch acceptance requires that graph membership.
 
+### D-35: Claimable work is rebuilt from snapshots; leases are epoch-local
+
+The durable attempt frontier is the authenticated difference between admitted
+attempt membership and canonical observation membership. It is projected by a
+bounded, snapshot-bound scan rather than stored as a mutable queue. A cursor
+from an older snapshot is rejected, and changing page size changes only scan
+suspension boundaries, not the sequence obtained at EOF.
+
+Worker reservations are bounded process-local acceleration state. They bind an
+immutable `AttemptId` to one daemon epoch, worker slot, and generation, but none
+of those operational fields enters campaign identity or recovery. A restarted
+daemon chooses a fresh nonzero epoch, rebuilds claimable attempts from the
+current snapshot, and may duplicate unfinished execution; canonical
+observation conditional-create remains the semantic idempotence boundary.
+
 ## Deliberately rejected representations
 
 The following patterns are outside the design even if they appear convenient

@@ -301,8 +301,14 @@ mod closure;
 mod observation;
 mod planner_issue;
 mod projection;
+mod queue;
 mod records;
 mod transactions;
+
+pub use queue::{
+    AttemptQueue, AttemptQueueCursor, AttemptQueueError, AttemptReservation, ClaimableAttemptPage,
+    DaemonEpoch, WorkerSlotId,
+};
 
 struct LoadedSnapshot {
     envelope: ObjectEnvelope,
@@ -3849,6 +3855,137 @@ mod tests {
                 .expect("validation checkpoints")
                 .len(),
             checkpoint_count
+        );
+    }
+
+    #[test]
+    fn claimable_attempt_pages_are_bounded_snapshot_bound_and_restart_rebuildable() {
+        fn collect(
+            repository: &CampaignRepository,
+            name: &str,
+            scan_limit: usize,
+        ) -> (CampaignSnapshotId, Vec<AttemptId>) {
+            let mut cursor = None;
+            let mut snapshot = None;
+            let mut attempts = Vec::new();
+            loop {
+                let page = repository
+                    .project_claimable_attempts(name, cursor, scan_limit)
+                    .expect("project claimable attempts");
+                assert!(page.scanned_entries() <= scan_limit);
+                if let Some(expected) = snapshot {
+                    assert_eq!(page.snapshot(), expected);
+                } else {
+                    snapshot = Some(page.snapshot());
+                }
+                attempts.extend_from_slice(page.attempts());
+                cursor = page.next();
+                if cursor.is_none() {
+                    break;
+                }
+            }
+            (snapshot.expect("at least one page"), attempts)
+        }
+
+        let (repository, lineage, policy) = fixture();
+        let (_, admitted, observation) =
+            admitted_observation_fixture(&repository, &lineage, &policy, "claimable-attempts");
+
+        assert_eq!(
+            DaemonEpoch::from_bytes([0; 16]),
+            Err(AttemptQueueError::ZeroDaemonEpoch)
+        );
+        let first_epoch = DaemonEpoch::from_bytes([1; 16]).expect("first daemon epoch");
+        assert!(matches!(
+            AttemptQueue::new(first_epoch, 0),
+            Err(AttemptQueueError::ZeroCapacity)
+        ));
+        let claimable_page = repository
+            .project_claimable_attempts("claimable-attempts", None, 10_000)
+            .expect("claimable page before completion");
+        let mut queue = AttemptQueue::new(first_epoch, 1).expect("bounded attempt queue");
+        let first_slot = WorkerSlotId::new(0);
+        let first_reservation = queue
+            .reserve_from_page(&claimable_page, first_slot)
+            .expect("reserve first attempt")
+            .expect("claimable attempt");
+        assert_eq!(first_reservation.attempt(), admitted.attempt);
+        assert_eq!(first_reservation.daemon_epoch(), first_epoch);
+        assert_eq!(first_reservation.worker_slot(), first_slot);
+        assert_eq!(first_reservation.generation(), 1);
+        assert_eq!(
+            queue
+                .reserve_from_page(&claimable_page, first_slot)
+                .expect("repeat exact slot reservation"),
+            Some(first_reservation)
+        );
+        assert_eq!(queue.reservation_count(), 1);
+
+        queue
+            .release(first_reservation)
+            .expect("release exact reservation");
+        let second_reservation = queue
+            .reserve_from_page(&claimable_page, WorkerSlotId::new(1))
+            .expect("reserve after release")
+            .expect("claimable attempt after release");
+        assert_eq!(second_reservation.generation(), 2);
+
+        let second_epoch = DaemonEpoch::from_bytes([2; 16]).expect("second daemon epoch");
+        let mut restarted_queue =
+            AttemptQueue::new(second_epoch, 1).expect("restarted attempt queue");
+        assert_eq!(
+            restarted_queue.release(second_reservation),
+            Err(AttemptQueueError::ReservationMismatch)
+        );
+        let restarted_reservation = restarted_queue
+            .reserve_from_page(&claimable_page, WorkerSlotId::new(0))
+            .expect("reserve in new daemon epoch")
+            .expect("claimable attempt in new daemon epoch");
+        assert_eq!(restarted_reservation.daemon_epoch(), second_epoch);
+        assert_eq!(restarted_reservation.generation(), 1);
+
+        let (small_snapshot, small) = collect(&repository, "claimable-attempts", 1);
+        let (large_snapshot, large) = collect(&repository, "claimable-attempts", 10_000);
+        assert_eq!(small_snapshot, admitted.new_snapshot);
+        assert_eq!(large_snapshot, admitted.new_snapshot);
+        assert_eq!(small, vec![admitted.attempt]);
+        assert_eq!(large, small);
+
+        let stale_cursor = repository
+            .project_claimable_attempts("claimable-attempts", None, 1)
+            .expect("first bounded queue page")
+            .next()
+            .expect("accounting root spans multiple one-entry pages");
+        let observed = repository
+            .publish_observation("claimable-attempts", admitted.new_snapshot, &observation)
+            .expect("publish canonical observation");
+        assert!(matches!(
+            repository.project_claimable_attempts(
+                "claimable-attempts",
+                Some(stale_cursor),
+                1,
+            ),
+            Err(CampaignRepositoryError::Stale { expected, current })
+                if expected == admitted.new_snapshot && current == observed.new_snapshot
+        ));
+
+        let (rebuilt_snapshot, rebuilt) = collect(&repository, "claimable-attempts", 3);
+        assert_eq!(rebuilt_snapshot, observed.new_snapshot);
+        assert!(rebuilt.is_empty());
+        let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+        let (restart_snapshot, restart_claimable) = collect(&restarted, "claimable-attempts", 2);
+        assert_eq!(restart_snapshot, observed.new_snapshot);
+        assert_eq!(restart_claimable, rebuilt);
+        let completed_page = restarted
+            .project_claimable_attempts("claimable-attempts", None, 10_000)
+            .expect("post-completion page");
+        let third_epoch = DaemonEpoch::from_bytes([3; 16]).expect("third daemon epoch");
+        let mut completed_queue = AttemptQueue::new(third_epoch, 1).expect("post-completion queue");
+        assert_eq!(
+            completed_queue
+                .reserve_from_page(&completed_page, WorkerSlotId::new(0))
+                .expect("post-completion reservation attempt"),
+            None
         );
     }
 
