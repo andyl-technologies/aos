@@ -80,9 +80,16 @@ fn exact_replay_running_dedup_and_capacity_are_bounded() {
     assert_eq!(queued.execution(), execution);
     assert_eq!(queued.request(), &first);
     assert!(supervisor.next_queued().is_none());
+    let completed_observation = observation(0x71);
     assert_eq!(
         supervisor
-            .complete_execution(execution_key(&first), execution, observation(0x71))
+            .stage_observation_publication(&queued, completed_observation)
+            .expect("stage observation publication"),
+        ObservationPublicationOutcome::Staged
+    );
+    assert_eq!(
+        supervisor
+            .complete_execution(execution_key(&first), execution, completed_observation)
             .expect("complete execution"),
         CompletionOutcome::Completed
     );
@@ -219,6 +226,13 @@ fn completion_and_cancellation_races_are_idempotent() {
         .expect("accepted completion fixture");
     let completed_execution = accepted_execution(&completed_response);
     let completed_observation = observation(0x72);
+    let completed_queued = supervisor.next_queued().expect("queued completion fixture");
+    assert_eq!(
+        supervisor
+            .stage_observation_publication(&completed_queued, completed_observation)
+            .expect("stage completion fixture"),
+        ObservationPublicationOutcome::Staged
+    );
     assert_eq!(
         supervisor
             .complete_execution(
@@ -448,7 +462,7 @@ fn compare_exchange_failures_reconcile_running_completion_and_cancellation() {
             CasFailure::BeforeStore => 0x42,
             CasFailure::AfterStore => 0x43,
         });
-        let ledger = FailingCasLedger::new(failure, 2);
+        let ledger = FailingCasLedger::new(failure, 3);
         let mut supervisor = LocalExecutorSupervisor::new(
             ledger,
             AllowAllAttemptAdmission,
@@ -462,6 +476,13 @@ fn compare_exchange_failures_reconcile_running_completion_and_cancellation() {
                 .expect("completion fixture accepted"),
         );
         let observation = observation(0x78);
+        let queued = supervisor.next_queued().expect("queued completion fixture");
+        assert_eq!(
+            supervisor
+                .stage_observation_publication(&queued, observation)
+                .expect("stage completion fixture"),
+            ObservationPublicationOutcome::Staged
+        );
         assert!(matches!(
             supervisor.complete_execution(execution_key(&request), execution, observation),
             Err(LocalExecutorError::Ledger(InjectedFailure))
@@ -538,6 +559,13 @@ fn completion_validation_is_fail_closed_by_default() {
         .submit_attempt(&request)
         .expect("accepted execution");
     let execution = accepted_execution(&response);
+    let queued = supervisor.next_queued().expect("queued execution");
+    assert_eq!(
+        supervisor
+            .stage_observation_publication(&queued, observation(0x76))
+            .expect("stage invalid completion"),
+        ObservationPublicationOutcome::Staged
+    );
     assert!(matches!(
         supervisor.complete_execution(execution_key(&request), execution, observation(0x76)),
         Err(LocalExecutorError::CompletionValidation {
@@ -549,8 +577,8 @@ fn completion_validation_is_fail_closed_by_default() {
         supervisor
             .ledger()
             .load_attempt(execution_key(&request))
-            .expect("running state"),
-        Some(AttemptRuntimeState::Running { .. })
+            .expect("publishing state"),
+        Some(AttemptRuntimeState::Publishing { .. })
     ));
 }
 
@@ -571,6 +599,13 @@ fn durable_completions_are_reauthenticated_or_discarded_before_reuse() {
             &supervisor
                 .submit_attempt(&request)
                 .expect("completion fixture accepted"),
+        );
+        let queued = supervisor.next_queued().expect("queued completion fixture");
+        assert_eq!(
+            supervisor
+                .stage_observation_publication(&queued, completed_observation)
+                .expect("stage completion fixture"),
+            ObservationPublicationOutcome::Staged
         );
         assert_eq!(
             supervisor
@@ -713,6 +748,13 @@ fn durable_restart_replaces_stale_running_and_preserves_completion() {
             .expect("replace stale running execution");
         let replacement_execution = accepted_execution(&replacement_response);
         assert_ne!(replacement_execution, first_execution);
+        let replacement_queued = supervisor.next_queued().expect("queued replacement");
+        assert_eq!(
+            supervisor
+                .stage_observation_publication(&replacement_queued, completed_observation)
+                .expect("stage durable completion"),
+            ObservationPublicationOutcome::Staged
+        );
         assert_eq!(
             supervisor
                 .complete_execution(
@@ -740,6 +782,98 @@ fn durable_restart_replaces_stale_running_and_preserves_completion() {
         }
     );
     assert_eq!(supervisor.active_count(), 0);
+}
+
+#[test]
+fn restart_recovers_publishing_without_losing_the_expected_observation() {
+    let first_epoch = daemon_epoch(0x34);
+    let capacity = ExecutorCapacity::new(1, 1, 2048, 4096, 64).expect("capacity");
+    let first_request = request(0x44, 0x62, first_epoch, resources(1, 1024, 2048));
+    let expected_observation = observation(0x79);
+    let ledger = {
+        let mut supervisor = LocalExecutorSupervisor::new(
+            MemoryAssignmentLedger::default(),
+            AllowAllAttemptAdmission,
+            first_epoch,
+            capacity,
+        );
+        let execution = accepted_execution(
+            &supervisor
+                .submit_attempt(&first_request)
+                .expect("accept first incarnation"),
+        );
+        let queued = supervisor.next_queued().expect("queued first incarnation");
+        assert_eq!(queued.execution(), execution);
+        assert_eq!(
+            supervisor
+                .stage_observation_publication(&queued, expected_observation)
+                .expect("persist publication root"),
+            ObservationPublicationOutcome::Staged
+        );
+        supervisor.into_ledger()
+    };
+
+    let second_epoch = daemon_epoch(0x35);
+    let completed_request = request(0x45, 0x62, second_epoch, resources(1, 1024, 2048));
+    let mut completed =
+        LocalExecutorSupervisor::new(ledger, AllowAllAttemptAdmission, second_epoch, capacity);
+    assert_eq!(
+        completed
+            .submit_attempt(&completed_request)
+            .expect("promote complete publication")
+            .disposition(),
+        SubmitAttemptDisposition::AlreadyCompleted {
+            observation: expected_observation
+        }
+    );
+    assert_eq!(completed.active_count(), 0);
+
+    let recovery_epoch = daemon_epoch(0x36);
+    let recovery_request = request(0x46, 0x63, recovery_epoch, resources(1, 1024, 2048));
+    let recovery_ledger = {
+        let mut supervisor = LocalExecutorSupervisor::new(
+            MemoryAssignmentLedger::default(),
+            AllowAllAttemptAdmission,
+            first_epoch,
+            capacity,
+        );
+        supervisor
+            .submit_attempt(&request(0x47, 0x63, first_epoch, resources(1, 1024, 2048)))
+            .expect("accept recovery fixture");
+        let queued = supervisor.next_queued().expect("queued recovery fixture");
+        supervisor
+            .stage_observation_publication(&queued, expected_observation)
+            .expect("persist incomplete publication root");
+        supervisor.into_ledger()
+    };
+    let mut recovery = LocalExecutorSupervisor::new(
+        recovery_ledger,
+        CompletionValidator(Err(CompletionValidationFailure::UnavailableInput)),
+        recovery_epoch,
+        capacity,
+    );
+    assert!(matches!(
+        recovery
+            .submit_attempt(&recovery_request)
+            .expect("admit exact recovery")
+            .disposition(),
+        SubmitAttemptDisposition::Accepted { .. }
+    ));
+    let queued = recovery.next_queued().expect("queued recovery incarnation");
+    assert!(matches!(
+        recovery.stage_observation_publication(&queued, observation(0x7a)),
+        Err(LocalExecutorError::ConflictingCompletion)
+    ));
+    assert!(matches!(
+        recovery
+            .ledger()
+            .load_attempt(execution_key(&recovery_request))
+            .expect("retained publication root"),
+        Some(AttemptRuntimeState::Publishing {
+            observation,
+            ..
+        }) if observation == expected_observation
+    ));
 }
 
 #[test]
@@ -865,6 +999,16 @@ impl AssignmentLedger for FailingCasLedger {
             Err(never) => match never {},
         }
     }
+
+    fn visit_observation_roots(
+        &self,
+        visitor: &mut dyn FnMut(ObservationId),
+    ) -> Result<(), Self::Error> {
+        match self.inner.visit_observation_roots(visitor) {
+            Ok(()) => Ok(()),
+            Err(never) => match never {},
+        }
+    }
 }
 
 struct FailingPublishLedger {
@@ -923,6 +1067,16 @@ impl AssignmentLedger for FailingPublishLedger {
     ) -> Result<AttemptStateCas, Self::Error> {
         match self.inner.compare_exchange_attempt(key, expected, next) {
             Ok(outcome) => Ok(outcome),
+            Err(never) => match never {},
+        }
+    }
+
+    fn visit_observation_roots(
+        &self,
+        visitor: &mut dyn FnMut(ObservationId),
+    ) -> Result<(), Self::Error> {
+        match self.inner.visit_observation_roots(visitor) {
+            Ok(()) => Ok(()),
             Err(never) => match never {},
         }
     }

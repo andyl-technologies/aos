@@ -446,6 +446,16 @@ transfer roots, and durable write-back journals. A pin declares
 metadata, thin, or exact retention plus a durability requirement. Hot-hub
 preference and placement receipts are operational.
 
+On the single-host executor, the lineage-qualified operational assignment
+ledger is the owner of result-publication roots. It streams the expected
+`ObservationId` from every authenticated `publishing` record and the retained
+`ObservationId` from every authenticated `completed` record into the GC root
+enumeration without materializing ledger history. `Publishing` is durable
+before the first candidate-object write and survives restart; completion or an
+explicit cancellation/quarantine transition is the only way to replace it.
+These operational records do not grant the executor authority to mutate a
+campaign ref.
+
 GC is planned per logical reachability and physical tier. It reports:
 
 - logically reachable objects;

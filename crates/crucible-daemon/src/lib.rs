@@ -14,6 +14,8 @@
 //! transport; [`executor_supervisor`] owns bounded single-host admission,
 //! idempotent scheduling, completion, and cancellation;
 //! [`repository_admission`] is its read-only production semantic boundary.
+//! [`executor_worker`] resolves accepted assignments, delegates execution, and
+//! publishes immutable observation candidates.
 //! Future modules split session hosting, API transport, and diagnostics.
 
 #![forbid(unsafe_code)]
@@ -24,6 +26,7 @@ pub mod assignment_ledger;
 pub mod control_responsiveness;
 pub mod executor_loopback;
 pub mod executor_supervisor;
+pub mod executor_worker;
 pub mod repository_admission;
 
 pub use assignment_ledger::{
@@ -42,7 +45,18 @@ pub use executor_loopback::{
 };
 pub use executor_supervisor::{
     AllowAllAttemptAdmission, AttemptAdmissionValidator, CancellationOutcome, CompletionOutcome,
-    CompletionValidationFailure, ExecutorCapacity, ExecutorCapacityError, LocalExecutorError,
-    LocalExecutorSupervisor, QueuedAttempt,
+    CompletionValidationFailure, ExecutionCancellation, ExecutorCapacity, ExecutorCapacityError,
+    LocalExecutorError, LocalExecutorSupervisor, ObservationPublicationOutcome, QueuedAttempt,
+};
+pub use executor_worker::{
+    AttemptExecutionContext, AttemptExecutionInput, AttemptExecutionModel, AttemptResultAbortError,
+    AttemptResultPreparationError, AttemptResultPublicationError, AttemptResultStageOutcome,
+    AttemptResultStagingError, AttemptWorkResult, AttemptWorkerFailure,
+    AttemptWorkerReconcileError, AttemptWorkerReconcileOutcome, LocalAttemptWorker,
+    PendingAttemptResult, PreparedAttemptResult, PublishedAttemptResult, RepositoryAttemptWorker,
+    RepositoryAttemptWorkerError, ResolvedAttemptStart, StagedAttemptResult,
+    abort_prepared_attempt_result, abort_staged_attempt_result, prepare_attempt_result,
+    publish_prepared_attempt_result, reconcile_attempt_failure, reconcile_published_attempt_result,
+    retry_pending_attempt_result, stage_prepared_attempt_result,
 };
 pub use repository_admission::RepositoryAttemptAdmission;

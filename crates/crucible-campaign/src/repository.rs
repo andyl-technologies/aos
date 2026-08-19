@@ -45,6 +45,8 @@ const MAX_ISSUE_GENERATOR_VALIDATION_OBJECTS: usize = 1_000_000;
 const PLANNER_SCAN_STORAGE_PAGE_ITEMS: usize = 10_000;
 const MAX_VALIDATED_HEADS: usize = 1_024;
 const MAX_CHOICE_VALIDATION_CACHE_ENTRIES: usize = 65_536;
+const _: () =
+    assert!(MAX_CHOICE_VALIDATION_CACHE_ENTRIES >= crate::observation::MAX_DISCOVERED_CHOICES);
 const MAX_SIMPLE_SUCCESSOR_GROWTH: usize = 512;
 const MAX_PLANNER_ISSUE_SUCCESSOR_GROWTH: usize = 4_000_000;
 // One fixed-depth trie insertion rewrites at most one node per digest nibble.
@@ -203,12 +205,223 @@ pub struct ObservationResult {
     pub replayed: bool,
 }
 
+/// Complete immutable executor result published before campaign admission.
+///
+/// The bundle keeps the child configuration and modeled evidence values beside
+/// the observation that names them. A repository validates the complete bundle
+/// and every already-published evidence dependency before writing any member.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObservationCandidate {
+    child: ConfigurationArtifact,
+    measurements: MeasurementSet,
+    properties: PropertyVerdictSet,
+    coverage: CoverageProjection,
+    discovered_choices: Vec<ChoiceOpportunity>,
+    observation: Observation,
+}
+
+impl ObservationCandidate {
+    /// Builds one executor-produced immutable result bundle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when discovered opportunity bodies exceed the
+    /// observation schema bound, contain duplicate IDs, or do not exactly
+    /// match the observation's discovered-choice set.
+    pub fn new(
+        child: ConfigurationArtifact,
+        measurements: MeasurementSet,
+        properties: PropertyVerdictSet,
+        coverage: CoverageProjection,
+        discovered_choices: Vec<ChoiceOpportunity>,
+        observation: Observation,
+    ) -> Result<Self, CampaignCodecError> {
+        if discovered_choices.len() > crate::observation::MAX_DISCOVERED_CHOICES {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "observation candidate has too many discovered choices",
+            });
+        }
+        let discovered_ids = discovered_choices
+            .iter()
+            .map(ChoiceOpportunity::id)
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        if discovered_ids.len() != discovered_choices.len()
+            || &discovered_ids != observation.discovered_choices()
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "observation candidate choice bodies differ from observation IDs",
+            });
+        }
+        Ok(Self {
+            child,
+            measurements,
+            properties,
+            coverage,
+            discovered_choices,
+            observation,
+        })
+    }
+
+    /// Returns the exact child configuration artifact.
+    #[must_use]
+    pub const fn child(&self) -> &ConfigurationArtifact {
+        &self.child
+    }
+
+    /// Returns the exact modeled measurements.
+    #[must_use]
+    pub const fn measurements(&self) -> &MeasurementSet {
+        &self.measurements
+    }
+
+    /// Returns the exact property verdicts.
+    #[must_use]
+    pub const fn properties(&self) -> &PropertyVerdictSet {
+        &self.properties
+    }
+
+    /// Returns the exact coverage projection.
+    #[must_use]
+    pub const fn coverage(&self) -> &CoverageProjection {
+        &self.coverage
+    }
+
+    /// Returns exact opportunity bodies discovered by the execution.
+    #[must_use]
+    pub fn discovered_choices(&self) -> &[ChoiceOpportunity] {
+        &self.discovered_choices
+    }
+
+    /// Returns the canonical observation that binds every bundle member.
+    #[must_use]
+    pub const fn observation(&self) -> &Observation {
+        &self.observation
+    }
+}
+
 /// Selection and exact choice records authenticated together by a repository.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedSelection {
     selection: Selection,
     opportunity: ChoiceOpportunity,
     domain: ChoiceDomain,
+}
+
+/// Narrow immutable-record capability supplied to a local campaign executor.
+///
+/// This facade deliberately exposes no campaign head, mutable-ref, owner
+/// projection, or coordinator transaction methods. It can authenticate the
+/// records needed to execute one attempt and publish a content-addressed
+/// observation candidate for later coordinator admission.
+#[derive(Clone)]
+pub struct CampaignExecutorStore {
+    repository: Arc<CampaignRepository>,
+}
+
+impl CampaignExecutorStore {
+    /// Creates a narrow executor capability over one campaign repository.
+    #[must_use]
+    pub const fn new(repository: Arc<CampaignRepository>) -> Self {
+        Self { repository }
+    }
+
+    /// Loads and authenticates one campaign compatibility lineage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lineage is missing, corrupt, or inconsistent.
+    pub fn load_lineage(
+        &self,
+        id: CampaignLineageId,
+    ) -> Result<CampaignLineage, CampaignRepositoryError> {
+        self.repository.load_lineage(id)
+    }
+
+    /// Loads and authenticates one execution-model scenario artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the artifact is missing, corrupt, or inconsistent.
+    pub fn load_scenario_artifact(
+        &self,
+        id: ScenarioArtifactId,
+    ) -> Result<ScenarioArtifact, CampaignRepositoryError> {
+        self.repository.load_scenario_artifact(id)
+    }
+
+    /// Loads and authenticates one semantic attempt closure.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the attempt or one of its references is missing,
+    /// corrupt, or inconsistent.
+    pub fn load_attempt(&self, id: AttemptId) -> Result<Attempt, CampaignRepositoryError> {
+        self.repository.load_attempt(id)
+    }
+
+    /// Loads and authenticates one semantic branch path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the path is missing, corrupt, or inconsistent.
+    pub fn load_branch_path(
+        &self,
+        id: BranchPathId,
+    ) -> Result<BranchPath, CampaignRepositoryError> {
+        self.repository.load_branch_path(id)
+    }
+
+    /// Loads and authenticates one exact configuration artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the artifact is missing, corrupt, or inconsistent.
+    pub fn load_configuration_artifact(
+        &self,
+        id: ConfigurationArtifactId,
+    ) -> Result<ConfigurationArtifact, CampaignRepositoryError> {
+        self.repository.load_configuration_artifact(id)
+    }
+
+    /// Resolves one selection with its authenticated opportunity and domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any exact selection reference is missing, corrupt,
+    /// or semantically inconsistent.
+    pub fn resolve_selection(
+        &self,
+        id: SelectionId,
+    ) -> Result<ResolvedSelection, CampaignRepositoryError> {
+        self.repository.resolve_selection(id)
+    }
+
+    /// Publishes a validated immutable observation candidate without advancing a campaign.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error before writing when the bundle or any already-published
+    /// dependency is missing, corrupt, oversized, or inconsistent. A storage
+    /// failure after publication starts may leave unreachable immutable data.
+    pub fn publish_observation_candidate(
+        &self,
+        candidate: &ObservationCandidate,
+    ) -> Result<ObservationId, CampaignRepositoryError> {
+        self.repository.publish_observation_candidate(candidate)
+    }
+
+    /// Validates an observation candidate without writing any bundle member.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the bundle or an already-published dependency is
+    /// missing, corrupt, oversized, or inconsistent.
+    pub fn validate_observation_candidate(
+        &self,
+        candidate: &ObservationCandidate,
+    ) -> Result<(), CampaignRepositoryError> {
+        self.repository.validate_observation_candidate(candidate)
+    }
 }
 
 impl ResolvedSelection {
@@ -3870,6 +4083,190 @@ mod tests {
         assert!(replayed_conflict.replayed);
         assert_eq!(replayed_conflict.new_snapshot, conflicted.new_snapshot);
         assert_eq!(replayed_conflict.disposition, conflicted.disposition);
+    }
+
+    #[test]
+    fn executor_candidate_publication_is_immutable_and_does_not_advance_the_campaign() {
+        let (repository, lineage, policy) = fixture();
+        let (_, admitted, observation) =
+            admitted_observation_fixture(&repository, &lineage, &policy, "observation-candidate");
+        let head_before = repository
+            .head("observation-candidate")
+            .expect("admitted head");
+        let candidate = ObservationCandidate::new(
+            repository
+                .load_configuration_artifact(observation.child_content())
+                .expect("candidate child"),
+            repository
+                .load_measurement_set(observation.measurements())
+                .expect("candidate measurements"),
+            repository
+                .load_property_verdict_set(observation.properties())
+                .expect("candidate properties"),
+            repository
+                .load_coverage_projection(observation.coverage())
+                .expect("candidate coverage"),
+            observation
+                .discovered_choices()
+                .iter()
+                .map(|id| {
+                    repository
+                        .load_choice_opportunity(*id)
+                        .expect("candidate discovered choice")
+                })
+                .collect(),
+            observation.clone(),
+        )
+        .expect("valid candidate");
+
+        let published = repository
+            .publish_observation_candidate(&candidate)
+            .expect("publish immutable candidate");
+        assert_eq!(published, observation.id().expect("observation id"));
+        assert_eq!(
+            repository
+                .head("observation-candidate")
+                .expect("unchanged campaign head")
+                .snapshot_id(),
+            head_before.snapshot_id()
+        );
+
+        let incorporated = repository
+            .publish_observation(
+                "observation-candidate",
+                admitted.new_snapshot,
+                candidate.observation(),
+            )
+            .expect("coordinator incorporates candidate");
+        assert_eq!(incorporated.observation, published);
+    }
+
+    #[test]
+    fn executor_candidate_publishes_a_fresh_next_choice_body() {
+        let (repository, lineage, policy) = fixture();
+        let (_, _, basis) =
+            admitted_observation_fixture(&repository, &lineage, &policy, "fresh-candidate-choice");
+        let prior_id = *basis.discovered_choices().first().expect("fixture choice");
+        let prior = repository
+            .load_choice_opportunity(prior_id)
+            .expect("load fixture choice");
+        let declaration = repository
+            .load_selectable(prior.declaration())
+            .expect("load declaration");
+        let domain = repository
+            .load_choice_domain(prior.domain())
+            .expect("load domain");
+        let fresh = ChoiceOpportunity::new(
+            lineage.scenario(),
+            &declaration,
+            &domain,
+            prior.coordinate(),
+            "fresh-executor-discovery",
+            prior.model_prior(),
+        )
+        .expect("fresh opportunity");
+        let fresh_id = fresh.id().expect("fresh opportunity id");
+        assert!(matches!(
+            repository.load_choice_opportunity(fresh_id),
+            Err(CampaignRepositoryError::Store(StoreError::NotFound { .. }))
+        ));
+
+        let observation = Observation::new(
+            basis.attempt(),
+            basis.child(),
+            basis.child_content(),
+            basis.path(),
+            basis.stop().clone(),
+            basis.measurements(),
+            basis.properties(),
+            basis.coverage(),
+            BTreeSet::from([fresh_id]),
+        )
+        .expect("fresh-choice observation");
+        let candidate = ObservationCandidate::new(
+            repository
+                .load_configuration_artifact(observation.child_content())
+                .expect("candidate child"),
+            repository
+                .load_measurement_set(observation.measurements())
+                .expect("candidate measurements"),
+            repository
+                .load_property_verdict_set(observation.properties())
+                .expect("candidate properties"),
+            repository
+                .load_coverage_projection(observation.coverage())
+                .expect("candidate coverage"),
+            vec![fresh.clone()],
+            observation,
+        )
+        .expect("fresh candidate");
+
+        repository
+            .publish_observation_candidate(&candidate)
+            .expect("publish candidate and fresh choice");
+        assert_eq!(
+            repository
+                .load_choice_opportunity(fresh_id)
+                .expect("load published fresh choice"),
+            fresh
+        );
+    }
+
+    #[test]
+    fn invalid_executor_candidate_is_rejected_before_any_bundle_write() {
+        let (repository, lineage, policy, blobs) = counted_fixture();
+        let (_, _, observation) = admitted_observation_fixture(
+            &repository,
+            &lineage,
+            &policy,
+            "invalid-observation-candidate",
+        );
+        let child = ConfigurationArtifact::new(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            ConfigurationId::from_hash(CampaignHash::derive(
+                "test-invalid-candidate-child",
+                b"child",
+            )),
+            1,
+            b"unpublished-invalid-child".to_vec(),
+        )
+        .expect("candidate child");
+        let candidate = ObservationCandidate::new(
+            child,
+            repository
+                .load_measurement_set(observation.measurements())
+                .expect("candidate measurements"),
+            repository
+                .load_property_verdict_set(observation.properties())
+                .expect("candidate properties"),
+            repository
+                .load_coverage_projection(observation.coverage())
+                .expect("candidate coverage"),
+            observation
+                .discovered_choices()
+                .iter()
+                .map(|id| {
+                    repository
+                        .load_choice_opportunity(*id)
+                        .expect("candidate discovered choice")
+                })
+                .collect(),
+            observation,
+        )
+        .expect("valid candidate");
+        let objects_before = blobs.object_count().expect("objects before rejection");
+
+        assert!(matches!(
+            repository.publish_observation_candidate(&candidate),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "observation-candidate-bundle-mismatch"
+            })
+        ));
+        assert_eq!(
+            blobs.object_count().expect("objects after rejection"),
+            objects_before
+        );
     }
 
     #[test]

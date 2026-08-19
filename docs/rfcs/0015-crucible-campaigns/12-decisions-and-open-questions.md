@@ -553,6 +553,30 @@ any framing, service, or semantic error. The external campaign-service API may
 still use RFC-0010's HTTP/2 gRPC/Connect-style binding; local executor completion
 does not depend on adopting a language framework.
 
+### D-39: Executor result publication is an immutable candidate handoff
+
+The execution model returns a complete `ObservationCandidate` containing the
+child configuration, modeled evidence, and newly discovered opportunity bodies
+beside the observation that names them. A linear dispatch token prevents one
+charged reservation from launching twice. Repository preflight runs outside the
+supervisor actor and authenticates every dependency and cross-object ID before
+any bundle write. A short actor CAS then records
+`Publishing(expected_observation_id)` in the durable lineage-qualified attempt
+ledger; that record is a streamed GC root and restart locator. Immutable
+publication runs outside the actor, followed by a short completion CAS. The
+coordinator separately owns snapshot incorporation.
+
+Retryable guest failure requeues one bounded reservation. Once a candidate
+exists, retryable storage failure retains and republishes that candidate without
+rerunning the model; stable failure is canceled or quarantined. Restart promotes
+a complete publishing candidate or reexecutes an incomplete one while requiring
+the exact previously committed observation ID. Cancellation keeps physical
+resource charges until the worker acknowledges exit.
+
+This preserves the executor's ability to publish immutable content without
+granting it campaign mutation authority and gives direct and loopback paths the
+same canonical completion boundary.
+
 ## Deliberately rejected representations
 
 The following patterns are outside the design even if they appear convenient

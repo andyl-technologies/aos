@@ -37,6 +37,12 @@ fn directory_ledger_reopens_exact_records_and_attempt_state() {
         execution: execution(0x51),
         observation: observation(0x71),
     };
+    let publishing = AttemptRuntimeState::Publishing {
+        execution_basis,
+        daemon_epoch: request.daemon_epoch(),
+        execution: execution(0x51),
+        observation: observation(0x71),
+    };
 
     {
         let mut ledger =
@@ -70,7 +76,18 @@ fn directory_ledger_reopens_exact_records_and_attempt_state() {
         );
         assert_eq!(
             ledger
-                .compare_exchange_attempt(key, Some(running), Some(completed))
+                .compare_exchange_attempt(key, Some(running), Some(publishing))
+                .expect("publish observation root"),
+            AttemptStateCas::Advanced
+        );
+        let mut roots = Vec::new();
+        ledger
+            .visit_observation_roots(&mut |root| roots.push(root))
+            .expect("stream publishing roots");
+        assert_eq!(roots, vec![observation(0x71)]);
+        assert_eq!(
+            ledger
+                .compare_exchange_attempt(key, Some(publishing), Some(completed))
                 .expect("publish completed state"),
             AttemptStateCas::Advanced
         );
@@ -87,6 +104,11 @@ fn directory_ledger_reopens_exact_records_and_attempt_state() {
         ledger.load_attempt(key).expect("load attempt state"),
         Some(completed)
     );
+    let mut roots = Vec::new();
+    ledger
+        .visit_observation_roots(&mut |root| roots.push(root))
+        .expect("stream reopened roots");
+    assert_eq!(roots, vec![observation(0x71)]);
     assert_eq!(response.validate_for(&request), Ok(()));
 }
 
@@ -206,6 +228,40 @@ fn memory_ledger_matches_conditional_publish_contract() {
     assert_eq!(
         ledger.load_assignment(request.assignment()),
         Ok(Some(record))
+    );
+}
+
+#[test]
+fn directory_ledger_reads_legacy_v1_attempt_state() {
+    let directory = tempfile::tempdir().expect("ledger tempdir");
+    let request = request(0x15, 0x35, 1);
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let state = AttemptRuntimeState::Completed {
+        execution_basis: request.execution_basis_digest(),
+        daemon_epoch: request.daemon_epoch(),
+        execution: execution(0x55),
+        observation: observation(0x75),
+    };
+    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
+
+    let mut payload = Vec::with_capacity(512);
+    payload.extend_from_slice(ATTEMPT_STATE_MAGIC_V1);
+    push_bytes(&mut payload, request.lineage().to_text().as_bytes());
+    push_bytes(&mut payload, request.attempt().to_text().as_bytes());
+    payload.extend_from_slice(&request.execution_basis_digest().as_bytes());
+    payload.push(1);
+    payload.extend_from_slice(&request.daemon_epoch().as_bytes());
+    payload.extend_from_slice(&execution(0x55).as_bytes());
+    push_bytes(&mut payload, observation(0x75).to_text().as_bytes());
+    let path = ledger.attempt_path(key);
+    fs::create_dir_all(path.parent().expect("attempt-state parent"))
+        .expect("create legacy attempt-state parent");
+    fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V1))
+        .expect("write legacy attempt state");
+
+    assert_eq!(
+        ledger.load_attempt(key).expect("load legacy attempt state"),
+        Some(state)
     );
 }
 

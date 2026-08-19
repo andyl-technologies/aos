@@ -54,7 +54,15 @@ impl CampaignRepository {
         let attempt = self.load_attempt(request.attempt())?;
         let start = match attempt.start() {
             AttemptStart::Discover { configuration } => configuration,
-            AttemptStart::Branch { parent, .. } => parent,
+            AttemptStart::Branch {
+                parent, selection, ..
+            } => {
+                let selection = self.resolve_selection(selection)?;
+                if selection.opportunity().scenario() != lineage.scenario() {
+                    return Err(integrity("executor-attempt-opportunity-scenario-mismatch"));
+                }
+                parent
+            }
         };
         let start = self.read_configuration_artifact(start.content_id())?;
         if start.scenario() != lineage.scenario()

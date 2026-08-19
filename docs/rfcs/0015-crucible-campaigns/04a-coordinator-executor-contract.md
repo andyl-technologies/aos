@@ -391,8 +391,13 @@ also loads the full observation closure, requires its `AttemptId` to equal the
 request, and requires the attempt start and observed child to belong to the
 named lineage's exact `ScenarioArtifactId`, not merely the same semantic
 `ScenarioDefId`. The repository-backed admission adapter and strict loopback
-transport consume these exact canonical bytes and validators. The QEMU worker
-remains a subsequent implementation checkpoint.
+transport consume these exact canonical bytes and validators. The local worker
+now resolves one accepted request into an immutable `AttemptExecutionInput`:
+exact lineage and scenario artifact, attempt, branch path, starting
+configuration, and, for a branch, the selection/opportunity/domain tuple
+authenticated together. An execution-model adapter receives that value and
+returns an `ObservationCandidate` bundle. The concrete QEMU/session adapter
+remains the next implementation checkpoint.
 
 The bounded loopback binding is:
 
@@ -420,9 +425,9 @@ The single-host daemon persists two bounded operational record families:
 ```text
 AssignmentRecordV1 = magic | request_bytes | response_bytes | checksum
 
-AttemptStateRecordV1 = magic | lineage_id | attempt_id |
+AttemptStateRecordV2 = magic | lineage_id | attempt_id |
                        execution_basis_digest |
-                       (running | completed | canceled) |
+                       (running | publishing | completed | canceled) |
                        daemon_epoch | execution_id | observation_id? |
                        checksum
 ```
@@ -457,6 +462,22 @@ Hard slot, aggregate vCPU,
 resident-memory, and writable-disk limits plus a per-execution quanta ceiling
 produce stable `incompatible` or `backpressure` outcomes without unbounded
 queues.
+
+Result handoff is an ordered operational transaction. Guest execution consumes
+one non-cloneable dispatch token and receives semantic input separately from an
+operational context containing only resource ceilings, retention intent, and a
+cancellation signal. Candidate preflight runs without borrowing the supervisor
+actor. A short actor CAS changes `running` to
+`publishing(observation_id)` before the first immutable bundle write. Immutable
+publication runs outside the actor, followed by a short
+`publishing -> completed` CAS. Publishing and completed observation IDs are
+streamed by the ledger as authenticated GC roots without materializing history.
+
+After restart, a complete publishing observation is reauthenticated and
+promoted without guest execution. If its closure is incomplete, a fresh daemon
+may recover publication under a new execution identity, but the committed
+observation ID remains fixed. Version 2 readers accept legacy version 1
+running/completed/canceled records; new writes use version 2.
 
 A mutable compare-and-swap error may be commit-indeterminate because rename
 precedes directory fsync. The supervisor reloads the exact state, and a
@@ -495,11 +516,34 @@ may capture an exact closure but cannot claim archival durability. The
 coordinator asks the store layer to ensure the complete closure under a named
 durability policy before publishing a durable pin or successful hibernation.
 
+The repository executor handoff is deliberately phased. First it validates the
+complete in-memory child-configuration, measurement, property, coverage,
+newly-discovered opportunity-body, and observation bundle plus every
+already-published dependency. An invalid bundle writes nothing. After the
+durable publishing root exists, it publishes immutable content-addressed
+objects without advancing a campaign ref. Only the coordinator may subsequently
+incorporate the authenticated observation through the snapshot owner
+transaction. Partial immutable writes remain recoverable under the publishing
+root and cannot create campaign meaning.
+
+The supervisor actor takes at most one queued assignment through a linear token
+and releases its mutable state before guest execution, candidate preflight, and
+immutable publication. Long guest or storage work never holds the borrow needed
+by service or cancellation handling. Retryable execution failure requeues the
+same reservation once; retryable result-storage failure retains and republishes
+the already-produced candidate without rerunning the guest. Stable failure is
+explicitly canceled or quarantined. Pending locators remain bounded by admitted
+capacity.
+
 Cancellation races are explicit. A canonical completion produced before the
 executor accepted cancellation remains eligible for ordinary validation. A
-completion produced after accepted cancellation is retained as operational
-diagnostic content unless the coordinator still has an independently valid
-admission for it. Cancellation never becomes a modeled timeout or failure.
+candidate returned after accepted cancellation is discarded before immutable
+publication unless another independently owned diagnostic policy retained it;
+it is never admitted as modeled completion by this path. Cancellation never
+becomes a modeled timeout or failure.
+Durable cancellation keeps CPU, memory, and disk charged until the physical
+worker acknowledges exit, so a non-cooperative guest cannot oversubscribe hard
+aggregate capacity.
 
 An attempt explicitly declares `Discover` or `Branch` start semantics.
 `Discover` realizes an existing configuration until a pending choice or modeled
@@ -517,8 +561,12 @@ arbitrarily selected.
   compatibility requirement, resource ceiling, and referenced object before
   guest execution, including the explicit discovery-versus-branch start form.
 - **[CCOMP-17]** Executor completion MUST publish immutable result objects
-  before advertising their IDs and MUST NOT advance virtual time while required
-  input content is unavailable.
+  before advertising their IDs, MUST validate the complete candidate before its
+  first bundle write, MUST durably bind an in-progress publication root to the
+  exact lineage, attempt, execution basis, and expected observation before that
+  write, MUST NOT advance campaign refs, and MUST NOT advance virtual time while
+  required input content is unavailable. Final observation incorporation
+  belongs to the coordinator.
 - **[CCOMP-18]** Cancellation, process loss, backpressure, and unavailable
   storage are operational outcomes. Only modeled evidence may produce a
   canonical modeled failure or reward.
@@ -552,7 +600,7 @@ reconciles any surviving local processes under a new daemon epoch, inventories
 authenticated materializations, and accepts idempotent resubmission. No durable
 worker lease is required for the single-host implementation.
 
-The directory assignment ledger retains completed observations and exact first
+The directory assignment ledger retains publishing and completed observations and exact first
 responses across restart. A fresh daemon epoch may replace a stale `running`
 record, while an accepted cancellation prevents a late worker completion from
 becoming the attempt's completed runtime state. Completion and cancellation are

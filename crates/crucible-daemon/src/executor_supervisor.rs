@@ -7,6 +7,10 @@
 //! campaign mutable-ref capability is accepted here.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use crucible_campaign::{
     AttemptResourceLimits, CampaignCodecError, DaemonEpoch, ExecutionId, ExecutorRejection,
@@ -183,10 +187,11 @@ pub enum ExecutorCapacityError {
 }
 
 /// One accepted assignment ready for the local execution worker.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct QueuedAttempt {
     execution: ExecutionId,
     request: SubmitAttemptRequest,
+    cancellation: ExecutionCancellation,
 }
 
 impl QueuedAttempt {
@@ -201,6 +206,30 @@ impl QueuedAttempt {
     pub const fn request(&self) -> &SubmitAttemptRequest {
         &self.request
     }
+
+    /// Returns the process-local cancellation signal for the guest runner.
+    #[must_use]
+    pub const fn cancellation(&self) -> &ExecutionCancellation {
+        &self.cancellation
+    }
+}
+
+/// Cloneable process-local cancellation signal for one execution incarnation.
+#[derive(Clone, Debug, Default)]
+pub struct ExecutionCancellation {
+    canceled: Arc<AtomicBool>,
+}
+
+impl ExecutionCancellation {
+    /// Returns whether cancellation has been requested for this execution.
+    #[must_use]
+    pub fn is_canceled(&self) -> bool {
+        self.canceled.load(Ordering::Acquire)
+    }
+
+    fn cancel(&self) {
+        self.canceled.store(true, Ordering::Release);
+    }
 }
 
 /// Idempotent result of publishing one executor completion.
@@ -213,6 +242,21 @@ pub enum CompletionOutcome {
     /// Cancellation won the race; the observation is diagnostic only.
     Canceled,
     /// The supplied execution is not the attempt's current execution.
+    NotCurrent,
+}
+
+/// Durable outcome of reserving an observation publication root.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObservationPublicationOutcome {
+    /// Running state advanced to a durable publication root.
+    Staged,
+    /// The exact observation was already staged for this execution.
+    AlreadyStaged,
+    /// Cancellation won before publication began.
+    Canceled,
+    /// The exact observation was already durably completed.
+    AlreadyCompleted,
+    /// The supplied execution is no longer current.
     NotCurrent,
 }
 
@@ -264,6 +308,14 @@ pub enum LocalExecutorError<E> {
 #[derive(Clone, Debug)]
 struct ActiveExecution {
     request: SubmitAttemptRequest,
+    cancellation: ExecutionCancellation,
+    worker_in_flight: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PendingCompletion {
+    key: AttemptExecutionKey,
+    observation: ObservationId,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -287,6 +339,8 @@ pub struct LocalExecutorSupervisor<L, V> {
     next_execution_ordinal: u64,
     active: BTreeMap<ExecutionId, ActiveExecution>,
     queued: VecDeque<ExecutionId>,
+    pending_completions: BTreeMap<ExecutionId, PendingCompletion>,
+    pending_cancellations: BTreeMap<ExecutionId, AttemptExecutionKey>,
     used: UsedCapacity,
 }
 
@@ -311,6 +365,8 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
             next_execution_ordinal: 0,
             active: BTreeMap::new(),
             queued: VecDeque::new(),
+            pending_completions: BTreeMap::new(),
+            pending_cancellations: BTreeMap::new(),
             used: UsedCapacity::default(),
         }
     }
@@ -339,6 +395,30 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
         self.queued.len()
     }
 
+    /// Returns the number of published observations awaiting ledger reconciliation.
+    #[must_use]
+    pub fn pending_completion_count(&self) -> usize {
+        self.pending_completions.len()
+    }
+
+    /// Returns the number of terminal worker stops awaiting ledger reconciliation.
+    #[must_use]
+    pub fn pending_cancellation_count(&self) -> usize {
+        self.pending_cancellations.len()
+    }
+
+    /// Returns one staged completion execution for bounded actor retry.
+    #[must_use]
+    pub fn next_pending_completion(&self) -> Option<ExecutionId> {
+        self.pending_completions.keys().next().copied()
+    }
+
+    /// Returns one staged cancellation execution for bounded actor retry.
+    #[must_use]
+    pub fn next_pending_cancellation(&self) -> Option<ExecutionId> {
+        self.pending_cancellations.keys().next().copied()
+    }
+
     /// Returns the ledger for read-only diagnostics and tests.
     #[must_use]
     pub const fn ledger(&self) -> &L {
@@ -355,14 +435,35 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
     #[must_use]
     pub fn next_queued(&mut self) -> Option<QueuedAttempt> {
         while let Some(execution) = self.queued.pop_front() {
-            if let Some(active) = self.active.get(&execution) {
+            if let Some(active) = self.active.get_mut(&execution) {
+                active.worker_in_flight = true;
                 return Some(QueuedAttempt {
                     execution,
                     request: active.request.clone(),
+                    cancellation: active.cancellation.clone(),
                 });
             }
         }
         None
+    }
+
+    /// Requeues a still-current accepted execution after an operational worker failure.
+    ///
+    /// The queue remains bounded by active capacity. Stale work and duplicate
+    /// queue entries are ignored.
+    pub fn requeue(&mut self, queued: QueuedAttempt) {
+        let execution = queued.execution;
+        if self
+            .active
+            .get(&execution)
+            .is_some_and(|active| active.request == queued.request)
+            && !self.queued.contains(&execution)
+        {
+            if let Some(active) = self.active.get_mut(&execution) {
+                active.worker_in_flight = false;
+            }
+            self.queued.push_back(execution);
+        }
     }
 }
 
@@ -371,6 +472,324 @@ where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
+    /// Durably reserves the exact observation as an in-progress publication root.
+    ///
+    /// The operational ledger entry is established before immutable candidate
+    /// bytes are written. GC therefore treats the observation closure as an
+    /// in-progress root even across a daemon crash. The execution-model worker
+    /// is considered physically stopped when this actor method is called.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LocalExecutorError`] for an invalid execution token, ledger
+    /// failure, or a conflicting observation.
+    pub fn stage_observation_publication(
+        &mut self,
+        queued: &QueuedAttempt,
+        observation: ObservationId,
+    ) -> Result<ObservationPublicationOutcome, LocalExecutorError<L::Error>> {
+        self.validate_pending_basis(queued)?;
+        self.mark_worker_finished(queued.execution);
+        let key = AttemptExecutionKey::new(queued.request.lineage(), queued.request.attempt());
+        let current = self
+            .ledger
+            .load_attempt(key)
+            .map_err(LocalExecutorError::Ledger)?;
+        let Some(current) = current else {
+            return Ok(ObservationPublicationOutcome::NotCurrent);
+        };
+        match current {
+            AttemptRuntimeState::Running {
+                execution_basis,
+                daemon_epoch,
+                execution,
+            } if execution_basis == queued.request.execution_basis_digest()
+                && daemon_epoch == self.daemon_epoch
+                && execution == queued.execution =>
+            {
+                let next = AttemptRuntimeState::Publishing {
+                    execution_basis,
+                    daemon_epoch,
+                    execution,
+                    observation,
+                };
+                let advance = self.advance_attempt(key, current, Some(next))?;
+                if let AttemptAdvance::CommittedAfterError(error) = advance {
+                    return Err(LocalExecutorError::Ledger(error));
+                }
+                Ok(ObservationPublicationOutcome::Staged)
+            }
+            AttemptRuntimeState::Publishing {
+                execution: current_execution,
+                observation: current_observation,
+                ..
+            } if current_execution == queued.execution && current_observation == observation => {
+                Ok(ObservationPublicationOutcome::AlreadyStaged)
+            }
+            AttemptRuntimeState::Publishing {
+                execution: current_execution,
+                ..
+            } if current_execution == queued.execution => {
+                Err(LocalExecutorError::ConflictingCompletion)
+            }
+            AttemptRuntimeState::Completed {
+                execution: current_execution,
+                observation: current_observation,
+                ..
+            } if current_execution == queued.execution && current_observation == observation => {
+                self.release_active_if_present(queued.execution)?;
+                Ok(ObservationPublicationOutcome::AlreadyCompleted)
+            }
+            AttemptRuntimeState::Canceled {
+                execution: current_execution,
+                ..
+            } if current_execution == queued.execution => {
+                self.release_active_if_present(queued.execution)?;
+                Ok(ObservationPublicationOutcome::Canceled)
+            }
+            AttemptRuntimeState::Running { .. }
+            | AttemptRuntimeState::Publishing { .. }
+            | AttemptRuntimeState::Completed { .. }
+            | AttemptRuntimeState::Canceled { .. } => Ok(ObservationPublicationOutcome::NotCurrent),
+        }
+    }
+
+    /// Stages an immutable observation and attempts durable completion reconciliation.
+    ///
+    /// A noncommitted ledger or validation failure retains the exact observation
+    /// in bounded process-local state. The actor can retry it with
+    /// [`Self::reconcile_pending_completion`] without re-running the guest.
+    /// Commit-indeterminate ledger failures release capacity and clear the
+    /// pending item after the ledger confirms the desired state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LocalExecutorError`] for a conflicting staged observation,
+    /// ledger failure, or semantic completion failure.
+    pub fn stage_and_reconcile_completion(
+        &mut self,
+        queued: &QueuedAttempt,
+        observation: ObservationId,
+    ) -> Result<CompletionOutcome, LocalExecutorError<L::Error>> {
+        let execution = queued.execution;
+        let key = AttemptExecutionKey::new(queued.request.lineage(), queued.request.attempt());
+        let pending = PendingCompletion { key, observation };
+        if self
+            .pending_completions
+            .get(&execution)
+            .is_some_and(|current| *current != pending)
+        {
+            return Err(LocalExecutorError::ConflictingCompletion);
+        }
+        if !self.pending_completions.contains_key(&execution) {
+            self.validate_pending_basis(queued)?;
+            self.require_pending_capacity()?;
+        }
+        self.mark_worker_finished(execution);
+        self.pending_completions.insert(execution, pending);
+        self.reconcile_pending_completion(execution)?
+            .ok_or(LocalExecutorError::LedgerInvariant {
+                reason: "staged completion disappeared before reconciliation",
+            })
+    }
+
+    /// Retries one staged immutable observation without executing the guest again.
+    ///
+    /// Returns `Ok(None)` when no completion is staged for this execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LocalExecutorError`] when durable or semantic completion
+    /// reconciliation fails. A still-current failure leaves the item staged.
+    pub fn reconcile_pending_completion(
+        &mut self,
+        execution: ExecutionId,
+    ) -> Result<Option<CompletionOutcome>, LocalExecutorError<L::Error>> {
+        let Some(pending) = self.pending_completions.get(&execution).copied() else {
+            return Ok(None);
+        };
+        match self.complete_execution(pending.key, execution, pending.observation) {
+            Ok(outcome) => {
+                self.pending_completions.remove(&execution);
+                Ok(Some(outcome))
+            }
+            Err(error) => {
+                let retryable = matches!(
+                    &error,
+                    LocalExecutorError::Ledger(_)
+                        | LocalExecutorError::CompletionValidation {
+                            reason: CompletionValidationFailure::UnavailableInput,
+                        }
+                );
+                if !retryable {
+                    self.pending_completions.remove(&execution);
+                    if self.active.contains_key(&execution) {
+                        self.stage_cancellation(pending.key, execution)?;
+                    }
+                } else if !self.active.contains_key(&execution) {
+                    // A compare-exchange error that nevertheless committed is
+                    // confirmed by `complete_execution` releasing the active
+                    // reservation; no retry remains necessary.
+                    self.pending_completions.remove(&execution);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Stages a terminal worker stop and attempts durable cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LocalExecutorError`] for a conflicting stop basis or ledger
+    /// failure. A noncommitted failure remains available to
+    /// [`Self::reconcile_pending_cancellation`].
+    pub fn stage_and_reconcile_cancellation(
+        &mut self,
+        queued: &QueuedAttempt,
+    ) -> Result<CancellationOutcome, LocalExecutorError<L::Error>> {
+        let execution = queued.execution;
+        let key = AttemptExecutionKey::new(queued.request.lineage(), queued.request.attempt());
+        if !self.pending_cancellations.contains_key(&execution) {
+            self.validate_pending_basis(queued)?;
+            self.require_pending_capacity()?;
+        }
+        self.mark_worker_finished(execution);
+        self.stage_cancellation(key, execution)
+    }
+
+    fn stage_cancellation(
+        &mut self,
+        key: AttemptExecutionKey,
+        execution: ExecutionId,
+    ) -> Result<CancellationOutcome, LocalExecutorError<L::Error>> {
+        if self
+            .pending_cancellations
+            .get(&execution)
+            .is_some_and(|current| *current != key)
+        {
+            return Err(LocalExecutorError::LedgerInvariant {
+                reason: "execution has a conflicting staged cancellation basis",
+            });
+        }
+        self.pending_cancellations.insert(execution, key);
+        self.reconcile_pending_cancellation(execution)?
+            .ok_or(LocalExecutorError::LedgerInvariant {
+                reason: "staged cancellation disappeared before reconciliation",
+            })
+    }
+
+    /// Retries one staged terminal worker stop without re-running the guest.
+    ///
+    /// Returns `Ok(None)` when no cancellation is staged for this execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LocalExecutorError`] when ledger reconciliation fails. A
+    /// still-current failure leaves the cancellation staged.
+    pub fn reconcile_pending_cancellation(
+        &mut self,
+        execution: ExecutionId,
+    ) -> Result<Option<CancellationOutcome>, LocalExecutorError<L::Error>> {
+        let Some(key) = self.pending_cancellations.get(&execution).copied() else {
+            return Ok(None);
+        };
+        match self.cancel_execution(key, execution) {
+            Ok(outcome) => {
+                self.pending_cancellations.remove(&execution);
+                Ok(Some(outcome))
+            }
+            Err(error) => {
+                if !self.active.contains_key(&execution) {
+                    self.pending_cancellations.remove(&execution);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn validate_pending_basis(
+        &self,
+        queued: &QueuedAttempt,
+    ) -> Result<(), LocalExecutorError<L::Error>> {
+        let key = AttemptExecutionKey::new(queued.request.lineage(), queued.request.attempt());
+        let basis = queued.request.execution_basis_digest();
+        let active_matches = self.active.get(&queued.execution).is_some_and(|active| {
+            active.request == queued.request
+                && AttemptExecutionKey::new(active.request.lineage(), active.request.attempt())
+                    == key
+        });
+        if active_matches {
+            return Ok(());
+        }
+        let durable_matches = self
+            .ledger
+            .load_attempt(key)
+            .map_err(LocalExecutorError::Ledger)?
+            .is_some_and(|state| match state {
+                AttemptRuntimeState::Running {
+                    execution_basis,
+                    daemon_epoch,
+                    execution,
+                }
+                | AttemptRuntimeState::Publishing {
+                    execution_basis,
+                    daemon_epoch,
+                    execution,
+                    ..
+                }
+                | AttemptRuntimeState::Completed {
+                    execution_basis,
+                    daemon_epoch,
+                    execution,
+                    ..
+                }
+                | AttemptRuntimeState::Canceled {
+                    execution_basis,
+                    daemon_epoch,
+                    execution,
+                } => {
+                    execution_basis == basis
+                        && execution == queued.execution
+                        && daemon_epoch == queued.request.daemon_epoch()
+                        && daemon_epoch == self.daemon_epoch
+                }
+            });
+        if !durable_matches {
+            return Err(LocalExecutorError::LedgerInvariant {
+                reason: "pending reconciliation has no exact execution reservation",
+            });
+        }
+        Ok(())
+    }
+
+    fn require_pending_capacity(&self) -> Result<(), LocalExecutorError<L::Error>> {
+        let pending = self
+            .pending_completions
+            .len()
+            .checked_add(self.pending_cancellations.len())
+            .ok_or(LocalExecutorError::LedgerInvariant {
+                reason: "pending reconciliation count overflow",
+            })?;
+        let limit = usize::try_from(self.capacity.maximum_concurrent_executions).map_err(|_| {
+            LocalExecutorError::LedgerInvariant {
+                reason: "executor capacity does not fit process address space",
+            }
+        })?;
+        if pending >= limit {
+            return Err(LocalExecutorError::LedgerInvariant {
+                reason: "pending reconciliation capacity exhausted",
+            });
+        }
+        Ok(())
+    }
+
+    fn mark_worker_finished(&mut self, execution: ExecutionId) {
+        if let Some(active) = self.active.get_mut(&execution) {
+            active.worker_in_flight = false;
+        }
+    }
+
     /// Durably records a published observation and releases local capacity.
     ///
     /// The caller publishes and authenticates the immutable observation before
@@ -414,11 +833,15 @@ where
                 self.release_active_if_present(execution)?;
                 Ok(CompletionOutcome::Canceled)
             }
-            AttemptRuntimeState::Running {
+            AttemptRuntimeState::Publishing {
                 execution_basis,
                 daemon_epoch,
                 execution: current_execution,
+                observation: staged_observation,
             } if daemon_epoch == self.daemon_epoch && current_execution == execution => {
+                if staged_observation != observation {
+                    return Err(LocalExecutorError::ConflictingCompletion);
+                }
                 let Some(active) = self.active.get(&execution) else {
                     return Ok(CompletionOutcome::NotCurrent);
                 };
@@ -446,6 +869,7 @@ where
                 Ok(CompletionOutcome::Completed)
             }
             AttemptRuntimeState::Running { .. }
+            | AttemptRuntimeState::Publishing { .. }
             | AttemptRuntimeState::Completed { .. }
             | AttemptRuntimeState::Canceled { .. } => Ok(CompletionOutcome::NotCurrent),
         }
@@ -462,6 +886,11 @@ where
         key: AttemptExecutionKey,
         execution: ExecutionId,
     ) -> Result<CancellationOutcome, LocalExecutorError<L::Error>> {
+        if let Some(active) = self.active.get(&execution)
+            && AttemptExecutionKey::new(active.request.lineage(), active.request.attempt()) == key
+        {
+            active.cancellation.cancel();
+        }
         let current = self
             .ledger
             .load_attempt(key)
@@ -482,13 +911,19 @@ where
                 execution: current_execution,
                 ..
             } if current_execution == execution => {
-                self.release_active_if_present(execution)?;
+                self.release_active_if_idle(execution)?;
                 Ok(CancellationOutcome::AlreadyCanceled)
             }
             AttemptRuntimeState::Running {
                 execution_basis,
                 daemon_epoch,
                 execution: current_execution,
+            }
+            | AttemptRuntimeState::Publishing {
+                execution_basis,
+                daemon_epoch,
+                execution: current_execution,
+                ..
             } if daemon_epoch == self.daemon_epoch && current_execution == execution => {
                 let next = AttemptRuntimeState::Canceled {
                     execution_basis,
@@ -496,13 +931,14 @@ where
                     execution,
                 };
                 let advance = self.advance_attempt(key, current, Some(next))?;
-                self.release_active_if_present(execution)?;
+                self.release_active_if_idle(execution)?;
                 if let AttemptAdvance::CommittedAfterError(error) = advance {
                     return Err(LocalExecutorError::Ledger(error));
                 }
                 Ok(CancellationOutcome::Canceled)
             }
             AttemptRuntimeState::Running { .. }
+            | AttemptRuntimeState::Publishing { .. }
             | AttemptRuntimeState::Completed { .. }
             | AttemptRuntimeState::Canceled { .. } => Ok(CancellationOutcome::NotCurrent),
         }
@@ -555,6 +991,94 @@ where
             .load_attempt(key)
             .map_err(LocalExecutorError::Ledger)?;
         match prior {
+            Some(AttemptRuntimeState::Publishing {
+                execution_basis: current_basis,
+                daemon_epoch,
+                execution,
+                ..
+            }) if current_basis == execution_basis
+                && daemon_epoch == self.daemon_epoch
+                && self.active.contains_key(&execution) =>
+            {
+                return self.persist_response(
+                    request,
+                    SubmitAttemptDisposition::AlreadyRunning { execution },
+                );
+            }
+            Some(
+                publishing @ AttemptRuntimeState::Publishing {
+                    execution_basis: current_basis,
+                    daemon_epoch,
+                    execution,
+                    observation,
+                },
+            ) if current_basis == execution_basis => {
+                match self.validator.validate_completion(request, observation) {
+                    Ok(()) => {
+                        let completed = AttemptRuntimeState::Completed {
+                            execution_basis: current_basis,
+                            daemon_epoch,
+                            execution,
+                            observation,
+                        };
+                        let advance = self.advance_attempt(key, publishing, Some(completed))?;
+                        if let AttemptAdvance::CommittedAfterError(error) = advance {
+                            return Err(LocalExecutorError::Ledger(error));
+                        }
+                        self.release_active_if_present(execution)?;
+                        return self.persist_response(
+                            request,
+                            SubmitAttemptDisposition::AlreadyCompleted { observation },
+                        );
+                    }
+                    Err(CompletionValidationFailure::UnavailableInput) => {
+                        if !self.has_capacity(request.resources()) {
+                            return self.persist_response(
+                                request,
+                                SubmitAttemptDisposition::Rejected {
+                                    reason: ExecutorRejection::Backpressure,
+                                },
+                            );
+                        }
+                        let recovery_execution = self.allocate_execution_id()?;
+                        let recovery = AttemptRuntimeState::Publishing {
+                            execution_basis: current_basis,
+                            daemon_epoch: self.daemon_epoch,
+                            execution: recovery_execution,
+                            observation,
+                        };
+                        let advance = self.advance_attempt(key, publishing, Some(recovery))?;
+                        if let AttemptAdvance::CommittedAfterError(error) = advance {
+                            self.reserve(request, recovery_execution)?;
+                            return Err(LocalExecutorError::Ledger(error));
+                        }
+                        let response = self.persist_response(
+                            request,
+                            SubmitAttemptDisposition::Accepted {
+                                execution: recovery_execution,
+                            },
+                        );
+                        self.reserve(request, recovery_execution)?;
+                        return response;
+                    }
+                    Err(CompletionValidationFailure::Unauthorized) => {
+                        return self.persist_response(
+                            request,
+                            SubmitAttemptDisposition::Rejected {
+                                reason: ExecutorRejection::Unauthorized,
+                            },
+                        );
+                    }
+                    Err(CompletionValidationFailure::Incompatible) => {
+                        return self.persist_response(
+                            request,
+                            SubmitAttemptDisposition::Rejected {
+                                reason: ExecutorRejection::Incompatible,
+                            },
+                        );
+                    }
+                }
+            }
             Some(AttemptRuntimeState::Completed {
                 execution_basis: current_basis,
                 observation,
@@ -596,6 +1120,12 @@ where
                 execution_basis: current_basis,
                 daemon_epoch,
                 execution,
+            })
+            | Some(AttemptRuntimeState::Publishing {
+                execution_basis: current_basis,
+                daemon_epoch,
+                execution,
+                ..
             }) if daemon_epoch == self.daemon_epoch
                 && current_basis == execution_basis
                 && self.active.contains_key(&execution) =>
@@ -606,6 +1136,11 @@ where
                 );
             }
             Some(AttemptRuntimeState::Running {
+                execution_basis: current_basis,
+                daemon_epoch,
+                ..
+            })
+            | Some(AttemptRuntimeState::Publishing {
                 execution_basis: current_basis,
                 daemon_epoch,
                 ..
@@ -626,6 +1161,7 @@ where
                 );
             }
             Some(AttemptRuntimeState::Running { .. })
+            | Some(AttemptRuntimeState::Publishing { .. })
             | Some(AttemptRuntimeState::Canceled { .. })
             | None => {}
         }
@@ -786,6 +1322,8 @@ where
             execution,
             ActiveExecution {
                 request: request.clone(),
+                cancellation: ExecutionCancellation::default(),
+                worker_in_flight: false,
             },
         );
         self.queued.push_back(execution);
@@ -839,6 +1377,20 @@ where
         execution: ExecutionId,
     ) -> Result<(), LocalExecutorError<L::Error>> {
         if self.active.contains_key(&execution) {
+            self.release_active(execution)?;
+        }
+        Ok(())
+    }
+
+    fn release_active_if_idle(
+        &mut self,
+        execution: ExecutionId,
+    ) -> Result<(), LocalExecutorError<L::Error>> {
+        if self
+            .active
+            .get(&execution)
+            .is_some_and(|active| !active.worker_in_flight)
+        {
             self.release_active(execution)?;
         }
         Ok(())
