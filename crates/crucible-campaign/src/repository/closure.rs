@@ -3,7 +3,10 @@
 use super::*;
 
 impl CampaignRepository {
-    pub(super) fn validate_complete_head(&self, head: ContentId) -> Result<(), CampaignRepositoryError> {
+    pub(super) fn validate_complete_head(
+        &self,
+        head: ContentId,
+    ) -> Result<(), CampaignRepositoryError> {
         self.validate_snapshot_ancestry(head)?;
         self.verify_campaign_closure(head)
     }
@@ -272,7 +275,10 @@ impl CampaignRepository {
         Ok(())
     }
 
-    pub(super) fn verify_campaign_closure(&self, root: ContentId) -> Result<(), CampaignRepositoryError> {
+    pub(super) fn verify_campaign_closure(
+        &self,
+        root: ContentId,
+    ) -> Result<(), CampaignRepositoryError> {
         let mut stack = vec![root];
         let mut visited = BTreeSet::new();
 
@@ -372,5 +378,4 @@ impl CampaignRepository {
         }
         Ok(())
     }
-
 }

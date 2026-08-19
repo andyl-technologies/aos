@@ -475,14 +475,24 @@ pub struct ExpansionState {
     pub continuations: CanonicalMap<BranchRequestId, ContinuationState>,
 }
 
+pub struct FeedbackWait {
+    completed_visits: u64,
+    required_visits: u64,
+}
+
 pub enum ContinuationState {
     Ready,
-    WaitingForFeedback { completed_visits: u64, required_visits: u64 },
+    WaitingForFeedback(FeedbackWait),
     Open,
     Exhausted,
     Closed,
 }
 ```
+
+`FeedbackWait` is constructed only when `completed_visits < required_visits`;
+its fields are private and strict decoding enforces the same invariant. Reaching
+the threshold produces `Ready` rather than an already-eligible waiting value.
+This changes no canonical wire bytes.
 
 This object may be cached, but it is derived from branch requests, policy,
 choice opportunity, proposals, and observations. A finite source's next cursor

@@ -1021,6 +1021,17 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
         _ => panic!("campaign branch selection"),
     };
     let path = BranchPath::new(vec![edge]).expect("path");
+    assert_eq!(
+        BranchPath::from_canonical_bytes(&path.canonical_bytes()).expect("canonical path"),
+        path
+    );
+    let mut trailing_path = path.canonical_bytes();
+    trailing_path.push(0);
+    assert_eq!(
+        BranchPath::from_canonical_bytes(&trailing_path),
+        Err(CampaignCodecError::TrailingBytes)
+    );
+
     let attempt = Attempt::new(
         AttemptStart::Branch {
             edge,
@@ -1031,6 +1042,11 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
         StopCondition::NextChoice,
     )
     .expect("attempt");
+    assert_eq!(
+        Attempt::from_canonical_bytes(&attempt.canonical_bytes()).expect("canonical attempt"),
+        attempt
+    );
+
     let basis = AttemptAdmission::new(
         attempt.id().expect("attempt id"),
         AttemptAdmissionRole::ExecutionBasis {
@@ -1046,6 +1062,41 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
         },
     );
     assert_ne!(basis.id(), additional.id());
+    assert_eq!(
+        AttemptAdmission::from_canonical_bytes(&basis.canonical_bytes())
+            .expect("canonical attempt admission"),
+        basis
+    );
+
+    let planner_step = PlannerStep::new(
+        None,
+        stored_id!(
+            PlannerInvocationId,
+            ObjectKind::Policy,
+            "planner-invocation"
+        ),
+        stored_id!(CampaignPolicyId, ObjectKind::Policy, "planner-step-policy"),
+        stored_id!(PlannerEngineId, ObjectKind::Policy, "planner-engine"),
+        stored_id!(PolicyArtifactId, ObjectKind::Policy, "policy-artifact"),
+        stored_id!(CampaignViewId, ObjectKind::CampaignFact, "planner-view"),
+        branch_point,
+        request.id().expect("request id"),
+        vec![proposal.id().expect("proposal id")],
+        stored_id!(PlannerStateId, ObjectKind::Policy, "next-planner-state"),
+        PlanningAccounting {
+            proposals: 1,
+            attempts: 1,
+            deduplicated: 0,
+            fuel: 1,
+        },
+        GuidanceEvidence::new(BTreeMap::new()).expect("guidance evidence"),
+    )
+    .expect("planner step");
+    assert_eq!(
+        PlannerStep::from_canonical_bytes(&planner_step.canonical_bytes())
+            .expect("canonical planner step"),
+        planner_step
+    );
 
     let illegal = BranchRequest::new(
         branch_point,
@@ -1067,6 +1118,12 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
             .is_err()
     );
 
+    let wait = FeedbackWait::new(2, 3).expect("pending feedback");
+    assert_eq!(wait.completed_visits(), 2);
+    assert_eq!(wait.required_visits(), 3);
+    assert!(FeedbackWait::new(3, 3).is_err());
+    assert!(FeedbackWait::new(4, 3).is_err());
+
     let request_id = request.id().expect("request id");
     let expansion = ExpansionState::new(
         branch_point,
@@ -1074,9 +1131,21 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
         content("proposal-root"),
         content("observation-root"),
         ExpansionStatistics::default(),
-        BTreeMap::from([(request_id, ContinuationState::Ready)]),
+        BTreeMap::from([(request_id, ContinuationState::WaitingForFeedback(wait))]),
     )
     .expect("expansion state");
+    assert_eq!(
+        ExpansionState::from_canonical_bytes(&expansion.canonical_bytes())
+            .expect("canonical expansion state"),
+        expansion
+    );
+    let mut invalid_wait = expansion.canonical_bytes();
+    let required_offset = invalid_wait.len() - std::mem::size_of::<u64>();
+    invalid_wait[required_offset..].copy_from_slice(&2_u64.to_be_bytes());
+    assert!(matches!(
+        ExpansionState::from_canonical_bytes(&invalid_wait),
+        Err(CampaignCodecError::InvalidValue { .. })
+    ));
     let expansion_envelope = ObjectEnvelope::for_record(
         CampaignRecordKind::ExpansionState,
         super::object::content_children(expansion.content_children()).expect("expansion children"),

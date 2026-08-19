@@ -521,5 +521,4 @@ impl CampaignRepository {
         self.verify_campaign_closure(content)?;
         SelectionId::from_content_id(content).map_err(Into::into)
     }
-
 }
