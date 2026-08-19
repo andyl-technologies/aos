@@ -611,6 +611,41 @@ reachable store namespace IDs. `WatchCapacity` reports bounded operational
 availability and coarse materialization locality. Capability and locality may
 influence placement but not proposal generation or modeled results.
 
+The initial canonical capability messages are:
+
+```text
+DescribeExecutorRequestV1 = version
+ExecutorDescriptionV1 = version | daemon_epoch | immutable_capability_set
+immutable_capability_set = compatibility_profile | host_architecture |
+                           sorted_qemu_profiles | sorted_materialization_paths |
+                           maximum_slots | per_attempt_resource_ceiling |
+                           sorted_store_namespace_ids
+
+WatchExecutorCapacityRequestV1 = version | daemon_epoch | capability_digest |
+                                 after_sequence?
+ExecutorCapacityReportV1 = version | daemon_epoch | capability_digest |
+                           sequence | available_slots | available_vcpus |
+                           available_resident_bytes | available_disk_bytes |
+                           sorted_exact_or_hot_locality
+```
+
+The immutable set MUST include the thin-replay correctness fallback. A locality
+entry may name only exact restore or hot fork; thin replay is not cached
+locality. The local service refuses to start when advertised daemon identity,
+slots, CPU, memory, disk, or per-execution quanta differ from the supervisor's
+enforced configuration. A capacity response MUST match the exact description,
+use a fresh strictly increasing daemon-epoch-scoped sequence greater than the
+caller's cursor, remain within configured ceilings, and advertise only a
+supported materialization tier. Recomputing a response always allocates a new
+sequence, including when a lagging client polls, so one `(daemon_epoch,
+capability_digest, sequence)` never identifies conflicting report bodies.
+Sequences observed by one client need not be contiguous: other clients may
+consume intervening numbers, and intermediate advisory capacity states may
+coalesce before the next poll.
+Direct and Unix-loopback clients apply the same checks. The loopback frame
+remains version 1 and assigns new explicit message-kind tags; unknown tags fail
+closed.
+
 The local coordinator may prefer an executor already holding a hot or exact
 parent. It submits the same attempt regardless of that preference. The executor
 alone chooses hot fork, exact restore, or thin replay and reports the realized

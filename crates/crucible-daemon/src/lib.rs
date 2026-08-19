@@ -31,6 +31,7 @@ pub mod control_responsiveness;
 pub mod crucible_artifact;
 pub mod crucible_execution;
 pub mod crucible_qemu_runner;
+pub mod executor_capability;
 pub mod executor_loopback;
 pub mod executor_supervisor;
 pub mod executor_worker;
@@ -60,15 +61,17 @@ pub use crucible_qemu_runner::{
     QemuCrucibleAttemptSession, QemuCrucibleRealizationStore, QemuCrucibleSessionFactory,
     QemuExactThinExecutionRunner, QemuExactThinRunnerError,
 };
+pub use executor_capability::LocalExecutorCapabilityService;
 pub use executor_loopback::{
     LoopbackExecutorProtocolError, LoopbackExecutorServerError, LoopbackExecutorService,
-    LoopbackExecutorTimeouts, serve_loopback_executor_once,
+    LoopbackExecutorTimeouts, serve_loopback_executor_component_once, serve_loopback_executor_once,
     serve_loopback_executor_once_with_timeouts,
 };
 pub use executor_supervisor::{
     AllowAllAttemptAdmission, AttemptAdmissionValidator, CancellationOutcome, CompletionOutcome,
-    CompletionValidationFailure, ExecutionCancellation, ExecutorCapacity, ExecutorCapacityError,
-    LocalExecutorError, LocalExecutorSupervisor, ObservationPublicationOutcome, QueuedAttempt,
+    CompletionValidationFailure, ExecutionCancellation, ExecutorAvailability, ExecutorCapacity,
+    ExecutorCapacityError, LocalExecutorError, LocalExecutorSupervisor,
+    ObservationPublicationOutcome, QueuedAttempt,
 };
 pub use executor_worker::{
     AttemptExecutionContext, AttemptExecutionInput, AttemptExecutionModel, AttemptResultAbortError,

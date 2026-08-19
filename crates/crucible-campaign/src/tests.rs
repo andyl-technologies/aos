@@ -233,6 +233,20 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         assert_eq!(message[3], "component-message");
         owned_campaign_schemas.insert(schema);
     }
+    for schema in [
+        "crucible.campaign.describe-executor-request",
+        "crucible.campaign.executor-description",
+        "crucible.campaign.watch-executor-capacity-request",
+        "crucible.campaign.executor-capacity-report",
+    ] {
+        let message = rows
+            .get(schema)
+            .unwrap_or_else(|| panic!("missing executor capability schema {schema}"));
+        assert_eq!(message[1], "1");
+        assert_eq!(message[2], "crucible-campaign::executor_capability");
+        assert_eq!(message[3], "component-message");
+        owned_campaign_schemas.insert(schema);
+    }
     for (schema, version) in [
         ("crucible.executor.assignment-record", "1"),
         ("crucible.executor.attempt-state-record", "2"),
