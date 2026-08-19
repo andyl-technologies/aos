@@ -20,14 +20,15 @@ use crate::{
     Attempt, AttemptAdmission, AttemptAdmissionId, AttemptAdmissionRole, AttemptId, AttemptStart,
     BranchPath, BranchPathId, BranchRequest, BranchRequestCause, BranchRequestId,
     CampaignCodecError, CampaignControlAction, CampaignFact, CampaignHash, CampaignLineage,
-    CampaignLineageId, CampaignPolicy, CampaignPolicyId, CampaignSnapshot, CampaignSnapshotId,
-    CampaignState, CandidateGeneratorAlgorithm, CandidateGeneratorSpec, CandidateGeneratorSpecId,
-    CandidateSource, ChoiceDomain, ChoiceDomainId, ChoiceGroup, ChoiceGroupId, ChoiceOpportunity,
-    ChoiceOpportunityId, ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId,
-    ControlRequest, ExpansionState, ExpansionStateId, MerkleMap, MerkleMapRoot, ObjectEnvelope,
-    PlannerDisposition, PlannerInvocation, PlannerInvocationId, PlannerState, PlannerStep,
-    PlannerStepId, PolicyActivation, PolicyArtifact, Proposal, ScenarioArtifact,
-    ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, SelectableId, Selection, SelectionId,
+    CampaignLineageId, CampaignPlanningView, CampaignPolicy, CampaignPolicyId, CampaignSnapshot,
+    CampaignSnapshotId, CampaignState, CandidateGeneratorAlgorithm, CandidateGeneratorSpec,
+    CandidateGeneratorSpecId, CandidateSource, ChoiceDomain, ChoiceDomainId, ChoiceGroup,
+    ChoiceGroupId, ChoiceOpportunity, ChoiceOpportunityId, ConfigurationArtifact,
+    ConfigurationArtifactId, ConfigurationId, ControlRequest, ExpansionState, ExpansionStateId,
+    MerkleMap, MerkleMapRoot, ObjectEnvelope, PlannerDisposition, PlannerInvocation,
+    PlannerInvocationId, PlannerState, PlannerStep, PlannerStepId, PolicyActivation,
+    PolicyArtifact, Proposal, ProposalId, ScenarioArtifact, ScenarioArtifactId, ScenarioDefId,
+    SelectableDeclaration, SelectableId, Selection, SelectionId,
 };
 
 const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;
@@ -89,6 +90,19 @@ pub struct BranchRequestResult {
     /// Exact immutable request identity.
     pub request: BranchRequestId,
     /// Whether this call observed a previously committed request.
+    pub replayed: bool,
+}
+
+/// Stable response for an accepted or idempotently replayed proposal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProposalResult {
+    /// Snapshot that first accepted this proposal.
+    pub prior_snapshot: CampaignSnapshotId,
+    /// Snapshot first produced by accepting this proposal.
+    pub new_snapshot: CampaignSnapshotId,
+    /// Exact immutable proposal identity.
+    pub proposal: ProposalId,
+    /// Whether this call observed a previously committed proposal.
     pub replayed: bool,
 }
 
@@ -261,6 +275,24 @@ fn map_key_content(namespace: &str, id: ContentId) -> CampaignHash {
     bytes.extend_from_slice(&(encoded.len() as u64).to_be_bytes());
     bytes.extend_from_slice(encoded.as_bytes());
     CampaignHash::derive("crucible.campaign-map-key.v1", &bytes)
+}
+
+fn proposal_ordinal_key(request: BranchRequestId, ordinal: u64) -> CampaignHash {
+    let request = request.content_id().encode();
+    let mut bytes = Vec::with_capacity(request.len() + 8);
+    bytes.extend_from_slice(request.as_bytes());
+    bytes.extend_from_slice(&ordinal.to_be_bytes());
+    CampaignHash::derive("crucible.campaign-proposal-request-ordinal.v1", &bytes)
+}
+
+fn proposal_value_key(request: BranchRequestId, value: &crate::ChoiceValue) -> CampaignHash {
+    let request = request.content_id().encode();
+    let value = crate::codec::encode(value);
+    let mut bytes = Vec::with_capacity(request.len() + value.len() + 8);
+    bytes.extend_from_slice(request.as_bytes());
+    bytes.extend_from_slice(&(value.len() as u64).to_be_bytes());
+    bytes.extend_from_slice(&value);
+    CampaignHash::derive("crucible.campaign-proposal-request-value.v1", &bytes)
 }
 
 fn required_child(
@@ -497,6 +529,26 @@ mod tests {
         .expect("branch request")
     }
 
+    fn finite_proposal(
+        request: &BranchRequest,
+        policy: &CampaignPolicy,
+        head: &CampaignHead,
+        value: ChoiceValue,
+        ordinal: u64,
+    ) -> Proposal {
+        Proposal::new(
+            request.branch_point(),
+            request.id().expect("request id"),
+            request.domain(),
+            value,
+            policy.id().expect("policy id"),
+            None,
+            ordinal,
+            head.snapshot().planning_view().id().expect("planning view"),
+        )
+        .expect("proposal")
+    }
+
     #[test]
     fn create_and_control_form_linear_authenticated_history() {
         let (repository, lineage, policy) = fixture();
@@ -621,6 +673,85 @@ mod tests {
             repository.apply_control("lazy", &reused_control),
             Err(CampaignRepositoryError::CommandReuse)
         ));
+    }
+
+    #[test]
+    fn finite_proposal_is_an_exact_indexed_delta_and_replays_before_staleness() {
+        let (repository, lineage, policy) = fixture();
+        let genesis = repository
+            .create("finite-proposal", &lineage, &policy, &BTreeMap::new())
+            .expect("create");
+        let request = branch_request(
+            &repository,
+            &lineage,
+            lineage.genesis_content(),
+            lineage.genesis(),
+            "finite-proposal",
+        );
+        let requested = repository
+            .submit_branch_request("finite-proposal", genesis.snapshot_id(), &request)
+            .expect("submit request");
+        let request_head = repository.head("finite-proposal").expect("request head");
+
+        let wrong_order = finite_proposal(
+            &request,
+            &policy,
+            &request_head,
+            ChoiceValue::Boolean(true),
+            1,
+        );
+        assert!(matches!(
+            repository.issue_proposal("finite-proposal", requested.new_snapshot, &wrong_order,),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "proposal-value-does-not-match-finite-source-order"
+            })
+        ));
+
+        let first = finite_proposal(
+            &request,
+            &policy,
+            &request_head,
+            ChoiceValue::Boolean(false),
+            1,
+        );
+        let accepted = repository
+            .issue_proposal("finite-proposal", requested.new_snapshot, &first)
+            .expect("issue proposal");
+        assert!(!accepted.replayed);
+        assert_eq!(accepted.proposal, first.id().expect("proposal id"));
+        assert_eq!(
+            repository
+                .load_proposal(accepted.proposal)
+                .expect("load proposal"),
+            first
+        );
+
+        let proposal_head = repository.head("finite-proposal").expect("proposal head");
+        let prior = request_head.snapshot().roots();
+        let next = proposal_head.snapshot().roots();
+        assert_ne!(prior.exploration, next.exploration);
+        assert_eq!(prior.graph, next.graph);
+        assert_eq!(prior.observations, next.observations);
+        assert_eq!(prior.corpus, next.corpus);
+        assert_eq!(prior.coverage, next.coverage);
+        assert_eq!(prior.findings, next.findings);
+        assert_eq!(prior.pins, next.pins);
+        assert_eq!(prior.accounting, next.accounting);
+        assert_eq!(
+            repository
+                .merkle
+                .inspect_shallow(next.exploration)
+                .expect("exploration root")
+                .entry_count(),
+            4
+        );
+
+        let replay = repository
+            .issue_proposal("finite-proposal", genesis.snapshot_id(), &first)
+            .expect("replay proposal");
+        assert!(replay.replayed);
+        assert_eq!(replay.prior_snapshot, accepted.prior_snapshot);
+        assert_eq!(replay.new_snapshot, accepted.new_snapshot);
     }
 
     #[test]

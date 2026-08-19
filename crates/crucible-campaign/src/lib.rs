@@ -64,7 +64,7 @@ pub use policy::{
 };
 pub use repository::{
     BranchRequestResult, CampaignCommandResult, CampaignHead, CampaignRepository,
-    CampaignRepositoryError, ResolvedSelection,
+    CampaignRepositoryError, ProposalResult, ResolvedSelection,
 };
 
 #[cfg(test)]

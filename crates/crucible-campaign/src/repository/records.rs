@@ -3,6 +3,16 @@
 use super::*;
 
 impl CampaignRepository {
+    /// Loads an exact proposal and validates its request, domain, policy, and planner basis.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error when the proposal or any exact
+    /// semantic reference is missing, corrupt, or inconsistent.
+    pub fn load_proposal(&self, id: ProposalId) -> Result<Proposal, CampaignRepositoryError> {
+        self.read_proposal(id.content_id())
+    }
+
     /// Loads an exact branch path and authenticates its stored identity.
     ///
     /// # Errors
@@ -192,6 +202,17 @@ impl CampaignRepository {
         Ok(invocation)
     }
 
+    pub(super) fn put_planning_view(
+        &self,
+        view: &CampaignPlanningView,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::PlanningView,
+            crate::object::content_children(view.content_children())?,
+            view.canonical_bytes(),
+        )?)
+    }
+
     pub(super) fn put_lineage(
         &self,
         lineage: &CampaignLineage,
@@ -225,6 +246,17 @@ impl CampaignRepository {
             crate::CampaignRecordKind::BranchRequest,
             crate::object::content_children(request.content_children())?,
             request.canonical_bytes(),
+        )?)
+    }
+
+    pub(super) fn put_proposal(
+        &self,
+        proposal: &Proposal,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::Proposal,
+            crate::object::content_children(proposal.content_children())?,
+            proposal.canonical_bytes(),
         )?)
     }
 
@@ -625,6 +657,55 @@ impl CampaignRepository {
             }
         }
         Ok(())
+    }
+
+    pub(super) fn validate_proposal_campaign_scope(
+        &self,
+        snapshot: &LoadedSnapshot,
+        proposal: &Proposal,
+    ) -> Result<BranchRequest, CampaignRepositoryError> {
+        let request = self.read_branch_request(proposal.request().content_id())?;
+        let request_key = map_key_content(
+            "exploration.branch-request",
+            proposal.request().content_id(),
+        );
+        if self
+            .merkle
+            .get(snapshot.snapshot.roots().exploration, request_key)?
+            != Some(proposal.request().content_id())
+        {
+            return Err(integrity("proposal-request-is-not-authoritative"));
+        }
+
+        let domain = self.read_choice_domain(proposal.domain().content_id())?;
+        proposal.validate_resolved(&request, &domain)?;
+        if proposal.policy() != snapshot.snapshot.active_policy()
+            || proposal.guidance_basis() != snapshot.snapshot.planning_view().id()?
+        {
+            return Err(integrity("proposal-campaign-basis-mismatch"));
+        }
+        if let Some(invocation) = proposal.planner_invocation() {
+            let invocation = self.load_planner_invocation(invocation)?;
+            if invocation.policy() != proposal.policy()
+                || invocation.input_view() != proposal.guidance_basis()
+            {
+                return Err(integrity("proposal-planner-invocation-mismatch"));
+            }
+        }
+
+        let Some(values) = request.source().finite_values() else {
+            return Err(integrity(
+                "generated-proposal-enumerator-is-not-implemented",
+            ));
+        };
+        let index = usize::try_from(proposal.ordinal() - 1)
+            .map_err(|_| integrity("proposal-ordinal-is-not-canonical"))?;
+        if values.iter().nth(index) != Some(proposal.value()) {
+            return Err(integrity(
+                "proposal-value-does-not-match-finite-source-order",
+            ));
+        }
+        Ok(request)
     }
 
     pub(super) fn read_proposal(&self, id: ContentId) -> Result<Proposal, CampaignRepositoryError> {

@@ -233,6 +233,124 @@ impl CampaignRepository {
         }
     }
 
+    /// Issues one finite-source proposal under the current planning view.
+    ///
+    /// Acceptance writes canonical proposal, request-ordinal, and request-value
+    /// indexes as one exact exploration-root delta. Generated-source proposal
+    /// enumeration remains fail-closed until its deterministic owner lands.
+    /// Repeating an accepted exact proposal returns its original transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a stale precondition, nonauthoritative request,
+    /// noncanonical finite order, duplicate ordinal or value, invalid closure,
+    /// publication failure, or final authoritative-ref conflict.
+    pub fn issue_proposal(
+        &self,
+        name: &str,
+        expected_snapshot: CampaignSnapshotId,
+        proposal: &Proposal,
+    ) -> Result<ProposalResult, CampaignRepositoryError> {
+        let _guard = self.lock_mutation()?;
+        let campaign_ref = campaign_ref(name)?;
+        let current_content = self
+            .refs
+            .read_ref(&campaign_ref)?
+            .ok_or(CampaignRepositoryError::NotFound)?;
+        let current = self.read_snapshot(current_content)?;
+        self.validate_complete_head(current_content)?;
+
+        let proposal_id = proposal.id()?;
+        if let Some(result) = self.find_proposal_result(current_content, proposal_id)? {
+            return Ok(result);
+        }
+
+        let current_id = CampaignSnapshotId::from_content_id(current_content)?;
+        if expected_snapshot != current_id {
+            return Err(CampaignRepositoryError::Stale {
+                expected: expected_snapshot,
+                current: current_id,
+            });
+        }
+        self.validate_proposal_campaign_scope(&current, proposal)?;
+
+        let planning_view = current.snapshot.planning_view();
+        let planning_view_content = self.put_planning_view(&planning_view)?;
+        if planning_view_content != proposal.guidance_basis().content_id() {
+            return Err(integrity("proposal-guidance-basis-publication-id-mismatch"));
+        }
+
+        let proposal_content = self.put_proposal(proposal)?;
+        if proposal_content != proposal_id.content_id() {
+            return Err(integrity("proposal-publication-id-mismatch"));
+        }
+        let proposal_key = map_key_content("exploration.proposal", proposal_content);
+        let ordinal_key = proposal_ordinal_key(proposal.request(), proposal.ordinal());
+        let value_key = proposal_value_key(proposal.request(), proposal.value());
+        for key in [proposal_key, ordinal_key, value_key] {
+            if self
+                .merkle
+                .get(current.snapshot.roots().exploration, key)?
+                .is_some()
+            {
+                return Err(integrity("proposal-index-has-no-ancestry-transition"));
+            }
+        }
+        if proposal.ordinal() > 1 {
+            let prior_key = proposal_ordinal_key(proposal.request(), proposal.ordinal() - 1);
+            let prior_content = self
+                .merkle
+                .get(current.snapshot.roots().exploration, prior_key)?
+                .ok_or_else(|| integrity("proposal-skipped-request-ordinal"))?;
+            let prior = self.read_proposal(prior_content)?;
+            if prior.request() != proposal.request()
+                || prior.ordinal().checked_add(1) != Some(proposal.ordinal())
+            {
+                return Err(integrity("proposal-predecessor-index-mismatch"));
+            }
+        }
+
+        let mut exploration = self.merkle.insert(
+            current.snapshot.roots().exploration,
+            proposal_key,
+            proposal_content,
+        )?;
+        for key in [ordinal_key, value_key] {
+            exploration = self
+                .merkle
+                .insert(exploration.content_id(), key, proposal_content)?;
+        }
+
+        let fact = CampaignFact::ProposalIssued(proposal_id);
+        let transition_content = self.put_fact(&fact)?;
+        let mut roots = current.snapshot.roots();
+        roots.exploration = exploration.content_id();
+        let next = CampaignSnapshot::successor(
+            current_id,
+            current.snapshot.lineage(),
+            current.snapshot.active_policy(),
+            roots,
+            crate::CampaignFactId::from_content_id(transition_content)?,
+        )?;
+        let next_content = self.put_snapshot(&next)?;
+        self.validate_complete_head(next_content)?;
+
+        match self
+            .refs
+            .compare_exchange(&campaign_ref, Some(current_content), next_content)?
+        {
+            RefCasOutcome::Advanced { .. } => Ok(ProposalResult {
+                prior_snapshot: current_id,
+                new_snapshot: CampaignSnapshotId::from_content_id(next_content)?,
+                proposal: proposal_id,
+                replayed: false,
+            }),
+            RefCasOutcome::Conflict { current, .. } => {
+                Err(CampaignRepositoryError::RefConflict { current })
+            }
+        }
+    }
+
     /// Applies one idempotent lifecycle, policy, or budget command.
     ///
     /// Command lookup happens before stale-precondition checking. Replaying the
