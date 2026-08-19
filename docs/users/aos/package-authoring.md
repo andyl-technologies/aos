@@ -104,6 +104,22 @@ List application-specific build tools, libraries, and runtime commands
 explicitly. If a dependency is missing from AOS, package it from source rather
 than reaching into the host or importing nixpkgs.
 
+`mkDerivation` also enables the repository hardening profile. Keep that profile
+unless an upstream representation is incompatible with one specific flag. For
+example, code that deliberately uses a trailing one-element or zero-length
+array as variable-length storage can trigger false `_FORTIFY_SOURCE` aborts
+under `strictflexarrays3`. In that case, preserve fortify and the other
+hardening checks while selecting the compatible flexible-array interpretation:
+
+```nix
+hardeningDisable = ["strictflexarrays3"];
+hardeningEnable = ["strictflexarrays1"];
+```
+
+Document the upstream data layout and reproduce the actual build-time or
+runtime abort before adding this exception. Do not disable all hardening to
+work around one incompatible flag.
+
 For an upstream release, add `fetchurl` and `fakeHash` to the package function
 arguments, keep `version` beside the source, and replace `src = null` with:
 
