@@ -48,6 +48,9 @@
   qemuInstructionFaults = import ./phase2-qemu-instruction-faults.nix {
     inherit pkgs lib qemuPackage;
   };
+  qemuRegisterMutation = import ./phase2-qemu-register-mutation.nix {
+    inherit pkgs lib qemuPackage;
+  };
   qemuGenesisObservationBoundary = pkgs.mkDerivation {
     pname = "crucible-phase2-qemu-genesis-observation-boundary";
     version = "0";
@@ -656,9 +659,7 @@
     }
     {
       patch = "0051-crucible-add-architecture-register-fault-mutations.patch";
-      check = import ./phase2-qemu-register-mutation.nix {
-        inherit pkgs lib qemuPackage;
-      };
+      check = qemuRegisterMutation;
     }
     {
       patch = "0052-crucible-instruction-and-exception-faults.patch";
@@ -893,6 +894,10 @@
     {
       patch = "0092-crucible-canonical-terminal-rr-cursor.patch";
       check = qemuCanonicalTerminalRrCursor;
+    }
+    {
+      patch = "0093-crucible-canonical-register-cursor.patch";
+      check = qemuRegisterMutation;
     }
   ];
 

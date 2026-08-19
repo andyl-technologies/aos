@@ -443,6 +443,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0093-crucible-canonical-register-cursor.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

@@ -430,6 +430,11 @@ produce live patched-QEMU architectural or device evidence.
   position onto the next scheduler-owned vCPU at position zero without
   mutating serialized scheduler state, while retaining every other cursor
   rejection.
+- [x] **T-QEMU-0093** Implement
+  [`crucible-canonical-register-cursor`](14-qemu-fault-patches/44-canonical-register-cursor.md):
+  advance after-instruction register evidence from the callback-local retired
+  prefix onto its semantic coordinate and project an exact quantum terminal
+  onto the canonical next-vCPU, position-zero handoff.
 - [x] **T-QEMU-0060** Implement
   [`crucible-block-typed-errors`](14-qemu-fault-patches/14-block-typed-errors.md):
   the closed block result ABI, exact Linux errno translation, malformed-result
