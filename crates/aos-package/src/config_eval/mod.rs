@@ -2188,8 +2188,11 @@ fn json_desired_package(
 }
 
 fn add_fixed_input_to_store(path: &Path) -> Result<PathBuf> {
-    if path.starts_with("/nix/store") {
-        return Ok(path.to_path_buf());
+    if let Some(root) = manifest_store_root(path.to_string_lossy().as_ref()) {
+        let root = Path::new(root);
+        if path == root {
+            return Ok(path.to_path_buf());
+        }
     }
     let output = std::process::Command::new("nix-store")
         .args(["--add-fixed", "sha256"])
