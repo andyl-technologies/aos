@@ -2,7 +2,9 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rustix::fs::{FlockOperation, flock};
@@ -43,30 +45,29 @@ impl DirectoryBlobBackend {
             .join(digest)
     }
 
-    fn read_full(&self, id: ContentId) -> Result<Vec<u8>, StoreError> {
+    fn read_handle(
+        &self,
+        id: ContentId,
+        range: Option<ByteRange>,
+    ) -> Result<BlobHandle, StoreError> {
         let path = self.object_path(id);
-        let mut file = match File::open(&path) {
-            Ok(file) => file,
-            Err(source) if source.kind() == io::ErrorKind::NotFound => {
-                return Err(StoreError::NotFound { id });
-            }
-            Err(source) => {
-                return Err(StoreError::Io {
-                    operation: "open-object",
-                    path,
-                    source,
-                });
-            }
-        };
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)
-            .map_err(|source| StoreError::Io {
-                operation: "read-object",
-                path,
-                source,
-            })?;
-        validate_bytes(id, &bytes)?;
-        Ok(bytes)
+        let (file, logical_length) = open_pinned_object(&path, id)?;
+        let range = range.unwrap_or(ByteRange {
+            offset: 0,
+            length: logical_length,
+        });
+        validate_range(logical_length, range)?;
+        let source: Arc<dyn BlobSource> = Arc::new(DirectoryBlobSource {
+            file,
+            id,
+            logical_length,
+            range,
+        });
+        if range.offset == 0 && range.length == logical_length {
+            Ok(BlobHandle::authenticated(id, source))
+        } else {
+            Ok(BlobHandle::integrity_checked(id, source))
+        }
     }
 
     fn create_staging(&self, directory: &Path) -> Result<(PathBuf, File), StoreError> {
@@ -97,27 +98,30 @@ impl ImmutableBlobBackend for DirectoryBlobBackend {
         BackendCapabilities {
             durable: true,
             range_read: true,
+            streaming_read: true,
             conditional_create: true,
-            streaming_put: false,
+            streaming_put: true,
             repair_inventory: false,
             planned_delete: false,
         }
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
-        match self.read_full(id) {
-            Ok(_) => Ok(true),
+        match self.read_handle(id, None) {
+            Ok(handle) => {
+                validate_source(id, &handle)?;
+                Ok(true)
+            }
             Err(StoreError::NotFound { .. }) => Ok(false),
             Err(error) => Err(error),
         }
     }
 
-    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<Vec<u8>, StoreError> {
-        slice_range(self.read_full(id)?, range)
+    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+        self.read_handle(id, range)
     }
 
-    fn put_if_absent(&self, id: ContentId, bytes: &[u8]) -> Result<PutReceipt, StoreError> {
-        validate_bytes(id, bytes)?;
+    fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
         let path = self.object_path(id);
         let directory = path.parent().ok_or(StoreError::InvalidComposition {
             reason: "object path has no containing directory",
@@ -125,18 +129,17 @@ impl ImmutableBlobBackend for DirectoryBlobBackend {
         create_dir_all_durable(directory)?;
 
         if path.exists() {
-            self.read_full(id)?;
+            source.verified_as(id)?;
+            if !self.contains(id)? {
+                return Err(StoreError::NotFound { id });
+            }
             sync_directory(directory)?;
-            return Ok(directory_receipt(&self.name, id, bytes.len()));
+            return Ok(directory_receipt(&self.name, id, source.logical_length()));
         }
 
         let (staging_path, mut staging) = self.create_staging(directory)?;
         let publish_result = (|| {
-            staging.write_all(bytes).map_err(|source| StoreError::Io {
-                operation: "write-object-staging",
-                path: staging_path.clone(),
-                source,
-            })?;
+            let authenticated_length = copy_source(id, source, &mut staging)?;
             staging.sync_all().map_err(|source| StoreError::Io {
                 operation: "sync-object-staging",
                 path: staging_path.clone(),
@@ -146,7 +149,9 @@ impl ImmutableBlobBackend for DirectoryBlobBackend {
             match fs::hard_link(&staging_path, &path) {
                 Ok(()) => {}
                 Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
-                    self.read_full(id)?;
+                    if !self.contains(id)? {
+                        return Err(StoreError::NotFound { id });
+                    }
                 }
                 Err(source) => {
                     return Err(StoreError::Io {
@@ -157,7 +162,7 @@ impl ImmutableBlobBackend for DirectoryBlobBackend {
                 }
             }
             sync_directory(directory)?;
-            Ok(())
+            Ok(authenticated_length)
         })();
 
         let remove_result = fs::remove_file(&staging_path);
@@ -171,9 +176,126 @@ impl ImmutableBlobBackend for DirectoryBlobBackend {
                 source,
             });
         }
-        publish_result?;
-        Ok(directory_receipt(&self.name, id, bytes.len()))
+        let authenticated_length = publish_result?;
+        Ok(directory_receipt(&self.name, id, authenticated_length))
     }
+}
+
+struct DirectoryBlobSource {
+    file: Arc<File>,
+    id: ContentId,
+    logical_length: u64,
+    range: ByteRange,
+}
+
+impl BlobSource for DirectoryBlobSource {
+    fn logical_length(&self) -> u64 {
+        self.range.length
+    }
+
+    fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
+        Ok(Box::new(AuthenticatingFileReader::new(
+            self.file.clone(),
+            self.id,
+            self.logical_length,
+            self.range,
+        )))
+    }
+}
+
+struct AuthenticatingFileReader {
+    file: Arc<File>,
+    id: ContentId,
+    logical_length: u64,
+    range: ByteRange,
+    scan_offset: u64,
+    output_offset: u64,
+    hasher: blake3::Hasher,
+    finalized: bool,
+}
+
+impl AuthenticatingFileReader {
+    fn new(file: Arc<File>, id: ContentId, logical_length: u64, range: ByteRange) -> Self {
+        Self {
+            file,
+            id,
+            logical_length,
+            range,
+            scan_offset: 0,
+            output_offset: 0,
+            hasher: content_hasher(id.kind(), id.schema_version(), logical_length),
+            finalized: false,
+        }
+    }
+
+    fn scan_until(&mut self, target: u64) -> io::Result<()> {
+        let mut buffer = [0_u8; 64 * 1024];
+        while self.scan_offset < target {
+            let remaining = target - self.scan_offset;
+            let limit = usize::try_from(remaining.min(buffer.len() as u64))
+                .map_err(|_| invalid_object_data())?;
+            let read = read_at_retry(&self.file, &mut buffer[..limit], self.scan_offset)?;
+            if read == 0 {
+                return Err(invalid_object_data());
+            }
+            self.hasher.update(&buffer[..read]);
+            self.scan_offset += read as u64;
+        }
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> io::Result<()> {
+        self.scan_until(self.logical_length)?;
+        let mut extra = [0_u8; 1];
+        if read_at_retry(&self.file, &mut extra, self.logical_length)? != 0
+            || *self.hasher.finalize().as_bytes() != self.id.digest()
+        {
+            return Err(invalid_object_data());
+        }
+        self.finalized = true;
+        Ok(())
+    }
+}
+
+impl Read for AuthenticatingFileReader {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if output.is_empty() || self.finalized {
+            return Ok(0);
+        }
+        self.scan_until(self.range.offset)?;
+        if self.output_offset < self.range.length {
+            let remaining = self.range.length - self.output_offset;
+            let limit = usize::try_from(remaining.min(output.len() as u64))
+                .map_err(|_| invalid_object_data())?;
+            let read = read_at_retry(
+                &self.file,
+                &mut output[..limit],
+                self.range.offset + self.output_offset,
+            )?;
+            if read == 0 {
+                return Err(invalid_object_data());
+            }
+            self.hasher.update(&output[..read]);
+            self.scan_offset += read as u64;
+            self.output_offset += read as u64;
+            return Ok(read);
+        }
+        self.finalize()?;
+        Ok(0)
+    }
+}
+
+fn read_at_retry(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<usize> {
+    loop {
+        match file.read_at(buffer, offset) {
+            Err(source) if source.kind() == io::ErrorKind::Interrupted => continue,
+            result => return result,
+        }
+    }
+}
+
+fn invalid_object_data() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "content authentication failed")
 }
 
 /// Durable authoritative ref backend using flock and atomic replacement.
@@ -315,15 +437,40 @@ impl MutableRefBackend for DirectoryRefBackend {
     }
 }
 
-fn directory_receipt(name: &str, id: ContentId, logical_length: usize) -> PutReceipt {
+fn directory_receipt(name: &str, id: ContentId, logical_length: u64) -> PutReceipt {
     PutReceipt::one(
         id,
         PlacementReceipt {
             backend: name.to_owned(),
             durable: true,
-            logical_length: logical_length as u64,
+            logical_length,
         },
     )
+}
+
+fn open_pinned_object(path: &Path, id: ContentId) -> Result<(Arc<File>, u64), StoreError> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {
+            return Err(StoreError::NotFound { id });
+        }
+        Err(source) => {
+            return Err(StoreError::Io {
+                operation: "open-object",
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    let logical_length = file
+        .metadata()
+        .map_err(|source| StoreError::Io {
+            operation: "inspect-object",
+            path: path.to_path_buf(),
+            source,
+        })?
+        .len();
+    Ok((Arc::new(file), logical_length))
 }
 
 fn sync_directory(path: &Path) -> Result<(), StoreError> {

@@ -51,46 +51,79 @@ are physical placement. They may change without changing the logical ID.
 The leaf interfaces are intentionally smaller than campaign storage:
 
 ```rust,illustrative
+pub trait BlobSource: Send + Sync {
+    fn logical_length(&self) -> u64;
+    fn open(&self) -> Result<Box<dyn Read + Send>, StoreError>;
+}
+
 pub trait ImmutableBlobBackend: Send + Sync {
     fn capabilities(&self) -> BackendCapabilities;
-    async fn contains(&self, id: ContentId) -> Result<bool, StoreError>;
-    async fn read(
+    fn contains(&self, id: ContentId) -> Result<bool, StoreError>;
+    fn read(
         &self,
         id: ContentId,
         range: Option<ByteRange>,
-    ) -> Result<BlobReader, StoreError>;
-    async fn put_if_absent(
+    ) -> Result<BlobHandle, StoreError>;
+    fn put_if_absent(
         &self,
         id: ContentId,
-        bytes: BlobReader,
+        source: &BlobHandle,
     ) -> Result<PutReceipt, StoreError>;
 }
 
 pub trait MutableRefBackend: Send + Sync {
-    async fn read_ref(&self, name: RefName)
+    fn read_ref(&self, name: &RefName)
         -> Result<Option<ContentId>, StoreError>;
-    async fn compare_exchange(
+    fn compare_exchange(
         &self,
-        name: RefName,
+        name: &RefName,
         expected: Option<ContentId>,
         next: ContentId,
     ) -> Result<RefCasOutcome, StoreError>;
 }
 
 pub trait StoreAdmin: Send + Sync {
-    async fn inventory(&self) -> Result<InventoryGeneration, StoreError>;
-    async fn verify(&self, scope: VerifyScope) -> Result<VerifyReport, StoreError>;
-    async fn plan_gc(&self, roots: RootSetId) -> Result<GcPlanId, StoreError>;
-    async fn apply_gc(&self, plan: GcPlanId) -> Result<GcReport, StoreError>;
-    async fn repack(&self, plan: RepackPlanId) -> Result<RepackReport, StoreError>;
+    fn inventory(&self) -> Result<InventoryGeneration, StoreError>;
+    fn verify(&self, scope: VerifyScope) -> Result<VerifyReport, StoreError>;
+    fn plan_gc(&self, roots: RootSetId) -> Result<GcPlanId, StoreError>;
+    fn apply_gc(&self, plan: GcPlanId) -> Result<GcReport, StoreError>;
+    fn repack(&self, plan: RepackPlanId) -> Result<RepackReport, StoreError>;
 }
 ```
 
-Production implementations may add bounded streaming, batched existence
-queries, delete-by-plan, and repair enumeration. Object reachability never
-depends on backend listing. `put_if_absent` authenticates logical bytes against
-the expected ID before success; `read` verifies the logical object after all
-physical decoding layers.
+`BlobSource` is finite and reopenable: every `open` returns the same byte stream
+and exactly `logical_length` bytes. Reopenability lets mirrors, retries, and
+promotion reread a source without retaining a RAM-sized extent. Every leaf
+still authenticates the particular stream it stores. `BlobHandle` implements
+the same source contract, so verified reads can flow directly into another
+backend. Reading a handle into a `Vec` requires an explicit caller-provided
+maximum. A handle captures the source's declared length once; subsequent
+changes to a source's length declaration cannot change an in-flight operation.
+
+Authentication evidence inside a `BlobHandle` is private and cannot be forged
+by a caller. A wrapper that has authenticated a source may preserve that
+evidence through routing and mirroring, while every physical leaf still
+authenticates the stream it publishes or relies on a child handle that
+authenticates every complete open. Thus a normal verified, routed, mirrored
+write performs one routing proof and one streaming pass per physical placement,
+not one full-object hash pass per composition wrapper.
+
+A backend read returns promptly with a handle; whole-object authentication may
+finish only when a stream opened from that handle reaches EOF. Consumers MUST
+drain the stream and observe its final result before publishing, restoring, or
+executing the bytes. The public complete-copy helper does this with bounded
+memory; the full-buffer helper additionally requires an explicit size limit.
+Bytes may already have reached a destination before a deferred authentication
+failure, so atomic consumers use staging and publish only after success.
+
+The initial Rust storage trait is synchronous and object-safe. The daemon runs
+potentially blocking drivers on its bounded storage I/O pool; asynchronous RPC
+and S3 adapters translate streaming bodies at the service boundary. This is an
+implementation scheduling choice, not a wire contract and not campaign state.
+Production implementations may add batched existence queries, delete-by-plan,
+and repair enumeration. Object reachability never depends on backend listing.
+`put_if_absent` authenticates logical bytes against the expected ID before
+success; `read` verifies the logical object after all physical decoding layers.
 
 Mutable refs are deliberately separate. Blob caches and mirrors may be
 composed freely, but one campaign namespace has one configured authoritative
@@ -110,7 +143,7 @@ authoritative conditional update succeeds.
 Capabilities are operational and include:
 
 ```text
-conditional create       bounded range read       streaming put/get
+conditional create       bounded range read       streaming read/put
 durable flush semantics  multipart/resume         atomic conditional ref
 delete support           repair enumeration       maximum object/part sizes
 physical encryption      sparse-file support      pack-index durability
@@ -161,6 +194,15 @@ matters when a prior attempt installed the name but failed its directory flush.
 An error after a ref replacement may be an indeterminate commit, so the sole
 coordinator re-reads the authoritative ref before deciding whether to retry.
 
+Directory read handles pin an already-opened inode rather than reopening its
+path. Unlink or atomic path replacement therefore cannot retarget an in-flight
+handle. Each complete open scans and authenticates the whole logical object,
+including bytes outside a requested range; in-place mutation is reported as
+corruption at EOF. This initial whole-object range verification is deliberately
+simple and bounded in memory. Packed or Merkle-authenticated layouts may later
+provide sub-object proofs without scanning unrelated bytes while preserving the
+same logical read contract.
+
 - **[CSTORE-7]** The directory backend MUST leave either no object or a complete
   authenticated object after interruption; same-filesystem staging debris is
   unreachable and reclaimable.
@@ -198,6 +240,26 @@ index; mutable refs never enter the blob graph. A graph may share a leaf between
 routes but must define unambiguous read, write, durability, promotion, and
 eviction behavior for every admitted object kind. A write-back layer is valid
 only with a durable transfer journal whose protected roots participate in GC.
+
+The initial admitted graph is a flat `StoreNodeId -> StoreNodeSpec` map with an
+explicit root and exact admitted `ObjectKind` set. `StoreNodeSpec` is a closed
+enum over built-in leaves and layers; child fields contain node IDs, which lets
+multiple routes share a leaf without duplicating it. Startup performs a DFS and
+demand propagation before constructing the root:
+
+- at most 256 nodes, depth at most 64, and bounded ASCII node IDs;
+- every child exists, the graph is acyclic, and every configured node is
+  reachable;
+- a router covers exactly the kinds that can reach it, including the union of
+  demands when the router is shared;
+- tiers and mirrors are nonempty, the write-tier index is valid, and promotion
+  or mirroring children support conditional immutable creation;
+- public introspection returns only node ID, built-in kind, and derived
+  capabilities, never a directory root, endpoint, or credential.
+
+Direct constructors for composition layers are private. Callers may use a leaf
+alone or an admitted `StoreGraph`, so arbitrary trait-object nesting cannot
+bypass these checks.
 
 Example:
 

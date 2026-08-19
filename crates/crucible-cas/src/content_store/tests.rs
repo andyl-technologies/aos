@@ -2,10 +2,11 @@
 
 #![allow(clippy::expect_used)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
 
@@ -13,8 +14,27 @@ use tempfile::TempDir;
 
 use super::composition::{RoutedStore, TieredStore, WriteThroughStore};
 use super::directory::{DirectoryBlobBackend, DirectoryRefBackend};
+use super::graph::{StoreGraph, StoreGraphConfig, StoreNodeId, StoreNodeKind, StoreNodeSpec};
 use super::memory::{MemoryBlobBackend, MemoryRefBackend};
 use super::*;
+
+const TEST_READ_LIMIT: u64 = 1024 * 1024;
+
+fn put_bytes(
+    store: &dyn ImmutableBlobBackend,
+    id: ContentId,
+    bytes: &[u8],
+) -> Result<PutReceipt, StoreError> {
+    store.put_if_absent(id, &BlobHandle::from_bytes(bytes))
+}
+
+fn read_bytes(
+    store: &dyn ImmutableBlobBackend,
+    id: ContentId,
+    range: Option<ByteRange>,
+) -> Result<Vec<u8>, StoreError> {
+    store.read(id, range)?.read_all(TEST_READ_LIMIT)
+}
 
 #[test]
 fn content_identity_is_domain_and_schema_separated() {
@@ -75,14 +95,13 @@ fn memory_blob_and_ref_contracts_are_idempotent() {
     let id = ContentId::for_bytes(ObjectKind::CampaignSnapshot, 1, bytes);
 
     assert!(!blobs.contains(id).expect("query empty memory store"));
-    let first = blobs.put_if_absent(id, bytes).expect("first put");
-    let second = blobs.put_if_absent(id, bytes).expect("duplicate put");
+    let first = put_bytes(&blobs, id, bytes).expect("first put");
+    let second = put_bytes(&blobs, id, bytes).expect("duplicate put");
     assert_eq!(first, second);
     assert_eq!(blobs.object_count().expect("object count"), 1);
     assert_eq!(blobs.logical_bytes().expect("logical bytes"), 17);
     assert_eq!(
-        blobs
-            .read(id, Some(ByteRange::new(9, 8).expect("valid range")))
+        read_bytes(&blobs, id, Some(ByteRange::new(9, 8).expect("valid range")))
             .expect("range read"),
         b"snapshot"
     );
@@ -111,17 +130,16 @@ fn directory_backend_publishes_objects_and_refs_durably() {
     let bytes = b"exact ram extent bytes";
     let id = ContentId::for_bytes(ObjectKind::RamExtent, 1, bytes);
 
-    let receipt = blobs.put_if_absent(id, bytes).expect("directory put");
+    let receipt = put_bytes(&blobs, id, bytes).expect("directory put");
     assert!(receipt.is_durable());
-    assert_eq!(blobs.read(id, None).expect("directory read"), bytes);
+    assert_eq!(read_bytes(&blobs, id, None).expect("directory read"), bytes);
     assert_eq!(
-        blobs
-            .read(id, Some(ByteRange::new(6, 3).expect("valid range")))
+        read_bytes(&blobs, id, Some(ByteRange::new(6, 3).expect("valid range")))
             .expect("directory range"),
         b"ram"
     );
     assert_eq!(
-        blobs.put_if_absent(id, bytes).expect("idempotent put"),
+        put_bytes(&blobs, id, bytes).expect("idempotent put"),
         receipt
     );
 
@@ -136,7 +154,7 @@ fn directory_backend_publishes_objects_and_refs_durably() {
     let reopened_blobs = DirectoryBlobBackend::new("reopened", temp.path().join("blobs"));
     let reopened_refs = DirectoryRefBackend::new(temp.path().join("authority"));
     assert_eq!(
-        reopened_blobs.read(id, None).expect("reopened object"),
+        read_bytes(&reopened_blobs, id, None).expect("reopened object"),
         bytes
     );
     assert_eq!(
@@ -146,7 +164,7 @@ fn directory_backend_publishes_objects_and_refs_durably() {
 
     fs::write(object_path(reopened_blobs.root(), id), b"corrupt").expect("corrupt object body");
     assert!(matches!(
-        reopened_blobs.read(id, None),
+        read_bytes(&reopened_blobs, id, None),
         Err(StoreError::Corrupt { .. })
     ));
     fs::write(
@@ -166,11 +184,12 @@ fn tiered_reads_promote_only_verified_objects() {
     let durable = Arc::new(MemoryBlobBackend::new("durable-test", 1_024));
     let bytes = b"finding bundle";
     let id = ContentId::for_bytes(ObjectKind::Finding, 1, bytes);
-    durable.put_if_absent(id, bytes).expect("seed lower tier");
+    put_bytes(durable.as_ref(), id, bytes).expect("seed lower tier");
 
     let tiers: Vec<Arc<dyn ImmutableBlobBackend>> = vec![cache.clone(), durable];
     let store = TieredStore::new("tiered", tiers, 1, true).expect("valid tiers");
-    assert_eq!(store.read(id, None).expect("tiered read"), bytes);
+    assert!(!store.capabilities().streaming_read);
+    assert_eq!(read_bytes(&store, id, None).expect("tiered read"), bytes);
     assert!(cache.contains(id).expect("promoted cache object"));
 }
 
@@ -190,18 +209,14 @@ fn routed_and_write_through_stores_preserve_logical_identity() {
 
     let fact_bytes = b"fact";
     let fact = ContentId::for_bytes(ObjectKind::CampaignFact, 1, fact_bytes);
-    let receipt = routed
-        .put_if_absent(fact, fact_bytes)
-        .expect("mirrored fact put");
+    let receipt = put_bytes(&routed, fact, fact_bytes).expect("mirrored fact put");
     assert_eq!(receipt.placements.len(), 2);
     assert!(metadata_a.contains(fact).expect("first mirror"));
     assert!(metadata_b.contains(fact).expect("second mirror"));
 
     let ram_bytes = b"page";
     let page = ContentId::for_bytes(ObjectKind::RamExtent, 1, ram_bytes);
-    routed
-        .put_if_absent(page, ram_bytes)
-        .expect("routed page put");
+    put_bytes(&routed, page, ram_bytes).expect("routed page put");
     assert!(ram.contains(page).expect("ram route"));
 }
 
@@ -210,17 +225,18 @@ fn invalid_ranges_and_mismatched_puts_are_rejected() {
     let store = MemoryBlobBackend::new("memory", 3);
     let id = ContentId::for_bytes(ObjectKind::Trace, 1, b"abc");
     assert!(matches!(
-        store.put_if_absent(id, b"different"),
+        put_bytes(&store, id, b"different"),
         Err(StoreError::Corrupt { .. })
     ));
-    store.put_if_absent(id, b"abc").expect("valid put");
+    put_bytes(&store, id, b"abc").expect("valid put");
     let overflow_id = ContentId::for_bytes(ObjectKind::Trace, 1, b"d");
     assert!(matches!(
-        store.put_if_absent(overflow_id, b"d"),
+        put_bytes(&store, overflow_id, b"d"),
         Err(StoreError::Quota)
     ));
     assert!(matches!(
-        store.read(
+        read_bytes(
+            &store,
             id,
             Some(ByteRange::new(2, 2).expect("non-overflowing range"))
         ),
@@ -244,13 +260,16 @@ fn directory_put_and_ref_cas_are_process_concurrent() {
         let barrier = barrier.clone();
         putters.push(thread::spawn(move || {
             barrier.wait();
-            blobs.put_if_absent(id, bytes)
+            put_bytes(blobs.as_ref(), id, bytes)
         }));
     }
     for putter in putters {
         assert!(putter.join().expect("put thread").is_ok());
     }
-    assert_eq!(blobs.read(id, None).expect("concurrent object"), bytes);
+    assert_eq!(
+        read_bytes(blobs.as_ref(), id, None).expect("concurrent object"),
+        bytes
+    );
 
     let refs = Arc::new(DirectoryRefBackend::new(temp.path().join("authority")));
     let name = RefName::new("campaigns/race").expect("valid ref");
@@ -308,8 +327,9 @@ fn capabilities_and_composed_failures_are_truthful() {
         BackendCapabilities {
             durable: true,
             range_read: true,
+            streaming_read: true,
             conditional_create: true,
-            streaming_put: false,
+            streaming_put: true,
             repair_inventory: false,
             planned_delete: false,
         }
@@ -324,13 +344,13 @@ fn capabilities_and_composed_failures_are_truthful() {
     let lower = Arc::new(MemoryBlobBackend::new("lower", 1_024));
     let bytes = b"lower bytes";
     let id = ContentId::for_bytes(ObjectKind::Trace, 1, bytes);
-    lower.put_if_absent(id, bytes).expect("seed lower tier");
+    put_bytes(lower.as_ref(), id, bytes).expect("seed lower tier");
     let unavailable: Arc<dyn ImmutableBlobBackend> = Arc::new(UnavailableReadBackend);
     let lower_trait: Arc<dyn ImmutableBlobBackend> = lower;
     let tiered = TieredStore::new("tiered", vec![unavailable, lower_trait], 1, false)
         .expect("valid tiered store");
     assert!(matches!(
-        tiered.read(id, None),
+        read_bytes(&tiered, id, None),
         Err(StoreError::Unavailable)
     ));
 }
@@ -345,15 +365,449 @@ fn partial_write_through_is_retryable() {
     let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, bytes);
 
     assert!(matches!(
-        store.put_if_absent(id, bytes),
+        put_bytes(&store, id, bytes),
         Err(StoreError::Unavailable)
     ));
     assert!(first.contains(id).expect("first orphan is readable"));
     assert!(!second.contains(id).expect("second placement absent"));
+    assert!(store.contains(id).expect("partial mirror is readable"));
+    assert_eq!(
+        read_bytes(&store, id, None).expect("partial mirror read"),
+        bytes
+    );
 
-    let receipt = store.put_if_absent(id, bytes).expect("retry mirror put");
+    let receipt = put_bytes(&store, id, bytes).expect("retry mirror put");
     assert_eq!(receipt.placements.len(), 2);
     assert!(second.contains(id).expect("second placement repaired"));
+}
+
+#[test]
+fn streaming_sources_are_reopenable_and_length_checked() {
+    let temp = TempDir::new().expect("temporary directory");
+    let store = DirectoryBlobBackend::new("directory", temp.path().join("blobs"));
+    let source = Arc::new(RepeatSource {
+        byte: 0xab,
+        logical_length: 4 * 1024 * 1024,
+    });
+    let id = ContentId::for_source(ObjectKind::RamExtent, 1, source.as_ref())
+        .expect("stream source identity");
+    let source = BlobHandle::new(source);
+    let receipt = store
+        .put_if_absent(id, &source)
+        .expect("stream directory put");
+    assert_eq!(
+        receipt.placements[0].logical_length,
+        source.logical_length()
+    );
+
+    let stored = store.read(id, None).expect("stream directory read");
+    let mut copied = Vec::new();
+    assert_eq!(
+        stored.copy_to(&mut copied).expect("bounded streaming copy"),
+        source.logical_length()
+    );
+    assert_eq!(copied, vec![0xab; source.logical_length() as usize]);
+    assert_eq!(
+        ContentId::for_source(ObjectKind::RamExtent, 1, &stored).expect("stored stream identity"),
+        id
+    );
+    assert_eq!(
+        store
+            .read(
+                id,
+                Some(ByteRange::new(source.logical_length() - 16, 16).expect("valid tail range"))
+            )
+            .expect("tail stream")
+            .read_all(16)
+            .expect("tail bytes"),
+        vec![0xab; 16]
+    );
+
+    let too_long = Arc::new(MismatchedLengthSource {
+        declared: 2,
+        bytes: b"abc",
+    });
+    assert!(matches!(
+        ContentId::for_source(ObjectKind::Trace, 1, too_long.as_ref()),
+        Err(StoreError::InvalidSourceLength { .. })
+    ));
+    let expected = ContentId::for_bytes(ObjectKind::Trace, 1, b"ab");
+    let too_long = BlobHandle::new(too_long);
+    assert!(matches!(
+        store.put_if_absent(expected, &too_long),
+        Err(StoreError::Corrupt { .. })
+    ));
+
+    let too_short = MismatchedLengthSource {
+        declared: 4,
+        bytes: b"abc",
+    };
+    assert!(matches!(
+        ContentId::for_source(ObjectKind::Trace, 1, &too_short),
+        Err(StoreError::InvalidSourceLength { .. })
+    ));
+
+    let enormous = BlobHandle::new(Arc::new(MismatchedLengthSource {
+        declared: u64::MAX,
+        bytes: b"",
+    }));
+    assert!(matches!(
+        enormous.read_all(u64::MAX),
+        Err(StoreError::Quota)
+    ));
+}
+
+#[test]
+fn verification_evidence_bounds_source_passes_through_a_mirror_graph() {
+    let temp = TempDir::new().expect("temporary directory");
+    let root = node_id("root");
+    let router = node_id("router");
+    let mirror = node_id("mirror");
+    let directory = node_id("directory");
+    let memory = node_id("memory");
+    let graph = StoreGraph::build(StoreGraphConfig {
+        root: root.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
+        nodes: BTreeMap::from([
+            (
+                root,
+                StoreNodeSpec::Verified {
+                    child: router.clone(),
+                },
+            ),
+            (
+                router,
+                StoreNodeSpec::Routed {
+                    routes: BTreeMap::from([(ObjectKind::CampaignFact, mirror.clone())]),
+                },
+            ),
+            (
+                mirror,
+                StoreNodeSpec::WriteThrough {
+                    children: vec![directory.clone(), memory.clone()],
+                },
+            ),
+            (
+                directory,
+                StoreNodeSpec::Directory {
+                    root: temp.path().join("objects"),
+                },
+            ),
+            (
+                memory,
+                StoreNodeSpec::Memory {
+                    max_logical_bytes: 1024 * 1024,
+                },
+            ),
+        ]),
+    })
+    .expect("valid mirror graph");
+    let bytes = vec![0x5a; 128 * 1024];
+    let opens = Arc::new(AtomicUsize::new(0));
+    let bytes_read = Arc::new(AtomicUsize::new(0));
+    let source = BlobHandle::new(Arc::new(CountingSource {
+        bytes: Arc::from(bytes.clone()),
+        opens: opens.clone(),
+        bytes_read: bytes_read.clone(),
+    }));
+    let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, &bytes);
+    let receipt = graph
+        .put_if_absent(id, &source)
+        .expect("mirrored streaming put");
+
+    assert_eq!(receipt.placements.len(), 2);
+    assert_eq!(opens.load(Ordering::SeqCst), 3);
+    assert_eq!(bytes_read.load(Ordering::SeqCst), bytes.len() * 3);
+}
+
+#[test]
+fn directory_handles_pin_inodes_and_authenticate_ranges_at_eof() {
+    let temp = TempDir::new().expect("temporary directory");
+    let store = DirectoryBlobBackend::new("directory", temp.path().join("objects"));
+    let bytes = b"stable pinned bytes";
+    let id = ContentId::for_bytes(ObjectKind::Trace, 1, bytes);
+    put_bytes(&store, id, bytes).expect("put pinned object");
+    let handle = store.read(id, None).expect("open pinned handle");
+    fs::remove_file(object_path(store.root(), id)).expect("unlink object path");
+    assert_eq!(handle.read_all(1_024).expect("read unlinked inode"), bytes);
+    assert_eq!(
+        handle.read_all(1_024).expect("reopen unlinked inode"),
+        bytes
+    );
+    assert!(matches!(
+        store.read(id, None),
+        Err(StoreError::NotFound { .. })
+    ));
+
+    let mutated = b"mutable-object";
+    let mutated_id = ContentId::for_bytes(ObjectKind::Trace, 1, mutated);
+    put_bytes(&store, mutated_id, mutated).expect("put mutation object");
+    let mutated_handle = store.read(mutated_id, None).expect("open mutation handle");
+    fs::write(object_path(store.root(), mutated_id), b"changed-object")
+        .expect("mutate pinned inode");
+    assert!(matches!(
+        mutated_handle.read_all(1_024),
+        Err(StoreError::Corrupt { .. })
+    ));
+
+    let range_bytes = vec![0x11; 4_096];
+    let range_id = ContentId::for_bytes(ObjectKind::RamExtent, 1, &range_bytes);
+    put_bytes(&store, range_id, &range_bytes).expect("put range object");
+    let range = store
+        .read(range_id, Some(ByteRange::new(0, 16).expect("valid range")))
+        .expect("open range handle");
+    let mut corrupt = range_bytes;
+    corrupt[4_095] ^= 0xff;
+    fs::write(object_path(store.root(), range_id), corrupt).expect("corrupt outside range");
+    assert!(matches!(
+        range.read_all(16),
+        Err(StoreError::Corrupt { .. })
+    ));
+}
+
+#[test]
+fn changing_and_failing_sources_leave_no_published_object_or_staging_file() {
+    let temp = TempDir::new().expect("temporary directory");
+    let directory = Arc::new(DirectoryBlobBackend::new(
+        "directory",
+        temp.path().join("objects"),
+    ));
+    let verified = super::composition::VerifiedStore::new("verified", directory.clone());
+    let expected_bytes = b"first opening is valid";
+    let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, expected_bytes);
+    let source = BlobHandle::new(Arc::new(ChangingSource {
+        opens: AtomicUsize::new(0),
+        first: expected_bytes,
+        later: b"second opening differs",
+    }));
+    assert!(matches!(
+        verified.put_if_absent(id, &source),
+        Err(StoreError::Corrupt { .. })
+    ));
+    assert!(
+        !directory
+            .contains(id)
+            .expect("changed source not published")
+    );
+    assert_no_staging(directory.root(), id);
+
+    let failing_bytes = b"reader fails in the middle";
+    let failing_id = ContentId::for_bytes(ObjectKind::Trace, 1, failing_bytes);
+    let failing = BlobHandle::new(Arc::new(FailingSource {
+        bytes: failing_bytes,
+        fail_after: 8,
+    }));
+    assert!(matches!(
+        directory.put_if_absent(failing_id, &failing),
+        Err(StoreError::StreamIo { .. })
+    ));
+    assert!(
+        !directory
+            .contains(failing_id)
+            .expect("failed source not published")
+    );
+    assert_no_staging(directory.root(), failing_id);
+
+    let interrupted = InterruptOnceSource {
+        bytes: b"retry interrupted reads",
+    };
+    assert_eq!(
+        ContentId::for_source(ObjectKind::Trace, 1, &interrupted)
+            .expect("interrupted read retried"),
+        ContentId::for_bytes(ObjectKind::Trace, 1, interrupted.bytes)
+    );
+}
+
+#[test]
+fn source_chunk_boundaries_do_not_change_content_identity() {
+    for length in [65_535_usize, 65_536, 65_537] {
+        let bytes = vec![0x7c; length];
+        let source = RepeatSource {
+            byte: 0x7c,
+            logical_length: length as u64,
+        };
+        assert_eq!(
+            ContentId::for_source(ObjectKind::RamExtent, 1, &source).expect("chunked identity"),
+            ContentId::for_bytes(ObjectKind::RamExtent, 1, &bytes)
+        );
+    }
+}
+
+#[test]
+fn closed_store_graph_routes_shared_leaves_and_is_introspectable() {
+    let temp = TempDir::new().expect("temporary directory");
+    let root = node_id("root");
+    let router = node_id("router");
+    let mirror = node_id("metadata-mirror");
+    let ram_tiers = node_id("ram-tiers");
+    let directory = node_id("directory");
+    let metadata_cache = node_id("metadata-cache");
+    let ram_cache = node_id("ram-cache");
+    let nodes = BTreeMap::from([
+        (
+            root.clone(),
+            StoreNodeSpec::Verified {
+                child: router.clone(),
+            },
+        ),
+        (
+            router,
+            StoreNodeSpec::Routed {
+                routes: BTreeMap::from([
+                    (ObjectKind::CampaignFact, mirror.clone()),
+                    (ObjectKind::RamExtent, ram_tiers.clone()),
+                ]),
+            },
+        ),
+        (
+            mirror,
+            StoreNodeSpec::WriteThrough {
+                children: vec![metadata_cache.clone(), directory.clone()],
+            },
+        ),
+        (
+            ram_tiers,
+            StoreNodeSpec::Tiered {
+                tiers: vec![ram_cache.clone(), directory.clone()],
+                write_tier: 1,
+                promote_reads: true,
+            },
+        ),
+        (
+            directory,
+            StoreNodeSpec::Directory {
+                root: temp.path().join("objects"),
+            },
+        ),
+        (
+            metadata_cache,
+            StoreNodeSpec::Memory {
+                max_logical_bytes: 1_024,
+            },
+        ),
+        (
+            ram_cache,
+            StoreNodeSpec::Memory {
+                max_logical_bytes: 1_024,
+            },
+        ),
+    ]);
+    let graph = StoreGraph::build(StoreGraphConfig {
+        root: root.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact, ObjectKind::RamExtent]),
+        nodes,
+    })
+    .expect("valid closed graph");
+    assert_eq!(graph.root_id(), &root);
+    assert_eq!(graph.describe().len(), 7);
+    assert!(
+        graph
+            .describe()
+            .iter()
+            .any(|node| node.kind == StoreNodeKind::Routed)
+    );
+
+    let fact_bytes = b"graph fact";
+    let fact = ContentId::for_bytes(ObjectKind::CampaignFact, 1, fact_bytes);
+    let fact_receipt = put_bytes(&graph, fact, fact_bytes).expect("graph fact put");
+    assert_eq!(fact_receipt.placements.len(), 2);
+    assert!(fact_receipt.is_durable());
+
+    let ram_bytes = b"graph ram";
+    let ram = ContentId::for_bytes(ObjectKind::RamExtent, 1, ram_bytes);
+    assert!(
+        put_bytes(&graph, ram, ram_bytes)
+            .expect("graph RAM put")
+            .is_durable()
+    );
+    assert_eq!(
+        read_bytes(&graph, ram, None).expect("graph RAM read"),
+        ram_bytes
+    );
+
+    let trace = ContentId::for_bytes(ObjectKind::Trace, 1, b"trace");
+    assert!(matches!(
+        put_bytes(&graph, trace, b"trace"),
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::RouteCoverage,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn closed_store_graph_rejects_cycles_missing_routes_and_unreachable_nodes() {
+    let root = node_id("root");
+    assert!(matches!(
+        StoreGraph::build(StoreGraphConfig {
+            root: root.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
+            nodes: BTreeMap::from([(
+                root.clone(),
+                StoreNodeSpec::Verified {
+                    child: root.clone()
+                }
+            )]),
+        }),
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::Cycle,
+            ..
+        })
+    ));
+
+    let router = node_id("router");
+    let leaf = node_id("leaf");
+    assert!(matches!(
+        StoreGraph::build(StoreGraphConfig {
+            root: router.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact, ObjectKind::RamExtent]),
+            nodes: BTreeMap::from([
+                (
+                    router,
+                    StoreNodeSpec::Routed {
+                        routes: BTreeMap::from([(ObjectKind::CampaignFact, leaf.clone())])
+                    }
+                ),
+                (
+                    leaf,
+                    StoreNodeSpec::Memory {
+                        max_logical_bytes: 1_024
+                    }
+                ),
+            ]),
+        }),
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::RouteCoverage,
+            ..
+        })
+    ));
+
+    let root = node_id("root");
+    let unused = node_id("unused");
+    assert!(matches!(
+        StoreGraph::build(StoreGraphConfig {
+            root: root.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
+            nodes: BTreeMap::from([
+                (
+                    root,
+                    StoreNodeSpec::Memory {
+                        max_logical_bytes: 1_024
+                    }
+                ),
+                (
+                    unused,
+                    StoreNodeSpec::Memory {
+                        max_logical_bytes: 1_024
+                    }
+                ),
+            ]),
+        }),
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::UnreachableNode,
+            ..
+        })
+    ));
 }
 
 fn object_path(root: &Path, id: ContentId) -> PathBuf {
@@ -365,7 +819,188 @@ fn object_path(root: &Path, id: ContentId) -> PathBuf {
         .join(digest)
 }
 
+fn node_id(value: &str) -> StoreNodeId {
+    StoreNodeId::new(value).expect("valid store node ID")
+}
+
+fn assert_no_staging(root: &Path, id: ContentId) {
+    let path = object_path(root, id);
+    let directory = path.parent().expect("object directory");
+    if !directory.exists() {
+        return;
+    }
+    assert!(
+        fs::read_dir(directory)
+            .expect("read object directory")
+            .all(|entry| !entry
+                .expect("directory entry")
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".staging-"))
+    );
+}
+
 struct UnavailableReadBackend;
+
+struct CountingSource {
+    bytes: Arc<[u8]>,
+    opens: Arc<AtomicUsize>,
+    bytes_read: Arc<AtomicUsize>,
+}
+
+impl BlobSource for CountingSource {
+    fn logical_length(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+
+    fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
+        self.opens.fetch_add(1, Ordering::SeqCst);
+        Ok(Box::new(CountingReader {
+            cursor: Cursor::new(self.bytes.clone()),
+            bytes_read: self.bytes_read.clone(),
+        }))
+    }
+}
+
+struct CountingReader {
+    cursor: Cursor<Arc<[u8]>>,
+    bytes_read: Arc<AtomicUsize>,
+}
+
+impl Read for CountingReader {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.cursor.read(output)?;
+        self.bytes_read.fetch_add(read, Ordering::SeqCst);
+        Ok(read)
+    }
+}
+
+struct ChangingSource {
+    opens: AtomicUsize,
+    first: &'static [u8],
+    later: &'static [u8],
+}
+
+impl BlobSource for ChangingSource {
+    fn logical_length(&self) -> u64 {
+        self.first.len() as u64
+    }
+
+    fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
+        let bytes = if self.opens.fetch_add(1, Ordering::SeqCst) == 0 {
+            self.first
+        } else {
+            self.later
+        };
+        Ok(Box::new(Cursor::new(bytes)))
+    }
+}
+
+struct FailingSource {
+    bytes: &'static [u8],
+    fail_after: usize,
+}
+
+impl BlobSource for FailingSource {
+    fn logical_length(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+
+    fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
+        Ok(Box::new(FailingReader {
+            bytes: self.bytes,
+            fail_after: self.fail_after,
+            position: 0,
+        }))
+    }
+}
+
+struct FailingReader {
+    bytes: &'static [u8],
+    fail_after: usize,
+    position: usize,
+}
+
+impl Read for FailingReader {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        if self.position >= self.fail_after {
+            return Err(std::io::Error::other("injected mid-stream failure"));
+        }
+        let end = self
+            .bytes
+            .len()
+            .min(self.fail_after)
+            .min(self.position.saturating_add(output.len()));
+        let bytes = &self.bytes[self.position..end];
+        output[..bytes.len()].copy_from_slice(bytes);
+        self.position = end;
+        Ok(bytes.len())
+    }
+}
+
+struct InterruptOnceSource {
+    bytes: &'static [u8],
+}
+
+impl BlobSource for InterruptOnceSource {
+    fn logical_length(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+
+    fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
+        Ok(Box::new(InterruptOnceReader {
+            cursor: Cursor::new(self.bytes),
+            interrupted: false,
+        }))
+    }
+}
+
+struct InterruptOnceReader {
+    cursor: Cursor<&'static [u8]>,
+    interrupted: bool,
+}
+
+impl Read for InterruptOnceReader {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        if !self.interrupted {
+            self.interrupted = true;
+            return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+        }
+        self.cursor.read(output)
+    }
+}
+
+struct RepeatSource {
+    byte: u8,
+    logical_length: u64,
+}
+
+impl BlobSource for RepeatSource {
+    fn logical_length(&self) -> u64 {
+        self.logical_length
+    }
+
+    fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
+        Ok(Box::new(
+            std::io::repeat(self.byte).take(self.logical_length),
+        ))
+    }
+}
+
+struct MismatchedLengthSource {
+    declared: u64,
+    bytes: &'static [u8],
+}
+
+impl BlobSource for MismatchedLengthSource {
+    fn logical_length(&self) -> u64 {
+        self.declared
+    }
+
+    fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
+        Ok(Box::new(Cursor::new(self.bytes)))
+    }
+}
 
 impl ImmutableBlobBackend for UnavailableReadBackend {
     fn name(&self) -> &str {
@@ -380,11 +1015,15 @@ impl ImmutableBlobBackend for UnavailableReadBackend {
         Err(StoreError::Unavailable)
     }
 
-    fn read(&self, _id: ContentId, _range: Option<ByteRange>) -> Result<Vec<u8>, StoreError> {
+    fn read(&self, _id: ContentId, _range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
         Err(StoreError::Unavailable)
     }
 
-    fn put_if_absent(&self, _id: ContentId, _bytes: &[u8]) -> Result<PutReceipt, StoreError> {
+    fn put_if_absent(
+        &self,
+        _id: ContentId,
+        _source: &BlobHandle,
+    ) -> Result<PutReceipt, StoreError> {
         Err(StoreError::Unavailable)
     }
 }
@@ -416,14 +1055,14 @@ impl ImmutableBlobBackend for FailFirstPutBackend {
         self.inner.contains(id)
     }
 
-    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<Vec<u8>, StoreError> {
+    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
         self.inner.read(id, range)
     }
 
-    fn put_if_absent(&self, id: ContentId, bytes: &[u8]) -> Result<PutReceipt, StoreError> {
+    fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
         if !self.failed.swap(true, Ordering::SeqCst) {
             return Err(StoreError::Unavailable);
         }
-        self.inner.put_if_absent(id, bytes)
+        self.inner.put_if_absent(id, source)
     }
 }
