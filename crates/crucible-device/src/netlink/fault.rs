@@ -62,7 +62,7 @@ impl LinkCorruptionStrategy {
     /// truncation each consume one selector so the mutated byte and truncation
     /// length are schedule material rather than fixed constants.
     #[must_use]
-    pub fn bit_draws(self) -> u32 {
+    pub fn selector_draws(self) -> u32 {
         match self {
             Self::BitFlip { max_bits } => max_bits,
             Self::FieldMutation | Self::Truncation { .. } => 1,
@@ -202,11 +202,11 @@ impl LinkFaults {
     ///
     /// This is the sum of every concrete strategy's selector needs.
     #[must_use]
-    pub fn corrupt_bit_draws(&self) -> u32 {
+    pub fn corruption_selector_draws(&self) -> u32 {
         self.corruption_strategies
             .iter()
             .fold(0u32, |total, strategy| {
-                total.saturating_add(strategy.bit_draws())
+                total.saturating_add(strategy.selector_draws())
             })
     }
 }

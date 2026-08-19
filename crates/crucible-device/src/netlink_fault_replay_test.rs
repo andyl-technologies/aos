@@ -11,7 +11,7 @@ fn corrupt_flips_exactly_the_seeded_bits() {
     faults.corruption_strategies = vec![LinkCorruptionStrategy::BitFlip { max_bits: 2 }];
     let mut l = link(faults);
     let draws = FrameDraws {
-        corrupt_bits: vec![0, 8], // bit 0 of byte 0, bit 0 of byte 1
+        corruption_selectors: vec![0, 8], // bit 0 of byte 0, bit 0 of byte 1
         ..FrameDraws::default()
     };
     let out = ok(l.emit(
@@ -29,7 +29,7 @@ fn corrupt_flips_exactly_the_seeded_bits() {
         &frame(vec![0; 4]),
         &FrameDraws {
             corrupt: 50,
-            corrupt_bits: vec![0, 8],
+            corruption_selectors: vec![0, 8],
             ..FrameDraws::default()
         },
         PastDeliveryPolicy::FailLoud,
@@ -50,7 +50,7 @@ fn corruption_strategies_use_seeded_selectors() {
     let first_out = ok(first.emit(
         &frame(vec![0, 0, 0, 0, 0]),
         &FrameDraws {
-            corrupt_bits: vec![1, 0],
+            corruption_selectors: vec![1, 0],
             ..FrameDraws::default()
         },
         PastDeliveryPolicy::FailLoud,
@@ -61,7 +61,7 @@ fn corruption_strategies_use_seeded_selectors() {
     let second_out = ok(second.emit(
         &frame(vec![0, 0, 0, 0, 0]),
         &FrameDraws {
-            corrupt_bits: vec![3, 2],
+            corruption_selectors: vec![3, 2],
             ..FrameDraws::default()
         },
         PastDeliveryPolicy::FailLoud,
@@ -290,7 +290,7 @@ fn run_sequence() -> Vec<(u64, u32, Vec<u8>)> {
                 additional_loss: Vec::new(),
                 duplicate: 0,
                 corrupt: 0,
-                corrupt_bits: vec![3],
+                corruption_selectors: vec![3],
             },
         ),
         (
@@ -302,7 +302,7 @@ fn run_sequence() -> Vec<(u64, u32, Vec<u8>)> {
                 additional_loss: Vec::new(),
                 duplicate: 1,
                 corrupt: 1,
-                corrupt_bits: vec![17],
+                corruption_selectors: vec![17],
             },
         ),
         (
@@ -314,7 +314,7 @@ fn run_sequence() -> Vec<(u64, u32, Vec<u8>)> {
                 additional_loss: Vec::new(),
                 duplicate: 1,
                 corrupt: 0,
-                corrupt_bits: vec![0],
+                corruption_selectors: vec![0],
             },
         ),
     ];
