@@ -189,6 +189,10 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             | CampaignRecordKind::AttemptAdmission
             | CampaignRecordKind::PlannerStep
             | CampaignRecordKind::ExpansionState => "crucible-campaign::exploration",
+            CampaignRecordKind::MeasurementSet
+            | CampaignRecordKind::PropertyVerdictSet
+            | CampaignRecordKind::CoverageProjection
+            | CampaignRecordKind::Observation => "crucible-campaign::observation",
             _ => "crucible-campaign::object",
         };
         assert_eq!(row[2], expected_owner);
@@ -1849,6 +1853,165 @@ fn generic_public_object_decode_rejects_owner_validated_merkle_records() {
     assert!(matches!(
         ObjectEnvelope::from_canonical_bytes(&envelope.canonical_bytes()),
         Err(CampaignCodecError::InvalidValue { .. })
+    ));
+}
+
+#[test]
+fn observation_records_are_canonical_bounded_and_child_bearing() {
+    let evidence = content_kind("measurement evidence", ObjectKind::Trace);
+    let measurements = MeasurementSet::new(BTreeMap::from([(
+        "latency".to_owned(),
+        MeasurementSeries::new(
+            vec![MetricValue::Unsigned(5), MetricValue::Unsigned(8)],
+            MetricValue::Unsigned(13),
+            BTreeSet::from([evidence]),
+        )
+        .expect("measurement series"),
+    )]))
+    .expect("measurement set");
+    assert_eq!(
+        MeasurementSet::from_canonical_bytes(&measurements.canonical_bytes())
+            .expect("canonical measurements"),
+        measurements
+    );
+    assert!(
+        MeasurementSeries::new(
+            vec![MetricValue::Unsigned(1)],
+            MetricValue::Signed(1),
+            BTreeSet::new(),
+        )
+        .is_err()
+    );
+
+    let properties = PropertyVerdictSet::new(BTreeMap::from([(
+        "network-recovers".to_owned(),
+        PropertyEvidence::new(PropertyVerdict::Passed, BTreeSet::from([evidence]))
+            .expect("property evidence"),
+    )]))
+    .expect("property verdict set");
+    assert_eq!(
+        PropertyVerdictSet::from_canonical_bytes(&properties.canonical_bytes())
+            .expect("canonical properties"),
+        properties
+    );
+    let coverage = CoverageProjection::new(BTreeSet::from([hash("coverage")]), BTreeSet::new())
+        .expect("coverage projection");
+    assert_eq!(
+        CoverageProjection::from_canonical_bytes(&coverage.canonical_bytes())
+            .expect("canonical coverage"),
+        coverage
+    );
+
+    let observation = Observation::new(
+        stored_id!(AttemptId, ObjectKind::CampaignFact, "observation attempt"),
+        ConfigurationId::from_hash(hash("observation child")),
+        stored_id!(
+            ConfigurationArtifactId,
+            ObjectKind::Configuration,
+            "observation child artifact"
+        ),
+        stored_id!(BranchPathId, ObjectKind::CampaignFact, "observation path"),
+        StopOutcome::Reached(StopCondition::NextChoice),
+        measurements.id().expect("measurement id"),
+        properties.id().expect("property id"),
+        coverage.id().expect("coverage id"),
+        BTreeSet::from([stored_id!(
+            ChoiceOpportunityId,
+            ObjectKind::CampaignFact,
+            "discovered choice"
+        )]),
+    )
+    .expect("observation");
+    assert_eq!(
+        Observation::from_canonical_bytes(&observation.canonical_bytes())
+            .expect("canonical observation"),
+        observation
+    );
+    let envelope = ObjectEnvelope::for_record(
+        CampaignRecordKind::Observation,
+        super::object::content_children(observation.content_children())
+            .expect("observation children"),
+        observation.canonical_bytes(),
+    )
+    .expect("observation envelope");
+    assert_eq!(
+        observation.id().expect("observation id").content_id(),
+        envelope.content_id()
+    );
+    assert_eq!(
+        ObjectEnvelope::from_canonical_bytes(&envelope.canonical_bytes())
+            .expect("canonical observation envelope"),
+        envelope
+    );
+
+    let mut trailing = observation.canonical_bytes();
+    trailing.push(0);
+    assert_eq!(
+        Observation::from_canonical_bytes(&trailing),
+        Err(CampaignCodecError::TrailingBytes)
+    );
+
+    let maximum_series_evidence = (0_u32..4096)
+        .map(|ordinal| ContentId::for_bytes(ObjectKind::Trace, 1, &ordinal.to_be_bytes()))
+        .collect::<BTreeSet<_>>();
+    let evidence_heavy_series = MeasurementSeries::new(
+        vec![MetricValue::Unsigned(1)],
+        MetricValue::Unsigned(1),
+        maximum_series_evidence.clone(),
+    )
+    .expect("maximum series evidence");
+    let excessive_measurements = (0..17)
+        .map(|ordinal| (format!("metric-{ordinal}"), evidence_heavy_series.clone()))
+        .collect::<BTreeMap<_, _>>();
+    assert!(matches!(
+        MeasurementSet::new(excessive_measurements),
+        Err(CampaignCodecError::LimitExceeded {
+            limit: "measurement-evidence-child-count"
+        })
+    ));
+    let evidence_heavy_property =
+        PropertyEvidence::new(PropertyVerdict::Passed, maximum_series_evidence)
+            .expect("maximum property evidence");
+    let excessive_properties = (0..17)
+        .map(|ordinal| {
+            (
+                format!("property-{ordinal}"),
+                evidence_heavy_property.clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert!(matches!(
+        PropertyVerdictSet::new(excessive_properties),
+        Err(CampaignCodecError::LimitExceeded {
+            limit: "property-evidence-child-count"
+        })
+    ));
+
+    let excessive_choices = (0..=crate::observation::MAX_DISCOVERED_CHOICES)
+        .map(|ordinal| {
+            ChoiceOpportunityId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                &ordinal.to_be_bytes(),
+            ))
+            .expect("choice id")
+        })
+        .collect::<BTreeSet<_>>();
+    assert!(matches!(
+        Observation::new(
+            observation.attempt(),
+            observation.child(),
+            observation.child_content(),
+            observation.path(),
+            observation.stop().clone(),
+            observation.measurements(),
+            observation.properties(),
+            observation.coverage(),
+            excessive_choices,
+        ),
+        Err(CampaignCodecError::LimitExceeded {
+            limit: "observation-discovered-choice-count"
+        })
     ));
 }
 

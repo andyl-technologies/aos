@@ -157,6 +157,47 @@ impl CampaignRepository {
         }))
     }
 
+    pub(super) fn find_observation_result(
+        &self,
+        content_id: ContentId,
+        observation: ObservationId,
+    ) -> Result<Option<ObservationResult>, CampaignRepositoryError> {
+        let key = mutation_result_content_key("observation", observation.content_id());
+        let Ok((result_content, loaded, fact)) = self.mutation_result_snapshot(content_id, key)
+        else {
+            return Ok(None);
+        };
+        if fact != CampaignFact::ObservationPublished(observation) {
+            return Err(integrity("observation-result-index-type-mismatch"));
+        }
+        let record = self.read_observation(observation.content_id())?;
+        let canonical_content = self
+            .merkle
+            .get(
+                loaded.snapshot.roots().observations,
+                map_key_content("observations.attempt", record.attempt().content_id()),
+            )?
+            .ok_or_else(|| integrity("observation-result-has-no-canonical-attempt-index"))?;
+        let disposition = if canonical_content == observation.content_id() {
+            ObservationDisposition::Canonical
+        } else {
+            ObservationDisposition::DeterminismConflict {
+                canonical: ObservationId::from_content_id(canonical_content)?,
+            }
+        };
+        let prior_snapshot = loaded
+            .snapshot
+            .parent()
+            .ok_or_else(|| integrity("observation-transition-has-no-parent"))?;
+        Ok(Some(ObservationResult {
+            prior_snapshot,
+            new_snapshot: CampaignSnapshotId::from_content_id(result_content)?,
+            observation,
+            disposition,
+            replayed: true,
+        }))
+    }
+
     pub(super) fn parent_result_upsert(
         &self,
         content_id: ContentId,
@@ -254,6 +295,9 @@ impl CampaignRepository {
             CampaignFact::PlannerAdvanced(step) => {
                 let step = self.read_planner_step(step.content_id())?;
                 mutation_result_content_key("planner", step.invocation().content_id())
+            }
+            CampaignFact::ObservationPublished(observation) => {
+                mutation_result_content_key("observation", observation.content_id())
             }
             _ => return Ok(None),
         };

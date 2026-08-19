@@ -68,7 +68,7 @@ pub enum StopCondition {
 }
 
 impl StopCondition {
-    pub(super) fn validate(&self) -> Result<(), CampaignCodecError> {
+    pub(crate) fn validate(&self) -> Result<(), CampaignCodecError> {
         match self {
             Self::NamedBoundary(name) => validate_identifier(name, "stop boundary is invalid"),
             Self::VirtualTimeNanoseconds(0) | Self::EventCount(0) => {

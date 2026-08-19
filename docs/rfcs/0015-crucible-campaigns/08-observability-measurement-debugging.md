@@ -145,6 +145,22 @@ discovered choice opportunities and branch points
 event-log range and evidence digests
 ```
 
+The initial canonical record layer represents exact samples as bounded Boolean,
+signed-integer, unsigned-integer, identifier-text, or opaque scenario-typed byte
+values. One `MeasurementSeries` retains a nonempty ordered sample vector, a
+same-type declared aggregate, and its evidence children. `MeasurementSet`,
+`PropertyVerdictSet`, and `CoverageProjection` are bounded name/identity maps or
+sets with generic child-bearing envelopes. Scenario measurement definitions,
+aggregate recomputation, rationals/histograms, and objective evaluation remain
+owned by T-CAM-3.1 through T-CAM-3.4; this record layer does not treat a claimed
+aggregate as independently verified policy input.
+
+The observation stores both `ConfigurationId` and
+`ConfigurationArtifactId`. The former is semantic graph identity; the latter is
+the exact replayable child evidence. Coverage storage adds immutable projection
+records and derives their identity union, so a new projector can rebuild the
+same union without mutating an old bitmap in place.
+
 Objective evaluation produces a separate deterministic record naming the
 observation and policy:
 

@@ -568,6 +568,20 @@ impl ChoiceOpportunity {
         Ok(())
     }
 
+    /// Derives a compact digest of fields copied from referenced choice records.
+    pub(crate) fn reference_contract_hash(&self) -> CampaignHash {
+        let mut encoder = Encoder::new();
+        self.declaration_semantics.encode(&mut encoder);
+        self.class.encode(&mut encoder);
+        self.source.encode(&mut encoder);
+        self.default.encode(&mut encoder);
+        self.domain_semantics.encode(&mut encoder);
+        CampaignHash::derive(
+            "crucible.choice-opportunity-reference-contract.v1",
+            &encoder.finish(),
+        )
+    }
+
     /// Returns the stable opportunity identity.
     ///
     /// # Errors

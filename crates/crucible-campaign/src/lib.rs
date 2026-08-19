@@ -18,6 +18,7 @@ mod identity;
 mod merkle;
 mod model;
 mod object;
+mod observation;
 mod policy;
 mod repository;
 
@@ -57,6 +58,10 @@ pub use model::{
     PlannerInvocation, PlannerState, PlanningBudget, PolicyActivation, PolicyArtifact,
 };
 pub use object::{CampaignRecordKind, ChildReference, ObjectEnvelope};
+pub use observation::{
+    CoverageProjection, MeasurementSeries, MeasurementSet, MetricValue, Observation,
+    PropertyEvidence, PropertyVerdict, PropertyVerdictSet, StopOutcome,
+};
 pub use policy::{
     CampaignMode, CampaignPolicy, CampaignSeed, CandidateGeneratorAlgorithm,
     CandidateGeneratorSpec, ChoicePolicy, ExactRational, ExplorerPolicy, FairnessPolicy,
@@ -65,8 +70,8 @@ pub use policy::{
 };
 pub use repository::{
     AttemptAdmissionResult, BranchRequestResult, CampaignCommandResult, CampaignHead,
-    CampaignRepository, CampaignRepositoryError, PlannerStepResult, ProposalResult,
-    ResolvedSelection,
+    CampaignRepository, CampaignRepositoryError, ObservationDisposition, ObservationResult,
+    PlannerStepResult, ProposalResult, ResolvedSelection,
 };
 
 #[cfg(test)]

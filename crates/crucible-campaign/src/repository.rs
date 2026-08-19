@@ -6,7 +6,7 @@
 //! root, so retry checks command identity before snapshot staleness and can
 //! reconstruct the original prior/new response from linear snapshot ancestry.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crucible_cas::content_envelope::ContentEnvelope;
@@ -20,17 +20,19 @@ use crate::{
     AdmissionOrdinal, Attempt, AttemptAdmission, AttemptAdmissionId, AttemptAdmissionRole,
     AttemptId, AttemptStart, BranchPath, BranchPathId, BranchRequest, BranchRequestCause,
     BranchRequestId, CampaignCodecError, CampaignControlAction, CampaignFact, CampaignHash,
-    CampaignLineage, CampaignLineageId, CampaignPlanningView, CampaignPolicy, CampaignPolicyId,
-    CampaignSnapshot, CampaignSnapshotId, CampaignState, CandidateGeneratorAlgorithm,
-    CandidateGeneratorSpec, CandidateGeneratorSpecId, CandidateSource, ChoiceDomain,
-    ChoiceDomainId, ChoiceGroup, ChoiceGroupId, ChoiceOpportunity, ChoiceOpportunityId,
-    ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId, ControlRequest,
-    ExpansionState, ExpansionStateId, MerkleMap, MerkleMapRoot, ObjectEnvelope, PlannerDisposition,
-    PlannerEngine, PlannerInvocation, PlannerInvocationId, PlannerProposalDisposition,
-    PlannerState, PlannerStep, PlannerStepId, PlannerStepProposal, PlanningAccounting,
-    PlanningBudget, PlanningScanPage, PlanningScanPosition, PlanningUsage, PolicyActivation,
-    PolicyArtifact, Proposal, ProposalId, ScenarioArtifact, ScenarioArtifactId, ScenarioDefId,
-    SelectableDeclaration, SelectableId, Selection, SelectionId,
+    CampaignLineage, CampaignLineageId, CampaignMode, CampaignPlanningView, CampaignPolicy,
+    CampaignPolicyId, CampaignSnapshot, CampaignSnapshotId, CampaignState,
+    CandidateGeneratorAlgorithm, CandidateGeneratorSpec, CandidateGeneratorSpecId, CandidateSource,
+    ChoiceDomain, ChoiceDomainId, ChoiceGroup, ChoiceGroupId, ChoiceOpportunity,
+    ChoiceOpportunityId, ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId,
+    ControlRequest, CoverageProjection, CoverageProjectionId, ExpansionState, ExpansionStateId,
+    MeasurementSet, MeasurementSetId, MerkleMap, MerkleMapRoot, ObjectEnvelope, Observation,
+    ObservationId, PlannerDisposition, PlannerEngine, PlannerInvocation, PlannerInvocationId,
+    PlannerProposalDisposition, PlannerState, PlannerStep, PlannerStepId, PlannerStepProposal,
+    PlanningAccounting, PlanningBudget, PlanningScanPage, PlanningScanPosition, PlanningUsage,
+    PolicyActivation, PolicyArtifact, PropertyVerdict, PropertyVerdictSet, PropertyVerdictSetId,
+    Proposal, ProposalId, ScenarioArtifact, ScenarioArtifactId, ScenarioDefId,
+    SelectableDeclaration, SelectableId, Selection, SelectionId, StopCondition, StopOutcome,
 };
 
 const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;
@@ -39,8 +41,18 @@ const MAX_CLOSURE_OBJECTS: usize = 64_000_000;
 const MAX_ISSUE_GENERATOR_VALIDATION_OBJECTS: usize = 1_000_000;
 const PLANNER_SCAN_STORAGE_PAGE_ITEMS: usize = 10_000;
 const MAX_VALIDATED_HEADS: usize = 1_024;
+const MAX_CHOICE_VALIDATION_CACHE_ENTRIES: usize = 65_536;
 const MAX_SIMPLE_SUCCESSOR_GROWTH: usize = 512;
 const MAX_PLANNER_ISSUE_SUCCESSOR_GROWTH: usize = 4_000_000;
+// One fixed-depth trie insertion rewrites at most one node per digest nibble.
+const MERKLE_UPDATE_NODE_UPPER: usize = 64;
+// Graph has two fixed keys, observations six, corpus/coverage/coordination one
+// each, and strict accounting three. Every discovered choice adds two graph keys.
+const OBSERVATION_FIXED_OWNER_UPSERTS: usize = 14;
+const MAX_OBSERVATION_SUCCESSOR_GROWTH: usize = ((2 * crate::observation::MAX_DISCOVERED_CHOICES
+    + OBSERVATION_FIXED_OWNER_UPSERTS)
+    * MERKLE_UPDATE_NODE_UPPER)
+    + 1;
 
 /// Authenticated current value of one named campaign ref.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -143,6 +155,33 @@ pub struct PlannerStepResult {
     pub replayed: bool,
 }
 
+/// Canonical or conflicting disposition of a published attempt observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObservationDisposition {
+    /// This observation is the attempt's canonical modeled completion.
+    Canonical,
+    /// Another observation was already selected canonically for the attempt.
+    DeterminismConflict {
+        /// The immutable canonical observation selected earlier.
+        canonical: ObservationId,
+    },
+}
+
+/// Stable response for accepted or idempotently replayed observation publication.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObservationResult {
+    /// Snapshot used as the transition parent.
+    pub prior_snapshot: CampaignSnapshotId,
+    /// Snapshot that retained the canonical or conflicting observation.
+    pub new_snapshot: CampaignSnapshotId,
+    /// Exact published observation.
+    pub observation: ObservationId,
+    /// Canonical completion or determinism-conflict evidence.
+    pub disposition: ObservationDisposition,
+    /// Whether an existing transition was returned.
+    pub replayed: bool,
+}
+
 /// Selection and exact choice records authenticated together by a repository.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedSelection {
@@ -237,6 +276,7 @@ pub struct CampaignRepository {
 
 mod ancestry;
 mod closure;
+mod observation;
 mod planner_issue;
 mod projection;
 mod records;
@@ -245,6 +285,31 @@ mod transactions;
 struct LoadedSnapshot {
     envelope: ObjectEnvelope,
     snapshot: CampaignSnapshot,
+}
+
+#[derive(Default)]
+struct ChoiceValidationCache {
+    contracts: BTreeMap<(ContentId, ContentId), CampaignHash>,
+    insertion_order: VecDeque<(ContentId, ContentId)>,
+}
+
+impl ChoiceValidationCache {
+    fn get(&self, key: &(ContentId, ContentId)) -> Option<CampaignHash> {
+        self.contracts.get(key).copied()
+    }
+
+    fn insert(&mut self, key: (ContentId, ContentId), contract: CampaignHash) {
+        if self.contracts.contains_key(&key) {
+            return;
+        }
+        if self.contracts.len() >= MAX_CHOICE_VALIDATION_CACHE_ENTRIES
+            && let Some(evicted) = self.insertion_order.pop_front()
+        {
+            self.contracts.remove(&evicted);
+        }
+        self.contracts.insert(key, contract);
+        self.insertion_order.push_back(key);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -379,6 +444,42 @@ fn admission_ordinal_key(ordinal: AdmissionOrdinal) -> CampaignHash {
     )
 }
 
+fn observation_sequence_key() -> CampaignHash {
+    CampaignHash::derive("crucible.campaign-observation-sequence.v1", b"")
+}
+
+fn observation_conflict_key(attempt: AttemptId, observation: ObservationId) -> CampaignHash {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(attempt.content_id().encode().as_bytes());
+    bytes.extend_from_slice(observation.content_id().encode().as_bytes());
+    CampaignHash::derive("crucible.campaign-observation-conflict.v1", &bytes)
+}
+
+fn branch_point_opportunity_key(
+    branch_point: crate::BranchPointId,
+    opportunity: ChoiceOpportunityId,
+) -> CampaignHash {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&branch_point.as_hash().as_bytes());
+    bytes.extend_from_slice(opportunity.content_id().encode().as_bytes());
+    CampaignHash::derive("crucible.campaign-branch-point-opportunity.v1", &bytes)
+}
+
+fn observation_successor_growth(choice_count: usize) -> Result<usize, CampaignRepositoryError> {
+    let owner_upserts = choice_count
+        .checked_mul(2)
+        .and_then(|choices| choices.checked_add(OBSERVATION_FIXED_OWNER_UPSERTS))
+        .ok_or_else(|| integrity("observation-successor-growth-overflow"))?;
+    let growth = owner_upserts
+        .checked_mul(MERKLE_UPDATE_NODE_UPPER)
+        .and_then(|nodes| nodes.checked_add(1))
+        .ok_or_else(|| integrity("observation-successor-growth-overflow"))?;
+    if growth > MAX_OBSERVATION_SUCCESSOR_GROWTH {
+        return Err(integrity("observation-successor-growth-exceeds-schema"));
+    }
+    Ok(growth)
+}
+
 fn attempt_admission_upserts(
     admission_content: ContentId,
     admission: AttemptAdmission,
@@ -475,6 +576,7 @@ const fn is_campaign_record_kind(kind: ObjectKind) -> bool {
             | ObjectKind::Policy
             | ObjectKind::Scenario
             | ObjectKind::Configuration
+            | ObjectKind::Observation
             | ObjectKind::Projection
     )
 }
@@ -493,13 +595,14 @@ mod tests {
     use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
 
     use crate::{
-        BooleanDomain, BranchBudget, BudgetGrant, CampaignFactId, CampaignMode,
+        AlternativeId, BooleanDomain, BranchBudget, BudgetGrant, CampaignFactId, CampaignMode,
         CampaignPlanningView, CampaignSeed, CandidateGeneratorAlgorithm, ChoiceClassContext,
         ChoiceCoordinate, ChoicePolicy, ChoiceSource, ChoiceValue, ConfigurationId,
-        ContinuationState, ExplorerPolicy, FairnessPolicy, GuidanceEvidence, PlannerEngine,
+        ContinuationState, DiscreteAlternative, DiscreteDomain, ExplorerPolicy, FairnessPolicy,
+        GuidanceEvidence, MeasurementSeries, MetricValue, PlannerEngine,
         PlannerProposalDisposition, PlannerState, PlannerStepProposal, PlanningBudget,
-        PlanningUsage, PolicyArtifact, ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy,
-        ScenarioDefId, StopCondition, WeightedGenerator,
+        PlanningUsage, PolicyArtifact, ProgressiveWideningPolicy, PropertyEvidence, PuctPolicy,
+        RetentionPolicy, ScenarioDefId, StopCondition, WeightedGenerator,
     };
 
     struct ConflictAfterCreateRefBackend {
@@ -785,6 +888,108 @@ mod tests {
         (selection, path, attempt)
     }
 
+    fn admitted_observation_fixture(
+        repository: &CampaignRepository,
+        lineage: &CampaignLineage,
+        policy: &CampaignPolicy,
+        name: &str,
+    ) -> (CampaignSnapshotId, AttemptAdmissionResult, Observation) {
+        let genesis = repository
+            .create(name, lineage, policy, &BTreeMap::new())
+            .expect("create observation campaign");
+        let request = branch_request(
+            repository,
+            lineage,
+            lineage.genesis_content(),
+            lineage.genesis(),
+            name,
+        );
+        let requested = repository
+            .submit_branch_request(name, genesis.snapshot_id(), &request)
+            .expect("submit observation request");
+        let proposal = finite_proposal(
+            &request,
+            policy,
+            &repository.head(name).expect("request head"),
+            ChoiceValue::Boolean(false),
+            1,
+        );
+        let proposed = repository
+            .issue_proposal(name, requested.new_snapshot, &proposal)
+            .expect("issue observation proposal");
+        let (selection, path, attempt) = branch_attempt(repository, &request, &proposal);
+        let admitted = repository
+            .admit_proposal(
+                name,
+                proposed.new_snapshot,
+                proposed.proposal,
+                &selection,
+                &path,
+                &attempt,
+            )
+            .expect("admit observation attempt");
+
+        let child = ConfigurationId::from_hash(CampaignHash::derive(
+            "test-observation-child",
+            name.as_bytes(),
+        ));
+        let child_content = repository
+            .publish_configuration_artifact(
+                lineage.scenario(),
+                lineage.scenario_content(),
+                child,
+                1,
+                format!("child:{name}").into_bytes(),
+            )
+            .expect("publish child artifact");
+        let measurements = MeasurementSet::new(BTreeMap::from([(
+            "latency".to_owned(),
+            MeasurementSeries::new(
+                vec![MetricValue::Unsigned(7)],
+                MetricValue::Unsigned(7),
+                BTreeSet::new(),
+            )
+            .expect("measurement series"),
+        )]))
+        .expect("measurement set");
+        let measurement_id = repository
+            .publish_measurement_set(&measurements)
+            .expect("publish measurements");
+        let properties = PropertyVerdictSet::new(BTreeMap::from([(
+            "network-recovers".to_owned(),
+            PropertyEvidence::new(PropertyVerdict::Passed, BTreeSet::new())
+                .expect("property evidence"),
+        )]))
+        .expect("property verdict set");
+        let property_id = repository
+            .publish_property_verdict_set(&properties)
+            .expect("publish properties");
+        let coverage = CoverageProjection::new(
+            BTreeSet::from([CampaignHash::derive(
+                "test-observation-coverage",
+                name.as_bytes(),
+            )]),
+            BTreeSet::new(),
+        )
+        .expect("coverage projection");
+        let coverage_id = repository
+            .publish_coverage_projection(&coverage)
+            .expect("publish coverage");
+        let observation = Observation::new(
+            admitted.attempt,
+            child,
+            child_content,
+            path.id().expect("path id"),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            measurement_id,
+            property_id,
+            coverage_id,
+            BTreeSet::from([request.opportunity()]),
+        )
+        .expect("observation");
+        (genesis.snapshot_id(), admitted, observation)
+    }
+
     fn planner_basis(
         repository: &CampaignRepository,
         name: &str,
@@ -893,6 +1098,96 @@ mod tests {
             CampaignState::Paused
         );
         assert_ne!(paused.new_snapshot, resumed.new_snapshot);
+    }
+
+    #[test]
+    fn policy_activation_cannot_change_campaign_reproducibility_mode() {
+        let (repository, lineage, policy) = fixture();
+        let genesis = repository
+            .create("policy-mode", &lineage, &policy, &BTreeMap::new())
+            .expect("create");
+        let streaming = CampaignPolicy::new(
+            policy.scenario(),
+            policy.campaign_seed(),
+            CampaignMode::Streaming,
+            policy.explorer().clone(),
+            policy.choice_policies().clone(),
+            policy.objectives().clone(),
+            policy.guidance().clone(),
+            policy.stop_conditions().clone(),
+            policy.fairness(),
+            policy.retention(),
+            policy.admits_scenario_defaults(),
+        )
+        .expect("streaming policy");
+        let streaming = CampaignPolicyId::from_content_id(
+            repository
+                .publish_policy(&streaming)
+                .expect("publish streaming policy"),
+        )
+        .expect("streaming policy id");
+        let activate = command(
+            "policy-mode-change",
+            genesis.snapshot_id(),
+            CampaignControlAction::ActivatePolicy(streaming),
+        );
+
+        assert!(matches!(
+            repository.apply_control("policy-mode", &activate),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "activated-policy-mode-mismatch"
+            })
+        ));
+        assert_eq!(
+            repository
+                .head("policy-mode")
+                .expect("unchanged policy head")
+                .snapshot_id(),
+            genesis.snapshot_id()
+        );
+
+        let parent = repository
+            .read_snapshot(genesis.content_id())
+            .expect("policy parent");
+        let control = CampaignFact::ControlRequested(activate.clone());
+        let control_content = repository.put_fact(&control).expect("put forged control");
+        let mut accounting = repository
+            .merkle
+            .insert(
+                parent.snapshot.roots().accounting,
+                map_key_hash("accounting.command", activate.command.as_hash()),
+                control_content,
+            )
+            .expect("forged command accounting");
+        let activation = CampaignFact::PolicyActivated(
+            PolicyActivation::new(policy.id().expect("prior policy"), streaming)
+                .expect("forged activation"),
+        );
+        let activation_content = repository
+            .put_fact(&activation)
+            .expect("put forged activation");
+        accounting = repository
+            .insert_fact(accounting, &activation, activation_content)
+            .expect("forged activation accounting");
+        let mut roots = parent.snapshot.roots();
+        roots.accounting = accounting.content_id();
+        let forged = CampaignSnapshot::successor(
+            genesis.snapshot_id(),
+            parent.snapshot.lineage(),
+            streaming,
+            roots,
+            CampaignFactId::from_content_id(control_content).expect("control fact id"),
+        )
+        .expect("forged mode-change successor");
+        let forged_content = repository
+            .put_snapshot(&forged)
+            .expect("put forged mode-change successor");
+        assert!(matches!(
+            repository.validate_complete_head(forged_content),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "activated-policy-mode-mismatch"
+            })
+        ));
     }
 
     #[test]
@@ -2818,6 +3113,520 @@ mod tests {
                 .expect("unchanged head")
                 .snapshot_id(),
             second_proposed.new_snapshot
+        );
+    }
+
+    #[test]
+    fn observations_publish_exact_roots_replay_and_retain_determinism_conflicts() {
+        let (repository, lineage, policy) = fixture();
+        let (genesis, admitted, observation) =
+            admitted_observation_fixture(&repository, &lineage, &policy, "observation");
+        let observation_id = observation.id().expect("observation id");
+        let accepted = repository
+            .publish_observation("observation", admitted.new_snapshot, &observation)
+            .expect("publish observation");
+        assert_eq!(accepted.disposition, ObservationDisposition::Canonical);
+        assert!(!accepted.replayed);
+        assert_eq!(accepted.observation, observation_id);
+
+        let canonical = repository
+            .read_snapshot(accepted.new_snapshot.content_id())
+            .expect("canonical observation snapshot");
+        let roots = canonical.snapshot.roots();
+        assert_eq!(
+            repository
+                .merkle
+                .get(
+                    roots.observations,
+                    map_key_content("observations.attempt", observation.attempt().content_id()),
+                )
+                .expect("attempt observation lookup"),
+            Some(observation_id.content_id())
+        );
+        assert_eq!(
+            repository
+                .merkle
+                .get(
+                    roots.graph,
+                    map_key_hash("graph.configuration", observation.child().as_hash()),
+                )
+                .expect("graph child lookup"),
+            Some(observation.child_content().content_id())
+        );
+        assert_eq!(
+            repository
+                .merkle
+                .get(
+                    roots.corpus,
+                    map_key_hash("corpus.configuration", observation.child().as_hash()),
+                )
+                .expect("corpus child lookup"),
+            Some(observation.child_content().content_id())
+        );
+        assert_eq!(
+            repository
+                .merkle
+                .get(
+                    roots.coverage,
+                    map_key_content("coverage.projection", observation.coverage().content_id()),
+                )
+                .expect("coverage lookup"),
+            Some(observation.coverage().content_id())
+        );
+        assert_eq!(
+            repository
+                .merkle
+                .get(roots.accounting, observation_sequence_key())
+                .expect("strict observation sequence"),
+            Some(observation_id.content_id())
+        );
+        assert_eq!(
+            repository
+                .load_observation(observation_id)
+                .expect("load observation"),
+            observation
+        );
+
+        let mut forged_roots = roots;
+        forged_roots.coverage = repository
+            .merkle
+            .insert(
+                forged_roots.coverage,
+                map_key_content("coverage.forged", observation.measurements().content_id()),
+                observation.measurements().content_id(),
+            )
+            .expect("forged coverage root")
+            .content_id();
+        let forged = CampaignSnapshot::successor(
+            admitted.new_snapshot,
+            canonical.snapshot.lineage(),
+            canonical.snapshot.active_policy(),
+            forged_roots,
+            canonical
+                .snapshot
+                .transition()
+                .expect("observation transition"),
+        )
+        .expect("forged observation successor");
+        let forged_content = repository
+            .put_snapshot(&forged)
+            .expect("put forged observation successor");
+        assert!(matches!(
+            repository.validate_complete_head(forged_content),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "observation-transition-coverage-root"
+            })
+        ));
+        let replay = repository
+            .publish_observation("observation", genesis, &observation)
+            .expect("replay canonical observation");
+        assert!(replay.replayed);
+        assert_eq!(
+            replay,
+            ObservationResult {
+                replayed: true,
+                ..accepted.clone()
+            }
+        );
+
+        let conflicting_measurements = MeasurementSet::new(BTreeMap::from([(
+            "latency".to_owned(),
+            MeasurementSeries::new(
+                vec![MetricValue::Unsigned(8)],
+                MetricValue::Unsigned(8),
+                BTreeSet::new(),
+            )
+            .expect("conflicting measurement series"),
+        )]))
+        .expect("conflicting measurement set");
+        let conflicting_measurements = repository
+            .publish_measurement_set(&conflicting_measurements)
+            .expect("publish conflicting measurements");
+        let conflict = Observation::new(
+            observation.attempt(),
+            observation.child(),
+            observation.child_content(),
+            observation.path(),
+            observation.stop().clone(),
+            conflicting_measurements,
+            observation.properties(),
+            observation.coverage(),
+            observation.discovered_choices().clone(),
+        )
+        .expect("conflicting observation");
+        let conflict_id = conflict.id().expect("conflict id");
+        let conflicted = repository
+            .publish_observation("observation", accepted.new_snapshot, &conflict)
+            .expect("retain observation conflict");
+        assert_eq!(
+            conflicted.disposition,
+            ObservationDisposition::DeterminismConflict {
+                canonical: observation_id
+            }
+        );
+        let conflict_snapshot = repository
+            .read_snapshot(conflicted.new_snapshot.content_id())
+            .expect("conflict snapshot");
+        assert_eq!(conflict_snapshot.snapshot.roots().graph, roots.graph);
+        assert_eq!(conflict_snapshot.snapshot.roots().corpus, roots.corpus);
+        assert_eq!(conflict_snapshot.snapshot.roots().coverage, roots.coverage);
+        assert_eq!(
+            conflict_snapshot.snapshot.roots().accounting,
+            roots.accounting
+        );
+        assert_eq!(
+            repository
+                .merkle
+                .get(
+                    conflict_snapshot.snapshot.roots().observations,
+                    observation_conflict_key(observation.attempt(), conflict_id),
+                )
+                .expect("conflict lookup"),
+            Some(conflict_id.content_id())
+        );
+        let replayed_conflict = repository
+            .publish_observation("observation", genesis, &conflict)
+            .expect("replay observation conflict");
+        assert!(replayed_conflict.replayed);
+        assert_eq!(replayed_conflict.new_snapshot, conflicted.new_snapshot);
+        assert_eq!(replayed_conflict.disposition, conflicted.disposition);
+    }
+
+    #[test]
+    fn observation_ref_conflict_leaves_the_admitted_head_authoritative() {
+        let (fixture_repository, lineage, policy, blobs) = counted_fixture();
+        drop(fixture_repository);
+        let refs = Arc::new(ConflictAfterCreateRefBackend::new());
+        let repository = CampaignRepository::new(blobs, refs.clone());
+        let (_, admitted, observation) =
+            admitted_observation_fixture(&repository, &lineage, &policy, "observation-cas");
+        let checkpoint_count = repository
+            .validated_heads
+            .lock()
+            .expect("validation checkpoints")
+            .len();
+        refs.arm();
+
+        assert!(matches!(
+            repository.publish_observation("observation-cas", admitted.new_snapshot, &observation,),
+            Err(CampaignRepositoryError::RefConflict { .. })
+        ));
+        assert_eq!(
+            repository
+                .head("observation-cas")
+                .expect("authoritative admitted head")
+                .snapshot_id(),
+            admitted.new_snapshot
+        );
+        assert_eq!(
+            repository
+                .validated_heads
+                .lock()
+                .expect("validation checkpoints")
+                .len(),
+            checkpoint_count
+        );
+    }
+
+    #[test]
+    fn observation_growth_bound_rebases_and_remains_restart_readable() {
+        let (repository, lineage, policy) = fixture();
+        let (_, admitted, observation) =
+            admitted_observation_fixture(&repository, &lineage, &policy, "observation-growth");
+        assert_eq!(
+            observation_successor_growth(crate::observation::MAX_DISCOVERED_CHOICES)
+                .expect("maximum observation growth"),
+            MAX_OBSERVATION_SUCCESSOR_GROWTH
+        );
+        let growth = observation_successor_growth(observation.discovered_choices().len())
+            .expect("fixture observation growth");
+        repository
+            .validated_heads
+            .lock()
+            .expect("validation checkpoints")
+            .get_mut(&admitted.new_snapshot.content_id())
+            .expect("admitted checkpoint")
+            .closure_objects = MAX_CLOSURE_OBJECTS - growth;
+
+        let accepted = repository
+            .publish_observation("observation-growth", admitted.new_snapshot, &observation)
+            .expect("full-validation observation rebase");
+        let checkpoint_objects = repository
+            .validated_heads
+            .lock()
+            .expect("validation checkpoints")
+            .get(&accepted.new_snapshot.content_id())
+            .expect("rebased observation checkpoint")
+            .closure_objects;
+        assert!(checkpoint_objects < MAX_OBSERVATION_SUCCESSOR_GROWTH);
+
+        repository
+            .validated_heads
+            .lock()
+            .expect("validation checkpoints")
+            .clear();
+        assert_eq!(
+            repository
+                .head("observation-growth")
+                .expect("restart-style full validation")
+                .snapshot_id(),
+            accepted.new_snapshot
+        );
+    }
+
+    #[test]
+    fn observation_evidence_preflight_rejects_nested_invalid_records_without_writes() {
+        let (repository, lineage, policy, blobs) = counted_fixture();
+        let (_, admitted, observation) = admitted_observation_fixture(
+            &repository,
+            &lineage,
+            &policy,
+            "observation-nested-evidence",
+        );
+        let invalid_path = BranchPath::new(Vec::new())
+            .expect("empty path")
+            .id()
+            .expect("empty path id");
+        let nested = Observation::new(
+            observation.attempt(),
+            observation.child(),
+            observation.child_content(),
+            invalid_path,
+            observation.stop().clone(),
+            observation.measurements(),
+            observation.properties(),
+            observation.coverage(),
+            observation.discovered_choices().clone(),
+        )
+        .expect("structurally valid nested observation");
+        let nested_id = nested.id().expect("nested observation id");
+        repository
+            .put_observation(&nested)
+            .expect("store incomplete nested observation fixture");
+        let evidence = MeasurementSet::new(BTreeMap::from([(
+            "nested-observation".to_owned(),
+            MeasurementSeries::new(
+                vec![MetricValue::Unsigned(1)],
+                MetricValue::Unsigned(1),
+                BTreeSet::from([nested_id.content_id()]),
+            )
+            .expect("nested evidence series"),
+        )]))
+        .expect("nested evidence set");
+        let objects_before = blobs.object_count().expect("objects before rejection");
+
+        assert!(matches!(
+            repository.publish_measurement_set(&evidence),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "observation-attempt-or-child-mismatch"
+            })
+        ));
+        assert_eq!(
+            blobs.object_count().expect("objects after rejection"),
+            objects_before
+        );
+        assert_eq!(
+            repository
+                .head("observation-nested-evidence")
+                .expect("unchanged admitted head")
+                .snapshot_id(),
+            admitted.new_snapshot
+        );
+    }
+
+    #[test]
+    fn choice_validation_cache_is_compact_shared_and_checks_copied_contracts() {
+        let (repository, lineage, _) = fixture();
+        let alternatives = (0_u32..1_024)
+            .map(|index| {
+                let id = AlternativeId::from_hash(CampaignHash::derive(
+                    "test-cache-alternative",
+                    &index.to_be_bytes(),
+                ));
+                (
+                    id,
+                    DiscreteAlternative::new(
+                        id,
+                        format!("alternative-{index:04}"),
+                        Some("x".repeat(512)),
+                    )
+                    .expect("cache alternative"),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let default = *alternatives.keys().next().expect("first alternative");
+        let domain = ChoiceDomain::Discrete(
+            DiscreteDomain::new(1, alternatives).expect("large shared domain"),
+        );
+        let declaration = SelectableDeclaration::new(
+            "cache.shared.domain",
+            ChoiceSource::Workload {
+                producer: "cache-producer".to_owned(),
+            },
+            domain.clone(),
+            ChoiceValue::Discrete(default),
+            ChoiceClassContext::new(BTreeSet::new()).expect("cache class"),
+            BTreeSet::new(),
+            true,
+        )
+        .expect("cache declaration");
+        repository
+            .publish_choice_domain(&domain)
+            .expect("publish shared domain");
+        repository
+            .publish_selectable(&declaration)
+            .expect("publish shared declaration");
+
+        let mut cache = ChoiceValidationCache::default();
+        let mut representative = None;
+        for index in 0_u32..256 {
+            let opportunity = ChoiceOpportunity::new(
+                lineage.scenario(),
+                &declaration,
+                &domain,
+                ChoiceCoordinate {
+                    scheduler: CampaignHash::derive("test-cache-scheduler", &index.to_be_bytes()),
+                    producer: CampaignHash::derive("test-cache-producer", b"shared"),
+                },
+                format!("cache-{index:04}"),
+                None,
+            )
+            .expect("shared-domain opportunity");
+            let envelope = ObjectEnvelope::for_record(
+                crate::CampaignRecordKind::ChoiceOpportunity,
+                crate::object::content_children(opportunity.content_children())
+                    .expect("opportunity children"),
+                crate::codec::encode(&opportunity),
+            )
+            .expect("opportunity envelope");
+            repository
+                .validate_opportunity_references_cached(&envelope, &mut cache)
+                .expect("validate shared pair");
+            representative.get_or_insert(opportunity);
+        }
+        assert_eq!(cache.contracts.len(), 1);
+        assert_eq!(cache.insertion_order.len(), 1);
+
+        let mut forged_bytes =
+            crate::codec::encode(representative.as_ref().expect("representative opportunity"));
+        let source = b"cache-producer";
+        let replacement = b"forge-producer";
+        let offset = forged_bytes
+            .windows(source.len())
+            .position(|window| window == source)
+            .expect("encoded source");
+        forged_bytes[offset..offset + source.len()].copy_from_slice(replacement);
+        let forged = crate::codec::decode::<ChoiceOpportunity>(&forged_bytes)
+            .expect("structurally valid forged opportunity");
+        let forged_envelope = ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::ChoiceOpportunity,
+            crate::object::content_children(forged.content_children())
+                .expect("forged opportunity children"),
+            forged_bytes,
+        )
+        .expect("forged opportunity envelope");
+        assert!(matches!(
+            repository.validate_opportunity_references_cached(&forged_envelope, &mut cache),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "choice-opportunity-cached-reference-mismatch"
+            })
+        ));
+    }
+
+    #[test]
+    fn strict_observations_commit_in_global_admission_order() {
+        let (repository, lineage, policy) = fixture();
+        let (_, first_admitted, first_observation) =
+            admitted_observation_fixture(&repository, &lineage, &policy, "observation-order");
+        let second_request = branch_request(
+            &repository,
+            &lineage,
+            lineage.genesis_content(),
+            lineage.genesis(),
+            "observation-order-second",
+        );
+        let second_requested = repository
+            .submit_branch_request(
+                "observation-order",
+                first_admitted.new_snapshot,
+                &second_request,
+            )
+            .expect("second request");
+        let second_proposal = finite_proposal(
+            &second_request,
+            &policy,
+            &repository
+                .head("observation-order")
+                .expect("second request head"),
+            ChoiceValue::Boolean(false),
+            1,
+        );
+        let second_proposed = repository
+            .issue_proposal(
+                "observation-order",
+                second_requested.new_snapshot,
+                &second_proposal,
+            )
+            .expect("second proposal");
+        let (second_selection, second_path, second_attempt) =
+            branch_attempt(&repository, &second_request, &second_proposal);
+        let second_admitted = repository
+            .admit_proposal(
+                "observation-order",
+                second_proposed.new_snapshot,
+                second_proposed.proposal,
+                &second_selection,
+                &second_path,
+                &second_attempt,
+            )
+            .expect("second admission");
+        let second_observation = Observation::new(
+            second_admitted.attempt,
+            first_observation.child(),
+            first_observation.child_content(),
+            second_path.id().expect("second path id"),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            first_observation.measurements(),
+            first_observation.properties(),
+            first_observation.coverage(),
+            BTreeSet::from([second_request.opportunity()]),
+        )
+        .expect("second observation");
+
+        assert!(matches!(
+            repository.publish_observation(
+                "observation-order",
+                second_admitted.new_snapshot,
+                &second_observation,
+            ),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "strict-observation-order-gap"
+            })
+        ));
+        assert_eq!(
+            repository
+                .head("observation-order")
+                .expect("head after rejected gap")
+                .snapshot_id(),
+            second_admitted.new_snapshot
+        );
+        let first_published = repository
+            .publish_observation(
+                "observation-order",
+                second_admitted.new_snapshot,
+                &first_observation,
+            )
+            .expect("first ordered observation");
+        let second_published = repository
+            .publish_observation(
+                "observation-order",
+                first_published.new_snapshot,
+                &second_observation,
+            )
+            .expect("second ordered observation");
+        assert_eq!(
+            second_published.disposition,
+            ObservationDisposition::Canonical
         );
     }
 

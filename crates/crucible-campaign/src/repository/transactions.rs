@@ -593,6 +593,27 @@ impl CampaignRepository {
         let mut projected = self.current_lifecycle(current_content)?;
         projected.apply(&request.action)?;
 
+        let policy_activation = match request.action {
+            CampaignControlAction::ActivatePolicy(next) => {
+                let policy = self.read_policy(next.content_id())?;
+                let prior_policy =
+                    self.read_policy(current.snapshot.active_policy().content_id())?;
+                if policy.mode() != prior_policy.mode() {
+                    return Err(integrity("activated-policy-mode-mismatch"));
+                }
+                let lineage_content = required_child(&current.envelope, "lineage")?;
+                let lineage = self.read_lineage(lineage_content)?;
+                if policy.scenario() != lineage.scenario() {
+                    return Err(integrity("activated-policy-scenario-mismatch"));
+                }
+                Some(PolicyActivation::new(
+                    current.snapshot.active_policy(),
+                    next,
+                )?)
+            }
+            _ => None,
+        };
+
         let control_fact = CampaignFact::ControlRequested(request.clone());
         let control_content = self.put_fact(&control_fact)?;
         let mut accounting = self.merkle.insert(
@@ -602,22 +623,14 @@ impl CampaignRepository {
         )?;
 
         let mut active_policy = current.snapshot.active_policy();
-        match request.action {
-            CampaignControlAction::ActivatePolicy(next) => {
-                let next_content = next.content_id();
-                let policy = self.read_policy(next_content)?;
-                let lineage_content = required_child(&current.envelope, "lineage")?;
-                let lineage = self.read_lineage(lineage_content)?;
-                if policy.scenario() != lineage.scenario() {
-                    return Err(integrity("activated-policy-scenario-mismatch"));
-                }
-                let activation =
-                    CampaignFact::PolicyActivated(PolicyActivation::new(active_policy, next)?);
+        match (request.action.clone(), policy_activation) {
+            (CampaignControlAction::ActivatePolicy(_), Some(activation)) => {
+                active_policy = activation.next();
+                let activation = CampaignFact::PolicyActivated(activation);
                 let activation_content = self.put_fact(&activation)?;
                 accounting = self.insert_fact(accounting, &activation, activation_content)?;
-                active_policy = next;
             }
-            CampaignControlAction::GrantBudget(grant) => {
+            (CampaignControlAction::GrantBudget(grant), None) => {
                 let budget = CampaignFact::BudgetGranted(grant);
                 let budget_content = self.put_fact(&budget)?;
                 accounting = self.insert_fact(accounting, &budget, budget_content)?;

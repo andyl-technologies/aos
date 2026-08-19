@@ -18,8 +18,14 @@ impl CampaignRepository {
             return Ok(checkpoint);
         }
 
-        let (ancestry_depth, lifecycle) = self.validate_snapshot_ancestry(head)?;
-        let closure_objects = self.verify_campaign_closure(head)?;
+        let mut choice_cache = ChoiceValidationCache::default();
+        let (ancestry_depth, lifecycle) =
+            self.validate_snapshot_ancestry(head, &mut choice_cache)?;
+        let closure_objects = self.verify_campaign_closures_anchored_cached(
+            [head],
+            &BTreeSet::new(),
+            &mut choice_cache,
+        )?;
         let checkpoint = ValidationCheckpoint {
             ancestry_depth,
             closure_objects,
@@ -85,8 +91,14 @@ impl CampaignRepository {
             });
         }
 
-        let (ancestry_depth, lifecycle) = self.validate_snapshot_ancestry(child)?;
-        let closure_objects = self.verify_campaign_closure(child)?;
+        let mut choice_cache = ChoiceValidationCache::default();
+        let (ancestry_depth, lifecycle) =
+            self.validate_snapshot_ancestry(child, &mut choice_cache)?;
+        let closure_objects = self.verify_campaign_closures_anchored_cached(
+            [child],
+            &BTreeSet::new(),
+            &mut choice_cache,
+        )?;
         Ok(ValidationCheckpoint {
             ancestry_depth,
             closure_objects,
@@ -135,6 +147,7 @@ impl CampaignRepository {
     pub(super) fn validate_snapshot_ancestry(
         &self,
         mut content_id: ContentId,
+        choice_cache: &mut ChoiceValidationCache,
     ) -> Result<(usize, ProjectedState), CampaignRepositoryError> {
         let mut snapshots = BTreeSet::new();
         let mut verified_roots = BTreeSet::new();
@@ -213,6 +226,14 @@ impl CampaignRepository {
                         CampaignFact::PlannerAdvanced(step) => {
                             self.validate_planner_step_successor(&parent_snapshot, &loaded, step)?;
                         }
+                        CampaignFact::ObservationPublished(observation) => {
+                            self.validate_observation_successor(
+                                &parent_snapshot,
+                                &loaded,
+                                observation,
+                                choice_cache,
+                            )?;
+                        }
                         _ => {
                             return Err(integrity("snapshot-transition-type-is-not-implemented"));
                         }
@@ -282,6 +303,13 @@ impl CampaignRepository {
             CampaignControlAction::ActivatePolicy(policy) => policy,
             _ => parent.snapshot.active_policy(),
         };
+        if let CampaignControlAction::ActivatePolicy(next) = request.action {
+            let prior_policy = self.read_policy(parent.snapshot.active_policy().content_id())?;
+            let next_policy = self.read_policy(next.content_id())?;
+            if prior_policy.mode() != next_policy.mode() {
+                return Err(integrity("activated-policy-mode-mismatch"));
+            }
+        }
         if child.snapshot.active_policy() != expected_policy {
             return Err(integrity("snapshot-transition-active-policy-mismatch"));
         }
@@ -808,9 +836,19 @@ impl CampaignRepository {
                     }
                 }
             }
+            CampaignFact::ObservationPublished(observation_id) => {
+                let observation = self.decode_observation(observation_id.content_id())?;
+                let attempt = observation.attempt().content_id();
+                if self.merkle.get(
+                    roots.accounting,
+                    map_key_content("accounting.attempt", attempt),
+                )? == Some(attempt)
+                {
+                    anchors.insert(attempt);
+                }
+            }
             CampaignFact::ChoiceOpportunityDiscovered(_)
             | CampaignFact::ControlRequested(_)
-            | CampaignFact::ObservationPublished(_)
             | CampaignFact::FindingPublished(_)
             | CampaignFact::AttemptClosed { .. }
             | CampaignFact::PolicyActivated(_)
@@ -825,7 +863,20 @@ impl CampaignRepository {
         root: ContentId,
         anchors: &BTreeSet<ContentId>,
     ) -> Result<usize, CampaignRepositoryError> {
-        let mut stack = vec![root];
+        self.verify_campaign_closures_anchored_cached(
+            [root],
+            anchors,
+            &mut ChoiceValidationCache::default(),
+        )
+    }
+
+    pub(super) fn verify_campaign_closures_anchored_cached(
+        &self,
+        roots: impl IntoIterator<Item = ContentId>,
+        anchors: &BTreeSet<ContentId>,
+        choice_cache: &mut ChoiceValidationCache,
+    ) -> Result<usize, CampaignRepositoryError> {
+        let mut stack = roots.into_iter().collect::<Vec<_>>();
         let mut visited = BTreeSet::new();
         let mut verified_merkle_positions = BTreeSet::new();
 
@@ -920,6 +971,19 @@ impl CampaignRepository {
                 crate::CampaignRecordKind::ExpansionState => {
                     self.read_expansion_state(id)?;
                 }
+                crate::CampaignRecordKind::MeasurementSet => {
+                    self.read_measurement_set(id)?;
+                }
+                crate::CampaignRecordKind::PropertyVerdictSet => {
+                    self.read_property_verdict_set(id)?;
+                }
+                crate::CampaignRecordKind::CoverageProjection => {
+                    self.read_coverage_projection(id)?;
+                }
+                crate::CampaignRecordKind::Observation => {
+                    let observation = self.decode_observation(id)?;
+                    self.validate_observation_references_cached(&observation, choice_cache)?;
+                }
                 crate::CampaignRecordKind::PolicyArtifact => {
                     self.validate_policy_artifact_references(&envelope)?;
                 }
@@ -930,7 +994,7 @@ impl CampaignRepository {
                     self.validate_planner_invocation_references(&envelope)?;
                 }
                 crate::CampaignRecordKind::ChoiceOpportunity => {
-                    self.validate_opportunity_references(&envelope)?;
+                    self.validate_opportunity_references_cached(&envelope, choice_cache)?;
                 }
                 crate::CampaignRecordKind::ChoiceGroup => {
                     self.validate_group_references(&envelope)?;
