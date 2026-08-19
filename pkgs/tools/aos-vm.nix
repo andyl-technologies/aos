@@ -6,7 +6,6 @@
 {
   mkDerivation,
   aos,
-  bash,
   edk2,
   gptfdisk,
   qemu,
@@ -16,7 +15,7 @@ mkDerivation {
   version = aos.version;
   src = null;
 
-  runtimeDeps = [aos bash edk2 gptfdisk qemu];
+  runtimeDeps = [aos edk2 gptfdisk qemu];
 
   phases = [
     {
@@ -24,21 +23,14 @@ mkDerivation {
       script = ''
         mkdir -p "$out/bin"
 
-        cat > "$out/bin/aos" <<EOF
-        #!${bash}/bin/bash
-        export AOS_OVMF_CODE="${edk2}/FV/OVMF_CODE.fd"
-        export AOS_OVMF_VARS="${edk2}/FV/OVMF_VARS.fd"
-        export AOS_QEMU="${qemu}/bin/qemu-system-x86_64"
-        export AOS_SGDISK="${gptfdisk}/sbin/sgdisk"
-        exec ${aos}/bin/aos "\$@"
-        EOF
-
-        cat > "$out/bin/apr" <<EOF
-        #!${bash}/bin/bash
-        exec ${aos}/bin/apr "\$@"
-        EOF
-
-        chmod +x "$out/bin/aos" "$out/bin/apr"
+        sed \
+          -e '/^exec /i export AOS_OVMF_CODE="${edk2}/FV/OVMF_CODE.fd"' \
+          -e '/^exec /i export AOS_OVMF_VARS="${edk2}/FV/OVMF_VARS.fd"' \
+          -e '/^exec /i export AOS_QEMU="${qemu}/bin/qemu-system-x86_64"' \
+          -e '/^exec /i export AOS_SGDISK="${gptfdisk}/sbin/sgdisk"' \
+          "${aos}/bin/aos" > "$out/bin/aos"
+        chmod +x "$out/bin/aos"
+        ln -s "${aos}/bin/apr" "$out/bin/apr"
       '';
     }
   ];
