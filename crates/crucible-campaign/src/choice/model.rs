@@ -923,7 +923,16 @@ impl Selection {
         codec::encode(self)
     }
 
-    pub(crate) fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+    /// Decodes one strict canonical selection envelope.
+    ///
+    /// This is the language-neutral conversion boundary used by execution
+    /// schedules. Callers must still resolve the named opportunity and domain
+    /// and invoke the appropriate replay validator before applying the value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed, noncanonical, invalid, or oversized input.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
         codec::decode(bytes)
     }
 

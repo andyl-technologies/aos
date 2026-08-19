@@ -35,7 +35,10 @@ crucible.executor.assignment-record	1	crucible-daemon::assignment_ledger	operati
 crucible.executor.attempt-state-record	2	crucible-daemon::assignment_ledger	operational-record	gate:component-contract
 crucible.executor.loopback-frame	1	crucible-daemon::executor_loopback	component-message	gate:component-contract
 crucible.executor.crucible-scenario-payload	1	crucible-daemon::crucible_artifact	execution-model-payload	gate:component-contract,gate:campaign-replay
-crucible.executor.crucible-configuration-payload	1	crucible-daemon::crucible_artifact	execution-model-payload	gate:component-contract,gate:campaign-replay
+crucible.executor.crucible-configuration-payload	2	crucible-daemon::crucible_artifact	execution-model-payload	gate:component-contract,gate:campaign-replay
+crucible.execution.schedule	2	crucible::model	execution-model-payload	gate:typed-choice,gate:campaign-replay
+crucible.execution.selection-decision	1	crucible::model	execution-model-payload	gate:typed-choice,gate:campaign-replay
+crucible.execution.checkpoint	4	crucible::model	checkpoint	gate:typed-choice,gate:campaign-replay
 crucible.campaign.expansion-state	2	crucible-campaign::exploration	projection	gate:lazy-frontier,gate:content-address
 crucible.campaign.measurement-set	1	crucible-campaign::observation	observation	gate:campaign-replay,gate:content-address
 crucible.campaign.property-verdict-set	1	crucible-campaign::observation	observation	gate:campaign-replay,gate:content-address

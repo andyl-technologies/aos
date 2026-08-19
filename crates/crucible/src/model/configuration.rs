@@ -244,6 +244,81 @@ impl Configuration {
     }
 }
 
+/// Structurally validated campaign selection embedded in one schedule decision.
+///
+/// The wrapper retains the strict language-neutral selection bytes rather than
+/// process-private consumer state. A replaying producer reconstructs the exact
+/// opportunity and domain, decodes [`Self::selection`], and applies the value
+/// only after the campaign replay validator succeeds.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SelectionDecision {
+    canonical_selection: Vec<u8>,
+}
+
+impl SelectionDecision {
+    /// Builds one schedule decision from a constructed campaign selection.
+    #[must_use]
+    pub fn new(selection: &crucible_campaign::Selection) -> Self {
+        Self {
+            canonical_selection: selection.canonical_bytes(),
+        }
+    }
+
+    /// Decodes one strict canonical selection decision.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crucible_campaign::CampaignCodecError`] for malformed,
+    /// noncanonical, invalid, or oversized selection bytes.
+    pub fn from_canonical_bytes(
+        bytes: &[u8],
+    ) -> Result<Self, crucible_campaign::CampaignCodecError> {
+        let selection = crucible_campaign::Selection::from_canonical_bytes(bytes)?;
+        Ok(Self::new(&selection))
+    }
+
+    /// Returns the strict language-neutral selection bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.canonical_selection
+    }
+
+    /// Decodes the retained campaign selection.
+    ///
+    /// Construction guarantees these bytes already passed strict structural
+    /// decoding. Opportunity, domain, and origin-specific replay validation is
+    /// still required before execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crucible_campaign::CampaignCodecError`] if in-memory bytes no
+    /// longer form the canonical validated selection.
+    pub fn selection(
+        &self,
+    ) -> Result<crucible_campaign::Selection, crucible_campaign::CampaignCodecError> {
+        crucible_campaign::Selection::from_canonical_bytes(&self.canonical_selection)
+    }
+}
+
+impl serde::Serialize for SelectionDecision {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_bytes(&self.canonical_selection)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SelectionDecision {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let bytes = <Vec<u8> as serde::Deserialize>::deserialize(deserializer)?;
+        Self::from_canonical_bytes(&bytes).map_err(serde::de::Error::custom)
+    }
+}
+
 /// One resolved nondeterministic choice at a scheduling point.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Decision {
@@ -257,6 +332,8 @@ pub enum Decision {
     Preemption(PreemptionDecision),
     /// A served application-requested random value.
     AppRandom(AppRandomDecision),
+    /// An unresolved typed campaign selection requiring producer validation.
+    Selection(SelectionDecision),
 }
 
 impl Decision {
@@ -351,7 +428,8 @@ impl Schedule {
                 Decision::RngDraw(_)
                 | Decision::Override(_)
                 | Decision::Preemption(_)
-                | Decision::AppRandom(_) => None,
+                | Decision::AppRandom(_)
+                | Decision::Selection(_) => None,
             };
             match (recorded, at) {
                 (Some(current), Some(at)) => Some(current.max(at)),
@@ -419,7 +497,7 @@ impl Schedule {
     /// Serializes this schedule as compact canonical bytes.
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
-        let mut writer = ScenarioBinaryWriter::new(SCHEDULE_BINARY_MAGIC);
+        let mut writer = ScenarioBinaryWriter::new(SCHEDULE_BINARY_MAGIC_V2);
         write_schedule_binary(self, &mut writer);
         writer.finish()
     }
@@ -428,11 +506,28 @@ impl Schedule {
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::ScenarioSerialization`] for malformed binary input
-    /// or a schedule id mismatch.
+    /// Returns [`EngineError::ScenarioSerialization`] for malformed binary input,
+    /// a schedule id mismatch, or a selection decision under legacy version 1.
+    /// Selection-free version-1 schedules remain readable; new writes use
+    /// version 2.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let mut reader = ScenarioBinaryReader::new(bytes, SCHEDULE_BINARY_MAGIC)?;
+        let (magic, legacy) = if bytes.starts_with(SCHEDULE_BINARY_MAGIC_V2) {
+            (SCHEDULE_BINARY_MAGIC_V2, false)
+        } else {
+            (SCHEDULE_BINARY_MAGIC_V1, true)
+        };
+        let mut reader = ScenarioBinaryReader::new(bytes, magic)?;
         let schedule = read_schedule_binary(&mut reader)?;
+        if legacy
+            && schedule
+                .decisions()
+                .iter()
+                .any(|decision| matches!(decision, Decision::Selection(_)))
+        {
+            return Err(scenario_serialization_error(
+                "schedule V1 cannot contain a campaign selection decision",
+            ));
+        }
         reader.finish()?;
         Ok(schedule)
     }

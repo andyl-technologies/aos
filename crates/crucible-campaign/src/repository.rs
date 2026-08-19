@@ -45,6 +45,8 @@ const MAX_ISSUE_GENERATOR_VALIDATION_OBJECTS: usize = 1_000_000;
 const PLANNER_SCAN_STORAGE_PAGE_ITEMS: usize = 10_000;
 const MAX_VALIDATED_HEADS: usize = 1_024;
 const MAX_CHOICE_VALIDATION_CACHE_ENTRIES: usize = 65_536;
+const MAX_SELECTION_RESOLUTION_RECORDS: usize = 4_096;
+const MAX_SELECTION_RESOLUTION_BYTES: usize = 128 * 1024 * 1024;
 const _: () =
     assert!(MAX_CHOICE_VALIDATION_CACHE_ENTRIES >= crate::observation::MAX_DISCOVERED_CHOICES);
 const MAX_SIMPLE_SUCCESSOR_GROWTH: usize = 512;
@@ -303,8 +305,8 @@ impl ObservationCandidate {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedSelection {
     selection: Selection,
-    opportunity: ChoiceOpportunity,
-    domain: ChoiceDomain,
+    opportunity: Arc<ChoiceOpportunity>,
+    domain: Arc<ChoiceDomain>,
 }
 
 /// Narrow immutable-record capability supplied to a local campaign executor.
@@ -396,6 +398,23 @@ impl CampaignExecutorStore {
         self.repository.resolve_selection(id)
     }
 
+    /// Resolves a bounded batch of selections with shared authenticated dependencies.
+    ///
+    /// Repeated opportunities, declarations, and domains are decoded once. The
+    /// aggregate unique canonical record bodies are bounded independently of
+    /// the number and ordering of selections.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the batch exceeds its record or byte bound, or
+    /// when any exact selection reference is missing, corrupt, or inconsistent.
+    pub fn resolve_selections(
+        &self,
+        ids: &[SelectionId],
+    ) -> Result<Vec<ResolvedSelection>, CampaignRepositoryError> {
+        self.repository.resolve_selections(ids)
+    }
+
     /// Publishes a validated immutable observation candidate without advancing a campaign.
     ///
     /// # Errors
@@ -433,14 +452,14 @@ impl ResolvedSelection {
 
     /// Returns the authenticated opportunity selected from.
     #[must_use]
-    pub const fn opportunity(&self) -> &ChoiceOpportunity {
-        &self.opportunity
+    pub fn opportunity(&self) -> &ChoiceOpportunity {
+        self.opportunity.as_ref()
     }
 
     /// Returns the authenticated effective choice domain.
     #[must_use]
-    pub const fn domain(&self) -> &ChoiceDomain {
-        &self.domain
+    pub fn domain(&self) -> &ChoiceDomain {
+        self.domain.as_ref()
     }
 }
 
@@ -1259,6 +1278,82 @@ mod tests {
         )
         .expect("attempt");
         (selection, path, attempt)
+    }
+
+    #[test]
+    fn selection_batch_resolution_shares_dependencies_and_bounds_records() {
+        let (repository, lineage, _) = fixture();
+        let domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain"));
+        let declaration = SelectableDeclaration::new(
+            "product.test.selection-batch",
+            ChoiceSource::Workload {
+                producer: "selection-batch".to_owned(),
+            },
+            domain.clone(),
+            ChoiceValue::Boolean(false),
+            ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
+            BTreeSet::new(),
+            true,
+        )
+        .expect("declaration");
+        repository
+            .publish_choice_domain(&domain)
+            .expect("publish domain");
+        repository
+            .publish_selectable(&declaration)
+            .expect("publish declaration");
+
+        let mut ids = Vec::new();
+        for ordinal in 0u16..256 {
+            let material = ordinal.to_le_bytes();
+            let opportunity = ChoiceOpportunity::new(
+                lineage.scenario(),
+                &declaration,
+                &domain,
+                ChoiceCoordinate {
+                    scheduler: CampaignHash::derive("test.selection-batch", &material),
+                    producer: CampaignHash::derive("test", b"selection-batch"),
+                },
+                format!("selection-{ordinal}"),
+                None,
+            )
+            .expect("opportunity");
+            repository
+                .publish_choice_opportunity(&opportunity)
+                .expect("publish opportunity");
+            let selection = Selection::new(
+                &opportunity,
+                &domain,
+                ChoiceValue::Boolean(false),
+                crate::SelectionOrigin::Default,
+            )
+            .expect("selection");
+            ids.push(
+                repository
+                    .publish_selection(&selection)
+                    .expect("publish selection"),
+            );
+        }
+
+        let resolved = repository
+            .resolve_selections(&ids)
+            .expect("resolve shared selection dependencies");
+        assert_eq!(resolved.len(), ids.len());
+        assert!(
+            resolved
+                .iter()
+                .all(|selection| std::ptr::eq(selection.domain(), resolved[0].domain()))
+        );
+
+        let oversized = vec![ids[0]; MAX_SELECTION_RESOLUTION_RECORDS + 1];
+        assert!(matches!(
+            repository.resolve_selections(&oversized),
+            Err(CampaignRepositoryError::Codec(
+                CampaignCodecError::InvalidValue {
+                    reason: "selection resolution batch exceeds record limit"
+                }
+            ))
+        ));
     }
 
     fn admitted_observation_fixture(

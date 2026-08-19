@@ -8,13 +8,14 @@
 
 use crucible::{Configuration, ScenarioDefForm};
 use crucible_campaign::{
-    Attempt, BranchPath, CampaignLineage, ObservationCandidate, ResolvedSelection,
+    Attempt, BranchPath, CampaignExecutorStore, CampaignLineage, ExecutorRejection,
+    ObservationCandidate, ResolvedSelection,
 };
 
 use crate::{
     AttemptExecutionContext, AttemptExecutionInput, AttemptExecutionModel, AttemptWorkerFailure,
-    CrucibleArtifactError, ResolvedAttemptStart, decode_crucible_configuration_artifact,
-    decode_crucible_scenario_artifact,
+    CrucibleArtifactError, ResolvedAttemptStart,
+    decode_crucible_configuration_artifact_with_selections, decode_crucible_scenario_artifact,
 };
 
 /// Authenticated Crucible discovery or one-selection branch start.
@@ -99,14 +100,15 @@ pub trait CrucibleExecutionRunner {
 
 /// Execution-model adapter that authenticates artifacts before invoking a runner.
 pub struct CrucibleExecutionModel<R> {
+    store: CampaignExecutorStore,
     runner: R,
 }
 
 impl<R> CrucibleExecutionModel<R> {
     /// Creates the strict Crucible adapter over one concrete runner.
     #[must_use]
-    pub const fn new(runner: R) -> Self {
-        Self { runner }
+    pub const fn new(store: CampaignExecutorStore, runner: R) -> Self {
+        Self { store, runner }
     }
 
     /// Returns the concrete runner for diagnostics and configuration.
@@ -155,24 +157,23 @@ where
         })?;
         let start = match input.start() {
             ResolvedAttemptStart::Discover { configuration } => {
-                let configuration = decode_crucible_configuration_artifact(
+                let configuration = decode_crucible_configuration_artifact_with_selections(
                     &scenario,
                     input.scenario(),
                     configuration,
+                    &self.store,
                 )
-                .map_err(|error| {
-                    AttemptWorkerFailure::Terminal(CrucibleExecutionModelError::Artifact(error))
-                })?;
+                .map_err(map_artifact_failure)?;
                 CrucibleResolvedAttemptStart::Discover { configuration }
             }
             ResolvedAttemptStart::Branch { parent, selection } => {
-                let parent =
-                    decode_crucible_configuration_artifact(&scenario, input.scenario(), parent)
-                        .map_err(|error| {
-                            AttemptWorkerFailure::Terminal(CrucibleExecutionModelError::Artifact(
-                                error,
-                            ))
-                        })?;
+                let parent = decode_crucible_configuration_artifact_with_selections(
+                    &scenario,
+                    input.scenario(),
+                    parent,
+                    &self.store,
+                )
+                .map_err(map_artifact_failure)?;
                 CrucibleResolvedAttemptStart::Branch {
                     parent,
                     selection: selection.clone(),
@@ -189,6 +190,22 @@ where
         self.runner
             .execute(&decoded, context)
             .map_err(map_runner_failure)
+    }
+}
+
+fn map_artifact_failure<E>(
+    error: CrucibleArtifactError,
+) -> AttemptWorkerFailure<CrucibleExecutionModelError<E>> {
+    let retryable = matches!(
+        &error,
+        CrucibleArtifactError::SelectionRepository(repository)
+            if repository.executor_rejection() == ExecutorRejection::UnavailableInput
+    );
+    let error = CrucibleExecutionModelError::Artifact(error);
+    if retryable {
+        AttemptWorkerFailure::Retryable(error)
+    } else {
+        AttemptWorkerFailure::Terminal(error)
     }
 }
 

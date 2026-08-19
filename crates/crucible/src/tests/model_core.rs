@@ -1,6 +1,44 @@
 //! Core model, scenario identity, and step-transition unit tests.
 
 use super::*;
+use crucible_campaign::{
+    BooleanDomain, CampaignCodecError, CampaignHash, ChoiceClassContext, ChoiceCoordinate,
+    ChoiceDomain, ChoiceOpportunity, ChoiceSource, ChoiceValue, ScenarioDefId,
+    SelectableDeclaration, Selection, SelectionOrigin,
+};
+use std::collections::BTreeSet;
+
+fn campaign_selection_fixture() -> Result<Selection, CampaignCodecError> {
+    let domain = ChoiceDomain::Boolean(BooleanDomain::new(1)?);
+    let declaration = SelectableDeclaration::new(
+        "product.test.selection",
+        ChoiceSource::Scheduler {
+            producer: String::from("test-scheduler"),
+        },
+        domain.clone(),
+        ChoiceValue::Boolean(false),
+        ChoiceClassContext::new(BTreeSet::new())?,
+        BTreeSet::new(),
+        true,
+    )?;
+    let opportunity = ChoiceOpportunity::new(
+        ScenarioDefId::from_hash(CampaignHash::derive("test", b"selection-scenario")),
+        &declaration,
+        &domain,
+        ChoiceCoordinate {
+            scheduler: CampaignHash::derive("test", b"selection-scheduler"),
+            producer: CampaignHash::derive("test", b"selection-producer"),
+        },
+        "selection-instance",
+        None,
+    )?;
+    Selection::new(
+        &opportunity,
+        &domain,
+        ChoiceValue::Boolean(false),
+        SelectionOrigin::Default,
+    )
+}
 
 #[test]
 fn streamed_content_hash_matches_in_memory_hash() -> Result<(), std::io::Error> {
@@ -25,6 +63,47 @@ fn step_appends_decision_without_mutating_parent() {
 
     assert!(config.schedule.is_empty());
     assert_eq!(child.schedule.decisions(), &[decision]);
+}
+
+#[test]
+fn campaign_selection_decision_is_strict_and_changes_schedule_identity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let selection = campaign_selection_fixture()?;
+    let decision = SelectionDecision::new(&selection);
+    assert_eq!(decision.selection()?, selection);
+
+    let schedule = Schedule::empty().appended(Decision::Selection(decision.clone()));
+    let encoded = schedule.to_compact_binary();
+    assert!(encoded.starts_with(b"crucible.schedule.v2\0"));
+    assert_eq!(Schedule::from_compact_binary(&encoded)?, schedule);
+    assert_ne!(schedule.content_hash(), Schedule::empty().content_hash());
+
+    let serialized = serde_json::to_vec(&decision)?;
+    assert_eq!(
+        serde_json::from_slice::<SelectionDecision>(&serialized)?,
+        decision
+    );
+
+    let mut corrupted = decision.canonical_bytes().to_vec();
+    corrupted.push(0);
+    assert!(SelectionDecision::from_canonical_bytes(&corrupted).is_err());
+
+    let mut legacy = encoded;
+    legacy[..b"crucible.schedule.v2\0".len()].copy_from_slice(b"crucible.schedule.v1\0");
+    assert!(Schedule::from_compact_binary(&legacy).is_err());
+
+    let selection_free = Schedule::empty().appended(Decision::RngDraw(RngDecision {
+        stream: RngStreamId::from_name("legacy-schedule"),
+        value: 7,
+    }));
+    let mut legacy_selection_free = selection_free.to_compact_binary();
+    legacy_selection_free[..b"crucible.schedule.v2\0".len()]
+        .copy_from_slice(b"crucible.schedule.v1\0");
+    assert_eq!(
+        Schedule::from_compact_binary(&legacy_selection_free)?,
+        selection_free
+    );
+    Ok(())
 }
 
 #[test]
@@ -747,10 +826,46 @@ fn compact_checkpoint_round_trips_concrete_execution_closure() {
     );
     let checkpoint = fat_checkpoint_for(&config).with_execution_closure(closure);
     let bytes = checkpoint.to_compact_binary();
+    assert!(bytes.starts_with(b"crucible.checkpoint.v4\0"));
     let restored = Checkpoint::from_compact_binary(&bytes)
         .unwrap_or_else(|error| panic!("checkpoint closure should decode: {error}"));
     assert_eq!(restored, checkpoint);
     assert_eq!(restored.execution_closure, Some(closure));
+
+    let mut legacy = bytes;
+    legacy[..b"crucible.checkpoint.v4\0".len()].copy_from_slice(b"crucible.checkpoint.v3\0");
+    assert_eq!(
+        Checkpoint::from_compact_binary(&legacy)
+            .unwrap_or_else(|error| panic!("selection-free V3 checkpoint should decode: {error}")),
+        checkpoint
+    );
+}
+
+#[test]
+fn compact_checkpoint_versions_campaign_selection_grammar() {
+    let selection = campaign_selection_fixture()
+        .unwrap_or_else(|error| panic!("selection fixture should construct: {error}"));
+    let config = Configuration {
+        def: generated_scenario(90),
+        schedule: Schedule::empty()
+            .appended(Decision::Selection(SelectionDecision::new(&selection))),
+    };
+    let checkpoint = fat_checkpoint_for(&config);
+    let bytes = checkpoint.to_compact_binary();
+    assert!(bytes.starts_with(b"crucible.checkpoint.v4\0"));
+    assert_eq!(
+        Checkpoint::from_compact_binary(&bytes)
+            .unwrap_or_else(|error| panic!("V4 selection checkpoint should decode: {error}")),
+        checkpoint
+    );
+
+    let mut forged_legacy = bytes;
+    forged_legacy[..b"crucible.checkpoint.v4\0".len()].copy_from_slice(b"crucible.checkpoint.v3\0");
+    assert!(matches!(
+        Checkpoint::from_compact_binary(&forged_legacy),
+        Err(EngineError::ScenarioSerialization { reason })
+            if reason == "checkpoint V3 cannot contain a campaign selection decision"
+    ));
 }
 
 #[test]

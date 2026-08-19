@@ -481,11 +481,33 @@ running/completed/canceled records; new writes use version 2.
 
 The local Crucible execution adapter owns two nested payload schemas. Scenario
 payload version 1 is the strict `ScenarioDefForm` compact-binary V5 encoding;
-configuration payload version 1 is the strict `Schedule` compact-binary V1
+configuration payload version 2 is the strict `Schedule` compact-binary V2
 encoding. Before VM launch the adapter decodes both, authenticates the exact
 scenario-artifact reference, reconstructs `Configuration`, and requires its
 re-derived `ScenarioDefId` and `ConfigurationId` to equal the campaign record.
 Unsupported nested schemas and identity drift fail before execution.
+
+Schedule V2 adds the single canonical campaign-selection decision envelope.
+The envelope contains only strict `Selection` canonical bytes and is globally
+dependent for reduction until its typed producer proves narrower locality. It
+contains no callback, native pointer, QEMU object, or consumer closure. Compact
+schedule V1 is rejected at this boundary instead of being silently interpreted
+through the new decision taxonomy. General execution-model readers retain
+selection-free Schedule V1 for legacy reproduction and continuation envelopes.
+Checkpoint V4 carries selection decisions; selection-free Checkpoint V3 remains
+readable, while a selection tag under V3 is rejected.
+
+Before selection resolution, the adapter linearly preflights a maximum of
+4,096 selection decisions and 256 MiB of conservative aggregate prefix-byte
+work for campaign-branch provenance. Prefix-byte work is encoded schedule bytes
+multiplied by campaign-branch selection count, bounding repeated cloning and
+hashing of variable-sized decisions. The adapter returns immediately after that
+scan when no selections exist. Repository resolution and prefix authentication
+begin only after both bounds pass, preventing canonical maximum-sized schedules
+from turning persistent schedule-prefix construction into quadratic work. The
+repository resolves the accepted IDs as one batch with a 128 MiB aggregate
+unique-canonical-record-body limit; identical selections and shared
+opportunity/declaration/domain dependencies are decoded once and reused.
 
 A mutable compare-and-swap error may be commit-indeterminate because rename
 precedes directory fsync. The supervisor reloads the exact state, and a

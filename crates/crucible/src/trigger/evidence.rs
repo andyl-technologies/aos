@@ -1098,6 +1098,13 @@ pub(super) fn external_decision_material(decision: &Decision) -> String {
             lines.push(format!("decision.width={}", random.width));
             lines.push(format!("decision.value={}", random.value));
         }
+        D::Selection(selection) => {
+            lines.push(String::from("decision=campaign-selection"));
+            lines.push(format!(
+                "decision.canonical_selection={}",
+                external_hex_bytes(selection.canonical_bytes())
+            ));
+        }
     }
     lines.join("\n")
 }

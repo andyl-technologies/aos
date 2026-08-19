@@ -1398,7 +1398,10 @@ pub(super) fn decision_touched_nodes(decision: &Decision) -> Option<BTreeSet<Nod
     match decision {
         Decision::Preemption(preemption) => Some(BTreeSet::from([preemption.node.clone()])),
         Decision::AppRandom(random) => Some(BTreeSet::from([random.node.clone()])),
-        Decision::DeliveryOrder(_) | Decision::RngDraw(_) | Decision::Override(_) => None,
+        Decision::DeliveryOrder(_)
+        | Decision::RngDraw(_)
+        | Decision::Override(_)
+        | Decision::Selection(_) => None,
     }
 }
 

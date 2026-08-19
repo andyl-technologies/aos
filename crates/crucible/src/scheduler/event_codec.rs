@@ -98,7 +98,10 @@ pub(super) fn search_schedule_decision_event_time(
         Decision::Preemption(preemption) => VirtualTime {
             ticks: preemption.at.retired,
         },
-        Decision::RngDraw(_) | Decision::Override(_) | Decision::AppRandom(_) => VirtualTime {
+        Decision::RngDraw(_)
+        | Decision::Override(_)
+        | Decision::AppRandom(_)
+        | Decision::Selection(_) => VirtualTime {
             ticks: fallback_sequence,
         },
     }
@@ -431,6 +434,13 @@ pub(super) fn decision_event_payload(decision: &Decision) -> EventPayload {
                 EventAttributeValue::U64(random.value),
             );
             EventPayload::new("app_random", attributes)
+        }
+        Decision::Selection(selection) => {
+            attributes.insert(
+                String::from("canonical_selection"),
+                EventAttributeValue::Bytes(selection.canonical_bytes().to_vec()),
+            );
+            EventPayload::new("campaign_selection", attributes)
         }
     }
 }
@@ -815,9 +825,10 @@ pub(super) fn decision_icount(at: VirtualTime, decision: &Decision) -> EventLogI
             icount: preemption.at,
         },
         Decision::AppRandom(random) => node_boundary_icount(at, &random.node),
-        Decision::DeliveryOrder(_) | Decision::RngDraw(_) | Decision::Override(_) => {
-            boundary_icount(at)
-        }
+        Decision::DeliveryOrder(_)
+        | Decision::RngDraw(_)
+        | Decision::Override(_)
+        | Decision::Selection(_) => boundary_icount(at),
     }
 }
 
@@ -934,9 +945,10 @@ pub(super) fn decision_source(decision: &Decision) -> EventSource {
         Decision::AppRandom(random) => EventSource::Guest {
             node: random.node.clone(),
         },
-        Decision::DeliveryOrder(_) | Decision::RngDraw(_) | Decision::Override(_) => {
-            EventSource::Engine
-        }
+        Decision::DeliveryOrder(_)
+        | Decision::RngDraw(_)
+        | Decision::Override(_)
+        | Decision::Selection(_) => EventSource::Engine,
     }
 }
 
@@ -2060,7 +2072,10 @@ pub(super) fn scheduler_decision_event_log_time(
                 })
             }
         }
-        Decision::RngDraw(_) | Decision::Override(_) | Decision::AppRandom(_) => Ok(VirtualTime {
+        Decision::RngDraw(_)
+        | Decision::Override(_)
+        | Decision::AppRandom(_)
+        | Decision::Selection(_) => Ok(VirtualTime {
             ticks: fallback.nanos,
         }),
     }
@@ -2134,6 +2149,23 @@ pub(super) fn scheduler_decision_material(decision: &Decision) -> String {
             lines.push(format!("width={}", random.width));
             lines.push(format!("value={}", random.value));
         }
+        Decision::Selection(selection) => {
+            lines.push(String::from("decision=campaign-selection"));
+            lines.push(format!(
+                "canonical_selection={}",
+                scheduler_hex_bytes(selection.canonical_bytes())
+            ));
+        }
     }
     lines.join("\n")
+}
+
+fn scheduler_hex_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
 }
