@@ -1,0 +1,50 @@
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index c5d110133..66e49aaf6 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -2192,7 +2192,9 @@ struct qemu_plugin_rr_cursor {
+  *
+  * Returns 0 on success. The read is admitted either from the active serialized
+  * RR owner or from an exact deterministic plugin boundary, where QEMU reads
+- * the authoritative committed cursor even if no vCPU is current. It returns
++ * the authoritative committed cursor even if no vCPU is current. At exact
++ * raw-zero genesis before the first selection, it reports the canonical next
++ * coordinate (vCPU 0, position 0) without mutating scheduler state. It returns
+  * nonzero in every other unowned context, if no pinned rr_switch_quantum is
+  * active, or if the cursor is not inside that quantum. The read is
+  * side-effect-free with respect to guest state.
+diff --git a/plugins/api.c b/plugins/api.c
+index 70e40aed3..efce95bb0 100644
+--- a/plugins/api.c
++++ b/plugins/api.c
+@@ -701,16 +701,27 @@ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
+         icount_crucible_rr_cursor_position_observed(cpu);
+     uint64_t rr_switch_quantum = icount_crucible_rr_switch_quantum();
+     int num_vcpus = qemu_plugin_num_vcpus();
++    bool genesis_cursor = exact_boundary && current_vcpu == UINT64_MAX &&
++        icount_get_raw_observed() == 0 && cursor_position == 0;
+ 
+-    if (!out || (!cpu && !exact_boundary) || current_vcpu == UINT64_MAX ||
++    if (!out || (!cpu && !exact_boundary) ||
++        (current_vcpu == UINT64_MAX && !genesis_cursor) ||
+         (cpu && cpu->cpu_index != current_vcpu && !exact_boundary) ||
+         num_vcpus <= 0 ||
+-        current_vcpu >= (uint64_t)num_vcpus || rr_switch_quantum == 0 ||
++        (current_vcpu != UINT64_MAX &&
++         current_vcpu >= (uint64_t)num_vcpus) || rr_switch_quantum == 0 ||
+         cursor_position >= rr_switch_quantum) {
+         return -1;
+     }
+ 
+-    out->current_vcpu = current_vcpu;
++    /*
++     * Before the first runnable selection, the serialized cursor is invalid by
++     * construction.  At an exact raw-zero boundary its unique next coordinate
++     * is nevertheless vCPU 0 at position 0.  Expose that canonical genesis
++     * coordinate without mutating TimersState; every non-genesis invalid cursor
++     * remains rejected.
++     */
++    out->current_vcpu = genesis_cursor ? 0 : current_vcpu;
+     out->cursor_position = cursor_position;
+     out->rr_switch_quantum = rr_switch_quantum;
+     return 0;

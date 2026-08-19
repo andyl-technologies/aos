@@ -435,6 +435,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0091-crucible-canonical-rr-genesis-cursor.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

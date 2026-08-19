@@ -56,7 +56,8 @@ and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-pa
 | [`0087-crucible-deterministic-rcu-quiescence`](38-deterministic-rcu-quiescence.md) | Prevent host-timed forced RCU kicks from changing guest interrupt visibility in sim mode | Determinism-critical scheduler execution |
 | [`0088-crucible-deterministic-host-kick-boundary`](39-deterministic-host-kick-boundary.md) | Defer state-free latency hints while preserving committed control and interrupt progress | Determinism-critical scheduler execution |
 | [`0089-crucible-exact-boundary-vcpu-introspection`](40-exact-boundary-vcpu-introspection.md) | Admit quiescent all-vCPU registers and the committed RR cursor at exact control boundaries | Determinism-critical checkpoint observation |
-| [`0090-crucible-active-tcg-kick-boundary`](41-active-tcg-kick-boundary.md) | Prove active guest execution before deferring generic host kicks | Determinism-critical scheduler execution |
+| [`0090-crucible-active-tcg-kick-boundary`](41-active-tcg-kick-boundary.md) | Prove active guest execution and defer host service to the finite RR boundary | Determinism-critical scheduler execution |
+| [`0091-crucible-canonical-rr-genesis-cursor`](42-canonical-rr-genesis-cursor.md) | Expose the unique raw-zero scheduler coordinate before first vCPU selection | Determinism-critical checkpoint observation |
 
 The numbers are reserved by this RFC. If the existing series grows before
 implementation, the PR may renumber the files while preserving this exact order
@@ -116,9 +117,16 @@ Patch `0089` then admits authoritative quiescent all-vCPU registers and the
 committed RR cursor from exact deterministic control boundaries even when the
 main-loop callback has no current vCPU; live unowned contexts remain rejected.
 Patch `0090` replaces the pre-runnable RR pointer approximation in patch
-`0088` with an explicit atomic flag around TCG guest execution, preserving
-startup and between-slice kicks while retaining deterministic active-slice
-boundaries.
+`0088` with deterministic translation-block-boundary exits and an explicit
+initial-wait completion flag. State-free kicks publish `exit_request` without
+setting the asynchronous icount decrementer, so the current block completes
+before host work is serviced; startup condition-variable wakeups and immediate
+exits for committed state remain intact.
+Patch `0091` closes the remaining fresh-process checkpoint gap. Before the
+first runnable selection, serialized RR state intentionally has no current
+owner, but its unique next coordinate is vCPU 0 at position 0. The formal
+cursor API exposes that coordinate only at the exact raw-zero boundary and
+does not modify scheduler state; every later invalid owner remains rejected.
 
 ## 14.2 Process and license boundary
 
