@@ -8062,14 +8062,15 @@ fn package_platform_table(
                 let root_verity = image.directory.path.join("root.verity");
                 let root_hash = image.directory.path.join("root.roothash");
                 let root_hash_sig = image.directory.path.join("root.roothash.p7s");
-                let verity_count = [&root_image, &root_verity, &root_hash, &root_hash_sig]
-                    .iter()
-                    .filter(|path| path.is_file())
-                    .count();
-                if verity_count != 0 && verity_count != 4 {
-                    bail!("published image has an incomplete dm-verity artifact set");
-                }
-                if verity_count == 4 {
+                if matches!(image.format.as_str(), "ext4-verity" | "erofs-verity") {
+                    let verity_count = [&root_image, &root_verity, &root_hash, &root_hash_sig]
+                        .iter()
+                        .filter(|path| path.is_file())
+                        .count();
+                    if verity_count != 4 {
+                        bail!("published image has an incomplete dm-verity artifact set");
+                    }
+
                     let hash = fs::read_to_string(&root_hash)?;
                     let hash = hash.trim();
                     if hash.len() != 64
@@ -20556,6 +20557,60 @@ references = []
         let parsed = crate::registry::parse::parse_package_file(&content).unwrap();
         let image = &parsed.versions[0].platforms["x86_64-linux"].images[0];
         assert_eq!(image.delivery.schema_version, 1);
+    }
+
+    #[test]
+    fn build_package_toml_keeps_disk_image_verity_sidecars_out_of_catalog() {
+        let image_fixture = TempDir::new().unwrap();
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-server-2026.04".into(),
+            nar_hash: "sha256:aabb".into(),
+            nar_size: 12345678,
+            references: vec!["ref1".into()],
+            closure_size: 52428800,
+        };
+        let img_info = write_direct_image_output(
+            image_fixture.path(),
+            "raw",
+            serde_json::json!(["bare-metal"]),
+        );
+        let image_root = Path::new(&img_info.path);
+        fs::write(image_root.join("root.img"), b"root").unwrap();
+        fs::write(image_root.join("root.verity"), b"verity").unwrap();
+        fs::write(image_root.join("root.roothash"), "a".repeat(64)).unwrap();
+        fs::write(image_root.join("root.roothash.p7s"), b"signature").unwrap();
+        rewrite_test_image_parent(&img_info, "2026.04", "x86_64-linux");
+        let image = inspect_test_image("raw", img_info, "2026.04", "x86_64-linux").unwrap();
+
+        let content = build_package_toml(
+            "",
+            "server",
+            "2026.04",
+            "x86_64-linux",
+            &info,
+            Some("AOS server"),
+            None,
+            Some("MIT"),
+            Some("aos-team"),
+            true,
+            None,
+            &[image],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let parsed = crate::registry::parse::parse_package_file(&content).unwrap();
+        let image = &parsed.versions[0].platforms["x86_64-linux"].images[0];
+        assert_eq!(image.format, "raw");
+        assert!(image.root_image.is_none());
+        assert!(image.root_verity.is_none());
+        assert!(image.root_hash.is_none());
+        assert!(image.root_hash_sig.is_none());
     }
 
     #[test]
