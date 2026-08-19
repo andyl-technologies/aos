@@ -5,6 +5,7 @@
 # runtime identity guard must reject it before the generated mapper unit can
 # execute, select the passive failure target, and leave root and /var untouched.
 {
+  lib,
   mkSystem,
   pkgs,
   ...
@@ -20,9 +21,15 @@
       };
     }
   ];
+  rootVerify = failClosedSystem.config.boot.initrd.systemd.services."aos-verity-root-verify";
 in
   assert builtins.elem "aos-boot-identity-guard.service" failClosedSystem.config.boot.initrd.systemd.services."mount-var".requires;
-  assert builtins.elem "aos-boot-identity-guard.service" failClosedSystem.config.boot.initrd.systemd.services."systemd-veritysetup@root".requires; {
+  assert builtins.elem "aos-verity-root-verify.service" failClosedSystem.config.boot.initrd.systemd.services."mount-var".requires;
+  assert builtins.elem "aos-boot-identity-guard.service" failClosedSystem.config.boot.initrd.systemd.services."systemd-veritysetup@root".requires;
+  assert builtins.elem "aos-boot-identity-guard.service" rootVerify.requires;
+  assert lib.hasInfix "systemctl start systemd-veritysetup@root.service" rootVerify.script;
+  assert builtins.elem "initrd-fs.target" rootVerify.requiredBy;
+  assert rootVerify.unitConfig.OnFailure == "aos-boot-identity-failure.target"; {
     name = "boot-identity-fail-closed";
     timeout = 300;
     bootTimeout = 120;

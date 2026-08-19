@@ -30,6 +30,11 @@ selectors, debug/break/run controls, unit injection, verity options, and their
 `rd.` aliases fail into a passive target with no shell. AOS does not ship the
 upstream debug or transient-command generators in its initrd.
 
+After creating the mapper, the initrd reads it completely before it may unlock
+or mount `/var`. This turns dm-verity's normal on-demand block authentication
+into an early boot gate: corruption anywhere in a counted immutable root keeps
+persistent state sealed and lets boot counting select a known-good image.
+
 Before PID 1 starts, the AOS EFI stub keeps the UKI's embedded signed command
 line authoritative. Command-line fragments supplied by db-signed PE addons or
 SMBIOS are measured into PCR 12 but not appended, so an external `rdinit=` or

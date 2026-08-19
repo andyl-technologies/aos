@@ -52,6 +52,11 @@ so their failure jobs cannot win the transaction before the passive target.
 success marker. This makes the guard a storage dependency instead of a
 diagnostic race.
 
+Because dm-verity authenticates blocks on demand, the normal initrd also reads
+the complete root mapper before `/var` can be unlocked or mounted. A counted
+image whose signed identity is valid but whose root data is corrupt therefore
+fails into the same passive target without releasing persistent state.
+
 The AOS systemd-stub also treats an embedded UKI `.cmdline` as authoritative.
 Db-signed PE-addon and SMBIOS command-line fragments are measured into PCR 12
 but are not appended when an embedded command line exists. A recovery UKI then

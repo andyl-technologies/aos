@@ -115,7 +115,9 @@
       ];
     };
 in {
-  name = "measured-boot";
+  name =
+    assert builtins.elem "aos-verity-root-verify.service" measuredSystem.config.boot.initrd.systemd.services."aos-var-crypt".requires;
+    "measured-boot";
   # Image boot + enrollment/migration + the A/B counted-candidate lifecycle.
   timeout = 5400;
   # The emulated TPM (swtpm) adds tens of seconds of slow command
@@ -1707,6 +1709,10 @@ in {
       transcript = target.relaunch_with_smbios_oem_strings(
           [], expect_agent=False, settle=45
       )
+      assert (
+          "AOS root verification failure: corrupt root rejected; /var unmounted"
+          in transcript
+      ), transcript[-12000:]
       assert "Switching root" not in transcript, transcript[-12000:]
       assert "unlocking /var via TPM2" not in transcript, transcript[-12000:]
       assert "Give root password for maintenance" not in transcript, transcript[-12000:]

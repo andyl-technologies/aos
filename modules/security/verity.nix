@@ -148,5 +148,42 @@ in {
         ${pkgs.systemd}/bin/udevadm settle
       '';
     };
+
+    # dm-verity validates blocks when they are read. Scan the complete mapper
+    # before exposing persistent state so corruption in an otherwise authentic
+    # counted image cannot release /var before the damaged block is touched.
+    boot.initrd.systemd.services."aos-verity-root-verify" = {
+      description = "Verify the complete dm-verity root before persistent state";
+      requiredBy = ["initrd-fs.target"];
+      requires = ["aos-boot-identity-guard.service"];
+      after = ["aos-boot-identity-guard.service"];
+      before = [
+        "aos-var-crypt.service"
+        "mount-var.service"
+        "initrd-fs.target"
+      ];
+      unitConfig = {
+        DefaultDependencies = "no";
+        OnFailure = "aos-boot-identity-failure.target";
+        OnFailureJobMode = "isolate";
+      };
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = ''
+        # The identity validator publishes the generated verity unit at
+        # runtime. Joining its start here keeps this static service in the
+        # original initrd-fs transaction while still waiting for the mapper.
+        ${pkgs.systemd}/bin/systemctl start systemd-veritysetup@root.service
+        ${pkgs.coreutils}/bin/dd \
+          if=/dev/mapper/root \
+          of=/dev/null \
+          bs=4M \
+          iflag=fullblock \
+          status=none
+        ${pkgs.coreutils}/bin/touch /run/aos/verity-root-valid
+      '';
+    };
   };
 }

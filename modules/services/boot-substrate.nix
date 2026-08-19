@@ -95,10 +95,12 @@
       requires =
         ["sysroot.mount"]
         ++ lib.optional config.aos.security.verity.enable "aos-boot-identity-guard.service"
+        ++ lib.optional config.aos.security.verity.enable "aos-verity-root-verify.service"
         ++ lib.optional (disksUnit != null) disksUnit;
       after =
         ["sysroot.mount"]
         ++ lib.optional config.aos.security.verity.enable "aos-boot-identity-guard.service"
+        ++ lib.optional config.aos.security.verity.enable "aos-verity-root-verify.service"
         ++ lib.optional (disksUnit != null) disksUnit
         ++ ["systemd-udev-settle.service"];
       unitConfig = {
