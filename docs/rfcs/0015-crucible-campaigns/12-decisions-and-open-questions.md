@@ -371,6 +371,45 @@ deduplication authority lives in snapshot roots rather than the step body,
 standalone loading of an `Issue` step fails closed; authoritative loading names
 the snapshot whose complete ancestry and coordination membership are validated.
 
+### D-32: Validated immutable parents seed incremental local validation
+
+Complete ancestry and closure validation establishes a process-local checkpoint
+for an immutable snapshot ID, including ancestry depth, conservative
+reachable-object work, and projected lifecycle state. A sole-writer repository
+transaction that has authenticated its inputs and applied its exact owner delta
+may prepare a child from that checkpoint without rewalking unchanged closure,
+but promotes it only after the authoritative ref CAS succeeds. Canonical depth
+and closure limits are enforced on both full and incremental paths. Relative to
+exact parent-authenticated roots and owner-index members, every incremental
+child authenticates and charges its complete newly reachable transition
+closure, including pre-published generator, policy, artifact, or other graphs
+that were not reachable from the parent, plus a conservative upper bound for
+newly constructed owner-index nodes. The cache retains only a bounded current
+frontier; eviction is always semantically safe and any lookup that races with
+eviction revalidates the immutable head.
+
+Branch-request and mutation-command membership are authenticated Merkle
+indexes. In addition, each successor's coordination root indexes its parent's
+accepted mutation result. The current head answers its own replay directly and
+every older command, request, proposal, admission, or planner invocation names
+its exact original result snapshot through that accumulated index. Unique
+mutation, lifecycle validation, and exact replay therefore do not scan snapshot
+history.
+
+Imported transition validation computes expected Merkle roots through a
+non-persisting canonical overlay over changed trie paths; validation never
+publishes intermediate nodes. Complete closure verification shares authenticated
+subtree positions across persistent historical roots, so structurally shared
+maps are not rescanned from their root for every snapshot version.
+
+This cache is optional acceleration state. It is neither serialized nor trusted
+across repository instances. Imported heads, restarted heads, and any head not
+reached through an exact local transaction receive complete fail-closed
+validation before promotion. Immutable blob semantics and active-ref GC
+protection are prerequisites: a backend that mutates or removes reachable
+objects violates the storage contract rather than silently invalidating a
+semantic checkpoint.
+
 ## Deliberately rejected representations
 
 The following patterns are outside the design even if they appear convenient
