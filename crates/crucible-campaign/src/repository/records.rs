@@ -2,6 +2,28 @@
 
 use super::*;
 
+fn charge_selection_resolution_record(
+    envelope: &ObjectEnvelope,
+    charged: &mut BTreeSet<ContentId>,
+    charged_bytes: &mut usize,
+) -> Result<(), CampaignRepositoryError> {
+    if !charged.insert(envelope.content_id()) {
+        return Ok(());
+    }
+    *charged_bytes = charged_bytes.checked_add(envelope.body().len()).ok_or(
+        CampaignCodecError::InvalidValue {
+            reason: "selection resolution byte accounting overflow",
+        },
+    )?;
+    if *charged_bytes > MAX_SELECTION_RESOLUTION_BYTES {
+        return Err(CampaignCodecError::InvalidValue {
+            reason: "selection resolution exceeds canonical record byte limit",
+        }
+        .into());
+    }
+    Ok(())
+}
+
 impl CampaignRepository {
     /// Loads an exact campaign lineage and authenticates its scenario/genesis closure.
     ///
@@ -311,20 +333,115 @@ impl CampaignRepository {
         &self,
         id: SelectionId,
     ) -> Result<ResolvedSelection, CampaignRepositoryError> {
-        let envelope =
-            self.require_record_kind(id.content_id(), crate::CampaignRecordKind::Selection)?;
-        let selection = Selection::from_canonical_bytes(envelope.body())?;
-        if selection.id()? != id {
-            return Err(integrity("selection-envelope-shape"));
+        self.resolve_selections(&[id])?
+            .pop()
+            .ok_or_else(|| integrity("selection-resolution-empty"))
+    }
+
+    /// Resolves selections while decoding each unique dependency once.
+    pub(super) fn resolve_selections(
+        &self,
+        ids: &[SelectionId],
+    ) -> Result<Vec<ResolvedSelection>, CampaignRepositoryError> {
+        if ids.len() > MAX_SELECTION_RESOLUTION_RECORDS {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "selection resolution batch exceeds record limit",
+            }
+            .into());
         }
-        let opportunity = self.read_opportunity(required_child(&envelope, "opportunity")?)?;
-        let domain = self.read_choice_domain(required_child(&envelope, "domain")?)?;
-        selection.validate_resolved_references(&opportunity, &domain)?;
-        Ok(ResolvedSelection {
-            selection,
-            opportunity,
-            domain,
-        })
+
+        let mut charged = BTreeSet::new();
+        let mut charged_bytes = 0usize;
+        let mut selections = BTreeMap::<SelectionId, ResolvedSelection>::new();
+        let mut opportunities = BTreeMap::<ContentId, Arc<ChoiceOpportunity>>::new();
+        let mut declarations = BTreeMap::<ContentId, Arc<SelectableDeclaration>>::new();
+        let mut domains = BTreeMap::<ContentId, Arc<ChoiceDomain>>::new();
+        let mut resolved = Vec::with_capacity(ids.len());
+
+        for id in ids {
+            if let Some(selection) = selections.get(id) {
+                resolved.push(selection.clone());
+                continue;
+            }
+
+            let selection_envelope =
+                self.require_record_kind(id.content_id(), crate::CampaignRecordKind::Selection)?;
+            charge_selection_resolution_record(
+                &selection_envelope,
+                &mut charged,
+                &mut charged_bytes,
+            )?;
+            let selection = Selection::from_canonical_bytes(selection_envelope.body())?;
+            if selection.id()? != *id {
+                return Err(integrity("selection-envelope-shape"));
+            }
+
+            let opportunity_id = required_child(&selection_envelope, "opportunity")?;
+            let selection_domain_id = required_child(&selection_envelope, "domain")?;
+            let opportunity = if let Some(opportunity) = opportunities.get(&opportunity_id) {
+                Arc::clone(opportunity)
+            } else {
+                let envelope = self.require_record_kind(
+                    opportunity_id,
+                    crate::CampaignRecordKind::ChoiceOpportunity,
+                )?;
+                charge_selection_resolution_record(&envelope, &mut charged, &mut charged_bytes)?;
+                let opportunity = crate::codec::decode::<ChoiceOpportunity>(envelope.body())?;
+                if opportunity.id()?.content_id() != opportunity_id {
+                    return Err(integrity("choice-opportunity-envelope-shape"));
+                }
+                Arc::new(opportunity)
+            };
+
+            let declaration_id = opportunity.declaration().content_id();
+            let declaration = if let Some(declaration) = declarations.get(&declaration_id) {
+                Arc::clone(declaration)
+            } else {
+                let envelope = self.require_record_kind(
+                    declaration_id,
+                    crate::CampaignRecordKind::SelectableDeclaration,
+                )?;
+                charge_selection_resolution_record(&envelope, &mut charged, &mut charged_bytes)?;
+                let declaration = SelectableDeclaration::from_canonical_bytes(envelope.body())?;
+                if declaration.id()?.content_id() != declaration_id {
+                    return Err(integrity("selectable-envelope-shape"));
+                }
+                let declaration = Arc::new(declaration);
+                declarations.insert(declaration_id, Arc::clone(&declaration));
+                declaration
+            };
+
+            let domain_id = opportunity.domain().content_id();
+            if domain_id != selection_domain_id {
+                return Err(integrity("selection-envelope-domain-mismatch"));
+            }
+            let domain = if let Some(domain) = domains.get(&domain_id) {
+                Arc::clone(domain)
+            } else {
+                let envelope =
+                    self.require_record_kind(domain_id, crate::CampaignRecordKind::ChoiceDomain)?;
+                charge_selection_resolution_record(&envelope, &mut charged, &mut charged_bytes)?;
+                let domain = ChoiceDomain::from_canonical_bytes(envelope.body())?;
+                if domain.id()?.content_id() != domain_id {
+                    return Err(integrity("choice-domain-envelope-shape"));
+                }
+                let domain = Arc::new(domain);
+                domains.insert(domain_id, Arc::clone(&domain));
+                domain
+            };
+
+            opportunity.validate_references(&declaration, &domain)?;
+            selection.validate_resolved_references(&opportunity, &domain)?;
+            opportunities.insert(opportunity_id, Arc::clone(&opportunity));
+            let selection = ResolvedSelection {
+                selection,
+                opportunity,
+                domain,
+            };
+            selections.insert(*id, selection.clone());
+            resolved.push(selection);
+        }
+        Ok(resolved)
     }
 
     /// Loads a planner invocation after validating all engine and input links.

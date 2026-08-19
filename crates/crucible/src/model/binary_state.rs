@@ -1,6 +1,7 @@
 //! Canonical binary writer and checkpoint/materialized-state codec.
 
 use super::*;
+const MAX_SELECTION_DECISION_BYTES: usize = 4 * 1024;
 pub(super) struct ScenarioBinaryWriter {
     pub(super) bytes: Vec<u8>,
 }
@@ -1120,6 +1121,10 @@ pub(super) fn write_decision_binary(decision: &Decision, writer: &mut ScenarioBi
             writer.write_u8(random.width);
             writer.write_u64(random.value);
         }
+        Decision::Selection(selection) => {
+            writer.write_u8(5);
+            writer.write_binary_blob(selection.canonical_bytes());
+        }
     }
 }
 
@@ -1175,6 +1180,14 @@ pub(super) fn read_decision_binary(
             width: reader.read_u8()?,
             value: reader.read_u64()?,
         })),
+        5 => SelectionDecision::from_canonical_bytes(reader.read_binary_blob_bounded(
+            "campaign selection decision",
+            MAX_SELECTION_DECISION_BYTES,
+        )?)
+        .map(Decision::Selection)
+        .map_err(|error| {
+            scenario_serialization_error(format!("invalid campaign selection decision: {error}"))
+        }),
         _ => Err(scenario_serialization_error("invalid decision tag")),
     }
 }

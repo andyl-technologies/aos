@@ -1,26 +1,30 @@
 //! Strict Crucible execution-model payloads carried by campaign artifacts.
 //!
 //! The campaign repository treats scenario and configuration payloads as
-//! opaque, language-neutral byte strings. This module owns payload schema 1:
+//! opaque, language-neutral byte strings. This module owns the following
+//! nested payload schemas:
 //!
 //! ```text
 //! CrucibleScenarioPayloadV1      = ScenarioDefForm compact binary V5
-//! CrucibleConfigurationPayloadV1 = Schedule compact binary V1
+//! CrucibleConfigurationPayloadV2 = Schedule compact binary V2
 //! ```
 //!
 //! Decoding re-derives both semantic identities before a live session or QEMU
 //! process can consume the values.
 
-use crucible::{Configuration, ScenarioDefForm, Schedule};
+use crucible::{Configuration, Decision, ScenarioDefForm, Schedule};
 use crucible_campaign::{
-    CampaignCodecError, CampaignHash, ConfigurationArtifact, ConfigurationId, ScenarioArtifact,
-    ScenarioDefId,
+    CampaignCodecError, CampaignExecutorStore, CampaignHash, CampaignRepositoryError,
+    ConfigurationArtifact, ConfigurationId, ScenarioArtifact, ScenarioDefId, SelectionOrigin,
 };
 
 /// Payload schema for a compact canonical Crucible scenario definition.
 pub const CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V1: u32 = 1;
 /// Payload schema for a compact canonical Crucible configuration schedule.
-pub const CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V1: u32 = 1;
+pub const CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2: u32 = 2;
+const CRUCIBLE_SCHEDULE_V2_MAGIC: &[u8] = b"crucible.schedule.v2\0";
+const MAX_CONFIGURATION_SELECTION_DECISIONS: usize = 4_096;
+const MAX_CONFIGURATION_BRANCH_PREFIX_BYTES: usize = 256 * 1024 * 1024;
 
 /// Failure to translate a campaign artifact into the Crucible execution model.
 #[derive(Debug, thiserror::Error)]
@@ -35,6 +39,9 @@ pub enum CrucibleArtifactError {
         /// Exact schema implemented by this adapter.
         expected: u32,
     },
+    /// Configuration payload bytes do not carry the required Schedule version.
+    #[error("Crucible configuration payload requires Schedule compact binary V2")]
+    UnsupportedScheduleEncoding,
     /// Compact Crucible bytes were malformed or semantically invalid.
     #[error("invalid Crucible {artifact} payload: {source}")]
     InvalidPayload {
@@ -53,6 +60,21 @@ pub enum CrucibleArtifactError {
     /// A configuration names a different exact scenario artifact.
     #[error("Crucible configuration artifact names a different exact scenario artifact")]
     ScenarioArtifactMismatch,
+    /// A structurally valid schedule contains selections that were not resolved.
+    #[error("Crucible configuration contains an unresolved campaign selection decision")]
+    UnresolvedSelectionDecision,
+    /// Authenticated campaign selection closure could not be resolved.
+    #[error(transparent)]
+    SelectionRepository(#[from] CampaignRepositoryError),
+    /// A model-sampled value has no pure model verifier in this executor.
+    #[error("Crucible configuration contains a model selection without a registered verifier")]
+    UnverifiedModelSelection,
+    /// A configuration exceeds the bounded selection-resolution contract.
+    #[error("Crucible configuration exceeds the campaign selection resolution limit")]
+    SelectionResolutionLimit,
+    /// A derived schedule prefix was inconsistent with its source schedule.
+    #[error(transparent)]
+    SelectionPrefix(#[from] crucible::ScheduleError),
     /// Campaign envelope construction rejected a newly encoded artifact.
     #[error(transparent)]
     Campaign(#[from] CampaignCodecError),
@@ -125,7 +147,7 @@ pub fn encode_crucible_configuration_artifact(
         scenario_artifact.scenario(),
         scenario_artifact.id()?,
         campaign_configuration_id(configuration.id()),
-        CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V1,
+        CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2,
         schedule.to_compact_binary(),
     )
     .map_err(Into::into)
@@ -142,6 +164,48 @@ pub fn decode_crucible_configuration_artifact(
     scenario_artifact: &ScenarioArtifact,
     artifact: &ConfigurationArtifact,
 ) -> Result<Configuration, CrucibleArtifactError> {
+    let configuration =
+        decode_crucible_configuration_artifact_structural(scenario, scenario_artifact, artifact)?;
+    if configuration
+        .schedule
+        .decisions()
+        .iter()
+        .any(|decision| matches!(decision, Decision::Selection(_)))
+    {
+        return Err(CrucibleArtifactError::UnresolvedSelectionDecision);
+    }
+    Ok(configuration)
+}
+
+/// Strictly decodes a configuration and resolves every embedded selection.
+///
+/// Each selection must equal its authenticated repository record. Branch
+/// provenance is recomputed from the exact schedule prefix and opportunity;
+/// model-sampled selections remain fail-closed until a pure model verifier is
+/// registered with the executor.
+///
+/// # Errors
+///
+/// Returns [`CrucibleArtifactError`] for the structural failures documented by
+/// [`decode_crucible_configuration_artifact`], missing or inconsistent
+/// selection records, invalid prefix provenance, or unverified model sampling.
+pub fn decode_crucible_configuration_artifact_with_selections(
+    scenario: &ScenarioDefForm,
+    scenario_artifact: &ScenarioArtifact,
+    artifact: &ConfigurationArtifact,
+    store: &CampaignExecutorStore,
+) -> Result<Configuration, CrucibleArtifactError> {
+    let configuration =
+        decode_crucible_configuration_artifact_structural(scenario, scenario_artifact, artifact)?;
+    validate_selection_decisions(&configuration, artifact, store)?;
+    Ok(configuration)
+}
+
+fn decode_crucible_configuration_artifact_structural(
+    scenario: &ScenarioDefForm,
+    scenario_artifact: &ScenarioArtifact,
+    artifact: &ConfigurationArtifact,
+) -> Result<Configuration, CrucibleArtifactError> {
     let authenticated_scenario = decode_crucible_scenario_artifact(scenario_artifact)?;
     if &authenticated_scenario != scenario || artifact.scenario() != scenario_artifact.scenario() {
         return Err(CrucibleArtifactError::SemanticIdentityMismatch {
@@ -154,8 +218,11 @@ pub fn decode_crucible_configuration_artifact(
     require_schema(
         "configuration",
         artifact.payload_schema(),
-        CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V1,
+        CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2,
     )?;
+    if !artifact.payload().starts_with(CRUCIBLE_SCHEDULE_V2_MAGIC) {
+        return Err(CrucibleArtifactError::UnsupportedScheduleEncoding);
+    }
     let schedule = Schedule::from_compact_binary(artifact.payload()).map_err(|source| {
         CrucibleArtifactError::InvalidPayload {
             artifact: "configuration",
@@ -172,6 +239,81 @@ pub fn decode_crucible_configuration_artifact(
         });
     }
     Ok(configuration)
+}
+
+fn validate_selection_decisions(
+    configuration: &Configuration,
+    artifact: &ConfigurationArtifact,
+    store: &CampaignExecutorStore,
+) -> Result<(), CrucibleArtifactError> {
+    let mut selections = Vec::new();
+    let mut campaign_branch_count = 0usize;
+    for (index, decision) in configuration.schedule.decisions().iter().enumerate() {
+        let Decision::Selection(decision) = decision else {
+            continue;
+        };
+        let selection = decision.selection()?;
+        selections.push((index, selection));
+        if selections.len() > MAX_CONFIGURATION_SELECTION_DECISIONS {
+            return Err(CrucibleArtifactError::SelectionResolutionLimit);
+        }
+        if matches!(
+            selections.last().map(|(_, selection)| selection.origin()),
+            Some(SelectionOrigin::CampaignBranch { .. })
+        ) {
+            campaign_branch_count = campaign_branch_count
+                .checked_add(1)
+                .ok_or(CrucibleArtifactError::SelectionResolutionLimit)?;
+        }
+    }
+    let branch_prefix_bytes = artifact
+        .payload()
+        .len()
+        .checked_mul(campaign_branch_count)
+        .ok_or(CrucibleArtifactError::SelectionResolutionLimit)?;
+    if branch_prefix_bytes > MAX_CONFIGURATION_BRANCH_PREFIX_BYTES {
+        return Err(CrucibleArtifactError::SelectionResolutionLimit);
+    }
+    if selections.is_empty() {
+        return Ok(());
+    }
+
+    let selection_ids = selections
+        .iter()
+        .map(|(_, selection)| selection.id())
+        .collect::<Result<Vec<_>, _>>()?;
+    let resolved = store.resolve_selections(&selection_ids)?;
+    for ((index, selection), resolved) in selections.into_iter().zip(resolved) {
+        if resolved.selection() != &selection
+            || resolved.opportunity().scenario() != artifact.scenario()
+        {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "configuration selection",
+            });
+        }
+        match selection.origin() {
+            SelectionOrigin::Default | SelectionOrigin::LockedReplay => {
+                selection.validate_replay(resolved.opportunity(), resolved.domain())?;
+            }
+            SelectionOrigin::CampaignBranch { .. } => {
+                let parent = Configuration {
+                    def: configuration.def.clone(),
+                    schedule: configuration.schedule.prefix(index)?,
+                };
+                selection.validate_branch_replay(
+                    resolved.opportunity(),
+                    resolved.domain(),
+                    resolved
+                        .opportunity()
+                        .branch_point_id(campaign_configuration_id(parent.id())),
+                )?;
+            }
+            SelectionOrigin::ModelSample(_) => {
+                return Err(CrucibleArtifactError::UnverifiedModelSelection);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn require_schema(
@@ -201,9 +343,51 @@ fn campaign_configuration_id(id: crucible::ContentHash) -> ConfigurationId {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use crucible::{Decision, DeliveryOrderDecision, VirtualTime};
+    use std::collections::BTreeSet;
+
+    use crucible::{Decision, DeliveryOrderDecision, SelectionDecision, VirtualTime};
+    use crucible_campaign::{
+        BooleanDomain, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain, ChoiceOpportunity,
+        ChoiceSource, ChoiceValue, SelectableDeclaration, Selection, SelectionOrigin,
+    };
 
     use super::*;
+
+    fn selection_decision(scenario: ScenarioDefId) -> Decision {
+        let domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("Boolean domain"));
+        let declaration = SelectableDeclaration::new(
+            "product.test.daemon-selection",
+            ChoiceSource::Scheduler {
+                producer: String::from("daemon-test"),
+            },
+            domain.clone(),
+            ChoiceValue::Boolean(false),
+            ChoiceClassContext::new(BTreeSet::new()).expect("class context"),
+            BTreeSet::new(),
+            true,
+        )
+        .expect("selectable declaration");
+        let opportunity = ChoiceOpportunity::new(
+            scenario,
+            &declaration,
+            &domain,
+            ChoiceCoordinate {
+                scheduler: CampaignHash::derive("test", b"daemon-scheduler"),
+                producer: CampaignHash::derive("test", b"daemon-producer"),
+            },
+            "daemon-selection",
+            None,
+        )
+        .expect("choice opportunity");
+        let selection = Selection::new(
+            &opportunity,
+            &domain,
+            ChoiceValue::Boolean(false),
+            SelectionOrigin::Default,
+        )
+        .expect("default selection");
+        Decision::Selection(SelectionDecision::new(&selection))
+    }
 
     #[test]
     fn crucible_payloads_round_trip_and_rederive_semantic_ids() {
@@ -219,6 +403,10 @@ mod tests {
         let configuration_artifact =
             encode_crucible_configuration_artifact(&scenario_artifact, &schedule)
                 .expect("configuration artifact");
+        assert_eq!(
+            configuration_artifact.payload_schema(),
+            CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2
+        );
 
         assert_eq!(
             decode_crucible_scenario_artifact(&scenario_artifact).expect("decoded scenario"),
@@ -261,6 +449,49 @@ mod tests {
             Err(CrucibleArtifactError::SemanticIdentityMismatch {
                 artifact: "scenario"
             })
+        ));
+
+        let configuration = encode_crucible_configuration_artifact(&valid, &Schedule::empty())
+            .expect("configuration artifact");
+        let legacy_configuration = ConfigurationArtifact::new(
+            configuration.scenario(),
+            configuration.scenario_artifact(),
+            configuration.configuration(),
+            1,
+            configuration.payload().to_vec(),
+        )
+        .expect("legacy configuration remains structurally valid");
+        assert!(matches!(
+            decode_crucible_configuration_artifact(&scenario, &valid, &legacy_configuration),
+            Err(CrucibleArtifactError::UnsupportedPayloadSchema {
+                artifact: "configuration",
+                actual: 1,
+                expected: CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2,
+            })
+        ));
+
+        let selection_schedule = Schedule::empty().appended(selection_decision(valid.scenario()));
+        let unresolved = encode_crucible_configuration_artifact(&valid, &selection_schedule)
+            .expect("selection configuration");
+        assert!(matches!(
+            decode_crucible_configuration_artifact(&scenario, &valid, &unresolved),
+            Err(CrucibleArtifactError::UnresolvedSelectionDecision)
+        ));
+
+        let mut legacy_payload = configuration.payload().to_vec();
+        legacy_payload[..b"crucible.schedule.v2\0".len()]
+            .copy_from_slice(b"crucible.schedule.v1\0");
+        let legacy_nested_schedule = ConfigurationArtifact::new(
+            configuration.scenario(),
+            configuration.scenario_artifact(),
+            configuration.configuration(),
+            CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2,
+            legacy_payload,
+        )
+        .expect("legacy nested schedule remains structurally valid");
+        assert!(matches!(
+            decode_crucible_configuration_artifact(&scenario, &valid, &legacy_nested_schedule),
+            Err(CrucibleArtifactError::UnsupportedScheduleEncoding)
         ));
     }
 }

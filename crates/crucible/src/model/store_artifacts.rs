@@ -373,6 +373,13 @@ pub(super) fn push_decision_lines(index: usize, decision: &Decision, lines: &mut
             lines.push(format!("{prefix}.width={}", random.width));
             lines.push(format!("{prefix}.value={}", random.value));
         }
+        Decision::Selection(selection) => {
+            lines.push(format!("{prefix}.kind=campaign-selection"));
+            lines.push(format!(
+                "{prefix}.canonical_selection={}",
+                bytes_hex(selection.canonical_bytes())
+            ));
+        }
     }
 }
 

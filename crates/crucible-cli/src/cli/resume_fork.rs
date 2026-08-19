@@ -1755,6 +1755,7 @@ pub(super) fn fork_artifact_decision_kind(decision: &crucible::Decision) -> &'st
         crucible::Decision::Override(_) => "override",
         crucible::Decision::Preemption(_) => "preemption",
         crucible::Decision::AppRandom(_) => "app_random",
+        crucible::Decision::Selection(_) => "campaign_selection",
     }
 }
 

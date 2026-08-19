@@ -226,16 +226,27 @@ semantic branch edge. A valid debugger selection override uses a debugger-
 caused branch request; an arbitrary register or memory write remains a non-
 canonical debug session and is not encoded as a `SelectionOrigin`.
 
-The implementation adds one canonical selection decision envelope to the
-schedule. Existing fault-firing, RNG-draw, override, preemption, and
-application-random decision paths are normalized through this envelope where
-they represent a genuine selectable. Domain-specific applied-effect evidence
-remains in the event log and adapter checkpoint state.
-
-This is a schema-version change, not a parallel compatibility path. Old
-artifacts are either migrated by an offline canonical converter with explicit
-source provenance or rejected; the execution engine does not silently lower
-two decision taxonomies at runtime.
+Schedule V2 adds one canonical selection-decision envelope. Existing
+fault-firing, RNG-draw, override, preemption, and application-random decision
+variants remain readable and are not silently reclassified as selections;
+producer-by-producer normalization remains implementation work. New campaign
+configuration payloads write Schedule V2 and reject nested Schedule V1 at the
+executor boundary. The general execution-model reader retains selection-free
+Schedule V1 for older reproduction artifacts and scheduler continuations, but
+rejects a selection tag under V1. Checkpoint V4 carries the expanded decision
+grammar while selection-free Checkpoint V3 remains readable. Domain-specific
+applied-effect evidence remains in the event log and adapter checkpoint state.
+Campaign execution resolves no more than 4,096 selection decisions in one
+configuration and permits at most 256 MiB of conservative aggregate
+schedule-prefix byte work across campaign-branch provenance checks. The latter
+is computed as encoded schedule bytes times campaign-branch selection count, so
+it bounds repeated deep clones and hashes even when an early decision contains
+a maximum-sized variable-length value. The resolver preflights both bounds in
+one linear scan before repository reads; selection-free schedules therefore
+remain linear in schedule length. Repository resolution is one bounded batch:
+at most 128 MiB of unique canonical selection, opportunity, declaration, and
+domain bodies are admitted, and repeated dependencies are decoded once and
+shared across resolved selections.
 
 - **[SEL-12]** A recorded selection MUST contain enough information to replay
   without consulting campaign state or drawing randomness.

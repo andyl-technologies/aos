@@ -1160,7 +1160,7 @@ impl Checkpoint {
     /// Serializes this checkpoint as compact canonical bytes.
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
-        let mut writer = ScenarioBinaryWriter::new(CHECKPOINT_BINARY_MAGIC);
+        let mut writer = ScenarioBinaryWriter::new(CHECKPOINT_BINARY_MAGIC_V4);
         write_checkpoint_binary(self, &mut writer);
         writer.finish()
     }
@@ -1174,8 +1174,24 @@ impl Checkpoint {
     /// match their decoded components, or when the outer checkpoint shape is
     /// internally inconsistent.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let mut reader = ScenarioBinaryReader::new(bytes, CHECKPOINT_BINARY_MAGIC)?;
+        let (magic, legacy) = if bytes.starts_with(CHECKPOINT_BINARY_MAGIC_V4) {
+            (CHECKPOINT_BINARY_MAGIC_V4, false)
+        } else {
+            (CHECKPOINT_BINARY_MAGIC_V3, true)
+        };
+        let mut reader = ScenarioBinaryReader::new(bytes, magic)?;
         let checkpoint = read_checkpoint_binary(&mut reader)?;
+        if legacy
+            && checkpoint
+                .schedule_delta
+                .decisions()
+                .iter()
+                .any(|decision| matches!(decision, Decision::Selection(_)))
+        {
+            return Err(scenario_serialization_error(
+                "checkpoint V3 cannot contain a campaign selection decision",
+            ));
+        }
         validate_checkpoint_binary_shape(&checkpoint)?;
         reader.finish()?;
         Ok(checkpoint)

@@ -233,7 +233,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   rerunning the guest. Snapshot incorporation remains coordinator-only. A
   strict Crucible execution adapter now decodes versioned scenario/schedule
   payloads, re-derives semantic IDs before runner invocation, and exposes a
-  typed runner boundary for operational hot/exact/thin selection. The concrete
+  typed runner boundary for operational hot/exact/thin selection. The execution
+  model now retains a validated campaign `Selection` as one canonical Schedule
+  V2 decision with strict binary/serde decoding, content-address participation,
+  event-log projection, and conservative reduction semantics. The concrete
   production-QEMU runner, capability
   service, full out-of-process campaign flight, and complete component
   conformance gate remain open.

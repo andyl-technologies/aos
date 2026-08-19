@@ -1806,7 +1806,7 @@ pub(super) fn is_genuine_search_frontier_decision(decision: &Decision) -> bool {
     match decision {
         Decision::DeliveryOrder(_) => false,
         Decision::RngDraw(_) | Decision::Override(_) => true,
-        Decision::Preemption(_) | Decision::AppRandom(_) => false,
+        Decision::Preemption(_) | Decision::AppRandom(_) | Decision::Selection(_) => false,
     }
 }
 
