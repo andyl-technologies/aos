@@ -17,7 +17,8 @@
 //!
 //! The APM (package manager) variants follow the extended convention
 //! documented in `cli.md`: `2` for missing packages, `3` for download
-//! failures, `4` for hash mismatches, and `100` for user cancellation.
+//! failures, `4` for hash mismatches, and `100` for user cancellation. An
+//! operation interrupted by SIGINT exits with the shell-standard status 130.
 
 use thiserror::Error;
 
@@ -87,6 +88,10 @@ pub enum AosError {
     /// The user aborted an interactive confirmation prompt.
     #[error("operation cancelled by user")]
     UserCancelled,
+
+    /// A long-running operation was interrupted while retaining resumable state.
+    #[error("{message}")]
+    Interrupted { message: String },
 }
 
 impl AosError {
@@ -108,6 +113,7 @@ impl AosError {
             AosError::HashMismatch { .. } => 4,
             AosError::RegistryHasPackages { .. } => 1,
             AosError::UserCancelled => 100,
+            AosError::Interrupted { .. } => 130,
         }
     }
 }
