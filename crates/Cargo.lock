@@ -2162,8 +2162,11 @@ version = "0.1.0"
 dependencies = [
  "crucible",
  "crucible-api",
+ "crucible-campaign",
  "crucible-protocol",
  "crucible-session",
+ "rustix 1.1.4",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
 ]

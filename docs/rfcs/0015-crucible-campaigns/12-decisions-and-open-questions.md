@@ -490,6 +490,45 @@ replay returns the original response. Changed bytes under the same assignment
 return a non-retryable conflict; transient backpressure or unavailable input is
 retried under a fresh assignment so the original response remains immutable.
 
+### D-37: Executor idempotency is direct-addressed durable operational state
+
+The single-host executor does not rebuild an in-memory assignment table by
+scanning daemon history. It stores one immutable, checksummed, bounded record
+under each `AssignmentId` and one conditionally replaced runtime-state record
+under each domain-separated `(CampaignLineageId, AttemptId)` key. The runtime
+record commits to an execution-basis digest over that pair, the complete
+resource limits, and retention intent. Directory publication uses fsynced
+staging plus atomic link/rename under an exclusive writer lock; a memory
+implementation exists only behind the same trait for conformance tests and fake
+components.
+
+The attempt state becomes `running` before an `accepted` response can become
+visible. An indeterminate response publication never rolls that state back:
+the prepared execution remains bounded and queued, so a visible response cannot
+refer to abandoned work. A new daemon epoch may replace stale running or
+canceled state. A fresh assignment reuses running or completed state only for
+the exact execution basis; resource/retention changes fail as incompatible and
+the same `AttemptId` in another lineage remains independent. A completed
+observation is returned only after read-only reauthentication against that
+request. Temporary input absence yields `unavailable-input`; semantic mismatch
+discards the operational completion and permits reexecution. Cancellation and
+completion use exact execution-bound conditional transitions, and conflicting
+second observations fail rather than selecting a winner.
+
+Mutable publication errors are reconciled by reloading the exact record. A
+directory reload re-fsyncs the containing directory before confirming a state
+that may have become visible after rename. Confirmed running work remains
+reserved, while confirmed completion/cancellation releases capacity even when
+the original I/O error is returned. Existing immutable assignment lookup also
+re-fsyncs its directory before declaring an exact replay durable. Capacity is
+bounded by slots and aggregate vCPU, resident-memory, and writable-disk limits,
+plus a per-execution deterministic-quanta ceiling.
+
+This ledger is operational acceleration, not campaign truth. Deleting it may
+duplicate unfinished execution but cannot change canonical attempts,
+observations, findings, or campaign refs. The supervisor receives a read-only
+admission validator and no mutable campaign-ref authority.
+
 ## Deliberately rejected representations
 
 The following patterns are outside the design even if they appear convenient

@@ -167,9 +167,12 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   supervisor integration remain open.
 - [ ] **T-CAM-4.5** Implement `CampaignSupervisor`, `CampaignProjector`,
   `ProposalPlanner`, `AttemptQueue`, and a bounded local `WorkerPool`.
-  The standalone bounded `AttemptQueue` reservation primitive is implemented;
-  supervisor ownership, worker execution, completion handoff, and responsive
-  scheduling remain open.
+  The standalone bounded `AttemptQueue` reservation primitive and the daemon's
+  single-host `LocalExecutorSupervisor` are implemented. The latter enforces
+  exact assignment replay, aggregate slot/CPU/memory/disk capacity, a bounded
+  pending queue, durable completion/cancellation races, and restart replacement
+  of stale executions. Campaign-level supervisor ownership, the QEMU worker,
+  canonical completion handoff, and responsive scheduling remain open.
 - [ ] **T-CAM-4.6** Implement strict and streaming commit modes, restart
   recovery, duplicate/conflict handling, backpressure, pagination, and
   projection rebuilding; implement snapshot-bound paged planner scans whose
@@ -178,8 +181,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   Exact observation publication now covers execution-basis authentication,
   strict global-admission order, stale-safe replay, deterministic conflict
   retention, exact root deltas, imported recomputation, and final-CAS safety;
-  supervisor scheduling, non-modeled ordinal closure, and restart reservation
-  recovery remain open.
+  Executor restart recovery now uses direct-by-ID, bounded, checksummed,
+  single-writer directory records and preserves exact responses, completed
+  observations, and cancellation races without loading history. Campaign
+  supervisor scheduling, non-modeled ordinal closure, and claim-reservation
+  integration remain open.
 - [ ] **T-CAM-4.7** Implement hierarchical per-event promotion and existing
   minimization integration.
 - [ ] **T-CAM-4.8** Complete the §14 Phase 4 local operator flight through lazy
@@ -202,9 +208,16 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   implementor-facing service trait, and one checked coordinator client for
   direct and RPC use. Repository validation authenticates the attempt and
   lineage for every response and the complete observation/attempt/lineage
-  correspondence before accepting `already-completed`. The daemon assignment
-  ledger, completion/cancellation, loopback adapter, and complete component
-  conformance gate remain open.
+  correspondence before accepting `already-completed`. The daemon now provides
+  a trait-based memory/directory assignment ledger, fsynced immutable response
+  publication, lineage-qualified conditional attempt state, exact
+  resource/retention execution-basis deduplication, bounded aggregate and
+  per-execution-quanta admission, reauthenticated completed-state reuse,
+  idempotent running/completed/canceled transitions, commit-indeterminate
+  publication recovery, restart conformance tests, and a separate
+  repository-backed read-only request validator. The production admission error
+  adapter, QEMU execution/completion worker, loopback adapter, capability
+  service, and complete component conformance gate remain open.
 - [x] **T-CAM-4.10** Replace repeated full-history validation on local owner
   mutations with bounded immutable validated-head/lifecycle checkpoints and
   authenticated membership and result-locator indexes; promote only after ref
