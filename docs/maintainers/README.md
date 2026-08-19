@@ -65,9 +65,13 @@ For incremental Rust work, build in the development environment and run the
 binary directly:
 
 ```sh
-nix develop -c cargo build --manifest-path crates/Cargo.toml --bin aos
-crates/target/debug/aos --help
+nix develop -c just cli-build
+crates/target/release/aos --help
 ```
+
+The `just` recipes use that release binary. Set `AOS_BIN` to an equivalent
+binary when the target directory lives elsewhere, for example on a constrained
+CI or agent filesystem.
 
 The development environment supplies the AOS-built dependencies and embeds the
 required OpenSSL runtime path. The CLI is multicall; use the correctly named

@@ -3,7 +3,7 @@
 
 set positional-arguments
 
-AOS := "./cli/target/release/aos"
+AOS := env_var_or_default("AOS_BIN", "./crates/target/release/aos")
 
 default:
     @just --list
@@ -140,7 +140,7 @@ gc-list:
 
 # Build the aos CLI from source
 cli-build:
-    cd cli && cargo build --release
+    cargo build --manifest-path crates/Cargo.toml --release --bin aos
 
 # Generate shell completions
 completions shell="bash":
