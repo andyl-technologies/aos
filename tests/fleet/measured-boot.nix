@@ -258,7 +258,10 @@ in {
               "(sleep 1; systemctl reboot) >/dev/null 2>&1 &", timeout=30
           )
           target.agent.close()
-          return wait_serial("AOS recovery>", offset)
+          transcript = wait_serial("AOS recovery>", offset)
+          recovery_start = transcript.rfind("AOS signed recovery environment")
+          assert recovery_start >= 0, transcript[-12000:]
+          return transcript[recovery_start:]
 
       def assert_external_cmdline_absent(transcript, fragment):
           kernel_cmdlines = [
