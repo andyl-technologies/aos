@@ -70,6 +70,11 @@ individual `pkg-*` output for that system. For example, submit
 `packages.x86_64-linux.all` to an x86_64 Linux builder. Git-backed package
 sources use pinned fixed-output archives so restricted remote evaluators create
 ordinary fetch derivations instead of requiring evaluation-time network access.
+Individual `pkg-*` outputs remain lazy: evaluating `pkg-openjdk-24`, for
+example, does not inspect or realize Crucible merely to enumerate the package
+set. Add new package files through `pkgs/default.nix` filesystem discovery, and
+add explicit package aliases to its `packageNames` inventory, so this property
+remains true.
 
 System image production currently uses Nix directly. See
 [Build and customize release images](../../maintainers/system-images.md). Do

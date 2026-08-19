@@ -708,10 +708,39 @@
   in
     filePackages // subdirPackages;
 
+  discoveredPackages = discoverPackages ./.;
+  packageNames = builtins.attrNames (
+    builtins.removeAttrs discoveredPackages ["trivial-builders"]
+    // {
+      nuke-references = null;
+      qemu-crucible = null;
+      qemu-crucible-reference = null;
+      crucible-controller = null;
+      git-minimal = null;
+      gcc = null;
+      glibc = null;
+      binutils = null;
+      cc = null;
+      gccUnwrapped = null;
+      getent = null;
+      bash = null;
+      coreutils = null;
+      gnumake = null;
+      sed = null;
+      grep = null;
+      findutils = null;
+      gawk = null;
+      diffutils = null;
+      tar = null;
+      gzip = null;
+      patch = null;
+    }
+  );
+
   self =
     {
       # --- Plumbing ---
-      inherit mkDerivation fetchurl lib;
+      inherit mkDerivation fetchurl lib packageNames;
       inherit mkCargoPackage mkGoPackage mkBazelPackage;
       inherit fetchCargoDeps fetchCargoVendor fetchGoModules fetchNpmDeps fetchBazelDeps;
       inherit bootstrapTools;
@@ -728,7 +757,7 @@
         inherit (self) bash gawk sed;
       };
     }
-    // discoverPackages ./.
+    // discoveredPackages
     // {
       # --- Explicit overrides for packages needing non-standard arguments ---
       linux = callPackage ./kernel/linux.nix {inherit linuxSource;};
