@@ -11,6 +11,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 mod artifact;
+mod authority;
 mod choice;
 mod codec;
 mod exploration;
@@ -23,6 +24,9 @@ mod policy;
 mod repository;
 
 pub use artifact::{ConfigurationArtifact, ScenarioArtifact};
+pub use authority::{
+    DebuggerAuthorityKey, DebuggerSubmission, PlannerAuthorityKey, PlannerSubmission,
+};
 pub use choice::{
     BooleanDomain, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain, ChoiceGroup,
     ChoiceGroupApplication, ChoiceGroupDomain, ChoiceGroupValue, ChoiceOpportunity,
@@ -70,8 +74,8 @@ pub use policy::{
 };
 pub use repository::{
     AttemptAdmissionResult, BranchRequestResult, CampaignCommandResult, CampaignHead,
-    CampaignRepository, CampaignRepositoryError, ObservationDisposition, ObservationResult,
-    PlannerStepResult, ProposalResult, ResolvedSelection,
+    CampaignRepository, CampaignRepositoryError, ChoiceDiscoveryResult, ObservationDisposition,
+    ObservationResult, PlannerStepResult, ProposalResult, ResolvedSelection,
 };
 
 #[cfg(test)]

@@ -25,14 +25,16 @@ use crate::{
     CandidateGeneratorAlgorithm, CandidateGeneratorSpec, CandidateGeneratorSpecId, CandidateSource,
     ChoiceDomain, ChoiceDomainId, ChoiceGroup, ChoiceGroupId, ChoiceOpportunity,
     ChoiceOpportunityId, ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId,
-    ControlRequest, CoverageProjection, CoverageProjectionId, ExpansionState, ExpansionStateId,
-    MeasurementSet, MeasurementSetId, MerkleMap, MerkleMapRoot, ObjectEnvelope, Observation,
-    ObservationId, PlannerDisposition, PlannerEngine, PlannerInvocation, PlannerInvocationId,
+    ControlRequest, CoverageProjection, CoverageProjectionId, DebuggerAuthorityKey,
+    DebuggerSubmission, ExpansionState, ExpansionStateId, MeasurementSet, MeasurementSetId,
+    MerkleMap, MerkleMapRoot, ObjectEnvelope, Observation, ObservationId, PlannerAuthorityKey,
+    PlannerDisposition, PlannerEngine, PlannerInvocation, PlannerInvocationId,
     PlannerProposalDisposition, PlannerState, PlannerStep, PlannerStepId, PlannerStepProposal,
-    PlanningAccounting, PlanningBudget, PlanningScanPage, PlanningScanPosition, PlanningUsage,
-    PolicyActivation, PolicyArtifact, PropertyVerdict, PropertyVerdictSet, PropertyVerdictSetId,
-    Proposal, ProposalId, ScenarioArtifact, ScenarioArtifactId, ScenarioDefId,
-    SelectableDeclaration, SelectableId, Selection, SelectionId, StopCondition, StopOutcome,
+    PlannerSubmission, PlanningAccounting, PlanningBudget, PlanningScanPage, PlanningScanPosition,
+    PlanningUsage, PolicyActivation, PolicyArtifact, PropertyVerdict, PropertyVerdictSet,
+    PropertyVerdictSetId, Proposal, ProposalId, ScenarioArtifact, ScenarioArtifactId,
+    ScenarioDefId, SelectableDeclaration, SelectableId, Selection, SelectionId, StopCondition,
+    StopOutcome,
 };
 
 const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;
@@ -109,6 +111,24 @@ pub struct BranchRequestResult {
     /// Exact immutable request identity.
     pub request: BranchRequestId,
     /// Whether this call observed a previously committed request.
+    pub replayed: bool,
+}
+
+/// Stable response for an authoritative choice-opportunity discovery.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChoiceDiscoveryResult {
+    /// Snapshot before the discovery transition, or the current snapshot when
+    /// the opportunity was already authoritative through another owner.
+    pub prior_snapshot: CampaignSnapshotId,
+    /// Snapshot produced by discovery, or the unchanged current snapshot.
+    pub new_snapshot: CampaignSnapshotId,
+    /// Exact parent artifact at which the opportunity became authoritative.
+    pub parent: ConfigurationArtifactId,
+    /// Semantic branch point derived from the parent and opportunity.
+    pub branch_point: crate::BranchPointId,
+    /// Exact immutable opportunity made authoritative.
+    pub opportunity: ChoiceOpportunityId,
+    /// Whether no new transition was needed.
     pub replayed: bool,
 }
 
@@ -272,6 +292,8 @@ pub struct CampaignRepository {
     // validated parent through one of the repository's exact owner mutations.
     // The map is optional bounded acceleration state, never campaign truth.
     validated_heads: Mutex<BTreeMap<ContentId, ValidationCheckpoint>>,
+    planner_authority: Option<PlannerAuthorityKey>,
+    debugger_authority: Option<DebuggerAuthorityKey>,
 }
 
 mod ancestry;
@@ -448,6 +470,20 @@ fn observation_sequence_key() -> CampaignHash {
     CampaignHash::derive("crucible.campaign-observation-sequence.v1", b"")
 }
 
+fn authoritative_choice_key(opportunity: ChoiceOpportunityId) -> CampaignHash {
+    map_key_content("graph.choice-opportunity", opportunity.content_id())
+}
+
+fn choice_discovery_result_key(
+    parent: ConfigurationArtifactId,
+    opportunity: ChoiceOpportunityId,
+) -> CampaignHash {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(parent.content_id().encode().as_bytes());
+    bytes.extend_from_slice(opportunity.content_id().encode().as_bytes());
+    CampaignHash::derive("crucible.campaign-choice-discovery-result.v1", &bytes)
+}
+
 fn observation_conflict_key(attempt: AttemptId, observation: ObservationId) -> CampaignHash {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(attempt.content_id().encode().as_bytes());
@@ -598,12 +634,46 @@ mod tests {
         AlternativeId, BooleanDomain, BranchBudget, BudgetGrant, CampaignFactId, CampaignMode,
         CampaignPlanningView, CampaignSeed, CandidateGeneratorAlgorithm, ChoiceClassContext,
         ChoiceCoordinate, ChoicePolicy, ChoiceSource, ChoiceValue, ConfigurationId,
-        ContinuationState, DiscreteAlternative, DiscreteDomain, ExplorerPolicy, FairnessPolicy,
-        GuidanceEvidence, MeasurementSeries, MetricValue, PlannerEngine,
+        ContinuationState, DebugSessionId, DiscreteAlternative, DiscreteDomain, ExplorerPolicy,
+        FairnessPolicy, GuidanceEvidence, MeasurementSeries, MetricValue, PlannerEngine,
         PlannerProposalDisposition, PlannerState, PlannerStepProposal, PlanningBudget,
         PlanningUsage, PolicyArtifact, ProgressiveWideningPolicy, PropertyEvidence, PuctPolicy,
         RetentionPolicy, ScenarioDefId, StopCondition, WeightedGenerator,
     };
+
+    trait TestBranchSubmission {
+        fn submit_known_branch_request(
+            &self,
+            name: &str,
+            expected_snapshot: CampaignSnapshotId,
+            request: &BranchRequest,
+        ) -> Result<BranchRequestResult, CampaignRepositoryError>;
+    }
+
+    impl TestBranchSubmission for CampaignRepository {
+        fn submit_known_branch_request(
+            &self,
+            name: &str,
+            expected_snapshot: CampaignSnapshotId,
+            request: &BranchRequest,
+        ) -> Result<BranchRequestResult, CampaignRepositoryError> {
+            let head = self.head(name)?;
+            if self.merkle.get(
+                head.snapshot().roots().graph,
+                branch_point_opportunity_key(request.branch_point(), request.opportunity()),
+            )? != Some(request.opportunity().content_id())
+            {
+                self.discover_choice_opportunity(
+                    name,
+                    expected_snapshot,
+                    request.parent(),
+                    request.opportunity(),
+                )?;
+            }
+            let current = self.head(name)?.snapshot_id();
+            self.submit_branch_request(name, current, request)
+        }
+    }
 
     struct ConflictAfterCreateRefBackend {
         inner: MemoryRefBackend,
@@ -673,11 +743,45 @@ mod tests {
         CampaignPolicy,
         Arc<MemoryBlobBackend>,
     ) {
+        fixture_with_quota_and_authorities(max_logical_bytes, None)
+    }
+
+    fn authorized_fixture() -> (
+        CampaignRepository,
+        CampaignLineage,
+        CampaignPolicy,
+        Arc<MemoryBlobBackend>,
+        PlannerAuthorityKey,
+        DebuggerAuthorityKey,
+    ) {
+        let planner = PlannerAuthorityKey::from_bytes([17; 32]).expect("planner authority");
+        let debugger = DebuggerAuthorityKey::from_bytes([23; 32]).expect("debugger authority");
+        let (repository, lineage, policy, blobs) = fixture_with_quota_and_authorities(
+            64 * 1024 * 1024,
+            Some((planner.clone(), debugger.clone())),
+        );
+        (repository, lineage, policy, blobs, planner, debugger)
+    }
+
+    fn fixture_with_quota_and_authorities(
+        max_logical_bytes: u64,
+        authorities: Option<(PlannerAuthorityKey, DebuggerAuthorityKey)>,
+    ) -> (
+        CampaignRepository,
+        CampaignLineage,
+        CampaignPolicy,
+        Arc<MemoryBlobBackend>,
+    ) {
         let scenario = ScenarioDefId::from_hash(CampaignHash::derive("test", b"scenario"));
         let genesis = ConfigurationId::from_hash(CampaignHash::derive("test", b"genesis"));
         let blobs = Arc::new(MemoryBlobBackend::new("campaign", max_logical_bytes));
         let refs = Arc::new(MemoryRefBackend::new());
-        let repository = CampaignRepository::new(blobs.clone(), refs);
+        let repository = if let Some((planner, debugger)) = authorities {
+            CampaignRepository::with_component_authorities(blobs.clone(), refs, planner, debugger)
+                .expect("distinct component authorities")
+        } else {
+            CampaignRepository::new(blobs.clone(), refs)
+        };
         let scenario_content = repository
             .publish_scenario_artifact(scenario, 1, b"scenario".to_vec())
             .expect("scenario artifact");
@@ -905,7 +1009,7 @@ mod tests {
             name,
         );
         let requested = repository
-            .submit_branch_request(name, genesis.snapshot_id(), &request)
+            .submit_known_branch_request(name, genesis.snapshot_id(), &request)
             .expect("submit observation request");
         let proposal = finite_proposal(
             &request,
@@ -1309,7 +1413,7 @@ mod tests {
             "planner-state-continuity",
         );
         let requested = repository
-            .submit_branch_request("planner-owner", accepted.new_snapshot, &request)
+            .submit_known_branch_request("planner-owner", accepted.new_snapshot, &request)
             .expect("submit intervening request");
         let wrong_input_state = PlannerState::new(
             engine.id().expect("engine id"),
@@ -1448,7 +1552,7 @@ mod tests {
             "first-planner-page-request",
         );
         let first = repository
-            .submit_branch_request("planner-pages", genesis.snapshot_id(), &first_request)
+            .submit_known_branch_request("planner-pages", genesis.snapshot_id(), &first_request)
             .expect("first request");
         let second_request = branch_request(
             &repository,
@@ -1458,7 +1562,7 @@ mod tests {
             "second-planner-page-request",
         );
         let second = repository
-            .submit_branch_request("planner-pages", first.new_snapshot, &second_request)
+            .submit_known_branch_request("planner-pages", first.new_snapshot, &second_request)
             .expect("second request");
 
         let mut expected_positions = [
@@ -1706,7 +1810,7 @@ mod tests {
             "planner-issue-source",
         );
         let requested = repository
-            .submit_branch_request("planner-issue", genesis.snapshot_id(), &source_request)
+            .submit_known_branch_request("planner-issue", genesis.snapshot_id(), &source_request)
             .expect("submit source request");
         let engine =
             PlannerEngine::new("closed-rust", 1, 1, BTreeSet::new()).expect("planner engine");
@@ -2188,6 +2292,393 @@ mod tests {
     }
 
     #[test]
+    fn choice_discovery_is_exact_replayable_and_required_before_branching() {
+        let (repository, lineage, policy) = fixture();
+        let genesis = repository
+            .create("choice-discovery", &lineage, &policy, &BTreeMap::new())
+            .expect("create");
+        let request = branch_request(
+            &repository,
+            &lineage,
+            lineage.genesis_content(),
+            lineage.genesis(),
+            "choice-discovery",
+        );
+        assert!(matches!(
+            repository.submit_branch_request("choice-discovery", genesis.snapshot_id(), &request),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "branch-request-opportunity-is-not-authoritative-campaign-knowledge"
+            })
+        ));
+        assert_eq!(
+            repository
+                .head("choice-discovery")
+                .expect("unchanged genesis")
+                .snapshot_id(),
+            genesis.snapshot_id()
+        );
+
+        let discovered = repository
+            .discover_choice_opportunity(
+                "choice-discovery",
+                genesis.snapshot_id(),
+                request.parent(),
+                request.opportunity(),
+            )
+            .expect("discover choice");
+        assert!(!discovered.replayed);
+        assert_eq!(discovered.prior_snapshot, genesis.snapshot_id());
+        assert_eq!(discovered.parent, request.parent());
+        assert_eq!(discovered.branch_point, request.branch_point());
+        let discovery_snapshot = repository
+            .read_snapshot(discovered.new_snapshot.content_id())
+            .expect("discovery snapshot");
+        assert_eq!(
+            repository
+                .merkle
+                .get(
+                    discovery_snapshot.snapshot.roots().graph,
+                    authoritative_choice_key(request.opportunity()),
+                )
+                .expect("authoritative choice membership"),
+            Some(request.opportunity().content_id())
+        );
+        assert_eq!(
+            repository
+                .merkle
+                .get(
+                    discovery_snapshot.snapshot.roots().graph,
+                    branch_point_opportunity_key(request.branch_point(), request.opportunity()),
+                )
+                .expect("scoped choice membership"),
+            Some(request.opportunity().content_id())
+        );
+
+        let accepted = repository
+            .submit_branch_request("choice-discovery", discovered.new_snapshot, &request)
+            .expect("submit known request");
+        let replay = repository
+            .discover_choice_opportunity(
+                "choice-discovery",
+                genesis.snapshot_id(),
+                request.parent(),
+                request.opportunity(),
+            )
+            .expect("replay discovery before stale check");
+        assert!(replay.replayed);
+        assert_eq!(replay.new_snapshot, discovered.new_snapshot);
+        assert_eq!(
+            repository
+                .head("choice-discovery")
+                .expect("branch head remains current")
+                .snapshot_id(),
+            accepted.new_snapshot
+        );
+
+        let mut forged_roots = discovery_snapshot.snapshot.roots();
+        forged_roots.graph = repository
+            .merkle
+            .insert(
+                forged_roots.graph,
+                map_key_content("graph.forged-choice", request.opportunity().content_id()),
+                request.opportunity().content_id(),
+            )
+            .expect("forged discovery graph")
+            .content_id();
+        let forged = CampaignSnapshot::successor(
+            genesis.snapshot_id(),
+            discovery_snapshot.snapshot.lineage(),
+            discovery_snapshot.snapshot.active_policy(),
+            forged_roots,
+            discovery_snapshot
+                .snapshot
+                .transition()
+                .expect("discovery transition"),
+        )
+        .expect("forged discovery successor");
+        let forged_content = repository
+            .put_snapshot(&forged)
+            .expect("put forged discovery successor");
+        assert!(matches!(
+            repository.validate_complete_head(forged_content),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "choice-discovery-graph-root-mismatch"
+            })
+        ));
+    }
+
+    #[test]
+    fn choice_authority_is_scoped_to_the_exact_parent_branch_point() {
+        let (repository, lineage, policy) = fixture();
+        let (genesis, admitted, observation) =
+            admitted_observation_fixture(&repository, &lineage, &policy, "choice-parent-scope");
+        let observed = repository
+            .publish_observation("choice-parent-scope", admitted.new_snapshot, &observation)
+            .expect("publish child observation");
+
+        let request = branch_request(
+            &repository,
+            &lineage,
+            lineage.genesis_content(),
+            lineage.genesis(),
+            "genesis-only-choice",
+        );
+        let discovered = repository
+            .discover_choice_opportunity(
+                "choice-parent-scope",
+                observed.new_snapshot,
+                request.parent(),
+                request.opportunity(),
+            )
+            .expect("discover choice only at genesis");
+        let opportunity = repository
+            .load_choice_opportunity(request.opportunity())
+            .expect("load opportunity");
+        let cross_parent = BranchRequest::new(
+            opportunity.branch_point_id(observation.child()),
+            observation.child_content(),
+            request.opportunity(),
+            request.domain(),
+            request.source().clone(),
+            request.cause(),
+            request.budget(),
+            request.stop().clone(),
+        )
+        .expect("cross-parent request");
+        assert!(matches!(
+            repository.submit_branch_request(
+                "choice-parent-scope",
+                discovered.new_snapshot,
+                &cross_parent,
+            ),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "branch-request-opportunity-is-not-authoritative-campaign-knowledge"
+            })
+        ));
+        assert_eq!(
+            repository
+                .head("choice-parent-scope")
+                .expect("unchanged scoped head")
+                .snapshot_id(),
+            discovered.new_snapshot
+        );
+        assert_ne!(genesis, observed.new_snapshot);
+    }
+
+    #[test]
+    fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
+        let shared = [41; 32];
+        assert!(matches!(
+            CampaignRepository::with_component_authorities(
+                Arc::new(MemoryBlobBackend::new("equal-authority", 1024)),
+                Arc::new(MemoryRefBackend::new()),
+                PlannerAuthorityKey::from_bytes(shared).expect("shared planner authority"),
+                DebuggerAuthorityKey::from_bytes(shared).expect("shared debugger authority"),
+            ),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "component-authority-keys-must-be-distinct"
+            })
+        ));
+        let (repository, lineage, policy, blobs, planner_key, debugger_key) = authorized_fixture();
+        assert!(PlannerAuthorityKey::from_bytes([0; 32]).is_err());
+        assert!(DebuggerAuthorityKey::from_bytes([0; 32]).is_err());
+
+        let debugger_genesis = repository
+            .create("debugger-authority", &lineage, &policy, &BTreeMap::new())
+            .expect("create debugger campaign");
+        let operator_request = branch_request(
+            &repository,
+            &lineage,
+            lineage.genesis_content(),
+            lineage.genesis(),
+            "debugger-authority",
+        );
+        let session = DebugSessionId::from_hash(CampaignHash::derive(
+            "test-debug-session",
+            b"debugger-authority",
+        ));
+        let debugger_request = BranchRequest::new(
+            operator_request.branch_point(),
+            operator_request.parent(),
+            operator_request.opportunity(),
+            operator_request.domain(),
+            operator_request.source().clone(),
+            BranchRequestCause::Debugger(session),
+            operator_request.budget(),
+            operator_request.stop().clone(),
+        )
+        .expect("debugger request");
+        assert!(matches!(
+            repository.submit_operator_branch_request(
+                "debugger-authority",
+                debugger_genesis.snapshot_id(),
+                &debugger_request,
+            ),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "branch-request-cause-requires-authority-specific-adapter"
+            })
+        ));
+        let discovered = repository
+            .discover_choice_opportunity(
+                "debugger-authority",
+                debugger_genesis.snapshot_id(),
+                debugger_request.parent(),
+                debugger_request.opportunity(),
+            )
+            .expect("discover debugger choice");
+
+        let wrong_debugger_key =
+            DebuggerAuthorityKey::from_bytes([29; 32]).expect("wrong debugger key");
+        let wrong_debugger = DebuggerSubmission::authorize(
+            &wrong_debugger_key,
+            discovered.new_snapshot,
+            session,
+            debugger_request.clone(),
+        )
+        .expect("wrong debugger submission");
+        let objects_before_debugger_rejection = blobs
+            .object_count()
+            .expect("debugger objects before rejection");
+        assert!(matches!(
+            repository.submit_debugger_branch_request("debugger-authority", &wrong_debugger),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "debugger-submission-authentication-failed"
+            })
+        ));
+        assert_eq!(
+            blobs
+                .object_count()
+                .expect("debugger objects after rejection"),
+            objects_before_debugger_rejection
+        );
+
+        let debugger_submission = DebuggerSubmission::authorize(
+            &debugger_key,
+            discovered.new_snapshot,
+            session,
+            debugger_request,
+        )
+        .expect("authorize debugger submission");
+        let debugger_bytes = debugger_submission.canonical_bytes();
+        assert_eq!(
+            CampaignHash::derive(
+                "crucible.test.debugger-submission-vector.v1",
+                &debugger_bytes,
+            )
+            .to_hex(),
+            "3142d32d1e725e1af17323de02b80a106411705968e29a1598648943fb1e6858",
+        );
+        let decoded_debugger =
+            DebuggerSubmission::from_canonical_bytes(&debugger_bytes).expect("decode debugger");
+        assert_eq!(decoded_debugger, debugger_submission);
+        assert!(decoded_debugger.verify(&debugger_key));
+        assert!(!decoded_debugger.verify(&wrong_debugger_key));
+        let mut tampered_debugger_bytes = debugger_bytes;
+        let last = tampered_debugger_bytes
+            .last_mut()
+            .expect("debugger submission has an authentication tag");
+        *last ^= 1;
+        let tampered_debugger = DebuggerSubmission::from_canonical_bytes(&tampered_debugger_bytes)
+            .expect("tampered tag remains structurally canonical");
+        assert!(!tampered_debugger.verify(&debugger_key));
+        let accepted_debugger = repository
+            .submit_debugger_branch_request("debugger-authority", &decoded_debugger)
+            .expect("accept debugger submission");
+        assert_eq!(accepted_debugger.prior_snapshot, discovered.new_snapshot);
+
+        let planner_genesis = repository
+            .create("planner-authority", &lineage, &policy, &BTreeMap::new())
+            .expect("create planner campaign");
+        let engine =
+            PlannerEngine::new("closed-rust", 1, 1, BTreeSet::new()).expect("planner engine");
+        let initial_state = PlannerState::new(
+            engine.id().expect("engine id"),
+            "closed-rust-state",
+            1,
+            vec![0],
+        )
+        .expect("initial state");
+        let (engine, _artifact, invocation) = planner_basis(
+            &repository,
+            "planner-authority",
+            planner_genesis.snapshot_id(),
+            initial_state,
+        );
+        let next_state = PlannerState::new(
+            engine.id().expect("engine id"),
+            "closed-rust-state",
+            1,
+            vec![1],
+        )
+        .expect("next state");
+        let proposal = no_work_proposal(invocation.id().expect("invocation id"), next_state);
+        let measured = PlanningUsage {
+            branch_requests: 0,
+            proposals: 0,
+            input_objects: 0,
+            input_bytes: 0,
+            fuel: 5,
+        };
+        let wrong_planner_key =
+            PlannerAuthorityKey::from_bytes([31; 32]).expect("wrong planner key");
+        let wrong_planner = PlannerSubmission::authorize(
+            &wrong_planner_key,
+            planner_genesis.snapshot_id(),
+            proposal.clone(),
+            measured,
+        )
+        .expect("wrong planner submission");
+        let objects_before_planner_rejection = blobs
+            .object_count()
+            .expect("planner objects before rejection");
+        assert!(matches!(
+            repository.accept_planner_submission("planner-authority", &wrong_planner),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "planner-submission-authentication-failed"
+            })
+        ));
+        assert_eq!(
+            blobs
+                .object_count()
+                .expect("planner objects after rejection"),
+            objects_before_planner_rejection
+        );
+        assert_eq!(
+            repository
+                .head("planner-authority")
+                .expect("unchanged planner head")
+                .snapshot_id(),
+            planner_genesis.snapshot_id()
+        );
+
+        let planner_submission = PlannerSubmission::authorize(
+            &planner_key,
+            planner_genesis.snapshot_id(),
+            proposal,
+            measured,
+        )
+        .expect("authorize planner submission");
+        let planner_bytes = planner_submission.canonical_bytes();
+        assert_eq!(
+            CampaignHash::derive("crucible.test.planner-submission-vector.v1", &planner_bytes,)
+                .to_hex(),
+            "d37f925254ebe9d6254e156dcb376f1ab18082a6b15517e7cce67be5023ea058",
+        );
+        let decoded_planner =
+            PlannerSubmission::from_canonical_bytes(&planner_bytes).expect("decode planner");
+        assert_eq!(decoded_planner, planner_submission);
+        assert!(decoded_planner.verify(&planner_key));
+        assert!(!decoded_planner.verify(&wrong_planner_key));
+        let accepted_planner = repository
+            .accept_planner_submission("planner-authority", &decoded_planner)
+            .expect("accept planner submission");
+        assert_eq!(
+            accepted_planner.prior_snapshot,
+            planner_genesis.snapshot_id()
+        );
+    }
+
+    #[test]
     fn branch_request_is_one_lazy_exact_root_delta_and_replays() {
         let (repository, lineage, policy) = fixture();
         let genesis = repository
@@ -2201,15 +2692,27 @@ mod tests {
             "retry-choice",
         );
 
+        let discovered = repository
+            .discover_choice_opportunity(
+                "lazy",
+                genesis.snapshot_id(),
+                request.parent(),
+                request.opportunity(),
+            )
+            .expect("discover request opportunity");
         let accepted = repository
-            .submit_branch_request("lazy", genesis.snapshot_id(), &request)
+            .submit_branch_request("lazy", discovered.new_snapshot, &request)
             .expect("submit request");
         assert!(!accepted.replayed);
-        assert_eq!(accepted.prior_snapshot, genesis.snapshot_id());
+        assert_eq!(accepted.prior_snapshot, discovered.new_snapshot);
         assert_eq!(accepted.request, request.id().expect("request id"));
 
         let requested = repository.head("lazy").expect("requested head");
-        let prior_roots = genesis.snapshot().roots();
+        let prior_roots = repository
+            .read_snapshot(discovered.new_snapshot.content_id())
+            .expect("discovery snapshot")
+            .snapshot
+            .roots();
         let next_roots = requested.snapshot().roots();
         assert_eq!(prior_roots.graph, next_roots.graph);
         assert_eq!(prior_roots.observations, next_roots.observations);
@@ -2251,7 +2754,7 @@ mod tests {
         );
         repository.apply_control("lazy", &resume).expect("resume");
         let replay = repository
-            .submit_branch_request("lazy", genesis.snapshot_id(), &request)
+            .submit_known_branch_request("lazy", genesis.snapshot_id(), &request)
             .expect("replay request");
         assert!(replay.replayed);
         assert_eq!(replay.prior_snapshot, accepted.prior_snapshot);
@@ -2271,7 +2774,7 @@ mod tests {
         .expect("changed request");
         let current = repository.head("lazy").expect("current head");
         assert!(matches!(
-            repository.submit_branch_request("lazy", current.snapshot_id(), &reused_command),
+            repository.submit_known_branch_request("lazy", current.snapshot_id(), &reused_command),
             Err(CampaignRepositoryError::CommandReuse)
         ));
 
@@ -2325,7 +2828,7 @@ mod tests {
                 )
                 .expect("scaled request");
                 let result = repository
-                    .submit_branch_request("branch-scale", snapshot, &request)
+                    .submit_known_branch_request("branch-scale", snapshot, &request)
                     .expect("submit scaled request");
                 if first_request.is_none() {
                     first_request = Some(request.clone());
@@ -2382,7 +2885,7 @@ mod tests {
                 .inspect_shallow(head.snapshot().roots().coordination)
                 .expect("scaled coordination root")
                 .entry_count(),
-            MUTATIONS - 1
+            MUTATIONS
         );
         assert_eq!(
             repository
@@ -2400,7 +2903,7 @@ mod tests {
         let first_request = first_request.expect("first request");
         let expected_request = first_request_result.expect("first request result");
         let replayed_request = repository
-            .submit_branch_request("branch-scale", genesis.snapshot_id(), &first_request)
+            .submit_known_branch_request("branch-scale", genesis.snapshot_id(), &first_request)
             .expect("deep request replay");
         assert!(replayed_request.replayed);
         assert_eq!(replayed_request.new_snapshot, expected_request.new_snapshot);
@@ -2428,7 +2931,7 @@ mod tests {
             "checkpoint-rebuild",
         );
         let requested = repository
-            .submit_branch_request("checkpoint-rebuild", genesis.snapshot_id(), &request)
+            .submit_known_branch_request("checkpoint-rebuild", genesis.snapshot_id(), &request)
             .expect("submit request");
 
         repository
@@ -2487,7 +2990,11 @@ mod tests {
         );
 
         assert!(matches!(
-            repository.submit_branch_request("ancestry-limit", genesis.snapshot_id(), &request),
+            repository.submit_known_branch_request(
+                "ancestry-limit",
+                genesis.snapshot_id(),
+                &request
+            ),
             Err(CampaignRepositoryError::Integrity {
                 reason: "snapshot-ancestry-limit"
             })
@@ -2507,13 +3014,6 @@ mod tests {
         let genesis = repository
             .create("closure-rebase", &lineage, &policy, &BTreeMap::new())
             .expect("create");
-        repository
-            .validated_heads
-            .lock()
-            .expect("validation checkpoints")
-            .get_mut(&genesis.content_id())
-            .expect("genesis checkpoint")
-            .closure_objects = MAX_CLOSURE_OBJECTS - MAX_SIMPLE_SUCCESSOR_GROWTH - 1;
         let request = branch_request(
             &repository,
             &lineage,
@@ -2521,9 +3021,24 @@ mod tests {
             lineage.genesis(),
             "closure-rebase",
         );
+        let discovered = repository
+            .discover_choice_opportunity(
+                "closure-rebase",
+                genesis.snapshot_id(),
+                request.parent(),
+                request.opportunity(),
+            )
+            .expect("discover closure-rebase opportunity");
+        repository
+            .validated_heads
+            .lock()
+            .expect("validation checkpoints")
+            .get_mut(&discovered.new_snapshot.content_id())
+            .expect("discovery checkpoint")
+            .closure_objects = MAX_CLOSURE_OBJECTS - MAX_SIMPLE_SUCCESSOR_GROWTH - 1;
 
         let accepted = repository
-            .submit_branch_request("closure-rebase", genesis.snapshot_id(), &request)
+            .submit_branch_request("closure-rebase", discovered.new_snapshot, &request)
             .expect("full-validation rebase");
         let checkpoints = repository
             .validated_heads
@@ -2533,7 +3048,7 @@ mod tests {
         let checkpoint = checkpoints
             .get(&accepted.new_snapshot.content_id())
             .expect("rebased child checkpoint");
-        assert_eq!(checkpoint.ancestry_depth, 2);
+        assert_eq!(checkpoint.ancestry_depth, 3);
         assert!(checkpoint.closure_objects < MAX_CLOSURE_OBJECTS);
     }
 
@@ -2584,15 +3099,23 @@ mod tests {
         )
         .expect("generated request");
 
+        let discovered = repository
+            .discover_choice_opportunity(
+                "generator-anchor",
+                genesis.snapshot_id(),
+                request.parent(),
+                request.opportunity(),
+            )
+            .expect("discover generator request opportunity");
         repository
             .validated_heads
             .lock()
             .expect("validation checkpoints")
-            .get_mut(&genesis.content_id())
-            .expect("genesis checkpoint")
+            .get_mut(&discovered.new_snapshot.content_id())
+            .expect("discovery checkpoint")
             .closure_objects = MAX_CLOSURE_OBJECTS - MAX_SIMPLE_SUCCESSOR_GROWTH - 32;
         let accepted = repository
-            .submit_branch_request("generator-anchor", genesis.snapshot_id(), &request)
+            .submit_branch_request("generator-anchor", discovered.new_snapshot, &request)
             .expect("accept anchored generator request");
         let checkpoints = repository
             .validated_heads
@@ -2622,7 +3145,7 @@ mod tests {
             "result-locator-first",
         );
         let first = repository
-            .submit_branch_request("result-locator", genesis.snapshot_id(), &first_request)
+            .submit_known_branch_request("result-locator", genesis.snapshot_id(), &first_request)
             .expect("first request");
         let second_request = branch_request(
             &repository,
@@ -2632,7 +3155,7 @@ mod tests {
             "result-locator-second",
         );
         let second = repository
-            .submit_branch_request("result-locator", first.new_snapshot, &second_request)
+            .submit_known_branch_request("result-locator", first.new_snapshot, &second_request)
             .expect("second request");
         let third_request = branch_request(
             &repository,
@@ -2642,11 +3165,11 @@ mod tests {
             "result-locator-third",
         );
         let third = repository
-            .submit_branch_request("result-locator", second.new_snapshot, &third_request)
+            .submit_known_branch_request("result-locator", second.new_snapshot, &third_request)
             .expect("third request");
 
         let parent = repository
-            .read_snapshot(second.new_snapshot.content_id())
+            .read_snapshot(third.prior_snapshot.content_id())
             .expect("parent snapshot");
         let valid = repository
             .read_snapshot(third.new_snapshot.content_id())
@@ -2654,7 +3177,7 @@ mod tests {
         let mut roots = valid.snapshot.roots();
         roots.coordination = parent.snapshot.roots().coordination;
         let forged = CampaignSnapshot::successor(
-            second.new_snapshot,
+            third.prior_snapshot,
             valid.snapshot.lineage(),
             valid.snapshot.active_policy(),
             roots,
@@ -2663,12 +3186,13 @@ mod tests {
         .expect("forged child");
         let forged_content = repository.put_snapshot(&forged).expect("put forged child");
 
-        assert!(matches!(
-            repository.validate_complete_head(forged_content),
-            Err(CampaignRepositoryError::Integrity {
-                reason: "branch-request-transition-coordination-root-mismatch"
-            })
-        ));
+        match repository.validate_complete_head(forged_content) {
+            Err(CampaignRepositoryError::Integrity { reason }) => assert_eq!(
+                reason,
+                "branch-request-transition-coordination-root-mismatch"
+            ),
+            other => panic!("unexpected forged-result-locator validation: {other:?}"),
+        }
     }
 
     #[test]
@@ -2690,7 +3214,7 @@ mod tests {
         refs.arm();
 
         assert!(matches!(
-            repository.submit_branch_request(
+            repository.submit_known_branch_request(
                 "checkpoint-conflict",
                 genesis.snapshot_id(),
                 &request,
@@ -2719,7 +3243,7 @@ mod tests {
             "finite-proposal",
         );
         let requested = repository
-            .submit_branch_request("finite-proposal", genesis.snapshot_id(), &request)
+            .submit_known_branch_request("finite-proposal", genesis.snapshot_id(), &request)
             .expect("submit request");
         let request_head = repository.head("finite-proposal").expect("request head");
 
@@ -2798,7 +3322,7 @@ mod tests {
             "admission-first",
         );
         let requested = repository
-            .submit_branch_request("admission", genesis.snapshot_id(), &request)
+            .submit_known_branch_request("admission", genesis.snapshot_id(), &request)
             .expect("request");
         let request_head = repository.head("admission").expect("request head");
         let proposal = finite_proposal(
@@ -2965,7 +3489,7 @@ mod tests {
         )
         .expect("duplicate request");
         let duplicate_requested = repository
-            .submit_branch_request("admission", second_head.snapshot_id(), &duplicate_request)
+            .submit_known_branch_request("admission", second_head.snapshot_id(), &duplicate_request)
             .expect("duplicate request transition");
         let duplicate_request_head = repository
             .head("admission")
@@ -3055,7 +3579,7 @@ mod tests {
         )
         .expect("limited request");
         let requested = repository
-            .submit_branch_request("admission-budget", genesis.snapshot_id(), &request)
+            .submit_known_branch_request("admission-budget", genesis.snapshot_id(), &request)
             .expect("request");
         let request_head = repository.head("admission-budget").expect("request head");
         let first = finite_proposal(
@@ -3546,7 +4070,7 @@ mod tests {
             "observation-order-second",
         );
         let second_requested = repository
-            .submit_branch_request(
+            .submit_known_branch_request(
                 "observation-order",
                 first_admitted.new_snapshot,
                 &second_request,
@@ -3644,7 +4168,7 @@ mod tests {
             "finite-expansion",
         );
         let first_requested = repository
-            .submit_branch_request("finite-expansion", genesis.snapshot_id(), &first_request)
+            .submit_known_branch_request("finite-expansion", genesis.snapshot_id(), &first_request)
             .expect("first request");
         let second_request = BranchRequest::new(
             first_request.branch_point(),
@@ -3660,7 +4184,7 @@ mod tests {
         )
         .expect("second request");
         let second_requested = repository
-            .submit_branch_request(
+            .submit_known_branch_request(
                 "finite-expansion",
                 first_requested.new_snapshot,
                 &second_request,
@@ -3949,7 +4473,7 @@ mod tests {
         ))
         .expect("stale id");
         assert!(matches!(
-            repository.submit_branch_request("scope", stale, &request),
+            repository.submit_known_branch_request("scope", stale, &request),
             Err(CampaignRepositoryError::Stale { .. })
         ));
         assert_eq!(
@@ -3976,9 +4500,14 @@ mod tests {
             "outside-request",
         );
         assert!(matches!(
-            repository.submit_branch_request("scope", genesis.snapshot_id(), &outside_request),
+            repository.discover_choice_opportunity(
+                "scope",
+                genesis.snapshot_id(),
+                outside_request.parent(),
+                outside_request.opportunity(),
+            ),
             Err(CampaignRepositoryError::Integrity {
-                reason: "branch-request-parent-is-not-in-campaign-graph"
+                reason: "choice-discovery-parent-is-not-in-campaign-graph"
             })
         ));
         assert_eq!(
@@ -4025,7 +4554,11 @@ mod tests {
         )
         .expect("incompatible request");
         assert!(matches!(
-            repository.submit_branch_request("generators", genesis.snapshot_id(), &incompatible,),
+            repository.submit_known_branch_request(
+                "generators",
+                genesis.snapshot_id(),
+                &incompatible,
+            ),
             Err(CampaignRepositoryError::Integrity {
                 reason: "candidate-generator-domain-family-mismatch"
             })
@@ -4055,7 +4588,7 @@ mod tests {
         )
         .expect("mixture request");
         assert!(matches!(
-            repository.submit_branch_request(
+            repository.submit_known_branch_request(
                 "generators",
                 genesis.snapshot_id(),
                 &incompatible_mixture,
@@ -4104,7 +4637,7 @@ mod tests {
         )
         .expect("valid generated request");
         let generated = repository
-            .submit_branch_request("generators", genesis.snapshot_id(), &valid)
+            .submit_known_branch_request("generators", genesis.snapshot_id(), &valid)
             .expect("accept compatible generator");
         assert!(matches!(
             repository.project_finite_expansion(
@@ -4132,6 +4665,17 @@ mod tests {
             lineage.genesis(),
             "forged-request",
         );
+        let discovered = repository
+            .discover_choice_opportunity(
+                "forged-request",
+                genesis.snapshot_id(),
+                request.parent(),
+                request.opportunity(),
+            )
+            .expect("discover forged-request opportunity");
+        let parent = repository
+            .read_snapshot(discovered.new_snapshot.content_id())
+            .expect("discovery parent");
         let request_content = repository
             .put_branch_request(&request)
             .expect("put request");
@@ -4139,7 +4683,7 @@ mod tests {
         let transition_content = repository
             .put_fact(&CampaignFact::BranchRequestIssued(request_id))
             .expect("put transition");
-        let mut roots = genesis.snapshot().roots();
+        let mut roots = parent.snapshot.roots();
         roots.exploration = repository
             .merkle
             .insert(
@@ -4159,9 +4703,9 @@ mod tests {
             .expect("forged accounting root")
             .content_id();
         let forged = CampaignSnapshot::successor(
-            genesis.snapshot_id(),
-            genesis.snapshot().lineage(),
-            genesis.snapshot().active_policy(),
+            discovered.new_snapshot,
+            parent.snapshot.lineage(),
+            parent.snapshot.active_policy(),
             roots,
             CampaignFactId::from_content_id(transition_content).expect("transition id"),
         )
@@ -4192,7 +4736,7 @@ mod tests {
             "shared-command",
         );
         let accepted = repository
-            .submit_branch_request("duplicate-command", genesis.snapshot_id(), &request)
+            .submit_known_branch_request("duplicate-command", genesis.snapshot_id(), &request)
             .expect("accept request");
         let head = repository.head("duplicate-command").expect("head");
         let BranchRequestCause::Operator(command_id) = request.cause() else {
@@ -4410,7 +4954,7 @@ mod tests {
         .expect("parent id");
         let missing_transition = crate::CampaignFactId::from_content_id(ContentId::for_bytes(
             ObjectKind::CampaignFact,
-            1,
+            2,
             b"missing-transition",
         ))
         .expect("transition id");

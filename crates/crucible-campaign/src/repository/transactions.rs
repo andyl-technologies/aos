@@ -13,7 +13,33 @@ impl CampaignRepository {
             merkle,
             mutation_lock: Mutex::new(()),
             validated_heads: Mutex::new(BTreeMap::new()),
+            planner_authority: None,
+            debugger_authority: None,
         }
+    }
+
+    /// Builds a repository with distinct trusted planner and debugger authorities.
+    ///
+    /// Direct and RPC adapters authenticate the same canonical submission
+    /// messages with operational keys. The keys never enter campaign state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an integrity error if both roles are configured with identical
+    /// key material.
+    pub fn with_component_authorities(
+        blobs: Arc<dyn ImmutableBlobBackend>,
+        refs: Arc<dyn MutableRefBackend>,
+        planner_authority: PlannerAuthorityKey,
+        debugger_authority: DebuggerAuthorityKey,
+    ) -> Result<Self, CampaignRepositoryError> {
+        if planner_authority.has_same_material(&debugger_authority) {
+            return Err(integrity("component-authority-keys-must-be-distinct"));
+        }
+        let mut repository = Self::new(blobs, refs);
+        repository.planner_authority = Some(planner_authority);
+        repository.debugger_authority = Some(debugger_authority);
+        Ok(repository)
     }
 
     /// Creates a campaign with a canonical genesis snapshot.
@@ -140,6 +166,154 @@ impl CampaignRepository {
             .map(|state| state.visible)
     }
 
+    /// Makes an operator-supplied choice authoritative campaign knowledge.
+    ///
+    /// The direct adapter itself is the ambient authenticated operator
+    /// boundary. RPC implementations must authenticate the principal before
+    /// calling it and must use the same canonical IDs and owner transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the underlying authoritative discovery
+    /// transaction rejects the opportunity or snapshot precondition.
+    pub fn discover_operator_choice_opportunity(
+        &self,
+        name: &str,
+        expected_snapshot: CampaignSnapshotId,
+        parent: ConfigurationArtifactId,
+        opportunity: ChoiceOpportunityId,
+    ) -> Result<ChoiceDiscoveryResult, CampaignRepositoryError> {
+        self.discover_choice_opportunity(name, expected_snapshot, parent, opportunity)
+    }
+
+    /// Makes one validated choice opportunity authoritative campaign knowledge.
+    ///
+    /// Executors may publish immutable opportunity bodies, but only this
+    /// coordinator transition or a canonical observation adds graph membership.
+    /// Exact replay precedes snapshot staleness. If another owner already made
+    /// the opportunity authoritative, the current snapshot is returned without
+    /// mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing or invalid opportunity closure, scenario
+    /// mismatch, stale precondition, publication failure, or final ref conflict.
+    pub(crate) fn discover_choice_opportunity(
+        &self,
+        name: &str,
+        expected_snapshot: CampaignSnapshotId,
+        parent: ConfigurationArtifactId,
+        opportunity: ChoiceOpportunityId,
+    ) -> Result<ChoiceDiscoveryResult, CampaignRepositoryError> {
+        let _guard = self.lock_mutation()?;
+        let campaign_ref = campaign_ref(name)?;
+        let current_content = self
+            .refs
+            .read_ref(&campaign_ref)?
+            .ok_or(CampaignRepositoryError::NotFound)?;
+        let current = self.read_snapshot(current_content)?;
+        self.validate_complete_head(current_content)?;
+        let current_id = CampaignSnapshotId::from_content_id(current_content)?;
+        let choice = self.read_opportunity(opportunity.content_id())?;
+        let parent_artifact = self.read_configuration_artifact(parent.content_id())?;
+        let lineage = self.read_lineage(required_child(&current.envelope, "lineage")?)?;
+        if choice.scenario() != lineage.scenario()
+            || parent_artifact.scenario() != lineage.scenario()
+        {
+            return Err(integrity("choice-discovery-scenario-mismatch"));
+        }
+        if self.merkle.get(
+            current.snapshot.roots().graph,
+            map_key_hash(
+                "graph.configuration",
+                parent_artifact.configuration().as_hash(),
+            ),
+        )? != Some(parent.content_id())
+        {
+            return Err(integrity(
+                "choice-discovery-parent-is-not-in-campaign-graph",
+            ));
+        }
+        let branch_point = choice.branch_point_id(parent_artifact.configuration());
+        let choice_key = branch_point_opportunity_key(branch_point, opportunity);
+        if let Some(existing) = self
+            .merkle
+            .get(current.snapshot.roots().graph, choice_key)?
+        {
+            if existing != opportunity.content_id() {
+                return Err(integrity("choice-discovery-graph-key-conflict"));
+            }
+            return Ok(self
+                .find_choice_discovery_result(current_content, parent, opportunity)?
+                .unwrap_or(ChoiceDiscoveryResult {
+                    prior_snapshot: current_id,
+                    new_snapshot: current_id,
+                    parent,
+                    branch_point,
+                    opportunity,
+                    replayed: true,
+                }));
+        }
+        if expected_snapshot != current_id {
+            return Err(CampaignRepositoryError::Stale {
+                expected: expected_snapshot,
+                current: current_id,
+            });
+        }
+
+        let graph = self.merkle.insert(
+            current.snapshot.roots().graph,
+            authoritative_choice_key(opportunity),
+            opportunity.content_id(),
+        )?;
+        let graph = self
+            .merkle
+            .insert(graph.content_id(), choice_key, opportunity.content_id())?;
+        let fact = CampaignFact::ChoiceOpportunityDiscovered {
+            parent,
+            branch_point,
+            opportunity,
+        };
+        let transition_content = self.put_fact(&fact)?;
+        let mut roots = current.snapshot.roots();
+        roots.graph = graph.content_id();
+        roots.coordination = self.coordination_with_parent_result(current_content, &current)?;
+        let next = CampaignSnapshot::successor(
+            current_id,
+            current.snapshot.lineage(),
+            current.snapshot.active_policy(),
+            roots,
+            crate::CampaignFactId::from_content_id(transition_content)?,
+        )?;
+        let next_content = self.put_snapshot(&next)?;
+        let checkpoint = self.prepare_local_successor_checkpoint(
+            current_content,
+            next_content,
+            None,
+            MAX_SIMPLE_SUCCESSOR_GROWTH,
+        )?;
+
+        match self
+            .refs
+            .compare_exchange(&campaign_ref, Some(current_content), next_content)?
+        {
+            RefCasOutcome::Advanced { .. } => {
+                self.promote_local_successor(current_content, next_content, checkpoint);
+                Ok(ChoiceDiscoveryResult {
+                    prior_snapshot: current_id,
+                    new_snapshot: CampaignSnapshotId::from_content_id(next_content)?,
+                    parent,
+                    branch_point,
+                    opportunity,
+                    replayed: false,
+                })
+            }
+            RefCasOutcome::Conflict { current, .. } => {
+                Err(CampaignRepositoryError::RefConflict { current })
+            }
+        }
+    }
+
     /// Submits one additive, lazily consumed branch request.
     ///
     /// Acceptance stores the request in the exploration root and records one
@@ -152,7 +326,7 @@ impl CampaignRepository {
     /// Returns an error for an invalid request closure, a parent configuration
     /// outside the campaign graph, a stale precondition, publication failure,
     /// or final authoritative-ref conflict.
-    pub fn submit_branch_request(
+    pub(crate) fn submit_branch_request(
         &self,
         name: &str,
         expected_snapshot: CampaignSnapshotId,
@@ -255,6 +429,47 @@ impl CampaignRepository {
                 Err(CampaignRepositoryError::RefConflict { current })
             }
         }
+    }
+
+    /// Submits one operator-authorized additive branch request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the request is not operator-caused or when the
+    /// ordinary authoritative branch transaction rejects it.
+    pub fn submit_operator_branch_request(
+        &self,
+        name: &str,
+        expected_snapshot: CampaignSnapshotId,
+        request: &BranchRequest,
+    ) -> Result<BranchRequestResult, CampaignRepositoryError> {
+        if !matches!(request.cause(), BranchRequestCause::Operator(_)) {
+            return Err(integrity(
+                "branch-request-cause-requires-authority-specific-adapter",
+            ));
+        }
+        self.submit_branch_request(name, expected_snapshot, request)
+    }
+
+    /// Submits one authenticated debugger-caused semantic branch request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when component authority is not configured, the
+    /// authenticator or session binding is invalid, or branch acceptance fails.
+    pub fn submit_debugger_branch_request(
+        &self,
+        name: &str,
+        submission: &DebuggerSubmission,
+    ) -> Result<BranchRequestResult, CampaignRepositoryError> {
+        let authority = self
+            .debugger_authority
+            .as_ref()
+            .ok_or_else(|| integrity("debugger-authority-is-not-configured"))?;
+        if !submission.verify(authority) {
+            return Err(integrity("debugger-submission-authentication-failed"));
+        }
+        self.submit_branch_request(name, submission.expected_snapshot(), submission.request())
     }
 
     /// Issues one finite-source proposal under the current planning view.
@@ -748,7 +963,7 @@ impl CampaignRepository {
     /// Returns an error for stale or mismatched invocation input, an invalid
     /// scan cursor, output or resource-budget overflow, conflicting replay,
     /// issuing output, invalid state continuity, or failed ref advancement.
-    pub fn accept_planner_step(
+    pub(crate) fn accept_planner_step(
         &self,
         name: &str,
         expected_snapshot: CampaignSnapshotId,
@@ -995,6 +1210,36 @@ impl CampaignRepository {
                 Err(CampaignRepositoryError::RefConflict { current })
             }
         }
+    }
+
+    /// Accepts one authenticated pure-planner component submission.
+    ///
+    /// Authentication proves which supervised component produced the exact
+    /// bytes; the coordinator still independently validates every semantic
+    /// output and computes authoritative accounting.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when component authority is not configured, the
+    /// authenticator is invalid, or ordinary planner acceptance fails.
+    pub fn accept_planner_submission(
+        &self,
+        name: &str,
+        submission: &PlannerSubmission,
+    ) -> Result<PlannerStepResult, CampaignRepositoryError> {
+        let authority = self
+            .planner_authority
+            .as_ref()
+            .ok_or_else(|| integrity("planner-authority-is-not-configured"))?;
+        if !submission.verify(authority) {
+            return Err(integrity("planner-submission-authentication-failed"));
+        }
+        self.accept_planner_step(
+            name,
+            submission.expected_snapshot(),
+            submission.proposal(),
+            submission.measured_usage(),
+        )
     }
 
     fn validate_planner_usage(

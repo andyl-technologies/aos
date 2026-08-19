@@ -2,14 +2,15 @@
 
 use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::{
-    AttemptAdmissionId, AttemptId, BranchRequestId, CampaignCodecError, CampaignCommandId,
-    CampaignFactId, CampaignHash, CampaignPolicyId, CampaignSnapshotId, ChoiceOpportunityId,
-    ConfigurationId, FindingId, ObservationId, PlannerStepId, ProposalId,
+    AttemptAdmissionId, AttemptId, BranchPointId, BranchRequestId, CampaignCodecError,
+    CampaignCommandId, CampaignFactId, CampaignHash, CampaignPolicyId, CampaignSnapshotId,
+    ChoiceOpportunityId, ConfigurationArtifactId, ConfigurationId, FindingId, ObservationId,
+    PlannerStepId, ProposalId,
 };
 
 use super::AdmissionOrdinal;
 
-const CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 1;
+const CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 2;
 
 /// Durable user intent projected from campaign accounting facts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -433,8 +434,15 @@ impl Canonical for NonModeledAttemptDisposition {
 /// Immutable causal fact from which campaign projections are rebuilt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CampaignFact {
-    /// A stable runtime choice occurrence was discovered.
-    ChoiceOpportunityDiscovered(ChoiceOpportunityId),
+    /// A stable runtime choice occurrence was discovered at one exact parent.
+    ChoiceOpportunityDiscovered {
+        /// Exact parent artifact at which the opportunity occurs.
+        parent: ConfigurationArtifactId,
+        /// Semantic branch point derived from the parent and opportunity.
+        branch_point: BranchPointId,
+        /// Exact presentation-bearing opportunity.
+        opportunity: ChoiceOpportunityId,
+    },
     /// A bounded finite or generated branch request was issued.
     BranchRequestIssued(BranchRequestId),
     /// A coordinator-validated planner step advanced planning state.
@@ -518,9 +526,15 @@ impl CampaignFact {
 impl Canonical for CampaignFact {
     fn encode(&self, encoder: &mut Encoder) {
         match self {
-            Self::ChoiceOpportunityDiscovered(id) => {
+            Self::ChoiceOpportunityDiscovered {
+                parent,
+                branch_point,
+                opportunity,
+            } => {
                 encoder.u8(0);
-                id.encode(encoder);
+                parent.encode(encoder);
+                branch_point.encode(encoder);
+                opportunity.encode(encoder);
             }
             Self::BranchRequestIssued(id) => {
                 encoder.u8(1);
@@ -577,7 +591,11 @@ impl Canonical for CampaignFact {
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         match decoder.u8()? {
-            0 => ChoiceOpportunityId::decode(decoder).map(Self::ChoiceOpportunityDiscovered),
+            0 => Ok(Self::ChoiceOpportunityDiscovered {
+                parent: ConfigurationArtifactId::decode(decoder)?,
+                branch_point: BranchPointId::decode(decoder)?,
+                opportunity: ChoiceOpportunityId::decode(decoder)?,
+            }),
             1 => BranchRequestId::decode(decoder).map(Self::BranchRequestIssued),
             2 => PlannerStepId::decode(decoder).map(Self::PlannerAdvanced),
             3 => ProposalId::decode(decoder).map(Self::ProposalIssued),

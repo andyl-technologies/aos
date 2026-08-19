@@ -385,11 +385,11 @@ but promotes it only after the authoritative ref CAS succeeds. Canonical depth
 and closure limits are enforced on both full and incremental paths. Relative to
 exact parent-authenticated roots and owner-index members, every incremental
 child authenticates and charges the complete closure newly reachable relative
-to those parent anchors, including pre-published generator, policy, artifact, or other graphs
-that were not reachable from the parent, plus a conservative upper bound for
-newly constructed owner-index nodes. The cache retains only a bounded current
-frontier; eviction is always semantically safe and any lookup that races with
-eviction revalidates the immutable head.
+to those parent anchors, including pre-published generator, policy, artifact,
+or other graphs that were not reachable from the parent, plus a conservative
+upper bound for newly constructed owner-index nodes. The cache retains only a
+bounded current frontier; eviction is always semantically safe and any lookup
+that races with eviction revalidates the immutable head.
 
 Branch-request and mutation-command membership are authenticated Merkle
 indexes. In addition, each successor's coordination root indexes its parent's
@@ -434,6 +434,23 @@ Coverage is stored as a grow-only set of immutable projection records rather
 than one mutable union value. The semantic union remains deterministic and
 rebuildable from those records, while each projection preserves its exact
 derivation evidence and content identity.
+
+### D-34: Component identity and semantic authority are separate
+
+The coordinator accepts planner and debugger output through versioned canonical
+messages authenticated with separate operational keys. The planner credential
+cannot authorize a debugger request and the debugger credential cannot
+authorize a planner result. Keys never enter content-addressed state, exports,
+or logs. Direct and loopback-RPC compositions decode the same messages and call
+the same adapter; raw owner mutations remain coordinator-internal.
+
+Authentication identifies the supervised producer of exact bytes, but it does
+not make those bytes campaign truth. The coordinator still recomputes planner
+pages and accounting, validates every output closure, requires debugger session
+and request-cause agreement, and applies exact snapshot owners. Likewise, a
+published choice body is not branchable merely because it exists. It becomes
+authoritative only through an exact discovery fact or canonical observation,
+and branch acceptance requires that graph membership.
 
 ## Deliberately rejected representations
 

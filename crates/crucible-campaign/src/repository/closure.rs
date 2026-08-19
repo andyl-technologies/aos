@@ -184,6 +184,19 @@ impl CampaignRepository {
                     let transition_fact = self.read_fact(transition.content_id())?;
                     let parent_snapshot = self.read_snapshot(parent.content_id())?;
                     match transition_fact {
+                        CampaignFact::ChoiceOpportunityDiscovered {
+                            parent,
+                            branch_point,
+                            opportunity,
+                        } => {
+                            self.validate_choice_discovery_successor(
+                                &parent_snapshot,
+                                &loaded,
+                                parent,
+                                branch_point,
+                                opportunity,
+                            )?;
+                        }
                         CampaignFact::ControlRequested(request) => {
                             if !seen_commands.insert(request.command) {
                                 return Err(integrity("snapshot-ancestry-reused-mutation-command"));
@@ -453,6 +466,78 @@ impl CampaignRepository {
             return Err(integrity(
                 "branch-request-transition-coordination-root-mismatch",
             ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_choice_discovery_successor(
+        &self,
+        parent: &LoadedSnapshot,
+        child: &LoadedSnapshot,
+        parent_artifact_id: ConfigurationArtifactId,
+        branch_point: crate::BranchPointId,
+        opportunity_id: ChoiceOpportunityId,
+    ) -> Result<(), CampaignRepositoryError> {
+        if child.snapshot.lineage() != parent.snapshot.lineage()
+            || child.snapshot.active_policy() != parent.snapshot.active_policy()
+        {
+            return Err(integrity("choice-discovery-changed-campaign-basis"));
+        }
+        let prior = parent.snapshot.roots();
+        let next = child.snapshot.roots();
+        if prior.exploration != next.exploration
+            || prior.observations != next.observations
+            || prior.corpus != next.corpus
+            || prior.coverage != next.coverage
+            || prior.findings != next.findings
+            || prior.pins != next.pins
+            || prior.accounting != next.accounting
+        {
+            return Err(integrity("choice-discovery-changed-unrelated-root"));
+        }
+
+        let opportunity = self.read_opportunity(opportunity_id.content_id())?;
+        let parent_artifact = self.read_configuration_artifact(parent_artifact_id.content_id())?;
+        let lineage = self.read_lineage(required_child(&parent.envelope, "lineage")?)?;
+        if opportunity.scenario() != lineage.scenario()
+            || parent_artifact.scenario() != lineage.scenario()
+        {
+            return Err(integrity("choice-discovery-scenario-mismatch"));
+        }
+        if self.merkle.get(
+            prior.graph,
+            map_key_hash(
+                "graph.configuration",
+                parent_artifact.configuration().as_hash(),
+            ),
+        )? != Some(parent_artifact_id.content_id())
+        {
+            return Err(integrity(
+                "choice-discovery-parent-is-not-in-campaign-graph",
+            ));
+        }
+        if opportunity.branch_point_id(parent_artifact.configuration()) != branch_point {
+            return Err(integrity("choice-discovery-branch-point-mismatch"));
+        }
+        let scoped_key = branch_point_opportunity_key(branch_point, opportunity_id);
+        if self.merkle.get(prior.graph, scoped_key)?.is_some() {
+            return Err(integrity("choice-discovery-reused-opportunity"));
+        }
+        if !self.merkle.equals_after_upserts(
+            prior.graph,
+            next.graph,
+            &BTreeMap::from([
+                (
+                    authoritative_choice_key(opportunity_id),
+                    opportunity_id.content_id(),
+                ),
+                (scoped_key, opportunity_id.content_id()),
+            ]),
+        )? {
+            return Err(integrity("choice-discovery-graph-root-mismatch"));
+        }
+        if !self.coordination_matches_parent_result(parent, next.coordination)? {
+            return Err(integrity("choice-discovery-coordination-root-mismatch"));
         }
         Ok(())
     }
@@ -847,7 +932,7 @@ impl CampaignRepository {
                     anchors.insert(attempt);
                 }
             }
-            CampaignFact::ChoiceOpportunityDiscovered(_)
+            CampaignFact::ChoiceOpportunityDiscovered { .. }
             | CampaignFact::ControlRequested(_)
             | CampaignFact::FindingPublished(_)
             | CampaignFact::AttemptClosed { .. }

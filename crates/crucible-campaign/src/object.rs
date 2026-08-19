@@ -164,6 +164,7 @@ impl CampaignRecordKind {
     pub const fn schema_version(self) -> u32 {
         match self {
             Self::Snapshot => 2,
+            Self::Fact => 2,
             Self::PlannerInvocation => 2,
             Self::PlannerStep => 3,
             Self::ExpansionState => 2,
@@ -605,9 +606,14 @@ fn snapshot_children(
 
 fn fact_children(fact: &CampaignFact) -> Result<BTreeSet<ContentChild>, CampaignCodecError> {
     let children = match fact {
-        CampaignFact::ChoiceOpportunityDiscovered(id) => {
-            vec![("choice-opportunity", id.content_id())]
-        }
+        CampaignFact::ChoiceOpportunityDiscovered {
+            parent,
+            opportunity,
+            ..
+        } => vec![
+            ("parent-configuration", parent.content_id()),
+            ("choice-opportunity", opportunity.content_id()),
+        ],
         CampaignFact::BranchRequestIssued(id) => vec![("branch-request", id.content_id())],
         CampaignFact::PlannerAdvanced(id) => vec![("planner-step", id.content_id())],
         CampaignFact::ProposalIssued(id) => vec![("proposal", id.content_id())],
