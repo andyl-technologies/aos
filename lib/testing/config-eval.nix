@@ -178,6 +178,7 @@ in
           export APM_SYSTEM_CONFIG_DIR="$config_root"
           export AOS_NIX_EVAL_CACHE_ROOT="$cache_root"
           export AOS_NIX_EVAL_STORE="$eval_store"
+          export NIX_REMOTE="$eval_store"
 
           ${pkgs.aos}/bin/apm __eval \
             --host-nix ${hostFixture} \
