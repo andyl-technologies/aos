@@ -594,6 +594,20 @@
       enforces = "DET-1,QFP-REG-1,QFP-REG-2,FAULT-EVIDENCE";
       capability = "exact RR ownership gates canonical register observation; every realized CPU manifest is validated; rejected register commands preserve every canonical GDB register byte and all six mutation side-effect counters";
     }
+    {
+      file = "0086-crucible-genesis-observation-boundary.patch";
+      catalogName = "crucible-genesis-observation-boundary";
+      class = "D";
+      enforces = "DET-1,QFP-REG-1,QFP-STATE-2";
+      capability = "the BQL-held prelaunch genesis boundary admits complete all-vCPU architectural observation only at exact raw icount zero";
+    }
+    {
+      file = "0087-crucible-deterministic-rcu-quiescence.patch";
+      catalogName = "crucible-deterministic-rcu-quiescence";
+      class = "D";
+      enforces = "DET-1,DET-29,QEMU-43";
+      capability = "sim mode reaches RCU quiescence at its bounded deterministic RR execution boundaries without host-timed translation-block exits";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

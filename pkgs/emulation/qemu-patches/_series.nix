@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "90cc516af978dc7a5320ceeb25ac34be112c45420401fa36e54f5b6ff55e308d";
+  patchBranchBundleSha256 = "44aafd380ee0eaed12a7baf3f9fb98d87bb0d1f60c078ed1e867aa7d3f5ec595";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "593687ed5ff9c4a2f07acc0d987295b8c0542c71";
+  patchBranchHeadCommit = "eae515e268ec284f1773e72d926860d1178962c1";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -795,6 +795,16 @@ let
       class = "D";
       enforces = "DET-1,QFP-REG-1,QFP-STATE-2";
       capability = "the BQL-held prelaunch genesis boundary admits complete all-vCPU architectural observation only at exact raw icount zero";
+    }
+    {
+      file = "0087-crucible-deterministic-rcu-quiescence.patch";
+      branchSubject = "crucible: defer host RCU kicks in sim";
+      branchCommit = "eae515e268ec284f1773e72d926860d1178962c1";
+      branchTree = "dc13f6fb07ecd2d6ad748b50097c8e21fad3caa6";
+      catalogName = "crucible-deterministic-rcu-quiescence";
+      class = "D";
+      enforces = "DET-1,DET-29,QEMU-43";
+      capability = "sim mode reaches RCU quiescence at its bounded deterministic RR execution boundaries without host-timed translation-block exits";
     }
   ];
   catalogOnlyCapabilities = [

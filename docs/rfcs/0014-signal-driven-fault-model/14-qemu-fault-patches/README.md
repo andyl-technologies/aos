@@ -1,6 +1,6 @@
 # 14 — QEMU fault-mutation patch series
 
-The complete node adapter and its exact-checkpoint handoff require thirty-seven new single-purpose patches after the
+The complete node adapter and its exact-checkpoint handoff require thirty-eight new single-purpose patches after the
 currently carried `0046-crucible-translation-prefetch-helper.patch`. Each patch
 has its own specification in this directory and remains part of the one atomic
 RFC-0014 implementation PR.
@@ -53,6 +53,7 @@ and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-pa
 | [`0084-crucible-exact-restore-network-announcement`](35-exact-restore-network-announcement.md) | Suppress migration-only virtio-net announcements during exact restore | Determinism-critical network continuation |
 | [`0085-crucible-register-rejection-atomicity`](36-register-rejection-atomicity.md) | Prove exact RR ownership and whole-machine architectural atomicity for rejected register commands | Determinism-critical fault rejection |
 | [`0086-crucible-genesis-observation-boundary`](37-genesis-observation-boundary.md) | Admit all-vCPU definition sampling under the BQL only at the exact prelaunch genesis boundary | Determinism-critical observation |
+| [`0087-crucible-deterministic-rcu-quiescence`](38-deterministic-rcu-quiescence.md) | Prevent host-timed forced RCU kicks from changing guest interrupt visibility in sim mode | Determinism-critical scheduler execution |
 
 The numbers are reserved by this RFC. If the existing series grows before
 implementation, the PR may renumber the files while preserving this exact order
@@ -100,7 +101,11 @@ any mutation-derived TLB, TB, flags, interrupt, timer, or control-flow effect.
 Patch `0086` then extends that same stopped-state observation authority to the
 unique prelaunch genesis boundary at raw icount zero. This lets the independent
 definition process sample every realized vCPU after initialization without
-weakening live RR ownership or relying on plugin-exit behavior.
+weakening live RR ownership or relying on plugin-exit behavior. Patch `0087`
+then removes the remaining host-timed translation-block exit from sim mode:
+forced RCU progress waits for the next bounded deterministic RR execution
+boundary instead of asynchronously changing where a pending interrupt becomes
+guest-visible.
 
 ## 14.2 Process and license boundary
 

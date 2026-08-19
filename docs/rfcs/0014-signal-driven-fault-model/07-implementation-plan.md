@@ -395,6 +395,12 @@ produce live patched-QEMU architectural or device evidence.
   [`crucible-genesis-observation-boundary`](14-qemu-fault-patches/37-genesis-observation-boundary.md):
   admit the BQL-held prelaunch definition callback only at raw icount zero,
   capture every realized vCPU before QMP quit, and remove plugin-exit sampling.
+- [x] **T-QEMU-0087** Implement
+  [`crucible-deterministic-rcu-quiescence`](14-qemu-fault-patches/38-deterministic-rcu-quiescence.md):
+  prevent host-originated forced RCU kicks from selecting translation-block and
+  interrupt-visibility boundaries in sim mode, while bounding natural
+  quiescence by the pinned deterministic RR quantum and preserving the stock
+  path outside sim mode.
 - [x] **T-QEMU-0060** Implement
   [`crucible-block-typed-errors`](14-qemu-fault-patches/14-block-typed-errors.md):
   the closed block result ABI, exact Linux errno translation, malformed-result
