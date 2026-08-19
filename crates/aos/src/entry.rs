@@ -70,6 +70,14 @@ pub(crate) async fn main() {
 /// they work even when `nix` is absent or the working directory is not a repo
 /// root.
 async fn run(cli: &Cli) -> Result<()> {
+    match cli.color {
+        crate::cli::ColorChoice::Auto if std::env::var_os("NO_COLOR").is_some() => {
+            console::set_colors_enabled_stderr(false);
+        }
+        crate::cli::ColorChoice::Auto => {}
+        crate::cli::ColorChoice::Always => console::set_colors_enabled_stderr(true),
+        crate::cli::ColorChoice::Never => console::set_colors_enabled_stderr(false),
+    }
     let progress_mode = match cli.progress {
         crate::cli::ProgressChoice::Auto => ProgressMode::Auto,
         crate::cli::ProgressChoice::Tty => ProgressMode::Tty,
