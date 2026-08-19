@@ -345,3 +345,41 @@ delta and no unrelated root or policy change.
 - **[LAZY-21]** Branch-request acceptance MUST be an exact one-key exploration
   delta. Candidate enumeration and attempt admission are separate later
   transitions.
+
+## 04.12 Atomic proposal issuance
+
+`IssueProposal(name, expected_snapshot, proposal)` is the sole-writer transition
+that advances one request continuation without admitting execution. It first
+authenticates the complete head, returns an exact prior transition before stale
+precondition rejection, and proves that the proposal names an authoritative
+request, the active policy, and the current complete planning view. Finite
+proposal ordinal `n` names exactly value `n` in canonical source order and
+requires ordinal `n - 1` to exist when `n > 1`. Generated proposals require the
+selected deterministic generator owner to reproduce the same value and remain
+fail-closed until that owner is implemented.
+
+The transition publishes the immutable `Proposal` and `ProposalIssued` fact,
+then makes an exact three-key delta to the exploration root:
+
+```text
+exploration.proposal[ProposalId] = Proposal
+exploration.proposal-request-ordinal[(BranchRequestId, ordinal)] = Proposal
+exploration.proposal-request-value[(BranchRequestId, ChoiceValue)] = Proposal
+```
+
+All three keys use distinct versioned domain separation. The ordinal index
+proves gapless request-local progress; the value index rejects repeated output
+from one source; and the identity index provides canonical typed membership. A
+proposal may remain pending between this transition and a later admission
+transition. Its existence consumes proposal budget but does not consume attempt
+budget, create a graph child, or count as an admitted continuation value.
+
+- **[LAZY-22]** Proposal replay MUST precede stale-snapshot rejection and return
+  the originally committed prior/new snapshot pair.
+- **[LAZY-23]** Proposal issuance MUST be an exact three-key exploration delta
+  and MUST preserve every other root, lineage, and active policy. Imported
+  successors MUST reproduce the same delta from their parent.
+- **[LAZY-24]** Finite proposal ordinals MUST be gapless and bind to canonical
+  source-value order. Generated proposal issuance MUST fail closed unless the
+  named deterministic generator owner reproduces the value from authenticated
+  campaign facts.

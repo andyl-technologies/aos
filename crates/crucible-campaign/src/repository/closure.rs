@@ -78,6 +78,9 @@ impl CampaignRepository {
                                 request,
                             )?;
                         }
+                        CampaignFact::ProposalIssued(proposal) => {
+                            self.validate_proposal_successor(&parent_snapshot, &loaded, proposal)?;
+                        }
                         _ => {
                             return Err(integrity("snapshot-transition-type-is-not-implemented"));
                         }
@@ -248,6 +251,73 @@ impl CampaignRepository {
             return Err(integrity(
                 "branch-request-transition-exploration-root-mismatch",
             ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_proposal_successor(
+        &self,
+        parent: &LoadedSnapshot,
+        child: &LoadedSnapshot,
+        proposal: ProposalId,
+    ) -> Result<(), CampaignRepositoryError> {
+        if child.snapshot.lineage() != parent.snapshot.lineage()
+            || child.snapshot.active_policy() != parent.snapshot.active_policy()
+        {
+            return Err(integrity("proposal-transition-changed-campaign-basis"));
+        }
+
+        let prior_roots = parent.snapshot.roots();
+        let next_roots = child.snapshot.roots();
+        if prior_roots.graph != next_roots.graph
+            || prior_roots.observations != next_roots.observations
+            || prior_roots.corpus != next_roots.corpus
+            || prior_roots.coverage != next_roots.coverage
+            || prior_roots.findings != next_roots.findings
+            || prior_roots.pins != next_roots.pins
+            || prior_roots.accounting != next_roots.accounting
+        {
+            return Err(integrity("proposal-transition-changed-unrelated-root"));
+        }
+
+        let proposal_content = proposal.content_id();
+        let proposal_record = self.read_proposal(proposal_content)?;
+        self.validate_proposal_campaign_scope(parent, &proposal_record)?;
+        let proposal_key = map_key_content("exploration.proposal", proposal_content);
+        let ordinal_key =
+            proposal_ordinal_key(proposal_record.request(), proposal_record.ordinal());
+        let value_key = proposal_value_key(proposal_record.request(), proposal_record.value());
+        for key in [proposal_key, ordinal_key, value_key] {
+            if self.merkle.get(prior_roots.exploration, key)?.is_some() {
+                return Err(integrity("proposal-transition-reused-proposal-slot"));
+            }
+        }
+        if proposal_record.ordinal() > 1 {
+            let prior_key =
+                proposal_ordinal_key(proposal_record.request(), proposal_record.ordinal() - 1);
+            let prior_content = self
+                .merkle
+                .get(prior_roots.exploration, prior_key)?
+                .ok_or_else(|| integrity("proposal-transition-skipped-request-ordinal"))?;
+            let prior = self.read_proposal(prior_content)?;
+            if prior.request() != proposal_record.request()
+                || prior.ordinal().checked_add(1) != Some(proposal_record.ordinal())
+            {
+                return Err(integrity("proposal-predecessor-index-mismatch"));
+            }
+        }
+
+        let upserts = BTreeMap::from([
+            (proposal_key, proposal_content),
+            (ordinal_key, proposal_content),
+            (value_key, proposal_content),
+        ]);
+        if !self.merkle.equals_after_upserts(
+            prior_roots.exploration,
+            next_roots.exploration,
+            &upserts,
+        )? {
+            return Err(integrity("proposal-transition-exploration-root-mismatch"));
         }
         Ok(())
     }
