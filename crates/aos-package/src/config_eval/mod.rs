@@ -1232,6 +1232,16 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
     // runs before the fixpoint so failures cannot emit a manifest.
     enforce_host_nix_trust_policy(cmd)?;
 
+    // Pure Nix evaluation may import only immutable store inputs. Metadata is
+    // delivered under /run, so pin the already-authorized bytes before either
+    // the package-selection projection or the complete option fixpoint sees
+    // them. The cloned command also makes every later manifest identity refer
+    // to the exact bytes evaluated, rather than reopening a mutable path.
+    let mut pinned_cmd = cmd.clone();
+    pinned_cmd.host_nix = add_fixed_input_to_store(&cmd.host_nix)
+        .context("pinning authorized host.nix before pure evaluation")?;
+    let cmd = &pinned_cmd;
+
     // The by-name config-module resolver is the on-host registry set: it reads
     // each package's `config_module` block from `registry.toml`. This replaces
     // the removed registry-wide provides index. When apm config is
@@ -2528,6 +2538,11 @@ fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {
     struct HostSelection {
         packages: Vec<String>,
     }
+
+    anyhow::ensure!(
+        cmd.host_nix.starts_with("/nix/store"),
+        "host package-selection input must be pinned in /nix/store"
+    );
 
     std::fs::create_dir_all(&cmd.eval_root)
         .with_context(|| format!("creating eval root {}", cmd.eval_root.display()))?;

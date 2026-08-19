@@ -1284,6 +1284,35 @@ fn platform_host_nix_policy_needs_no_image_baked_key() {
 }
 
 #[test]
+fn host_package_selection_rejects_a_mutable_input_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let host_nix = tmp.path().join("host.nix");
+    std::fs::write(&host_nix, b"{ aos.apm.desiredPackages = []; }\n").unwrap();
+    let cmd = EvalCommand {
+        host_nix,
+        base_lib: PathBuf::from("/nix/store/hash-aos-base-lib"),
+        facts_json: None,
+        desired: None,
+        module_abi: 1,
+        out: tmp.path().join("manifest.json"),
+        eval_root: tmp.path().join("eval"),
+        verbose: 0,
+        trusted_config_keys_dirs: Vec::new(),
+        require_signed_host_nix: false,
+        image_default_host: false,
+    };
+
+    let error = super::load_host_selection(&cmd)
+        .expect_err("pure package selection must reject a mutable host path");
+    assert!(
+        error
+            .to_string()
+            .contains("must be pinned in /nix/store"),
+        "{error:#}"
+    );
+}
+
+#[test]
 fn image_default_host_accepts_only_the_empty_module_without_operator_keys() {
     let tmp = tempfile::tempdir().unwrap();
     let host_nix = tmp.path().join("host.nix");
