@@ -468,7 +468,11 @@ verification. At seed, authenticate the paired copy against the immutable db
 certificate embedded by reference in the initrd closure. Immediately before an
 inactive slot is touched, authenticate the retained recovery copy against the
 immutable running toplevel's configured db-certificate snapshot and its signed
-command-line/os-release identity. The snapshot includes the current image
+command-line/os-release identity. Normal UKIs carry a signed
+`AOS_RELEASE_ID`, rather than `VERSION_ID`, because the latter is deliberately
+omitted from Type #2 normal entries so local generation filenames remain the
+only boot-order authority. Recovery UKIs retain `VERSION_ID` for their
+human-facing release identity. The snapshot includes the current image
 signer and every build-configured rotation-overlap certificate, so an old-slot
 UKI remains usable during an intentional overlap. It is not the mutable
 registry roster: retiring a provisioned certificate requires a replacement

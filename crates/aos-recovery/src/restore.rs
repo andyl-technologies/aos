@@ -305,7 +305,7 @@ fn unique_os_release<'a>(os_release: &'a str, key: &str) -> Result<&'a str, Rest
     match values.as_slice() {
         [value] if !value.is_empty() => Ok(value),
         _ => Err(RestoreError::Manifest(format!(
-            "recovery os-release has no unique {key}"
+            "signed UKI os-release has no unique {key}"
         ))),
     }
 }
@@ -411,7 +411,7 @@ fn verify_bundle_uki_identity(
                 )));
             }
             let os_release = extract_uki_section(&component.path, ".osrel", id)?;
-            if unique_os_release(&os_release, "VERSION_ID")? != release {
+            if unique_os_release(&os_release, "AOS_RELEASE_ID")? != release {
                 return Err(RestoreError::Component(format!(
                     "{id} signed release disagrees with the bundle"
                 )));
