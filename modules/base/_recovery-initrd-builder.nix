@@ -135,6 +135,7 @@ in
           ln -s ${systemd}/bin/systemd-ask-password root/bin/systemd-ask-password
           ln -s ${systemd}/bin/udevadm root/bin/udevadm
           ln -s ${binutils}/bin/objcopy root/bin/objcopy
+          ln -s ${coreutils}/bin/cp root/bin/cp
           ln -s ${coreutils}/bin/sync root/bin/sync
           ln -s ${jq}/bin/jq root/bin/jq
           ln -s ${openssl}/bin/openssl root/bin/openssl
