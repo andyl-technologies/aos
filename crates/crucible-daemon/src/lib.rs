@@ -51,7 +51,8 @@ pub use crucible_artifact::{
 };
 pub use crucible_execution::{
     CrucibleAttemptExecution, CrucibleExecutionModel, CrucibleExecutionModelError,
-    CrucibleExecutionRunner, CrucibleResolvedAttemptStart,
+    CrucibleExecutionOutcome, CrucibleExecutionRunner, CrucibleMaterializationTier,
+    CrucibleResolvedAttemptStart,
 };
 pub use executor_loopback::{
     LoopbackExecutorProtocolError, LoopbackExecutorServerError, LoopbackExecutorService,

@@ -616,6 +616,14 @@ parent. It submits the same attempt regardless of that preference. The executor
 alone chooses hot fork, exact restore, or thin replay and reports the realized
 tier as operational telemetry.
 
+The local Crucible runner receives an authenticated branch parent, the resolved
+selection closure, and the exact canonical schedule prefix formed by appending
+that selection. It revalidates campaign-branch provenance against the parent
+before runner invocation. A successful runner returns the immutable observation
+candidate separately from `hot-fork`, `exact-restore`, or `thin-replay`
+telemetry; the adapter strips that telemetry before canonical candidate
+publication.
+
 - **[CCOMP-20]** Capability reports MUST distinguish immutable compatibility
   facts from volatile capacity and locality hints, and consumers MUST treat
   stale hints as rejection/retry rather than semantic failure.
