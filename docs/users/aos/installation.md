@@ -42,10 +42,12 @@ AOS_TOKEN=REPLACE_WITH_TOKEN aos image list \
 ```
 
 To boot a downloaded raw or QCOW2 image locally without modifying the verified
-artifact, use the packaged QEMU workflow:
+artifact, install the opt-in `pkgs.aos-vm` host package and use its packaged
+QEMU workflow:
 
 ```sh
-aos vm run ./aos-server.qcow2 \
+nix-build -A pkgs.aos-vm -o result-aos-vm
+./result-aos-vm/bin/aos vm run ./aos-server.qcow2 \
   --host-config ./host.nix \
   --disk-size-gib 16 \
   --ssh-port 2222

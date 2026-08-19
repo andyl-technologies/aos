@@ -58,6 +58,15 @@ pub struct VmRunArgs {
     /// OVMF variable-store template copied for this VM.
     #[arg(long, env = "AOS_OVMF_VARS")]
     pub firmware_vars: Option<PathBuf>,
+    /// QEMU x86_64 system emulator executable.
+    #[arg(long, env = "AOS_QEMU")]
+    pub qemu: Option<PathBuf>,
+    /// QEMU disk conversion executable.
+    #[arg(long, env = "AOS_QEMU_IMG")]
+    pub qemu_img: Option<PathBuf>,
+    /// GPT repair executable.
+    #[arg(long, env = "AOS_SGDISK")]
+    pub sgdisk: Option<PathBuf>,
     /// Print the resolved launch configuration without changing VM state.
     #[arg(long)]
     pub dry_run: bool,

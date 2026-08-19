@@ -120,7 +120,11 @@ per-VM OVMF variable store, and can deliver literal `host.nix` through QEMU's
 native metadata channel:
 
 ```sh
-aos vm run ./aos.qcow2 \
+nix-build -A pkgs.aos-vm -o result-aos-vm
+```
+
+```sh
+./result-aos-vm/bin/aos vm run ./aos.qcow2 \
   --host-config ./host.nix \
   --disk-size-gib 16 \
   --ssh-port 2222
@@ -130,8 +134,9 @@ Signed configuration deployments can add
 `--host-config-signature ./host.nix.sig`; the command exposes both files under
 their documented QEMU `fw_cfg` names.
 
-The packaged CLI carries the AOS-built QEMU, OVMF, `qemu-img`, and `sgdisk`.
-When running a development binary, pass `--firmware-code` and
+The opt-in `pkgs.aos-vm` host package carries the AOS-built QEMU, OVMF,
+`qemu-img`, and `sgdisk` without adding emulator tooling to guest images. When
+running the base package or a development binary, pass `--firmware-code` and
 `--firmware-vars`, or set `AOS_OVMF_CODE` and `AOS_OVMF_VARS`, if firmware is
 not installed at a conventional system path.
 
