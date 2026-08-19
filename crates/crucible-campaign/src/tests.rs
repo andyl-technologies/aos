@@ -244,6 +244,12 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         assert_eq!(record[2], "crucible-daemon::assignment_ledger");
         assert_eq!(record[3], "operational-record");
     }
+    let loopback = rows
+        .get("crucible.executor.loopback-frame")
+        .unwrap_or_else(|| panic!("missing executor loopback frame schema"));
+    assert_eq!(loopback[1], "1");
+    assert_eq!(loopback[2], "crucible-daemon::executor_loopback");
+    assert_eq!(loopback[3], "component-message");
     for schema in rows.keys() {
         if schema.starts_with("crucible.campaign.") {
             assert!(

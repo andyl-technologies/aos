@@ -10,9 +10,11 @@
 //! Module map: [`assignment_ledger`] owns crash-safe executor idempotency and
 //! runtime-state records; [`control_responsiveness`] forwards daemon-routed
 //! acknowledgement evidence to the API's quantum-counted control-responsive
-//! contract; [`executor_supervisor`] owns bounded single-host admission,
-//! idempotent scheduling, completion, and cancellation. Future modules split
-//! session hosting, API transport, and diagnostics.
+//! contract; [`executor_loopback`] provides the strict Unix-stream component
+//! transport; [`executor_supervisor`] owns bounded single-host admission,
+//! idempotent scheduling, completion, and cancellation;
+//! [`repository_admission`] is its read-only production semantic boundary.
+//! Future modules split session hosting, API transport, and diagnostics.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -20,7 +22,9 @@
 
 pub mod assignment_ledger;
 pub mod control_responsiveness;
+pub mod executor_loopback;
 pub mod executor_supervisor;
+pub mod repository_admission;
 
 pub use assignment_ledger::{
     AssignmentLedger, AssignmentLedgerError, AssignmentPublish, AssignmentRecord,
@@ -31,8 +35,14 @@ pub use control_responsiveness::{
     DAEMON_CONTROL_RESPONSIVE_QUANTUM_BOUND, DaemonControlResponsiveRoute,
     validate_daemon_control_responsiveness,
 };
+pub use executor_loopback::{
+    LoopbackExecutorProtocolError, LoopbackExecutorServerError, LoopbackExecutorService,
+    LoopbackExecutorTimeouts, serve_loopback_executor_once,
+    serve_loopback_executor_once_with_timeouts,
+};
 pub use executor_supervisor::{
     AllowAllAttemptAdmission, AttemptAdmissionValidator, CancellationOutcome, CompletionOutcome,
     CompletionValidationFailure, ExecutorCapacity, ExecutorCapacityError, LocalExecutorError,
     LocalExecutorSupervisor, QueuedAttempt,
 };
+pub use repository_admission::RepositoryAttemptAdmission;

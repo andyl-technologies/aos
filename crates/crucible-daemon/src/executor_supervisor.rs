@@ -47,6 +47,8 @@ pub trait AttemptAdmissionValidator {
 pub enum CompletionValidationFailure {
     /// Referenced immutable input is not currently available for authentication.
     UnavailableInput,
+    /// The immutable observation tier denied this executor access.
+    Unauthorized,
     /// The observation is present but does not match the exact execution basis.
     Incompatible,
 }
@@ -570,6 +572,14 @@ where
                             request,
                             SubmitAttemptDisposition::Rejected {
                                 reason: ExecutorRejection::UnavailableInput,
+                            },
+                        );
+                    }
+                    Err(CompletionValidationFailure::Unauthorized) => {
+                        return self.persist_response(
+                            request,
+                            SubmitAttemptDisposition::Rejected {
+                                reason: ExecutorRejection::Unauthorized,
                             },
                         );
                     }

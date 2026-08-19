@@ -23,6 +23,32 @@ impl CampaignRepository {
         &self,
         request: &SubmitAttemptRequest,
     ) -> Result<(), CampaignRepositoryError> {
+        self.validate_executor_request_lineage(request).map(drop)
+    }
+
+    /// Authenticates a request and requires the executor's exact local profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::validate_executor_request`], or an
+    /// integrity error when any Crucible, QEMU, protocol, scenario-schema, or
+    /// exact-closure-schema compatibility field differs.
+    pub fn validate_executor_request_with_profile(
+        &self,
+        request: &SubmitAttemptRequest,
+        profile: &ExecutorCompatibilityProfile,
+    ) -> Result<(), CampaignRepositoryError> {
+        let lineage = self.validate_executor_request_lineage(request)?;
+        if !profile.admits(&lineage) {
+            return Err(integrity("executor-compatibility-profile-mismatch"));
+        }
+        Ok(())
+    }
+
+    fn validate_executor_request_lineage(
+        &self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<CampaignLineage, CampaignRepositoryError> {
         let lineage = self.read_lineage(request.lineage().content_id())?;
         self.verify_campaign_closure(request.lineage().content_id())?;
         let attempt = self.load_attempt(request.attempt())?;
@@ -36,7 +62,7 @@ impl CampaignRepository {
         {
             return Err(integrity("executor-attempt-lineage-mismatch"));
         }
-        Ok(())
+        Ok(lineage)
     }
 
     /// Validates one exact executor response against stored campaign semantics.
@@ -57,23 +83,68 @@ impl CampaignRepository {
         response: &SubmitAttemptResponse,
     ) -> Result<(), CampaignRepositoryError> {
         response.validate_for(request)?;
-        self.validate_executor_request(request)?;
-
         if let SubmitAttemptDisposition::AlreadyCompleted { observation } = response.disposition() {
-            let lineage = self.read_lineage(request.lineage().content_id())?;
-            let observation = self.load_observation(observation)?;
-            if observation.attempt() != request.attempt() {
-                return Err(integrity("executor-completion-attempt-mismatch"));
-            }
-            let child =
-                self.read_configuration_artifact(observation.child_content().content_id())?;
-            if child.scenario() != lineage.scenario()
-                || child.scenario_artifact() != lineage.scenario_content()
-            {
-                return Err(integrity("executor-completion-lineage-mismatch"));
-            }
+            return self.validate_executor_completion(request, observation);
         }
+        self.validate_executor_request(request)
+    }
 
+    /// Authenticates one completed observation against an exact executor request.
+    ///
+    /// This read-only entry point is used both before a worker publishes durable
+    /// completion state and when a restarted executor considers reusing its
+    /// operational completion acceleration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when request input is unavailable or incompatible, the
+    /// observation closure is missing or invalid, or its attempt/child does not
+    /// belong to the exact request lineage and scenario artifact.
+    pub fn validate_executor_completion(
+        &self,
+        request: &SubmitAttemptRequest,
+        observation: ObservationId,
+    ) -> Result<(), CampaignRepositoryError> {
+        let lineage = self.validate_executor_request_lineage(request)?;
+        self.validate_executor_completion_for_lineage(request, observation, &lineage)
+    }
+
+    /// Authenticates completion against both campaign semantics and local profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::validate_executor_completion`], or an
+    /// integrity error when the executor compatibility profile differs from the
+    /// request lineage.
+    pub fn validate_executor_completion_with_profile(
+        &self,
+        request: &SubmitAttemptRequest,
+        observation: ObservationId,
+        profile: &ExecutorCompatibilityProfile,
+    ) -> Result<(), CampaignRepositoryError> {
+        let lineage = self.validate_executor_request_lineage(request)?;
+        if !profile.admits(&lineage) {
+            return Err(integrity("executor-compatibility-profile-mismatch"));
+        }
+        self.validate_executor_completion_for_lineage(request, observation, &lineage)
+    }
+
+    fn validate_executor_completion_for_lineage(
+        &self,
+        request: &SubmitAttemptRequest,
+        observation: ObservationId,
+        lineage: &CampaignLineage,
+    ) -> Result<(), CampaignRepositoryError> {
+        let observation = self.load_observation(observation)?;
+        if observation.attempt() != request.attempt() {
+            return Err(integrity("executor-completion-attempt-mismatch"));
+        }
+        let child = self.read_configuration_artifact(observation.child_content().content_id())?;
+        if child.scenario() != lineage.scenario()
+            || child.scenario_artifact() != lineage.scenario_content()
+        {
+            return Err(integrity("executor-completion-lineage-mismatch"));
+        }
         Ok(())
     }
 }

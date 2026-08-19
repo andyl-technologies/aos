@@ -214,10 +214,13 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   resource/retention execution-basis deduplication, bounded aggregate and
   per-execution-quanta admission, reauthenticated completed-state reuse,
   idempotent running/completed/canceled transitions, commit-indeterminate
-  publication recovery, restart conformance tests, and a separate
-  repository-backed read-only request validator. The production admission error
-  adapter, QEMU execution/completion worker, loopback adapter, capability
-  service, and complete component conformance gate remain open.
+  publication recovery, restart conformance tests, a production repository
+  admission/completion adapter with an exact immutable executor profile, and a
+  strict 4-KiB versioned Unix-loopback binding with finite deadlines,
+  close-on-error behavior, direct/loopback equivalence, and hostile/partial
+  frame tests. The QEMU
+  execution/completion worker, capability service, full out-of-process campaign
+  flight, and complete component conformance gate remain open.
 - [x] **T-CAM-4.10** Replace repeated full-history validation on local owner
   mutations with bounded immutable validated-head/lifecycle checkpoints and
   authenticated membership and result-locator indexes; promote only after ref

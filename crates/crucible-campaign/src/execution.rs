@@ -14,11 +14,96 @@
 //! execution metadata. They never enter the identity of an attempt,
 //! configuration, observation, or finding.
 
+use std::collections::BTreeMap;
+
 use crate::codec::{self, Canonical, Decoder, Encoder};
-use crate::{AttemptId, CampaignCodecError, CampaignHash, CampaignLineageId, ObservationId};
+use crate::policy::validate_identifier;
+use crate::{
+    AttemptId, CampaignCodecError, CampaignHash, CampaignLineage, CampaignLineageId, ObservationId,
+};
 
 const EXECUTOR_MESSAGE_SCHEMA_VERSION: u32 = 1;
-const MAX_EXECUTOR_MESSAGE_BYTES: usize = 4 * 1024;
+
+/// Maximum canonical bytes in one executor component message.
+pub const MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES: usize = 4 * 1024;
+
+/// Exact local compatibility profile admitted by one executor incarnation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutorCompatibilityProfile {
+    crucible_version: String,
+    qemu_build: String,
+    protocol_versions: BTreeMap<String, u32>,
+    scenario_schema: u32,
+    exact_closure_schema: u32,
+}
+
+impl ExecutorCompatibilityProfile {
+    /// Builds one exact executor compatibility profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when an identifier or protocol map is
+    /// empty/oversized, or any required version is zero.
+    pub fn new(
+        crucible_version: impl Into<String>,
+        qemu_build: impl Into<String>,
+        protocol_versions: BTreeMap<String, u32>,
+        scenario_schema: u32,
+        exact_closure_schema: u32,
+    ) -> Result<Self, CampaignCodecError> {
+        let crucible_version = crucible_version.into();
+        let qemu_build = qemu_build.into();
+        validate_identifier(&crucible_version, "executor Crucible version is invalid")?;
+        validate_identifier(&qemu_build, "executor QEMU build identity is invalid")?;
+        if protocol_versions.is_empty() || protocol_versions.len() > 256 {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "executor protocol-version set is empty or oversized",
+            });
+        }
+        for (component, version) in &protocol_versions {
+            validate_identifier(component, "executor protocol component is invalid")?;
+            if *version == 0 {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "executor protocol version is zero",
+                });
+            }
+        }
+        if scenario_schema == 0 || exact_closure_schema == 0 {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "executor lineage schema version is zero",
+            });
+        }
+        Ok(Self {
+            crucible_version,
+            qemu_build,
+            protocol_versions,
+            scenario_schema,
+            exact_closure_schema,
+        })
+    }
+
+    /// Copies the exact compatibility basis from an authenticated lineage.
+    #[must_use]
+    pub fn from_lineage(lineage: &CampaignLineage) -> Self {
+        Self {
+            crucible_version: lineage.crucible_version().to_owned(),
+            qemu_build: lineage.qemu_build().to_owned(),
+            protocol_versions: lineage.protocol_versions().clone(),
+            scenario_schema: lineage.scenario_schema(),
+            exact_closure_schema: lineage.exact_closure_schema(),
+        }
+    }
+
+    /// Returns whether all compatibility fields exactly match a lineage.
+    #[must_use]
+    pub fn admits(&self, lineage: &CampaignLineage) -> bool {
+        self.crucible_version == lineage.crucible_version()
+            && self.qemu_build == lineage.qemu_build()
+            && self.protocol_versions == *lineage.protocol_versions()
+            && self.scenario_schema == lineage.scenario_schema()
+            && self.exact_closure_schema == lineage.exact_closure_schema()
+    }
+}
 
 macro_rules! operational_id {
     ($name:ident, $summary:literal, $zero_reason:literal) => {
@@ -243,7 +328,7 @@ impl SubmitAttemptRequest {
         };
         codec::ensure_encoded_size(
             &request,
-            MAX_EXECUTOR_MESSAGE_BYTES,
+            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
             "submit-attempt-request-encoded-bytes",
         )?;
         Ok(request)
@@ -510,7 +595,7 @@ impl SubmitAttemptResponse {
         };
         codec::ensure_encoded_size(
             &response,
-            MAX_EXECUTOR_MESSAGE_BYTES,
+            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
             "submit-attempt-response-encoded-bytes",
         )?;
         Ok(response)
@@ -635,7 +720,7 @@ impl Canonical for SubmitAttemptResponse {
         };
         codec::ensure_encoded_size(
             &response,
-            MAX_EXECUTOR_MESSAGE_BYTES,
+            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
             "submit-attempt-response-encoded-bytes",
         )?;
         Ok(response)
@@ -725,7 +810,7 @@ fn decode_executor_message<T: Canonical>(
     bytes: &[u8],
     limit: &'static str,
 ) -> Result<T, CampaignCodecError> {
-    if bytes.len() > MAX_EXECUTOR_MESSAGE_BYTES {
+    if bytes.len() > MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES {
         return Err(CampaignCodecError::LimitExceeded { limit });
     }
     codec::decode(bytes)
