@@ -2163,6 +2163,7 @@ dependencies = [
  "crucible",
  "crucible-api",
  "crucible-campaign",
+ "crucible-cas",
  "crucible-protocol",
  "crucible-qemu",
  "crucible-session",

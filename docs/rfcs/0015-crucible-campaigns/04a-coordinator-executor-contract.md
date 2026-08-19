@@ -242,6 +242,68 @@ pub enum PlannerProposalDisposition {
 }
 ```
 
+The initial strict component messages refine the illustrative request above by
+carrying every direct invocation object by value:
+
+```text
+PlannerRequestV1 = version | expected_snapshot | invocation | engine |
+                   policy_artifact | policy | planner_state | input_view |
+                   input_bundle
+input_bundle = sorted(ContentId, canonical ObjectEnvelope bytes)
+
+PlannerResponseV1 = version | request_digest | PlannerSubmissionV1 |
+                    response_authentication_tag
+request_digest = H("crucible.campaign.planner-request-digest.v1",
+                   canonical PlannerRequestV1 bytes)
+
+PlannerLoopbackFrameV1 = magic[8] | kind:u8 | reserved[3] |
+                         body_length:u32be | canonical_body[body_length]
+kind = planner-request(1) | planner-response(2)
+magic = "CRUCPL01"
+```
+
+Requests and responses are each limited to 64 MiB. The source-interpretation
+bundle contains at most 65,536 non-Merkle campaign envelopes, orders them by
+content identity, rejects duplicates and unrelated objects, and must contain
+the exact `BranchRequest` body for every served scan position. The adapter
+recomputes the sum of those canonical request-body bytes and requires it to
+equal `PlanningScanPage.input_bytes`. Direct engine dependencies reachable from
+the by-value engine, artifact, policy, state, view, or served requests may be
+included once. Owner-authenticated view projections that require Merkle proofs
+remain coordinator-built inputs; completing that projection bundle and the
+closed planner implementation remains an implementation-plan gate.
+
+The response authentication tag covers the response version, request digest,
+and complete already-authenticated submission under a distinct
+domain-separated planner authority tag. `PlannerResponseV1` therefore binds the complete request, not only the
+`PlannerInvocationId`. This prevents a cached response from being replayed
+across byte-distinct interpretation bundles for the same invocation. The
+supervised authority adapter requires a distinct deterministic execution
+supervisor.
+The pure engine returns only its semantic proposal and cannot supply the
+accepted fuel measurement. The adapter derives input and output counts from the
+request and proposal, obtains fuel only from the supervisor, and validates
+invocation, next-state engine, page disposition, exact measured counts, and all
+budget dimensions before producing `PlannerSubmissionV1`. A production planner
+authority MUST use a supervisor that owns evaluation, enforces deterministic
+fuel and finite wall-clock bounds, observes cancellation, and can terminate an
+over-budget or hung engine; the in-process fake supervisor and one-request
+loopback server are conformance fixtures, not production supervision. Planner
+fuel claims in the proposal remain untrusted diagnostics. The checked
+coordinator client verifies the request digest and planner authority again.
+Direct and Unix-loopback paths use the same checked client. The loopback transport uses nonzero absolute
+read/write deadlines capped at one hour, checks the body bound before
+allocation, and shuts down both stream directions after any framing, canonical,
+service, or I/O failure.
+
+The checked client returns `PlannerResponseV1` rather than discarding its
+request digest. Before this component path is wired into coordinator
+acceptance, the coordinator record model MUST retain or otherwise commit to
+that exact digest so an accepted step remains auditable against the complete
+interpretation input. That repository integration is intentionally still open
+in the implementation plan; the component transport alone is not authority to
+accept a planner step.
+
 The coordinator supplies a bounded immutable view resolved from
 `input_view`. Direct invocation borrows the same typed bundle that the RPC
 adapter encodes canonically; an engine never receives an ID without the bounded
@@ -285,9 +347,9 @@ artifact, engine, protocol, and parameter versions.
 identity, dependency lock, planner ABI, engine version, arguments, and any
 source or compiled artifact required to reproduce it. `PlannerState` is bounded
 portable data. It is never a language stack, closure, heap, actor/process,
-native trait object, or runtime continuation. Repeating one invocation must
-return byte-identical canonical output; disagreement is a planner-determinism
-failure.
+native trait object, or runtime continuation. Repeating one complete
+`PlannerRequestV1` must return byte-identical canonical output; disagreement is
+a planner-determinism failure.
 
 A globally ordered frontier need not fit in one bundle. The coordinator serves
 snapshot-bound pages in canonical continuation-key order. The invocation ID

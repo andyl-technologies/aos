@@ -47,6 +47,19 @@ impl PlannerAuthorityKey {
     pub(crate) fn has_same_material(&self, debugger: &DebuggerAuthorityKey) -> bool {
         constant_time_bytes_eq(&self.0, &debugger.0)
     }
+
+    pub(crate) fn authenticate_component_basis(&self, domain: &str, basis: &[u8]) -> CampaignHash {
+        authenticate(&self.0, domain, basis)
+    }
+
+    pub(crate) fn verify_component_basis(
+        &self,
+        domain: &str,
+        basis: &[u8],
+        actual: CampaignHash,
+    ) -> bool {
+        constant_time_hash_eq(self.authenticate_component_basis(domain, basis), actual)
+    }
 }
 
 /// Coordinator-configured secret used to authenticate debugger submissions.

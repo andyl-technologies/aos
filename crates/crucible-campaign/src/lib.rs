@@ -22,6 +22,7 @@ mod merkle;
 mod model;
 mod object;
 mod observation;
+mod planner_service;
 mod policy;
 mod repository;
 
@@ -78,6 +79,12 @@ pub use object::{CampaignRecordKind, ChildReference, ObjectEnvelope};
 pub use observation::{
     CoverageProjection, MeasurementSeries, MeasurementSet, MetricValue, Observation,
     PropertyEvidence, PropertyVerdict, PropertyVerdictSet, StopOutcome,
+};
+pub use planner_service::{
+    AuthorizedPlannerService, AuthorizedPlannerServiceError, CampaignPlanningBundle,
+    MAX_PLANNER_COMPONENT_MESSAGE_BYTES, PlannerClient, PlannerClientError, PlannerEngineOutput,
+    PlannerExecutionSupervisor, PlannerRequest, PlannerResponse, PlannerService, PurePlannerEngine,
+    SupervisedPlannerExecution,
 };
 pub use policy::{
     CampaignMode, CampaignPolicy, CampaignSeed, CandidateGeneratorAlgorithm,
