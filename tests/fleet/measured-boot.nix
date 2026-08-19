@@ -234,9 +234,9 @@ in {
           transcript = ""
           while time.monotonic() < deadline:
               try:
-                  with open(target.serial_log_path, "r", errors="replace") as serial:
+                  with open(target.serial_log_path, "rb") as serial:
                       serial.seek(offset)
-                      transcript = serial.read()
+                      transcript = serial.read().decode("utf-8", errors="replace")
               except OSError:
                   transcript = ""
               if marker in transcript:
@@ -246,9 +246,9 @@ in {
 
       def serial_since(offset):
           try:
-              with open(target.serial_log_path, "r", errors="replace") as serial:
+              with open(target.serial_log_path, "rb") as serial:
                   serial.seek(offset)
-                  return serial.read()
+                  return serial.read().decode("utf-8", errors="replace")
           except OSError:
               return ""
 
