@@ -4912,8 +4912,7 @@ fn clone_authoring_registry(
     if url.starts_with("http://") || url.starts_with("https://") {
         // libgit2 cannot read the static dumb-HTTP object tree; init locally
         // and fetch through the pure-Rust reader.
-        let repo = git2::Repository::init(clone_dir)
-            .with_context(|| format!("initializing {}", clone_dir.display()))?;
+        let repo = init_sha256_authoring_repository(clone_dir)?;
         repo.remote("origin", url).context("adding origin remote")?;
         let refspecs = vec![
             "+refs/heads/*:refs/remotes/origin/*".to_string(),
@@ -4953,6 +4952,14 @@ fn clone_authoring_registry(
         .clone(url, clone_dir)
         .with_context(|| format!("cloning {url}"))?;
     checkout_authoring_ref(&repo, branch, tag, commit)
+}
+
+/// Initializes the non-bare SHA-256 repository used by a producer clone.
+fn init_sha256_authoring_repository(clone_dir: &Path) -> Result<git2::Repository> {
+    let mut options = git2::RepositoryInitOptions::new();
+    options.object_format(git2::ObjectFormat::Sha256);
+    git2::Repository::init_opts(clone_dir, &options)
+        .with_context(|| format!("initializing {}", clone_dir.display()))
 }
 
 /// Resolve the origin's default branch (the branch its `HEAD` points at) from
@@ -5439,6 +5446,16 @@ mod tests {
             )]),
         };
         (record_path, checker, cel)
+    }
+
+    #[test]
+    fn authoring_repository_uses_sha256_object_format() {
+        let clone_dir = TempDir::new().unwrap();
+        let repo = init_sha256_authoring_repository(clone_dir.path()).unwrap();
+
+        assert!(!repo.is_bare());
+        assert_eq!(repo.object_format(), git2::ObjectFormat::Sha256);
+        assert_eq!(repo.path(), clone_dir.path().join(".git"));
     }
 
     #[test]
