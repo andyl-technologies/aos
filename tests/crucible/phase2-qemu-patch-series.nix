@@ -636,6 +636,13 @@
       enforces = "DET-1,QFP-REG-1,QFP-STATE-2";
       capability = "exact raw-zero observers read the unique next RR coordinate without mutating scheduler state while every later invalid cursor remains rejected";
     }
+    {
+      file = "0092-crucible-canonical-terminal-rr-cursor.patch";
+      catalogName = "crucible-canonical-terminal-rr-cursor";
+      class = "D";
+      enforces = "DET-1,DET-29,QFP-STATE-2";
+      capability = "live observers at a quantum terminal project onto the next scheduler-owned vCPU at position zero without mutating serialized RR state";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

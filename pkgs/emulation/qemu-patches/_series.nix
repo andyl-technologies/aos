@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "42560ec536fa36fee59202d6e4ec39a3f6345e15201caa3bd9ca0d1e2fbf432c";
+  patchBranchBundleSha256 = "dd5e97b5f96d1602fb03d2c0a9df64881f9af847c0f0114f91fa0e06db0ee21d";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "53d1c54de86a867fafa21936aa090b6de8e8fd5b";
+  patchBranchHeadCommit = "e4b752dd8373c62d92c70c5385886730ea2bd7dd";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -845,6 +845,16 @@ let
       class = "D";
       enforces = "DET-1,QFP-REG-1,QFP-STATE-2";
       capability = "exact raw-zero observers read the unique next RR coordinate without mutating scheduler state while every later invalid cursor remains rejected";
+    }
+    {
+      file = "0092-crucible-canonical-terminal-rr-cursor.patch";
+      branchSubject = "crucible: canonicalize terminal RR observations";
+      branchCommit = "e4b752dd8373c62d92c70c5385886730ea2bd7dd";
+      branchTree = "c9084d25cd61d01f8ab29b98d2700f509551be04";
+      catalogName = "crucible-canonical-terminal-rr-cursor";
+      class = "D";
+      enforces = "DET-1,DET-29,QFP-STATE-2";
+      capability = "live observers at a quantum terminal project onto the next scheduler-owned vCPU at position zero without mutating serialized RR state";
     }
   ];
   catalogOnlyCapabilities = [
