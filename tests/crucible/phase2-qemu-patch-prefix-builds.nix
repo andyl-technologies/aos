@@ -64,6 +64,11 @@ in
           set -eu
           export LC_ALL=C
 
+          fail() {
+            echo "FAIL: $*" >&2
+            exit 1
+          }
+
           mkdir -p "$out"
 
           # Provenance: replay the ordered stack as a deterministic git commit
@@ -88,8 +93,12 @@ in
           GIT_COMMITTER_EMAIL="${series.deterministicAuthorEmail}" \
           GIT_COMMITTER_DATE="${series.deterministicBaseDate}" \
             git -c commit.gpgsign=false commit -q -m "qemu-${series.qemuVersion}-base"
-          test "$(git rev-parse HEAD)" = "${series.patchBranchBaseCommit}"
-          test "$(git rev-parse HEAD^{tree})" = "${series.patchBranchBaseTree}"
+          actual_base_commit=$(git rev-parse HEAD)
+          actual_base_tree=$(git rev-parse HEAD^{tree})
+          test "$actual_base_commit" = "${series.patchBranchBaseCommit}" \
+            || fail "base commit $actual_base_commit does not match ${series.patchBranchBaseCommit}"
+          test "$actual_base_tree" = "${series.patchBranchBaseTree}" \
+            || fail "base tree $actual_base_tree does not match ${series.patchBranchBaseTree}"
 
           : > "$out/prefix-provenance.tsv"
           prefix_index=0
@@ -99,10 +108,12 @@ in
             IFS='|' read -r metadata_patch branch_commit branch_tree expected_patch_hash patch_subject <<EOF
           $metadata
           EOF
-            test "$metadata_patch" = "$patch_name"
+            test "$metadata_patch" = "$patch_name" \
+              || fail "metadata lookup for $patch_name returned $metadata_patch"
 
             actual_patch_hash=$(sha256sum "${patchDir}/$patch_name" | gawk '{ print $1 }')
-            test "$actual_patch_hash" = "$expected_patch_hash"
+            test "$actual_patch_hash" = "$expected_patch_hash" \
+              || fail "$patch_name hash $actual_patch_hash does not match $expected_patch_hash"
 
             patch --batch --forward --fuzz=0 --no-backup-if-mismatch \
               -p1 -i "${patchDir}/$patch_name" > /dev/null
@@ -116,19 +127,24 @@ in
               git -c commit.gpgsign=false commit -q -s -m "$patch_subject"
             actual_branch_commit=$(git rev-parse HEAD)
             actual_branch_tree=$(git rev-parse HEAD^{tree})
-            test "$actual_branch_commit" = "$branch_commit"
-            test "$actual_branch_tree" = "$branch_tree"
+            test "$actual_branch_commit" = "$branch_commit" \
+              || fail "$patch_name commit $actual_branch_commit does not match $branch_commit"
+            test "$actual_branch_tree" = "$branch_tree" \
+              || fail "$patch_name tree $actual_branch_tree does not match $branch_tree"
 
             printf '%s\t%s\t%s\t%s\t%s\n' \
               "$prefix_index" "$patch_name" \
               "$actual_branch_commit" "$actual_branch_tree" "$actual_patch_hash" \
               >> "$out/prefix-provenance.tsv"
           done
-          test "$(git rev-parse HEAD)" = "${series.patchBranchHeadCommit}"
+          actual_branch_head=$(git rev-parse HEAD)
+          test "$actual_branch_head" = "${series.patchBranchHeadCommit}" \
+            || fail "branch head $actual_branch_head does not match ${series.patchBranchHeadCommit}"
           cd "$TMPDIR"
 
           prefix_count=$(wc -l < "$out/prefix-provenance.tsv" | tr -d ' ')
-          test "$prefix_count" -eq ${toString patchCount}
+          test "$prefix_count" -eq ${toString patchCount} \
+            || fail "prefix count $prefix_count does not match ${toString patchCount}"
 
           # Full-series build evidence: the shipped fully-patched package. The
           # full series is the only prefix that links.

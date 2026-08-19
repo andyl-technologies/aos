@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "5df5662b377b33c5eca2a0872f0a2593a834a4567f88b1fa492ab9c4ea83eaf7";
+  patchBranchBundleSha256 = "42560ec536fa36fee59202d6e4ec39a3f6345e15201caa3bd9ca0d1e2fbf432c";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "4f708a7c350df4205317fa3586f51b54728f4de7";
+  patchBranchHeadCommit = "53d1c54de86a867fafa21936aa090b6de8e8fd5b";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -809,7 +809,7 @@ let
     {
       file = "0088-crucible-deterministic-host-kick-boundary.patch";
       branchSubject = "crucible: defer generic host kicks in active sim slices";
-      branchCommit = "3561cc760370e03fec2f7be7d6d25d6971936a0b";
+      branchCommit = "79780f4de0d08c3ef2ad43019d787ade68f0294a";
       branchTree = "e6dd34d7a989df6352ed4a6f6aad38098832a3f9";
       catalogName = "crucible-deterministic-host-kick-boundary";
       class = "D";
@@ -819,7 +819,7 @@ let
     {
       file = "0089-crucible-exact-boundary-vcpu-introspection.patch";
       branchSubject = "crucible: admit vCPU introspection at exact boundaries";
-      branchCommit = "7e622d4d0a71e524fac5cf5a9a56f4a396ced77a";
+      branchCommit = "0e16a87a0e79c39d6c07d5b02169c5e118228780";
       branchTree = "1bdcbb1934ac36da79f25d7e78bec7b911a3dc65";
       catalogName = "crucible-exact-boundary-vcpu-introspection";
       class = "D";
@@ -829,7 +829,7 @@ let
     {
       file = "0090-crucible-active-tcg-kick-boundary.patch";
       branchSubject = "crucible: defer generic kicks to TCG boundaries";
-      branchCommit = "bf887eacb23cd2694e0c5dd6f69b1bb1fbc12820";
+      branchCommit = "260c90b9564b99764ec70442d26d4ee5ee588143";
       branchTree = "6bbc6b736a157cbbc62092c925ac4a4ef3e16bd9";
       catalogName = "crucible-active-tcg-kick-boundary";
       class = "D";
@@ -839,7 +839,7 @@ let
     {
       file = "0091-crucible-canonical-rr-genesis-cursor.patch";
       branchSubject = "crucible: expose the canonical RR genesis cursor";
-      branchCommit = "4f708a7c350df4205317fa3586f51b54728f4de7";
+      branchCommit = "53d1c54de86a867fafa21936aa090b6de8e8fd5b";
       branchTree = "4762a69a59020bf84d761d6f2a1e18d3df4856e9";
       catalogName = "crucible-canonical-rr-genesis-cursor";
       class = "D";
