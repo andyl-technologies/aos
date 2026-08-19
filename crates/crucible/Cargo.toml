@@ -17,6 +17,7 @@ workspace = true
 blake3 = { workspace = true }
 ciborium = { workspace = true }
 crucible-sim = { path = "../crucible-sim" }
+crucible-campaign = { workspace = true }
 crucible-device = { path = "../crucible-device" }
 crucible-shmem = { path = "../crucible-shmem", optional = true }
 crucible-protocol = { path = "../crucible-protocol" }

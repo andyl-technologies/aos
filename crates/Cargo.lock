@@ -2065,6 +2065,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "ciborium",
+ "crucible-campaign",
  "crucible-device",
  "crucible-harness",
  "crucible-protocol",
@@ -2112,6 +2113,18 @@ name = "crucible-assert"
 version = "0.1.0"
 dependencies = [
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "crucible-campaign"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "crucible-cas",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "unicode-normalization",
 ]
 
 [[package]]

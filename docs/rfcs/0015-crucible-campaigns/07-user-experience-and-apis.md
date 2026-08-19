@@ -204,6 +204,13 @@ observation basis through proposal, immutable execution basis or additional-
 cause association, branch edge, selection, execution evidence, and reward
 credit.
 
+The local repository API exposes the same validation boundary at object scale.
+Typed loads authenticate scenario/configuration artifacts, opportunities,
+groups, and planner invocations. A selection load returns a resolved aggregate
+containing its exact opportunity and domain; raw structural selection decoding
+is not a public trusted-state API. Model-sampled selections additionally pass
+the selected model implementation's pure replay verifier before execution.
+
 - **[CAPI-5]** Human output MAY evolve, but language-neutral JSON/CBOR and RPC
   schemas are versioned, define unknown-field behavior and bounds, include full
   content IDs rather than display abbreviations, and have raw golden vectors.

@@ -78,7 +78,9 @@ An integer value is legal exactly when it is within the inclusive bounds and
 `(value - minimum)` is divisible by `step`. Landmarks are legal values suggested
 by the producer because they correspond to defaults, timeouts, protocol
 thresholds, powers of two, physical transitions, or other semantic boundaries.
-They guide candidate generation but do not alter the legal domain.
+They guide candidate generation but do not alter the legal domain or its
+`ChoiceDomainSemanticId`; they do alter the exact stored `ChoiceDomainId` so
+the generator input remains auditable.
 
 A discrete alternative has a stable ID independent of display order or label.
 Labels are user-facing annotations. Reordering alternatives does not change
@@ -117,7 +119,10 @@ group is recorded as an ordered set of member selections and applied in one
 adapter transaction.
 
 - **[SEL-7]** Group canonical order MUST be member selectable ID order, not
-  authoring order. A group application either commits every member or none.
+  authoring order. Every member domain MUST be validated as a legal narrowing
+  of the exact referenced `SelectableDeclaration`; caller-supplied IDs and
+  unrelated domains are not a valid group. A group application either commits
+  every member or none.
 - **[SEL-8]** Candidate generation MAY sample a large product lazily, but every
   yielded tuple MUST be validated against the complete declared constraints
   before proposal publication.
@@ -127,6 +132,7 @@ adapter transaction.
 ```rust,illustrative
 pub struct ChoiceOpportunity {
     pub id: ChoiceOpportunityId,
+    pub semantic_id: ChoiceOpportunitySemanticId,
     pub class: ChoiceClassId,
     pub source: ChoiceSource,
     pub declaration: SelectableId,
@@ -137,6 +143,13 @@ pub struct ChoiceOpportunity {
     pub model_prior: Option<ProbabilityModelId>,
 }
 ```
+
+`ChoiceOpportunityId` is the exact stored record identity and retains the exact
+declaration and offered-domain content IDs. `ChoiceOpportunitySemanticId`
+replaces those fields with `SelectableSemanticId` and
+`ChoiceDomainSemanticId`. Thus label, description, display ordering, or integer
+landmark changes remain visible in storage/provenance without changing the
+semantic branch point, edge, or resulting configuration.
 
 Environment-originated opportunities use RFC-0014's stable
 `FaultOpportunity` identity and typed target/operation/phase coordinate.
@@ -164,8 +177,9 @@ derived from the declaration and stable context tags, not from the specific
 runtime coordinate.
 
 - **[SEL-9]** Replaying a schedule MUST reconstruct an identical
-  choice-opportunity ID and domain digest before accepting the recorded
-  selection.
+  exact choice-opportunity ID and domain digest before accepting the recorded
+  selection. Semantic branch identity is separately reconstructed from the
+  opportunity and domain semantic IDs.
 - **[SEL-10]** A producer MUST supply an explicit stable instance key when the
   same declaration can be offered more than once at an otherwise identical
   coordinate. Ambiguity fails closed.
@@ -191,11 +205,19 @@ pub enum SelectionOrigin {
         draw: u64,
     },
     CampaignBranch {
+        branch_point: BranchPointId,
         edge: BranchEdgeId,
     },
     LockedReplay,
 }
 ```
+
+The branch point is stored beside the edge so a repository closure audit can
+recompute the edge from `(branch point, semantic domain, value)` without an
+ambient planner object. Structural decoding alone does not return a validated
+public `Selection`: resolving the exact opportunity and domain and checking
+origin-specific evidence is the conversion boundary to an executable
+selection. Model samples additionally require the named pure model verifier.
 
 Operator, planner, debugger, and exhaustive provenance belongs to the
 `BranchRequestCause` and `Proposal` facts in campaign knowledge, not to the

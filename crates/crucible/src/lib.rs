@@ -42,6 +42,9 @@ mod sim_backend;
 pub mod tracing_bridge;
 pub mod trigger;
 
+/// Portable canonical campaign vocabulary owned by `crucible-campaign`.
+pub use crucible_campaign as campaign;
+
 pub use backend::{
     AdvanceOutcome, Backend, BackendEffect, BackendError, BackendInput,
     BackendNetworkCompletedFaultPhase, BackendNetworkFaultContinuation, BackendNetworkFaultCursor,

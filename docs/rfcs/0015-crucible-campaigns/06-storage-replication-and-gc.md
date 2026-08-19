@@ -18,15 +18,54 @@ multi-host campaign execution or multi-writer campaign convergence.
 ContentId = H(
   object-kind domain tag,
   canonical schema version,
+  canonical plaintext byte length,
   canonical plaintext bytes
 )
 ```
+
+Canonical structured objects use a generic, bounded, versioned plaintext
+envelope below campaign semantics:
+
+```text
+"CRUCOBJE" | envelope-version
+schema-name | schema-version
+sorted-set(role, child-ContentId)
+body-length | record-specific canonical body
+```
+
+The full envelope bytes are the plaintext bytes hashed by `ContentId`; the
+record body does not receive a second identity. Child roles and IDs are part of
+identity. The envelope parser rejects duplicate or out-of-order children,
+noncanonical content-ID text, unknown framing, trailing bytes, and objects over
+the hard size bound. A generic closure walker needs only this envelope parser;
+record-owning crates additionally verify that the advertised children exactly
+match references decoded from the body.
 
 Logical object kinds include campaign facts and snapshots, scenario and policy
 objects, page or extent bytes, exact-closure manifests, opaque VMState, disk
 objects, logs, traces, coverage projections, and findings. A kind-specific ID
 such as `PageId`, `ExactClosureId`, or `CampaignSnapshotId` is a typed
 `ContentId`, not a storage location.
+
+Record-typed API/CLI text uses `schema-name@kind.version.digest`; canonical
+record bodies encode the same exact schema tag before the generic content ID.
+This is a type-confusion boundary, not a second identity: the suffix is still
+the sole content address, and loading it must authenticate an envelope with the
+claimed registered schema.
+
+Closure verification is iterative, duplicate-aware, and bounded. Structured
+campaign objects and Merkle nodes are parsed and their role-tagged children are
+walked; owner codecs additionally prove body/child correspondence and
+cross-record constraints. Non-campaign structured kinds such as exact
+manifests, observations, findings, and projections are still parsed as generic
+envelopes so their children remain walkable; their owning crate performs the
+stronger body validation. Scenario and configuration artifacts are owned
+campaign envelopes with exact semantic cross-links; legacy raw forms must be
+migrated explicitly before import. Deliberately opaque leaves such as RAM/disk
+extents, VMState, and trace segments are drained through their authenticated
+stream to EOF but are not parsed as envelopes. A missing child, wrong record
+subtype, malformed ancestry transition, cycle, or traversal-limit breach
+rejects publication/import rather than yielding a partially readable head.
 
 Compression, encryption, sparse representation, pack membership, pack byte
 range, local path, bucket, multipart layout, tier, cache state, and copy count

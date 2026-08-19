@@ -79,7 +79,8 @@ admitted attempts
   Reservation state affects local claimability only and MUST NOT change whether
   an attempt exists or a branch point/source continuation is open.
 - **[LAZY-4]** The frontier API MUST paginate or stream. It MUST NOT require all
-  continuations or attempts to be loaded into memory.
+  continuations or attempts to be loaded into memory. Page size and scan
+  suspension boundaries MUST NOT alter a deterministic planner result.
 
 ## 04.3 Pull-based planning and backpressure
 
@@ -106,6 +107,15 @@ CampaignProjector updates guidance/frontier projections
 The planner may keep a small configurable ready-attempt buffer to hide QEMU
 startup latency, but it never fills the latent domain merely because storage is
 available.
+
+Selecting globally across a large frontier is itself a suspended deterministic
+computation. The coordinator exposes a snapshot-bound canonical scan ordered by
+stable continuation key. Planner state records the scan cursor, accumulated
+best candidate and score evidence, source snapshot/view, and remaining fuel.
+The planner may return `continue-scan` without issuing a proposal. Page size,
+RPC chunking, and restart boundaries are operational delivery choices and MUST
+NOT change the selected source or its tie break. A changed snapshot invalidates
+the scan rather than combining pages from different semantic views.
 
 - **[LAZY-5]** Maximum admitted-but-unreserved attempts, in-flight attempts, live
   QEMU worlds, paused hot children, and dirty-memory bytes MUST have independent
@@ -168,6 +178,11 @@ observation claimable again. Observation publication uses conditional create by
 `AttemptId`; identical results dedup and different results trigger determinism
 investigation.
 
+The authoritative observation index is a conditional mapping from `AttemptId`
+to `ObservationId`. Repeating the same pair is idempotent. A different
+observation for an already completed attempt is retained as determinism-defect
+evidence but is never selected by arrival time or last-writer-wins.
+
 The existing RFC-0010 `SharedFrontier` keyed by checkpoint content hash becomes
 a rebuildable attempt index keyed by `AttemptId`. It no longer asserts that a
 checkpoint is expanded once.
@@ -177,7 +192,8 @@ checkpoint is expanded once.
   finding identity. Reservations MUST NOT be required to recover the frontier.
 - **[LAZY-10]** A daemon crash after publishing an observation but before
   releasing a reservation MUST at worst cause duplicate execution. It MUST NOT
-  lose the observation or block the attempt permanently.
+  lose the observation or block the attempt permanently. Conflicting canonical
+  observations for one attempt MUST be reported as a determinism defect.
 
 ## 04.6 Feedback and backpropagation
 
@@ -211,7 +227,9 @@ In strict mode, `CampaignSupervisor` assigns monotonically recorded attempt
 sequences and the projector commits observations in that order. Results may
 execute concurrently and wait in a content-addressed completed set. Missing
 earlier attempts are retried; operator cancellation is an explicit accounting
-fact.
+fact with a non-modeled disposition that closes the ordinal without inventing
+an observation. This prevents a cancelled or permanently rejected attempt from
+leaving an unfillable strict-order gap.
 
 In streaming mode, the projector may commit any completed observation. Each
 `PlannerStep` records the exact observation root it saw. The planner remains a
@@ -220,6 +238,8 @@ untracked proposals.
 
 - **[LAZY-13]** A strict campaign MUST reproduce planner steps from its initial
   snapshot, policy, seed, attempt-order results, and budget grants.
+  Every admission ordinal MUST eventually receive one canonical observation or
+  an explicit non-modeled terminal disposition.
 - **[LAZY-14]** A streaming campaign MUST reproduce every recorded planner step
   from its named observation basis even when a fresh campaign run would receive
   observations in another order.
