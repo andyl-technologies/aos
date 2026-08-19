@@ -210,6 +210,18 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
     assert_eq!(planner_result[3], "component-message");
     owned_campaign_schemas.insert("crucible.campaign.planner-step-proposal");
     for schema in [
+        "crucible.campaign.planner-request",
+        "crucible.campaign.planner-response",
+    ] {
+        let message = rows
+            .get(schema)
+            .unwrap_or_else(|| panic!("missing planner service schema {schema}"));
+        assert_eq!(message[1], "1");
+        assert_eq!(message[2], "crucible-campaign::planner_service");
+        assert_eq!(message[3], "component-message");
+        owned_campaign_schemas.insert(schema);
+    }
+    for schema in [
         "crucible.campaign.planner-submission",
         "crucible.campaign.debugger-submission",
     ] {
@@ -264,6 +276,12 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
     assert_eq!(loopback[1], "1");
     assert_eq!(loopback[2], "crucible-daemon::executor_loopback");
     assert_eq!(loopback[3], "component-message");
+    let planner_loopback = rows
+        .get("crucible.planner.loopback-frame")
+        .unwrap_or_else(|| panic!("missing planner loopback frame schema"));
+    assert_eq!(planner_loopback[1], "1");
+    assert_eq!(planner_loopback[2], "crucible-daemon::planner_loopback");
+    assert_eq!(planner_loopback[3], "component-message");
     for schema in rows.keys() {
         if schema.starts_with("crucible.campaign.") {
             assert!(

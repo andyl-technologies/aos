@@ -204,8 +204,17 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   The repository checkpoint now provides strict canonical planner/debugger
   submission messages with separate operational keys, public authority-specific
   direct adapters, zero-write authentication failure, and an exact replayable
-  choice-discovery owner required before branching. Campaign/planner loopback
-  RPC and service-level principal plumbing remain open. The executor
+  choice-discovery owner required before branching. The planner component now
+  has strict 64-MiB request/response messages, by-value invocation inputs, a
+  sorted content-addressed source-interpretation bundle, exact request-digest
+  response binding, a mandatory adapter-owned execution-supervisor contract,
+  supervised authority signing, checked direct clients,
+  golden vectors, fake engines, and a versioned Unix-loopback adapter with
+  finite absolute deadlines, close-on-error behavior, and direct/loopback
+  equivalence. A killable production supervisor that enforces fuel, wall-clock,
+  and cancellation bounds, the coordinator-owned Merkle-proof guidance bundle,
+  concrete closed planner, accepted-step retention of the exact request digest,
+  CampaignService RPC, and service-level principal plumbing remain open. The executor
   checkpoint now provides strict 4-KiB canonical `SubmitAttempt` request and
   response messages, nonzero operational assignment/execution/epoch IDs,
   explicit resource and retention fields, exact-request digest binding, stable

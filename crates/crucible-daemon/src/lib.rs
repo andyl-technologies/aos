@@ -19,7 +19,8 @@
 //! translates opaque campaign payloads into Crucible execution-model values;
 //! [`crucible_execution`] supplies the typed runner boundary used by the local
 //! QEMU/session adapter; [`crucible_qemu_runner`] connects that boundary to the
-//! exact-restore/thin-replay QEMU realization path.
+//! exact-restore/thin-replay QEMU realization path; [`planner_loopback`] owns
+//! the strict local pure-planner component transport.
 //! Future modules split session hosting, API transport, and diagnostics.
 
 #![forbid(unsafe_code)]
@@ -35,6 +36,7 @@ pub mod executor_capability;
 pub mod executor_loopback;
 pub mod executor_supervisor;
 pub mod executor_worker;
+pub mod planner_loopback;
 pub mod repository_admission;
 
 pub use assignment_ledger::{
@@ -83,5 +85,10 @@ pub use executor_worker::{
     abort_prepared_attempt_result, abort_staged_attempt_result, prepare_attempt_result,
     publish_prepared_attempt_result, reconcile_attempt_failure, reconcile_published_attempt_result,
     retry_pending_attempt_result, stage_prepared_attempt_result,
+};
+pub use planner_loopback::{
+    LoopbackPlannerProtocolError, LoopbackPlannerServerError, LoopbackPlannerService,
+    LoopbackPlannerTimeouts, serve_loopback_planner_once,
+    serve_loopback_planner_once_with_timeouts,
 };
 pub use repository_admission::RepositoryAttemptAdmission;
