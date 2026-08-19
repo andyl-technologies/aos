@@ -126,6 +126,10 @@ aos vm run ./aos.qcow2 \
   --ssh-port 2222
 ```
 
+Signed configuration deployments can add
+`--host-config-signature ./host.nix.sig`; the command exposes both files under
+their documented QEMU `fw_cfg` names.
+
 The packaged CLI carries the AOS-built QEMU, OVMF, `qemu-img`, and `sgdisk`.
 When running a development binary, pass `--firmware-code` and
 `--firmware-vars`, or set `AOS_OVMF_CODE` and `AOS_OVMF_VARS`, if firmware is

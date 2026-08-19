@@ -31,6 +31,9 @@ pub struct VmRunArgs {
     /// Literal host.nix supplied through QEMU fw_cfg.
     #[arg(long)]
     pub host_config: Option<PathBuf>,
+    /// Detached signature supplied beside host.nix through QEMU fw_cfg.
+    #[arg(long, requires = "host_config")]
+    pub host_config_signature: Option<PathBuf>,
     /// Virtual disk capacity in GiB.
     #[arg(long, default_value_t = 16)]
     pub disk_size_gib: u64,
