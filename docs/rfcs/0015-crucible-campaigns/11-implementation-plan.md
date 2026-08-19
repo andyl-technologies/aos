@@ -19,6 +19,9 @@ default campaign path until its listed gates pass.
 7. Do not implement multi-host fanout in this RFC's initial scope.
 8. All QEMU-side code remains in the QEMU patch/plugin GPL scope with source and
    license-ledger updates.
+9. Begin manual developer flights with the first vertical slice. No phase is
+   described as usable and no campaign or hot-fork path becomes a default until
+   its §14 operator evidence is accepted.
 
 ## 11.2 Phase 0 — RFC review and executable contracts
 
@@ -29,10 +32,14 @@ default campaign path until its listed gates pass.
 - [ ] **T-CAM-0.3** Freeze requirement-to-gate mapping and assign every new wire
   format a schema/version owner.
 - [ ] **T-CAM-0.4** Add a repository traceability check ensuring every
-  `CAM`/`CMOD`/`SEL`/`GUIDE`/`LAZY`/`HFORK`/`CSTORE`/`CAPI`/`CMEAS`/`CSEC`/`CPERF`
+  `CAM`/`CMOD`/`SEL`/`GUIDE`/`LAZY`/`HFORK`/`CSTORE`/`CAPI`/`CMEAS`/`CSEC`/`CPERF`/`CMAN`
   requirement is covered by a task and gate.
+- [ ] **T-CAM-0.5** Tabletop the realistic lifecycle, finding handoff,
+  destructive recovery matrix, dogfood flight, evidence manifest, and owner
+  sign-offs from §14.
 
-**Exit:** the RFC is accepted and the implementation delta remains disabled.
+**Exit:** the RFC and manual-flight design are accepted and the implementation
+delta remains disabled.
 
 ## 11.3 Phase 1 — Canonical campaign model
 
@@ -53,9 +60,14 @@ Primary crates: `crucible`, `crucible-cas`, and codec-only API types.
   projection verification.
 - [ ] **T-CAM-1.6** Add schema corruption, authoring-order canonicalization,
   merge, crash-window, and provenance-lineage tests.
+- [ ] **T-CAM-1.7** Run the §14 Phase 1 offline model flight: create, inspect,
+  fork, merge, pause, resume, and audit snapshots using only public object/API
+  surfaces, and publish its evidence bundle.
 
 **Gates:** `gate:campaign-model`, `gate:content-address`,
 `gate:campaign-continuity-v2` model tier.
+
+**Manual gate:** accepted §14 Phase 1 campaign-model flight.
 
 ## 11.4 Phase 2 — Typed choice model and guest protocol
 
@@ -81,9 +93,14 @@ Primary crates: `crucible`, `crucible-protocol`, `crucible-shmem`,
   effect adapters.
 - [ ] **T-CAM-2.7** Route application randomness through the integer selectable
   model and remove the parallel raw-width exploration path.
+- [ ] **T-CAM-2.8** Integrate the actual network product guest with discrete and
+  integral choices, exercise a pending selection across checkpoint/replay, and
+  complete the §14 Phase 2 guest flight without internal protocol tooling.
 
 **Gates:** `gate:typed-choice`, `gate:abi-conformance`,
 `gate:e2e-determinism`, `gate:license-boundary`.
+
+**Manual gate:** accepted §14 Phase 2 real-guest choice flight.
 
 ## 11.5 Phase 3 — Measurements and objectives
 
@@ -100,9 +117,14 @@ Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and
   lexicographic, top-`K`, fairness-reserve, and explanation records.
 - [ ] **T-CAM-3.5** Extend finding artifacts and retention policy with exact
   pre/post-failure pins and measurement/evidence closure.
+- [ ] **T-CAM-3.6** Have an independent reviewer cross-check guest convergence
+  markers, model-derived traffic evidence, measurement windows, objective
+  ranking, and one known finding in the §14 Phase 3 flight.
 
 **Gates:** `gate:campaign-model`, `gate:campaign-replay`, guest protocol
 extensions under `gate:abi-conformance`.
+
+**Manual gate:** accepted §14 Phase 3 measurement/finding flight.
 
 ## 11.6 Phase 4 — Lazy local campaign supervisor
 
@@ -125,9 +147,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   projection rebuilding.
 - [ ] **T-CAM-4.7** Implement hierarchical per-event promotion and existing
   minimization integration.
+- [ ] **T-CAM-4.8** Complete the §14 Phase 4 local operator flight through lazy
+  widening, live status, explanation, bounded pressure, pause/restart/resume,
+  steering, and graceful stop.
 
 **Gates:** `gate:lazy-frontier`, `gate:attempt-idempotence`,
 `gate:campaign-replay`, `gate:campaign-statistics`, `gate:harness-lint`.
+
+**Manual gate:** accepted §14 Phase 4 local campaign flight.
 
 ## 11.7 Phase 5 — Store abstraction and durable closure efficiency
 
@@ -151,9 +178,14 @@ Primary crates: `crucible-cas` and `crucible-api` lifecycle/checkpoint code.
 - [ ] **T-CAM-5.7** Add manifest-first and missing-object transfer APIs with
   resumable authenticated ranges, working-set hints, and a non-executing
   demand-fetch spike; keep cross-host worker scheduling out of scope.
+- [ ] **T-CAM-5.8** Complete the §14 Phase 5 hibernate/restart/resume, backend
+  outage, credential expiry, corruption, transfer/import, incompatible restore,
+  retention, and plan/apply GC flights.
 
 **Gates:** `gate:campaign-store-equivalence`, `gate:campaign-replication`,
 `gate:exact-closure-streaming`, `gate:campaign-continuity-v2`.
+
+**Manual gate:** accepted §14 Phase 5 storage and destructive-recovery evidence.
 
 ## 11.8 Phase 6 — QEMU hot-fork spike
 
@@ -180,10 +212,14 @@ the public protocol. The spike is not a production feature.
   promotion, and resource-pressure fallback without unbounded growth.
 - [ ] **T-CAM-6.8** Produce QEMU patch license/source-ledger updates and public
   protocol documentation.
+- [ ] **T-CAM-6.9** Complete the §14 Phase 6 lab audit of quiescence, memory
+  mappings, descriptors, private rings/disks, dirty-page growth, resource leaks,
+  rejection paths, and exact/thin fallback using the representative product.
 
 **Exit:** either the spike satisfies the structural and minimum-speedup targets,
-or hot fork remains rejected and the RFC is revised around another measured
-local-COW mechanism. No optimistic partial capability ships.
+its manual lab evidence is accepted, or hot fork remains rejected and the RFC is
+revised around another measured local-COW mechanism. No optimistic partial
+capability ships.
 
 ## 11.9 Phase 7 — Production hot fork and multi-node worlds
 
@@ -200,10 +236,16 @@ local-COW mechanism. No optimistic partial capability ships.
   resource/cgroup limits, demotion to exact/thin, and fallback diagnostics.
 - [ ] **T-CAM-7.6** Add the complete equivalence, isolation, negative,
   resource-leak, and scaling matrix from §10.
+- [ ] **T-CAM-7.7** Complete the §14 Phase 7 atomic multi-machine,
+  massive-parallelism, deep-template, pressure, operator-handoff, and 24-hour
+  dogfood flight with a final process/descriptor/memory/disk/store audit.
 
 **Gates:** `gate:hot-fork-equivalence`, `gate:hot-fork-isolation`,
 `gate:hot-fork-scaling`, `gate:world-fork-atomicity`,
 `gate:license-boundary`, `gate:abi-conformance`.
+
+**Manual gate:** accepted §14 Phase 7 dogfood evidence; hot fork remains
+non-default before this gate.
 
 ## 11.10 Phase 8 — User-facing porcelain
 
@@ -219,9 +261,15 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   through common campaign primitives and remove parallel state models.
 - [ ] **T-CAM-8.5** Publish user documentation and the worked network campaign
   as an executable fixture.
+- [ ] **T-CAM-8.6** Have an operator who did not implement the feature complete
+  the §14 standard lifecycle, finding-to-debug handoff, steering, retention, and
+  cleanup flights using only public documentation and porcelain.
 
 **Gates:** CLI/API contract tests, `gate:campaign-continuity-v2`,
 `gate:campaign-replay`, and existing control-responsiveness gates.
+
+**Manual gate:** `gate:campaign-operator-acceptance` with accepted §14 Phase 8
+evidence.
 
 ## 11.11 Phase 9 — Final integration and release criteria
 
@@ -238,6 +286,12 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   process/storage boundaries.
 - [ ] **T-CAM-9.6** Update canonical user docs only after implementation behavior
   passes the full gate set.
+- [ ] **T-CAM-9.7** Run the complete 72-hour §14 release-candidate dogfood,
+  destructive recovery, hibernation/maintenance transfer, finding handoff, GC,
+  cleanup, defect-disposition, and cross-owner sign-off flight.
+
+**Manual gates:** `gate:campaign-operator-acceptance`,
+`gate:campaign-destructive-recovery`, and `gate:campaign-dogfood`.
 
 ## 11.12 Implementation completion definition
 
@@ -252,6 +306,12 @@ This RFC is implemented only when:
 - hot fork is either production-gated for its declared TCG profile or explicitly
   rejected and removed from the completion claim;
 - user-facing campaign commands operate on the one snapshot model;
+- an independent operator completes the public lifecycle and another
+  investigator reproduces a finding solely from its exported bundle;
+- destructive process, host, store, credential, pressure, fork, and GC drills
+  preserve the last authenticated state and require no private repair;
+- the realistic 72-hour dogfood flight sustains useful parallelism, steering,
+  hibernation, handoff, and clean resource accounting;
 - every required gate is green with no alternate compatibility runtime.
 
 ## 11.13 Initial requirement traceability
@@ -261,7 +321,7 @@ area mapping ensures that no part of the RFC is merely aspirational:
 
 | Requirements | Primary phases | Primary gates |
 | --- | --- | --- |
-| `CAM-1..12` | 1–9 | campaign model, replay, continuity, ABI, license boundary |
+| `CAM-1..13` | 1–9 | campaign model, replay, continuity, ABI, license boundary, manual acceptance |
 | `CMOD-1..22` | 1, 4 | campaign model, content address, attempt idempotence, continuity |
 | `SEL-1..20` | 2 | typed choice, ABI conformance, end-to-end determinism |
 | `GUIDE-1..20` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
@@ -272,6 +332,7 @@ area mapping ensures that no part of the RFC is merely aspirational:
 | `CMEAS-1..14` | 3, 8 | campaign model, replay, ABI conformance |
 | `CSEC-1..12` | 1–9 | license boundary, ABI conformance, isolation, store equivalence |
 | `CPERF-1..7` | 4–7, 9 | lazy frontier, hot-fork scaling/equivalence, exact-closure streaming |
+| `CMAN-1..20` | 0–9 | operator acceptance, destructive recovery, dogfood, campaign replay |
 
 The executable traceability check required by T-CAM-0.4 must expand every range,
 name at least one implementing task and test for each requirement, reject stale
