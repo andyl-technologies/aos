@@ -115,9 +115,7 @@
       ];
     };
 in {
-  name =
-    assert builtins.elem "aos-verity-root-verify.service" measuredSystem.config.boot.initrd.systemd.services."aos-var-crypt".requires;
-    "measured-boot";
+  name = assert builtins.elem "aos-verity-root-verify.service" measuredSystem.config.boot.initrd.systemd.services."aos-var-crypt".requires; "measured-boot";
   # Image boot + enrollment/migration + the A/B counted-candidate lifecycle.
   timeout = 5400;
   # The emulated TPM (swtpm) adds tens of seconds of slow command

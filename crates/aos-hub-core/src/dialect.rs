@@ -52,6 +52,7 @@
 //! KEYTEXT128                  TEXT COLLATE BINARY     VARCHAR(128) COLLATE "C"   VARCHAR(128) + utf8mb4_0900_bin
 //! KEYTEXT255                  TEXT COLLATE BINARY     VARCHAR(255) COLLATE "C"   VARCHAR(255) + utf8mb4_0900_bin
 //! KEYTEXT512                  TEXT COLLATE BINARY     VARCHAR(512) COLLATE "C"   VARCHAR(512) + utf8mb4_0900_bin
+//! KEYTEXT1024                 TEXT COLLATE BINARY     VARCHAR(1024) COLLATE "C"  VARCHAR(1024) + utf8mb4_0900_bin
 //! BLOB                        BLOB                    BYTEA                     LONGBLOB
 //! AUTOINCREMENT               AUTOINCREMENT           (removed)                 (removed)
 //! ```
@@ -71,7 +72,7 @@
 //! `KEYTEXT<N>` marks a bounded, case-sensitive topology key. It is intended
 //! for stable names, normalized paths, hashes, revisions, and other values
 //! whose equality and ordering must not depend on the database's default
-//! collation. The supported capacities are 16, 32, 64, 128, 255, and 512. SQLite
+//! collation. The supported capacities are 16, 32, 64, 128, 255, 512, and 1024. SQLite
 //! and Durable Object SQLite use bytewise `BINARY` collation, postgres uses its deterministic
 //! `C` collation, and MySQL 8.0.16+ uses its `NO PAD` `utf8mb4_0900_bin`
 //! collation.
@@ -80,9 +81,10 @@
 //! write because SQL `VARCHAR(N)` limits characters, not encoded bytes, and
 //! SQLite does not enforce a declared text length.
 //!
-//! The largest form is safe for a topology index containing one key plus a
+//! Forms through 512 bytes are safe for a topology index containing one key plus a
 //! `BIGINT`: `VARCHAR(512)` occupies at most 2,048 bytes under `utf8mb4`, below
-//! InnoDB's 3,072-byte index-key limit. Multi-text indexes must use the smallest
+//! InnoDB's 3,072-byte index-key limit. `KEYTEXT1024` is reserved for unindexed
+//! provider identifiers. Multi-text indexes must use the smallest
 //! appropriate forms so their combined worst-case width remains below that
 //! limit.
 //!
@@ -268,6 +270,7 @@ impl Dialect {
                 "KEYTEXT128",
                 "KEYTEXT255",
                 "KEYTEXT512",
+                "KEYTEXT1024",
             ] {
                 s = replace_word(&s, marker, "TEXT COLLATE BINARY");
             }
@@ -328,13 +331,14 @@ impl Dialect {
         // supported capacity before the generic TEXT rewrite; otherwise a
         // marker such as KEYTEXT64 would become KEYVARCHAR(255)64 and could no
         // longer be restored. The sentinels deliberately contain no `TEXT`.
-        const KEYTEXT_SENTINELS: [(&str, &str, usize); 6] = [
+        const KEYTEXT_SENTINELS: [(&str, &str, usize); 7] = [
             ("KEYTEXT16", "\u{0}KEY_EXACT_16\u{0}", 16),
             ("KEYTEXT32", "\u{0}KEY_EXACT_32\u{0}", 32),
             ("KEYTEXT64", "\u{0}KEY_EXACT_64\u{0}", 64),
             ("KEYTEXT128", "\u{0}KEY_EXACT_128\u{0}", 128),
             ("KEYTEXT255", "\u{0}KEY_EXACT_255\u{0}", 255),
             ("KEYTEXT512", "\u{0}KEY_EXACT_512\u{0}", 512),
+            ("KEYTEXT1024", "\u{0}KEY_EXACT_1024\u{0}", 1024),
         ];
         for (marker, sentinel, _) in KEYTEXT_SENTINELS {
             s = replace_word(&s, marker, sentinel);

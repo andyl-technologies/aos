@@ -439,7 +439,10 @@ fn CanonicalRoutes(
     canonical: Vec<aos_proto_types::CanonicalRoute>,
     routes: Vec<aos_proto_types::DeliveryRoute>,
 ) -> impl IntoView {
-    let audience = RwSignal::new("web".to_string());
+    // Keep the initial signal aligned with the first server-rendered option.
+    // Otherwise hydration displays Git while submissions retain Web until the
+    // user changes the select to a different value and back.
+    let audience = RwSignal::new("git".to_string());
     let initial_route = routes
         .iter()
         .find(|value| value.spec.as_ref().is_some_and(|spec| spec.enabled))

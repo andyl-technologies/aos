@@ -332,6 +332,7 @@ mod egress_nonce;
 mod gc_topology;
 pub use gc_topology::*;
 mod placement_policy;
+mod registry_delete;
 mod signing_keys;
 mod topology;
 pub use placement_policy::*;
@@ -377,6 +378,12 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("identity_control.sql"),
     include_str!("identity_incarnation.sql"),
     include_str!("operation_scope_inventory.sql"),
+    include_str!("publication_multipart.sql"),
+    include_str!("publication_multipart_progress.sql"),
+    include_str!("placement_scan_claim.sql"),
+    include_str!("portable_recovery_cursor.sql"),
+    include_str!("org_usage_backfill.sql"),
+    include_str!("cache_multipart_creation.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -1133,7 +1140,7 @@ pub struct PackageRow {
     pub name: String,
     /// One-line description.
     pub description: String,
-    /// SPDX license identifier.
+    /// Published license metadata.
     pub license: String,
     /// Latest indexed version string.
     pub latest_version: Option<String>,
@@ -1154,7 +1161,7 @@ pub struct PackageDetail {
     pub description: String,
     /// Optional homepage URL.
     pub homepage: Option<String>,
-    /// SPDX license identifier.
+    /// Published license metadata.
     pub license: String,
     /// Maintainer handle.
     pub maintainer: String,
@@ -1707,6 +1714,54 @@ pub struct RegistryPublicationUploadObjectRecord {
     pub expected_hash: String,
     /// Exact byte size.
     pub expected_size: i64,
+    /// Whether every required publication placement has exact observed bytes.
+    pub verified: bool,
+}
+
+/// One durable multipart transaction for a declared publication object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryPublicationMultipartUploadRecord {
+    /// Opaque upload identity carried by multipart requests.
+    pub upload_id: String,
+    /// Publication owning the object.
+    pub publication_id: String,
+    /// Registry owning the publication.
+    pub registry_id: i64,
+    /// Stable logical object id.
+    pub surface_object_id: i64,
+    /// `active`, `completing`, `completed`, `aborted`, or `failed`.
+    pub state: String,
+    /// Expiry time in Unix seconds.
+    pub expires_at: i64,
+    /// Number of contiguous object bytes incorporated into `sha256_state`.
+    pub hashed_size: i64,
+    /// Portable hexadecimal SHA-256 compression state.
+    pub sha256_state: String,
+    /// Part currently claimed for a provider write, when any.
+    pub pending_part: Option<i64>,
+    /// Exact body digest for the claimed part.
+    pub pending_hash: Option<String>,
+    /// Unique lease owner authorized to commit the claimed provider writes.
+    pub pending_token: Option<String>,
+    /// Claim acquisition time in Unix seconds.
+    pub pending_since: Option<i64>,
+    /// Unique request authorized to perform provider completion.
+    pub completion_token: Option<String>,
+    /// Completion ownership acquisition time in Unix seconds.
+    pub completion_since: Option<i64>,
+}
+
+/// One backend-confirmed part identity retained for crash-safe completion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryPublicationMultipartPartRecord {
+    /// Opaque upload identity owning the part.
+    pub upload_id: String,
+    /// 1-based contiguous part number.
+    pub part_number: u32,
+    /// Frozen physical placement that accepted the part.
+    pub placement_id: i64,
+    /// Opaque backend entity tag required at completion.
+    pub etag: String,
 }
 
 /// One physical placement of a registry or binary-cache surface.
@@ -2034,6 +2089,46 @@ pub struct ObjectPresenceRecord {
     pub size: Option<i64>,
     /// Controller observation time in Unix seconds.
     pub observed_at: i64,
+}
+
+/// Byte evidence produced by one complete physical-placement scan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlacementScanPresence {
+    /// Logical surface object receiving the observation.
+    pub surface_object_id: i64,
+    /// `present`, `missing`, or `corrupt`.
+    pub state: String,
+    /// SHA-256 digest derived from the physical bytes, when present.
+    pub observed_hash: Option<String>,
+    /// Size derived from the physical bytes, when present.
+    pub observed_size: Option<i64>,
+    /// Backend-issued strong entity tag, when available.
+    pub etag: Option<String>,
+}
+
+/// Maximum number of placement observations persisted in one atomic batch.
+///
+/// The bound matches the Worker surface-list page so one provider page maps to
+/// one database round trip without allowing an unbounded transaction.
+pub const MAX_PLACEMENT_SCAN_PRESENCE_BATCH: usize = 256;
+
+// Durable Object SQLite accepts at most 100 bound parameters per statement.
+// The placement occupies one slot in each bulk delete.
+const MAX_PLACEMENT_SCAN_DELETE_IDS: usize = 99;
+
+/// Earlier byte-verified evidence eligible for strong-version scan reuse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReusablePlacementEvidence {
+    /// Logical surface object described by the evidence.
+    pub surface_object_id: i64,
+    /// Presence state recorded by the prior publication or complete scan.
+    pub state: String,
+    /// SHA-256 digest verified for that provider version.
+    pub observed_hash: Option<String>,
+    /// Verified representation size.
+    pub observed_size: Option<i64>,
+    /// Provider-issued strong version identifier.
+    pub etag: Option<String>,
 }
 
 /// Operator-confirmed equivalence between two exact surface placements.
@@ -2960,12 +3055,17 @@ impl Database {
         ))
     }
 
-    /// Resolves the first placement eligible for a whole-surface read.
+    /// Resolves the authoritative placement eligible for a whole-surface read.
     ///
     /// This is used by background consumers that enumerate a complete surface
     /// (indexing, scans, and maintenance). Request-path object reads use the
-    /// stricter object-evidence planner. Selection is deterministic and never
-    /// falls back to a resource-global binding or deployment bucket.
+    /// stricter object-evidence planner. A reconciled writer is preferred over
+    /// replicas because it owns the current mutable surface. When a write
+    /// authority exists, selection fails closed unless that writer is also an
+    /// eligible reader; an unproven replica cannot stand in for mutable state.
+    /// `read_order` orders replicas only for surfaces without a write authority.
+    /// Selection is deterministic and never falls back to a resource-global
+    /// binding or deployment bucket.
     ///
     /// # Errors
     ///
@@ -2982,6 +3082,7 @@ impl Database {
                     "SELECT {PLACEMENT_COLUMNS} FROM surface_placement_effective
                      WHERE (registry_id = ?1 OR cache_id = ?2)
                        AND effective_read_enabled = 1
+                       AND (write_authority_id IS NULL OR effective_write_enabled = 1)
                      ORDER BY read_order, name, id LIMIT 1"
                 ),
                 &vals![registry_id, cache_id],
@@ -4320,10 +4421,11 @@ impl Database {
                 )?);
             }
         }
-        let mut checked_stmts = stmts
-            .into_iter()
-            .map(Statement::unchecked)
-            .collect::<Vec<_>>();
+        let mut checked_stmts = vec![Self::registry_index_mutation_guard(
+            registry_id,
+            indexed_placement_id,
+        )];
+        checked_stmts.extend(stmts.into_iter().map(Statement::unchecked));
         if let Some((objects, observed_at)) = image_presence {
             let placement_id = indexed_placement_id
                 .context("signed image presence requires an exact indexed placement")?;
@@ -4389,12 +4491,16 @@ impl Database {
     /// Returns an error on database failure.
     pub async fn mark_index_failed(&self, registry_id: i64, error: &str) -> Result<()> {
         self.backend
-            .execute(
-                "INSERT INTO registry_index (registry_id, state, error)
+            .checked_batch(&[
+                Self::registry_index_publication_guard(registry_id),
+                Statement::new(
+                    "INSERT INTO registry_index (registry_id, state, error)
              VALUES (?1, 'failed', ?2)
              ON CONFLICT(registry_id) DO UPDATE SET state = 'failed', error = excluded.error",
-                &vals![registry_id, error],
-            )
+                    vals![registry_id, error],
+                )
+                .unchecked(),
+            ])
             .await?;
         Ok(())
     }
@@ -4411,12 +4517,16 @@ impl Database {
     /// Returns an error on database failure.
     pub async fn mark_index_pending(&self, registry_id: i64) -> Result<()> {
         self.backend
-            .execute(
-                "INSERT INTO registry_index (registry_id, state, error)
+            .checked_batch(&[
+                Self::registry_index_publication_guard(registry_id),
+                Statement::new(
+                    "INSERT INTO registry_index (registry_id, state, error)
              VALUES (?1, 'pending', NULL)
              ON CONFLICT(registry_id) DO UPDATE SET state = 'pending', error = NULL",
-                &vals![registry_id],
-            )
+                    vals![registry_id],
+                )
+                .unchecked(),
+            ])
             .await?;
         Ok(())
     }
@@ -4521,22 +4631,8 @@ impl Database {
             ),
             Statement::new(
                 "DELETE FROM registry_index
-                     WHERE registry_id = ?1 AND generation = ?3
-                       AND EXISTS (
-                         SELECT 1 FROM surface_placement_effective selected
-                         WHERE selected.id = ?2 AND selected.registry_id = ?1
-                           AND selected.effective_read_enabled = 1
-                           AND NOT EXISTS (
-                             SELECT 1 FROM surface_placement_effective better
-                             WHERE better.registry_id = ?1
-                               AND better.effective_read_enabled = 1
-                               AND (better.read_order < selected.read_order
-                                 OR (better.read_order = selected.read_order
-                                   AND better.name < selected.name)
-                                 OR (better.read_order = selected.read_order
-                                   AND better.name = selected.name
-                                   AND better.id < selected.id))))",
-                vals![registry_id, placement_id, generation].to_vec(),
+                     WHERE registry_id = ?1 AND generation = ?2",
+                vals![registry_id, generation].to_vec(),
             ),
             Statement::new(
                 "INSERT INTO registry_index
@@ -4549,17 +4645,22 @@ impl Database {
             ),
         ];
         let statement_count = statements.len();
-        let checked = statements
-            .into_iter()
-            .enumerate()
-            .map(|(index, statement)| {
-                if index + 2 >= statement_count {
-                    statement.expecting(1)
-                } else {
-                    statement.unchecked()
-                }
-            })
-            .collect::<Vec<_>>();
+        let mut checked = vec![Self::registry_index_mutation_guard(
+            registry_id,
+            Some(placement_id),
+        )];
+        checked.extend(
+            statements
+                .into_iter()
+                .enumerate()
+                .map(|(index, statement)| {
+                    if index + 2 >= statement_count {
+                        statement.expecting(1)
+                    } else {
+                        statement.unchecked()
+                    }
+                }),
+        );
         self.backend.checked_batch(&checked).await
     }
 
@@ -4575,12 +4676,16 @@ impl Database {
     /// Returns an error on database failure.
     pub async fn mark_index_stale(&self, registry_id: i64, error: &str) -> Result<()> {
         self.backend
-            .execute(
-                "INSERT INTO registry_index (registry_id, state, error)
+            .checked_batch(&[
+                Self::registry_index_publication_guard(registry_id),
+                Statement::new(
+                    "INSERT INTO registry_index (registry_id, state, error)
              VALUES (?1, 'stale', ?2)
              ON CONFLICT(registry_id) DO UPDATE SET state = 'stale', error = excluded.error",
-                &vals![registry_id, error],
-            )
+                    vals![registry_id, error],
+                )
+                .unchecked(),
+            ])
             .await?;
         Ok(())
     }
@@ -4641,7 +4746,10 @@ impl Database {
         // no mid-flight `last_insert_rowid`; the per-registry sequential indexer
         // rules out a concurrent writer colliding on the id base.
         let mut next_channel = self.max_id("channels").await?;
-        let mut stmts: Vec<CheckedStatement> = Vec::new();
+        let mut stmts = vec![Self::registry_index_mutation_guard(
+            registry_id,
+            indexed_placement_id,
+        )];
         stmts.push(
             Statement::new(
                 "UPDATE channels SET active = 0 WHERE registry_id = ?1",
@@ -4749,6 +4857,9 @@ impl Database {
         registry_id: i64,
         indexed_placement_id: Option<i64>,
     ) -> Result<()> {
+        if self.registry_has_active_publication(registry_id).await? {
+            bail!("registry index mutation is blocked by an active publication");
+        }
         let allowed = match indexed_placement_id {
             Some(placement_id) => {
                 self.reconciled_surface_reader(SurfaceTarget::Registry(registry_id))
@@ -4773,6 +4884,86 @@ impl Database {
             bail!("registry index mutation requires the authoritative placement");
         }
         Ok(())
+    }
+
+    /// Reports whether a publication can still change a registry's visible surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn registry_has_active_publication(&self, registry_id: i64) -> Result<bool> {
+        Ok(self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM registry_publications
+                 WHERE registry_id = ?1 AND state IN ('preparing', 'writing_pointers')
+                 LIMIT 1",
+                &vals![registry_id],
+            )
+            .await?
+            .is_some())
+    }
+
+    /// Fences one index transaction against an in-flight publication.
+    fn registry_index_publication_guard(registry_id: i64) -> CheckedStatement {
+        Statement::new(
+            "UPDATE registries SET updated_at = updated_at
+             WHERE id = ?1 AND NOT EXISTS (
+               SELECT 1 FROM registry_publications publication
+               WHERE publication.registry_id = registries.id
+                 AND publication.state IN ('preparing', 'writing_pointers'))",
+            vals![registry_id],
+        )
+        .expecting(1)
+    }
+
+    /// Fences one index transaction against publication and source-topology changes.
+    fn registry_index_mutation_guard(
+        registry_id: i64,
+        indexed_placement_id: Option<i64>,
+    ) -> CheckedStatement {
+        let source_predicate = match indexed_placement_id {
+            Some(placement_id) => Statement::new(
+                "UPDATE registries SET updated_at = updated_at
+                 WHERE id = ?1
+                   AND NOT EXISTS (
+                     SELECT 1 FROM registry_publications publication
+                     WHERE publication.registry_id = registries.id
+                       AND publication.state IN ('preparing', 'writing_pointers'))
+                   AND EXISTS (
+                     SELECT 1 FROM surface_placement_effective selected
+                     WHERE selected.id = ?2 AND selected.registry_id = registries.id
+                       AND selected.effective_read_enabled = 1
+                       AND (selected.write_authority_id IS NULL
+                         OR selected.effective_write_enabled = 1)
+                       AND NOT EXISTS (
+                         SELECT 1 FROM surface_placement_effective better
+                         WHERE better.registry_id = registries.id
+                           AND better.effective_read_enabled = 1
+                           AND (better.write_authority_id IS NULL
+                             OR better.effective_write_enabled = 1)
+                           AND (better.read_order < selected.read_order
+                             OR (better.read_order = selected.read_order
+                               AND better.name < selected.name)
+                             OR (better.read_order = selected.read_order
+                               AND better.name = selected.name
+                               AND better.id < selected.id))))",
+                vals![registry_id, placement_id],
+            ),
+            None => Statement::new(
+                "UPDATE registries SET updated_at = updated_at
+                 WHERE id = ?1
+                   AND NOT EXISTS (
+                     SELECT 1 FROM registry_publications publication
+                     WHERE publication.registry_id = registries.id
+                       AND publication.state IN ('preparing', 'writing_pointers'))
+                   AND (SELECT COUNT(*) FROM surface_placements placement
+                        WHERE placement.registry_id = registries.id
+                          AND placement.desired_state <> 'offline') <= 1",
+                vals![registry_id],
+            ),
+        };
+        source_predicate.expecting(1)
     }
 
     // -- anti-rollback floors ------------------------------------------------
@@ -5837,6 +6028,50 @@ impl Database {
             .context("created registry publication disappeared")
     }
 
+    /// Reopens an exact failed publication that has never become visible.
+    ///
+    /// The registry head must still equal the publication's frozen parent.
+    /// Object identities remain immutable; admission replays their idempotent
+    /// declarations after this state reset.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed id, stale parent, non-failed state, or
+    /// database failure.
+    pub async fn retry_failed_registry_publication(
+        &self,
+        publication_id: &str,
+        now: i64,
+    ) -> Result<RegistryPublicationRecord> {
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE registry_publications SET state = 'preparing',
+                       completed_at = NULL, retired_at = NULL
+                     WHERE publication_id = ?1 AND state = 'failed'
+                       AND EXISTS (SELECT 1 FROM registry_publication_state state
+                         WHERE state.registry_id = registry_publications.registry_id
+                           AND (state.current_publication_id = registry_publications.parent_publication_id
+                             OR (state.current_publication_id IS NULL
+                               AND registry_publications.parent_publication_id IS NULL)))",
+                    vals![publication_id],
+                )
+                .expecting(1),
+                Statement::new(
+                    "UPDATE registry_publication_placements
+                     SET state = 'preparing', observed_at = ?2
+                     WHERE publication_id = ?1 AND state = 'failed'",
+                    vals![publication_id, now],
+                )
+                .unchecked(),
+            ])
+            .await?;
+        self.registry_publication(publication_id)
+            .await?
+            .context("retried registry publication disappeared")
+    }
+
     /// Returns one registry publication by stable id.
     ///
     /// # Errors
@@ -6021,7 +6256,23 @@ impl Database {
             .query(
                 "SELECT po.publication_id, po.registry_id, po.surface_object_id,
                         object.object_key, po.object_kind, po.expected_hash,
-                        po.expected_size
+                        po.expected_size,
+                        CASE WHEN EXISTS (
+                          SELECT 1 FROM registry_publication_placements required
+                          WHERE required.publication_id = po.publication_id
+                            AND required.required = 1)
+                        AND NOT EXISTS (
+                          SELECT 1 FROM registry_publication_placements required
+                          WHERE required.publication_id = po.publication_id
+                            AND required.required = 1
+                            AND NOT EXISTS (
+                              SELECT 1 FROM object_placements presence
+                              WHERE presence.surface_object_id = po.surface_object_id
+                                AND presence.placement_id = required.placement_id
+                                AND presence.state = 'present'
+                                AND presence.observed_hash = po.expected_hash
+                                AND presence.observed_size = po.expected_size))
+                        THEN 1 ELSE 0 END
                  FROM registry_publication_objects po
                  JOIN surface_objects object ON object.id = po.surface_object_id
                  WHERE po.publication_id = ?1
@@ -6040,6 +6291,7 @@ impl Database {
                     object_kind: row.get(4)?,
                     expected_hash: row.get(5)?,
                     expected_size: row.get(6)?,
+                    verified: row.get(7)?,
                 })
             })
             .collect()
@@ -6060,6 +6312,509 @@ impl Database {
             .await?
             .into_iter()
             .find(|object| object.surface_object_id == surface_object_id))
+    }
+
+    /// Returns one durable registry-publication multipart upload.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed upload id or database failure.
+    pub async fn registry_publication_multipart_upload(
+        &self,
+        upload_id: &str,
+    ) -> Result<Option<RegistryPublicationMultipartUploadRecord>> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        self.backend
+            .query_opt(
+                "SELECT upload_id, publication_id, registry_id, surface_object_id,
+                        state, expires_at, hashed_size, sha256_state,
+                        pending_part, pending_hash, pending_token, pending_since,
+                        completion_token, completion_since
+                 FROM registry_publication_multipart_uploads WHERE upload_id = ?1",
+                &vals![upload_id],
+            )
+            .await?
+            .map(|row| {
+                Ok(RegistryPublicationMultipartUploadRecord {
+                    upload_id: row.get(0)?,
+                    publication_id: row.get(1)?,
+                    registry_id: row.get(2)?,
+                    surface_object_id: row.get(3)?,
+                    state: row.get(4)?,
+                    expires_at: row.get(5)?,
+                    hashed_size: row.get(6)?,
+                    sha256_state: row.get(7)?,
+                    pending_part: row.get(8)?,
+                    pending_hash: row.get(9)?,
+                    pending_token: row.get(10)?,
+                    pending_since: row.get(11)?,
+                    completion_token: row.get(12)?,
+                    completion_since: row.get(13)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Returns the active multipart upload for one publication object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed identities or database failure.
+    pub async fn active_registry_publication_multipart_upload(
+        &self,
+        publication_id: &str,
+        surface_object_id: i64,
+    ) -> Result<Option<RegistryPublicationMultipartUploadRecord>> {
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT upload_id FROM registry_publication_multipart_uploads
+                 WHERE publication_id = ?1 AND surface_object_id = ?2
+                   AND active_object_slot = 1",
+                &vals![publication_id, surface_object_id],
+            )
+            .await?;
+        match row {
+            Some(row) => {
+                self.registry_publication_multipart_upload(&row.get::<String>(0)?)
+                    .await
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Lists every active multipart upload owned by one publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed publication id or database failure.
+    pub async fn active_registry_publication_multipart_uploads(
+        &self,
+        publication_id: &str,
+    ) -> Result<Vec<RegistryPublicationMultipartUploadRecord>> {
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        let rows = self
+            .backend
+            .query(
+                "SELECT upload_id FROM registry_publication_multipart_uploads
+                 WHERE publication_id = ?1 AND active_object_slot = 1
+                 ORDER BY upload_id",
+                &vals![publication_id],
+            )
+            .await?;
+        let mut uploads = Vec::with_capacity(rows.len());
+        for row in rows {
+            uploads.push(
+                self.registry_publication_multipart_upload(&row.get::<String>(0)?)
+                    .await?
+                    .context("active publication multipart upload disappeared")?,
+            );
+        }
+        Ok(uploads)
+    }
+
+    /// Creates one durable multipart upload after every backend has admitted it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed identities, invalid backend JSON, an
+    /// existing active upload for the object, or database failure.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_registry_publication_multipart_upload(
+        &self,
+        upload_id: &str,
+        publication_id: &str,
+        registry_id: i64,
+        surface_object_id: i64,
+        expires_at: i64,
+        now: i64,
+        placements: &[(i64, i64)],
+    ) -> Result<RegistryPublicationMultipartUploadRecord> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        if expires_at <= now {
+            bail!("publication multipart expiry must be in the future");
+        }
+        let mut statements = vec![Statement::new(
+            "INSERT INTO registry_publication_multipart_uploads
+                 (upload_id, publication_id, registry_id, surface_object_id,
+                  state, active_object_slot, expires_at,
+                  created_at, finished_at)
+                 VALUES (?1, ?2, ?3, ?4, 'active', 1, ?5, ?6, NULL)",
+            vals![
+                upload_id,
+                publication_id,
+                registry_id,
+                surface_object_id,
+                expires_at,
+                now
+            ],
+        )
+        .expecting(1)];
+        for (placement_id, placement_resource_version) in placements {
+            statements.push(
+                Statement::new(
+                    "INSERT INTO registry_publication_multipart_backends
+                 (upload_id, placement_id, placement_resource_version,
+                  backend_upload_id, state)
+                 VALUES (?1, ?2, ?3, NULL, 'creating')",
+                    vals![upload_id, placement_id, placement_resource_version],
+                )
+                .expecting(1),
+            );
+        }
+        self.backend.checked_batch(&statements).await?;
+        self.registry_publication_multipart_upload(upload_id)
+            .await?
+            .context("created publication multipart upload disappeared")
+    }
+
+    /// Attaches a provider upload identity to its durable creating record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed identities, a lifecycle conflict, or
+    /// database failure.
+    pub async fn attach_registry_publication_multipart_backend(
+        &self,
+        upload_id: &str,
+        placement_id: i64,
+        backend_upload_id: &str,
+    ) -> Result<()> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        validate_key_bytes(backend_upload_id, "backend multipart upload id", 1024)?;
+        self.backend
+            .checked_batch(&[Statement::new(
+                "UPDATE registry_publication_multipart_backends
+             SET backend_upload_id = ?3, state = 'ready'
+             WHERE upload_id = ?1 AND placement_id = ?2 AND state = 'creating'
+               AND EXISTS (SELECT 1 FROM registry_publication_multipart_uploads
+                 WHERE upload_id = ?1 AND state = 'active')",
+                vals![upload_id, placement_id, backend_upload_id],
+            )
+            .expecting(1)])
+            .await
+    }
+
+    /// Lists every ready provider upload identity for one durable transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed upload id or database failure.
+    pub async fn registry_publication_multipart_backends(
+        &self,
+        upload_id: &str,
+    ) -> Result<Vec<(i64, i64, String, Option<String>)>> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        self.backend
+            .query(
+                "SELECT placement_id, placement_resource_version, backend_upload_id,
+                        completion_etag
+                 FROM registry_publication_multipart_backends
+                 WHERE upload_id = ?1 AND state = 'ready'
+                 ORDER BY placement_id",
+                &vals![upload_id],
+            )
+            .await?
+            .iter()
+            .map(|row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+            .collect()
+    }
+
+    /// Returns whether a durable multipart transaction has unresolved backend creation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed upload id or database failure.
+    pub async fn registry_publication_multipart_has_creating_backend(
+        &self,
+        upload_id: &str,
+    ) -> Result<bool> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        Ok(self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM registry_publication_multipart_backends
+                 WHERE upload_id = ?1 AND state = 'creating' LIMIT 1",
+                &vals![upload_id],
+            )
+            .await?
+            .is_some())
+    }
+
+    /// Advances an active multipart upload into its idempotent completion phase.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the upload is not active/completing or persistence fails.
+    pub async fn begin_registry_publication_multipart_completion(
+        &self,
+        upload_id: &str,
+        completion_token: &str,
+        claimed_at: i64,
+        steal_before: i64,
+    ) -> Result<RegistryPublicationMultipartUploadRecord> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        validate_key_bytes(completion_token, "multipart completion token", 64)?;
+        anyhow::ensure!(
+            claimed_at > steal_before,
+            "multipart completion claim is invalid"
+        );
+        let updated = self
+            .backend
+            .execute(
+                "UPDATE registry_publication_multipart_uploads
+                 SET state = 'completing', completion_token = ?2, completion_since = ?3
+                 WHERE upload_id = ?1
+                   AND ((state = 'active' AND completion_token IS NULL
+                         AND completion_since IS NULL)
+                     OR (state = 'completing' AND completion_since <= ?4))",
+                &vals![upload_id, completion_token, claimed_at, steal_before],
+            )
+            .await?;
+        anyhow::ensure!(updated == 1, "multipart completion is already owned");
+        self.registry_publication_multipart_upload(upload_id)
+            .await?
+            .filter(|upload| {
+                upload.state == "completing"
+                    && upload.completion_token.as_deref() == Some(completion_token)
+            })
+            .context("publication multipart upload is not completable")
+    }
+
+    /// Atomically records every placement identity for one uploaded part.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed identities, an invalid part number or
+    /// entity tag, an inactive upload, or database failure.
+    pub async fn record_registry_publication_multipart_part(
+        &self,
+        upload_id: &str,
+        part_number: u32,
+        placements: &[(i64, String)],
+        prior_hashed_size: i64,
+        hashed_size: i64,
+        sha256_state: &str,
+        pending_hash: &str,
+        pending_token: &str,
+    ) -> Result<()> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        validate_key_bytes(pending_hash, "publication multipart part hash", 64)?;
+        validate_key_bytes(pending_token, "publication multipart claim token", 64)?;
+        if part_number == 0 || placements.is_empty() || hashed_size <= prior_hashed_size {
+            bail!("publication multipart part identity is incomplete");
+        }
+        validate_key_bytes(sha256_state, "publication SHA-256 state", 64)?;
+        if sha256_state.len() != 64 || !sha256_state.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            bail!("publication SHA-256 state is invalid");
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        let mut statements = Vec::with_capacity(placements.len() + 1);
+        statements.push(
+            Statement::new(
+                "UPDATE registry_publication_multipart_uploads
+                 SET hashed_size = ?3, sha256_state = ?4,
+                     pending_part = NULL, pending_hash = NULL,
+                     pending_token = NULL, pending_since = NULL
+                 WHERE upload_id = ?1 AND state = 'active' AND hashed_size = ?2
+                   AND pending_part = ?5 AND pending_hash = ?6
+                   AND pending_token = ?7",
+                vals![
+                    upload_id,
+                    prior_hashed_size,
+                    hashed_size,
+                    sha256_state,
+                    i64::from(part_number),
+                    pending_hash,
+                    pending_token
+                ],
+            )
+            .expecting(1),
+        );
+        for (placement_id, etag) in placements {
+            if !seen.insert(*placement_id) || etag.is_empty() || etag.len() > 1024 {
+                bail!("publication multipart placement identity is invalid");
+            }
+            statements.push(
+                Statement::new(
+                    "INSERT INTO registry_publication_multipart_parts
+                 (upload_id, part_number, placement_id, etag)
+                 SELECT ?1, ?2, ?3, ?4
+                 WHERE EXISTS (SELECT 1 FROM registry_publication_multipart_uploads
+                   WHERE upload_id = ?1 AND state = 'active' AND hashed_size = ?5)",
+                    vals![
+                        upload_id,
+                        i64::from(part_number),
+                        placement_id,
+                        etag,
+                        hashed_size
+                    ],
+                )
+                .expecting(1),
+            );
+        }
+        self.backend.checked_batch(&statements).await
+    }
+
+    /// Claims the next contiguous part before any provider side effect.
+    ///
+    /// A claim serializes writes for a part until the complete provider
+    /// transaction is explicitly aborted. It is never stolen on the same
+    /// provider upload because a timed-out writer may still have an in-flight
+    /// side effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed claim data, an inactive upload, a
+    /// conflicting claim, stale hash progress, or database failure.
+    pub async fn claim_registry_publication_multipart_part(
+        &self,
+        upload_id: &str,
+        part_number: u32,
+        body_hash: &str,
+        hashed_size: i64,
+        claim_token: &str,
+        claimed_at: i64,
+    ) -> Result<()> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        validate_key_bytes(body_hash, "publication multipart part hash", 64)?;
+        validate_key_bytes(claim_token, "publication multipart claim token", 64)?;
+        if claimed_at < 0 {
+            bail!("publication multipart claim lease is invalid");
+        }
+        if body_hash.len() != 64
+            || !body_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            bail!("publication multipart part hash is invalid");
+        }
+        self.backend
+            .checked_batch(&[Statement::new(
+                "UPDATE registry_publication_multipart_uploads
+                 SET pending_part = ?2, pending_hash = ?3,
+                     pending_token = ?5, pending_since = ?6
+                 WHERE upload_id = ?1 AND state = 'active' AND hashed_size = ?4
+                   AND pending_part IS NULL AND pending_hash IS NULL
+                   AND pending_token IS NULL AND pending_since IS NULL",
+                vals![
+                    upload_id,
+                    i64::from(part_number),
+                    body_hash,
+                    hashed_size,
+                    claim_token,
+                    claimed_at
+                ],
+            )
+            .expecting(1)])
+            .await
+    }
+
+    /// Records the strong object identity returned by provider completion.
+    pub async fn record_registry_publication_multipart_completion_etag(
+        &self,
+        upload_id: &str,
+        placement_id: i64,
+        etag: &str,
+    ) -> Result<()> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        validate_key_bytes(etag, "multipart completion ETag", 1024)?;
+        self.backend
+            .checked_batch(&[Statement::new(
+                "UPDATE registry_publication_multipart_backends SET completion_etag = ?3
+             WHERE upload_id = ?1 AND placement_id = ?2 AND state = 'ready'
+               AND (completion_etag IS NULL OR completion_etag = ?3)",
+                vals![upload_id, placement_id, etag],
+            )
+            .expecting(1)])
+            .await
+    }
+
+    /// Lists durable backend identities for every confirmed upload part.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed upload id, invalid persisted part
+    /// numbers, or database failure.
+    pub async fn registry_publication_multipart_parts(
+        &self,
+        upload_id: &str,
+    ) -> Result<Vec<RegistryPublicationMultipartPartRecord>> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        self.backend
+            .query(
+                "SELECT upload_id, part_number, placement_id, etag
+                 FROM registry_publication_multipart_parts
+                 WHERE upload_id = ?1 ORDER BY part_number, placement_id",
+                &vals![upload_id],
+            )
+            .await?
+            .iter()
+            .map(|row| {
+                Ok(RegistryPublicationMultipartPartRecord {
+                    upload_id: row.get(0)?,
+                    part_number: u32::try_from(row.get::<i64>(1)?)?,
+                    placement_id: row.get(2)?,
+                    etag: row.get(3)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Finishes one active multipart upload with a terminal state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid terminal state, lifecycle conflict, or
+    /// database failure.
+    pub async fn finish_registry_publication_multipart_upload(
+        &self,
+        upload_id: &str,
+        state: &str,
+        now: i64,
+    ) -> Result<()> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        if !matches!(state, "completed" | "aborted" | "failed") {
+            bail!("invalid publication multipart terminal state");
+        }
+        self.backend
+            .checked_batch(&[Statement::new(
+                "UPDATE registry_publication_multipart_uploads
+                     SET state = ?2, active_object_slot = NULL, finished_at = ?3
+                     WHERE upload_id = ?1 AND state IN('active', 'completing')",
+                vals![upload_id, state, now],
+            )
+            .expecting(1)])
+            .await
+    }
+
+    /// Finishes a multipart completion only for its current durable owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed identities, lost completion ownership,
+    /// or database failure.
+    pub async fn finish_owned_registry_publication_multipart_completion(
+        &self,
+        upload_id: &str,
+        completion_token: &str,
+        finished_at: i64,
+    ) -> Result<()> {
+        validate_key_bytes(upload_id, "publication multipart upload id", 64)?;
+        validate_key_bytes(completion_token, "multipart completion token", 64)?;
+        self.backend
+            .checked_batch(&[Statement::new(
+                "UPDATE registry_publication_multipart_uploads
+                 SET state = 'completed', active_object_slot = NULL,
+                     finished_at = ?3
+                 WHERE upload_id = ?1 AND state = 'completing'
+                   AND completion_token = ?2",
+                vals![upload_id, completion_token, finished_at],
+            )
+            .expecting(1)])
+            .await
     }
 
     /// Lists the physical placements frozen into a publication manifest.
@@ -6133,9 +6888,11 @@ impl Database {
                     "INSERT INTO object_placements
                      (surface_object_id, cache_id, registry_id, placement_id,
                       state, observed_hash, observed_size, etag,
-                      observed_inventory_generation, observed_at)
+                      observed_inventory_generation, observed_at,
+                      catalog_object_resource_version)
                      SELECT object.id, NULL, pub.registry_id, placement.id,
-                            'present', ?4, ?5, ?6, pub.ordinal, ?7
+                            'present', ?4, ?5, ?6, pub.ordinal, ?7,
+                            object.resource_version
                      FROM registry_publications pub
                      JOIN registry_publication_objects declared
                        ON declared.publication_id = pub.publication_id
@@ -7369,6 +8126,341 @@ impl Database {
             .context("observed placement disappeared")
     }
 
+    /// Lists prior evidence before a physical scan replaces its inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed persisted data.
+    pub async fn reusable_placement_scan_evidence(
+        &self,
+        placement_id: i64,
+    ) -> Result<Vec<ReusablePlacementEvidence>> {
+        self.backend
+            .query(
+                "SELECT surface_object_id, state, observed_hash, observed_size, etag
+                   FROM object_placements
+                  WHERE placement_id = ?1
+                  ORDER BY surface_object_id",
+                &vals![placement_id],
+            )
+            .await?
+            .iter()
+            .map(|row| {
+                Ok(ReusablePlacementEvidence {
+                    surface_object_id: row.get(0)?,
+                    state: row.get(1)?,
+                    observed_hash: row.get(2)?,
+                    observed_size: row.get(3)?,
+                    etag: row.get(4)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Starts a physical inventory scan while retaining reusable active evidence.
+    ///
+    /// The observation changes to syncing/unknown before any prior evidence can
+    /// be selected by readers. Active rows remain available to the controller
+    /// as strong-version checkpoints; inactive rows are removed immediately.
+    /// A complete scan replaces every active row before restoring eligibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the placement topology or observation version is
+    /// stale, or when persistence fails.
+    pub async fn begin_surface_placement_scan(
+        &self,
+        placement_id: i64,
+        expected_resource_version: i64,
+        expected_observation_version: i64,
+        operation_id: &str,
+        operation_resource_version: i64,
+        claim_token: &str,
+    ) -> Result<SurfacePlacementRecord> {
+        validate_key_bytes(operation_id, "placement scan operation id", 64)?;
+        validate_key_bytes(claim_token, "placement scan claim token", 64)?;
+        let now = unix_now();
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE surface_placement_observations
+                     SET state = 'syncing', completeness = 'unknown', observed_at = ?4,
+                         observation_version = observation_version + 1
+                     WHERE placement_id = ?1 AND observation_version = ?3
+                       AND EXISTS (SELECT 1 FROM surface_placements placement
+                         WHERE placement.id = ?1 AND placement.resource_version = ?2)
+                       AND EXISTS (SELECT 1 FROM placement_scan_claims claim
+                         JOIN topology_operations operation
+                           ON operation.operation_id = claim.operation_id
+                         WHERE claim.operation_id = ?5 AND claim.claim_token = ?6
+                           AND claim.operation_resource_version = ?7
+                           AND claim.lease_expires_at > ?4
+                           AND operation.resource_version = ?7
+                           AND operation.state = 'running')",
+                    vals![
+                        placement_id,
+                        expected_resource_version,
+                        expected_observation_version,
+                        now,
+                        operation_id,
+                        claim_token,
+                        operation_resource_version
+                    ],
+                )
+                .expecting(1),
+                Statement::new(
+                    "DELETE FROM object_placements
+                     WHERE placement_id = ?1
+                       AND NOT EXISTS (
+                         SELECT 1 FROM surface_objects object
+                          WHERE object.id = object_placements.surface_object_id
+                            AND object.lifecycle_state = 'active')
+                       AND EXISTS (SELECT 1 FROM surface_placement_observations observation
+                         WHERE observation.placement_id = ?1
+                           AND observation.observation_version = ?2)",
+                    vals![placement_id, expected_observation_version + 1],
+                )
+                .unchecked(),
+            ])
+            .await?;
+        self.surface_placement(placement_id)
+            .await?
+            .context("placement disappeared after its scan began")
+    }
+
+    /// Records one bounded batch of logical-object evidence during a placement scan.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed evidence, stale placement topology, an
+    /// object on another surface, duplicate objects, an oversized batch, a
+    /// placement no longer being scanned, or a database failure.
+    pub async fn record_surface_placement_scan_presences(
+        &self,
+        placement_id: i64,
+        expected_resource_version: i64,
+        expected_observation_version: i64,
+        operation_id: &str,
+        operation_resource_version: i64,
+        claim_token: &str,
+        presences: &[(i64, PlacementScanPresence)],
+        observed_at: i64,
+    ) -> Result<()> {
+        validate_key_bytes(operation_id, "placement scan operation id", 64)?;
+        validate_key_bytes(claim_token, "placement scan claim token", 64)?;
+        if presences.len() > MAX_PLACEMENT_SCAN_PRESENCE_BATCH {
+            bail!(
+                "placement scan presence batch exceeds {} objects",
+                MAX_PLACEMENT_SCAN_PRESENCE_BATCH
+            );
+        }
+        if observed_at < 0 {
+            bail!("placement scan evidence has an invalid time or size");
+        }
+        if presences.is_empty() {
+            return Ok(());
+        }
+
+        let mut seen = std::collections::BTreeSet::new();
+        for (_, presence) in presences {
+            if !seen.insert(presence.surface_object_id) {
+                bail!(
+                    "placement scan presence batch repeats object {}",
+                    presence.surface_object_id
+                );
+            }
+            if !matches!(presence.state.as_str(), "present" | "missing" | "corrupt") {
+                bail!("invalid placement scan presence state '{}'", presence.state);
+            }
+            if presence.observed_size.is_some_and(|size| size < 0) {
+                bail!("placement scan evidence has an invalid time or size");
+            }
+            if presence.state == "missing"
+                && (presence.observed_hash.is_some()
+                    || presence.observed_size.is_some()
+                    || presence.etag.is_some())
+            {
+                bail!("missing placement scan evidence cannot describe physical bytes");
+            }
+            if presence.state != "missing"
+                && (presence.observed_hash.is_none() || presence.observed_size.is_none())
+            {
+                bail!("present placement scan evidence requires a digest and size");
+            }
+            if let Some(hash) = presence.observed_hash.as_deref() {
+                validate_key_bytes(hash, "placement scan observed hash", 128)?;
+            }
+        }
+        let claim_checked_at = unix_now();
+
+        let delete_count = presences.len().div_ceil(MAX_PLACEMENT_SCAN_DELETE_IDS);
+        let mut statements = Vec::with_capacity(presences.len() + delete_count);
+        for presence_chunk in presences.chunks(MAX_PLACEMENT_SCAN_DELETE_IDS) {
+            let mut delete_params = Vec::with_capacity(presence_chunk.len() + 1);
+            delete_params.push(crate::value::ToValue::to_value(&placement_id));
+            delete_params.extend(
+                presence_chunk.iter().map(|(_, presence)| {
+                    crate::value::ToValue::to_value(&presence.surface_object_id)
+                }),
+            );
+            let object_placeholders = (0..presence_chunk.len())
+                .map(|index| format!("?{}", index + 2))
+                .collect::<Vec<_>>()
+                .join(", ");
+            statements.push(
+                Statement::new(
+                    format!(
+                        "DELETE FROM object_placements
+                         WHERE placement_id = ?1
+                           AND surface_object_id IN ({object_placeholders})"
+                    ),
+                    delete_params,
+                )
+                .unchecked(),
+            );
+        }
+        for (expected_object_resource_version, presence) in presences {
+            statements.push(
+                Statement::new(
+                    "INSERT INTO object_placements
+                       (surface_object_id, cache_id, registry_id, placement_id,
+                        state, observed_hash, observed_size, etag,
+                        observed_inventory_generation, observed_at,
+                        catalog_object_resource_version)
+                     SELECT object.id, object.cache_id, object.registry_id, placement.id,
+                            ?6, ?7, ?8, ?9, ?3, ?13, object.resource_version
+                     FROM surface_objects object
+                     JOIN surface_placements placement
+                       ON object.registry_id = placement.registry_id
+                       OR object.cache_id = placement.cache_id
+                     JOIN surface_placement_observations observation
+                       ON observation.placement_id = placement.id
+                     WHERE placement.id = ?1 AND object.id = ?2
+                       AND placement.resource_version = ?3
+                       AND observation.observation_version = ?4
+                       AND object.resource_version = ?5
+                       AND object.lifecycle_state = 'active'
+                       AND observation.state = 'syncing'
+                       AND observation.completeness = 'unknown'
+                       AND EXISTS (SELECT 1 FROM placement_scan_claims claim
+                         JOIN topology_operations operation
+                           ON operation.operation_id = claim.operation_id
+                         WHERE claim.operation_id = ?10 AND claim.claim_token = ?11
+                           AND claim.operation_resource_version = ?12
+                           AND claim.lease_expires_at > ?14
+                           AND operation.resource_version = ?12
+                           AND operation.state = 'running')",
+                    vals![
+                        placement_id,
+                        presence.surface_object_id,
+                        expected_resource_version,
+                        expected_observation_version,
+                        *expected_object_resource_version,
+                        presence.state,
+                        presence.observed_hash,
+                        presence.observed_size,
+                        presence.etag,
+                        operation_id,
+                        claim_token,
+                        operation_resource_version,
+                        observed_at,
+                        claim_checked_at
+                    ],
+                )
+                .expecting(1),
+            );
+        }
+
+        self.backend.checked_batch(&statements).await
+    }
+
+    /// Publishes the terminal state of a complete physical inventory pass.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid state, stale topology or observation
+    /// versions, or persistence failure.
+    pub async fn finish_surface_placement_scan(
+        &self,
+        placement_id: i64,
+        expected_resource_version: i64,
+        expected_observation_version: i64,
+        operation_id: &str,
+        operation_resource_version: i64,
+        claim_token: &str,
+        state: &str,
+        completeness: &str,
+    ) -> Result<SurfacePlacementRecord> {
+        validate_key_bytes(operation_id, "placement scan operation id", 64)?;
+        validate_key_bytes(claim_token, "placement scan claim token", 64)?;
+        if !matches!(
+            (state, completeness),
+            ("ready", "complete") | ("degraded", "partial")
+        ) {
+            bail!("placement scan state and completeness are inconsistent");
+        }
+        let affected = self
+            .backend
+            .execute(
+                "UPDATE surface_placement_observations
+                 SET state = ?7, completeness = ?8, observed_at = ?9,
+                     observation_version = observation_version + 1
+                 WHERE placement_id = ?1 AND observation_version = ?3
+                   AND state = 'syncing' AND completeness = 'unknown'
+                   AND EXISTS (SELECT 1 FROM surface_placements placement
+                     WHERE placement.id = ?1 AND placement.resource_version = ?2)
+                   AND EXISTS (SELECT 1 FROM placement_scan_claims claim
+                     JOIN topology_operations operation
+                       ON operation.operation_id = claim.operation_id
+                     WHERE claim.operation_id = ?4 AND claim.claim_token = ?5
+                       AND claim.operation_resource_version = ?6
+                       AND claim.lease_expires_at > ?9
+                       AND operation.resource_version = ?6
+                       AND operation.state = 'running')
+                   AND NOT EXISTS (
+                     SELECT 1 FROM surface_objects object
+                     JOIN surface_placements placement ON placement.id = ?1
+                     WHERE object.lifecycle_state = 'active'
+                       AND (object.registry_id = placement.registry_id
+                         OR object.cache_id = placement.cache_id)
+                       AND NOT EXISTS (SELECT 1 FROM object_placements presence
+                         WHERE presence.surface_object_id = object.id
+                           AND presence.placement_id = ?1
+                           AND presence.catalog_object_resource_version = object.resource_version))
+                   AND (?7 <> 'ready' OR NOT EXISTS (
+                     SELECT 1 FROM surface_objects object
+                     JOIN surface_placements placement ON placement.id = ?1
+                     WHERE object.lifecycle_state = 'active'
+                       AND (object.registry_id = placement.registry_id
+                         OR object.cache_id = placement.cache_id)
+                       AND NOT EXISTS (SELECT 1 FROM object_placements presence
+                         WHERE presence.surface_object_id = object.id
+                           AND presence.placement_id = ?1
+                           AND presence.catalog_object_resource_version = object.resource_version
+                           AND presence.state = 'present'
+                           AND presence.observed_hash = object.content_hash
+                           AND presence.observed_size = object.size)))",
+                &vals![
+                    placement_id,
+                    expected_resource_version,
+                    expected_observation_version,
+                    operation_id,
+                    claim_token,
+                    operation_resource_version,
+                    state,
+                    completeness,
+                    unix_now()
+                ],
+            )
+            .await?;
+        if affected != 1 {
+            bail!("placement scan topology or observation version is stale");
+        }
+        self.surface_placement(placement_id)
+            .await?
+            .context("placement disappeared after its scan completed")
+    }
+
     /// Creates initial single-writer authority from a validated complete placement.
     ///
     /// # Errors
@@ -8469,6 +9561,11 @@ impl Database {
                  WHERE job.placement_id = ?1 AND job.active_slot = 1)
                AND NOT EXISTS (SELECT 1 FROM cache_inventory_placement_scans scan
                  WHERE scan.placement_id = ?1 AND scan.completed_at IS NULL)
+               AND NOT EXISTS (SELECT 1
+                 FROM registry_publication_multipart_uploads upload
+                 JOIN registry_publication_multipart_backends backend
+                   ON backend.upload_id = upload.upload_id
+                 WHERE backend.placement_id = ?1 AND upload.active_object_slot = 1)
                AND NOT EXISTS (
                  SELECT 1 FROM delivery_routes r
                  WHERE r.placement_id = ?1 OR r.placement_policy_revision_id IN (
@@ -8544,6 +9641,11 @@ impl Database {
                      WHERE job.placement_id = ?1 AND job.active_slot = 1)
                    AND NOT EXISTS (SELECT 1 FROM cache_inventory_placement_scans scan
                      WHERE scan.placement_id = ?1 AND scan.completed_at IS NULL)
+                   AND NOT EXISTS (SELECT 1
+                     FROM registry_publication_multipart_uploads upload
+                     JOIN registry_publication_multipart_backends backend
+                       ON backend.upload_id = upload.upload_id
+                     WHERE backend.placement_id = ?1 AND upload.active_object_slot = 1)
                    AND NOT EXISTS (SELECT 1 FROM topology_operations o
                      WHERE o.state IN ('pending', 'running') AND (
                        (o.primary_target_kind = 'placement'
@@ -8561,7 +9663,7 @@ impl Database {
         let row = self
             .backend
             .query_opt(
-                "SELECT p.name, r.slug, c.slug FROM surface_placements p
+                "SELECT p.name, r.stable_id, c.stable_id FROM surface_placements p
                  LEFT JOIN registries r ON r.id = p.registry_id
                  LEFT JOIN binary_caches c ON c.id = p.cache_id WHERE p.id = ?1",
                 &vals![id],
@@ -8641,6 +9743,75 @@ impl Database {
             .context("created surface object disappeared")
     }
 
+    /// Converts one legacy immutable registry object into a replaceable pointer
+    /// while preserving its currently published identity.
+    ///
+    /// This migration is reserved for paths classified as replaceable by the
+    /// shared machine-surface policy. It lets deployments adopt stricter path
+    /// semantics without taking the currently published bytes offline.
+    /// When a current publication exists, the converted row remains owned by
+    /// it until the new publication completes, so reads stay available
+    /// throughout migration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the object and preparing publication belong to
+    /// the same registry, the object is active and immutable (or was already
+    /// converted by an equivalent concurrent admission), or the database
+    /// operation fails.
+    pub async fn convert_registry_object_to_mutable(
+        &self,
+        registry_id: i64,
+        surface_object_id: i64,
+        object_key: &str,
+        preparing_publication_id: &str,
+    ) -> Result<SurfaceObjectRecord> {
+        validate_key_bytes(object_key, "surface object key", 512)?;
+        validate_key_bytes(preparing_publication_id, "publication id", 64)?;
+        if !aos_registry_surface::keymap::is_mutable_path(object_key) {
+            bail!("surface object path is not replaceable metadata");
+        }
+        let now = unix_now();
+        self.backend
+            .execute(
+                "UPDATE surface_objects
+                 SET object_kind = 'mutable_pointer', partition_key = NULL,
+                     mutable_publication_id = COALESCE(
+                       (SELECT state.current_publication_id
+                        FROM registry_publication_state state
+                        WHERE state.registry_id = ?1),
+                       ?4),
+                     updated_at = ?5, resource_version = resource_version + 1
+                 WHERE id = ?2 AND registry_id = ?1 AND cache_id IS NULL
+                   AND object_key = ?3 AND lifecycle_state = 'active'
+                   AND object_kind = 'immutable' AND mutable_publication_id IS NULL
+                   AND EXISTS (SELECT 1 FROM registry_publications publication
+                     WHERE publication.publication_id = ?4
+                       AND publication.registry_id = ?1
+                       AND publication.state = 'preparing')",
+                &vals![
+                    registry_id,
+                    surface_object_id,
+                    object_key,
+                    preparing_publication_id,
+                    now
+                ],
+            )
+            .await?;
+        let object = self
+            .surface_object(surface_object_id)
+            .await?
+            .context("converted registry object disappeared")?;
+        if object.registry_id != Some(registry_id)
+            || object.object_key != object_key
+            || object.lifecycle_state != "active"
+            || object.object_kind != "mutable_pointer"
+        {
+            bail!("loose object conversion is stale or cross-registry");
+        }
+        Ok(object)
+    }
+
     /// Returns a logical object by id.
     ///
     /// # Errors
@@ -8679,6 +9850,63 @@ impl Database {
             )
             .await?;
         rows.first().map(row_to_surface_object).transpose()
+    }
+
+    /// Lists every active logical object on one registry or binary-cache surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed persisted data.
+    pub async fn list_active_surface_objects(
+        &self,
+        surface: SurfaceTarget,
+    ) -> Result<Vec<SurfaceObjectRecord>> {
+        let (registry_id, cache_id) = surface.ids();
+        self.backend
+            .query(
+                &format!(
+                    "SELECT {SURFACE_OBJECT_COLUMNS} FROM surface_objects
+                     WHERE (registry_id = ?1 OR cache_id = ?2)
+                       AND lifecycle_state = 'active'
+                     ORDER BY object_key, id"
+                ),
+                &vals![registry_id, cache_id],
+            )
+            .await?
+            .iter()
+            .map(row_to_surface_object)
+            .collect()
+    }
+
+    /// Resolves the stable placement identity captured by a topology operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed persisted data.
+    pub async fn surface_placement_by_operation_target(
+        &self,
+        stable_id: &str,
+    ) -> Result<Option<SurfacePlacementRecord>> {
+        validate_key_bytes(stable_id, "placement operation target", 255)?;
+        let rows = self
+            .backend
+            .query(
+                &format!(
+                    "SELECT {PLACEMENT_COLUMNS} FROM surface_placement_effective
+                     WHERE id IN (
+                       SELECT placement.id FROM surface_placements placement
+                       LEFT JOIN registries registry ON registry.id = placement.registry_id
+                       LEFT JOIN binary_caches cache ON cache.id = placement.cache_id
+                       WHERE (registry.stable_id || '/placement:' || placement.name) = ?1
+                          OR (cache.stable_id || '/placement:' || placement.name) = ?1)"
+                ),
+                &vals![stable_id],
+            )
+            .await?;
+        if rows.len() > 1 {
+            bail!("placement operation target is ambiguous");
+        }
+        rows.first().map(row_to_surface_placement).transpose()
     }
 
     /// Lists placement-presence observations for one logical surface object.
@@ -9483,28 +10711,60 @@ impl Database {
             bail!("an operation cannot repeat the same target identity");
         }
         let now = unix_now();
-        let mut statements = vec![Statement::new(
-            "INSERT INTO topology_operations (operation_id, operation_kind,
+        let mut statements = Vec::with_capacity(resolved.len() + 1);
+        for ((target, _, _, _), requested) in resolved.iter().zip(&input.targets) {
+            let guard = match target {
+                NewTopologyOperationTargetRef::Registry(id) => Some(Statement::new(
+                    "UPDATE registries SET updated_at = updated_at WHERE id = ?1",
+                    vals![id],
+                )),
+                NewTopologyOperationTargetRef::Placement(id) => Some(Statement::new(
+                    "UPDATE surface_placements SET updated_at = updated_at
+                     WHERE id = ?1 AND resource_version = ?2",
+                    vals![id, requested.generation_key],
+                )),
+                NewTopologyOperationTargetRef::DeliveryRoute(id) => Some(Statement::new(
+                    "UPDATE delivery_routes SET updated_at = updated_at
+                     WHERE id = ?1 AND EXISTS (
+                       SELECT 1 FROM delivery_route_heads
+                       WHERE delivery_route_id = ?1
+                         AND configuration_generation = ?2
+                         AND configuration_digest = ?3)",
+                    vals![id, requested.generation_key, requested.configuration_digest],
+                )),
+                _ => None,
+            };
+            if let Some(guard) = guard {
+                // Registry deletion locks the same owned rows before it
+                // cancels operations. This makes admission and teardown
+                // mutually exclusive on every supported SQL backend.
+                statements.push(guard.expecting(1));
+            }
+        }
+        statements.push(
+            Statement::new(
+                "INSERT INTO topology_operations (operation_id, operation_kind,
                 authorization_scope_key, control_permission, primary_target_kind,
                 primary_target_stable_id, primary_target_generation_key,
                 primary_target_configuration_digest, state, progress_total,
                 detail_json, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', ?9, ?10, ?11)",
-            vals![
-                input.operation_id,
-                input.operation_kind,
-                authorization_scope_key,
-                input.control_permission.as_str(),
-                primary_target_kind,
-                primary_target_stable_id,
-                primary_requested.generation_key,
-                primary_requested.configuration_digest,
-                input.progress_total,
-                input.detail_json,
-                now
-            ],
-        )
-        .expecting(1)];
+                vals![
+                    input.operation_id,
+                    input.operation_kind,
+                    authorization_scope_key,
+                    input.control_permission.as_str(),
+                    primary_target_kind,
+                    primary_target_stable_id,
+                    primary_requested.generation_key,
+                    primary_requested.configuration_digest,
+                    input.progress_total,
+                    input.detail_json,
+                    now
+                ],
+            )
+            .expecting(1),
+        );
         for ((target, target_kind, stable_id, target_scope), requested) in
             resolved.into_iter().zip(&input.targets)
         {
@@ -9868,6 +11128,41 @@ impl Database {
             .collect()
     }
 
+    /// Lists placement scans eligible for a controller claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn due_surface_placement_scan_operations(
+        &self,
+        now: i64,
+        limit: usize,
+    ) -> Result<Vec<TopologyOperationRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        self.backend
+            .query(
+                &format!(
+                    "SELECT {OPERATION_COLUMNS} FROM topology_operations operation
+                     WHERE operation.operation_kind = 'scan_placement'
+                       AND (operation.state = 'pending'
+                         OR (operation.state = 'running' AND (
+                           NOT EXISTS (SELECT 1 FROM placement_scan_claims claim
+                             WHERE claim.operation_id = operation.operation_id)
+                           OR EXISTS (SELECT 1 FROM placement_scan_claims claim
+                             WHERE claim.operation_id = operation.operation_id
+                               AND claim.lease_expires_at <= ?1))))
+                     ORDER BY operation.created_at, operation.operation_id LIMIT ?2"
+                ),
+                &vals![now, i64::try_from(limit)?],
+            )
+            .await?
+            .iter()
+            .map(row_to_topology_operation)
+            .collect()
+    }
+
     /// Lists route-probe operations eligible for a controller claim.
     ///
     /// # Errors
@@ -10061,12 +11356,12 @@ impl Database {
             "retention_subscription" => {
                 return self
                     .numeric_operation_target_scope("cache_retention_subscriptions", stable_id)
-                    .await
+                    .await;
             }
             "population_target" => {
                 return self
                     .numeric_operation_target_scope("cache_population_targets", stable_id)
-                    .await
+                    .await;
             }
             "cache_gc_generation" => {
                 "SELECT cache.scope_key
@@ -10465,6 +11760,227 @@ impl Database {
             return Ok(None);
         }
         self.topology_operation(operation_id).await
+    }
+
+    /// Claims one pending or stale-running physical placement scan under CAS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid lease or database failure.
+    pub async fn claim_surface_placement_scan_operation(
+        &self,
+        operation_id: &str,
+        expected_version: i64,
+        claim_token: &str,
+        lease_seconds: i64,
+    ) -> Result<Option<TopologyOperationRecord>> {
+        validate_key_bytes(claim_token, "placement scan claim token", 64)?;
+        if lease_seconds <= 0 {
+            bail!("placement scan claim lease must be positive");
+        }
+        let now = unix_now();
+        let lease_expires_at = now
+            .checked_add(lease_seconds)
+            .context("placement scan claim deadline overflowed")?;
+        let claimed_version = expected_version
+            .checked_add(1)
+            .context("placement scan claim version overflowed")?;
+        let result = self
+            .backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE topology_operations
+                     SET state = 'running',
+                         started_at = CASE WHEN state = 'pending' THEN ?3 ELSE started_at END,
+                         finished_at = NULL, error = NULL,
+                         resource_version = resource_version + 1
+                     WHERE operation_id = ?1 AND operation_kind = 'scan_placement'
+                       AND resource_version = ?2
+                       AND (state = 'pending' OR (state = 'running' AND (
+                         NOT EXISTS (SELECT 1 FROM placement_scan_claims claim
+                           WHERE claim.operation_id = topology_operations.operation_id)
+                         OR EXISTS (SELECT 1 FROM placement_scan_claims claim
+                           WHERE claim.operation_id = topology_operations.operation_id
+                             AND claim.lease_expires_at <= ?3))))",
+                    vals![operation_id, expected_version, now],
+                )
+                .expecting(1),
+                Statement::new(
+                    "DELETE FROM placement_scan_claims
+                     WHERE operation_id = ?1
+                       AND EXISTS (SELECT 1 FROM topology_operations operation
+                         WHERE operation.operation_id = ?1
+                           AND operation.resource_version = ?2)",
+                    vals![operation_id, claimed_version],
+                )
+                .unchecked(),
+                Statement::new(
+                    "INSERT INTO placement_scan_claims
+                       (operation_id, claim_token, operation_resource_version,
+                        heartbeat_at, lease_expires_at)
+                     SELECT operation_id, ?3, resource_version, ?4, ?5
+                     FROM topology_operations
+                     WHERE operation_id = ?1 AND resource_version = ?2
+                       AND state = 'running'",
+                    vals![
+                        operation_id,
+                        claimed_version,
+                        claim_token,
+                        now,
+                        lease_expires_at
+                    ],
+                )
+                .expecting(1),
+            ])
+            .await;
+        if let Err(error) = result {
+            let claim = self
+                .backend
+                .query_opt(
+                    "SELECT claim_token FROM placement_scan_claims
+                     WHERE operation_id = ?1 AND operation_resource_version = ?2",
+                    &vals![operation_id, claimed_version],
+                )
+                .await?;
+            if claim
+                .as_ref()
+                .and_then(|row| row.get::<String>(0).ok())
+                .as_deref()
+                == Some(claim_token)
+            {
+                return self.topology_operation(operation_id).await;
+            }
+            if claim.is_some()
+                || self
+                    .topology_operation(operation_id)
+                    .await?
+                    .is_some_and(|operation| operation.resource_version != claimed_version)
+            {
+                return Ok(None);
+            }
+            return Err(error).context("persisting placement scan claim");
+        }
+        self.topology_operation(operation_id).await
+    }
+
+    /// Renews one live physical-placement scan claim under its opaque fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the claim expired or was replaced, the deadline is
+    /// invalid, or persistence fails.
+    pub async fn heartbeat_surface_placement_scan_operation(
+        &self,
+        operation_id: &str,
+        expected_version: i64,
+        claim_token: &str,
+        heartbeat_at: i64,
+        lease_seconds: i64,
+    ) -> Result<()> {
+        validate_key_bytes(claim_token, "placement scan claim token", 64)?;
+        if lease_seconds <= 0 {
+            bail!("placement scan claim lease must be positive");
+        }
+        if heartbeat_at < 0 {
+            bail!("placement scan heartbeat time is invalid");
+        }
+        let lease_expires_at = heartbeat_at
+            .checked_add(lease_seconds)
+            .context("placement scan heartbeat deadline overflowed")?;
+        self.backend
+            .checked_batch(&[Statement::new(
+                "UPDATE placement_scan_claims
+                 SET heartbeat_at = ?4, lease_expires_at = ?5
+                 WHERE operation_id = ?1 AND operation_resource_version = ?2
+                   AND claim_token = ?3 AND lease_expires_at > ?4
+                   AND EXISTS (SELECT 1 FROM topology_operations operation
+                     WHERE operation.operation_id = ?1
+                       AND operation.resource_version = ?2
+                       AND operation.state = 'running')",
+                vals![
+                    operation_id,
+                    expected_version,
+                    claim_token,
+                    heartbeat_at,
+                    lease_expires_at
+                ],
+            )
+            .expecting(1)])
+            .await
+    }
+
+    /// Terminalizes one live physical-placement scan under its exact claim.
+    ///
+    /// Returns `false` without mutation when the claim expired or was replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid terminal state or progress, malformed
+    /// detail, or persistence failure.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn finish_claimed_surface_placement_scan_operation(
+        &self,
+        operation_id: &str,
+        expected_version: i64,
+        claim_token: &str,
+        state: &str,
+        progress_current: i64,
+        progress_total: Option<i64>,
+        detail_json: &str,
+        error: Option<&str>,
+        finished_at: i64,
+    ) -> Result<bool> {
+        validate_key_bytes(operation_id, "placement scan operation id", 64)?;
+        validate_key_bytes(claim_token, "placement scan claim token", 64)?;
+        if !matches!((state, error), ("succeeded", None) | ("failed", Some(_))) {
+            bail!("placement scan terminal state and error are inconsistent");
+        }
+        if progress_current < 0
+            || progress_total.is_some_and(|total| total < progress_current)
+            || finished_at < 0
+        {
+            bail!("placement scan terminal progress or time is invalid");
+        }
+        validate_json_value(detail_json, "placement scan operation detail")?;
+
+        let affected = self
+            .backend
+            .execute(
+                "UPDATE topology_operations
+                 SET state = ?4, progress_current = ?5, progress_total = ?6,
+                     detail_json = ?7, error = ?8, finished_at = ?9,
+                     resource_version = resource_version + 1
+                 WHERE operation_id = ?1 AND resource_version = ?2
+                   AND operation_kind = 'scan_placement' AND state = 'running'
+                   AND EXISTS (SELECT 1 FROM placement_scan_claims claim
+                     WHERE claim.operation_id = topology_operations.operation_id
+                       AND claim.operation_resource_version = ?2
+                       AND claim.claim_token = ?3
+                       AND claim.lease_expires_at > ?9)",
+                &vals![
+                    operation_id,
+                    expected_version,
+                    claim_token,
+                    state,
+                    progress_current,
+                    progress_total,
+                    detail_json,
+                    error,
+                    finished_at
+                ],
+            )
+            .await?;
+        if affected == 0 {
+            return Ok(false);
+        }
+        self.backend
+            .execute(
+                "DELETE FROM placement_scan_claims
+                 WHERE operation_id = ?1 AND claim_token = ?2",
+                &vals![operation_id, claim_token],
+            )
+            .await?;
+        Ok(true)
     }
 
     /// Claims a pending or stale-running delivery-route probe under CAS.
@@ -11385,9 +12901,11 @@ impl Database {
                     "INSERT INTO object_placements
                  (surface_object_id, cache_id, registry_id, placement_id,
                   state, observed_hash, observed_size, etag,
-                  observed_inventory_generation, observed_at)
+                  observed_inventory_generation, observed_at,
+                  catalog_object_resource_version)
                  SELECT root.surface_object_id, NULL, root.registry_id, placement.id,
-                        'present', ?4, ?5, ?6, ?7, ?7
+                        'present', ?4, ?5, ?6, ?7, ?7,
+                        object.resource_version
                  FROM registry_image_roots root
                  JOIN surface_objects object
                    ON object.id = root.surface_object_id
@@ -12271,6 +13789,12 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
+                    "INSERT INTO org_usage (org_id, used_bytes, object_count, updated_at)
+                     VALUES (?1, 0, 0, 0)",
+                    vals![org_id],
+                )
+                .expecting(1),
+                Statement::new(
                     "INSERT INTO authorization_scopes
                      (scope_key, kind, org_id, parent_scope_key, resource_stable_id, created_at)
                      VALUES (?1, 'organization', ?2, 'instance', ?1, ?3)",
@@ -12352,6 +13876,12 @@ impl Database {
                      (id, stable_id, slug, name, created_at, updated_at, creation_plan_id)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6)",
                     vals![org_id, consumer_scope_key, slug, name, now, plan_id],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO org_usage (org_id, used_bytes, object_count, updated_at)
+                     VALUES (?1, 0, 0, 0)",
+                    vals![org_id],
                 )
                 .expecting(1),
                 Statement::new(
@@ -14171,7 +15701,9 @@ impl Database {
         }
         // Resource locators are unique across registries and caches.
         if self.binary_cache_by_slug(&slug).await?.is_some() {
-            bail!("a cache already exists at '{slug}' (slugs are unique across registries and caches)");
+            bail!(
+                "a cache already exists at '{slug}' (slugs are unique across registries and caches)"
+            );
         }
         // Per-org registry-count quota (NULL/unset = unlimited).
         if let Some(max_registries) = self.org_quota(org_id).await?.max_registries {
@@ -14350,7 +15882,9 @@ impl Database {
         // Resource locators are unique across registries and caches so browse
         // links and control-plane lookup cannot become ambiguous.
         if self.registry_by_slug(slug).await?.is_some() {
-            bail!("a registry already exists at '{slug}' (slugs are unique across registries and caches)");
+            bail!(
+                "a registry already exists at '{slug}' (slugs are unique across registries and caches)"
+            );
         }
         let created_at = unix_now();
         let owner_scope_key = match org_id {
@@ -14936,7 +16470,9 @@ impl Database {
                 .await?
         };
         if affected != 1 {
-            bail!("topology defaults are missing, stale, duplicated, or reference inaccessible resources");
+            bail!(
+                "topology defaults are missing, stale, duplicated, or reference inaccessible resources"
+            );
         }
         self.stable_topology_defaults(scope_key)
             .await?
@@ -15394,41 +16930,207 @@ impl Database {
         local_root_path: Option<&str>,
         object_bucket: Option<&str>,
     ) -> Result<StorageBindingRecord> {
-        if let Some(binding) = self.instance_default_binding().await? {
+        let binding = if let Some(binding) = self.instance_default_binding().await? {
             if binding.kind != kind
                 || binding.local_root_path.as_deref() != local_root_path
                 || binding.object_bucket.as_deref() != object_bucket
             {
                 bail!("instance-default storage binding disagrees with deployment storage");
             }
-            return Ok(binding);
-        }
-        let created = self
-            .create_topology_storage_binding(
-                None,
-                "instance-default",
-                "instance",
-                "default",
-                kind,
-                local_root_path,
-                object_bucket,
-                (kind == "deployment_r2").then_some(""),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
-            .await;
-        match created {
-            Ok(_) => {}
-            Err(_error) if self.instance_default_binding().await?.is_some() => {}
-            Err(error) => return Err(error),
-        }
-        self.instance_default_binding()
+            binding
+        } else {
+            let created = self
+                .create_topology_storage_binding(
+                    None,
+                    "instance-default",
+                    "instance",
+                    "default",
+                    kind,
+                    local_root_path,
+                    object_bucket,
+                    (kind == "deployment_r2").then_some(""),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await;
+            match created {
+                Ok(_) => {}
+                Err(_error) if self.instance_default_binding().await?.is_some() => {}
+                Err(error) => return Err(error),
+            }
+            self.instance_default_binding()
+                .await?
+                .context("instance-default binding disappeared after provisioning")?
+        };
+        self.ensure_deployment_owned_write_revision(&binding)
+            .await?;
+        Ok(binding)
+    }
+
+    /// Records the write capability supplied by the deployment itself.
+    ///
+    /// Local filesystem and Worker R2 bindings do not use operator-managed
+    /// object-store credentials. Their deployment attachment is nevertheless
+    /// an immutable authorization input, so it receives the same validated
+    /// credential and write-revision history used by external providers.
+    async fn ensure_deployment_owned_write_revision(
+        &self,
+        binding: &StorageBindingRecord,
+    ) -> Result<()> {
+        let version_ref = match binding.kind.as_str() {
+            "local_fs" => "native://aos-hub/default-storage/v1",
+            "deployment_r2" => "worker://aos-hub/default-storage/v1",
+            kind => bail!("instance-default binding cannot use provider kind '{kind}'"),
+        };
+        let provider_identity = serde_json::to_vec(&(
+            binding.kind.as_str(),
+            binding.local_root_path.as_deref(),
+            binding.object_bucket.as_deref(),
+            version_ref,
+        ))?;
+        let credential_fingerprint = hex::encode(sha2::Sha256::digest(&provider_identity));
+
+        let credential = match self
+            .current_storage_binding_credential(binding.id, "write")
             .await?
-            .context("instance-default binding disappeared after provisioning")
+        {
+            Some(credential) => credential,
+            None => match self
+                .set_storage_binding_credential_revision(
+                    binding.id,
+                    "write",
+                    version_ref,
+                    0,
+                    &credential_fingerprint,
+                    "deployment-runtime",
+                )
+                .await
+            {
+                Ok(credential) => credential,
+                Err(error) => self
+                    .current_storage_binding_credential(binding.id, "write")
+                    .await?
+                    .ok_or(error)?,
+            },
+        };
+        anyhow::ensure!(
+            credential.secret_version_ref == version_ref
+                && credential.credential_fingerprint == credential_fingerprint,
+            "instance-default write credential disagrees with deployment storage"
+        );
+        let credential = match credential.validation_state.as_str() {
+            "valid" => credential,
+            "unknown" => match self
+                .validate_storage_binding_credential_revision(
+                    binding.id,
+                    "write",
+                    credential.generation,
+                    "valid",
+                    None,
+                    credential.head_resource_version,
+                )
+                .await
+            {
+                Ok(credential) => credential,
+                Err(error) => {
+                    let Some(current) = self
+                        .current_storage_binding_credential(binding.id, "write")
+                        .await?
+                    else {
+                        return Err(error);
+                    };
+                    if current.validation_state != "valid" {
+                        return Err(error);
+                    }
+                    current
+                }
+            },
+            state => bail!("instance-default write credential is {state}"),
+        };
+
+        let capability_fingerprint = hex::encode(sha2::Sha256::digest(serde_json::to_vec(&(
+            binding.kind.as_str(),
+            true,
+            false,
+        ))?));
+        let revision_fingerprint = hex::encode(sha2::Sha256::digest(serde_json::to_vec(&(
+            credential.secret_version_ref.as_str(),
+            credential.generation,
+            capability_fingerprint.as_str(),
+        ))?));
+        let revision = self
+            .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
+                storage_binding_id: binding.id,
+                write_credential_generation: credential.generation,
+                writes_supported: true,
+                conditional_writes_supported: false,
+                revision_fingerprint,
+                capability_fingerprint,
+            })
+            .await?;
+        let observation = self
+            .storage_binding_write_observation(binding.id, revision.revision)
+            .await?;
+        match observation {
+            None => {
+                if let Err(error) = self
+                    .observe_storage_binding_write_revision(
+                        binding.id,
+                        revision.revision,
+                        "valid",
+                        None,
+                        None,
+                    )
+                    .await
+                {
+                    let current = self
+                        .storage_binding_write_observation(binding.id, revision.revision)
+                        .await?;
+                    if !current
+                        .as_ref()
+                        .is_some_and(|current| current.state == "valid")
+                    {
+                        return Err(error);
+                    }
+                }
+            }
+            Some(observation) if observation.state == "valid" => {}
+            Some(observation) => bail!(
+                "instance-default write revision has unexpected state '{}'",
+                observation.state
+            ),
+        }
+        let state = self
+            .storage_binding_write_state(binding.id)
+            .await?
+            .context("instance-default write state is missing")?;
+        match state.current_write_revision {
+            Some(current) if current == revision.revision => {}
+            None => {
+                if let Err(error) = self
+                    .set_current_storage_binding_write_revision(
+                        binding.id,
+                        revision.revision,
+                        state.resource_version,
+                    )
+                    .await
+                {
+                    let current = self
+                        .storage_binding_write_state(binding.id)
+                        .await?
+                        .context("instance-default write state disappeared")?;
+                    if current.current_write_revision != Some(revision.revision) {
+                        return Err(error);
+                    }
+                }
+            }
+            Some(_) => bail!("instance-default binding selected an unexpected write revision"),
+        }
+        Ok(())
     }
 
     /// Look up a storage binding by `(org_id, name)`.
@@ -15528,10 +17230,22 @@ impl Database {
     /// Returns an error on database failure.
     pub async fn storage_binding_delete_blockers(&self, id: i64) -> Result<Vec<String>> {
         let checks = [
-            ("placements", "SELECT COUNT(*) FROM surface_placements WHERE storage_binding_id = ?1"),
-            ("storage gateways", "SELECT COUNT(*) FROM storage_gateways WHERE storage_binding_id = ?1"),
-            ("topology defaults", "SELECT COUNT(*) FROM topology_defaults WHERE storage_binding_id = ?1"),
-            ("active consumer grants", "SELECT COUNT(*) FROM storage_binding_consumer_scopes WHERE storage_binding_id = ?1 AND state = 'active' AND grant_kind <> 'owner'"),
+            (
+                "placements",
+                "SELECT COUNT(*) FROM surface_placements WHERE storage_binding_id = ?1",
+            ),
+            (
+                "storage gateways",
+                "SELECT COUNT(*) FROM storage_gateways WHERE storage_binding_id = ?1",
+            ),
+            (
+                "topology defaults",
+                "SELECT COUNT(*) FROM topology_defaults WHERE storage_binding_id = ?1",
+            ),
+            (
+                "active consumer grants",
+                "SELECT COUNT(*) FROM storage_binding_consumer_scopes WHERE storage_binding_id = ?1 AND state = 'active' AND grant_kind <> 'owner'",
+            ),
         ];
         let mut blockers = Vec::new();
         for (label, sql) in checks {
@@ -20012,133 +21726,6 @@ impl Database {
         .await
     }
 
-    /// Deletes an unused registry identity and records the transition atomically.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the registry still owns write authority, history
-    /// serialization fails, or the checked transaction cannot commit. Returns
-    /// `Ok(false)` when the registry no longer matches `expected_version`.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn delete_registry_at_version(
-        &self,
-        registry_id: i64,
-        expected_version: i64,
-        change_id: &str,
-        actor_kind: &str,
-        actor_id: Option<i64>,
-        actor_label: &str,
-    ) -> Result<bool> {
-        let Some(current) = self.registry_by_id(registry_id).await? else {
-            return Ok(false);
-        };
-        if current.resource_version != expected_version {
-            return Ok(false);
-        }
-        let now = unix_now();
-        let old_json = serde_json::to_string(&serde_json::json!({
-            "stableId": &current.stable_id,
-            "slug": &current.slug,
-            "visibility": &current.visibility,
-            "crawlPolicy": &current.crawl_policy,
-            "llmsTxtBody": &current.llms_txt_body,
-            "trustKeys": &current.trust_keys,
-            "resourceVersion": expected_version,
-        }))?;
-        let event_id = uuid::Uuid::new_v4().simple().to_string();
-        let payload_json = serde_json::to_string(&serde_json::json!({
-            "changeId": change_id,
-            "registryId": &current.stable_id,
-            "slug": &current.slug,
-            "resourceVersion": expected_version,
-        }))?;
-        let event = NewTopologyEvent {
-            event_id: &event_id,
-            event_name: "registry.deleted",
-            owner_scope_key: &current.scope_key,
-            resource_kind: "registry",
-            resource_stable_id: &current.stable_id,
-            resource_generation_key: expected_version,
-            actor_kind,
-            actor_id,
-            actor_label,
-            payload_json: &payload_json,
-            occurred_at: now,
-        };
-        let summary = format!("delete registry identity '{}'", current.slug);
-        let result = self
-            .backend
-            .checked_batch(&[
-                Statement::new(
-                    "INSERT INTO change_requests
-                     (change_id, actor_kind, actor_id, actor_label, scope, status,
-                      summary, created_at, applied_at)
-                     SELECT ?1, ?2, ?3, ?4, scope_key, 'applied', ?6, ?7, ?7
-                       FROM registries WHERE id = ?5 AND resource_version = ?8",
-                    vals![
-                        change_id,
-                        actor_kind,
-                        actor_id,
-                        sanitize_log_text(actor_label),
-                        registry_id,
-                        summary,
-                        now,
-                        expected_version
-                    ],
-                )
-                .expecting(1),
-                Statement::new(
-                    "INSERT INTO change_request_revisions
-                     (change_id, object_type, object_id, op, old_json, new_json, seq)
-                     VALUES (?1, 'registry', ?2, 'delete', ?3, NULL, 0)",
-                    vals![change_id, current.stable_id, old_json],
-                )
-                .expecting(1),
-                Statement::new(
-                    "INSERT INTO audit_log
-                     (outbox_event_id, change_id, actor_kind, actor_id, actor_label,
-                      action, scope, detail, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, 'registry.deleted', ?6, ?7, ?8)",
-                    vals![
-                        event_id,
-                        change_id,
-                        actor_kind,
-                        actor_id,
-                        sanitize_log_text(actor_label),
-                        current.scope_key,
-                        payload_json,
-                        now
-                    ],
-                )
-                .expecting(1),
-                Self::topology_event_statement(&event),
-                Statement::new(
-                    "DELETE FROM registries WHERE id = ?1 AND scope_key = ?2
-                       AND resource_version = ?3",
-                    vals![registry_id, current.scope_key, expected_version],
-                )
-                .expecting(1),
-                Statement::new(
-                    "UPDATE authorization_scopes SET retired_at = ?2
-                      WHERE scope_key = ?1 AND kind = 'registry' AND retired_at IS NULL",
-                    vals![current.scope_key, now],
-                )
-                .expecting(1),
-            ])
-            .await;
-        if let Err(error) = result {
-            if self
-                .registry_by_id(registry_id)
-                .await?
-                .map_or(true, |record| record.resource_version != expected_version)
-            {
-                return Ok(false);
-            }
-            return Err(error);
-        }
-        Ok(true)
-    }
-
     /// The instance-root crawl policy (defaulting to allow-all when unset).
     ///
     /// Reads the `root_crawl_policy` instance-config key and parses it leniently
@@ -22019,7 +23606,9 @@ fn normalize_topology_hostname(hostname: &str) -> Result<String> {
         || hostname.contains(char::is_whitespace)
         || hostname.contains(['/', ':', '?', '#'])
     {
-        bail!("domain hostname must contain only a host, without scheme, port, path, query, or fragment");
+        bail!(
+            "domain hostname must contain only a host, without scheme, port, path, query, or fragment"
+        );
     }
     for label in hostname.split('.') {
         if label.is_empty()
@@ -22058,7 +23647,9 @@ fn validate_key_bytes(value: &str, label: &str, capacity: usize) -> Result<()> {
         || value.len() > capacity
         || value.chars().any(char::is_control)
     {
-        bail!("{label} must be non-empty, have no surrounding whitespace or control characters, and fit in {capacity} UTF-8 bytes");
+        bail!(
+            "{label} must be non-empty, have no surrounding whitespace or control characters, and fit in {capacity} UTF-8 bytes"
+        );
     }
     Ok(())
 }
@@ -22727,6 +24318,62 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn deployment_default_records_one_valid_write_revision() {
+        let db = Database::open_in_memory().await.unwrap();
+        let first = db
+            .ensure_instance_default_binding("deployment_r2", None, Some("R2"))
+            .await
+            .unwrap();
+        let second = db
+            .ensure_instance_default_binding("deployment_r2", None, Some("R2"))
+            .await
+            .unwrap();
+        assert_eq!(first.id, second.id);
+
+        let credential = db
+            .current_storage_binding_credential(first.id, "write")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(credential.validation_state, "valid");
+        assert_eq!(
+            credential.secret_version_ref,
+            "worker://aos-hub/default-storage/v1"
+        );
+        let state = db
+            .storage_binding_write_state(first.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let revision = db
+            .storage_binding_write_revision(first.id, state.current_write_revision.unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(revision.writes_supported);
+        assert!(!revision.conditional_writes_supported);
+        assert_eq!(revision.write_credential_generation, credential.generation);
+
+        let count: i64 = db
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM storage_binding_write_revisions
+                 WHERE storage_binding_id = ?1",
+                &vals![first.id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(count, 1);
+        assert!(db
+            .ensure_instance_default_binding("deployment_r2", None, Some("different"))
+            .await
+            .is_err());
+    }
+
     async fn create_test_binding(db: &Database, org_id: i64, name: &str, path: &str) -> i64 {
         let owner = db.org_by_id(org_id).await.unwrap().unwrap();
         db.create_topology_storage_binding(
@@ -22799,8 +24446,8 @@ mod tests {
             let (sha256, extension, media_type, compatible_targets, info_sha256) = match format {
                 "raw" => (
                     "a".repeat(64),
-                    "img",
-                    "application/vnd.aos.disk-image.raw",
+                    "img.zst",
+                    "application/vnd.aos.disk-image.raw+zstd",
                     vec![ImageTarget::BareMetal],
                     "c".repeat(64),
                 ),
@@ -22825,7 +24472,11 @@ mod tests {
                 filename: filename.clone(),
                 object_key: immutable_image_object_key(&sha256, &filename),
                 media_type: media_type.into(),
-                compression: ImageCompression::None,
+                compression: if format == "raw" {
+                    ImageCompression::Zstd
+                } else {
+                    ImageCompression::None
+                },
                 byte_size: 4096,
                 sha256: sha256.clone(),
                 compatible_targets,
@@ -23111,6 +24762,158 @@ source_nar_hash = ""
             )
             .unwrap();
         assert_eq!(public_boundary, (1, "active".to_string()));
+    }
+
+    #[test]
+    fn publication_multipart_migration_upgrades_an_existing_database() {
+        let multipart_index = MIGRATIONS
+            .iter()
+            .position(|migration| migration.contains("ADD COLUMN hashed_size"))
+            .unwrap();
+        let multipart_migration = MIGRATIONS[multipart_index];
+        let connection = Connection::open_in_memory().unwrap();
+        for script in &MIGRATIONS[..multipart_index] {
+            connection.execute_batch(script).unwrap();
+        }
+        connection.execute_batch(multipart_migration).unwrap();
+        let tables: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name IN (
+                   'registry_publication_multipart_uploads',
+                   'registry_publication_multipart_parts',
+                   'registry_publication_multipart_backends')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 3);
+        let columns: Vec<String> = connection
+            .prepare("PRAGMA table_info(registry_publication_multipart_uploads)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(columns.iter().any(|column| column == "hashed_size"));
+        assert!(columns.iter().any(|column| column == "sha256_state"));
+        assert!(columns.iter().any(|column| column == "pending_token"));
+        assert!(columns.iter().any(|column| column == "completion_token"));
+        let backend_columns: Vec<String> = connection
+            .prepare("PRAGMA table_info(registry_publication_multipart_backends)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(backend_columns
+            .iter()
+            .any(|column| column == "completion_etag"));
+    }
+
+    #[test]
+    fn placement_scan_claim_migration_upgrades_an_existing_database() {
+        let claim_index = MIGRATIONS
+            .iter()
+            .position(|migration| migration.contains("CREATE TABLE placement_scan_claims"))
+            .unwrap();
+        let claim_migration = MIGRATIONS[claim_index];
+        let connection = Connection::open_in_memory().unwrap();
+        for script in &MIGRATIONS[..claim_index] {
+            connection.execute_batch(script).unwrap();
+        }
+        connection.execute_batch(claim_migration).unwrap();
+
+        let claim_table: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'placement_scan_claims'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(claim_table, 1);
+        let columns: Vec<String> = connection
+            .prepare("PRAGMA table_info(object_placements)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(columns
+            .iter()
+            .any(|column| column == "catalog_object_resource_version"));
+    }
+
+    #[test]
+    fn portable_recovery_cursor_migration_repairs_existing_database() {
+        let cursor_index = MIGRATIONS
+            .iter()
+            .position(|migration| migration.contains("SET after_expires_at = -9007199254740991"))
+            .unwrap();
+        let cursor_migration = MIGRATIONS[cursor_index];
+        let earlier = &MIGRATIONS[..cursor_index];
+        let connection = Connection::open_in_memory().unwrap();
+        for script in earlier {
+            connection.execute_batch(script).unwrap();
+        }
+        connection
+            .execute(
+                "UPDATE write_recovery_cursors SET after_expires_at = ?1
+                 WHERE recovery_kind = 'cache'",
+                [i64::MIN],
+            )
+            .unwrap();
+
+        connection.execute_batch(cursor_migration).unwrap();
+
+        let after_expires_at: i64 = connection
+            .query_row(
+                "SELECT after_expires_at FROM write_recovery_cursors
+                 WHERE recovery_kind = 'cache'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            after_expires_at,
+            crate::cache_scan::CACHE_WRITE_RECOVERY_CURSOR_START
+        );
+    }
+
+    #[test]
+    fn org_usage_backfill_repairs_existing_organizations() {
+        let backfill_index = MIGRATIONS
+            .iter()
+            .position(|migration| migration.contains("SELECT id, 0, 0, 0"))
+            .unwrap();
+        let connection = Connection::open_in_memory().unwrap();
+        for script in &MIGRATIONS[..backfill_index] {
+            connection.execute_batch(script).unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO orgs
+                 (id, stable_id, slug, name, created_at, updated_at)
+                 VALUES (1, 'org:00000000000000000000000000000001',
+                   'existing', 'Existing', 7, 7)",
+                [],
+            )
+            .unwrap();
+
+        connection
+            .execute_batch(MIGRATIONS[backfill_index])
+            .unwrap();
+
+        let usage: (i64, i64, i64) = connection
+            .query_row(
+                "SELECT used_bytes, object_count, updated_at
+                 FROM org_usage WHERE org_id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(usage, (0, 0, 0));
     }
 
     #[test]
@@ -26180,8 +27983,198 @@ source_nar_hash = ""
     #[tokio::test]
     async fn registry_delete_cas_commits_history_audit_and_outbox_once() {
         let db = Database::open_in_memory().await.unwrap();
-        let id = db.register_registry("retired", &[], false).await.unwrap();
+        let org_id = db.create_org("retired", "Retired").await.unwrap();
+        let id = db
+            .create_managed_registry(org_id, "", "registry", "private", &[], false)
+            .await
+            .unwrap();
         let registry = db.registry_by_id(id).await.unwrap().unwrap();
+        let binding_id = create_test_binding(&db, org_id, "retired", "/tmp/retired").await;
+        let mut placement =
+            topology_placement(SurfaceTarget::Registry(id), "primary", "retired", 0);
+        placement.storage_binding_id = binding_id;
+        let placement = db.create_surface_placement(&placement).await.unwrap();
+        let placement = db
+            .observe_surface_placement(placement.id, "ready", "complete", 1)
+            .await
+            .unwrap();
+        let write_generation =
+            create_valid_write_credential(&db, binding_id, "secret://binding/retired/v1").await;
+        let write_revision = db
+            .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
+                storage_binding_id: binding_id,
+                write_credential_generation: write_generation,
+                writes_supported: true,
+                conditional_writes_supported: false,
+                revision_fingerprint: "retired-write-v1".into(),
+                capability_fingerprint: "retired-writes".into(),
+            })
+            .await
+            .unwrap();
+        db.observe_storage_binding_write_revision(
+            binding_id,
+            write_revision.revision,
+            "valid",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        db.bind_surface_placement_write_capability(placement.id, write_revision.revision)
+            .await
+            .unwrap();
+        db.create_surface_write_authority(
+            SurfaceTarget::Registry(id),
+            "retired-authority-v1",
+            placement.id,
+            placement.resource_version,
+            placement.write_spec_version,
+            write_revision.revision,
+        )
+        .await
+        .unwrap();
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: "retired-publication".into(),
+            registry_id: id,
+            generation: "retired-generation".into(),
+            manifest_digest: "a".repeat(64),
+            refs_digest: "b".repeat(64),
+            default_commit: None,
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        db.fail_registry_publication("retired-publication", unix_now())
+            .await
+            .unwrap();
+        db.backend
+            .execute(
+                "INSERT INTO registry_publications
+                 (publication_id, registry_id, ordinal, generation,
+                  manifest_digest, refs_digest, parent_publication_id, state,
+                  created_at, completed_at)
+                 VALUES ('retired-publication-child', ?1, 2,
+                   'retired-generation-child', ?2, ?3,
+                   'retired-publication', 'failed', ?4, ?4)",
+                &vals![id, "5".repeat(64), "6".repeat(64), unix_now()],
+            )
+            .await
+            .unwrap();
+        let cache_id = db
+            .create_binary_cache(
+                Some(org_id),
+                "retired-cache",
+                "Retired cache",
+                "private",
+                10,
+                "zstd",
+                true,
+            )
+            .await
+            .unwrap();
+        db.backend
+            .batch(&[
+                Statement::new(
+                    "INSERT INTO releases
+                     (id, registry_id, semver, tag_oid, commit_oid, pack_present)
+                     VALUES (9001, ?1, '1.0.0', ?2, ?3, 1)",
+                    vals![id, "e".repeat(64), "f".repeat(64)],
+                ),
+                Statement::new(
+                    "INSERT INTO release_artifact_snapshots
+                     (snapshot_id, release_id, registry_id, source_commit,
+                      verified_tag_oid, verification_record_id, manifest_digest,
+                      state, complete_slot, expected_artifact_count,
+                      actual_artifact_count, started_at, completed_at)
+                     VALUES ('retired-snapshot', 9001, ?1, ?2, ?3,
+                       'retired-verification', ?4, 'complete', 1, 1, 1, ?5, ?5)",
+                    vals![
+                        id,
+                        "f".repeat(64),
+                        "e".repeat(64),
+                        "1".repeat(64),
+                        unix_now()
+                    ],
+                ),
+                Statement::new(
+                    "INSERT INTO release_artifacts
+                     (snapshot_id, release_id, registry_id, package_name,
+                      package_version, platform, artifact_kind, store_path,
+                      store_hash, metadata_digest)
+                     VALUES ('retired-snapshot', 9001, ?1, 'demo', '1.0.0',
+                       'x86_64-linux', 'output', '/nix/store/demo', 'demo', ?2)",
+                    vals![id, "2".repeat(64)],
+                ),
+                Statement::new(
+                    "INSERT INTO release_artifact_snapshot_heads
+                     (release_id, registry_id, complete_artifact_snapshot_id,
+                      updated_at)
+                     VALUES (9001, ?1, 'retired-snapshot', ?2)",
+                    vals![id, unix_now()],
+                ),
+                Statement::new(
+                    "INSERT INTO cache_retention_subscriptions
+                     (id, cache_id, registry_id, selector_json, selector_digest,
+                      created_at, updated_at)
+                     VALUES (9001, ?1, ?2, '{}', ?3, ?4, ?4)",
+                    vals![cache_id, id, "3".repeat(64), unix_now()],
+                ),
+                Statement::new(
+                    "INSERT INTO cache_retention_refreshes
+                     (refresh_id, subscription_id, cache_id, registry_id,
+                      expected_subscription_version, expected_cache_epoch,
+                      selector_digest, registry_source_revision,
+                      registry_index_generation, registry_index_digest, state,
+                      started_at, activated_at, parent_grace_until, finished_at,
+                      expected_reason_count, actual_reason_count)
+                     VALUES ('retired-refresh', 9001, ?1, ?2, 1, 0, ?3, ?4,
+                       1, ?5, 'complete', ?6, ?6, ?6, ?6, 0, 0)",
+                    vals![
+                        cache_id,
+                        id,
+                        "3".repeat(64),
+                        "retired-source",
+                        "4".repeat(64),
+                        unix_now()
+                    ],
+                ),
+            ])
+            .await
+            .unwrap();
+        db.backend
+            .batch(&[
+                Statement::new(
+                    "INSERT INTO cache_retention_refreshes
+                     (refresh_id, subscription_id, cache_id, registry_id,
+                      parent_refresh_id, expected_parent_refresh_id,
+                      expected_subscription_version, expected_cache_epoch,
+                      selector_digest, registry_source_revision,
+                      registry_index_generation, registry_index_digest, state,
+                      started_at, activated_at, parent_grace_until, finished_at,
+                      expected_reason_count, actual_reason_count)
+                     VALUES ('retired-refresh-child', 9001, ?1, ?2,
+                       'retired-refresh', 'retired-refresh', 1, 0, ?3, ?4,
+                       2, ?5, 'complete', ?6, ?6, ?6, ?6, 0, 0)",
+                    vals![
+                        cache_id,
+                        id,
+                        "3".repeat(64),
+                        "retired-source-child",
+                        "7".repeat(64),
+                        unix_now()
+                    ],
+                ),
+                Statement::new(
+                    "INSERT INTO cache_retention_refresh_heads
+                     (subscription_id, cache_id, registry_id, current_refresh_id,
+                      updated_at)
+                     VALUES (9001, ?1, ?2, 'retired-refresh-child', ?3)",
+                    vals![cache_id, id, unix_now()],
+                ),
+            ])
+            .await
+            .unwrap();
+        db.materialize_topology_events().await.unwrap();
         let change_id = uuid::Uuid::new_v4().to_string();
 
         assert!(db
@@ -26209,6 +28202,44 @@ source_nar_hash = ""
         assert_eq!(audit.len(), 1);
         assert_eq!(audit[0].action, "registry.deleted");
         assert_eq!(audit[0].change_id.as_deref(), Some(change_id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn registry_delete_rejects_active_publication_without_partial_history() {
+        let db = Database::open_in_memory().await.unwrap();
+        let id = db
+            .register_registry("publishing", &[], false)
+            .await
+            .unwrap();
+        let registry = db.registry_by_id(id).await.unwrap().unwrap();
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: "active-publication".into(),
+            registry_id: id,
+            generation: "active-generation".into(),
+            manifest_digest: "c".repeat(64),
+            refs_digest: "d".repeat(64),
+            default_commit: None,
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+
+        let change_id = uuid::Uuid::new_v4().to_string();
+        let error = db
+            .delete_registry_at_version(
+                id,
+                registry.resource_version,
+                &change_id,
+                "user",
+                Some(7),
+                "operator@example.test",
+            )
+            .await
+            .unwrap_err();
+
+        assert!(format!("{error:#}").contains("active publication or upload"));
+        assert!(db.registry_by_id(id).await.unwrap().is_some());
+        assert!(db.changeset(&change_id).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -26677,6 +28708,20 @@ source_nar_hash = ""
         // A normal single-segment slug still succeeds.
         assert!(db.create_org("acme", "Acme").await.is_ok());
         assert_eq!(db.org_by_slug("acme").await.unwrap().unwrap().slug, "acme");
+    }
+
+    #[tokio::test]
+    async fn create_org_initializes_quota_usage() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org_id = db.create_org("usage", "Usage").await.unwrap();
+
+        let usage = db.org_usage(org_id).await.unwrap();
+        assert_eq!(usage.used_bytes, 0);
+        assert_eq!(usage.object_count, 0);
+        assert!(
+            db.reserve_org_usage(org_id, 1, 1).await.unwrap(),
+            "the initialized row accepts an atomic reservation"
+        );
     }
 
     #[tokio::test]
@@ -27249,6 +29294,95 @@ source_nar_hash = ""
     }
 
     #[tokio::test]
+    async fn whole_surface_reads_prefer_the_reconciled_writer() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org = db.create_org("reader", "Reader").await.unwrap();
+        let binding = create_test_binding(&db, org, "reader", "/tmp/reader").await;
+        let registry = db
+            .create_managed_registry(org, "", "registry", "public", &[], false)
+            .await
+            .unwrap();
+
+        let mut replica =
+            topology_placement(SurfaceTarget::Registry(registry), "replica", "replica", 0);
+        replica.storage_binding_id = binding;
+        let replica = db.create_surface_placement(&replica).await.unwrap();
+        db.observe_surface_placement(replica.id, "ready", "complete", 1)
+            .await
+            .unwrap();
+
+        let mut writer =
+            topology_placement(SurfaceTarget::Registry(registry), "writer", "writer", 100);
+        writer.storage_binding_id = binding;
+        let writer = db.create_surface_placement(&writer).await.unwrap();
+        let writer = db
+            .observe_surface_placement(writer.id, "ready", "complete", 1)
+            .await
+            .unwrap();
+        let generation =
+            create_valid_write_credential(&db, binding, "secret://binding/reader/v1").await;
+        let revision = db
+            .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
+                storage_binding_id: binding,
+                write_credential_generation: generation,
+                writes_supported: true,
+                conditional_writes_supported: true,
+                revision_fingerprint: "reader-write-v1".to_string(),
+                capability_fingerprint: "reader-writes-and-conditional".to_string(),
+            })
+            .await
+            .unwrap();
+        db.observe_storage_binding_write_revision(binding, revision.revision, "valid", None, None)
+            .await
+            .unwrap();
+        db.bind_surface_placement_write_capability(writer.id, revision.revision)
+            .await
+            .unwrap();
+        db.create_surface_write_authority(
+            SurfaceTarget::Registry(registry),
+            "reader-authority-v1",
+            writer.id,
+            writer.resource_version,
+            writer.write_spec_version,
+            revision.revision,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            db.reconciled_surface_reader(SurfaceTarget::Registry(registry))
+                .await
+                .unwrap()
+                .id,
+            writer.id,
+            "a lower-order replica must not supersede the current mutable surface"
+        );
+        db.assert_registry_index_mutation_source(registry, Some(writer.id))
+            .await
+            .unwrap();
+
+        db.observe_surface_placement(writer.id, "offline", "complete", 2)
+            .await
+            .unwrap();
+        assert!(
+            db.reconciled_surface_reader(SurfaceTarget::Registry(registry))
+                .await
+                .is_err(),
+            "an unavailable writer must not fall back to an unproven replica"
+        );
+        assert!(
+            db.backend
+                .checked_batch(&[Database::registry_index_mutation_guard(
+                    registry,
+                    Some(writer.id),
+                )])
+                .await
+                .is_err(),
+            "the commit guard must reject authority changes after preflight"
+        );
+    }
+
+    #[tokio::test]
     async fn topology_orders_named_placements_and_rejects_stale_versions() {
         let db = Database::open_in_memory().await.unwrap();
         let org = db.create_org("ordered", "Ordered").await.unwrap();
@@ -27387,6 +29521,70 @@ source_nar_hash = ""
             .list_registry_publications_page(registry_id, Some("failed"), 10, Some(3))
             .await
             .is_err());
+
+        let retried = db
+            .retry_failed_registry_publication("publication-history-2", unix_now())
+            .await
+            .unwrap();
+        assert_eq!(retried.state, "preparing");
+        assert!(db
+            .retry_failed_registry_publication("publication-history-2", unix_now())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn registry_index_mutation_waits_for_an_active_publication() {
+        let db = Database::open_in_memory().await.unwrap();
+        let registry_id = db
+            .register_registry("publication-index-fence", &[], false)
+            .await
+            .unwrap();
+        db.mark_index_failed(registry_id, "prior failure")
+            .await
+            .unwrap();
+        let prior = db.index_status(registry_id).await.unwrap().unwrap();
+
+        let publication_id = "publication-index-fence-1";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: publication_id.into(),
+            registry_id,
+            generation: "generation-1".into(),
+            manifest_digest: "a".repeat(64),
+            refs_digest: "b".repeat(64),
+            default_commit: None,
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+
+        assert!(db
+            .registry_has_active_publication(registry_id)
+            .await
+            .unwrap());
+        assert!(db.mark_index_pending(registry_id).await.is_err());
+        assert!(db.mark_index_stale(registry_id, "transient").await.is_err());
+        assert!(db
+            .mark_index_failed(registry_id, "replacement")
+            .await
+            .is_err());
+        let retained = db.index_status(registry_id).await.unwrap().unwrap();
+        assert_eq!(retained.state, prior.state);
+        assert_eq!(retained.error, prior.error);
+        assert_eq!(retained.generation, prior.generation);
+
+        db.fail_registry_publication(publication_id, unix_now())
+            .await
+            .unwrap();
+        assert!(!db
+            .registry_has_active_publication(registry_id)
+            .await
+            .unwrap());
+        db.mark_index_pending(registry_id).await.unwrap();
+        assert_eq!(
+            db.index_status(registry_id).await.unwrap().unwrap().state,
+            "pending"
+        );
     }
 
     #[tokio::test]
@@ -27455,10 +29653,319 @@ source_nar_hash = ""
         assert_eq!(objects.len(), 2);
         assert_eq!(objects[0].object_kind, "immutable");
         assert_eq!(objects[1].object_kind, "mutable_pointer");
+        assert!(objects.iter().all(|object| !object.verified));
         assert!(!db
             .registry_publication_class_is_complete(publication_id, "immutable")
             .await
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn legacy_registry_object_conversion_follows_shared_mutability_policy() {
+        let db = Database::open_in_memory().await.unwrap();
+        let registry_id = db
+            .register_registry("loose-migration", &[], false)
+            .await
+            .unwrap();
+        let current_publication_id = "loosemigrationpublication000000000000";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: current_publication_id.into(),
+            registry_id,
+            generation: "generation-0".into(),
+            manifest_digest: "0".repeat(64),
+            refs_digest: "1".repeat(64),
+            default_commit: Some("2".repeat(64)),
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        db.backend
+            .execute(
+                "UPDATE registry_publications SET state = 'ready', completed_at = ?2
+                 WHERE publication_id = ?1",
+                &vals![current_publication_id, unix_now()],
+            )
+            .await
+            .unwrap();
+        db.backend
+            .execute(
+                "UPDATE registry_publication_state SET current_publication_id = ?1
+                 WHERE registry_id = ?2",
+                &vals![current_publication_id, registry_id],
+            )
+            .await
+            .unwrap();
+        let object_key =
+            "objects/ab/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        let object = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry_id),
+                object_key: object_key.into(),
+                content_hash: Some("d".repeat(64)),
+                size: Some(91),
+                object_kind: "immutable".into(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        let publication_id = "loosemigrationpublication000000000001";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: publication_id.into(),
+            registry_id,
+            generation: "generation-1".into(),
+            manifest_digest: "a".repeat(64),
+            refs_digest: "b".repeat(64),
+            default_commit: Some("c".repeat(64)),
+            parent_publication_id: Some(current_publication_id.into()),
+        })
+        .await
+        .unwrap();
+
+        for _ in 0..2 {
+            let converted = db
+                .convert_registry_object_to_mutable(
+                    registry_id,
+                    object.id,
+                    object_key,
+                    publication_id,
+                )
+                .await
+                .unwrap();
+            assert_eq!(converted.object_kind, "mutable_pointer");
+            assert_eq!(converted.content_hash, Some("d".repeat(64)));
+            assert_eq!(converted.size, Some(91));
+            assert_eq!(
+                converted.mutable_publication_id.as_deref(),
+                Some(current_publication_id)
+            );
+        }
+
+        let release_info_key = "releases/1/0/0/objects/info/packs";
+        let release_info = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry_id),
+                object_key: release_info_key.into(),
+                content_hash: Some("e".repeat(64)),
+                size: Some(12),
+                object_kind: "immutable".into(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        let converted = db
+            .convert_registry_object_to_mutable(
+                registry_id,
+                release_info.id,
+                release_info_key,
+                publication_id,
+            )
+            .await
+            .unwrap();
+        assert_eq!(converted.object_kind, "mutable_pointer");
+        assert_eq!(converted.content_hash, Some("e".repeat(64)));
+        assert_eq!(
+            converted.mutable_publication_id.as_deref(),
+            Some(current_publication_id)
+        );
+
+        for pack_index_key in [
+            "objects/pack/pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.idx",
+            "releases/1/0/0/objects/pack/pack-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.idx",
+        ] {
+            let pack_index = db
+                .create_surface_object(&SetSurfaceObject {
+                    surface: SurfaceTarget::Registry(registry_id),
+                    object_key: pack_index_key.into(),
+                    content_hash: Some("f".repeat(64)),
+                    size: Some(2048),
+                    object_kind: "immutable".into(),
+                    mutable_publication_id: None,
+                })
+                .await
+                .unwrap();
+            let converted = db
+                .convert_registry_object_to_mutable(
+                    registry_id,
+                    pack_index.id,
+                    pack_index_key,
+                    publication_id,
+                )
+                .await
+                .unwrap();
+            assert_eq!(converted.object_kind, "mutable_pointer");
+            assert_eq!(converted.content_hash, Some("f".repeat(64)));
+            assert_eq!(
+                converted.mutable_publication_id.as_deref(),
+                Some(current_publication_id)
+            );
+        }
+
+        let narinfo_key = "00wvyrrlz4wggxnpkhl91im5ibh493m5.narinfo";
+        let narinfo = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry_id),
+                object_key: narinfo_key.into(),
+                content_hash: Some("1".repeat(64)),
+                size: Some(512),
+                object_kind: "immutable".into(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        let converted = db
+            .convert_registry_object_to_mutable(
+                registry_id,
+                narinfo.id,
+                narinfo_key,
+                publication_id,
+            )
+            .await
+            .unwrap();
+        assert_eq!(converted.object_kind, "mutable_pointer");
+        assert_eq!(
+            converted.mutable_publication_id.as_deref(),
+            Some(current_publication_id)
+        );
+
+        let nar_key = format!("nar/store-sha256-{}.nar.zst", "2".repeat(64));
+        let nar = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry_id),
+                object_key: nar_key.clone(),
+                content_hash: Some("2".repeat(64)),
+                size: Some(4096),
+                object_kind: "immutable".into(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        let error = db
+            .convert_registry_object_to_mutable(registry_id, nar.id, &nar_key, publication_id)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not replaceable metadata"));
+    }
+
+    #[tokio::test]
+    async fn registry_publication_multipart_state_retains_expired_backend_identity() {
+        let db = Database::open_in_memory().await.unwrap();
+        let registry_id = db
+            .register_registry("multipart-state", &[], false)
+            .await
+            .unwrap();
+        let publication_id = "multipartpublication0000000000000001";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: publication_id.into(),
+            registry_id,
+            generation: "generation-1".into(),
+            manifest_digest: "a".repeat(64),
+            refs_digest: "b".repeat(64),
+            default_commit: Some("c".repeat(40)),
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        let object = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry_id),
+                object_key: "images/system.raw.zst".into(),
+                content_hash: Some("d".repeat(64)),
+                size: Some(128),
+                object_kind: "immutable".into(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        db.set_registry_publication_object(&SetRegistryPublicationObject {
+            publication_id: publication_id.into(),
+            surface_object_id: object.id,
+            object_kind: "immutable".into(),
+            expected_hash: "d".repeat(64),
+            expected_size: 128,
+        })
+        .await
+        .unwrap();
+
+        let created = db
+            .create_registry_publication_multipart_upload(
+                "multipart-upload-1",
+                publication_id,
+                registry_id,
+                object.id,
+                2,
+                1,
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.expires_at, 2);
+        assert_eq!(created.hashed_size, 0);
+
+        let part_hash = "e".repeat(64);
+        db.claim_registry_publication_multipart_part(
+            "multipart-upload-1",
+            1,
+            &part_hash,
+            0,
+            "claim-token-1",
+            100,
+        )
+        .await
+        .unwrap();
+        assert!(db
+            .claim_registry_publication_multipart_part(
+                "multipart-upload-1",
+                1,
+                &part_hash,
+                0,
+                "claim-token-2",
+                101,
+            )
+            .await
+            .is_err());
+        assert!(db
+            .claim_registry_publication_multipart_part(
+                "multipart-upload-1",
+                1,
+                &"f".repeat(64),
+                0,
+                "claim-token-3",
+                702,
+            )
+            .await
+            .is_err());
+        let claimed = db
+            .registry_publication_multipart_upload("multipart-upload-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed.pending_part, Some(1));
+        assert_eq!(claimed.pending_hash.as_deref(), Some(part_hash.as_str()));
+        assert_eq!(claimed.pending_token.as_deref(), Some("claim-token-1"));
+        assert_eq!(claimed.pending_since, Some(100));
+
+        let active = db
+            .active_registry_publication_multipart_upload(publication_id, object.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(active.upload_id, "multipart-upload-1");
+        assert_eq!(
+            db.active_registry_publication_multipart_uploads(publication_id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        db.finish_registry_publication_multipart_upload("multipart-upload-1", "aborted", 3)
+            .await
+            .unwrap();
+        assert!(db
+            .active_registry_publication_multipart_upload(publication_id, object.id)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     /// Test helper: register a managed registry owned by `org` at `slug` with a

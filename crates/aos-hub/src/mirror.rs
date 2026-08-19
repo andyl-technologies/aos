@@ -1060,7 +1060,7 @@ fn assert_nar_store_hash_matches_requested(
 /// Derive both the `<hash>.narinfo` path and the `<store-hash>` component for a
 /// `nar/<store-hash>-<…>` NAR path.
 ///
-/// The static-cache NAR URL is `nar/<store-hash>-<nar-hash>.<ext>` (see
+/// The static-cache NAR URL is `nar/<store-hash>-<file-hash>.<ext>` (see
 /// `aos_core::nar::cache::nar_url`), so the store hash is the basename segment
 /// before the first `-`, and its narinfo lives at `<store-hash>.narinfo` at the
 /// surface root. The pull-through NAR branch needs the bare `<store-hash>` (not

@@ -57,5 +57,8 @@ in
       };
     };
 
-    meta.description = "AOS desired package config sequencing test payload";
+    meta = {
+      description = "AOS desired package config sequencing test payload";
+      license = "Apache-2.0";
+    };
   }

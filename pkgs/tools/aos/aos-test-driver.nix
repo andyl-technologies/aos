@@ -71,6 +71,7 @@ mkDerivation {
 
   meta = {
     description = "Python test driver for AOS VM and fleet tests";
+    license = "Apache-2.0";
   };
 
   # Host-side type check. Pyrefly is heavy (rust + ~600 crates), so it
@@ -112,6 +113,7 @@ mkDerivation {
 
       meta = {
         description = "pyrefly strict-mode type check for aos-test-driver";
+        license = "Apache-2.0";
       };
     };
   };

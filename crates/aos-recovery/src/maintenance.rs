@@ -274,13 +274,7 @@ fn open_with_recovery_key(var_device: &std::path::Path) -> Result<(), Maintenanc
         .take()
         .ok_or_else(|| MaintenanceError::RecoveryToken("password pipe was not created".into()))?;
     let crypt_status = Command::new("/bin/cryptsetup")
-        .args([
-            "open",
-            "--type",
-            "luks",
-            "--key-slot",
-            &keyslot,
-        ])
+        .args(["open", "--type", "luks", "--key-slot", &keyslot])
         .arg(var_device)
         .arg("var")
         .stdin(Stdio::from(password))

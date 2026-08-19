@@ -7,8 +7,10 @@
 //! through this port, so the index-after-flip logic is single-sourced across the
 //! native hub and the Cloudflare Worker.
 //!
-//! - [`Reindexer`] — `reindex(registry)`, run inline by the write handler for a
+//! - [`Reindexer`] — `reindex(registry)`, invoked by the write handler after a
 //!   completing pointer write.
+//! - [`QueuedReindexer`] — the production adapter for deployments where a full
+//!   index walk must not extend an already-committed mutation request.
 //!
 //! # Deployment mapping
 //!
@@ -16,33 +18,30 @@
 //!   `LocalFsFetch` over the storage-binding root) and records an `index` audit
 //!   row, so the index is consistent the instant the final pointer write returns
 //!   `200`. This is the relocated behavior of the hub's prior facade `reindex`.
-//! - The **Cloudflare Worker** *defers* re-indexing to its Cron-trigger indexer,
-//!   which already re-walks every registry's R2 surface on a schedule
-//!   (`index_all`). The Worker's single-registry indexer is tightly coupled to
-//!   its concrete HubDb/R2/`model::Registry` types and is not cleanly callable from
-//!   a core port over a [`RegistryRecord`], so the Worker's [`Reindexer`] is a
-//!   no-op that logs the deferral and returns `Ok(None)` (no inline commit).
-//!   **Consistency implication:** a Worker publish
-//!   becomes browse-visible only at the next Cron run, not synchronously on the
-//!   final `PUT` (the read *facade* is already fresh — it streams the new bytes
-//!   straight from R2 — only the derived HubDb index lags). The native hub keeps the
-//!   synchronous guarantee; the Worker is eventually consistent on the index.
+//! - The **Cloudflare Worker** uses [`QueuedReindexer`] to submit one
+//!   registry-scoped job. Its queue consumer runs the same indexer over R2, and
+//!   the periodic all-registry pass remains the recovery path if queue admission
+//!   fails. The published read surface is immediately current; only the derived
+//!   browse index is eventually consistent. The native hub keeps its synchronous
+//!   index guarantee.
 //!
 //! The port carries the same target-conditional bound as the rest of the core
 //! ports ([`BackendBounds`]): `Send + Sync` natively, unbounded on the
 //! single-threaded wasm32 Worker.
 
+use std::sync::Arc;
+
 use anyhow::Result;
 
 use crate::backend::BackendBounds;
 use crate::db::RegistryRecord;
+use crate::jobs::{Job, Queue};
 
 /// Re-indexes a registry after a publish-completing pointer write.
 ///
-/// Run inline by the shared facade-write handler when a mutable-pointer write
-/// [`triggers a reindex`](crate::service). The native hub indexes synchronously
-/// from the local surface; the Worker defers to its Cron indexer (a logged
-/// no-op).
+/// Invoked by the shared facade-write handler when a mutable-pointer write
+/// [`triggers a reindex`](crate::service). Implementations may index
+/// synchronously or durably schedule the work.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait Reindexer: BackendBounds {
@@ -56,13 +55,82 @@ pub trait Reindexer: BackendBounds {
     /// A synchronous implementation (the native hub) returns `Some(commit)`, the
     /// oid the fresh index was built from — used to cross-reference the audit row
     /// for the publication operation that triggered the re-index.
-    /// A *deferring* implementation (the Worker) returns `Ok(None)`: the index is
-    /// reconciled later by the Cron indexer, so no commit is available inline and
-    /// the deferred-advance audit row carries no index commit reference.
+    /// A deferring implementation returns `Ok(None)`: no indexed commit is
+    /// available inline, so the deferred-advance audit row carries no index
+    /// commit reference.
     ///
     /// # Errors
     ///
-    /// Returns an error on an indexing, surface-read, or database failure. A
-    /// deferring implementation (the Worker) returns `Ok(None)` unconditionally.
+    /// Returns an error on an indexing, surface-read, database, or queue
+    /// admission failure.
     async fn reindex(&self, registry: &RegistryRecord) -> Result<Option<String>>;
+}
+
+/// Defers registry indexing to the shared durable job queue.
+///
+/// The enqueue is deliberately the only synchronous work performed after the
+/// caller's publication or configuration transaction commits. Queue consumers
+/// may safely retry [`Job::Reindex`], while the periodic index reconciler
+/// remains the recovery path if enqueueing itself fails.
+pub struct QueuedReindexer {
+    queue: Arc<dyn Queue>,
+}
+
+impl QueuedReindexer {
+    /// Builds a reindex scheduler backed by `queue`.
+    #[must_use]
+    pub fn new(queue: Arc<dyn Queue>) -> Self {
+        Self { queue }
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl Reindexer for QueuedReindexer {
+    async fn reindex(&self, registry: &RegistryRecord) -> Result<Option<String>> {
+        self.queue
+            .enqueue(&Job::Reindex {
+                registry_id: registry.id,
+            })
+            .await?;
+        Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{QueuedReindexer, Reindexer};
+    use crate::db::RegistryRecord;
+    use crate::jobs::{InMemoryQueue, Job};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn queued_reindexer_schedules_the_exact_registry() {
+        let queue = Arc::new(InMemoryQueue::new());
+        let reindexer = QueuedReindexer::new(queue.clone());
+        let registry = RegistryRecord {
+            id: 41,
+            stable_id: "registry:queued".into(),
+            scope_key: "registry:queued".into(),
+            owner_scope_key: "instance".into(),
+            slug: "queued".into(),
+            trust_keys: Vec::new(),
+            require_signatures: false,
+            org_id: None,
+            project_path: String::new(),
+            visibility: "private".into(),
+            crawl_policy: "deny_all".into(),
+            llms_txt_body: None,
+            resource_version: 1,
+            updated_at: 0,
+        };
+
+        assert_eq!(reindexer.reindex(&registry).await.unwrap(), None);
+        assert_eq!(
+            queue.drain(),
+            vec![Job::Reindex {
+                registry_id: registry.id
+            }]
+        );
+    }
 }

@@ -447,6 +447,9 @@ async fn fixture_syncs_git_native_registry_over_static_http() -> Result<()> {
 
 #[tokio::test]
 async fn static_origin_upload_e2e_syncs_uploaded_filesystem_destination() -> Result<()> {
+    let (version_text, version) = current_git_version()?;
+    ensure_supported_stock_git(&version_text, version)?;
+
     let fixture = RegistryFixture::new("origin-upload")?;
     fixture.write_registry_toml_with_caches(&[])?;
     fixture.write_gitattributes()?;
@@ -455,6 +458,8 @@ async fn static_origin_upload_e2e_syncs_uploaded_filesystem_destination() -> Res
     fixture.write_closure(&store_path)?;
     let source_commit = fixture.commit_all("release 1.0.0")?;
     fixture.publish_bare_origin()?;
+    git_success(fixture.origin_path(), &["repack", "-ad"])?;
+    git_success(fixture.origin_path(), &["update-server-info"])?;
 
     let uploaded = tempfile::TempDir::new()?;
     let upload_urls = vec![format!("file://{}", uploaded.path().display())];
@@ -470,8 +475,39 @@ async fn static_origin_upload_e2e_syncs_uploaded_filesystem_destination() -> Res
     assert!(uploaded.path().join("HEAD").exists());
     assert!(uploaded.path().join("info/refs").exists());
     assert!(uploaded.path().join("objects/info").exists());
+    let uploaded_pack_dir = uploaded.path().join("objects/pack");
+    assert!(
+        std::fs::read_dir(&uploaded_pack_dir)?
+            .filter_map(std::result::Result::ok)
+            .any(|entry| entry.path().extension() == Some(OsStr::new("idx")))
+    );
 
     let server = StaticHttpServer::spawn(uploaded.path().to_path_buf()).await?;
+    let stock_clone = tempfile::TempDir::new()?;
+    let clone_path = stock_clone.path().join("registry");
+    let clone_output = tokio::process::Command::new("git")
+        .env_remove("LD_LIBRARY_PATH")
+        .env("GIT_SMART_HTTP", "0")
+        .arg("clone")
+        .arg(server.base_url())
+        .arg(&clone_path)
+        .output()
+        .await?;
+    if !clone_output.status.success() {
+        anyhow::bail!(
+            "stock dumb-HTTP clone failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&clone_output.stdout),
+            String::from_utf8_lossy(&clone_output.stderr),
+        );
+    }
+    assert_eq!(
+        git_stdout(
+            &clone_path,
+            &["rev-parse", &format!("{source_commit}^{{commit}}")],
+        )?,
+        source_commit
+    );
+
     let config = fixture.registry_config(server.base_url());
     let mut state = RegistryState::default();
     let result = git::sync_git(

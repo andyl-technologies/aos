@@ -4,10 +4,7 @@
 ##! from authenticated `host.nix`. Normal runtime configuration does not belong
 ##! here: this namespace is reserved for state committed once during initial
 ##! provisioning and frozen until factory reset.
-{
-  lib,
-  ...
-}: let
+{lib, ...}: let
   partitionType = lib.types.submodule ({name, ...}: {
     options = {
       device = lib.mkOption {

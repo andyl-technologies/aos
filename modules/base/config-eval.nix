@@ -19,6 +19,7 @@
 }: let
   cfg = config.aos.config.evalAtBoot;
   provisioningStateDir = config.aos.provisioning.stateDir;
+  espSync = config.aos.config.artifacts.esp-sync;
   exposedBundledPackages =
     lib.filterAttrs
     (_: package: package.bundle && (package.package ? expose))
@@ -311,8 +312,8 @@ in {
       # switch-root. Stage 2 consumes the durable state that it wrote under
       # /var, so requiring that vanished unit would drop this job and, through
       # aos-eval's Requires= edge, silently skip host activation.
-      requires = ["local-fs.target" "systemd-tmpfiles-setup.service"];
-      after = ["local-fs.target" "systemd-tmpfiles-setup.service"];
+      requires = ["aos-mount-esp.service" "local-fs.target" "systemd-tmpfiles-setup.service"];
+      after = ["aos-mount-esp.service" "local-fs.target" "systemd-tmpfiles-setup.service"];
       before = ["aos-eval.service" "multi-user.target"];
       serviceConfig = {
         Type = "oneshot";
@@ -321,12 +322,10 @@ in {
       script = ''
         set -euo pipefail
         state=/var/lib/profiles/image/state.json
-        if ! ${pkgs.util-linux}/bin/mountpoint -q /boot; then
-          mkdir -p /boot
-          ${pkgs.util-linux}/bin/mount -t vfat \
-            -o ro,noatime,fmask=0077,dmask=0077 \
-            ${lib.escapeShellArg config.aos.filesystems.espDevice} /boot
-        fi
+        ${pkgs.util-linux}/bin/mountpoint -q /boot || {
+          echo "aos-image-measurement-index: booted ESP is not mounted" >&2
+          exit 1
+        }
         running=$(${pkgs.jq}/bin/jq -er '.running' "$state")
         entry=$(${pkgs.jq}/bin/jq -er --argjson running "$running" \
           '.generations[] | select(.number == $running) | .uki_path' "$state")
@@ -604,12 +603,13 @@ in {
       description = "Commit a successful image transition";
       wantedBy = ["multi-user.target"];
       after = [
+        "aos-mount-esp.service"
         "aos-firstboot-reeval.service"
         "aos-graph-compile.service"
         "aos-activate.service"
         "aos-config.target"
       ];
-      requires = ["aos-graph-compile.service"];
+      requires = ["aos-mount-esp.service" "aos-graph-compile.service"];
       before = ["multi-user.target"];
       unitConfig.ConditionPathExists = [
         "/run/aos/image-reeval-required"
@@ -623,12 +623,10 @@ in {
       };
       script = ''
         set -euo pipefail
-        if ! ${pkgs.util-linux}/bin/mountpoint -q /boot; then
-          mkdir -p /boot
-          ${pkgs.util-linux}/bin/mount -t vfat \
-            -o ro,noatime,fmask=0077,dmask=0077 \
-            ${lib.escapeShellArg config.aos.filesystems.espDevice} /boot
-        fi
+        ${pkgs.util-linux}/bin/mountpoint -q /boot || {
+          echo "aos-image-boot-commit: booted ESP is not mounted" >&2
+          exit 1
+        }
         boot_writable=false
         restore_boot_read_only() {
           if [ "$boot_writable" = true ]; then
@@ -637,7 +635,6 @@ in {
         }
         trap restore_boot_read_only EXIT
 
-        expected_esp=$(${pkgs.coreutils}/bin/readlink -f ${lib.escapeShellArg config.aos.filesystems.espDevice})
         mounted_esp=$(${pkgs.util-linux}/bin/findmnt -n -o SOURCE --target /boot)
         mounted_esp=$(${pkgs.coreutils}/bin/readlink -f "$mounted_esp")
         mounted_fstype=$(${pkgs.util-linux}/bin/findmnt -n -o FSTYPE --target /boot)
@@ -646,12 +643,20 @@ in {
           echo "aos-image-boot-commit: /boot must be the root of a vfat ESP" >&2
           exit 1
         fi
-        if [ ! -b "$expected_esp" ] || [ ! -b "$mounted_esp" ]; then
+        if [ ! -b "$mounted_esp" ]; then
           echo "aos-image-boot-commit: ESP source paths must be block devices" >&2
           exit 1
         fi
-        if [ "$mounted_esp" != "$expected_esp" ]; then
-          echo "aos-image-boot-commit: /boot is mounted from $mounted_esp, expected $expected_esp" >&2
+        configured_esp=false
+        for device in ${lib.concatMapStringsSep " " lib.escapeShellArg config.aos.boot.storage.espDevices}; do
+          [ -b "$device" ] || continue
+          if [ "$mounted_esp" = "$(${pkgs.coreutils}/bin/readlink -f "$device")" ]; then
+            configured_esp=true
+            break
+          fi
+        done
+        if [ "$configured_esp" != true ]; then
+          echo "aos-image-boot-commit: /boot is not mounted from a configured ESP" >&2
           exit 1
         fi
 
@@ -813,12 +818,13 @@ in {
         fi
         ${pkgs.systemd}/bin/bootctl set-default "''${stable##*/}"
 
-        # Restore the ESP's steady-state protection before publishing the
-        # transition as complete. If this remount fails, the durable pending
-        # state and runtime marker remain and the next boot retries the
-        # idempotent blessing/reconciliation path.
+        # Make the blessed/default view durable on every replica before
+        # publishing the transition as complete. A failed synchronization
+        # retains pending state so the idempotent commit path retries after the
+        # failed member is repaired.
         ${pkgs.util-linux}/bin/mount -o remount,ro /boot
         boot_writable=false
+        ${espSync}/bin/aos-sync-esps
 
         ${pkgs.jq}/bin/jq --argjson running "$running" \
           '.default = $running

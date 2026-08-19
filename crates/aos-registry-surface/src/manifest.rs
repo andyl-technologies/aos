@@ -610,15 +610,10 @@ impl ImageDelivery {
             self.object_key == immutable_image_object_key(&self.sha256, &self.filename),
             "image object key is not the canonical content-addressed key"
         );
-        ensure!(
-            self.compression == ImageCompression::None,
-            "image compression is not supported by this delivery contract version"
-        );
-
         let (extension, media_type, targets): (&str, &str, &[ImageTarget]) = match format {
             "raw" => (
-                "img",
-                "application/vnd.aos.disk-image.raw",
+                "img.zst",
+                "application/vnd.aos.disk-image.raw+zstd",
                 &[ImageTarget::BareMetal],
             ),
             "qcow2" => (
@@ -636,8 +631,13 @@ impl ImageDelivery {
         };
         if format == "raw" {
             ensure!(
-                self.logical_disk_sha256 == self.sha256,
-                "raw image must be the canonical logical disk encoding"
+                self.compression == ImageCompression::Zstd,
+                "raw image must use zstd delivery compression"
+            );
+        } else {
+            ensure!(
+                self.compression == ImageCompression::None,
+                "converted disk images must not declare outer compression"
             );
         }
         ensure!(
@@ -762,6 +762,8 @@ pub enum ImageVerificationState {
 pub enum ImageCompression {
     /// No outer compression; the object bytes are the named disk encoding.
     None,
+    /// Zstandard compression of the complete named disk encoding.
+    Zstd,
 }
 
 /// End-user execution or installation target for an AOS system image.
@@ -932,8 +934,8 @@ mod image_delivery_tests {
         let info_sha256 = "b".repeat(64);
         let (extension, media_type, targets) = match format {
             "raw" => (
-                "img",
-                "application/vnd.aos.disk-image.raw",
+                "img.zst",
+                "application/vnd.aos.disk-image.raw+zstd",
                 vec![ImageTarget::BareMetal],
             ),
             "qcow2" => (
@@ -961,7 +963,11 @@ mod image_delivery_tests {
             filename: filename.clone(),
             object_key: immutable_image_object_key(&image_sha256, &filename),
             media_type: media_type.to_string(),
-            compression: ImageCompression::None,
+            compression: if format == "raw" {
+                ImageCompression::Zstd
+            } else {
+                ImageCompression::None
+            },
             byte_size: 4096,
             sha256: image_sha256.clone(),
             compatible_targets: targets,
@@ -1076,6 +1082,18 @@ nar_size = 1
         assert!(wrong_target
             .validate("qcow2", "2026.08", "x86_64-linux")
             .is_err());
+
+        let mut uncompressed_raw = delivery("raw");
+        uncompressed_raw.compression = ImageCompression::None;
+        assert!(uncompressed_raw
+            .validate("raw", "2026.08", "x86_64-linux")
+            .is_err());
+
+        let mut compressed_qcow2 = delivery("qcow2");
+        compressed_qcow2.compression = ImageCompression::Zstd;
+        assert!(compressed_qcow2
+            .validate("qcow2", "2026.08", "x86_64-linux")
+            .is_err());
     }
 
     #[test]
@@ -1134,11 +1152,12 @@ nar_size = 1
         let qcow2 = raw_image_block(true)
             .replace("format = \"raw\"", "format = \"qcow2\"")
             .replace("server-raw", "server-qcow2")
-            .replace("aos-server.img", "aos-server.qcow2")
+            .replace("aos-server.img.zst", "aos-server.qcow2")
             .replace(
-                "application/vnd.aos.disk-image.raw",
+                "application/vnd.aos.disk-image.raw+zstd",
                 "application/vnd.aos.disk-image.qcow2",
             )
+            .replace("compression = \"zstd\"", "compression = \"none\"")
             .replace(
                 "compatible_targets = [\"bare-metal\"]",
                 "compatible_targets = [\"qemu-kvm\", \"openstack\"]",

@@ -166,23 +166,79 @@ struct ImageTransitionIntent {
 }
 
 /// Filesystem locations used by the offline A/B writer.
-struct ImageSlotLayout<'a> {
-    boot_root: &'a Path,
-    root_a: &'a Path,
-    root_b: &'a Path,
-    root_a_hash: &'a Path,
-    root_b_hash: &'a Path,
+struct ImageSlotLayout {
+    boot_root: PathBuf,
+    esp_devices: Vec<PathBuf>,
+    root_a: PathBuf,
+    root_b: PathBuf,
+    root_a_hash: PathBuf,
+    root_b_hash: PathBuf,
 }
 
-impl Default for ImageSlotLayout<'static> {
+impl Default for ImageSlotLayout {
     fn default() -> Self {
         Self {
-            boot_root: Path::new(BOOT_ROOT),
-            root_a: Path::new(ROOT_A_DEVICE),
-            root_b: Path::new(ROOT_B_DEVICE),
-            root_a_hash: Path::new(ROOT_A_HASH_DEVICE),
-            root_b_hash: Path::new(ROOT_B_HASH_DEVICE),
+            boot_root: PathBuf::from(BOOT_ROOT),
+            esp_devices: vec![PathBuf::from("/dev/disk/by-partlabel/ESP")],
+            root_a: PathBuf::from(ROOT_A_DEVICE),
+            root_b: PathBuf::from(ROOT_B_DEVICE),
+            root_a_hash: PathBuf::from(ROOT_A_HASH_DEVICE),
+            root_b_hash: PathBuf::from(ROOT_B_HASH_DEVICE),
         }
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BootStorageMetadata {
+    esp_devices: Vec<PathBuf>,
+    devices: BootStorageDevices,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BootStorageDevices {
+    root_a: PathBuf,
+    root_b: PathBuf,
+    root_a_hash: PathBuf,
+    root_b_hash: PathBuf,
+}
+
+impl ImageSlotLayout {
+    fn from_running_toplevel() -> Result<Self> {
+        Self::from_toplevel(Path::new(RUNNING_TOPLEVEL_LINK))
+    }
+
+    fn from_toplevel(toplevel: &Path) -> Result<Self> {
+        let path = toplevel.join("meta/boot-storage.json");
+        let bytes = std::fs::read(&path)
+            .with_context(|| format!("reading boot-storage metadata {}", path.display()))?;
+        let metadata: BootStorageMetadata = serde_json::from_slice(&bytes)
+            .with_context(|| format!("parsing boot-storage metadata {}", path.display()))?;
+        if metadata.esp_devices.is_empty() {
+            bail!("boot-storage metadata has no EFI System Partition devices");
+        }
+        for device in metadata.esp_devices.iter().chain([
+            &metadata.devices.root_a,
+            &metadata.devices.root_b,
+            &metadata.devices.root_a_hash,
+            &metadata.devices.root_b_hash,
+        ]) {
+            if !device.is_absolute() || !device.starts_with("/dev") {
+                bail!(
+                    "boot-storage metadata contains unsafe device {}",
+                    device.display()
+                );
+            }
+        }
+        Ok(Self {
+            boot_root: PathBuf::from(BOOT_ROOT),
+            esp_devices: metadata.esp_devices,
+            root_a: metadata.devices.root_a,
+            root_b: metadata.devices.root_b,
+            root_a_hash: metadata.devices.root_a_hash,
+            root_b_hash: metadata.devices.root_b_hash,
+        })
     }
 }
 
@@ -222,6 +278,25 @@ fn load_running_image_generation_from(
     toplevel_link: &Path,
     cmdline: &Path,
 ) -> Result<ImageGeneration> {
+    load_running_image_generation_with_device_identity(
+        image_profile,
+        os_release,
+        toplevel_link,
+        cmdline,
+        block_device_identity,
+    )
+}
+
+fn load_running_image_generation_with_device_identity<F>(
+    image_profile: &Path,
+    os_release: &Path,
+    toplevel_link: &Path,
+    cmdline: &Path,
+    device_identity: F,
+) -> Result<ImageGeneration>
+where
+    F: Fn(&Path) -> Result<u64>,
+{
     let state_path = image_profile.join(IMAGE_STATE_FILE);
     let state_bytes = std::fs::read(&state_path)
         .with_context(|| format!("reading image generation state {}", state_path.display()))?;
@@ -303,12 +378,9 @@ fn load_running_image_generation_from(
         .get("systemd.verity_root_data")
         .or_else(|| cmdline_fields.get("root"))
     {
-        let booted_slot = match root.as_str() {
-            ROOT_A_DEVICE => Some(ImageSlot::A),
-            ROOT_B_DEVICE => Some(ImageSlot::B),
-            _ => None,
-        };
-        if booted_slot.is_some() && booted_slot != Some(running.slot) {
+        let layout = ImageSlotLayout::from_toplevel(toplevel_link)?;
+        let booted_slot = image_slot_for_root(Path::new(root), &layout, device_identity)?;
+        if booted_slot != running.slot {
             bail!(
                 "running root slot disagrees with image generation {}",
                 running.number
@@ -316,6 +388,42 @@ fn load_running_image_generation_from(
         }
     }
     Ok(running)
+}
+
+/// Returns the kernel identity of an opened block device.
+fn block_device_identity(path: &Path) -> Result<u64> {
+    let device = std::fs::File::open(path)
+        .with_context(|| format!("opening image-slot device {}", path.display()))?;
+    let metadata = device.metadata()?;
+    if !metadata.file_type().is_block_device() {
+        bail!("image-slot path is not a block device: {}", path.display());
+    }
+    Ok(metadata.rdev())
+}
+
+/// Resolves a running root device to one distinct declared image slot.
+fn image_slot_for_root<F>(
+    root: &Path,
+    layout: &ImageSlotLayout,
+    device_identity: F,
+) -> Result<ImageSlot>
+where
+    F: Fn(&Path) -> Result<u64>,
+{
+    let root_identity = device_identity(root)?;
+    let root_a_identity = device_identity(&layout.root_a)?;
+    let root_b_identity = device_identity(&layout.root_b)?;
+    if root_a_identity == root_b_identity {
+        bail!("declared image slots resolve to the same block device");
+    }
+
+    if root_identity == root_a_identity {
+        Ok(ImageSlot::A)
+    } else if root_identity == root_b_identity {
+        Ok(ImageSlot::B)
+    } else {
+        bail!("running kernel root device is not a declared image slot");
+    }
 }
 
 fn parse_kernel_cmdline(path: &Path) -> Result<std::collections::BTreeMap<String, String>> {
@@ -579,12 +687,13 @@ pub async fn install_system(
             crate::config_eval::activation::ActivateConfigParams::default().switch_lock;
         let _switch_guard = crate::config_eval::activation::acquire_switch_lock_pub(&switch_lock)?;
         printer.step(8, 8, "Staging inactive A/B image slot...");
+        let layout = ImageSlotLayout::from_running_toplevel()?;
         let staged = with_writable_boot(|| {
             stage_pending_image_generation_with(
                 image_profile,
                 &ProfileScope::System.profile_path(),
                 Path::new(NIX_OVERLAY_UPPER_STORE),
-                &ImageSlotLayout::default(),
+                &layout,
                 toplevel_meta,
                 &closure.registry_name,
                 image,
@@ -1309,8 +1418,8 @@ fn image_artifact_path(
 
 fn copy_payload_to_slot(source: &Path, destination: &Path) -> Result<()> {
     let source_len = std::fs::metadata(source)?.len();
-    let production_partlabel = destination.starts_with("/dev/disk/by-partlabel");
-    if production_partlabel {
+    let production_device = destination.starts_with("/dev");
+    if production_device {
         let resolved = std::fs::canonicalize(destination)
             .with_context(|| format!("resolving inactive image slot {}", destination.display()))?;
         if !resolved.starts_with("/dev") {
@@ -1328,8 +1437,8 @@ fn copy_payload_to_slot(source: &Path, destination: &Path) -> Result<()> {
         .open(destination)
         .with_context(|| format!("opening inactive image slot {}", destination.display()))?;
     let destination_metadata = output.metadata()?;
-    if (production_partlabel && !destination_metadata.file_type().is_block_device())
-        || (!production_partlabel
+    if (production_device && !destination_metadata.file_type().is_block_device())
+        || (!production_device
             && !(destination_metadata.file_type().is_block_device()
                 || destination_metadata.is_file()))
     {
@@ -1365,20 +1474,11 @@ fn copy_payload_to_slot(source: &Path, destination: &Path) -> Result<()> {
 /// rename UKIs, so they use this narrow bracket and restore read-only state on
 /// both success and failure.
 fn with_writable_boot<T>(action: impl FnOnce() -> Result<T>) -> Result<T> {
-    let expected_device = PathBuf::from(read_toplevel_meta(
-        Path::new(RUNNING_TOPLEVEL_LINK),
-        "esp-device",
-    )?);
-    if !expected_device.is_absolute() || !expected_device.starts_with("/dev") {
-        bail!(
-            "running image records an unsafe EFI System Partition device: {}",
-            expected_device.display()
-        );
-    }
+    let layout = ImageSlotLayout::from_running_toplevel()?;
     validate_boot_esp_mount(
         Path::new(BOOT_ROOT),
         Path::new("/proc/self/mountinfo"),
-        &expected_device,
+        &layout.esp_devices,
         true,
     )?;
     with_writable_boot_using(Path::new(BOOT_ROOT), remount_boot, action)
@@ -1387,17 +1487,14 @@ fn with_writable_boot<T>(action: impl FnOnce() -> Result<T>) -> Result<T> {
 fn validate_boot_esp_mount(
     boot_root: &Path,
     mountinfo: &Path,
-    expected_device: &Path,
+    expected_devices: &[PathBuf],
     require_block_devices: bool,
 ) -> Result<()> {
     let boot_root = std::fs::canonicalize(boot_root)
         .with_context(|| format!("resolving EFI mount point {}", boot_root.display()))?;
-    let expected_device = std::fs::canonicalize(expected_device).with_context(|| {
-        format!(
-            "resolving expected EFI System Partition {}",
-            expected_device.display()
-        )
-    })?;
+    if expected_devices.is_empty() {
+        bail!("no EFI System Partition devices are configured");
+    }
     let contents = std::fs::read_to_string(mountinfo)
         .with_context(|| format!("reading mount table {}", mountinfo.display()))?;
     let (mounted_root, filesystem_type, source) = contents
@@ -1435,37 +1532,45 @@ fn validate_boot_esp_mount(
     }
     // Open both paths before inspecting them so a symlink replacement cannot
     // change the device identity between validation and comparison.
-    let expected_file = std::fs::File::open(&expected_device).with_context(|| {
-        format!(
-            "opening expected EFI System Partition {}",
-            expected_device.display()
-        )
-    })?;
     let mounted_file = std::fs::File::open(source)
         .with_context(|| format!("opening mounted EFI device {source}"))?;
-    let expected_metadata = expected_file.metadata()?;
     let mounted_metadata = mounted_file.metadata()?;
-    if require_block_devices
-        && (!expected_metadata.file_type().is_block_device()
-            || !mounted_metadata.file_type().is_block_device())
-    {
+    if require_block_devices && !mounted_metadata.file_type().is_block_device() {
         bail!("EFI System Partition paths must both be block devices");
     }
     let mounted_device = std::fs::canonicalize(source)
         .with_context(|| format!("resolving mounted EFI device {source}"))?;
-    let same_device = if expected_metadata.file_type().is_block_device()
-        && mounted_metadata.file_type().is_block_device()
-    {
-        expected_metadata.rdev() == mounted_metadata.rdev()
-    } else {
-        mounted_device == expected_device
-    };
-    if !same_device {
+    let mut matched = false;
+    for expected_device in expected_devices {
+        // A failed replica must not prevent validating the ESP that firmware
+        // actually selected. Replication still reports the failed member when
+        // the transaction attempts to synchronize every configured ESP.
+        let Ok(expected_device) = std::fs::canonicalize(expected_device) else {
+            continue;
+        };
+        let Ok(expected_file) = std::fs::File::open(&expected_device) else {
+            continue;
+        };
+        let expected_metadata = expected_file.metadata()?;
+        if require_block_devices && !expected_metadata.file_type().is_block_device() {
+            bail!("EFI System Partition paths must both be block devices");
+        }
+        matched = if expected_metadata.file_type().is_block_device()
+            && mounted_metadata.file_type().is_block_device()
+        {
+            expected_metadata.rdev() == mounted_metadata.rdev()
+        } else {
+            mounted_device == expected_device
+        };
+        if matched {
+            break;
+        }
+    }
+    if !matched {
         bail!(
-            "{} is mounted from {}, expected {}",
+            "{} is mounted from {}, not a configured EFI System Partition",
             boot_root.display(),
-            mounted_device.display(),
-            expected_device.display()
+            mounted_device.display()
         );
     }
     Ok(())
@@ -1512,7 +1617,7 @@ fn read_toplevel_meta(toplevel: &Path, name: &str) -> Result<String> {
 }
 
 fn stage_slot_artifacts(
-    layout: &ImageSlotLayout<'_>,
+    layout: &ImageSlotLayout,
     target_slot: ImageSlot,
     image_store: &Path,
     image: &SysrootImageEntry,
@@ -1545,7 +1650,7 @@ enum StageCheckpoint {
 
 #[allow(clippy::too_many_arguments)]
 fn stage_slot_artifacts_with<F>(
-    layout: &ImageSlotLayout<'_>,
+    layout: &ImageSlotLayout,
     target_slot: ImageSlot,
     image_store: &Path,
     image: &SysrootImageEntry,
@@ -1558,8 +1663,8 @@ where
     F: FnMut(StageCheckpoint) -> Result<()>,
 {
     let (root_device, hash_device, legacy_uki_name) = match target_slot {
-        ImageSlot::A => (layout.root_a, layout.root_a_hash, "uki-a.efi"),
-        ImageSlot::B => (layout.root_b, layout.root_b_hash, "uki-b.efi"),
+        ImageSlot::A => (&layout.root_a, &layout.root_a_hash, "uki-a.efi"),
+        ImageSlot::B => (&layout.root_b, &layout.root_b_hash, "uki-b.efi"),
     };
     let root = image_artifact_path(image_store, image.root_image.as_deref(), "root.img")?;
     let verity = image
@@ -1887,7 +1992,7 @@ fn recovery_generation_for_slot(
 }
 
 fn discover_installed_slot_ukis(
-    layout: &ImageSlotLayout<'_>,
+    layout: &ImageSlotLayout,
     state: &ImageGenerationState,
     slot: ImageSlot,
     intended_uki: &str,
@@ -1978,7 +2083,7 @@ fn discover_installed_slot_ukis(
 }
 
 fn validate_known_good_recovery(
-    layout: &ImageSlotLayout<'_>,
+    layout: &ImageSlotLayout,
     state: &ImageGenerationState,
     running: &ImageGeneration,
 ) -> Result<()> {
@@ -2147,7 +2252,7 @@ fn image_uki_for_slot<'a>(
 }
 
 fn cleanup_replaced_slot_ukis(
-    layout: &ImageSlotLayout<'_>,
+    layout: &ImageSlotLayout,
     state: &ImageGenerationState,
     slot: ImageSlot,
     keep_recorded: &str,
@@ -2164,7 +2269,7 @@ fn cleanup_replaced_slot_ukis(
         .iter()
         .filter(|generation| generation.slot == slot)
     {
-        let Ok(entry) = resolve_installed_uki_entry(layout.boot_root, &previous.uki_path) else {
+        let Ok(entry) = resolve_installed_uki_entry(&layout.boot_root, &previous.uki_path) else {
             continue;
         };
         if stable_uki_entry_id(&entry)? == keep_entry {
@@ -2212,7 +2317,7 @@ fn stage_pending_image_generation_with<F>(
     profile: &Path,
     system_profile: &Path,
     upper_store: &Path,
-    layout: &ImageSlotLayout<'_>,
+    layout: &ImageSlotLayout,
     package: &PackageMeta,
     registry: &str,
     image: &SysrootImageEntry,
@@ -2253,16 +2358,26 @@ where
             .find(|generation| generation.number == number)
             .cloned()
     }) {
-        if pending.toplevel != package.store_path {
-            bail!(
-                "image generation {} is already pending; refusing to replace it",
-                pending.number
-            );
+        // A crash may occur after the authenticated pending record is durable
+        // but before its UKI is published. In that case, fall through and
+        // reconstruct the same slot transaction instead of requiring an entry
+        // that deliberately does not exist yet.
+        if let Ok(pending_entry) = resolve_installed_uki_entry(&layout.boot_root, &pending.uki_path)
+        {
+            if pending.toplevel != package.store_path {
+                bail!(
+                    "image generation {} is already published and pending; refusing to replace it",
+                    pending.number
+                );
+            }
+            select_image_default_with(profile, &mut state, pending.number, &pending_entry, select)?;
+            cleanup_replaced_slot_ukis(layout, &state, pending.slot, &pending.uki_path)?;
+            replicate_boot_partitions(layout)?;
+            return Ok(pending);
         }
-        let pending_entry = resolve_installed_uki_entry(layout.boot_root, &pending.uki_path)?;
-        select_image_default_with(profile, &mut state, pending.number, &pending_entry, select)?;
-        cleanup_replaced_slot_ukis(layout, &state, pending.slot, &pending.uki_path)?;
-        return Ok(pending);
+        if pending.toplevel != package.store_path {
+            abort_unpublished_image_selection(profile, &mut state, pending.number)?;
+        }
     }
 
     // Allocate the persistent image number before naming the ESP entry. The
@@ -2331,15 +2446,6 @@ where
     } else if state.recovery_pending.is_some() {
         bail!("unfinished recovery publication cannot resume without catalog metadata");
     }
-    stage_slot_artifacts(
-        layout,
-        target_slot,
-        image_store,
-        image,
-        &installed_uki,
-        &reusable_ukis,
-        recovery.as_ref(),
-    )?;
 
     // A failed counted-boot attempt leaves an authenticated generation record
     // behind after fallback. Re-arm that record instead of appending a second
@@ -2375,6 +2481,25 @@ where
     } else {
         state.generations.push(generation.clone());
     }
+    // Authenticate and mark the generation pending before any
+    // firmware-discoverable UKI is published. A crash may leave a pending
+    // record without an entry, which is safe and retryable; the inverse would
+    // let firmware select a candidate that boot assessment refuses to bless.
+    write_atomic_durable(
+        &profile.join(IMAGE_STATE_FILE),
+        &serde_json::to_vec_pretty(&state)?,
+    )?;
+    prepare_image_selection(profile, &mut state, number, &entry_id)?;
+    stage_slot_artifacts(
+        layout,
+        target_slot,
+        image_store,
+        image,
+        &installed_uki,
+        &reusable_ukis,
+        recovery.as_ref(),
+    )?;
+    replicate_boot_partitions(layout)?;
     state.recovery_pending = None;
     crate::store::create_baselib_gc_root(
         &profile.join(format!("image-gen-{number}")),
@@ -2385,7 +2510,42 @@ where
     crate::store::reconcile_baselib_gc_roots(profile, &state, &configs)?;
     select_image_default_with(profile, &mut state, number, &entry_id, select)?;
     cleanup_replaced_slot_ukis(layout, &state, target_slot, &installed_uki)?;
+    replicate_boot_partitions(layout)?;
     Ok(generation)
+}
+
+/// Clears a durable selection intent whose UKI was never published.
+fn abort_unpublished_image_selection(
+    profile: &Path,
+    state: &mut ImageGenerationState,
+    target: u32,
+) -> Result<()> {
+    if state.pending != Some(target) {
+        bail!("cannot abort image generation {target}: it is not pending");
+    }
+    // Removing the intent first is crash-safe: the authenticated pending
+    // record still prevents an unknown image from being blessed, while a
+    // retry can repeat this cleanup. This path is called only after proving
+    // that no firmware-discoverable candidate exists.
+    remove_file_durable(&profile.join(IMAGE_TRANSITION_INTENT))?;
+    state.pending = None;
+    write_atomic_durable(
+        &profile.join(IMAGE_STATE_FILE),
+        &serde_json::to_vec_pretty(state)?,
+    )
+}
+
+fn replicate_boot_partitions(layout: &ImageSlotLayout) -> Result<()> {
+    if layout.esp_devices.len() <= 1 {
+        return Ok(());
+    }
+    let status = std::process::Command::new("aos-sync-esps")
+        .status()
+        .context("replicating EFI System Partitions")?;
+    if !status.success() {
+        bail!("EFI System Partition replication failed with {status}");
+    }
+    Ok(())
 }
 
 /// Selects an older A/B image generation durably with `bootctl set-default`.
@@ -2654,7 +2814,33 @@ fn select_image_default_with<F>(
 where
     F: FnOnce(&str) -> Result<()>,
 {
+    prepare_image_selection(profile, state, target, entry_id)?;
     let stable_entry_id = stable_uki_entry_id(entry_id)?;
+
+    // sd-boot renames counted entries before launching them (for example,
+    // `image+3.efi` becomes `image+2-1.efi`). Selection therefore receives the
+    // stable entry ID even when the caller clears an older exact override and
+    // lets the image-owned pattern choose the newest live generation.
+    select(&stable_entry_id)?;
+    let mut committed = state.clone();
+    committed.default = target;
+    write_atomic_durable(
+        &profile.join(IMAGE_STATE_FILE),
+        &serde_json::to_vec_pretty(&committed)?,
+    )?;
+    remove_file_durable(&profile.join(IMAGE_TRANSITION_INTENT))?;
+    *state = committed;
+    Ok(())
+}
+
+/// Durably authenticates a candidate and records selection intent.
+fn prepare_image_selection(
+    profile: &Path,
+    state: &mut ImageGenerationState,
+    target: u32,
+    entry_id: &str,
+) -> Result<()> {
+    stable_uki_entry_id(entry_id)?;
     let intent_path = profile.join(IMAGE_TRANSITION_INTENT);
     if intent_path.is_file() {
         let existing: ImageTransitionIntent = serde_json::from_slice(&std::fs::read(&intent_path)?)
@@ -2686,20 +2872,6 @@ where
         &serde_json::to_vec_pretty(&prepared)?,
     )?;
     *state = prepared;
-
-    // sd-boot renames counted entries before launching them (for example,
-    // `image+3.efi` becomes `image+2-1.efi`). Selection therefore receives the
-    // stable entry ID even when the caller clears an older exact override and
-    // lets the image-owned pattern choose the newest live generation.
-    select(&stable_entry_id)?;
-    let mut committed = state.clone();
-    committed.default = target;
-    write_atomic_durable(
-        &profile.join(IMAGE_STATE_FILE),
-        &serde_json::to_vec_pretty(&committed)?,
-    )?;
-    remove_file_durable(&intent_path)?;
-    *state = committed;
     Ok(())
 }
 
@@ -5122,6 +5294,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn image_slot_layout_uses_declared_boot_storage_devices() {
+        let tmp = TempDir::new().unwrap();
+        let metadata_dir = tmp.path().join("meta");
+        std::fs::create_dir_all(&metadata_dir).unwrap();
+        std::fs::write(
+            metadata_dir.join("boot-storage.json"),
+            br#"{
+              "backend": "zfs-zvol",
+              "espDevices": ["/dev/disk/by-partlabel/aos-esp-1", "/dev/disk/by-partlabel/aos-esp-2"],
+              "devices": {
+                "rootA": "/dev/zvol/rpool/aos/slots/root-a",
+                "rootAHash": "/dev/zvol/rpool/aos/slots/root-a-hash",
+                "rootB": "/dev/zvol/rpool/aos/slots/root-b",
+                "rootBHash": "/dev/zvol/rpool/aos/slots/root-b-hash"
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let layout = ImageSlotLayout::from_toplevel(tmp.path()).unwrap();
+        assert_eq!(layout.esp_devices.len(), 2);
+        assert_eq!(layout.root_b, Path::new("/dev/zvol/rpool/aos/slots/root-b"));
+    }
+
     fn active_catalog() -> SbCertsToml {
         SbCertsToml {
             active: vec![SbCert {
@@ -5150,6 +5347,20 @@ mod tests {
         .unwrap();
         std::fs::write(toplevel.join("meta/package-name"), "server").unwrap();
         std::fs::write(toplevel.join("meta/version"), "1").unwrap();
+        std::fs::write(
+            toplevel.join("meta/boot-storage.json"),
+            br#"{
+              "backend": "gpt-partitions",
+              "espDevices": ["/dev/disk/by-partlabel/esp"],
+              "devices": {
+                "rootA": "/dev/disk/by-partlabel/root-a",
+                "rootAHash": "/dev/disk/by-partlabel/root-a-hash",
+                "rootB": "/dev/disk/by-partlabel/root-b",
+                "rootBHash": "/dev/disk/by-partlabel/root-b-hash"
+              }
+            }"#,
+        )
+        .unwrap();
         std::os::unix::fs::symlink("/nix/store/base-lib", toplevel.join("base-lib")).unwrap();
         std::fs::write(
             toplevel.join("os-release"),
@@ -5197,10 +5408,56 @@ mod tests {
         (tmp, image_profile, toplevel_link, os_release, cmdline)
     }
 
+    fn fixture_device_identity(path: &Path) -> Result<u64> {
+        match path.file_name().and_then(|name| name.to_str()) {
+            Some("root-a" | "vda2") => Ok(1),
+            Some("root-b" | "vda3") => Ok(2),
+            _ => bail!("fixture has no device identity for {}", path.display()),
+        }
+    }
+
+    fn load_running_image_generation_fixture(
+        image_profile: &Path,
+        os_release: &Path,
+        toplevel_link: &Path,
+        cmdline: &Path,
+    ) -> Result<ImageGeneration> {
+        load_running_image_generation_with_device_identity(
+            image_profile,
+            os_release,
+            toplevel_link,
+            cmdline,
+            fixture_device_identity,
+        )
+    }
+
+    #[test]
+    fn running_root_matches_the_resolved_block_device_identity() {
+        let layout = ImageSlotLayout::default();
+        assert_eq!(
+            image_slot_for_root(Path::new("/dev/vda2"), &layout, fixture_device_identity).unwrap(),
+            ImageSlot::A
+        );
+        assert_eq!(
+            image_slot_for_root(Path::new("/dev/vda3"), &layout, fixture_device_identity).unwrap(),
+            ImageSlot::B
+        );
+    }
+
+    #[test]
+    fn running_root_rejects_aliased_image_slots() {
+        let layout = ImageSlotLayout::default();
+        let error = image_slot_for_root(Path::new("/dev/vda2"), &layout, |path| {
+            fixture_device_identity(path).map(|_| 1)
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("same block device"));
+    }
+
     #[test]
     fn running_image_rejects_tampered_var_index_metadata() {
         let (_tmp, image_profile, toplevel_link, os_release, cmdline) = running_identity_fixture();
-        let loaded = load_running_image_generation_from(
+        let loaded = load_running_image_generation_fixture(
             &image_profile,
             &os_release,
             &toplevel_link,
@@ -5214,7 +5471,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
         state.generations[0].uki_path = "EFI/Linux/attacker.efi".into();
         std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
-        let error = load_running_image_generation_from(
+        let error = load_running_image_generation_fixture(
             &image_profile,
             &os_release,
             &toplevel_link,
@@ -5234,7 +5491,7 @@ mod tests {
         state.generations[0].uki_source_path = Some("EFI/Linux/aos-server-1+3.efi".into());
         std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
 
-        let loaded = load_running_image_generation_from(
+        let loaded = load_running_image_generation_fixture(
             &image_profile,
             &os_release,
             &toplevel_link,
@@ -5245,7 +5502,7 @@ mod tests {
 
         state.generations[0].uki_source_path = Some("EFI/Linux/attacker+3.efi".into());
         std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
-        let error = load_running_image_generation_from(
+        let error = load_running_image_generation_fixture(
             &image_profile,
             &os_release,
             &toplevel_link,
@@ -5263,7 +5520,7 @@ mod tests {
             "root=/dev/disk/by-partlabel/root-b roothash=bad\n",
         )
         .unwrap();
-        let error = load_running_image_generation_from(
+        let error = load_running_image_generation_fixture(
             &image_profile,
             &os_release,
             &toplevel_link,
@@ -5277,7 +5534,7 @@ mod tests {
             "root=/dev/mapper/root systemd.verity_root_data=/dev/disk/by-partlabel/root-b roothash=deadbeef\n",
         )
         .unwrap();
-        let error = load_running_image_generation_from(
+        let error = load_running_image_generation_fixture(
             &image_profile,
             &os_release,
             &toplevel_link,
@@ -5295,15 +5552,20 @@ mod tests {
             "console=ttyS0,115200 console=tty0 root=/dev/disk/by-partlabel/root-a roothash=deadbeef\n",
         )
         .unwrap();
-        load_running_image_generation_from(&image_profile, &os_release, &toplevel_link, &cmdline)
-            .unwrap();
+        load_running_image_generation_fixture(
+            &image_profile,
+            &os_release,
+            &toplevel_link,
+            &cmdline,
+        )
+        .unwrap();
 
         std::fs::write(
             &cmdline,
             "root=/dev/disk/by-partlabel/root-a roothash=deadbeef roothash=bad\n",
         )
         .unwrap();
-        let error = load_running_image_generation_from(
+        let error = load_running_image_generation_fixture(
             &image_profile,
             &os_release,
             &toplevel_link,
@@ -5333,11 +5595,12 @@ mod tests {
         std::fs::write(image_store.join("uki-a.efi"), b"uki-a").unwrap();
         std::fs::write(image_store.join("uki-b.efi"), b"uki-b").unwrap();
         let layout = ImageSlotLayout {
-            boot_root: &boot,
-            root_a: &root_a,
-            root_b: &root_b,
-            root_a_hash: &hash_a,
-            root_b_hash: &hash_b,
+            boot_root: boot.clone(),
+            esp_devices: vec![tmp.path().join("esp")],
+            root_a: root_a.clone(),
+            root_b: root_b.clone(),
+            root_a_hash: hash_a.clone(),
+            root_b_hash: hash_b.clone(),
         };
         let mut image = signed_image(SIGNER_ACTIVE, &[("aos", 2)]);
         image.sb_signer_cert_sha256 = None;
@@ -5449,11 +5712,12 @@ mod tests {
                 std::fs::write(&reusable, format!("old-normal-{target_name}")).unwrap();
 
                 let layout = ImageSlotLayout {
-                    boot_root: &boot,
-                    root_a: &root_a,
-                    root_b: &root_b,
-                    root_a_hash: &hash_a,
-                    root_b_hash: &hash_b,
+                    boot_root: boot.clone(),
+                    esp_devices: vec![boot.clone()],
+                    root_a: root_a.clone(),
+                    root_b: root_b.clone(),
+                    root_a_hash: hash_a.clone(),
+                    root_b_hash: hash_b.clone(),
                 };
                 let mut image = signed_image(SIGNER_ACTIVE, &[("aos", 2)]);
                 image.root_image = Some("root.img".into());
@@ -5611,7 +5875,10 @@ mod tests {
         )
         .unwrap();
 
-        validate_boot_esp_mount(&boot, &mountinfo, &expected, false).unwrap();
+        validate_boot_esp_mount(&boot, &mountinfo, std::slice::from_ref(&expected), false).unwrap();
+
+        let missing = devices.join("missing-replica");
+        validate_boot_esp_mount(&boot, &mountinfo, &[missing, expected.clone()], false).unwrap();
 
         std::fs::write(
             &mountinfo,
@@ -5622,8 +5889,10 @@ mod tests {
             ),
         )
         .unwrap();
-        let error = validate_boot_esp_mount(&boot, &mountinfo, &expected, false).unwrap_err();
-        assert!(error.to_string().contains("expected"));
+        let error =
+            validate_boot_esp_mount(&boot, &mountinfo, std::slice::from_ref(&expected), false)
+                .unwrap_err();
+        assert!(error.to_string().contains("not a configured"));
 
         std::fs::write(
             &mountinfo,
@@ -5634,7 +5903,9 @@ mod tests {
             ),
         )
         .unwrap();
-        let error = validate_boot_esp_mount(&boot, &mountinfo, &expected, false).unwrap_err();
+        let error =
+            validate_boot_esp_mount(&boot, &mountinfo, std::slice::from_ref(&expected), false)
+                .unwrap_err();
         assert!(error.to_string().contains("bind/subtree"));
 
         std::fs::write(
@@ -5646,7 +5917,9 @@ mod tests {
             ),
         )
         .unwrap();
-        let error = validate_boot_esp_mount(&boot, &mountinfo, &expected, false).unwrap_err();
+        let error =
+            validate_boot_esp_mount(&boot, &mountinfo, std::slice::from_ref(&expected), false)
+                .unwrap_err();
         assert!(error.to_string().contains("expected vfat"));
 
         std::fs::write(
@@ -5658,7 +5931,9 @@ mod tests {
             ),
         )
         .unwrap();
-        let error = validate_boot_esp_mount(&boot, &mountinfo, &expected, true).unwrap_err();
+        let error =
+            validate_boot_esp_mount(&boot, &mountinfo, std::slice::from_ref(&expected), true)
+                .unwrap_err();
         assert!(error.to_string().contains("block devices"));
     }
 
@@ -5710,11 +5985,12 @@ mod tests {
         let hash_a = tmp.path().join("root-a-hash");
         let hash_b = tmp.path().join("root-b-hash");
         let layout = ImageSlotLayout {
-            boot_root: &boot,
-            root_a: &root_a,
-            root_b: &root_b,
-            root_a_hash: &hash_a,
-            root_b_hash: &hash_b,
+            boot_root: boot,
+            esp_devices: vec![tmp.path().join("esp")],
+            root_a,
+            root_b,
+            root_a_hash: hash_a,
+            root_b_hash: hash_b,
         };
 
         cleanup_replaced_slot_ukis(&layout, &state, ImageSlot::B, "EFI/Linux/aos-new+3.efi")
@@ -5743,11 +6019,12 @@ mod tests {
         std::fs::write(image_store.join("root.verity"), b"new-verity").unwrap();
         std::fs::write(image_store.join("uki-b.efi"), b"uki-b").unwrap();
         let layout = ImageSlotLayout {
-            boot_root: &boot,
-            root_a: &root_a,
-            root_b: &root_b,
-            root_a_hash: &hash_a,
-            root_b_hash: &hash_b,
+            boot_root: boot.clone(),
+            esp_devices: vec![tmp.path().join("esp")],
+            root_a,
+            root_b: root_b.clone(),
+            root_a_hash: hash_a,
+            root_b_hash: hash_b,
         };
         let mut image = signed_image(SIGNER_ACTIVE, &[("aos", 2)]);
         image.sb_signer_cert_sha256 = None;
@@ -6437,6 +6714,57 @@ mod tests {
         assert_eq!(state.default, 2);
         assert_eq!(state.pending, Some(2));
         assert!(!tmp.path().join(IMAGE_TRANSITION_INTENT).exists());
+    }
+
+    #[test]
+    fn image_selection_preparation_precedes_candidate_publication() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut state = ImageGenerationState {
+            running: 1,
+            default: 1,
+            pending: None,
+            recovery_known_good: None,
+            recovery_pending: None,
+            generations: Vec::new(),
+        };
+
+        prepare_image_selection(tmp.path(), &mut state, 2, "aos-2+3.efi").unwrap();
+
+        assert_eq!(state.default, 1);
+        assert_eq!(state.pending, Some(2));
+        assert!(tmp.path().join(IMAGE_TRANSITION_INTENT).is_file());
+        assert!(!tmp.path().join("aos-2+3.efi").exists());
+        let durable: ImageGenerationState =
+            serde_json::from_slice(&std::fs::read(tmp.path().join(IMAGE_STATE_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(durable.pending, Some(2));
+    }
+
+    #[test]
+    fn unpublished_image_selection_can_be_aborted_for_a_corrected_retry() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut state = ImageGenerationState {
+            running: 1,
+            default: 1,
+            pending: None,
+            recovery_known_good: None,
+            recovery_pending: None,
+            generations: Vec::new(),
+        };
+        prepare_image_selection(tmp.path(), &mut state, 2, "aos-2+3.efi").unwrap();
+
+        abort_unpublished_image_selection(tmp.path(), &mut state, 2).unwrap();
+
+        assert_eq!(state.default, 1);
+        assert_eq!(state.pending, None);
+        assert!(!tmp.path().join(IMAGE_TRANSITION_INTENT).exists());
+        let durable: ImageGenerationState =
+            serde_json::from_slice(&std::fs::read(tmp.path().join(IMAGE_STATE_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(durable.pending, None);
+
+        prepare_image_selection(tmp.path(), &mut state, 3, "aos-3+3.efi").unwrap();
+        assert_eq!(state.pending, Some(3));
     }
 
     #[test]

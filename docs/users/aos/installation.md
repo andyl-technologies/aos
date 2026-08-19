@@ -54,20 +54,30 @@ The same golden system may be published in several disk encodings:
 
 | Format | Typical target |
 | --- | --- | --- |
-| Raw GPT disk | Bare metal, custom image pipelines, QEMU |
+| Zstd-compressed raw GPT disk | Bare metal, custom image pipelines, QEMU |
 | QCOW2 | QEMU/KVM, OpenStack, Proxmox |
 | VMDK | VMware and vSphere |
 | Dynamic VHD | Hyper-V and VHD-based conversion pipelines |
 
-Use the format published for the target. The CLI verifies the file checksum by
-default; retain its `image-info.json` with the deployment record. UEFI firmware
-is required; do not pass a separate kernel or initrd.
+Use the format published for the target. Raw images are delivered as
+`aos-<system>.img.zst`; fixed partition headroom and the empty inactive slot
+therefore add almost no transfer cost. The CLI verifies the compressed object's
+signed size and SHA-256. Publication also verifies that decompression produces
+the exact `virtualSizeBytes` and `logicalDiskSha256` recorded in
+`image-info.json`. Retain that metadata with the deployment record. UEFI
+firmware is required; do not pass a separate kernel or initrd.
 
 ## Size the target
 
-The build output is sized tightly around the EFI System Partition and
-immutable `root-a`/`root-b` slots. The target must provide trailing unallocated
-space for first-boot state:
+Each golden image declares maximum sizes for its root, verity tree, initrd,
+UKI, ESP, runtime closure, and direct download through `aos.image.budgets`.
+The root, verity, and ESP maxima are storage-format contracts: they determine
+the capacities of the A/B GPT partitions and encrypted ZFS zvols rather than
+following the size of one particular build. The per-image `image-budget` Nix
+check fails when an artifact, transfer, or runtime closure crosses its declared
+maximum.
+
+The target must also provide trailing unallocated space for first-boot state:
 
 - `swap`: 2 GiB by default;
 - `/var`: 4 GiB minimum and grows to consume remaining space.
@@ -87,7 +97,7 @@ If a raw file is enlarged before boot, relocate its backup GPT header after
 resizing:
 
 ```sh
-cp /path/to/downloaded-aos.img aos-server.img
+zstd -d /path/to/downloaded-aos.img.zst -o aos-server.img
 chmod u+w aos-server.img
 truncate -s 16G aos-server.img
 
@@ -111,17 +121,113 @@ ls -l /dev/disk/by-id
 lsblk -o NAME,SIZE,MODEL,SERIAL,MOUNTPOINTS
 ```
 
-After the operator has confirmed the target, a typical imaging tool can copy
-the downloaded raw image to that device and flush it. Relocate the GPT backup header
-on the target before first boot:
+After the operator has confirmed the target, decompress directly into the
+imaging tool so the uncompressed disk need not occupy staging storage. Then
+relocate the GPT backup header on the target before first boot:
 
 ```sh
+zstd -dc aos-server.img.zst | \
+  sudo dd of=/dev/disk/by-id/REPLACE_WITH_TARGET bs=16M oflag=direct status=progress
+sudo sync
 sudo sgdisk -e /dev/disk/by-id/REPLACE_WITH_TARGET
 ```
 
 The repository intentionally does not wrap this destructive step in an AOS
 command. Use the deployment system's normal image-import or disk-imaging
 workflow, with its audit and confirmation controls.
+
+## Install redundant encrypted ZFS storage
+
+The reusable `aos.profiles.bareMetalZfs` profile provides a different
+bare-metal layout. Every selected disk receives an independently bootable ESP
+sized from the golden image's artifact contract and a ZFS member. Adjacent
+members form mirrors, and the mirrors are striped by the pool, so two disks
+produce a mirror and four or more disks produce RAID10-style storage. The
+encrypted pool contains mutable datasets and contract-sized zvols for both
+immutable EROFS roots and both dm-verity hash trees. There is no LUKS layer
+below ZFS.
+
+Create a deployment system module from the production server baseline, enable
+dm-verity and measured boot, enable the profile, list one ESP identity per
+target disk, and supply deployment-owned Secure Boot and PCR-policy keys. Do
+not import the checked-in Secure Boot or measured-boot system fixtures: those
+also select test-only packages and keys. For example:
+
+```nix
+{
+  imports = [./systems/server.nix];
+
+  aos.security.verity.enable = true;
+
+  aos.profiles.bareMetalZfs = {
+    enable = true;
+    espDevices = [
+      "/dev/disk/by-partlabel/aos-esp-1"
+      "/dev/disk/by-partlabel/aos-esp-2"
+      "/dev/disk/by-partlabel/aos-esp-3"
+      "/dev/disk/by-partlabel/aos-esp-4"
+    ];
+    nvidiaOpen = true;
+    serverManagement = true;
+  };
+
+  # These values must be Nix path values from a private deployment input or
+  # an isolated signing builder, not untracked absolute-path strings.
+  aos.boot.secureBoot = {
+    enable = true;
+    dbKey = toString ./private-signing/db.key;
+    dbCert = toString ./private-signing/db.crt;
+    enrollAuthDir = toString ./public-enrollment;
+    measuredBoot = {
+      enable = true;
+      pcrPrivateKey = toString ./private-signing/pcr.key;
+      pcrPublicKey = toString ./public-signing/pcr.pem;
+    };
+  };
+}
+```
+
+The private deployment input must be available to a controlled build sandbox;
+these are Nix path values so their contents are copied into that builder's
+store. Use a signing builder whose store, logs, and substituter outputs are not
+shared, then destroy its private-key-bearing store paths after the build. This
+repository does not yet provide an offline-signing protocol or key-custody
+service. Never commit or publish the private input. The repository's
+measured-boot systems are test fixtures with public keys; do not install them
+on a real machine.
+
+Build the module's `system.build.installBundle` output on x86 Linux. Run the
+bundle's `bin/aos-install-zfs` from a trusted AOS recovery environment that has the exact ZFS
+kernel module loaded, the deployment Secure Boot keys enrolled, Secure Boot
+enforcing, and a working TPM2. The command is intentionally destructive and
+accepts only stable whole-disk identities with no existing partition table:
+
+```sh
+/path/to/install-bundle/bin/aos-install-zfs \
+  --confirm ERASE-AND-INSTALL \
+  --recovery-key-output /recovery-media/zfs-recovery.key \
+  --disk /dev/disk/by-id/REPLACE_WITH_DISK_1 \
+  --disk /dev/disk/by-id/REPLACE_WITH_DISK_2 \
+  --disk /dev/disk/by-id/REPLACE_WITH_DISK_3 \
+  --disk /dev/disk/by-id/REPLACE_WITH_DISK_4
+```
+
+The number of `--disk` arguments must equal the configured ESP count and must
+be even. Before the first destructive write, the installer rejects duplicate,
+mounted, partitioned, or kernel-name-only disks; an existing or relative
+recovery output; a topology mismatch; and a non-enforcing Secure Boot state.
+It creates native AES-256-GCM encryption, verifies the root payloads fit their
+zvol capacities, seals the pool key to the configured PCR policy, copies the
+sealed credential and boot artifacts to every ESP, and exports the pool.
+
+Move the recovery key off the installation environment before rebooting. Test
+both unattended TPM unlock and recovery-key import, then test booting through
+each firmware-visible ESP and surviving one failed mirror member before
+placing data on the system.
+
+Kernel lockdown is a separate opt-in policy. If enabled, the deployment must
+also sign both the ZFS and NVIDIA external modules with a key trusted by the
+kernel; the bare-metal profile does not generate or retain that private key.
 
 ## Supply first-boot metadata
 
@@ -219,6 +325,17 @@ If first boot stops before the target, inspect the units and state in
   out-of-band recovery path when moving network and access policy to runtime.
 - Secure-boot and measured-boot variants in this repository use test keys.
   They are validation fixtures, not production enrollment artifacts.
+- The ZFS installer supports mirrored pairs striped into RAID10-style pools.
+  RAID0-only topology is intentionally not exposed because it cannot satisfy
+  the redundant-storage contract.
+- The initrd carries a focused firmware subset for supported pre-root server
+  storage and network adapters, not the general runtime bundle. Image
+  definitions for other hardware must add the required firmware package to
+  `aos.boot.initrd.firmwarePackages`; runtime firmware remains available after
+  the immutable root is mounted.
+- NVIDIA support in this repository stops at open kernel modules and matching
+  GSP firmware. CUDA, OpenGL, Vulkan, management utilities, and other matching
+  proprietary userspace components must be supplied separately.
 - `apm install PACKAGE --system --image raw --output FILE` downloads an image
   published in a system registry. It does not write a disk or provision a
   machine.

@@ -150,35 +150,31 @@ manifest contains **no secret values** — credentials appear only as handles
 
 ## The evaluator
 
-### AOS-packaged C++ Nix
+### Stock C++ Nix
 
-AOS packages C++ Nix 2.24.12 from source in `pkgs/tools/nix.nix`, with
-`nix-instantiate --eval` present and tested. It is
-the production evaluator and carries the narrow pure-input admission extension
-described below. The module system remains
-*our* Nix code (`lib/modules.nix`) and evaluates identically on either
-evaluator. The seam is exactly `eval entry.nix → JSON manifest`.
+AOS packages stock C++ Nix 2.24.12 from source in `pkgs/tools/nix.nix`, with
+`nix-instantiate --eval` present and tested. It is the production evaluator.
+The module system remains *our* Nix code (`lib/modules.nix`) and evaluates
+identically on either evaluator. The seam is exactly
+`eval entry.nix → JSON manifest`.
 
 Invocation (eval-only by construction; the string-path discipline guarantees no
 instantiation even in a normal evaluator):
 
 ```text
 nix-instantiate --store dummy:// --eval --strict --json --pure-eval \
-  --option restrict-eval true \                  # read only explicitly admitted inputs
+  --option restrict-eval true \                  # fixed fetchTree inputs only
   --option allow-import-from-derivation false \  # no IFD ⇒ no build can sneak in
   --option allowed-uris '' \                     # no evaluator network capability
-  --aos-pure-eval-input /run/aos-eval/entry.nix \
-  --aos-pure-eval-input /nix/store/<hash>-aos-base-lib \
-  --aos-pure-eval-input /nix/store/<hash>-host.nix \
-  --aos-pure-eval-input /nix/store/<hash>-package-config \
-  -A manifest /run/aos-eval/entry.nix
+  --expr '<generated expression using fixed-NAR-hash fetchTree inputs>'
 ```
 
-The repeatable `--aos-pure-eval-input` extension adds only the named canonical
-file or directory to Nix's existing pure-eval allowlist. It does not copy or
-readdress an input, so path equality and `toString` observe the authenticated
-original path. The generated facts module is admitted as an individual file;
-the evaluator never admits `/run` or the complete eval root.
+The generated expression is delivered on standard input and addresses every
+base-library, host-module, facts, and package-config tree through
+`builtins.fetchTree { type = "path"; path = ...; narHash = ...; }`. Pure
+evaluation admits those trees only after their authenticated NAR identities
+match. No mutable evaluator source pathname, ambient `/run` tree, parent store
+directory, or URI is admitted.
 
 The driver supplies the capabilities needed around stock Nix:
 

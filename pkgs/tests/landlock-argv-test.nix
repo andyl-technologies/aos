@@ -51,5 +51,8 @@ in
       };
     };
 
-    meta.description = "AOS Landlock exec argv preservation test payload";
+    meta = {
+      description = "AOS Landlock exec argv preservation test payload";
+      license = "Apache-2.0";
+    };
   }

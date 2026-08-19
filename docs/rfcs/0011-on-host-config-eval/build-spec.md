@@ -901,21 +901,18 @@ Each iteration runs a **cold stock-Nix subprocess** (`architecture.md`
 
 ```text
 nix-instantiate --store dummy:// --eval --strict --json --pure-eval \
-  --option restrict-eval true \                  # read only explicitly admitted inputs
+  --option restrict-eval true \                  # fixed fetchTree inputs only
   --option allow-import-from-derivation false \  # no IFD ⇒ no build can sneak in
   --option allowed-uris '' \                     # no evaluator network capability
-  --aos-pure-eval-input /run/aos-eval/entry.nix \
-  --aos-pure-eval-input /nix/store/<hash>-aos-base-lib \
-  --aos-pure-eval-input /nix/store/<hash>-host.nix \
-  --aos-pure-eval-input /nix/store/<hash>-package-config \
-  -A manifest /run/aos-eval/entry.nix
+  --expr '<generated expression using fixed-NAR-hash fetchTree inputs>'
 ```
 
-`--aos-pure-eval-input` is repeatable and requires pure evaluation. Each value
-is canonicalized and admitted directly to the evaluator's pure path allowlist;
-the path is neither copied nor readdressed. The driver passes the exact entry
-and facts files plus the authenticated base-library, host-module, and config
-output roots. It does not admit `/run`, a parent store directory, or any URI.
+The driver sends the expression on standard input. Every base-library,
+host-module, facts, and package-config tree is referenced through
+`builtins.fetchTree { type = "path"; path = ...; narHash = ...; }`, so pure
+evaluation admits it only after its authenticated NAR identity matches. The
+driver does not admit a mutable evaluator source path, `/run`, a parent store
+directory, or any URI.
 
 `entry.nix` is regenerated each iteration from the current `working_set`
 (base-lib injected as module args — packages do not import it;

@@ -26,7 +26,8 @@
     {
       "x86_64-linux" = "ttyS0";
       "aarch64-linux" = "ttyAMA0";
-    }.${
+    }
+    .${
       stdenv.hostPlatform.system
     }
     or (throw "crucible-fixtures: unsupported system '${stdenv.hostPlatform.system}'");

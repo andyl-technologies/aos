@@ -16,22 +16,6 @@ use anyhow::{Result, bail};
 
 use super::*;
 
-#[test]
-fn host_selection_entry_quotes_unusual_paths_without_nix_interpolation() {
-    let rendered = render_host_selection_entry(
-        Path::new("/tmp/base lib;\")"),
-        Path::new("/tmp/host-${builtins.abort \"injected\"}.nix"),
-    );
-
-    assert!(
-        rendered.contains("import \"/tmp/base lib;\\\")\""),
-        "{rendered}"
-    );
-    assert!(
-        rendered.contains("import \"/tmp/host-\\${builtins.abort \\\"injected\\\"}.nix\""),
-        "{rendered}"
-    );
-}
 use crate::types::{
     ConfigModuleMeta, ConfigOutputMeta, ModuleAbiCompat, OwnedRoot, RootContribution,
 };
@@ -1298,6 +1282,33 @@ fn platform_host_nix_policy_needs_no_image_baked_key() {
 
     super::enforce_host_nix_trust_policy(&cmd)
         .expect("platform metadata is trusted without an image-specific key");
+}
+
+#[test]
+fn host_package_selection_rejects_a_mutable_input_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let host_nix = tmp.path().join("host.nix");
+    std::fs::write(&host_nix, b"{ aos.apm.desiredPackages = []; }\n").unwrap();
+    let cmd = EvalCommand {
+        host_nix,
+        base_lib: PathBuf::from("/nix/store/hash-aos-base-lib"),
+        facts_json: None,
+        desired: None,
+        module_abi: 1,
+        out: tmp.path().join("manifest.json"),
+        eval_root: tmp.path().join("eval"),
+        verbose: 0,
+        trusted_config_keys_dirs: Vec::new(),
+        require_signed_host_nix: false,
+        image_default_host: false,
+    };
+
+    let error = super::load_host_selection(&cmd)
+        .expect_err("pure package selection must reject a mutable host path");
+    assert!(
+        error.to_string().contains("must be pinned in /nix/store"),
+        "{error:#}"
+    );
 }
 
 #[test]

@@ -7,7 +7,9 @@
   pkgs,
   lib,
 }: let
-  metadataExemptions = [
+  # Bootstrap aliases predate pname/version passthrough but still carry the
+  # distribution metadata consumed by registry publication.
+  identityExemptions = [
     "binutils"
     "bootstrapTools"
     "cc"
@@ -23,15 +25,36 @@
     pkg = pkgs.${name};
     hasPname = pkg ? pname && builtins.isString pkg.pname && pkg.pname != "";
     hasVersion = pkg ? version && builtins.isString pkg.version && pkg.version != "";
-    metadataOk =
-      builtins.elem name metadataExemptions
-      || (hasPname && hasVersion);
+    hasDescription = pkg.meta ? description && builtins.isString pkg.meta.description && pkg.meta.description != "";
+    hasLicense =
+      pkg.meta
+      ? license
+      && (
+        (builtins.isString pkg.meta.license && pkg.meta.license != "")
+        || (
+          builtins.isList pkg.meta.license
+          && pkg.meta.license != []
+          && builtins.all (license: builtins.isString license && license != "") pkg.meta.license
+        )
+      );
+    hasMaintainers =
+      pkg.meta
+      ? maintainers
+      && builtins.isList pkg.meta.maintainers
+      && pkg.meta.maintainers != []
+      && builtins.all (maintainer: builtins.isString maintainer && maintainer != "") pkg.meta.maintainers;
     forced =
       lib.throwIfNot (pkg ? name && builtins.isString pkg.name && pkg.name != "")
       "package lint: pkgs.${name} has no derivation name"
-      (lib.throwIfNot metadataOk
+      (lib.throwIfNot (builtins.elem name identityExemptions || (hasPname && hasVersion))
         "package lint: pkgs.${name} must define non-empty pname and version"
-        true);
+        (lib.throwIfNot hasDescription
+          "package lint: pkgs.${name} must define a non-empty meta.description"
+          (lib.throwIfNot hasLicense
+            "package lint: pkgs.${name} must define a non-empty meta.license string or list"
+            (lib.throwIfNot hasMaintainers
+              "package lint: pkgs.${name} must define non-empty string meta.maintainers"
+              true))));
   in
     builtins.derivation {
       name = "aos-package-lint-${name}-0";

@@ -114,6 +114,8 @@ pub struct TransferRequest {
     pub body: Option<TransferBody>,
     /// Expected hash for download verification.
     pub hash: Option<HashSpec>,
+    /// Maximum response-body bytes accepted before the transfer is aborted.
+    pub maximum_bytes: Option<u64>,
     /// Whether to attempt resuming a partial download. Only effective
     /// for protocols that support ranged reads and when `output` is
     /// [`TransferOutput::File`]; the existing file's size is used as
@@ -132,6 +134,7 @@ impl TransferRequest {
             headers: Vec::new(),
             body: None,
             hash: None,
+            maximum_bytes: None,
             resume: false,
             output: TransferOutput::Memory,
         }
@@ -145,6 +148,7 @@ impl TransferRequest {
             headers: Vec::new(),
             body: None,
             hash: None,
+            maximum_bytes: None,
             resume: false,
             output: TransferOutput::File(path),
         }
@@ -158,6 +162,7 @@ impl TransferRequest {
             headers: Vec::new(),
             body: Some(TransferBody::Bytes(data)),
             hash: None,
+            maximum_bytes: None,
             resume: false,
             output: TransferOutput::Memory,
         }
@@ -171,6 +176,7 @@ impl TransferRequest {
             headers: Vec::new(),
             body: Some(TransferBody::File(path)),
             hash: None,
+            maximum_bytes: None,
             resume: false,
             output: TransferOutput::Memory,
         }
@@ -184,6 +190,7 @@ impl TransferRequest {
             headers: Vec::new(),
             body: Some(TransferBody::Bytes(data)),
             hash: None,
+            maximum_bytes: None,
             resume: false,
             output: TransferOutput::Memory,
         }
@@ -197,6 +204,7 @@ impl TransferRequest {
             headers: Vec::new(),
             body: None,
             hash: None,
+            maximum_bytes: None,
             resume: false,
             output: TransferOutput::Memory,
         }
@@ -214,6 +222,12 @@ impl TransferRequest {
             algorithm,
             expected: expected.to_string(),
         });
+        self
+    }
+
+    /// Limit the number of response-body bytes the transfer may consume.
+    pub fn with_maximum_bytes(mut self, maximum_bytes: u64) -> Self {
+        self.maximum_bytes = Some(maximum_bytes);
         self
     }
 

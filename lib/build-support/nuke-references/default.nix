@@ -28,4 +28,8 @@ mkDerivation {
       '';
     }
   ];
+  meta = {
+    description = "Remove selected Nix store references from package outputs";
+    license = "MIT";
+  };
 }

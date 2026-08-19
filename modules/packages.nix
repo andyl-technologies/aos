@@ -373,10 +373,12 @@ in {
     environment.systemPackages =
       lib.concatLists
       (lib.mapAttrsToList (
-          _: package: [
-            package.package
-            package.package.expose
-          ] ++ lib.optional (package.package ? config) package.package.config
+          _: package:
+            [
+              package.package
+              package.package.expose
+            ]
+            ++ lib.optional (package.package ? config) package.package.config
         )
         exposedBundledPackages);
 

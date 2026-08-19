@@ -302,20 +302,20 @@ in {
       lib.mapAttrs' (name: unit:
         lib.nameValuePair unit.name (artifactOwner path name))
       units;
-    ownedListUnits = path: units:
-      let
-        records = builtins.map (unit:
-          lib.nameValuePair unit.name
-          (provenance.ownerOfListAttr path "where" unit.where))
-        units;
-        names = builtins.map (record: record.name) records;
-        duplicates = builtins.filter
-          (name: builtins.length (builtins.filter (candidate: candidate == name) names) > 1)
-          (lib.unique names);
-      in
-        if duplicates == []
-        then builtins.listToAttrs records
-        else throw "list-backed systemd definitions collide at final unit name(s): ${lib.concatStringsSep ", " duplicates}";
+    ownedListUnits = path: units: let
+      records = builtins.map (unit:
+        lib.nameValuePair unit.name
+        (provenance.ownerOfListAttr path "where" unit.where))
+      units;
+      names = builtins.map (record: record.name) records;
+      duplicates =
+        builtins.filter
+        (name: builtins.length (builtins.filter (candidate: candidate == name) names) > 1)
+        (lib.unique names);
+    in
+      if duplicates == []
+      then builtins.listToAttrs records
+      else throw "list-backed systemd definitions collide at final unit name(s): ${lib.concatStringsSep ", " duplicates}";
     typedOwnerSets = [
       (ownedAttrUnits ["systemd" "services"] cfg.services)
       (ownedAttrUnits ["systemd" "targets"] cfg.targets)
@@ -327,42 +327,46 @@ in {
       (ownedListUnits ["systemd" "automounts"] cfg.automounts)
     ];
     typedNames = lib.concatLists (builtins.map builtins.attrNames typedOwnerSets);
-    duplicateTypedNames = builtins.filter
+    duplicateTypedNames =
+      builtins.filter
       (name: builtins.length (builtins.filter (candidate: candidate == name) typedNames) > 1)
       (lib.unique typedNames);
     typedUnitOwners =
       if duplicateTypedNames != []
       then throw "typed systemd definitions collide at final unit name(s): ${lib.concatStringsSep ", " duplicateTypedNames}"
       else builtins.foldl' (acc: owners: acc // owners) {} typedOwnerSets;
-    rawUnitNames = builtins.attrNames
+    rawUnitNames =
+      builtins.attrNames
       (builtins.removeAttrs cfg.units (builtins.attrNames typedUnitOwners));
     rawUnitOwners = builtins.listToAttrs (builtins.map (name:
       lib.nameValuePair name
       (provenance.ownerOfAttr ["systemd" "units"] name))
     rawUnitNames);
-    typedRawCollisionCheck = builtins.foldl' (checked: name: let
-      allDefs = provenance.definitionsOfAttr ["systemd" "units"] name;
-      # `config.systemd.units = renderedUnits` contributes exactly one
-      # synthetic @base definition for every typed unit. Remove exactly one
-      # such record; every remaining definition is a genuine raw-unit source,
-      # including a second @base definition from another image module.
-      stripped = builtins.foldl' (state: definition:
-        if !state.removed && definition.owner == "@base"
-        then state // {removed = true;}
-        else state // {definitions = state.definitions ++ [definition];}) {
-        removed = false;
-        definitions = [];
-      }
-      allDefs;
-      rawDefs = stripped.definitions;
-      rawOwners = lib.unique (builtins.map (definition: definition.owner) rawDefs);
-      typedOwner = typedUnitOwners.${name};
-    in
-      if rawDefs == []
-      then checked
-      else throw "raw systemd unit ${name} collides with typed owner ${typedOwner}; raw owner(s): ${lib.concatStringsSep ", " rawOwners}")
-    true
-    (builtins.attrNames typedUnitOwners);
+    typedRawCollisionCheck =
+      builtins.foldl' (checked: name: let
+        allDefs = provenance.definitionsOfAttr ["systemd" "units"] name;
+        # `config.systemd.units = renderedUnits` contributes exactly one
+        # synthetic @base definition for every typed unit. Remove exactly one
+        # such record; every remaining definition is a genuine raw-unit source,
+        # including a second @base definition from another image module.
+        stripped =
+          builtins.foldl' (state: definition:
+            if !state.removed && definition.owner == "@base"
+            then state // {removed = true;}
+            else state // {definitions = state.definitions ++ [definition];}) {
+            removed = false;
+            definitions = [];
+          }
+          allDefs;
+        rawDefs = stripped.definitions;
+        rawOwners = lib.unique (builtins.map (definition: definition.owner) rawDefs);
+        typedOwner = typedUnitOwners.${name};
+      in
+        if rawDefs == []
+        then checked
+        else throw "raw systemd unit ${name} collides with typed owner ${typedOwner}; raw owner(s): ${lib.concatStringsSep ", " rawOwners}")
+      true
+      (builtins.attrNames typedUnitOwners);
     unitOwners = builtins.seq typedRawCollisionCheck (typedUnitOwners // rawUnitOwners);
 
     asList = value:
@@ -382,20 +386,25 @@ in {
       else if unit.reloadIfChanged
       then "reload"
       else "restart";
-    attrActions = kind: units: lib.mapAttrs' (_: unit:
-      lib.nameValuePair unit.name {
-        action = reconcileAction kind unit;
-        credentials = if kind == "service" then credentialHandles unit else [];
-        enable = unit.enable;
-      })
-    units;
-    listActions = kind: units: builtins.listToAttrs (builtins.map (unit:
-      lib.nameValuePair unit.name {
-        action = reconcileAction kind unit;
-        credentials = [];
-        enable = unit.enable;
-      })
-    units);
+    attrActions = kind: units:
+      lib.mapAttrs' (_: unit:
+        lib.nameValuePair unit.name {
+          action = reconcileAction kind unit;
+          credentials =
+            if kind == "service"
+            then credentialHandles unit
+            else [];
+          enable = unit.enable;
+        })
+      units;
+    listActions = kind: units:
+      builtins.listToAttrs (builtins.map (unit:
+        lib.nameValuePair unit.name {
+          action = reconcileAction kind unit;
+          credentials = [];
+          enable = unit.enable;
+        })
+      units);
     typedUnitActions =
       attrActions "service" cfg.services
       // attrActions "target" cfg.targets

@@ -87,7 +87,7 @@ pub(crate) async fn fetch(repo_dir: &Path, base_url: &str, refspecs: &[String]) 
     }
 
     let target_oids: Vec<String> = targets.iter().map(|(oid, _)| oid.clone()).collect();
-    let objects_dir = repo::objects_dir(repo_dir);
+    let objects_dir = repo::objects_dir(repo_dir)?;
 
     // Walk the local graph first: a repeat sync with no upstream change finds
     // nothing missing and downloads no objects at all — only the refs (below)
@@ -675,6 +675,34 @@ mod tests {
             return;
         };
         fetch_and_assert(&origin).await;
+    }
+
+    /// Authoring clones are normal worktrees, so loose objects must land in
+    /// `.git/objects` rather than an unobserved sibling directory.
+    #[tokio::test]
+    async fn fetch_reads_static_sha256_repo_into_worktree() {
+        let Some(origin) = serve_repo(false) else {
+            return;
+        };
+        let client_dir = origin._tmp.path().join("client-worktree");
+        let mut options = git2::RepositoryInitOptions::new();
+        options.object_format(git2::ObjectFormat::Sha256);
+        git2::Repository::init_opts(&client_dir, &options).unwrap();
+
+        fetch(&client_dir, &origin.url, &[MAIN_REFSPEC.to_string()])
+            .await
+            .expect("dumb-http worktree fetch should succeed");
+
+        let resolved = repo::rev_parse(&client_dir, "refs/remotes/origin/main")
+            .await
+            .unwrap();
+        assert_eq!(resolved, origin.head);
+        let nested = repo::read_blob_at(&client_dir, &origin.head, "sub/nested.txt")
+            .await
+            .unwrap();
+        assert_eq!(nested.as_deref(), Some(&b"nested"[..]));
+        assert!(!client_dir.join("objects").exists());
+        assert!(client_dir.join(".git/objects").is_dir());
     }
 
     /// End-to-end over the pack path: a repacked repo serves `objects/info/packs`

@@ -138,6 +138,7 @@ mod tests {
             let end = (start + limit).min(self.paths.len());
             Ok(crate::fetch::SurfaceListPage {
                 paths: self.paths[start..end].to_vec(),
+                evidence: Default::default(),
                 next_cursor: (end < self.paths.len()).then(|| end.to_string()),
             })
         }

@@ -306,11 +306,7 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
                 "sha256": hex::encode(Sha256::digest(bytes)),
                 "byteSize": bytes.len(),
                 "kind": kind,
-                "mediaType": match path.rsplit_once('.').map(|(_, extension)| extension) {
-                    Some("json") => "application/json",
-                    Some("qcow2") => "application/x-qemu-disk",
-                    _ => "application/octet-stream",
-                },
+                "mediaType": aos_hub_core::keymap::content_type(path),
             })
         })
         .collect::<Vec<_>>();
@@ -434,7 +430,7 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     assert_eq!(body, public_fixture.raw);
     assert_eq!(
         headers[header::CONTENT_DISPOSITION],
-        "attachment; filename=\"aos-1.0.0-x86_64.img\""
+        "attachment; filename=\"aos-1.0.0-x86_64.img.zst\""
     );
     assert_eq!(headers["x-aos-sha256"].to_str().unwrap(), raw_sha256);
     assert!(headers[header::CACHE_CONTROL]
