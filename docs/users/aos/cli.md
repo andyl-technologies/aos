@@ -70,6 +70,10 @@ individual `pkg-*` output for that system. For example, submit
 `packages.x86_64-linux.all` to an x86_64 Linux builder. Git-backed package
 sources use pinned fixed-output archives so restricted remote evaluators create
 ordinary fetch derivations instead of requiring evaluation-time network access.
+The aggregate remains one remote build session and does not shard its package
+plan across a worker fleet. Submit independent `pkg-*` outputs as separate
+builds when you want package-level cluster parallelism; their successful store
+outputs remain reusable by a later `all` build.
 Individual `pkg-*` outputs remain lazy: evaluating `pkg-openjdk-24`, for
 example, does not inspect or realize Crucible merely to enumerate the package
 set. Add new package files through `pkgs/default.nix` filesystem discovery, and
