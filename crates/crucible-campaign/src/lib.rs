@@ -73,9 +73,11 @@ pub use policy::{
     RetentionPolicy, WeightedGenerator,
 };
 pub use repository::{
-    AttemptAdmissionResult, BranchRequestResult, CampaignCommandResult, CampaignHead,
-    CampaignRepository, CampaignRepositoryError, ChoiceDiscoveryResult, ObservationDisposition,
-    ObservationResult, PlannerStepResult, ProposalResult, ResolvedSelection,
+    AttemptAdmissionResult, AttemptQueue, AttemptQueueCursor, AttemptQueueError,
+    AttemptReservation, BranchRequestResult, CampaignCommandResult, CampaignHead,
+    CampaignRepository, CampaignRepositoryError, ChoiceDiscoveryResult, ClaimableAttemptPage,
+    DaemonEpoch, ObservationDisposition, ObservationResult, PlannerStepResult, ProposalResult,
+    ResolvedSelection, WorkerSlotId,
 };
 
 #[cfg(test)]

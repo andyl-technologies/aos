@@ -187,6 +187,25 @@ The existing RFC-0010 `SharedFrontier` keyed by checkpoint content hash becomes
 a rebuildable attempt index keyed by `AttemptId`. It no longer asserts that a
 checkpoint is expanded once.
 
+The first repository checkpoint projects that index directly from one
+authenticated `CampaignSnapshot`. `ProjectClaimableAttempts` scans a bounded
+page of the accounting root, accepts only canonical `accounting.attempt` keys,
+and removes attempts present under the canonical `observations.attempt` owner.
+Its opaque continuation carries the snapshot identity and exclusive accounting
+key. A head advance rejects the old continuation rather than mixing semantic
+roots, and concatenating all pages to EOF produces the same canonical sequence
+for every valid scan bound. Because the accounting root is heterogeneous, an
+empty result page may still carry a continuation.
+
+`AttemptQueue` then applies a separately bounded in-process reservation table
+to those pages. One worker slot obtains at most one exact reservation;
+repeating that claim is idempotent, and release requires the complete current
+attempt/epoch/slot/generation tuple. The daemon supplies a fresh nonzero epoch
+when constructing a new queue after restart. The queue and cursor are
+operational Rust interfaces at this checkpoint, not canonical campaign objects
+or component messages; a later service schema must preserve these semantics
+without adding reservation fields to semantic identity.
+
 - **[LAZY-9]** Daemon epoch, worker slot, reservation generation, retry count,
   and execution handle MUST NOT enter attempt, configuration, observation, or
   finding identity. Reservations MUST NOT be required to recover the frontier.
@@ -573,3 +592,11 @@ change.
 - **[LAZY-39]** Imported observation successors MUST be validated by read-only
   owner recomputation. Local publication MUST advance the ref last and MUST NOT
   promote a rejected CAS child as validated acceleration state.
+- **[LAZY-40]** Claimable-attempt projection MUST scan a bounded number of
+  authenticated accounting entries, accept only canonical attempt membership,
+  exclude canonical observation membership, bind continuations to one exact
+  snapshot, and produce a page-boundary-independent sequence to EOF.
+- **[LAZY-41]** Local reservations MUST be bounded and epoch-local. A worker
+  slot's repeated claim MUST return its exact reservation, release MUST reject
+  a stale or different-epoch tuple, and constructing a fresh daemon epoch MUST
+  recover every admitted unobserved attempt without durable lease state.

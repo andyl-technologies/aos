@@ -158,8 +158,18 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
 - [ ] **T-CAM-4.4** Replace checkpoint-once frontier authority with branch-point
   source continuations, an attempt-level rebuildable queue, and volatile
   daemon-epoch reservations.
+  The repository checkpoint now provides snapshot-bound, bounded accounting
+  scans that authenticate canonical attempt membership, exclude completed
+  observations, remain page-size independent to EOF, and rebuild identically
+  through a fresh repository. Its bounded process-local reservation table is
+  idempotent per worker slot, rejects stale epoch/generation releases, and
+  restarts empty under a fresh daemon epoch. Generated source continuations and
+  supervisor integration remain open.
 - [ ] **T-CAM-4.5** Implement `CampaignSupervisor`, `CampaignProjector`,
   `ProposalPlanner`, `AttemptQueue`, and a bounded local `WorkerPool`.
+  The standalone bounded `AttemptQueue` reservation primitive is implemented;
+  supervisor ownership, worker execution, completion handoff, and responsive
+  scheduling remain open.
 - [ ] **T-CAM-4.6** Implement strict and streaming commit modes, restart
   recovery, duplicate/conflict handling, backpressure, pagination, and
   projection rebuilding; implement snapshot-bound paged planner scans whose
@@ -385,7 +395,7 @@ area mapping ensures that no part of the RFC is merely aspirational:
 | `CMOD-1..30` | 1, 2, 4 | campaign model, content address, attempt idempotence, continuity |
 | `SEL-1..21` | 2 | typed choice, ABI conformance, end-to-end determinism |
 | `GUIDE-1..24` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
-| `LAZY-1..39` | 4 | lazy frontier, attempt idempotence, campaign replay |
+| `LAZY-1..41` | 4 | lazy frontier, attempt idempotence, campaign replay |
 | `CCOMP-1..24` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
 | `HFORK-1..24` | 6, 7 | hot-fork equivalence/isolation/scaling, world-fork atomicity, ABI/license |
 | `CSTORE-1..22` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |
