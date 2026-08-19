@@ -32,6 +32,15 @@ Rust implementation may compose them in one daemon and use an allocation-free
 in-process client. It must also expose the same typed operations over the
 versioned RPC transport and pass one conformance suite through both paths.
 
+The dependency-free semantic center is the `crucible-campaign` crate. It owns
+portable IDs, canonical campaign objects, the pure projector and planner
+contracts, and no QEMU or transport implementation. `crucible` adapts those
+types to scenario execution, `crucible-api` owns wire DTOs and adapters, and
+`crucible-daemon` owns the sole-writer actor and local executor. Existing
+campaign manifests, search worklists, adaptive-search structs, and explicit
+fork queues are migration inputs; none remains a second authority after its
+campaign-service adapter lands.
+
 ## 04a.1 Authority and ownership
 
 | Component | Owns | Must not own |
@@ -166,6 +175,7 @@ pub struct PlannerRequest {
     pub planner_state: PlannerStateId,
     pub input_view: CampaignViewId,
     pub input_bundle: CampaignPlanningBundle,
+    pub scan_page: Option<PlanningScanPage>,
     pub budget: PlanningBudget,
     pub engine: PlannerEngineId,
 }
@@ -177,6 +187,13 @@ pub struct PlannerStepProposal {
     pub proposals: Vec<Proposal>,
     pub usage_claim: PlanningUsage,
     pub explanation: GuidanceEvidence,
+    pub disposition: PlannerDisposition,
+}
+
+pub enum PlannerDisposition {
+    ContinueScan { cursor: PlanningScanCursor },
+    Issue,
+    NoWork,
 }
 ```
 
@@ -200,9 +217,18 @@ native trait object, or runtime continuation. Repeating one invocation must
 return byte-identical canonical output; disagreement is a planner-determinism
 failure.
 
+A globally ordered frontier need not fit in one bundle. The coordinator serves
+snapshot-bound pages in canonical continuation-key order. Portable planner
+state carries the scan cursor, best candidate and score evidence accumulated so
+far, immutable view identity, and remaining fuel. The engine may suspend with
+`ContinueScan`; changing page size or RPC chunking must yield the same eventual
+selection and evidence. A page from another view, a skipped key, or a cursor
+replay with different bytes is rejected.
+
 - **[CCOMP-12]** A planner step MUST be a deterministic function of its named
   engine and artifact, policy, planner state, complete planning view, explicit
-  budget, and canonical bounded input bundle.
+  budget, and canonical bounded input bundle. Pagination and transport chunking
+  MUST NOT alter the result of a completed snapshot-bound scan.
 - **[CCOMP-13]** The planner MUST NOT read wall time, worker completion arrival
   order outside the recorded mode, host load, store placement, credentials, or
   other undeclared I/O while producing canonical output.
@@ -257,6 +283,13 @@ completion produced after accepted cancellation is retained as operational
 diagnostic content unless the coordinator still has an independently valid
 admission for it. Cancellation never becomes a modeled timeout or failure.
 
+An attempt explicitly declares `Discover` or `Branch` start semantics.
+`Discover` realizes an existing configuration until a pending choice or modeled
+terminal outcome; it is how a campaign first learns dynamic guest
+opportunities. `Branch` realizes a parent at a known opportunity and applies
+exactly one typed selection. The executor cannot infer one form from missing
+fields or synthesize an edge for discovery.
+
 Delivery is at-least-once. The executor avoids duplicate local work when it can,
 but a coordinator retry or daemon crash may repeat an attempt. Equal canonical
 results deduplicate; conflicting results are determinism failures and are never
@@ -264,7 +297,7 @@ arbitrarily selected.
 
 - **[CCOMP-16]** An executor MUST validate every attempt, capability,
   compatibility requirement, resource ceiling, and referenced object before
-  guest execution.
+  guest execution, including the explicit discovery-versus-branch start form.
 - **[CCOMP-17]** Executor completion MUST publish immutable result objects
   before advertising their IDs and MUST NOT advance virtual time while required
   input content is unavailable.

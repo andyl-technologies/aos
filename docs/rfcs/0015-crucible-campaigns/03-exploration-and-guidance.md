@@ -38,6 +38,16 @@ This is an illustrative interface, not permission to store trait objects. The
 durable representation is a closed, versioned `CandidateGeneratorSpec` plus
 canonical facts from which its cursor and statistics are derived.
 
+The initial canonical specification is a closed tagged union covering `all`,
+weighted categorical, stratified/boundary/log/permuted/progressive integer,
+corpus mutation, and an ordered positive-integer-weight mixture of other
+specifications. It records an implementation-protocol version, bounds every
+map/list before allocation, and exposes mixture children in the generic object
+envelope. Arbitrary class names, native closures, serialized functors, and
+unversioned parameter maps are not admitted. Recursive mixture references are
+authenticated as ordinary content children and must form a complete reachable
+closure before policy or campaign-ref publication.
+
 - **[GUIDE-1]** Candidate generation MUST be a pure function of the named
   planner engine/artifact and state, choice opportunity, branch point, branch
   request, policy, campaign seed, explicit planning budget, and canonical

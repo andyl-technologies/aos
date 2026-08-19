@@ -1,8 +1,8 @@
 # RFC-0015: Crucible campaigns, adaptive exploration, and hot forking
 
-- **Status:** Proposed. This initial review checkpoint is documentation-only.
-  Implementation is planned in this RFC's draft pull request after design
-  review; no campaign or hot-fork implementation is enabled by this document.
+- **Status:** Proposed. Implementation is landing incrementally in this draft
+  pull request behind non-default library and test surfaces; no campaign or
+  hot-fork path is enabled as a supported default before its listed gates.
 - **Date:** 2026-08-18
 - **PR:** [#194](https://github.com/andyl-technologies/aos/pull/194)
 - **Depends on:** [RFC-0010](../0010-crucible/README.md) and
@@ -320,6 +320,8 @@ effects into arbitrary callbacks.
 16. [`14-manual-validation-and-dogfooding.md`](14-manual-validation-and-dogfooding.md)
     defines independent operator acceptance, realistic dogfood, destructive
     recovery, evidence bundles, and release-blocking manual gates.
+17. [`schema-registry.tsv`](schema-registry.tsv) assigns each wire and object
+    schema its version owner, storage domain, and compatibility gates.
 
 ## Requirement prefixes
 

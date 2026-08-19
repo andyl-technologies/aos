@@ -6,6 +6,14 @@ daemon queues and iterator objects are rebuildable indexes.
 
 ## 01.1 Identity hierarchy
 
+Every stored campaign record has exactly one identity: a record-specific typed
+wrapper around the generic `ContentId` of its complete canonical content
+envelope. There is no second logical hash that can disagree with the storage
+identity. The formulas below describe the semantic fields encoded in each
+record body; the actual hash input also contains the envelope version, schema
+name and version, exact sorted child-reference table, and body framing defined
+in §06.1.
+
 ```text
 ScenarioDefId = H(world, plan, properties, measurements, selectables, seed)
 
@@ -13,7 +21,9 @@ ConfigurationId = H(ScenarioDefId, Schedule)
 
 CampaignLineageId = H(
   ScenarioDefId,
+  ScenarioArtifactId,
   GenesisConfigurationId,
+  ConfigurationArtifactId,
   CrucibleVersion,
   QemuBuildAndPatchSeries,
   ProtocolVersions
@@ -35,8 +45,51 @@ PlannerInvocationId = H(
 )
 ```
 
+`CampaignHash` and semantic wrappers such as `ConfigurationId`,
+`BranchPointId`, and `BranchEdgeId` identify values derived from other
+canonical records. They are not independently stored record identities. Stored
+objects such as policies, snapshots, facts, choice domains, opportunities,
+selections, planner artifacts, and Merkle nodes use typed `ContentId` wrappers.
+Presentation-independent choice-domain semantics have a separate explicitly
+named `ChoiceDomainSemanticId`; selectable declarations and runtime
+opportunities similarly expose `SelectableSemanticId` and
+`ChoiceOpportunitySemanticId`. Their stored `*Id` values remain exact typed
+`ContentId` wrappers and therefore cover presentation metadata too. Semantic
+branch-point and edge derivation uses the explicitly named semantic IDs, while
+storage closure and provenance retain the exact IDs.
+
+The public textual and canonical-binary form of a stored-record ID includes its
+exact registered schema tag as well as the generic `ContentId`. A policy-family
+content ID cannot therefore be parsed or decoded as a planner-state,
+planner-engine, or candidate-generator ID merely because those records share an
+`ObjectKind`. The underlying generic content ID becomes authoritative only
+after the named envelope is loaded and authenticated as the claimed record
+schema.
+
+The normative owner, version, object-kind domain, and compatibility gates for
+every format introduced here are frozen in
+[`schema-registry.tsv`](schema-registry.tsv). Adding or changing a format
+requires updating that registry and its executable completeness check.
+
 The human campaign name is not an identity component. It is a mutable reference
 such as `network-recovery -> CampaignSnapshotId`.
+
+`CampaignLineage` carries both semantic scenario/genesis identities and exact
+typed content references to owned `ScenarioArtifact` and
+`ConfigurationArtifact` records. The scenario record binds its semantic
+`ScenarioDefId` and execution-model schema to the exact canonical payload. The
+configuration record binds its semantic `ConfigurationId`, its
+`ScenarioDefId`, and the exact `ScenarioArtifactId` to its canonical payload.
+Repository reads resolve these records and recheck every cross-record binding;
+validation is not limited to the campaign-creation path.
+
+Campaign creation inserts the exact genesis configuration artifact into the
+canonical graph and corpus keys, publishes any candidate-generator closure,
+and verifies the complete snapshot closure before advancing the name. A
+semantic digest without the corresponding reachable bytes is not a readable
+campaign. Raw pre-RFC scenario/configuration blobs require explicit migration
+into these owned records before import; they are never guessed to be either a
+legacy blob or a record based on their bytes.
 
 - **[CMOD-10]** A policy revision MUST NOT change existing configuration IDs.
   Every proposal MUST name the policy revision that issued it.
@@ -87,14 +140,15 @@ pub struct CampaignSnapshot {
     pub parent: Option<CampaignSnapshotId>,
     pub lineage: CampaignLineageId,
     pub active_policy: CampaignPolicyId,
-    pub graph_root: ContentHash,
-    pub exploration_root: ContentHash,
-    pub observations_root: ContentHash,
-    pub corpus_root: ContentHash,
-    pub coverage_root: ContentHash,
-    pub findings_root: ContentHash,
-    pub pins_root: ContentHash,
-    pub accounting_root: ContentHash,
+    pub graph_root: ContentId,
+    pub exploration_root: ContentId,
+    pub observations_root: ContentId,
+    pub corpus_root: ContentId,
+    pub coverage_root: ContentId,
+    pub findings_root: ContentId,
+    pub pins_root: ContentId,
+    pub accounting_root: ContentId,
+    pub transition: Option<CampaignFactId>,
 }
 ```
 
@@ -102,20 +156,38 @@ Snapshot ancestry for one campaign ref is linear in this RFC because exactly
 one coordinator owns that ref. `derive` creates another named ref at an existing
 snapshot; it does not create a multi-parent merge commit. Immutable facts may be
 shared by any number of refs without giving more than one writer authority over
-any ref.
+any ref. A non-genesis snapshot names exactly one `transition` fact that caused
+the parent-to-child change; a genesis snapshot has neither parent nor
+transition. This direct edge makes lifecycle history independently auditable
+without inferring causality from changed projection roots.
+
+Reading a snapshot replays its transition contract, rather than merely checking
+that all named objects exist. Each successor preserves lineage, changes only
+the roots permitted by its typed transition, proves its active-policy delta,
+and reconstructs the exact affected Merkle entries. Lifecycle actions are then
+folded from genesis in forward order. Genesis has canonical empty roots outside
+the graph/corpus, and those two roots contain exactly the lineage's typed
+genesis configuration at their canonical keys. A transition family whose owner
+codec and replay projection are not implemented fails closed on import.
 
 The roots name immutable canonical maps or sets:
 
 | Root | Contents |
 | --- | --- |
 | `graph_root` | Configurations, branch points, schedule edges, and graph metadata. |
-| `exploration_root` | Branch requests, proposals, planner-step facts, candidate-source specifications, and derived expansion-state snapshots. |
+| `exploration_root` | Branch requests, proposals, planner-step facts, and candidate-source specifications. |
 | `observations_root` | Attempt results, measurements, properties, coverage projections, and causal evidence. |
 | `corpus_root` | Retained configurations and reproduction artifacts worth further mutation. |
 | `coverage_root` | Grow-only union of canonical coverage identities. |
 | `findings_root` | Failure signatures, clusters, minimization products, and reproduction artifacts. |
 | `pins_root` | User and policy retention decisions for configurations and exact closures. |
 | `accounting_root` | Budget grants, consumed attempts, modeled completion counts, policy activation, pause/resume, and operator commands. |
+
+Expansion-state, frontier, statistics, and status objects are rebuildable
+projections over these authoritative roots. A snapshot may name an optional
+authenticated projection cache through non-authoritative acceleration metadata,
+but deleting every such cache cannot make the snapshot unreadable or alter its
+semantic value.
 
 - **[CMOD-12]** Every snapshot root MUST name an immutable object whose children
   are discoverable without listing the backing store.
@@ -124,6 +196,13 @@ The roots name immutable canonical maps or sets:
   ref is advanced.
 - **[CMOD-14]** A snapshot MUST be readable without any daemon-local queue,
   reservation, PID, socket, hot-fork handle, or filesystem path.
+
+Each canonical object is wrapped in the generic child-bearing envelope from
+§06.1. Record-specific constructors derive the child table from the decoded
+body and reject missing, extra, duplicated, or wrongly role-tagged references.
+Generic storage, transfer, retention, and garbage-collection code can therefore
+walk every closure without importing campaign record types, while the campaign
+codec remains responsible for the stronger record-specific correspondence.
 
 ## 01.4 Campaign facts
 
@@ -134,6 +213,7 @@ pub enum CampaignFact {
     PlannerAdvanced(PlannerStep),
     ProposalIssued(Proposal),
     AttemptAdmitted(AttemptAdmission),
+    AttemptClosed(NonModeledAttemptDisposition),
     ObservationPublished(Observation),
     FindingPublished(Finding),
     PolicyActivated(PolicyActivation),
@@ -147,17 +227,24 @@ Facts are immutable and carry causal references. They may be represented in
 persistent Merkle maps rather than replayed from a flat log. A projection cache
 may summarize them, but the facts remain sufficient to rebuild it.
 
+`AttemptClosed` records the admitted attempt, its global ordinal, and an
+explicit non-modeled disposition such as accepted operator cancellation,
+permanent incompatibility, invalid input, or authorization refusal. Retriable
+operational failure does not close an ordinal. This is the only non-observation
+path that can close strict ordering, and it cannot be interpreted as a modeled
+timeout, crash, or assertion result.
+
 `PlannerStep` makes adaptation explicit:
 
 ```rust,illustrative
 pub struct CampaignPlanningView {
-    pub graph_root: ContentHash,
-    pub exploration_root: ContentHash,
-    pub observations_root: ContentHash,
-    pub corpus_root: ContentHash,
-    pub coverage_root: ContentHash,
-    pub findings_root: ContentHash,
-    pub accounting_root: ContentHash,
+    pub graph_root: ContentId,
+    pub exploration_root: ContentId,
+    pub observations_root: ContentId,
+    pub corpus_root: ContentId,
+    pub coverage_root: ContentId,
+    pub findings_root: ContentId,
+    pub accounting_root: ContentId,
 }
 ```
 
@@ -257,27 +344,46 @@ pub struct BranchEdge {
 }
 
 pub struct Attempt {
-    pub edge: BranchEdgeId,
-    pub parent: ConfigurationId,
-    pub selection: Selection,
+    pub start: AttemptStart,
+    pub path: BranchPathId,
     pub stop: StopCondition,
+}
+
+pub enum AttemptStart {
+    Discover {
+        configuration: ConfigurationId,
+    },
+    Branch {
+        edge: BranchEdgeId,
+        parent: ConfigurationId,
+        selection: Selection,
+    },
+}
+
+pub struct BranchPath {
+    pub edges: Vec<BranchEdgeId>,
 }
 
 pub struct AttemptAdmission {
     pub attempt: AttemptId,
-    pub proposal: ProposalId,
     pub role: AttemptAdmissionRole,
 }
 
 pub enum AttemptAdmissionRole {
-    ExecutionBasis,
-    AdditionalCause,
+    ExecutionBasis {
+        proposal: Option<ProposalId>,
+        cause: BranchRequestCause,
+        admission_ordinal: AdmissionOrdinal,
+    },
+    AdditionalCause {
+        proposal: ProposalId,
+    },
 }
 
 pub struct Observation {
     pub attempt: AttemptId,
     pub child: ConfigurationId,
-    pub path: Vec<BranchEdgeId>,
+    pub path: BranchPathId,
     pub stop: StopOutcome,
     pub measurements: MeasurementSetId,
     pub properties: PropertyVerdictSetId,
@@ -322,6 +428,16 @@ later duplicates are `AdditionalCause` and cannot trigger execution or
 retroactively change estimator eligibility. A repeated attempt may produce
 identical bytes and deduplicate. If it does not, the replay oracle localizes a
 determinism defect.
+
+`AttemptStart::Discover` is the bootstrap form. It realizes a configuration
+until the next pending choice or terminal outcome without pretending a choice
+edge already exists. `AttemptStart::Branch` resumes a known parent opportunity
+and applies exactly one recorded selection. A discovery basis has no proposal
+but still records its command or policy cause and global `AdmissionOrdinal`.
+The ordinal belongs to campaign accounting, not `AttemptId`; strict projection
+uses it to fold completions in a stable order. `BranchPathId` authenticates the
+ordered edge path used for guidance backpropagation. It is never reconstructed
+by choosing an arbitrary parent from a graph with shared descendants.
 
 - **[CMOD-17]** A proposal MUST validate its value against the named domain
   before an attempt can be admitted.
@@ -392,8 +508,10 @@ sealed it.
   creates a new named ref sharing all immutable reachable objects. It MUST NOT
   copy the object closure.
 - **[CMOD-23]** `BranchPointId` MUST identify the pair of a parent
-  `ConfigurationId` and stable `ChoiceOpportunityId`. Campaign policy, request
-  cause, candidate source, and materialization tier MUST NOT enter that ID.
+  `ConfigurationId` and stable `ChoiceOpportunitySemanticId`. Exact
+  presentation-bearing opportunity/declaration/domain content IDs, campaign
+  policy, request cause, candidate source, and materialization tier MUST NOT
+  enter that ID.
 - **[CMOD-24]** The semantic edge for one legal selected value at a branch point
   MUST deduplicate regardless of whether planner, operator, debugger, or
   exhaustive requests proposed it. Every proposal cause remains separately
@@ -409,6 +527,7 @@ sealed it.
   request MUST NOT eagerly create its proposals, attempts, configurations, or
   QEMU children.
 - **[CMOD-28]** Each admitted attempt MUST have exactly one immutable
-  `ExecutionBasis`. Additional request causes MUST NOT consume another attempt,
-  change sampling provenance, or trigger another execution. Conflicting
-  execution bases are a campaign-integrity error.
+  `ExecutionBasis` and one globally ordered `AdmissionOrdinal`. Additional
+  request causes MUST NOT consume another attempt, change sampling provenance,
+  or trigger another execution. Conflicting execution bases or ordinals are a
+  campaign-integrity error.

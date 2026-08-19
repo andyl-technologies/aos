@@ -48,7 +48,8 @@ delta remains disabled.
 
 ## 11.3 Phase 1 — Canonical campaign model
 
-Primary crates: `crucible`, `crucible-cas`, and codec-only API types.
+Primary crates: `crucible-campaign`, `crucible`, `crucible-cas`, and codec-only
+API types.
 
 - [ ] **T-CAM-1.1** Implement `CampaignLineage`, `CampaignPolicy`,
   `CampaignSnapshot`, `CampaignPlanningView`, planner engine/artifact/state and
@@ -143,10 +144,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   `CandidateSource` forms plus generator specs for all/discrete, boundary,
   stratified, logarithmic, permuted, progressive integer, and corpus mutation.
 - [ ] **T-CAM-4.2** Implement branch request/cause, branch-edge deduplication,
-  immutable attempt execution basis, additional-cause association, proposal,
-  attempt, observation, credit, input-only planner invocation, coordinator-
-  accepted planner step/accounting, branch-point `ExpansionState`, and
-  per-source portable continuation state.
+  discovery-versus-branch attempt starts, immutable attempt execution basis,
+  global admission ordinal, authenticated branch path, additional-cause
+  association, proposal, attempt, observation, credit, input-only planner
+  invocation, coordinator-accepted planner step/accounting, branch-point
+  `ExpansionState`, and per-source portable continuation state.
 - [ ] **T-CAM-4.3** Implement progressive-widening exact rational rules,
   interval refinement, deterministic PUCT, coverage/rarity/assertion/objective
   guidance, and path backpropagation.
@@ -157,8 +159,9 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   `ProposalPlanner`, `AttemptQueue`, and a bounded local `WorkerPool`.
 - [ ] **T-CAM-4.6** Implement strict and streaming commit modes, restart
   recovery, duplicate/conflict handling, backpressure, pagination, and
-  projection rebuilding; reject stale, oversized, timed-out, cancelled, and
-  nondeterministic planner invocations.
+  projection rebuilding; implement snapshot-bound paged planner scans whose
+  result is chunk-size independent; reject stale, oversized, timed-out,
+  cancelled, and nondeterministic planner invocations.
 - [ ] **T-CAM-4.7** Implement hierarchical per-event promotion and existing
   minimization integration.
 - [ ] **T-CAM-4.8** Complete the §14 Phase 4 local operator flight through lazy

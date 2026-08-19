@@ -45,6 +45,8 @@ pub enum ObjectKind {
     MerkleNode,
     /// Scenario definition or referenced immutable scenario artifact.
     Scenario,
+    /// Canonical scenario configuration and schedule artifact.
+    Configuration,
     /// Campaign policy, planner artifact, or planner state.
     Policy,
     /// Exact checkpoint manifest.
@@ -74,6 +76,7 @@ impl ObjectKind {
             Self::CampaignSnapshot => "campaign-snapshot",
             Self::MerkleNode => "merkle-node",
             Self::Scenario => "scenario",
+            Self::Configuration => "configuration",
             Self::Policy => "policy",
             Self::ExactManifest => "exact-manifest",
             Self::RamExtent => "ram-extent",
@@ -92,6 +95,7 @@ impl ObjectKind {
             "campaign-snapshot" => Some(Self::CampaignSnapshot),
             "merkle-node" => Some(Self::MerkleNode),
             "scenario" => Some(Self::Scenario),
+            "configuration" => Some(Self::Configuration),
             "policy" => Some(Self::Policy),
             "exact-manifest" => Some(Self::ExactManifest),
             "ram-extent" => Some(Self::RamExtent),
