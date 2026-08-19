@@ -294,6 +294,24 @@ impl SubmitAttemptRequest {
         )
     }
 
+    /// Returns the assignment-neutral local execution-contract digest.
+    ///
+    /// The digest binds lineage, attempt, resource ceilings, and retention but
+    /// excludes assignment and daemon-epoch identities. Fresh assignments may
+    /// share one running or completed execution only when this digest matches.
+    #[must_use]
+    pub fn execution_basis_digest(&self) -> CampaignHash {
+        let mut encoder = Encoder::new();
+        self.lineage.encode(&mut encoder);
+        self.attempt.encode(&mut encoder);
+        self.resources.encode(&mut encoder);
+        self.retention.encode(&mut encoder);
+        CampaignHash::derive(
+            "crucible.campaign.submit-attempt-execution-basis.v1",
+            &encoder.finish(),
+        )
+    }
+
     /// Returns strict canonical component-message bytes.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
@@ -808,6 +826,10 @@ mod tests {
         )
         .expect("different request");
         assert!(!response.matches_request(&different));
+        assert_eq!(
+            request.execution_basis_digest(),
+            different.execution_basis_digest()
+        );
 
         let changed_resources = SubmitAttemptRequest::new(
             request.assignment(),
@@ -818,6 +840,10 @@ mod tests {
             request.retention(),
         )
         .expect("changed-resource request");
+        assert_ne!(
+            request.execution_basis_digest(),
+            changed_resources.execution_basis_digest()
+        );
         assert!(!response.matches_request(&changed_resources));
         assert_eq!(
             SubmitAttemptResponse::from_canonical_bytes_for(&changed_resources, &response_bytes),

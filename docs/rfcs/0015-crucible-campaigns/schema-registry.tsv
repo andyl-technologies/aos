@@ -31,6 +31,8 @@ crucible.campaign.planner-submission	1	crucible-campaign::authority	component-me
 crucible.campaign.debugger-submission	1	crucible-campaign::authority	component-message	gate:component-contract
 crucible.campaign.submit-attempt-request	1	crucible-campaign::execution	component-message	gate:component-contract
 crucible.campaign.submit-attempt-response	1	crucible-campaign::execution	component-message	gate:component-contract
+crucible.executor.assignment-record	1	crucible-daemon::assignment_ledger	operational-record	gate:component-contract
+crucible.executor.attempt-state-record	1	crucible-daemon::assignment_ledger	operational-record	gate:component-contract
 crucible.campaign.expansion-state	2	crucible-campaign::exploration	projection	gate:lazy-frontier,gate:content-address
 crucible.campaign.measurement-set	1	crucible-campaign::observation	observation	gate:campaign-replay,gate:content-address
 crucible.campaign.property-verdict-set	1	crucible-campaign::observation	observation	gate:campaign-replay,gate:content-address

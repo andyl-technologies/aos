@@ -387,9 +387,68 @@ attempt closure for every outcome. Before accepting `already-completed`, it
 also loads the full observation closure, requires its `AttemptId` to equal the
 request, and requires the attempt start and observed child to belong to the
 named lineage's exact `ScenarioArtifactId`, not merely the same semantic
-`ScenarioDefId`. The loopback transport, executor capability validation, and
-production daemon execution ledger remain subsequent implementation checkpoints
-and must consume these exact canonical bytes and validators.
+`ScenarioDefId`. The production repository admission adapter, loopback
+transport, and QEMU worker remain subsequent implementation checkpoints and
+must consume these exact canonical bytes and validators.
+
+The single-host daemon persists two bounded operational record families:
+
+```text
+AssignmentRecordV1 = magic | request_bytes | response_bytes | checksum
+
+AttemptStateRecordV1 = magic | lineage_id | attempt_id |
+                       execution_basis_digest |
+                       (running | completed | canceled) |
+                       daemon_epoch | execution_id | observation_id? |
+                       checksum
+```
+
+Each record is at most 16 KiB, carries a domain-separated checksum, and strictly
+decodes all embedded component messages and typed IDs. Immutable assignment
+records are addressed directly by `AssignmentId` and published by fsynced
+staging plus an atomic hard link. Mutable attempt-state records are addressed
+directly by a domain-separated digest of `(CampaignLineageId, AttemptId)` and
+use an fsynced atomic replacement under one nonblocking directory writer lock.
+Their execution-basis digest commits to that pair plus the complete resource
+limits and retention intent, but excludes assignment and daemon-epoch
+identities. Restart therefore reads only requested and active IDs; it does not
+load assignment history into memory. The in-memory ledger implements the
+identical trait only for fake components and tests.
+
+The bounded local supervisor persists `running` before publishing `accepted`.
+If response publication is indeterminate, it retains and queues the prepared
+work before returning the service error, so a response that became visible can
+never name an abandoned execution. Exact assignment replay reads the immutable
+first response. A fresh assignment for the same lineage-qualified attempt
+returns `already-running` in the current epoch or `already-completed` only when
+its execution-basis digest is exact. A changed resource or retention contract
+is `incompatible`; another lineage owns independent runtime state even when its
+content-addressed `AttemptId` is equal. Stale/canceled state is replaceable.
+Completed operational state is reauthenticated against the exact request before
+reuse: temporarily unavailable input yields `unavailable-input`, while a
+present but incompatible completion is discarded and reexecuted because the
+ledger is acceleration rather than campaign truth. Hard slot, aggregate vCPU,
+resident-memory, and writable-disk limits plus a per-execution quanta ceiling
+produce stable `incompatible` or `backpressure` outcomes without unbounded
+queues.
+
+A mutable compare-and-swap error may be commit-indeterminate because rename
+precedes directory fsync. The supervisor reloads the exact state, and a
+successful directory reload re-fsyncs its containing directory before it can
+confirm the transition. Confirmed `running` retains the bounded work
+reservation; confirmed completion or cancellation releases it even while the
+original I/O error is reported. An untracked same-epoch running record has no
+published assignment response and is safely replaced on retry. Immutable
+assignment lookup similarly re-fsyncs the parent before treating an existing
+record as a durable exact replay.
+
+Admission is a required read-only executor boundary that authenticates the
+attempt closure and host compatibility before capacity reservation. The
+repository exposes that exact immutable request validator separately from
+response validation, and the supervisor accepts it through a narrow admission
+trait rather than receiving campaign mutable-ref authority.
+`AllowAllAttemptAdmission` exists only for already-authenticated compositions
+and component tests; it is not a production trust boundary.
 
 An `AssignmentId`, `ExecutionId`, executor identity, coordinator epoch, retry
 count, PID, materialization tier, and wall time are operational. They never
@@ -460,6 +519,14 @@ without canonical observations. The executor discards stale process handles,
 reconciles any surviving local processes under a new daemon epoch, inventories
 authenticated materializations, and accepts idempotent resubmission. No durable
 worker lease is required for the single-host implementation.
+
+The directory assignment ledger retains completed observations and exact first
+responses across restart. A fresh daemon epoch may replace a stale `running`
+record, while an accepted cancellation prevents a late worker completion from
+becoming the attempt's completed runtime state. Completion and cancellation are
+conditional, idempotent state transitions: an exact replay succeeds, the
+opposite terminal outcome reports the winner, and a different second
+observation is a determinism conflict.
 
 The component conformance harness includes:
 

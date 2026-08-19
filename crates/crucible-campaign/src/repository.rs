@@ -4020,6 +4020,9 @@ mod tests {
             ExecutionRetentionIntent::RetainOnFailure,
         )
         .expect("executor request");
+        repository
+            .validate_executor_request(&request)
+            .expect("valid executor request");
         let completed = SubmitAttemptResponse::new(
             &request,
             SubmitAttemptDisposition::AlreadyCompleted {
@@ -4104,6 +4107,12 @@ mod tests {
             },
         )
         .expect("wrong-lineage response");
+        assert!(matches!(
+            repository.validate_executor_request(&wrong_lineage_request),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "executor-attempt-lineage-mismatch"
+            })
+        ));
         assert!(matches!(
             repository.validate_executor_response(&wrong_lineage_request, &wrong_lineage_response),
             Err(CampaignRepositoryError::Integrity {
