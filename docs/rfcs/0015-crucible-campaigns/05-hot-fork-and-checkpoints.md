@@ -16,11 +16,26 @@ realizations of one semantic edge, not two campaign branches.
 | Tier | Representation | Primary uses |
 | --- | --- | --- |
 | **Hot** | Paused fork-template QEMU processes, OS copy-on-write RAM, isolated child disk overlays, cloned host continuation | High-fanout on-host exploration |
-| **Exact** | Portable authenticated closure containing QEMU VM state, disk deltas, host continuation, scheduler/fault state, logs, and provenance | Hibernation, debugging, failure retention, maintenance migration, future worker transfer |
+| **Exact** | Portable authenticated closure containing QEMU VM state, disk deltas, host continuation, scheduler/fault state, logs, and provenance | Hibernation, debugging, failure retention, offline maintenance transfer |
 | **Thin** | Scenario, schedule, graph ancestry, and retained artifacts sufficient to replay from a valid ancestor | Source of truth and storage fallback |
 
 All three denote one `ConfigurationId`. A materialization index may record which
 tiers are currently available, but tier is not configuration identity.
+
+The identities are deliberately distinct:
+
+```text
+ConfigurationId   H(scenario definition, semantic schedule)
+ExactClosureId    H(authenticated exact-state manifest)
+PageId/ExtentId   H(kind, schema, canonical plaintext bytes)
+PackId/location   replaceable physical backend representation
+```
+
+An exact closure manifest maps stable public `(RAMBlockId, page-or-extent
+index)` keys to logical page/extent IDs and compact zero, repeated, base, and
+delta runs. Pack layout is not part of the manifest. QEMU exposes RAM-block and
+extent metadata only through the versioned snapshot protocol; it never exposes
+private structures to the Apache host.
 
 - **[HFORK-1]** `instantiate(configuration)` MUST accept any admitted realization
   tier and return equivalent modeled state or fail with localized validation
@@ -263,7 +278,7 @@ private structures. Apache storage code treats QEMU blobs as opaque bytes.
 - **[HFORK-16]** Exact restore MUST authenticate the complete closure and pass
   the replay oracle before the restored runtime can become a fork template.
 
-## 05.10 Hibernation, debugging, and maintenance migration
+## 05.10 Hibernation, debugging, and offline maintenance transfer
 
 ### Hibernation
 
@@ -279,12 +294,15 @@ mutations create non-canonical derived sessions and never modify the retained
 canonical state. A debugger selection at a declared branch point instead uses
 an ordinary debugger-caused `BranchRequest` and remains canonical.
 
-### Maintenance migration
+### Offline maintenance transfer
 
-Persist and replicate the exact closure to the destination store, validate
-provenance/capabilities, restore on the destination, optionally promote it to a
-local hot template, and only then release the source materialization. The
-campaign ref may remain unchanged because location is not identity.
+Quiesce the campaign, persist and pin the exact closure, ensure its complete
+executable object closure in the destination store, validate
+provenance/capabilities, restore during a separate operator action, optionally
+promote it to a local hot template, and only then release the source
+materialization. The campaign is not executing on both hosts and no distributed
+scheduler is involved. The campaign ref may remain unchanged because location
+is not identity.
 
 - **[HFORK-17]** Migration failure MUST leave a valid source closure or process.
   Destructive source release occurs only after destination authentication.

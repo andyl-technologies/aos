@@ -380,9 +380,18 @@ is only an additional cause and does not reclassify the original sample.
 
 Steering creates a new policy snapshot. For example, an operator may add a
 budget to the route-churn region or pin a suspected branch. The previous
-planner steps retain the policy digest under which they were made.
+planner steps retain the policy, planner artifact, invocation, bounded planning
+view, budget, and coordinator validation under which they were accepted.
 
-## Replay, hibernation, and migration
+In local mode the coordinator submits each admitted attempt through
+`ExecutorService`. The executor chooses a hot sibling fork when the parent is
+resident and otherwise uses exact restore or thin replay. It publishes the
+observation and optional exact-closure objects and returns their IDs; the
+coordinator authenticates and recomputes them before advancing the campaign.
+Running the fixture through direct and loopback-RPC component adapters produces
+the same canonical campaign snapshots.
+
+## Replay, hibernation, and offline transfer
 
 To debug the loop, the operator requests the finding's midpoint:
 
@@ -398,16 +407,19 @@ a derived session and do not alter the canonical finding.
 The same storage representation supports longer-lived operations:
 
 ```text
-crucible campaign hibernate network-recovery --upload s3:campaign-archive
+crucible campaign hibernate network-recovery --durability archive
 crucible campaign resume network-recovery
-crucible campaign export network-recovery --snapshot 7f4d…
+crucible campaign export network-recovery --snapshot 7f4d… --to archive
 ```
 
 Hibernation converts required hot templates into exact closures, publishes all
 objects, atomically advances the snapshot, and only then releases host-local
-processes. A future worker can fetch manifests first and stream verified RAM or
-disk extents on demand. That transfer optimization does not change branch
-identity or the exact-closure contract.
+processes. `archive` is a configured logical store or durability policy; it may
+compose directory, packed local, and S3-compatible leaf drivers without
+changing the command or campaign identity. Offline transfer walks the closure,
+copies only missing logical objects, verifies them, and requires the complete
+execution closure locally before restore. No remote worker or demand pager is
+part of this RFC.
 
 ## What the result can claim
 

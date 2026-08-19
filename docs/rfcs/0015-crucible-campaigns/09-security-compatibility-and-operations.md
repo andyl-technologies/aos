@@ -1,8 +1,8 @@
 # 09 — Security, compatibility, provenance, and operations
 
 Campaigns retain complete machine state, accept structured guest input, execute
-large adaptive workloads, and may eventually move artifacts between hosts. This
-file defines the fail-closed trust and operational boundaries.
+large adaptive workloads, and archive or transfer artifacts through pluggable
+stores. This file defines the fail-closed trust and operational boundaries.
 
 ## 09.1 Trust domains
 
@@ -11,16 +11,18 @@ scenario/policy author        trusted to define admitted experiment
 campaign operator             authorized to allocate/steer/retain/export
 guest application             untrusted protocol producer
 QEMU/plugin process           separate GPL process, protocol peer
-campaign daemon               trusted campaign and execution coordinator
-object store                  untrusted for integrity, trusted per deployment for availability
-future worker host            authenticated executor, untrusted for unverified result bytes
+campaign coordinator          sole writer of campaign ref and facts
+local executor                trusted host execution appliance, untrusted until returned bytes validate
+planner engine                untrusted pure proposal producer
+store graph/backends          untrusted for integrity, trusted per deployment for availability
 ```
 
 Content authentication protects integrity against store corruption but not
-confidentiality or authorization. A malicious executor can withhold work or
-return bad bytes; replay/content checks reject inconsistent canonical objects.
+confidentiality or authorization. A faulty executor or planner can withhold
+work or return bad bytes; coordinator validation, replay, and content checks
+reject inconsistent canonical objects.
 
-- **[CSEC-1]** Every object crossing a process, store, or host boundary MUST be
+- **[CSEC-1]** Every object crossing a process or store-component boundary MUST be
   length-bounded, schema-validated, and content-authenticated before use.
 
 ## 09.2 Guest protocol safety
@@ -51,7 +53,8 @@ Before running, the daemon validates campaign ceilings for:
 - hot templates, live worlds, vCPUs, RAM, dirty-page budget, descriptors, and
   disk overlays;
 - exact closure and store quotas;
-- generator computation per poll;
+- generator and external planner computation, output bytes, object reads, fuel,
+  cancellation, and wall-clock supervision per step;
 - projection rebuild and report bounds.
 
 - **[CSEC-4]** Campaign policy MUST NOT contain an algorithm or parameter set
@@ -59,6 +62,12 @@ Before running, the daemon validates campaign ceilings for:
   size.
 - **[CSEC-5]** Resource exhaustion pauses or rejects work with explicit status;
   it MUST NOT silently change selected values, stop conditions, or model faults.
+
+Planner processes receive a read-only bounded planning bundle and no store
+credentials or mutable-ref capability. Executors receive only the immutable
+object read/write capability required for admitted attempts. The coordinator
+authenticates their returned objects and recomputes derived identities before
+incorporation.
 
 ## 09.4 QEMU fork isolation
 
@@ -153,8 +162,8 @@ viewer        inspect non-sensitive metadata and reports
 operator      start/pause/resume and grant bounded resources
 steerer       activate policy revisions and issue bounded branch requests
 debugger      fetch retained exact state and create debug sessions
-exporter      replicate or export sensitive closures
-administrator configure stores, quotas, and trusted worker identities
+exporter      archive or export sensitive closures
+administrator configure store graphs, durability policies, quotas, and executor trust
 ```
 
 Mutating commands carry authenticated principal, command ID, expected snapshot,
@@ -174,19 +183,19 @@ Authenticated encryption may wrap canonical plaintext objects. Replicas verify
 the canonical object digest after decryption. Key IDs and nonces are envelope
 metadata rather than plaintext identity.
 
-## 09.10 Crash and partition behavior
+## 09.10 Crash and component-failure behavior
 
 | Failure | Required behavior |
 | --- | --- |
-| Worker process dies | Lease expires; attempt repeats |
-| Daemon dies | Campaign ref remains valid; rebuild projections and queues |
+| QEMU child or executor operation dies | Local reservation is discarded; attempt repeats |
+| Coordinator/daemon dies | Campaign ref remains valid; rebuild projections and queues |
 | Store write interrupted | Unreachable staging/incomplete multipart object; old ref remains |
-| Ref CAS lost | Re-read, merge/rebase, retry |
+| Ref CAS conflicts | Reject stale command, re-read the sole-writer head, diagnose ownership violation if unexpected |
 | Observation duplicated | Idempotent content/credit admission |
 | Observation conflicts | Retain conflict and stop affected planning path |
 | Hot child rebind fails | Kill child; no graph edge; retry another tier |
-| Host maintenance | Persist/pin exact closures, release hot processes, restore later/elsewhere |
-| Future network partition | Leases expire; duplicate work deduplicates; no corrupt merge |
+| Store tier unavailable | Use a policy-admitted readable tier or pause; never weaken required durability silently |
+| Host maintenance | Persist/pin exact closures, release hot processes, transfer offline, restore separately |
 
 - **[CSEC-12]** No operational failure may be converted into a modeled result
   unless the scenario explicitly models that failure through a recorded

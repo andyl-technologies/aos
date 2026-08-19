@@ -129,10 +129,11 @@ update before implementation is declared complete.
 The durable gate compares:
 
 - current full artifact staging/chunking;
-- direct streaming into the local object store;
+- direct streaming through directory and composed content-store graphs;
 - parent-relative disk and RAM delta capture;
 - repeated identical and sparse-dirty captures;
-- restore from local objects and a latency-injected S3-compatible test backend.
+- restore from loose and packed local objects and a latency-injected archival
+  leaf.
 
 It verifies logical bytes, bytes read from source, bytes uploaded, unique stored
 bytes, memory used by capture, and whole-artifact authentication. A sparse-dirty
@@ -159,7 +160,7 @@ Fixtures include:
 - rejection of exhaustive `--all` above its finite-cardinality ceiling;
 - duplicate attempt and observation delivery;
 - daemon restart with all projection caches deleted;
-- strict and streaming planning under shuffled worker completion.
+- strict and streaming planning under shuffled executor completion.
 
 The gate proves domain cardinality is not enumerated, generator polling is
 bounded, projections paginate, and strict mode produces identical planner steps
@@ -173,7 +174,8 @@ under shuffled completion delivery.
 
 | Gate | Contract |
 | --- | --- |
-| `gate:campaign-model` | Canonical policy/snapshot/fact identities, CAS history, projection rebuild, and merge rules |
+| `gate:campaign-model` | Canonical policy/snapshot/fact identities, linear CAS history, sole-writer rejection, derivation, and projection rebuild |
+| `gate:campaign-component-contract` | Campaign/planner/executor direct and loopback-RPC adapters share schemas, validation, idempotency, capability negotiation, and canonical results |
 | `gate:branch-point-model` | Choice opportunities form parent-scoped branch points; finite/generated requests share lazy admission and duplicate semantic edges deduplicate without losing cause evidence |
 | `gate:typed-choice` | Guest and environment choices share domain validation, stable IDs, selection replay, and mismatch rejection |
 | `gate:campaign-replay` | Findings replay without campaign/store and strict campaign planner steps reproduce |
@@ -184,8 +186,8 @@ under shuffled completion delivery.
 | `gate:hot-fork-scaling` | Fork latency/memory/storage follow the required cost shape |
 | `gate:world-fork-atomicity` | Multi-node partial failure exposes no branch |
 | `gate:exact-closure-streaming` | Direct and delta capture authenticate to equivalent restored state |
-| `gate:campaign-store-equivalence` | Local and S3-compatible backends expose identical object/ref semantics |
-| `gate:campaign-replication` | Partial/full Merkle sync, corruption rejection, and ref CAS |
+| `gate:campaign-store-equivalence` | Directory, memory, packed, and S3-compatible leaves expose their declared immutable/ref semantics |
+| `gate:campaign-store-composition` | Every supported route/tier/layer order preserves logical IDs, durability, errors, crash recovery, GC roots, and packing invariants |
 | `gate:campaign-continuity-v2` | Pause/restart/restore retains graph, frontier, knowledge, pins, and accounting |
 | `gate:campaign-statistics` | `P`/`Q` support and weight rules; biased campaigns cannot emit probability claims |
 | `gate:license-boundary` | Existing process/license closure including all new QEMU patches |
@@ -231,7 +233,7 @@ Tests corrupt or omit:
 - branch-request bounds, cause evidence, source cursor, and duplicate-edge
   projection state;
 - policy/generator versions;
-- proposal observation basis;
+- planner invocation, artifact, state, planning-view basis, and budget;
 - campaign snapshot children;
 - exact closure chunks and lengths;
 - one world node's fork generation;
@@ -239,12 +241,28 @@ Tests corrupt or omit:
 - one inherited writable descriptor disposition;
 - one disk backing identity;
 - one host continuation component;
-- an S3 conditional ref write;
+- one authoritative conditional ref write and one tier promotion;
+- a pack index publication or repack generation switch;
 - duplicate/conflicting attempt observations;
 - provenance components.
 
 Every fault must fail before guest resume or campaign ref publication, preserve
 the prior valid state, and produce localized evidence.
+
+Component-contract fixtures run the same campaign through direct clients and
+same-host split-process RPC, kill and restart coordinator and executor
+independently, repeat submits and completions at every boundary, race accepted
+cancellation against completion, inject stale assignments, and reject
+oversized, incompatible, stalled, or nondeterministic planner results. Golden
+wire vectors are checked without constructing Rust-native request values.
+
+Store fixtures cover every supported leaf and allowed composition: miss versus
+unavailable/corrupt/unauthorized, read promotion, interrupted write-through and
+write-back journal recovery, directory file/directory flush windows, global GC
+with multiple derived campaign refs, pack-index loss/rebuild, repacking during
+reads, logical identity under loose versus packed placement, physical
+encryption/compression, and stale plan rejection after any root, graph, journal,
+or inventory generation changes.
 
 - **[CPERF-8]** Automated branch-point tests MUST prove that finite and generated
   sources converge on one semantic edge for a duplicate value, credit it once,

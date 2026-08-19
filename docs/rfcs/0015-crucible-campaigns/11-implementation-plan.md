@@ -13,10 +13,11 @@ default campaign path until its listed gates pass.
 4. Add lazy local campaigns before hot QEMU forking.
 5. Keep exact restore/thin replay as correctness fallbacks while hot fork is
    developed and gated.
-6. Implement local filesystem storage first behind the backend-neutral object
-   interface; exercise an S3-compatible conformance backend before claiming
-   replication readiness.
-7. Do not implement multi-host fanout in this RFC's initial scope.
+6. Implement separate immutable-blob and mutable-ref traits, then directory
+   leaves, composition layers, packing, and an S3-compatible leaf through one
+   conformance suite.
+7. Implement the language-neutral campaign/planner/local-executor contracts
+   with direct and loopback-RPC adapters; do not implement multi-host fanout.
 8. All QEMU-side code remains in the QEMU patch/plugin GPL scope with source and
    license-ledger updates.
 9. Begin manual developer flights with the first vertical slice. No phase is
@@ -34,7 +35,7 @@ default campaign path until its listed gates pass.
 - [ ] **T-CAM-0.3** Freeze requirement-to-gate mapping and assign every new wire
   format a schema/version owner.
 - [ ] **T-CAM-0.4** Add a repository traceability check ensuring every
-  `CAM`/`CMOD`/`SEL`/`GUIDE`/`LAZY`/`HFORK`/`CSTORE`/`CAPI`/`CMEAS`/`CSEC`/`CPERF`/`CMAN`
+  `CAM`/`CMOD`/`SEL`/`GUIDE`/`LAZY`/`CCOMP`/`HFORK`/`CSTORE`/`CAPI`/`CMEAS`/`CSEC`/`CPERF`/`CMAN`
   requirement is covered by a task and gate.
 - [ ] **T-CAM-0.5** Tabletop the realistic lifecycle, finding handoff,
   destructive recovery matrix, dogfood flight, evidence manifest, and owner
@@ -48,8 +49,9 @@ delta remains disabled.
 Primary crates: `crucible`, `crucible-cas`, and codec-only API types.
 
 - [ ] **T-CAM-1.1** Implement `CampaignLineage`, `CampaignPolicy`,
-  `CampaignSnapshot`, stable IDs, canonical binary encoding, and strict TOML
-  authoring DTOs.
+  `CampaignSnapshot`, `CampaignPlanningView`, planner engine/artifact/state and
+  invocation identities, stable IDs, canonical binary encoding, and strict
+  TOML authoring DTOs.
 - [ ] **T-CAM-1.2** Implement immutable campaign facts, persistent Merkle
   sets/maps, snapshot ancestry, and content-reference walking.
 - [ ] **T-CAM-1.3** Extend the existing campaign manifest roots with graph,
@@ -61,10 +63,12 @@ Primary crates: `crucible`, `crucible-cas`, and codec-only API types.
 - [ ] **T-CAM-1.5** Implement full projection rebuild and sampled cached-
   projection verification.
 - [ ] **T-CAM-1.6** Add schema corruption, authoring-order canonicalization,
-  merge, crash-window, and provenance-lineage tests.
+  stale-command, single-writer ownership, crash-window, and provenance-lineage
+  tests.
 - [ ] **T-CAM-1.7** Run the §14 Phase 1 offline model flight: create, inspect,
-  derive, merge, pause, resume, and audit snapshots using only public object/API
-  surfaces, and publish its evidence bundle.
+  derive, reject a stale command, pause, resume, and audit linear snapshot
+  ancestry using only public object/API surfaces, and publish its evidence
+  bundle.
 
 **Gates:** `gate:campaign-model`, `gate:content-address`,
 `gate:campaign-continuity-v2` model tier.
@@ -138,57 +142,73 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   stratified, logarithmic, permuted, progressive integer, and corpus mutation.
 - [ ] **T-CAM-4.2** Implement branch request/cause, branch-edge deduplication,
   immutable attempt execution basis, additional-cause association, proposal,
-  attempt, observation, credit, planner step, branch-point `ExpansionState`, and
-  per-source continuation state.
+  attempt, observation, credit, input-only planner invocation, coordinator-
+  accepted planner step/accounting, branch-point `ExpansionState`, and
+  per-source portable continuation state.
 - [ ] **T-CAM-4.3** Implement progressive-widening exact rational rules,
   interval refinement, deterministic PUCT, coverage/rarity/assertion/objective
   guidance, and path backpropagation.
 - [ ] **T-CAM-4.4** Replace checkpoint-once frontier authority with branch-point
-  source continuations, an attempt-level rebuildable queue, and TTL lease hints.
+  source continuations, an attempt-level rebuildable queue, and volatile
+  daemon-epoch reservations.
 - [ ] **T-CAM-4.5** Implement `CampaignSupervisor`, `CampaignProjector`,
   `ProposalPlanner`, `AttemptQueue`, and a bounded local `WorkerPool`.
 - [ ] **T-CAM-4.6** Implement strict and streaming commit modes, restart
   recovery, duplicate/conflict handling, backpressure, pagination, and
-  projection rebuilding.
+  projection rebuilding; reject stale, oversized, timed-out, cancelled, and
+  nondeterministic planner invocations.
 - [ ] **T-CAM-4.7** Implement hierarchical per-event promotion and existing
   minimization integration.
 - [ ] **T-CAM-4.8** Complete the §14 Phase 4 local operator flight through lazy
   widening, additive finite branching, edge deduplication, live status,
   explanation, bounded pressure, pause/restart/resume, steering, and graceful
   stop.
+- [ ] **T-CAM-4.9** Implement the authoritative language-neutral
+  `CampaignService`, pure `PlannerEngine`, and local `ExecutorService` schemas;
+  provide direct and loopback-RPC adapters, golden vectors, fake components,
+  capability negotiation, idempotent assignment, and component conformance.
 
 **Gates:** `gate:branch-point-model`, `gate:lazy-frontier`, `gate:attempt-idempotence`,
 `gate:campaign-replay`, `gate:campaign-statistics`, `gate:harness-lint`.
 
 **Manual gate:** accepted §14 Phase 4 local campaign flight.
 
-## 11.7 Phase 5 — Store abstraction and durable closure efficiency
+## 11.7 Phase 5 — Composable content stores and durable closure efficiency
 
 Primary crates: `crucible-cas` and `crucible-api` lifecycle/checkpoint code.
 
-- [ ] **T-CAM-5.1** Introduce the streaming object/ref backend interface and
-  migrate current local campaign/exact-closure persistence behind it.
-- [ ] **T-CAM-5.2** Implement canonical object envelopes, child-reference
-  walking, persistent Merkle collections, partial closure traversal, and typed
-  corruption diagnostics.
+- [ ] **T-CAM-5.1** Introduce separate streaming `ImmutableBlobBackend` and
+  conditional `MutableRefBackend` traits, capability and error models, and
+  migrate current campaign/exact-closure persistence behind them.
+- [ ] **T-CAM-5.2** Implement canonical object envelopes, domain-separated
+  logical IDs, child-reference walking, persistent Merkle collections, partial
+  closure traversal, and typed corruption diagnostics.
 - [ ] **T-CAM-5.3** Remove full-file staging copies from the normal exact-closure
   publish/materialize path; stream with bounded buffers and preserve sparse
   extents where valid.
 - [ ] **T-CAM-5.4** Implement immutable disk backing plus child overlay
   manifests and content-deduplicated changed-object storage.
-- [ ] **T-CAM-5.5** Add an S3-compatible conformance backend or hermetic test
-  double supporting conditional refs, multipart interruption, corruption, and
-  latency/failure injection. Do not add worker fanout.
-- [ ] **T-CAM-5.6** Implement metadata/findings/debug/executable/mirror
-  replication closures, pins, plan/apply GC, and sensitive-export reporting.
-- [ ] **T-CAM-5.7** Add manifest-first and missing-object transfer APIs with
-  resumable authenticated ranges, working-set hints, and a non-executing
-  demand-fetch spike; keep cross-host worker scheduling out of scope.
+- [ ] **T-CAM-5.5** Implement and validate an acyclic store-composition graph
+  with verified, routed, tiered, read-through, write-through, write-back,
+  compressed, encrypted, quota, metrics, and namespaced layers, including a
+  durable GC-protected transfer journal for write-back operation.
+- [ ] **T-CAM-5.6** Implement packed logical-object storage with crash-safe
+  index generations, range authentication, concurrent-reader-safe repacking,
+  logical/physical accounting, and page/extent IDs independent of pack layout.
+- [ ] **T-CAM-5.7** Implement directory and S3-compatible leaf backends through
+  the same conformance harness, including conditional refs, multipart
+  interruption, corruption, credential expiry, and latency/failure injection.
 - [ ] **T-CAM-5.8** Complete the §14 Phase 5 hibernate/restart/resume, backend
-  outage, credential expiry, corruption, transfer/import, incompatible restore,
-  retention, and plan/apply GC flights.
+  outage, credential expiry, corruption, tier promotion/eviction, repacking,
+  archival transfer/import, incompatible restore, retention, and plan/apply GC
+  flights across multiple derived refs and active publication/transfer/write-
+  back roots.
+- [ ] **T-CAM-5.9** Implement metadata/findings/debug/executable/mirror closure
+  policies, durability receipts, pins, sensitive-export reporting, resumable
+  missing-object transfer, and offline maintenance transfer. Do not implement
+  demand paging or worker fanout.
 
-**Gates:** `gate:campaign-store-equivalence`, `gate:campaign-replication`,
+**Gates:** `gate:campaign-store-equivalence`, `gate:campaign-store-composition`,
 `gate:exact-closure-streaming`, `gate:campaign-continuity-v2`.
 
 **Manual gate:** accepted §14 Phase 5 storage and destructive-recovery evidence.
@@ -286,8 +306,9 @@ evidence.
   ABI, QEMU, package, and license gates with campaigns disabled and enabled.
 - [ ] **T-CAM-9.2** Run performance baselines and prove the hot path meets the
   required scaling shape and minimum speedup.
-- [ ] **T-CAM-9.3** Prove daemon restart, hibernation, maintenance migration via
-  local store copy/S3-compatible replication, and fast midpoint debugging.
+- [ ] **T-CAM-9.3** Prove coordinator/executor restart, hibernation, backend-
+  neutral archival and offline maintenance transfer, and fast midpoint
+  debugging.
 - [ ] **T-CAM-9.4** Prove all findings remain self-contained and reproduce on one
   host with no campaign daemon or shared store.
 - [ ] **T-CAM-9.5** Verify no prohibited native pointers, QEMU structures,
@@ -313,7 +334,8 @@ This RFC is implemented only when:
   widening;
 - campaign pause/restart reconstructs the complete frontier and knowledge;
 - local campaigns pull bounded attempts with deterministic replay evidence;
-- exact closures stream through the backend-neutral store;
+- direct and loopback-RPC coordinator/executor paths produce identical facts;
+- exact closures stream through a validated composable store graph;
 - hot fork is either production-gated for its declared TCG profile or explicitly
   rejected and removed from the completion claim;
 - user-facing campaign commands operate on the one snapshot model;
@@ -337,8 +359,9 @@ area mapping ensures that no part of the RFC is merely aspirational:
 | `SEL-1..21` | 2 | typed choice, ABI conformance, end-to-end determinism |
 | `GUIDE-1..24` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
 | `LAZY-1..19` | 4 | lazy frontier, attempt idempotence, campaign replay |
+| `CCOMP-1..22` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
 | `HFORK-1..24` | 6, 7 | hot-fork equivalence/isolation/scaling, world-fork atomicity, ABI/license |
-| `CSTORE-1..22` | 1, 5 | store equivalence, replication, exact-closure streaming, continuity |
+| `CSTORE-1..22` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |
 | `CAPI-1..13` | 8 | CLI/API contracts, continuity, campaign replay |
 | `CMEAS-1..14` | 3, 8 | campaign model, replay, ABI conformance |
 | `CSEC-1..12` | 1–9 | license boundary, ABI conformance, isolation, store equivalence |

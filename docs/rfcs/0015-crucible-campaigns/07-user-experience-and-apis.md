@@ -1,8 +1,8 @@
 # 07 — User-facing campaign schema, CLI, and APIs
 
 The user should experience one coherent object: a campaign that can be created,
-run, watched, steered, paused, branched, derived, inspected, reproduced, and
-replicated.
+run, watched, steered, paused, branched, derived, inspected, reproduced,
+archived, and restored.
 CLI, daemon RPC, structured output, and a future graphical view are projections
 of the same campaign snapshot and command model.
 
@@ -134,7 +134,7 @@ crucible campaign derive NAME@SNAPSHOT NEW_NAME [--policy POLICY]
 
 `create` stores canonical scenario/policy objects and creates the first snapshot
 and named ref. `start` attaches local execution resources and changes desired
-state through a recorded command. `pause` stops new proposals/leases and applies
+state through a recorded command. `pause` stops new proposals/reservations and applies
 the selected active-attempt behavior. `stop --seal` prevents accidental future
 budget grants until an explicit unseal command.
 
@@ -204,8 +204,9 @@ observation basis through proposal, immutable execution basis or additional-
 cause association, branch edge, selection, execution evidence, and reward
 credit.
 
-- **[CAPI-5]** Human output MAY evolve, but JSON/CBOR structured schemas are
-  versioned and include full content IDs rather than display abbreviations.
+- **[CAPI-5]** Human output MAY evolve, but language-neutral JSON/CBOR and RPC
+  schemas are versioned, define unknown-field behavior and bounds, include full
+  content IDs rather than display abbreviations, and have raw golden vectors.
 - **[CAPI-6]** Status MUST distinguish latent/open continuations, admitted
   attempts, running worlds, stored graph nodes, and materialized checkpoints.
 
@@ -225,20 +226,29 @@ valid ancestor. Debugger writes create a non-canonical branch. `replay` uses the
 self-contained scenario/schedule artifact and does not require the original
 campaign.
 
-## 07.6 Store and replication porcelain
+## 07.6 Store, durability, and archival porcelain
 
 ```text
-crucible campaign push NAME STORE [--mode MODE]
-crucible campaign pull STORE/NAME [--mode MODE] [--name LOCAL_NAME]
-crucible campaign sync NAME STORE [--mode MODE]
-crucible campaign gc NAME --plan
-crucible campaign gc NAME --apply PLAN_ID
+crucible campaign hibernate NAME --durability DURABILITY
+crucible campaign export NAME --to STORE [--mode MODE]
+crucible campaign import BUNDLE|STORE/NAME [--name NAME]
+crucible campaign restore NAME --from STORE
+
+crucible store list
+crucible store status STORE
+crucible store verify STORE
+crucible store ensure CONTENT_ID --in STORE
+crucible store gc STORE --plan
+crucible store gc STORE --apply PLAN_ID
 ```
 
-`push` and `pull` display object counts and bytes by semantic metadata,
-reproduction artifact, exact VM state, disk, log, and trace classes. Sensitive
-closure warnings occur before transfer. `gc` is always plan then apply; the plan
-names its input snapshot and becomes stale if the ref moves.
+Campaign commands name configured logical stores and durability policies, never
+drivers, buckets, endpoints, or local paths. A deployment may bind `archive` to
+a directory, S3-compatible backend, or composed store graph. Export and import
+display logical and physical byte counts by metadata, reproduction artifact,
+exact RAM, disk, log, and trace classes. Sensitive closure warnings occur before
+transfer. Store GC is always plan then apply; the plan names its logical roots,
+physical inventory basis, and policy version and becomes stale if they move.
 
 ## 07.7 Existing commands as campaign sugar
 
@@ -255,12 +265,13 @@ The existing command concepts remain useful but use one implementation:
 | `replay` | Instantiate a recorded scenario/schedule artifact |
 | `triage` | Project and minimize the campaign findings ledger |
 
-- **[CAPI-7]** These commands MUST call the same campaign/execution primitives
-  rather than maintain separate search, fuzz, or branch state models.
+- **[CAPI-7]** These commands MUST call `CampaignService` and the same campaign
+  primitives rather than maintain separate search, fuzz, branch, local-daemon,
+  or future-endpoint state models.
 
-## 07.8 Daemon API
+## 07.8 Component APIs
 
-The daemon exposes versioned resources:
+The coordinator exposes the sole user-facing campaign service:
 
 ```text
 CampaignService
@@ -277,14 +288,28 @@ CampaignService
   ExplainObject
   WatchCampaign
 
-ExecutionWorkerService                reserved for future remote workers
-  ClaimAttempt
-  RenewAttempt
-  GetAttempt
-  PublishObservation
-  PublishOperationalFailure
-  ReleaseAttempt
+PlannerEngine
+  Step
+
+ExecutorService
+  DescribeExecutor
+  WatchCapacity
+  SubmitAttempt
+  GetAttemptExecution
+  WatchExecutions
+  CancelExecution
+  QueryMaterializations
+  EnsureMaterialization
+  RetainExactClosure
+  EvictMaterialization
+  GetHealth
 ```
+
+`CampaignService` is the CLI endpoint. The initial coordinator invokes one
+local executor through either the direct or loopback-RPC adapter. Planner and
+executor services are component seams, not additional user control planes;
+their authority and idempotency rules are defined in
+[`04a-coordinator-executor-contract.md`](04a-coordinator-executor-contract.md).
 
 All mutation requests carry command ID, expected snapshot ID, and authenticated
 principal. CAS conflict responses return the current head and enough detail to
@@ -295,8 +320,10 @@ operational telemetry. Canonical facts are fetched by object ID; the watch
 stream itself is not authoritative and may coalesce status updates.
 
 - **[CAPI-8]** Losing a watch stream MUST lose no campaign state. Reconnecting
-  from a stale cursor returns the current snapshot and subsequent events.
-- **[CAPI-9]** Read-only clients MUST be able to inspect metadata replicas
+  from a stale cursor returns the current snapshot and subsequent events. Graph,
+  frontier, choice, and finding pagination cursors MUST bind the queried
+  snapshot and reject or explicitly restart after a head change.
+- **[CAPI-9]** Read-only clients MUST be able to inspect a metadata-only archive
   without permission to fetch sensitive exact-checkpoint objects.
 
 ## 07.9 Policy steering

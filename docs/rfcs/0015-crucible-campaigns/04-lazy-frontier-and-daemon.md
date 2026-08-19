@@ -72,12 +72,12 @@ The claimable work set is:
 ```text
 admitted attempts
   - completed observations
-  - currently live, unexpired lease hints
+  - currently live local reservations
 ```
 
 - **[LAZY-3]** Frontier readiness MUST be derived from semantic facts and policy.
-  Lease state affects claimability only and MUST NOT change whether an attempt
-  exists or a branch point/source continuation is open.
+  Reservation state affects local claimability only and MUST NOT change whether
+  an attempt exists or a branch point/source continuation is open.
 - **[LAZY-4]** The frontier API MUST paginate or stream. It MUST NOT require all
   continuations or attempts to be loaded into memory.
 
@@ -94,7 +94,7 @@ ProposalPlanner polls its finite iterator or generator once
        |
 publish Proposal + admit/reuse semantic Attempt
        |
-WorkerPool leases Attempt
+ExecutorService reserves Attempt locally
        |
 HotCheckpointManager chooses realization
        |
@@ -107,7 +107,7 @@ The planner may keep a small configurable ready-attempt buffer to hide QEMU
 startup latency, but it never fills the latent domain merely because storage is
 available.
 
-- **[LAZY-5]** Maximum admitted-but-unleased attempts, in-flight attempts, live
+- **[LAZY-5]** Maximum admitted-but-unreserved attempts, in-flight attempts, live
   QEMU worlds, paused hot children, and dirty-memory bytes MUST have independent
   backpressure limits.
 - **[LAZY-6]** Reaching an operational limit MUST pause proposal issuance or
@@ -129,7 +129,7 @@ ProposalPlanner
   selects branch points/sources and deterministically generates proposals
 
 AttemptQueue
-  exposes idempotent attempt leases and completion publication
+  exposes idempotent local reservations and completion publication
 
 WorkerPool
   owns local execution slots and process supervision
@@ -143,38 +143,41 @@ virtual time, deterministic event ordering, and schedule recording. The
 campaign planner is outside it. The resource scheduler may prefer a cache-local
 attempt but cannot choose its value.
 
-- **[LAZY-7]** Campaign planning, execution scheduling, and resource placement
-  MUST be separate interfaces and modules. Distribution metadata is forbidden
-  from the first two except that a recorded campaign proposal supplies a typed
-  selection to execution.
+- **[LAZY-7]** Campaign planning, modeled execution scheduling, and operational
+  resource placement MUST be separate interfaces and modules. Executor and
+  store-placement metadata is forbidden from the first two except that a
+  recorded campaign proposal supplies a typed selection to execution.
 - **[LAZY-8]** The daemon MUST expose a bounded responsive control path for
   pause, status, pin, and shutdown even while every worker slot is busy.
 
-## 04.5 Attempt leasing
+## 04.5 Local attempt reservations
 
 ```rust,illustrative
-pub struct AttemptLease {
+pub struct AttemptReservation {
     pub attempt: AttemptId,
-    pub owner: WorkerId,
+    pub daemon_epoch: DaemonEpoch,
+    pub worker_slot: WorkerSlotId,
     pub generation: u64,
-    pub expires_at: OperationalTime,
 }
 ```
 
-Leases are mutable operational hints. The authoritative `Attempt` is immutable.
-An expired lease permits another worker to repeat the attempt. Observation
-publication uses conditional create by `AttemptId`; identical results dedup and
-different results trigger determinism investigation.
+Reservations are volatile operational hints owned by one local daemon. The
+authoritative `Attempt` is immutable. Restart discards reservations under the
+old daemon epoch and makes every admitted attempt without a canonical
+observation claimable again. Observation publication uses conditional create by
+`AttemptId`; identical results dedup and different results trigger determinism
+investigation.
 
 The existing RFC-0010 `SharedFrontier` keyed by checkpoint content hash becomes
 a rebuildable attempt index keyed by `AttemptId`. It no longer asserts that a
 checkpoint is expanded once.
 
-- **[LAZY-9]** Lease owner, expiry, renewal cadence, and generation MUST NOT
-  enter attempt, configuration, observation, or finding identity.
+- **[LAZY-9]** Daemon epoch, worker slot, reservation generation, retry count,
+  and execution handle MUST NOT enter attempt, configuration, observation, or
+  finding identity. Reservations MUST NOT be required to recover the frontier.
 - **[LAZY-10]** A daemon crash after publishing an observation but before
-  releasing a lease MUST at worst cause duplicate execution. It MUST NOT lose
-  the observation or block the attempt permanently.
+  releasing a reservation MUST at worst cause duplicate execution. It MUST NOT
+  lose the observation or block the attempt permanently.
 
 ## 04.6 Feedback and backpropagation
 
@@ -247,30 +250,31 @@ ancestor; hot-fork eligibility is only a cache capability.
   pinned, demoted, or evicted. Those reasons are telemetry, not canonical
   campaign evidence.
 
-## 04.9 Future worker-host boundary
+## 04.9 Local executor boundary
 
-The initial implementation keeps all workers local, but defines location-free
-operations:
+The campaign supervisor invokes the local executor through the normative
+contract in [`04a-coordinator-executor-contract.md`](04a-coordinator-executor-contract.md).
+The semantic operations remain location-independent even though this RFC
+implements exactly one executor on the same host:
 
 ```text
-claim_attempt(worker capabilities, cached configuration IDs)
-renew_attempt(attempt ID, lease generation)
-fetch_attempt(attempt ID)
-publish_observation(attempt ID, observation ID)
-publish_operational_failure(attempt ID, diagnostic)
-release_attempt(attempt ID, lease generation)
+describe executor and capacity
+submit immutable attempt by ID
+watch execution state
+publish immutable result objects
+report result IDs or operational failure
+retain or evict local materializations
 ```
 
-A future worker fetches the parent configuration and selected exact closure,
-restores once, and may become the preferred host for later sibling attempts.
-Soft hash affinity affects placement only.
+The executor resolves the parent configuration through its configured content
+store, chooses hot fork, exact restore, or thin replay, and may retain the parent
+as a hot sibling hub. Materialization affinity affects realization cost only.
 
-- **[LAZY-16]** Attempt and observation schemas MUST be usable without a shared
-  filesystem and without serializing a daemon-native session handle.
-- **[LAZY-17]** Future multi-host planning MAY use one logical campaign leader
-  or CAS-elected planner. Worker execution and object publication remain
-  at-least-once and idempotent; no distributed consensus is required to execute
-  or store one attempt.
+- **[LAZY-16]** Attempt and observation schemas MUST work through both direct
+  and loopback-RPC executor adapters without a shared path or serialized
+  daemon-native session handle.
+- **[LAZY-17]** The local executor MAY publish immutable result objects but MUST
+  NOT advance the campaign ref, admit proposals, or interpret campaign policy.
 
 ## 04.10 Recovery procedure
 
@@ -279,7 +283,7 @@ After daemon restart:
 1. resolve each configured campaign ref;
 2. authenticate its snapshot and lineage;
 3. rebuild or validate campaign projections;
-4. treat uncompleted attempts with absent/expired local leases as claimable;
+4. discard old-epoch reservations and treat uncompleted attempts as claimable;
 5. inventory valid exact closures and discard stale hot-process handles;
 6. recompute hotness, expansion state, and ready source continuations;
 7. resume pulling only when user intent is `running`.
