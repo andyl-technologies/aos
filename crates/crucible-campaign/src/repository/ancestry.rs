@@ -121,6 +121,48 @@ impl CampaignRepository {
         Err(integrity("snapshot-ancestry-limit"))
     }
 
+    pub(super) fn find_attempt_admission_result(
+        &self,
+        mut content_id: ContentId,
+        proposal: ProposalId,
+    ) -> Result<Option<AttemptAdmissionResult>, CampaignRepositoryError> {
+        let mut visited = BTreeSet::new();
+        for _ in 0..MAX_SNAPSHOT_ANCESTRY {
+            if !visited.insert(content_id) {
+                return Err(integrity("snapshot-ancestry-cycle"));
+            }
+            let loaded = self.read_snapshot(content_id)?;
+            if let Some(transition_content) = optional_child(&loaded.envelope, "transition") {
+                let transition = self.read_fact(transition_content)?;
+                if let CampaignFact::AttemptAdmitted(admission_id) = transition {
+                    let admission = self.read_attempt_admission(admission_id.content_id())?;
+                    let candidate = match admission.role() {
+                        AttemptAdmissionRole::ExecutionBasis { proposal, .. } => proposal,
+                        AttemptAdmissionRole::AdditionalCause { proposal } => Some(proposal),
+                    };
+                    if candidate == Some(proposal) {
+                        let prior_snapshot = loaded.snapshot.parent().ok_or_else(|| {
+                            integrity("attempt-admission-transition-has-no-parent")
+                        })?;
+                        return Ok(Some(AttemptAdmissionResult {
+                            prior_snapshot,
+                            new_snapshot: CampaignSnapshotId::from_content_id(content_id)?,
+                            proposal,
+                            attempt: admission.attempt(),
+                            admission: admission_id,
+                            replayed: true,
+                        }));
+                    }
+                }
+            }
+            let Some(parent) = optional_child(&loaded.envelope, "parent") else {
+                return Ok(None);
+            };
+            content_id = parent;
+        }
+        Err(integrity("snapshot-ancestry-limit"))
+    }
+
     pub(super) fn mutation_command_exists(
         &self,
         mut content_id: ContentId,
@@ -190,7 +232,9 @@ impl CampaignRepository {
                             }
                             actions.push(request.action);
                         }
-                        CampaignFact::BranchRequestIssued(_) | CampaignFact::ProposalIssued(_) => {}
+                        CampaignFact::BranchRequestIssued(_)
+                        | CampaignFact::ProposalIssued(_)
+                        | CampaignFact::AttemptAdmitted(_) => {}
                         _ => {
                             return Err(integrity("snapshot-transition-type-is-not-implemented"));
                         }

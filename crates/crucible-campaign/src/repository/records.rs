@@ -260,6 +260,50 @@ impl CampaignRepository {
         )?)
     }
 
+    pub(super) fn put_selection(
+        &self,
+        selection: &Selection,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::Selection,
+            crate::object::content_children(selection.content_children())?,
+            selection.canonical_bytes(),
+        )?)
+    }
+
+    pub(super) fn put_branch_path(
+        &self,
+        path: &BranchPath,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::BranchPath,
+            BTreeSet::new(),
+            path.canonical_bytes(),
+        )?)
+    }
+
+    pub(super) fn put_attempt(
+        &self,
+        attempt: &Attempt,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::Attempt,
+            crate::object::content_children(attempt.content_children())?,
+            attempt.canonical_bytes(),
+        )?)
+    }
+
+    pub(super) fn put_attempt_admission(
+        &self,
+        admission: &AttemptAdmission,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::AttemptAdmission,
+            crate::object::content_children(admission.content_children())?,
+            admission.canonical_bytes(),
+        )?)
+    }
+
     pub(super) fn put_scenario_artifact(
         &self,
         artifact: &ScenarioArtifact,
@@ -847,6 +891,141 @@ impl CampaignRepository {
             }
         }
         Ok(admission)
+    }
+
+    pub(super) fn count_request_execution_bases(
+        &self,
+        accounting_root: ContentId,
+        request: BranchRequestId,
+    ) -> Result<u64, CampaignRepositoryError> {
+        let mut after = None;
+        let mut count = 0_u64;
+        loop {
+            let page = self.merkle.scan(accounting_root, after, 10_000)?;
+            for (key, value) in page.entries() {
+                if *key != map_key_content("accounting.attempt-admission", *value) {
+                    continue;
+                }
+                let admission = self.read_attempt_admission(*value)?;
+                let AttemptAdmissionRole::ExecutionBasis {
+                    proposal: Some(proposal),
+                    ..
+                } = admission.role()
+                else {
+                    continue;
+                };
+                if self.read_proposal(proposal.content_id())?.request() == request {
+                    count = count
+                        .checked_add(1)
+                        .ok_or_else(|| integrity("request-attempt-count-overflow"))?;
+                }
+            }
+            let Some(next) = page.next_after() else {
+                return Ok(count);
+            };
+            after = Some(next);
+        }
+    }
+
+    pub(super) fn next_admission_ordinal(
+        &self,
+        accounting_root: ContentId,
+    ) -> Result<AdmissionOrdinal, CampaignRepositoryError> {
+        let Some(latest) = self.merkle.get(accounting_root, admission_sequence_key())? else {
+            return Ok(AdmissionOrdinal::new(1));
+        };
+        let admission = self.read_attempt_admission(latest)?;
+        let AttemptAdmissionRole::ExecutionBasis {
+            admission_ordinal, ..
+        } = admission.role()
+        else {
+            return Err(integrity(
+                "admission-sequence-does-not-name-execution-basis",
+            ));
+        };
+        admission_ordinal
+            .checked_next()
+            .ok_or_else(|| integrity("admission-ordinal-overflow"))
+    }
+
+    pub(super) fn expected_proposal_admission(
+        &self,
+        snapshot: &LoadedSnapshot,
+        proposal: ProposalId,
+        attempt: AttemptId,
+    ) -> Result<AttemptAdmission, CampaignRepositoryError> {
+        let roots = snapshot.snapshot.roots();
+        let proposal_content = proposal.content_id();
+        if self.merkle.get(
+            roots.exploration,
+            map_key_content("exploration.proposal", proposal_content),
+        )? != Some(proposal_content)
+        {
+            return Err(integrity("admission-proposal-is-not-authoritative"));
+        }
+        if self
+            .merkle
+            .get(
+                roots.accounting,
+                map_key_content("accounting.proposal-admission", proposal_content),
+            )?
+            .is_some()
+        {
+            return Err(integrity("proposal-already-has-admission"));
+        }
+
+        let proposal_record = self.read_proposal(proposal_content)?;
+        let attempt_record = self.read_attempt(attempt.content_id())?;
+        let request =
+            self.validate_proposal_attempt_equivalence(&proposal_record, &attempt_record)?;
+        let AttemptStart::Branch { edge, .. } = attempt_record.start() else {
+            return Err(integrity("proposal-admission-attempt-is-discovery"));
+        };
+        let path = self.read_branch_path(attempt_record.path().content_id())?;
+        let lineage = self.read_lineage(required_child(&snapshot.envelope, "lineage")?)?;
+        if request.parent() != lineage.genesis_content() || path.edges() != [edge] {
+            return Err(integrity(
+                "proposal-admission-branch-path-owner-is-not-implemented",
+            ));
+        }
+        let attempt_key = map_key_content("accounting.attempt", attempt.content_id());
+        let basis_key = map_key_content("accounting.attempt-execution-basis", attempt.content_id());
+        let indexed_attempt = self.merkle.get(roots.accounting, attempt_key)?;
+        let indexed_basis = self.merkle.get(roots.accounting, basis_key)?;
+
+        match (indexed_attempt, indexed_basis) {
+            (None, None) => {
+                if self
+                    .count_request_execution_bases(roots.accounting, proposal_record.request())?
+                    >= request.budget().maximum_attempts()
+                {
+                    return Err(integrity("branch-request-attempt-budget-exhausted"));
+                }
+                Ok(AttemptAdmission::new(
+                    attempt,
+                    AttemptAdmissionRole::ExecutionBasis {
+                        proposal: Some(proposal),
+                        cause: request.cause(),
+                        admission_ordinal: self.next_admission_ordinal(roots.accounting)?,
+                    },
+                ))
+            }
+            (Some(indexed_attempt), Some(indexed_basis))
+                if indexed_attempt == attempt.content_id() =>
+            {
+                let basis = self.read_attempt_admission(indexed_basis)?;
+                if basis.attempt() != attempt
+                    || !matches!(basis.role(), AttemptAdmissionRole::ExecutionBasis { .. })
+                {
+                    return Err(integrity("attempt-execution-basis-index-mismatch"));
+                }
+                Ok(AttemptAdmission::new(
+                    attempt,
+                    AttemptAdmissionRole::AdditionalCause { proposal },
+                ))
+            }
+            _ => Err(integrity("attempt-admission-index-shape")),
+        }
     }
 
     pub(super) fn read_planner_step(

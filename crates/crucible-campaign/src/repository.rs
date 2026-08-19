@@ -17,18 +17,18 @@ use crucible_cas::content_store::{
 use thiserror::Error;
 
 use crate::{
-    Attempt, AttemptAdmission, AttemptAdmissionId, AttemptAdmissionRole, AttemptId, AttemptStart,
-    BranchPath, BranchPathId, BranchRequest, BranchRequestCause, BranchRequestId,
-    CampaignCodecError, CampaignControlAction, CampaignFact, CampaignHash, CampaignLineage,
-    CampaignLineageId, CampaignPlanningView, CampaignPolicy, CampaignPolicyId, CampaignSnapshot,
-    CampaignSnapshotId, CampaignState, CandidateGeneratorAlgorithm, CandidateGeneratorSpec,
-    CandidateGeneratorSpecId, CandidateSource, ChoiceDomain, ChoiceDomainId, ChoiceGroup,
-    ChoiceGroupId, ChoiceOpportunity, ChoiceOpportunityId, ConfigurationArtifact,
-    ConfigurationArtifactId, ConfigurationId, ControlRequest, ExpansionState, ExpansionStateId,
-    MerkleMap, MerkleMapRoot, ObjectEnvelope, PlannerDisposition, PlannerInvocation,
-    PlannerInvocationId, PlannerState, PlannerStep, PlannerStepId, PolicyActivation,
-    PolicyArtifact, Proposal, ProposalId, ScenarioArtifact, ScenarioArtifactId, ScenarioDefId,
-    SelectableDeclaration, SelectableId, Selection, SelectionId,
+    AdmissionOrdinal, Attempt, AttemptAdmission, AttemptAdmissionId, AttemptAdmissionRole,
+    AttemptId, AttemptStart, BranchPath, BranchPathId, BranchRequest, BranchRequestCause,
+    BranchRequestId, CampaignCodecError, CampaignControlAction, CampaignFact, CampaignHash,
+    CampaignLineage, CampaignLineageId, CampaignPlanningView, CampaignPolicy, CampaignPolicyId,
+    CampaignSnapshot, CampaignSnapshotId, CampaignState, CandidateGeneratorAlgorithm,
+    CandidateGeneratorSpec, CandidateGeneratorSpecId, CandidateSource, ChoiceDomain,
+    ChoiceDomainId, ChoiceGroup, ChoiceGroupId, ChoiceOpportunity, ChoiceOpportunityId,
+    ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId, ControlRequest,
+    ExpansionState, ExpansionStateId, MerkleMap, MerkleMapRoot, ObjectEnvelope, PlannerDisposition,
+    PlannerInvocation, PlannerInvocationId, PlannerState, PlannerStep, PlannerStepId,
+    PolicyActivation, PolicyArtifact, Proposal, ProposalId, ScenarioArtifact, ScenarioArtifactId,
+    ScenarioDefId, SelectableDeclaration, SelectableId, Selection, SelectionId,
 };
 
 const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;
@@ -103,6 +103,23 @@ pub struct ProposalResult {
     /// Exact immutable proposal identity.
     pub proposal: ProposalId,
     /// Whether this call observed a previously committed proposal.
+    pub replayed: bool,
+}
+
+/// Stable response for an accepted or idempotently replayed attempt admission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttemptAdmissionResult {
+    /// Snapshot that first accepted this admission.
+    pub prior_snapshot: CampaignSnapshotId,
+    /// Snapshot first produced by accepting this admission.
+    pub new_snapshot: CampaignSnapshotId,
+    /// Proposal receiving its unique admission disposition.
+    pub proposal: ProposalId,
+    /// Semantic attempt admitted or reused.
+    pub attempt: AttemptId,
+    /// Exact execution-basis or additional-cause record.
+    pub admission: AttemptAdmissionId,
+    /// Whether this call observed a previously committed admission.
     pub replayed: bool,
 }
 
@@ -293,6 +310,64 @@ fn proposal_value_key(request: BranchRequestId, value: &crate::ChoiceValue) -> C
     bytes.extend_from_slice(&(value.len() as u64).to_be_bytes());
     bytes.extend_from_slice(&value);
     CampaignHash::derive("crucible.campaign-proposal-request-value.v1", &bytes)
+}
+
+fn admission_sequence_key() -> CampaignHash {
+    CampaignHash::derive("crucible.campaign-admission-sequence.v1", b"")
+}
+
+fn admission_ordinal_key(ordinal: AdmissionOrdinal) -> CampaignHash {
+    CampaignHash::derive(
+        "crucible.campaign-admission-ordinal.v1",
+        &ordinal.value().to_be_bytes(),
+    )
+}
+
+fn attempt_admission_upserts(
+    admission_content: ContentId,
+    admission: AttemptAdmission,
+) -> Result<BTreeMap<CampaignHash, ContentId>, CampaignRepositoryError> {
+    let attempt = admission.attempt().content_id();
+    let proposal = match admission.role() {
+        AttemptAdmissionRole::ExecutionBasis {
+            proposal: Some(proposal),
+            admission_ordinal,
+            ..
+        } => {
+            let mut upserts = BTreeMap::from([
+                (map_key_content("accounting.attempt", attempt), attempt),
+                (
+                    map_key_content("accounting.attempt-execution-basis", attempt),
+                    admission_content,
+                ),
+                (admission_ordinal_key(admission_ordinal), admission_content),
+                (admission_sequence_key(), admission_content),
+            ]);
+            upserts.insert(
+                map_key_content("accounting.attempt-admission", admission_content),
+                admission_content,
+            );
+            upserts.insert(
+                map_key_content("accounting.proposal-admission", proposal.content_id()),
+                admission_content,
+            );
+            return Ok(upserts);
+        }
+        AttemptAdmissionRole::AdditionalCause { proposal } => proposal,
+        AttemptAdmissionRole::ExecutionBasis { proposal: None, .. } => {
+            return Err(integrity("proposal-admission-is-discovery-basis"));
+        }
+    };
+    Ok(BTreeMap::from([
+        (
+            map_key_content("accounting.attempt-admission", admission_content),
+            admission_content,
+        ),
+        (
+            map_key_content("accounting.proposal-admission", proposal.content_id()),
+            admission_content,
+        ),
+    ]))
 }
 
 fn required_child(
@@ -549,6 +624,41 @@ mod tests {
         .expect("proposal")
     }
 
+    fn branch_attempt(
+        repository: &CampaignRepository,
+        request: &BranchRequest,
+        proposal: &Proposal,
+    ) -> (Selection, BranchPath, Attempt) {
+        let opportunity = repository
+            .load_choice_opportunity(request.opportunity())
+            .expect("opportunity");
+        let domain = repository
+            .load_choice_domain(request.domain())
+            .expect("domain");
+        let selection = Selection::new_campaign_branch(
+            &opportunity,
+            &domain,
+            proposal.value().clone(),
+            request.branch_point(),
+        )
+        .expect("branch selection");
+        let crate::SelectionOrigin::CampaignBranch { edge, .. } = selection.origin() else {
+            panic!("campaign branch selection")
+        };
+        let path = BranchPath::new(vec![edge]).expect("branch path");
+        let attempt = Attempt::new(
+            AttemptStart::Branch {
+                edge,
+                parent: request.parent(),
+                selection: selection.id().expect("selection id"),
+            },
+            path.id().expect("path id"),
+            request.stop().clone(),
+        )
+        .expect("attempt");
+        (selection, path, attempt)
+    }
+
     #[test]
     fn create_and_control_form_linear_authenticated_history() {
         let (repository, lineage, policy) = fixture();
@@ -752,6 +862,338 @@ mod tests {
         assert!(replay.replayed);
         assert_eq!(replay.prior_snapshot, accepted.prior_snapshot);
         assert_eq!(replay.new_snapshot, accepted.new_snapshot);
+    }
+
+    #[test]
+    fn attempt_admission_assigns_one_basis_and_deduplicates_later_causes() {
+        let (repository, lineage, policy) = fixture();
+        let genesis = repository
+            .create("admission", &lineage, &policy, &BTreeMap::new())
+            .expect("create");
+        let request = branch_request(
+            &repository,
+            &lineage,
+            lineage.genesis_content(),
+            lineage.genesis(),
+            "admission-first",
+        );
+        let requested = repository
+            .submit_branch_request("admission", genesis.snapshot_id(), &request)
+            .expect("request");
+        let request_head = repository.head("admission").expect("request head");
+        let proposal = finite_proposal(
+            &request,
+            &policy,
+            &request_head,
+            ChoiceValue::Boolean(false),
+            1,
+        );
+        let proposed = repository
+            .issue_proposal("admission", requested.new_snapshot, &proposal)
+            .expect("proposal");
+        let (selection, path, attempt) = branch_attempt(&repository, &request, &proposal);
+        let admitted = repository
+            .admit_proposal(
+                "admission",
+                proposed.new_snapshot,
+                proposed.proposal,
+                &selection,
+                &path,
+                &attempt,
+            )
+            .expect("admission");
+        assert!(!admitted.replayed);
+        let basis = repository
+            .load_attempt_admission(admitted.admission)
+            .expect("basis");
+        assert_eq!(
+            basis.role(),
+            AttemptAdmissionRole::ExecutionBasis {
+                proposal: Some(proposed.proposal),
+                cause: request.cause(),
+                admission_ordinal: AdmissionOrdinal::new(1),
+            }
+        );
+        let basis_head = repository.head("admission").expect("basis head");
+        assert_eq!(
+            repository
+                .merkle
+                .inspect_shallow(basis_head.snapshot().roots().accounting)
+                .expect("accounting root")
+                .entry_count(),
+            6
+        );
+
+        let valid_admission_snapshot = repository
+            .read_snapshot(admitted.new_snapshot.content_id())
+            .expect("valid admission snapshot");
+        let mut forged_roots = valid_admission_snapshot.snapshot.roots();
+        forged_roots.accounting = repository
+            .merkle
+            .insert(
+                forged_roots.accounting,
+                map_key_content("accounting.forged", admitted.admission.content_id()),
+                admitted.admission.content_id(),
+            )
+            .expect("forged accounting root")
+            .content_id();
+        let forged = CampaignSnapshot::successor(
+            valid_admission_snapshot
+                .snapshot
+                .parent()
+                .expect("admission parent"),
+            valid_admission_snapshot.snapshot.lineage(),
+            valid_admission_snapshot.snapshot.active_policy(),
+            forged_roots,
+            valid_admission_snapshot
+                .snapshot
+                .transition()
+                .expect("admission transition"),
+        )
+        .expect("forged admission successor");
+        let forged_content = repository
+            .put_snapshot(&forged)
+            .expect("put forged admission successor");
+        assert!(matches!(
+            repository.validate_complete_head(forged_content),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "attempt-admission-transition-accounting-root-mismatch"
+            })
+        ));
+
+        let replay = repository
+            .admit_proposal(
+                "admission",
+                genesis.snapshot_id(),
+                proposed.proposal,
+                &selection,
+                &path,
+                &attempt,
+            )
+            .expect("replay admission");
+        assert!(replay.replayed);
+        assert_eq!(replay.new_snapshot, admitted.new_snapshot);
+        let wrong_path = BranchPath::new(Vec::new()).expect("wrong path");
+        assert!(matches!(
+            repository.admit_proposal(
+                "admission",
+                genesis.snapshot_id(),
+                proposed.proposal,
+                &selection,
+                &wrong_path,
+                &attempt,
+            ),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "proposal-admission-input-closure-mismatch"
+            })
+        ));
+
+        let second_proposal = finite_proposal(
+            &request,
+            &policy,
+            &basis_head,
+            ChoiceValue::Boolean(true),
+            2,
+        );
+        let second_proposed = repository
+            .issue_proposal("admission", basis_head.snapshot_id(), &second_proposal)
+            .expect("second proposal");
+        let (second_selection, second_path, second_attempt) =
+            branch_attempt(&repository, &request, &second_proposal);
+        let second_admitted = repository
+            .admit_proposal(
+                "admission",
+                second_proposed.new_snapshot,
+                second_proposed.proposal,
+                &second_selection,
+                &second_path,
+                &second_attempt,
+            )
+            .expect("second admission");
+        assert_eq!(
+            repository
+                .load_attempt_admission(second_admitted.admission)
+                .expect("second basis")
+                .role(),
+            AttemptAdmissionRole::ExecutionBasis {
+                proposal: Some(second_proposed.proposal),
+                cause: request.cause(),
+                admission_ordinal: AdmissionOrdinal::new(2),
+            }
+        );
+        let second_head = repository.head("admission").expect("second head");
+        assert_eq!(
+            repository
+                .merkle
+                .inspect_shallow(second_head.snapshot().roots().accounting)
+                .expect("second accounting root")
+                .entry_count(),
+            11
+        );
+
+        let duplicate_request = BranchRequest::new(
+            request.branch_point(),
+            request.parent(),
+            request.opportunity(),
+            request.domain(),
+            request.source().clone(),
+            BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(
+                CampaignHash::derive("test", b"admission-duplicate"),
+            )),
+            request.budget(),
+            request.stop().clone(),
+        )
+        .expect("duplicate request");
+        let duplicate_requested = repository
+            .submit_branch_request("admission", second_head.snapshot_id(), &duplicate_request)
+            .expect("duplicate request transition");
+        let duplicate_request_head = repository
+            .head("admission")
+            .expect("duplicate request head");
+        let duplicate_proposal = finite_proposal(
+            &duplicate_request,
+            &policy,
+            &duplicate_request_head,
+            ChoiceValue::Boolean(false),
+            1,
+        );
+        let duplicate_proposed = repository
+            .issue_proposal(
+                "admission",
+                duplicate_requested.new_snapshot,
+                &duplicate_proposal,
+            )
+            .expect("duplicate proposal");
+        let (duplicate_selection, duplicate_path, duplicate_attempt) =
+            branch_attempt(&repository, &duplicate_request, &duplicate_proposal);
+        assert_eq!(
+            duplicate_attempt.id().expect("duplicate attempt id"),
+            admitted.attempt
+        );
+        let deduplicated = repository
+            .admit_proposal(
+                "admission",
+                duplicate_proposed.new_snapshot,
+                duplicate_proposed.proposal,
+                &duplicate_selection,
+                &duplicate_path,
+                &duplicate_attempt,
+            )
+            .expect("deduplicated admission");
+        assert_eq!(
+            repository
+                .load_attempt_admission(deduplicated.admission)
+                .expect("additional cause")
+                .role(),
+            AttemptAdmissionRole::AdditionalCause {
+                proposal: duplicate_proposed.proposal,
+            }
+        );
+        let deduplicated_head = repository.head("admission").expect("deduplicated head");
+        assert_eq!(
+            repository
+                .merkle
+                .inspect_shallow(deduplicated_head.snapshot().roots().accounting)
+                .expect("deduplicated accounting root")
+                .entry_count(),
+            13
+        );
+        assert_eq!(
+            repository
+                .merkle
+                .get(
+                    deduplicated_head.snapshot().roots().accounting,
+                    admission_sequence_key(),
+                )
+                .expect("sequence lookup"),
+            Some(second_admitted.admission.content_id())
+        );
+    }
+
+    #[test]
+    fn attempt_admission_enforces_request_budget_without_materializing_accounting() {
+        let (repository, lineage, policy) = fixture();
+        let genesis = repository
+            .create("admission-budget", &lineage, &policy, &BTreeMap::new())
+            .expect("create");
+        let base = branch_request(
+            &repository,
+            &lineage,
+            lineage.genesis_content(),
+            lineage.genesis(),
+            "admission-budget",
+        );
+        let request = BranchRequest::new(
+            base.branch_point(),
+            base.parent(),
+            base.opportunity(),
+            base.domain(),
+            base.source().clone(),
+            base.cause(),
+            BranchBudget::new(2, 1).expect("limited budget"),
+            base.stop().clone(),
+        )
+        .expect("limited request");
+        let requested = repository
+            .submit_branch_request("admission-budget", genesis.snapshot_id(), &request)
+            .expect("request");
+        let request_head = repository.head("admission-budget").expect("request head");
+        let first = finite_proposal(
+            &request,
+            &policy,
+            &request_head,
+            ChoiceValue::Boolean(false),
+            1,
+        );
+        let first_proposed = repository
+            .issue_proposal("admission-budget", requested.new_snapshot, &first)
+            .expect("first proposal");
+        let (first_selection, first_path, first_attempt) =
+            branch_attempt(&repository, &request, &first);
+        repository
+            .admit_proposal(
+                "admission-budget",
+                first_proposed.new_snapshot,
+                first_proposed.proposal,
+                &first_selection,
+                &first_path,
+                &first_attempt,
+            )
+            .expect("first admission");
+
+        let first_head = repository.head("admission-budget").expect("first head");
+        let second = finite_proposal(
+            &request,
+            &policy,
+            &first_head,
+            ChoiceValue::Boolean(true),
+            2,
+        );
+        let second_proposed = repository
+            .issue_proposal("admission-budget", first_head.snapshot_id(), &second)
+            .expect("second proposal");
+        let (second_selection, second_path, second_attempt) =
+            branch_attempt(&repository, &request, &second);
+        assert!(matches!(
+            repository.admit_proposal(
+                "admission-budget",
+                second_proposed.new_snapshot,
+                second_proposed.proposal,
+                &second_selection,
+                &second_path,
+                &second_attempt,
+            ),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "branch-request-attempt-budget-exhausted"
+            })
+        ));
+        assert_eq!(
+            repository
+                .head("admission-budget")
+                .expect("unchanged head")
+                .snapshot_id(),
+            second_proposed.new_snapshot
+        );
     }
 
     #[test]

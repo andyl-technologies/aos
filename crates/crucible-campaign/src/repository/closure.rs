@@ -81,6 +81,13 @@ impl CampaignRepository {
                         CampaignFact::ProposalIssued(proposal) => {
                             self.validate_proposal_successor(&parent_snapshot, &loaded, proposal)?;
                         }
+                        CampaignFact::AttemptAdmitted(admission) => {
+                            self.validate_attempt_admission_successor(
+                                &parent_snapshot,
+                                &loaded,
+                                admission,
+                            )?;
+                        }
                         _ => {
                             return Err(integrity("snapshot-transition-type-is-not-implemented"));
                         }
@@ -318,6 +325,74 @@ impl CampaignRepository {
             &upserts,
         )? {
             return Err(integrity("proposal-transition-exploration-root-mismatch"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_attempt_admission_successor(
+        &self,
+        parent: &LoadedSnapshot,
+        child: &LoadedSnapshot,
+        admission: AttemptAdmissionId,
+    ) -> Result<(), CampaignRepositoryError> {
+        if child.snapshot.lineage() != parent.snapshot.lineage()
+            || child.snapshot.active_policy() != parent.snapshot.active_policy()
+        {
+            return Err(integrity(
+                "attempt-admission-transition-changed-campaign-basis",
+            ));
+        }
+        let prior_roots = parent.snapshot.roots();
+        let next_roots = child.snapshot.roots();
+        if prior_roots.graph != next_roots.graph
+            || prior_roots.exploration != next_roots.exploration
+            || prior_roots.observations != next_roots.observations
+            || prior_roots.corpus != next_roots.corpus
+            || prior_roots.coverage != next_roots.coverage
+            || prior_roots.findings != next_roots.findings
+            || prior_roots.pins != next_roots.pins
+        {
+            return Err(integrity(
+                "attempt-admission-transition-changed-unrelated-root",
+            ));
+        }
+
+        let admission_content = admission.content_id();
+        let admission_record = self.read_attempt_admission(admission_content)?;
+        let proposal = match admission_record.role() {
+            AttemptAdmissionRole::ExecutionBasis {
+                proposal: Some(proposal),
+                ..
+            }
+            | AttemptAdmissionRole::AdditionalCause { proposal } => proposal,
+            AttemptAdmissionRole::ExecutionBasis { proposal: None, .. } => {
+                return Err(integrity("proposal-admission-is-discovery-basis"));
+            }
+        };
+        let expected =
+            self.expected_proposal_admission(parent, proposal, admission_record.attempt())?;
+        if admission_record != expected || expected.id()? != admission {
+            return Err(integrity("attempt-admission-owner-recomputation-mismatch"));
+        }
+
+        let upserts = attempt_admission_upserts(admission_content, admission_record)?;
+        for key in upserts
+            .keys()
+            .copied()
+            .filter(|key| *key != admission_sequence_key())
+        {
+            if self.merkle.get(prior_roots.accounting, key)?.is_some() {
+                return Err(integrity("attempt-admission-transition-reused-index"));
+            }
+        }
+        if !self.merkle.equals_after_upserts(
+            prior_roots.accounting,
+            next_roots.accounting,
+            &upserts,
+        )? {
+            return Err(integrity(
+                "attempt-admission-transition-accounting-root-mismatch",
+            ));
         }
         Ok(())
     }
