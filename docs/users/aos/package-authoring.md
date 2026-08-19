@@ -109,8 +109,11 @@ Use the dependency field that matches why the package is needed:
 
 `mkDerivation` already supplies the wrapped compiler and bootstrap tools.
 List application-specific build tools, libraries, and runtime commands
-explicitly. If a dependency is missing from AOS, package it from source rather
-than reaching into the host or importing nixpkgs.
+explicitly. Include tools that an upstream configure script probes before the
+compile even when the build phases do not invoke them directly; for example,
+declare Perl in `buildDeps` when configure rejects a missing Perl interpreter.
+If a dependency is missing from AOS, package it from source rather than
+reaching into the host or importing nixpkgs.
 
 `mkDerivation` also enables the repository hardening profile. Keep that profile
 unless an upstream representation is incompatible with one specific flag. For
