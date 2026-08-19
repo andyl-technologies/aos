@@ -385,6 +385,16 @@ produce live patched-QEMU architectural or device evidence.
   Crucible VMState load, leave ordinary QEMU migration unchanged, and prove the
   fresh-process two-node world produces the same packet and fault-decision
   continuation as uninterrupted execution.
+- [x] **T-QEMU-0085** Implement
+  [`crucible-register-rejection-atomicity`](14-qemu-fault-patches/36-register-rejection-atomicity.md):
+  admit live architectural observation only under exact serialized RR
+  ownership, validate every realized CPU manifest, and prove that every
+  rejected register command preserves all canonical register bytes and
+  mutation-side-effect counters.
+- [x] **T-QEMU-0086** Implement
+  [`crucible-genesis-observation-boundary`](14-qemu-fault-patches/37-genesis-observation-boundary.md):
+  admit the BQL-held prelaunch definition callback only at raw icount zero,
+  capture every realized vCPU before QMP quit, and remove plugin-exit sampling.
 - [x] **T-QEMU-0060** Implement
   [`crucible-block-typed-errors`](14-qemu-fault-patches/14-block-typed-errors.md):
   the closed block result ABI, exact Linux errno translation, malformed-result

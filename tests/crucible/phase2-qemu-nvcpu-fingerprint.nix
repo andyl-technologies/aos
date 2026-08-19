@@ -402,6 +402,14 @@
         needle = "observed_non_running";
       }
       {
+        label = "definition uses completed genesis callback";
+        needle = "definition_callback_completed";
+      }
+      {
+        label = "definition has no plugin-exit sampling fallback";
+        needle = "genesis definition was incomplete";
+      }
+      {
         label = "definition records complete genesis RR state";
         needle = "rr_state_status";
       }
@@ -878,6 +886,21 @@ in
               return 1
             }
 
+            wait_for_definition_record() {
+              trace="$1"
+              waited=0
+              while [ "$waited" -lt 600 ]; do
+                if [ -s "$trace" ] &&
+                  jq -e -s '[.[] | select(.kind == "definition")] | length == 1' \
+                    "$trace" >/dev/null 2>&1; then
+                  return 0
+                fi
+                sleep 0.1
+                waited=$((waited + 1))
+              done
+              return 1
+            }
+
             run_definition() {
               label=definition
               qmp_socket="$TMPDIR/qmp-nvcpu-definition.sock"
@@ -922,6 +945,8 @@ in
               jq -e -s '[.[] | select(.return | type == "array")][-1].return | map(."cpu-index") | sort == [0,1,2,3]' \
                 "$TMPDIR/qmp-cpus-definition.json" >/dev/null \
                 || fail "definition preflight did not report exact CPU indexes 0..3"
+              wait_for_definition_record "$trace" \
+                || fail "definition preflight genesis callback did not complete"
               qmp_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-quit-definition.json" || true
               wait "$qemu_pid" || fail "definition-only QEMU exited unsuccessfully"
               qemu_pid=""
@@ -947,6 +972,9 @@ in
                   and .process_argv_raw_bytes == $argv.process_argv_raw_bytes
                   and .process_argv_digest == $argv.process_argv_digest
                   and .definition_only == true
+                  and .definition_pause_requested == true
+                  and .definition_callback_completed == true
+                  and .definition_pause_status == 0
                   and .observed_non_running == true
                   and .observed_icount == 0
                   and .retired == 0

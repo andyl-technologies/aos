@@ -1,0 +1,53 @@
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index e396abd72..b6357df07 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1666,16 +1666,20 @@ int qemu_plugin_crucible_device_state_schema_sha256(
+ 
+ #define QEMU_PLUGIN_CRUCIBLE_RAM_REGION_NAME_MAX 256
+ 
+-/** Callback invoked after QEMU has entered a terminal paused boundary. */
++/** Callback invoked at an admitted BQL-held quiescent observation boundary. */
+ typedef void (*qemu_plugin_crucible_terminal_paused_cb_t)(int status,
+                                                           void *userdata);
+ 
+ /**
+- * Stop the running VM and invoke a callback later under the BQL while paused.
++ * Invoke a callback later under the BQL at a quiescent observation boundary.
+  *
+  * Only one terminal-pause request may be pending. The callback receives zero
+- * only at a `RUN_STATE_PAUSED` boundary suitable for the raw export APIs; all
+- * other statuses are failures and must not be used to export state.
++ * only at a boundary suitable for the raw export APIs: either a terminal
++ * `RUN_STATE_PAUSED` boundary, or the `RUN_STATE_PRELAUNCH` genesis boundary
++ * while the exact raw instruction count remains zero. A running VM is stopped
++ * before the callback. All other statuses are failures and must not be used to
++ * export state. In particular, prelaunch after any retired instruction fails
++ * closed rather than being treated as genesis.
+  */
+ QEMU_PLUGIN_API
+ int qemu_plugin_crucible_request_terminal_pause(
+diff --git a/plugins/api.c b/plugins/api.c
+index 0330a3da3..54d33612c 100644
+--- a/plugins/api.c
++++ b/plugins/api.c
+@@ -1102,6 +1102,7 @@ static void crucible_terminal_pause_bh(void *opaque)
+ {
+     struct CrucibleTerminalPauseRequest *request = opaque;
+     int status = 0;
++    int64_t observed_icount;
+ 
+     if (!bql_locked()) {
+         status = -EPERM;
+@@ -1112,6 +1113,11 @@ static void crucible_terminal_pause_bh(void *opaque)
+                                     crucible_terminal_pause_bh, request);
+             return;
+         }
++    } else if (runstate_check(RUN_STATE_PRELAUNCH)) {
++        observed_icount = icount_get_raw_observed();
++        if (observed_icount != 0) {
++            status = observed_icount < 0 ? -EPERM : -ERANGE;
++        }
+     } else if (!runstate_check(RUN_STATE_PAUSED)) {
+         status = -ECANCELED;
+     }
