@@ -253,6 +253,10 @@ in {
               return ""
 
       def reboot_recovery_console():
+          boundary = "AOS_TEST_RECOVERY_REBOOT_BOUNDARY"
+          boundary_offset = serial_offset()
+          target.succeed(f"echo {boundary} > /dev/ttyS0")
+          wait_serial(boundary, boundary_offset)
           offset = serial_offset()
           target.execute(
               "(sleep 1; systemctl reboot) >/dev/null 2>&1 &", timeout=30
