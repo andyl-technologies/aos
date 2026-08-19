@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "dd5e97b5f96d1602fb03d2c0a9df64881f9af847c0f0114f91fa0e06db0ee21d";
+  patchBranchBundleSha256 = "53d8a9850ea1f119d5da04d58b121107a18536df26ac7a9632ecdf65f99338f2";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "e4b752dd8373c62d92c70c5385886730ea2bd7dd";
+  patchBranchHeadCommit = "fe4c33d744b1c99f2442b378a9685186f5e1eed3";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -855,6 +855,16 @@ let
       class = "D";
       enforces = "DET-1,DET-29,QFP-STATE-2";
       capability = "live observers at a quantum terminal project onto the next scheduler-owned vCPU at position zero without mutating serialized RR state";
+    }
+    {
+      file = "0093-crucible-canonical-register-cursor.patch";
+      branchSubject = "crucible: canonicalize after-instruction register cursors";
+      branchCommit = "fe4c33d744b1c99f2442b378a9685186f5e1eed3";
+      branchTree = "bc8035c8095c35d16b8f43633487376f8bdd1463";
+      catalogName = "crucible-canonical-register-cursor";
+      class = "D";
+      enforces = "DET-1,DET-29,QFP-STATE-2";
+      capability = "after-instruction register evidence advances its callback-local prefix and projects an exact quantum terminal onto the canonical next RR coordinate";
     }
   ];
   catalogOnlyCapabilities = [

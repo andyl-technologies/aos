@@ -1456,6 +1456,22 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   non-sim, and invalid-owner behavior remains unchanged.
 - **Risk:** D.
 
+### crucible-canonical-register-cursor — commit after-instruction coordinates
+
+- **Patch:** `0093-crucible-canonical-register-cursor.patch`.
+- **Enforces:** [DET-1], [DET-29], [QFP-STATE-2].
+- **Mechanism:** register mutations advance the callback-local retired prefix
+  by the current instruction for after-instruction evidence. An exact terminal
+  is projected onto the next RR owner at position zero, matching the serialized
+  coordinate that scheduler accounting commits.
+- **Micro-test:** the full live register mutation matrix exercises before and
+  after phases, and its terminal case rejects the legacy position-equal-quantum
+  encoding in favor of the canonical position-zero handoff.
+- **Inertness:** [PATCH-3](c) — only register evidence in the existing
+  after-instruction mutation phase receives the semantic advancement; before
+  phase and non-register behavior is unchanged.
+- **Risk:** D.
+
 ### crucible-whitebox-guest-write — return synchronous doorbell replies
 
 - **Enforces:** [PLUG-34], [PLUG-51], [GHC-32], [GHC-37].

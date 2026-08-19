@@ -59,6 +59,7 @@ and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-pa
 | [`0090-crucible-active-tcg-kick-boundary`](41-active-tcg-kick-boundary.md) | Prove active guest execution and defer host service to the finite RR boundary | Determinism-critical scheduler execution |
 | [`0091-crucible-canonical-rr-genesis-cursor`](42-canonical-rr-genesis-cursor.md) | Expose the unique raw-zero scheduler coordinate before first vCPU selection | Determinism-critical checkpoint observation |
 | [`0092-crucible-canonical-terminal-rr-cursor`](43-canonical-terminal-rr-cursor.md) | Project a live quantum-terminal observation onto the scheduler's next committed coordinate | Determinism-critical execution fingerprinting |
+| [`0093-crucible-canonical-register-cursor`](44-canonical-register-cursor.md) | Advance after-instruction register evidence onto its canonical committed RR coordinate | Determinism-critical register evidence |
 
 The numbers are reserved by this RFC. If the existing series grows before
 implementation, the PR may renumber the files while preserving this exact order

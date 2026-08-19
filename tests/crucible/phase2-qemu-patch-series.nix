@@ -643,6 +643,13 @@
       enforces = "DET-1,DET-29,QFP-STATE-2";
       capability = "live observers at a quantum terminal project onto the next scheduler-owned vCPU at position zero without mutating serialized RR state";
     }
+    {
+      file = "0093-crucible-canonical-register-cursor.patch";
+      catalogName = "crucible-canonical-register-cursor";
+      class = "D";
+      enforces = "DET-1,DET-29,QFP-STATE-2";
+      capability = "after-instruction register evidence advances its callback-local prefix and projects an exact quantum terminal onto the canonical next RR coordinate";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
