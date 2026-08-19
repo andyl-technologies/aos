@@ -73,7 +73,7 @@ decisions. Their independent histories could not describe an interacting path.
 ### D-6: Choice-instance identity is semantic and stable
 
 A selectable declaration has a stable definition identifier. Each dynamic
-encounter derives a `ChoiceInstanceId` from the definition, semantic parent,
+encounter derives a `ChoiceOpportunityId` from the definition, semantic parent,
 occurrence, and phase. A selection records both identifiers, the chosen value,
 and the proposal evidence.
 
@@ -94,9 +94,9 @@ Adaptive proposal probabilities never silently redefine the modeled
 population. Weighted estimators record the required `P/Q` evidence, and search
 claims remain distinct from statistical claims.
 
-### D-8: Infinite or large domains widen progressively
+### D-8: Large domains widen progressively at branch points
 
-A node exposes only a bounded number of candidates initially. Additional
+A branch point exposes only a bounded number of candidates initially. Additional
 candidates are materialized as visits and information justify them, using the
 policy's pinned widening rule and candidate generator. This permits integral
 domains and large products without pretending to enumerate them.
@@ -124,12 +124,13 @@ tree from the same inputs and budget.
 
 The mode is campaign policy and is visible in claims and status output.
 
-### D-11: The frontier is lazy and persistent
+### D-11: Expansion state is lazy and persistent
 
-The campaign stores compact continuation state: generator kind and version,
-domain cursor, deterministic seed, widening counters, and policy-local
-statistics. Candidates become proposals only when demanded by capacity or
-feedback.
+Each branch point has campaign-local expansion state containing requests,
+proposals, observations, statistics, and compact source continuations:
+generator kind and version, finite-source cursor, deterministic seed, widening
+counters, and policy-local statistics. Candidates become proposals only when
+demanded by capacity or feedback.
 
 These continuations are serializable state machines, not language closures or
 native function pointers. They can be resumed after daemon restart or on
@@ -219,9 +220,10 @@ consensus.
 
 ### D-20: Campaigns are first-class user-facing objects
 
-The `crucible campaign` porcelain owns creation, running, inspection,
-comparison, steering, hibernation, export, replay, and garbage-collection
-workflows. Existing one-run and corpus commands remain useful and may be
+The `crucible campaign` porcelain owns creation, running, semantic branching,
+campaign derivation, inspection, comparison, steering, hibernation, export,
+replay, and garbage-collection workflows. Existing one-run and corpus commands
+remain useful and may be
 implemented as bounded campaign policies.
 
 A user sees a decision graph with evidence and measurements, not a directory of
@@ -254,13 +256,67 @@ Rejected: treating the worked example as a demo performed only by the feature
 author, or accepting a green CI result as evidence that retention, recovery,
 explanation, debugging, and cleanup are usable and safe.
 
+### D-24: Branch points unify explicit and adaptive alternatives
+
+The user-facing and temporal-graph concept is a `BranchPoint`, identified by a
+parent configuration and typed `ChoiceOpportunity`. Adaptive expansion is not a
+different kind of graph node; `ExpansionState` is campaign-local knowledge
+attached to that branch point.
+
+Both an explicit branch and adaptive exploration publish `BranchRequest`
+facts. They then use the same proposal, attempt, observation, scheduling,
+storage, replay, and explanation machinery.
+
+Rejected: parallel “explicit fork” and “search expansion” graph models. They
+would disagree about deduplication, provenance, and replay while describing the
+same semantic selection.
+
+### D-25: An explicit branch is a bounded finite candidate source
+
+The finite request is normally low-cardinality, but the selectable domain need
+not be. Selecting three latency values from a billion-value integral domain is
+a valid three-way explicit branch. A generated request represents exhaustive
+iteration, sampling, mutation, or progressive widening.
+
+Both forms remain lazy. Publishing a 100-value request creates a persistent
+source, not 100 scheduler jobs or QEMU children. Finite requests are additive to
+existing generated sources. A policy revision or derived campaign is required
+to replace future exploration rules.
+
+### D-26: Request provenance does not multiply semantic edges
+
+Planner, operator, debugger, and exhaustive-policy causes belong to branch
+request and proposal facts. The semantic edge is uniquely keyed by branch point,
+domain, and selected value. When several causes propose the same value, the UI
+shows every cause on one edge and execution deduplicates by semantic attempt
+identity.
+
+An operator or debugger proposal used as the attempt's immutable execution
+basis is an intervention. It may guide later adaptive work only when policy says
+so, and it does not enter statistical estimators unless the statistical design
+explicitly models and weights it. Later duplicate causes do not reclassify the
+execution.
+
+### D-27: Branch, derive, hot fork, and debug mutation are distinct
+
+`branch` admits semantic values at a branch point. `derive` creates a new named
+campaign ref sharing immutable objects. `hot fork` is a QEMU realization
+optimization. A valid debugger selection is a debugger-caused semantic branch;
+an arbitrary memory/register mutation is a non-canonical derived session.
+
+A checkpoint need not contain a choice opportunity, and a branch point need not
+have a checkpoint or support hot fork. Conflating these operations would make
+cache state affect the temporal graph.
+
 ## Deliberately rejected representations
 
 The following patterns are outside the design even if they appear convenient
 for a prototype:
 
 - one pre-created scheduler job for every possible branch;
+- eager job creation for every value in an explicit finite request;
 - in-memory closures as persisted frontier entries;
+- separate explicit-fork and adaptive-expansion data models;
 - mutable branch rows whose last writer wins;
 - a shared writable QCOW2 overlay, shared observation ring, or shared control
   socket among fork children;

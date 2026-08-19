@@ -5,6 +5,12 @@ reloading its entire state for every child. This file defines a local hot-fork
 path and keeps it semantically interchangeable with RFC-0014's durable exact
 checkpoint and RFC-0010 thin replay.
 
+Here **hot fork** names only the QEMU realization mechanism. It does not create
+campaign meaning by itself. The campaign first admits a `BranchEdge`; the daemon
+may then realize its `Attempt` by hot fork, exact restore, or thin replay. Two
+process children that receive the same recorded selection are duplicate
+realizations of one semantic edge, not two campaign branches.
+
 ## 05.1 Three realization tiers
 
 | Tier | Representation | Primary uses |
@@ -74,7 +80,7 @@ A hot parent is a read-only execution template:
 ```text
 running world
     |
-reach stable choice/checkpoint boundary
+reach a stable, hot-fork-capable branch boundary
     |
 prepare exact host + QEMU continuation
     |
@@ -268,8 +274,10 @@ configuration.
 ### Failure retention
 
 On critical failure, pin the nearest pre-failure exact closure, failing schedule
-suffix, evidence, and post-failure closure when available. Debugger mutations
-fork non-canonical branches and never modify the retained canonical state.
+suffix, evidence, and post-failure closure when available. Arbitrary debugger
+mutations create non-canonical derived sessions and never modify the retained
+canonical state. A debugger selection at a declared branch point instead uses
+an ordinary debugger-caused `BranchRequest` and remains canonical.
 
 ### Maintenance migration
 

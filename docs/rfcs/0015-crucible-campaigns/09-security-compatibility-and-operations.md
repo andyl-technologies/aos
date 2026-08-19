@@ -44,8 +44,9 @@ Before running, the daemon validates campaign ceilings for:
 
 - total and per-class selectables;
 - candidate and observation cardinality;
-- maximum expansion depth and active path length;
-- proposal, attempt, and finding counts per budget grant;
+- maximum branch depth and active path length;
+- branch-request cardinality, proposal, attempt, and finding counts per budget
+  grant;
 - event-log, coverage, metric, and projection bytes;
 - hot templates, live worlds, vCPUs, RAM, dirty-page budget, descriptors, and
   disk overlays;
@@ -150,7 +151,7 @@ Daemon roles include:
 ```text
 viewer        inspect non-sensitive metadata and reports
 operator      start/pause/resume and grant bounded resources
-steerer       activate policy revisions and issue manual proposals
+steerer       activate policy revisions and issue bounded branch requests
 debugger      fetch retained exact state and create debug sessions
 exporter      replicate or export sensitive closures
 administrator configure stores, quotas, and trusted worker identities

@@ -8,7 +8,7 @@ roots that make reachability explicit, and a small set of compare-and-swap refs.
 
 | Class | Examples | Replication |
 | --- | --- | --- |
-| Canonical semantic state | Scenario, policy, configuration, selection, proposal, attempt, observation, finding, snapshot | Always eligible; required to understand campaign |
+| Canonical semantic state | Scenario, policy, configuration, choice opportunity, branch point/request/edge, selection, proposal, attempt, observation, finding, snapshot | Always eligible; required to understand campaign |
 | Durable acceleration | Exact checkpoint manifests/chunks, compacted projections, coverage indexes | Policy-controlled; never identity-changing |
 | Ephemeral operation | Leases, worker IDs, PIDs, sockets, local hot templates, RSS, host paths | Never replicated as campaign state |
 
@@ -192,8 +192,8 @@ chunks. Fetching a finding or configuration later lazily pulls its closure.
 
 The following structures merge by content-addressed union:
 
-- temporal graph nodes and edges;
-- proposals and attempts;
+- temporal graph nodes, branch points, and edges;
+- branch requests, proposals, and attempts;
 - canonical observations keyed by attempt;
 - coverage and novelty facts;
 - corpus and findings;
@@ -207,8 +207,10 @@ retaining both historical facts.
 
 Two planners may independently issue different valid proposals from partial
 knowledge in a future coordinatorless mode. Both proposals are safe to retain,
-but this does not satisfy strict campaign reproducibility. The initial and
-strict implementations use one logical planner ref sequence.
+but proposals for an identical branch-point value converge on one semantic edge
+without discarding either cause. This does not satisfy strict campaign
+reproducibility. The initial and strict implementations use one logical planner
+ref sequence.
 
 - **[CSTORE-14]** Merging campaign stores MUST NOT merge or synthesize VM state.
   It unions facts and graph objects; identical configuration IDs deduplicate.

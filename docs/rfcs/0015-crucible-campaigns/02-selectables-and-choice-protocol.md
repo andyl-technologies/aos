@@ -1,8 +1,9 @@
 # 02 — Typed selectables and the shared choice protocol
 
 Environmental models and guest applications expose different effects but the
-same exploration concept: a stable point offers a typed set of legal values,
-and the scheduler records one selection. This file defines that common model.
+same exploration concept: a stable opportunity offers a typed set of legal
+values, and the scheduler records one selection. This file defines that common
+model.
 
 ## 02.1 Declaration, offer, selection, and application
 
@@ -10,7 +11,7 @@ The protocol separates four steps:
 
 1. A **selectable declaration** names a reusable schema, legal domain, default,
    units, and semantic tags.
-2. A **choice offer** instantiates that declaration at one stable runtime
+2. A **choice opportunity** instantiates that declaration at one stable runtime
    coordinate and may narrow its legal domain.
 3. A **selection** records the chosen value, domain digest, policy provenance,
    and any model-sampling evidence.
@@ -20,7 +21,7 @@ The protocol separates four steps:
 
 ```text
 environment adapter ----\
-guest application -------+-> ChoicePoint -> Selection -> typed consumer
+guest application -------+-> ChoiceOpportunity -> Selection -> typed consumer
 scheduler/workload ------/
 ```
 
@@ -29,7 +30,7 @@ how to mutate QEMU or device state. Domain-specific application remains in the
 validated adapter defined by RFC-0014.
 
 - **[SEL-1]** Every explorable degree of freedom MUST be representable as a
-  `ChoicePoint` with a stable ID, versioned domain, default value, source,
+  `ChoiceOpportunity` with a stable ID, versioned domain, default value, source,
   class, and semantic tags.
 - **[SEL-2]** A selection engine MUST return only a `ChoiceValue`; it MUST NOT
   receive a callback, native pointer, QEMU object, guest address, or arbitrary
@@ -121,11 +122,11 @@ adapter transaction.
   yielded tuple MUST be validated against the complete declared constraints
   before proposal publication.
 
-## 02.4 Stable choice-point identity
+## 02.4 Stable choice-opportunity identity
 
 ```rust,illustrative
-pub struct ChoicePoint {
-    pub id: ChoicePointId,
+pub struct ChoiceOpportunity {
+    pub id: ChoiceOpportunityId,
     pub class: ChoiceClassId,
     pub source: ChoiceSource,
     pub declaration: SelectableId,
@@ -137,9 +138,9 @@ pub struct ChoicePoint {
 }
 ```
 
-Environment-originated points use RFC-0014's stable
+Environment-originated opportunities use RFC-0014's stable
 `FaultOpportunity` identity and typed target/operation/phase coordinate.
-Guest-originated points use:
+Guest-originated opportunities use:
 
 ```text
 H(
@@ -158,24 +159,25 @@ counter is not sufficient because inserting an unrelated choice would shift all
 future IDs.
 
 `ChoiceClassId` allows guidance statistics to be shared across semantically
-equivalent repeated points without conflating unrelated choices. It is derived
-from the declaration and stable context tags, not from the specific runtime
-coordinate.
+equivalent repeated opportunities without conflating unrelated choices. It is
+derived from the declaration and stable context tags, not from the specific
+runtime coordinate.
 
-- **[SEL-9]** Replaying a schedule MUST reconstruct an identical choice-point ID
-  and domain digest before accepting the recorded selection.
+- **[SEL-9]** Replaying a schedule MUST reconstruct an identical
+  choice-opportunity ID and domain digest before accepting the recorded
+  selection.
 - **[SEL-10]** A producer MUST supply an explicit stable instance key when the
   same declaration can be offered more than once at an otherwise identical
   coordinate. Ambiguity fails closed.
 - **[SEL-11]** Adding an unrelated selectable, node, binding, or RNG stream MUST
   NOT perturb the keyed candidate or model-sampling sequence of an existing
-  choice point.
+  choice opportunity.
 
 ## 02.5 Selection record
 
 ```rust,illustrative
 pub struct Selection {
-    pub point: ChoicePointId,
+    pub opportunity: ChoiceOpportunityId,
     pub domain: ChoiceDomainId,
     pub value: ChoiceValue,
     pub origin: SelectionOrigin,
@@ -188,16 +190,19 @@ pub enum SelectionOrigin {
         stream: RngStreamId,
         draw: u64,
     },
-    CampaignProposal {
-        proposal: ProposalId,
-        policy: CampaignPolicyId,
+    CampaignBranch {
+        edge: BranchEdgeId,
     },
     LockedReplay,
-    OperatorFork {
-        command: CampaignCommandId,
-    },
 }
 ```
+
+Operator, planner, debugger, and exhaustive provenance belongs to the
+`BranchRequestCause` and `Proposal` facts in campaign knowledge, not to the
+modeled selection. This keeps two requests for the same value on the same
+semantic branch edge. A valid debugger selection override uses a debugger-
+caused branch request; an arbitrary register or memory write remains a non-
+canonical debug session and is not encoded as a `SelectionOrigin`.
 
 The implementation adds one canonical selection decision envelope to the
 schedule. Existing fault-firing, RNG-draw, override, preemption, and
@@ -212,10 +217,11 @@ two decision taxonomies at runtime.
 
 - **[SEL-12]** A recorded selection MUST contain enough information to replay
   without consulting campaign state or drawing randomness.
-- **[SEL-13]** Selection origin is provenance. Two selections of the same value
-  at the same point denote the same modeled branch even if different campaign
-  policies proposed them; proposal records remain distinct campaign facts while
-  temporal-graph configuration identity deduplicates.
+- **[SEL-13]** Selection origin identifies the modeled delivery mechanism. Two
+  selections of the same value at the same opportunity denote the same modeled
+  branch even if different branch requests proposed them; request and proposal
+  records remain distinct campaign facts while the branch edge and temporal-
+  graph configuration deduplicate.
 
 ## 02.6 Scenario declaration and runtime offers
 
@@ -248,9 +254,10 @@ A white-box guest registers declarations during setup and freezes its catalog at
 Required declarations must exist exactly; unexpected declarations are rejected
 unless an explicit scenario wildcard admits bounded dynamic selectables.
 
-Dynamic choice offers may narrow a declared domain, for example to the recovery
-policies legal in the current protocol state. The narrowed domain is hashed into
-the point. It may never broaden beyond the scenario declaration.
+Dynamic choice opportunities may narrow a declared domain, for example to the
+recovery policies legal in the current protocol state. The narrowed domain is
+hashed into the opportunity. It may never broaden beyond the scenario
+declaration.
 
 - **[SEL-14]** Scenario admission MUST resolve all statically declared
   environment selectables and validate policy selectors before guest start.
@@ -278,16 +285,18 @@ SelectionRequest
 
 SelectionReply
   protocol_version
-  choice_point_id
+  choice_opportunity_id
   domain_id
   selected value
   status
 ```
 
 The request is reply-bearing. The guest blocks at the doorbell until the host
-returns a value or a typed rejection. This point is also a legal hot-fork
-boundary: the world may be paused immediately before the reply, cloned, and
-given different replies in sibling children.
+returns a value or a typed rejection. This opportunity may also be a legal
+hot-fork boundary when the complete world satisfies the advertised capability:
+the world may be paused immediately before the reply, cloned, and given
+different replies in sibling children. The opportunity still defines a branch
+point when only exact restore or thin replay is available.
 
 The wire protocol uses fixed-width little-endian headers, checked offsets,
 bounded UTF-8 identifiers normalized by the protocol, and explicit lengths. It
@@ -320,17 +329,17 @@ and node lifecycle effects all use the same proposal interface. Their typed
 adapters retain authority over target validity, phase, composition, and effect
 application.
 
-Scheduler preemption and workload inputs may also expose choice points when
-their existing deterministic contracts admit genuine alternatives. Ordinary
-deterministic event ordering does not become a choice merely because a campaign
-would like to vary it.
+Scheduler preemption and workload inputs may also expose choice opportunities
+when their existing deterministic contracts admit genuine alternatives.
+Ordinary deterministic event ordering does not become a choice merely because a
+campaign would like to vary it.
 
 - **[SEL-18]** A producer MUST NOT expose an alternative whose application
   violates the deterministic scheduler, adapter capability manifest, causal
   lookahead, or scenario bounds.
-- **[SEL-19]** The campaign layer MUST treat guest and environment point sources
-  uniformly for candidate generation and guidance while preserving source and
-  typed-consumer identity in evidence.
+- **[SEL-19]** The campaign layer MUST treat guest and environment opportunity
+  sources uniformly for candidate generation and guidance while preserving
+  source and typed-consumer identity in evidence.
 
 ## 02.9 Randomness as a selectable
 
@@ -358,9 +367,13 @@ The scenario declares ceilings for:
 - requests per selectable and total requests per run;
 - maximum choice message and reply bytes;
 - pending simultaneous guest requests;
-- candidate proposals per point and per class.
+- candidate proposals per opportunity and per class.
 
 - **[SEL-20]** Guest-controlled declarations and requests are untrusted input.
   All allocation bounds MUST be checked before allocation or iteration, and
   violations MUST produce localized protocol evidence and terminate according
   to scenario policy.
+- **[SEL-21]** Discovering a `ChoiceOpportunity` MUST NOT imply that the parent
+  configuration is checkpointed or hot-fork eligible. Campaign projection pairs
+  the opportunity with its parent to form a `BranchPoint`; realization
+  capability is recorded separately.

@@ -2,19 +2,20 @@
 
 Campaigns are useful only if logical width is cheap and active execution stays
 bounded. Correctness gates prove equivalence among realization tiers;
-performance gates prove that hot branching actually improves the cost model.
+performance gates prove that QEMU hot forking actually improves the cost model.
 
 ## 10.1 Cost model
 
-For a campaign with latent possibilities `L`, admitted attempts `A`, runnable
-worlds `R`, hot parent state `H`, branch deltas `D_i`, and durable unique objects
-`U`, the intended resource model is:
+For a campaign with latent possibilities `L`, branch requests `B`, emitted
+proposals `P`, admitted attempts `A`, runnable worlds `R`, hot parent state `H`,
+branch deltas `D_i`, and durable unique objects `U`, the intended resource model
+is:
 
 ```text
-campaign metadata      O(A + observations + compact frontier projections), not O(L)
+campaign metadata      O(B + P + A + observations + compact projections), not O(L)
 live memory            O(H + active rings + sum(D_i for live branches)), not O(R * H)
 durable storage        O(U), with content and parent-delta deduplication
-planner work           O(log(open expansions) + generator poll + path credit)
+planner work           O(log(open source continuations) + source poll + path credit)
 fork setup             O(process/page-table metadata + isolated small resources),
                        with no eager copy of guest RAM
 ```
@@ -39,7 +40,9 @@ The performance harness records:
 campaign_projection_rebuild_objects
 campaign_projection_rebuild_bytes
 planner_poll_ns
-planner_ready_expansions
+planner_ready_sources
+branch_request_pending_values
+branch_edge_deduplications
 proposal_publish_bytes
 attempt_queue_latency_operational
 
@@ -147,8 +150,13 @@ Fixtures include:
 
 - a discrete domain of 10 alternatives;
 - an integer domain with more than `2^32` legal values;
-- one million dormant choice points represented by paged Merkle collections;
+- one million dormant branch points represented by paged Merkle collections;
 - progressive widening with repeated descendant feedback;
+- a three-value finite request on the huge integer domain, including one value
+  already admitted by a generated source;
+- a maximum-sized finite request consumed with one proposal slot and one worker
+  slot, proving request publication does not create a batch;
+- rejection of exhaustive `--all` above its finite-cardinality ceiling;
 - duplicate attempt and observation delivery;
 - daemon restart with all projection caches deleted;
 - strict and streaming planning under shuffled worker completion.
@@ -166,6 +174,7 @@ under shuffled completion delivery.
 | Gate | Contract |
 | --- | --- |
 | `gate:campaign-model` | Canonical policy/snapshot/fact identities, CAS history, projection rebuild, and merge rules |
+| `gate:branch-point-model` | Choice opportunities form parent-scoped branch points; finite/generated requests share lazy admission and duplicate semantic edges deduplicate without losing cause evidence |
 | `gate:typed-choice` | Guest and environment choices share domain validation, stable IDs, selection replay, and mismatch rejection |
 | `gate:campaign-replay` | Findings replay without campaign/store and strict campaign planner steps reproduce |
 | `gate:lazy-frontier` | Suspended generators resume, widen, wait, exhaust, and recover correctly |
@@ -218,7 +227,9 @@ permanently failed nodes, and a failure during fork preparation.
 
 Tests corrupt or omit:
 
-- domain and choice-point digests;
+- domain, choice-opportunity, and branch-point digests;
+- branch-request bounds, cause evidence, source cursor, and duplicate-edge
+  projection state;
 - policy/generator versions;
 - proposal observation basis;
 - campaign snapshot children;
@@ -234,6 +245,12 @@ Tests corrupt or omit:
 
 Every fault must fail before guest resume or campaign ref publication, preserve
 the prior valid state, and produce localized evidence.
+
+- **[CPERF-8]** Automated branch-point tests MUST prove that finite and generated
+  sources converge on one semantic edge for a duplicate value, credit it once,
+  retain every request cause and the immutable execution basis, resume both
+  source cursors after restart, and keep operator/debugger execution bases out
+  of statistical estimates unless predeclared by policy.
 
 ## 10.10 Benchmark publication
 

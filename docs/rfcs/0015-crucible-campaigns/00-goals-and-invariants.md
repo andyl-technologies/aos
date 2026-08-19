@@ -10,19 +10,24 @@ campaign knowledge, and operational placement.
 | --- | --- |
 | **Scenario** | Immutable `World`, fault/signal plan, properties, measurements, seed, and selectable declarations defining legal modeled behavior. |
 | **Configuration** | One temporal-graph node, identified by `(ScenarioDef, Schedule)`. |
-| **Choice point** | A stable opportunity at which one value from a typed domain may be selected. |
-| **Selection** | The concrete value chosen at one choice point and recorded in the schedule. |
+| **Selectable declaration** | A reusable typed domain and application contract exposed by a scenario producer. |
+| **Choice opportunity** | One stable runtime occurrence at which a producer offers a selectable declaration. |
+| **Branch point** | The semantic campaign location `(parent configuration, choice opportunity)` from which alternate selections may create child configurations. |
+| **Selection** | The concrete value chosen at one choice opportunity and recorded in the schedule. |
 | **Campaign** | A named, persistent adaptive exploration of one scenario lineage. |
 | **Policy** | Immutable rules for proposing candidates, prioritizing paths, ranking outcomes, fairness, and retention. |
-| **Proposal** | A campaign request to try one legal value at one choice point. |
+| **Branch request** | An operator, policy, debugger, or exhaustive request to admit values from one bounded finite or generated candidate source at a branch point. |
+| **Proposal** | One legal candidate value emitted by a branch request. |
 | **Attempt** | An idempotent executable unit: instantiate a parent, apply a proposal, and run to a stop condition. |
-| **Observation** | Canonical outcome of a completed attempt: child configuration, measurements, properties, coverage, and discovered choice points. |
-| **Expansion** | All proposals and observations associated with one `(parent, choice point)`. |
-| **Continuation** | A resumable projection describing whether an expansion can yield another proposal and how. |
+| **Branch edge** | The unique semantic edge for `(branch point, selected value)`, independent of how many requests proposed it. |
+| **Observation** | Canonical outcome of a completed attempt: child configuration, measurements, properties, coverage, and discovered choice opportunities. |
+| **Expansion state** | Campaign-local requests, proposals, observations, statistics, and suspended candidate sources attached to one branch point. |
+| **Continuation** | A resumable projection describing whether one candidate source can yield another proposal and how. |
 | **Frontier** | The set of ready, waiting, and open continuations plus admitted attempts not yet completed. |
 | **Finding** | A stable failure signature with a self-contained reproduction artifact and optional retained exact checkpoint. |
 | **Materialization** | A hot process, exact durable closure, or cached replay state that makes one configuration cheap to instantiate. |
 | **Lineage** | Scenario/genesis/provenance boundary within which graph and checkpoint reuse is valid. |
+| **Derived campaign** | A new named campaign ref based on an existing snapshot or configuration and sharing its immutable reachable objects. |
 
 ## 00.2 Three planes
 
@@ -79,12 +84,12 @@ estimation rules appear in §03.
 
 The following are canonical when their inputs are declared and recorded:
 
-- scheduler selection among a typed choice domain;
+- scheduler selection at a typed choice opportunity;
 - signal-fault outcome or parameter selection at a stable opportunity;
 - guest application selection through the white-box choice protocol;
 - workload input selection declared by the scenario;
 - preemption or interrupt-timing selection admitted by the scheduler;
-- a campaign proposal converted into one of the preceding selections.
+- a campaign branch proposal converted into one of the preceding selections.
 
 The following create non-canonical debugger branches or a new lineage:
 
@@ -98,7 +103,7 @@ The following create non-canonical debugger branches or a new lineage:
   policy is not modeled state. It MUST NOT reuse a checkpoint across scenario or
   provenance changes unless a separately specified prefix-equivalence proof
   authenticates that reuse. The initial implementation provides no such proof
-  and therefore forks a fresh lineage.
+  and therefore creates a fresh lineage.
 
 ## 00.5 Correctness and exploration completeness
 
@@ -108,7 +113,7 @@ campaign makes no completeness claim. Progressive widening, probabilistic
 sampling, coverage guidance, beam selection, and corpus mutation all trade
 completeness for reach.
 
-- **[CMOD-7]** Every campaign result MUST report the admitted choice points,
+- **[CMOD-7]** Every campaign result MUST report the admitted branch points,
   explored values, stop conditions, budgets consumed, reductions applied, and
   whether any domain was actually exhausted.
 - **[CMOD-8]** “No finding” means no finding in the recorded explored set. The
@@ -134,3 +139,20 @@ perform local hot fanout without changing campaign semantics.
   handle, host path, or in-memory Rust object in a durable `Attempt` or
   `Observation`. Local acceleration is attached through optional cache handles
   outside canonical encoding.
+
+## 00.7 Four distinct uses of branching
+
+RFC-0015 uses separate terms for operations that share a tree-shaped visual but
+have different identities and effects:
+
+| Operation | Meaning |
+| --- | --- |
+| **Branch** | Admit one or more semantic selections at a `BranchPoint`; an explicit low-cardinality branch is a finite `CandidateSource`. |
+| **Derive** | Create a new named campaign ref from an existing snapshot or configuration, sharing immutable objects. |
+| **Hot fork** | Realize one or more already-admitted semantic branches by QEMU process-level copy-on-write. |
+| **Debug branch** | Apply a valid declared selection as a canonical branch, or label arbitrary debugger mutation as a non-canonical derived session. |
+
+A checkpoint is a reusable realization of a configuration; it is not itself a
+branch point. A branch point exists only when a typed choice opportunity is
+known at a parent configuration. Conversely, a branch point need not be
+hot-fork eligible: exact restore or thin replay can realize the same edge.

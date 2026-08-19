@@ -2,7 +2,8 @@
 
 A campaign may imply more branches than can be enumerated, stored, or run. The
 daemon therefore treats the frontier as a pull-based collection of suspended
-expansion computations and materializes only a bounded active window.
+candidate sources attached to branch points and materializes only a bounded
+active window.
 
 ## 04.1 Persistent iterators, not stored closures
 
@@ -11,7 +12,7 @@ The useful intuition is a suspended iterator:
 ```rust,illustrative
 pub enum ContinuationPoll {
     Yield {
-        attempt: Attempt,
+        proposal: Proposal,
         next: ContinuationSnapshot,
     },
     WaitForFeedback {
@@ -25,7 +26,8 @@ The durable store never serializes a Rust closure, trait object, code pointer,
 or VM stack. It stores:
 
 - a closed versioned generator kind and parameters in `CampaignPolicy`;
-- the stable `ExpansionKey` and `ChoiceDomainId`;
+- a bounded immutable `BranchRequest` and its finite or generated source;
+- the stable `BranchPointId`, `BranchRequestId`, and `ChoiceDomainId`;
 - immutable proposals and observations;
 - optional authenticated projection snapshots;
 - policy and implementation versions.
@@ -44,20 +46,26 @@ come from the observation set.
 The frontier projection contains:
 
 ```rust,illustrative
+pub struct CandidateContinuationKey {
+    pub branch_point: BranchPointId,
+    pub request: BranchRequestId,
+}
+
 pub struct CampaignFrontier {
-    pub ready_expansions: MerkleSet<ExpansionKey>,
-    pub waiting_expansions: MerkleSet<ExpansionKey>,
-    pub open_expansions: MerkleSet<ExpansionKey>,
+    pub ready_sources: MerkleSet<CandidateContinuationKey>,
+    pub waiting_sources: MerkleSet<CandidateContinuationKey>,
+    pub open_branch_points: MerkleSet<BranchPointId>,
     pub admitted_attempts: MerkleSet<AttemptId>,
     pub completed_attempts: MerkleSet<AttemptId>,
 }
 ```
 
-An expansion may move from ready to waiting after yielding one candidate and
-become ready again when descendant feedback raises its widening allowance. It
-may be open but low priority for a long period. Finite domains become exhausted
-only when every legal value is admitted or the generator supplies an
-authenticated exhaustion proof.
+A source continuation may move from ready to waiting after yielding one
+candidate and become ready again when descendant feedback raises its widening
+allowance. Its branch point may be open but low priority for a long period. A
+finite request exhausts when every requested value has been admitted or already
+deduplicated. A complete finite domain is exhausted only when every legal value
+is admitted or the generator supplies an authenticated exhaustion proof.
 
 The claimable work set is:
 
@@ -69,7 +77,7 @@ admitted attempts
 
 - **[LAZY-3]** Frontier readiness MUST be derived from semantic facts and policy.
   Lease state affects claimability only and MUST NOT change whether an attempt
-  exists or an expansion is open.
+  exists or a branch point/source continuation is open.
 - **[LAZY-4]** The frontier API MUST paginate or stream. It MUST NOT require all
   continuations or attempts to be loaded into memory.
 
@@ -80,11 +88,11 @@ The local daemon issues work only when capacity exists:
 ```text
 resource slot opens
        |
-CampaignSupervisor selects one ready expansion
+CampaignSupervisor selects one ready source at a branch point
        |
-ProposalPlanner polls its generator once
+ProposalPlanner polls its finite iterator or generator once
        |
-publish Proposal + Attempt
+publish Proposal + admit/reuse semantic Attempt
        |
 WorkerPool leases Attempt
        |
@@ -118,7 +126,7 @@ CampaignProjector
   folds facts into graph/frontier/guidance/status projections
 
 ProposalPlanner
-  selects expansions and deterministically generates proposals
+  selects branch points/sources and deterministically generates proposals
 
 AttemptQueue
   exposes idempotent attempt leases and completion publication
@@ -170,25 +178,25 @@ checkpoint is expanded once.
 
 ## 04.6 Feedback and backpropagation
 
-Every attempt carries the ordered expansion/selection path by which it was
-admitted. On canonical completion, the projector credits its observation to
-each expansion on that path. No in-memory MCTS stack is required.
+Every attempt carries the ordered branch-edge path by which it was admitted. On
+canonical completion, the projector credits its observation to the expansion
+state at each branch point on that path. No in-memory MCTS stack is required.
 
 ```text
-root expansion E0
+root branch point B0
   -> selection A
-     -> expansion E1
+     -> branch point B1
         -> selection B
            -> observation O
 
-credit O to E1 and E0, exactly once
+credit O to B1 and B0, exactly once
 ```
 
 Credits include count, reward vector, coverage novelty, property result,
 measurement deltas, and finding signature. Canonical credit identity is
-`H(observation, expansion)`. A persistent set prevents duplicate credit.
+`H(observation, branch point)`. A persistent set prevents duplicate credit.
 
-- **[LAZY-11]** Backpropagation MUST use recorded expansion paths and idempotent
+- **[LAZY-11]** Backpropagation MUST use recorded branch-edge paths and idempotent
   credit IDs. It MUST survive restart and arbitrary result duplication.
 - **[LAZY-12]** Operational failure produces retry telemetry, not backpropagated
   reward. A modeled guest crash is canonical only after the execution scheduler
@@ -230,7 +238,10 @@ hotness =
 This is operational scoring and may use host measurements. It selects among
 equivalent realization tiers but cannot alter proposal priority or branch
 meaning. A parent may move from live template to durable closure to thin-only
-state and later be restored.
+state and later be restored. A checkpoint without a pending choice opportunity
+may be valuable for debugging or replay without being a branch point. A branch
+point without a checkpoint remains valid and is realized through an available
+ancestor; hot-fork eligibility is only a cache capability.
 
 - **[LAZY-15]** Materialization policy MUST expose why a checkpoint is hot,
   pinned, demoted, or evicted. Those reasons are telemetry, not canonical
@@ -270,9 +281,13 @@ After daemon restart:
 3. rebuild or validate campaign projections;
 4. treat uncompleted attempts with absent/expired local leases as claimable;
 5. inventory valid exact closures and discard stale hot-process handles;
-6. recompute hotness and ready continuations;
+6. recompute hotness, expansion state, and ready source continuations;
 7. resume pulling only when user intent is `running`.
 
 - **[LAZY-18]** Recovery MUST be safe after interruption between every pair of
   object publication and ref-update steps. Corrupt or incomplete objects remain
   unreachable and eligible for later garbage collection.
+- **[LAZY-19]** Publishing a branch request MAY make a finite or generated
+  continuation ready, but MUST NOT eagerly enqueue all of its values. The daemon
+  polls it only under proposal-buffer, attempt-budget, and resource backpressure,
+  including when the request was explicitly issued by an operator.

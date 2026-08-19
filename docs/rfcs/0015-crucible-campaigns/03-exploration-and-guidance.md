@@ -8,10 +8,10 @@ space while preserving a clear account of what was and was not explored.
 
 Campaign planning has two levels:
 
-1. **Frontier selection:** which open expansion should receive the next unit of
-   work?
+1. **Frontier selection:** which open branch point and candidate-source
+   continuation should receive the next unit of work?
 2. **Candidate generation:** which previously unadmitted value should that
-   expansion try?
+   branch point try?
 
 The existing breadth-first, depth-first, priority, coverage, novelty, assertion
 proximity, and deterministic-bandit mechanisms are frontier policies. The new
@@ -21,8 +21,8 @@ candidate-generator abstraction handles typed domains.
 pub trait CandidateGenerator {
     fn poll(
         &self,
-        point: &ChoicePoint,
-        view: &ExpansionView,
+        opportunity: &ChoiceOpportunity,
+        view: &ExpansionStateView,
         seed: Seed,
     ) -> CandidatePoll;
 }
@@ -39,10 +39,35 @@ durable representation is a closed, versioned `CandidateGeneratorSpec` plus
 canonical facts from which its cursor and statistics are derived.
 
 - **[GUIDE-1]** Candidate generation MUST be a pure function of the choice
-  point, policy, campaign seed, admitted proposal set, and named observation
-  basis.
+  opportunity, branch point, branch request, policy, campaign seed, admitted
+  proposal set, and named observation basis.
 - **[GUIDE-2]** Generator implementation version and parameters MUST be included
   in `CampaignPolicyId` and every resulting proposal's provenance.
+
+### Candidate sources and explicit branches
+
+Every `BranchRequest` supplies one of two source forms:
+
+```rust,illustrative
+pub enum CandidateSource {
+    Finite { values: CanonicalSet<ChoiceValue> },
+    Generated { generator: CandidateGeneratorSpecId },
+}
+```
+
+A finite source is an explicit bounded set, not a statement about the
+cardinality of the underlying domain. An operator can therefore branch a huge
+integer opportunity at three deliberately chosen values. `--all` is shorthand
+for a finite source only when validation proves that the complete domain fits
+the policy's explicit exhaustive-cardinality ceiling.
+
+A generated source is a suspended deterministic computation: sampling,
+mutation, exhaustive iteration, or progressive widening. Finite and generated
+sources share validation, proposal, attempt, observation, credit, and replay
+machinery. Issuing a finite request is additive; it does not close or replace a
+policy generator already attached to the same branch point. Replacing the
+exploration policy requires an explicit policy activation, or deriving a new
+campaign when the operator wants an independent future history.
 
 ## 03.2 Built-in generators
 
@@ -60,8 +85,9 @@ The initial implementation provides:
 | `mutate_near_corpus` | Any supported domain | Deterministically mutates retained successful, novel, or failing values. |
 
 Generators compose as a fixed ordered mixture with integer weights. Duplicate
-values deduplicate by `(ExpansionKey, ChoiceValue)`; the generator advances until
-it yields a new value or proves exhaustion.
+values deduplicate by `(BranchPointId, ChoiceDomainId, ChoiceValue)`; the
+generator advances until it yields a new value or proves exhaustion. Distinct
+request/proposal facts that produce the duplicate remain visible as provenance.
 
 - **[GUIDE-3]** Every finite generator MUST eventually exhaust its domain if
   polled without a budget limit. Sampling generators over huge domains MUST
@@ -72,8 +98,8 @@ it yields a new value or proves exhaustion.
 
 ## 03.3 Progressive widening
 
-For an expansion with `N` completed descendant visits and `M` admitted distinct
-children, a widening policy permits another child when:
+For a branch point with `N` completed descendant visits and `M` admitted
+distinct children, a widening policy permits another child when:
 
 ```text
 M < ceil(k * N^alpha)
@@ -111,14 +137,14 @@ Splits use exact integer midpoint and rounding rules. Empty or duplicate splits
 are discarded.
 
 - **[GUIDE-5]** Progressive widening MUST feed descendant observations back to
-  every expansion on the recorded selection path. It MUST NOT mutate ancestor
-  configurations.
+  the expansion state at every branch point on the recorded branch-edge path.
+  It MUST NOT mutate ancestor configurations.
 - **[GUIDE-6]** Widening eligibility and interval selection MUST be explainable
   from stored visit counts, rewards, proposal values, policy parameters, and
   observation IDs.
-- **[GUIDE-7]** A widening expansion MAY remain dormant indefinitely without a
-  live QEMU process. Reopening it realizes its parent from the cheapest correct
-  cache tier.
+- **[GUIDE-7]** A widening branch point MAY remain dormant indefinitely without
+  a live QEMU process. Polling its expansion state again realizes its parent
+  from the cheapest correct cache tier.
 
 ## 03.4 Tree policy: deterministic MCTS/PUCT
 
@@ -141,14 +167,14 @@ The prior may come from the scenario's model distribution, an explicit campaign
 proposal prior, or a uniform default. Using a model prior for PUCT does not make
 the resulting visit frequency a statistical estimate; it is still guidance.
 
-Rewards propagate from a completed observation along its recorded expansion
+Rewards propagate from a completed observation along its recorded branch-edge
 path. Confirmed correctness failures dominate ordinary optimization rewards in
 bug-finding mode. Optimization mode may instead reject failures and optimize the
 remaining metric vector.
 
-- **[GUIDE-8]** PUCT statistics MUST be keyed by stable expansion and selection
-  identity. Results from different `ChoiceClassId`s MUST NOT be pooled unless the
-  policy explicitly declares a shared class.
+- **[GUIDE-8]** PUCT statistics MUST be keyed by stable branch-point and branch-
+  edge identity. Results from different `ChoiceClassId`s MUST NOT be pooled
+  unless the policy explicitly declares a shared class.
 - **[GUIDE-9]** Duplicate attempts and duplicate observations MUST receive
   credit exactly once.
 
@@ -161,7 +187,7 @@ Built-in observation signals include:
 - assertion-proximity progress;
 - property failure or recovery;
 - metric improvement relative to a declared baseline;
-- new choice-point discovery;
+- new choice-opportunity discovery;
 - failure-signature novelty;
 - state or event-log novelty under a declared projection.
 
@@ -246,6 +272,16 @@ material sufficient for declared importance weighting. Adaptive resampling uses
 predeclared sequential Monte Carlo rules and reports effective sample size and
 weight concentration. Paths with `Q = 0` where `P > 0` invalidate the estimate.
 
+An operator or debugger proposal used as an attempt's `ExecutionBasis` is an
+intervention, not a draw from the campaign's proposal distribution. Its
+observation remains useful for finding bugs, comparing outcomes, and—when
+policy explicitly opts in—updating adaptive guidance. It is excluded from
+frequency and importance-weighted estimators unless the statistical policy
+modeled that intervention in advance and records the correct `P/Q` evidence. An
+operator proposal later attached as an `AdditionalCause` does not retroactively
+taint or legitimize the original execution basis. A manually requested
+pathological value must never silently change a population claim.
+
 - **[GUIDE-15]** Statistical mode MUST reject any proposal policy that cannot
   provide the declared support and weight accounting. It MUST NOT silently fall
   back to guidance-biased frequency.
@@ -287,3 +323,20 @@ oracle.
 - **[GUIDE-20]** A minimized artifact MUST retain the original finding,
   minimization policy, candidate history, and proof that the final artifact
   reproduces the same signature.
+
+## 03.11 Branch-source rules
+
+- **[GUIDE-21]** A finite candidate request MUST be additive to existing
+  expansion state, canonically ordered, lazily consumed, and bounded by both
+  request cardinality and campaign budget. Duplicate values MUST reuse the same
+  semantic branch edge, and attempts MUST deduplicate when all of their semantic
+  inputs match.
+- **[GUIDE-22]** `branch --all` MUST fail before request publication when the
+  validated finite domain exceeds the configured exhaustive-cardinality ceiling
+  or cannot provide a finite cardinality proof.
+- **[GUIDE-23]** An operator or debugger `ExecutionBasis` MUST be excluded from
+  statistical estimators unless the pinned statistical policy admitted its
+  selection mechanism and records valid support and weighting evidence. An
+  `AdditionalCause` MUST NOT reclassify the attempt.
+- **[GUIDE-24]** A policy MAY learn from intervention observations only through
+  an explicit policy rule visible in proposal explanations and campaign claims.

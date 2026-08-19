@@ -19,7 +19,7 @@ retain that state as a hot or durable checkpoint, explore a small and changing
 subset of a vast choice space, feed descendant observations back into the
 exploration policy, and revisit an earlier checkpoint to admit additional
 branches. It unifies systematic search, probabilistic sampling,
-coverage-guided fuzzing, performance optimization, manual forks, hibernation,
+coverage-guided fuzzing, performance optimization, manual branching, hibernation,
 failure retention, and eventual multi-host work distribution over the same
 content-addressed temporal graph.
 
@@ -34,13 +34,13 @@ CampaignRef -> immutable CampaignSnapshot
                     |
                     +-- scenario lineage and active policy
                     +-- temporal graph
-                    +-- lazy expansion frontier
+                    +-- branch points and lazy expansion state
                     +-- observations, corpus, coverage, and findings
                     +-- retention pins and accounting
 ```
 
-Every object under the named campaign reference is immutable and
-content-addressed. The frontier is a derived projection of durable facts, not a
+Every object under the named campaign reference is immutable and content-
+addressed. The frontier is a derived projection of branch-point facts, not a
 directory of mutable VM processes. QEMU processes, exact checkpoint files,
 local copy-on-write mappings, and daemon work queues are realizations and
 caches. They affect cost, never branch identity.
@@ -75,23 +75,26 @@ feedback-directed campaigns:
   complete adaptive campaign.
 
 Without a single model for those concerns, search, fuzzing, optimization,
-manual forking, debugging, and future distributed execution would grow separate
-control planes and subtly different replay semantics.
+manual branching, debugging, and future distributed execution would grow
+separate control planes and subtly different replay semantics.
 
 ## Design thesis
 
 A campaign is a **named reference to an immutable snapshot of accumulated
 exploration knowledge**. That snapshot names an append-only set of facts and
-content-addressed projections. From it, Crucible can derive every open
-expansion, regenerate every candidate stream, reproduce every branch, restore
-every retained checkpoint, and explain every adaptive planning decision.
+content-addressed projections. From it, Crucible can derive every open branch
+point and its expansion state, regenerate every candidate source, reproduce
+every branch, restore every retained checkpoint, and explain every adaptive
+planning decision.
 
 ```text
                      immutable CampaignPolicy
                               |
-Scenario -> ChoicePoint -> Proposal -> Attempt -> Observation -> Finding
-    |            |             |          |            |
-    +------------+-------------+----------+------------+
+Scenario -> ChoiceOpportunity -> BranchPoint -> BranchRequest
+                                            |          |
+                                            +-> Proposal -> Attempt
+                                                           |
+                                                    Observation -> Finding
                               |
                     content-addressed facts
                               |
@@ -109,7 +112,28 @@ Workers pull bounded `Attempt` objects. They do not enumerate the entire state
 space and do not own campaign policy. A local daemon materializes each attempt
 from the cheapest correct realization: a paused hot-fork template, a durable
 exact closure, or thin replay. Descendant observations update campaign
-knowledge and may make an ancestor expansion eligible to yield more candidates.
+knowledge and may make an ancestor branch point eligible to yield more
+candidates from its expansion state.
+
+## Branching and expansion are one model
+
+A protocol producer exposes a typed `ChoiceOpportunity`. When execution reaches
+it, the pair `(parent ConfigurationId, ChoiceOpportunityId)` identifies a
+`BranchPoint`. The campaign attaches `ExpansionState` to that semantic point:
+branch requests, candidate sources, proposals, observations, statistics, and
+suspended continuations.
+
+An explicit branch is therefore the small finite case of ordinary expansion. A
+request for `{0, 20 ms, 500 ms}` may target an integer domain with billions of
+legal values. Progressive widening at the same point uses a generated source.
+Both are additive and lazily pulled under the same budgets. If they propose the
+same value, their causes remain auditable, one semantic edge is reused, and any
+attempt with identical remaining semantic inputs deduplicates.
+
+This use of **branch** is distinct from deriving a new named campaign, QEMU
+**hot fork** realization, and non-canonical debugger mutation. A checkpoint is
+not automatically a branch point, and a branch point does not require a hot-
+fork-capable checkpoint.
 
 ## Relationship to RFC-0010 and RFC-0014
 
@@ -125,8 +149,9 @@ This RFC preserves RFC-0010's identity and determinism contracts:
 It refines three RFC-0010 control-plane decisions:
 
 1. A search frontier is no longer just the set of checkpoints not yet expanded.
-   It is the projection of **open expansion continuations**, and one
-   configuration may yield additional attempts repeatedly.
+   It is the projection of **open branch points and their expansion
+   continuations**, and one configuration may yield additional attempts
+   repeatedly.
 2. Fleet claims are keyed by immutable `AttemptId`, not only by checkpoint
    identity. A parent configuration may have many independently claimable
    attempts over its lifetime.
@@ -136,7 +161,8 @@ It refines three RFC-0010 control-plane decisions:
    snapshot.
 
 RFC-0014's `FaultOpportunity` becomes an environment-originated
-`ChoicePoint`. Its typed domain adapter still owns effect validation,
+`ChoiceOpportunity`. Pairing it with the semantic parent configuration creates
+a campaign `BranchPoint`. Its typed domain adapter still owns effect validation,
 composition, and application. This RFC adds the shared selection and campaign
 layer above those adapters; it does not replace signal evaluation or turn typed
 effects into arbitrary callbacks.
@@ -147,8 +173,8 @@ effects into arbitrary callbacks.
   probabilistic sampling, coverage-guided mutation, progressive widening,
   performance optimization, manual branching, and failure minimization.
 - **[CAM-2]** Expose environment, scheduler, workload, and guest application
-  degrees of freedom as one typed choice-point model with integral and discrete
-  domains.
+  degrees of freedom as one typed choice-opportunity and branch-point model with
+  integral and discrete domains.
 - **[CAM-3]** Keep model probability, exploration proposal probability, and the
   realized recorded selection distinct and auditable.
 - **[CAM-4]** Represent the frontier lazily so an enormous latent state space
@@ -156,8 +182,9 @@ effects into arbitrary callbacks.
   possible child.
 - **[CAM-5]** Permit descendant feedback to revisit an immutable ancestor and
   admit more candidates without mutating or merging VM state.
-- **[CAM-6]** Make a campaign fully pausable, resumable, forkable, inspectable,
-  replicable, and garbage-collectable from its content-addressed snapshot.
+- **[CAM-6]** Make a campaign fully pausable, resumable, branchable, derivable,
+  inspectable, replicable, and garbage-collectable from its content-addressed
+  snapshot.
 - **[CAM-7]** Make the common on-host branch path share paused QEMU memory pages,
   immutable disk state, log prefixes, and host continuation state copy-on-write.
 - **[CAM-8]** Preserve a portable durable exact closure for hibernation,
@@ -176,6 +203,9 @@ effects into arbitrary callbacks.
   destructive recovery drills, and long-running realistic dogfood campaigns in
   addition to automated conformance before campaigns or hot fork become
   defaults.
+- **[CAM-14]** Treat explicit operator branching and adaptive expansion as
+  candidate sources attached to the same branch point, while keeping campaign
+  derivation and QEMU hot forking as distinct operations.
 
 ## Non-goals
 
@@ -207,7 +237,8 @@ effects into arbitrary callbacks.
 2. **One mutable campaign ref.** A user-visible campaign name points to one
    immutable snapshot. All durable objects below it are content-addressed.
 3. **Typed choices.** Every selected value validates against a versioned,
-   hashed domain. Replay rejects a changed domain or choice-point identity.
+   hashed domain. Replay rejects a changed domain or choice-opportunity
+   identity.
 4. **Recorded adaptation.** Every proposal names the policy and observation
    snapshot that caused it. Adaptive decisions are explainable after the fact.
 5. **Lazy admission.** Possibility does not imply materialization. Only admitted
@@ -239,14 +270,15 @@ effects into arbitrary callbacks.
 1. [`00-goals-and-invariants.md`](00-goals-and-invariants.md) fixes vocabulary,
    scope, and the determinism boundary.
 2. [`01-campaign-data-model.md`](01-campaign-data-model.md) defines campaign
-   lineages, policies, snapshots, facts, graph objects, projections, and
-   lifecycle.
+   lineages, policies, snapshots, branch points, requests, facts, graph
+   objects, projections, and lifecycle.
 3. [`02-selectables-and-choice-protocol.md`](02-selectables-and-choice-protocol.md)
    defines typed integral and discrete selectables shared by guest and
    environment producers.
 4. [`03-exploration-and-guidance.md`](03-exploration-and-guidance.md) defines
-   probabilistic exploration, progressive widening, MCTS/PUCT, beam and Pareto
-   selection, guidance, and statistical validity.
+   finite and generated candidate sources, explicit branches, probabilistic
+   exploration, progressive widening, MCTS/PUCT, beam and Pareto selection,
+   guidance, and statistical validity.
 5. [`04-lazy-frontier-and-daemon.md`](04-lazy-frontier-and-daemon.md) defines
    persistent iterators, attempt scheduling, feedback, daemon ownership,
    backpressure, and future worker contracts.
