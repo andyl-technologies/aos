@@ -78,14 +78,16 @@
           pname = "${packageName}-generated-config-source";
           version = args.version or "0";
           src = null;
-          phases = [{
-            name = "install";
-            script = ''
-              mkdir -p "$out"
-              cp ${./build-support/_generated-expose-config-module.nix} "$out/module.nix"
-              cp ${generatedExposeConfigFile} "$out/expose-config.json"
-            '';
-          }];
+          phases = [
+            {
+              name = "install";
+              script = ''
+                mkdir -p "$out"
+                cp ${./build-support/_generated-expose-config-module.nix} "$out/module.nix"
+                cp ${generatedExposeConfigFile} "$out/expose-config.json"
+              '';
+            }
+          ];
           preferLocalBuild = true;
           allowSubstitutes = false;
         }
@@ -118,15 +120,17 @@
           pname = "${packageName}-composed-config-source";
           version = args.version or "0";
           src = null;
-          phases = [{
-            name = "install";
-            script = ''
-              mkdir -p "$out/authored" "$out/generated"
-              cp -R ${preparedAuthoredConfigModule.src}/. "$out/authored/"
-              cp -R ${generatedConfigSource}/. "$out/generated/"
-              cp ${composedModuleFile} "$out/module.nix"
-            '';
-          }];
+          phases = [
+            {
+              name = "install";
+              script = ''
+                mkdir -p "$out/authored" "$out/generated"
+                cp -R ${preparedAuthoredConfigModule.src}/. "$out/authored/"
+                cp -R ${generatedConfigSource}/. "$out/generated/"
+                cp ${composedModuleFile} "$out/module.nix"
+              '';
+            }
+          ];
           preferLocalBuild = true;
           allowSubstitutes = false;
         }
@@ -137,7 +141,10 @@
       else if hasGeneratedExposeConfig
       then {
         src = generatedConfigSource;
-        moduleAbiCompat = {min = 1; max = 1;};
+        moduleAbiCompat = {
+          min = 1;
+          max = 1;
+        };
         declares = generatedExposeDeclares;
       }
       else null;
@@ -146,9 +153,10 @@
       if authoredConfigModule != null && hasGeneratedExposeConfig
       then {
         src = composedConfigSource;
-        metaJson = builtins.toJSON (authoredConfigMeta // {
-          declares = lib.unique (authoredConfigMeta.declares ++ generatedExposeDeclares);
-        });
+        metaJson = builtins.toJSON (authoredConfigMeta
+          // {
+            declares = lib.unique (authoredConfigMeta.declares ++ generatedExposeDeclares);
+          });
         dependencyOutputs = preparedAuthoredConfigModule.dependencyOutputs;
       }
       else if hasGeneratedExposeConfig
@@ -156,7 +164,10 @@
         src = generatedConfigSource;
         metaJson = builtins.toJSON {
           schema = "aos.config-module-meta/v1";
-          module_abi_compat = {min = 1; max = 1;};
+          module_abi_compat = {
+            min = 1;
+            max = 1;
+          };
           declares = effectiveConfigModule.declares;
           owns_roots = [];
           contributes = [];

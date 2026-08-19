@@ -156,8 +156,8 @@ mod tests {
         // Cold projection reads as None.
         assert_eq!(read(&kv).await.unwrap(), None);
         // Create a public registry, rebuild, and read it back.
-        let org = db.create_org("andyl", "Andyl").await.unwrap();
-        db.create_managed_registry(org, "", "main", "public", &[], false)
+        let org_id = db.create_org("andyl", "Andyl").await.unwrap();
+        db.create_managed_registry(org_id, "", "main", "public", &[], false)
             .await
             .unwrap();
         let built = rebuild(&db, &kv).await.unwrap();

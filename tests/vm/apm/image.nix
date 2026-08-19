@@ -116,7 +116,11 @@
               '{schemaVersion: 1, name: "server", version: "2026.03",
                 architecture: "x86_64", platform: "x86_64-linux",
                 format: $format, filename: $filename, objectKey: $objectKey,
-                mediaType: $mediaType, compression: "${if format == "raw" then "zstd" else "none"}", byteSize: $byteSize,
+                mediaType: $mediaType, compression: "${
+              if format == "raw"
+              then "zstd"
+              else "none"
+            }", byteSize: $byteSize,
                 virtualSizeBytes: ${builtins.toString sizeKiB} * 1024,
                 sha256: $sha256, logicalDiskSha256: $logicalDiskSha256,
                 rootfsSha256: $rootfsSha256, compatibleTargets: $targets,

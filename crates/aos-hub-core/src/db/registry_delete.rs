@@ -7,9 +7,9 @@
 //! in one checked transaction. Active publication work and cache-retention
 //! roots fail closed before that transaction begins.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 
-use super::{Database, NewTopologyEvent, sanitize_log_text, unix_now};
+use super::{sanitize_log_text, unix_now, Database, NewTopologyEvent};
 use crate::backend::{CheckedStatement, Statement};
 
 impl Database {

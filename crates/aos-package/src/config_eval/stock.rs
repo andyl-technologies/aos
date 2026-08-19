@@ -281,7 +281,7 @@ fn command_from_path(name: &str) -> Result<Command> {
 /// passes.
 ///
 /// The executable is resolved before the environment is cleared. Callers add
-/// only explicit `-I` inputs and the expression/attribute they need.
+/// only exact authenticated inputs and the expression/attribute they need.
 pub(super) fn pure_eval_command() -> Result<Command> {
     let mut command = command_from_path("nix-instantiate")?;
     configure_pure_eval_command(&mut command);
@@ -448,7 +448,13 @@ fn sha256_sri(hash: &str) -> Result<String> {
 
 /// Renders a Rust string as a quoted Nix string literal.
 fn nix_string(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    format!(
+        "\"{}\"",
+        value
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace("${", "\\${")
+    )
 }
 
 /// Render a path as a bare Nix path literal when it is an absolute store-style
@@ -462,7 +468,7 @@ fn nix_path_str(path: &str) -> String {
     if path.starts_with('/') && path.bytes().all(is_nix_path_byte) {
         path.to_string()
     } else {
-        format!("\"{}\"", path.replace('\\', "\\\\").replace('"', "\\\""))
+        nix_string(path)
     }
 }
 
@@ -1187,6 +1193,10 @@ mod tests {
         assert!(
             args.windows(3)
                 .any(|args| { args == ["--option", "allow-import-from-derivation", "false"] })
+        );
+        assert!(
+            args.windows(3)
+                .any(|args| { args == ["--option", "allowed-uris", "path:/nix/store/"] })
         );
         assert!(
             command

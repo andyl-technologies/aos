@@ -135,6 +135,17 @@ in {
       '';
     };
 
+    espExtraFreeMiB = lib.mkOption {
+      type = lib.types.int;
+      default = 0;
+      internal = true;
+      description = ''
+        Additional free space reserved on the ESP for tests that exercise
+        temporary boot artifacts outside the production publication
+        transaction.
+      '';
+    };
+
     hostConfigClosures = lib.mkOption {
       type = lib.types.listOf lib.types.package;
       default = [];
@@ -186,6 +197,24 @@ in {
     '';
   };
 
+  options.system.build.recoveryUkiA = lib.mkOption {
+    type = lib.types.nullOr lib.types.package;
+    default = null;
+    description = "Signed, uncounted recovery UKI paired with immutable slot A.";
+  };
+
+  options.system.build.recoveryUkiB = lib.mkOption {
+    type = lib.types.nullOr lib.types.package;
+    default = null;
+    description = "Signed, uncounted recovery UKI paired with immutable slot B.";
+  };
+
+  options.system.build.recoveryBundle = lib.mkOption {
+    type = lib.types.nullOr lib.types.package;
+    default = null;
+    description = "Authenticated fixed-layout payload for removable recovery media.";
+  };
+
   config = lib.mkIf cfg.enable {
     assertions = [
       {
@@ -195,6 +224,10 @@ in {
       {
         assertion = logicalDiskContractMiB <= maxLogicalDiskMiB;
         message = "aos.image storage budgets produce a logical disk larger than the 8192 MiB publication safety limit";
+      }
+      {
+        assertion = cfg.espExtraFreeMiB >= 0;
+        message = "aos.image.espExtraFreeMiB must not be negative";
       }
     ];
     system.build.image = {
@@ -220,5 +253,10 @@ in {
     };
     system.build.checks.image-budget = imageBudgetCheck;
     system.build.uki = rawImage.uki;
+    system.build.recoveryInitrd = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryInitrdA;
+    system.build.recoverySlotManifest = lib.mkIf config.aos.boot.recovery.enable rawImage.recoverySlotManifest;
+    system.build.recoveryUkiA = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryUkiA;
+    system.build.recoveryUkiB = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryUkiB;
+    system.build.recoveryBundle = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryBundle;
   };
 }

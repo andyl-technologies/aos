@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "aos",
     "aos-core",
+    "aos-boot-identity",
+    "aos-recovery",
     "aos-net",
     "aos-proto",
     "aos-proto-types",
@@ -190,6 +192,7 @@ rcgen = "0.14"
 # Internal crates
 crucible-cas = { path = "crucible-cas" }
 aos-core = { path = "aos-core" }
+aos-boot-identity = { path = "aos-boot-identity" }
 aos-net = { path = "aos-net" }
 aos-proto = { path = "aos-proto" }
 aos-proto-types = { path = "aos-proto-types" }
@@ -219,3 +222,4 @@ unwrap_used = "deny"
 # and backtraces while omitting linked DWARF from the executable under test.
 [profile.test]
 debug = 0
+opt-level = "s"

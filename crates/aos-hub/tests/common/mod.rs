@@ -11,7 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use aos_hub::surface::object::{
-    ObjectKind, Oid, TreeEntry, encode_loose, encode_tree, hash_object,
+    encode_loose, encode_tree, hash_object, ObjectKind, Oid, TreeEntry,
 };
 use aos_hub::surface::sshsig;
 use aos_hub::surface::tag::render_tag_payload;
@@ -803,9 +803,9 @@ pub fn standard_registry_with_commit_message(
 #[allow(dead_code)]
 pub fn system_image_registry(root: &Path) -> SystemImageFixture {
     use aos_registry_surface::manifest::{
-        ImageCompression, ImageDelivery, ImageEntry, ImageInfoReference, ImageTarget,
-        ImageUkiIdentity, ImageVerificationState, immutable_image_info_object_key,
-        immutable_image_object_key,
+        immutable_image_info_object_key, immutable_image_object_key, ImageCompression,
+        ImageDelivery, ImageEntry, ImageInfoReference, ImageTarget, ImageUkiIdentity,
+        ImageVerificationState,
     };
     use sha2::Digest as _;
 
@@ -885,6 +885,8 @@ pub fn system_image_registry(root: &Path) -> SystemImageFixture {
             sbat: Vec::new(),
             expected_pcr11: None,
             ukis: Vec::new(),
+            recovery_ukis: Vec::new(),
+            recovery_bundle: None,
             root_image: None,
             root_verity: None,
             root_hash: None,

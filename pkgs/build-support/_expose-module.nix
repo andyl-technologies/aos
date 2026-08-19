@@ -25,8 +25,7 @@
       merge = loc: defs:
         if builtins.all (definition: type.check definition.value) defs
         then type.merge loc defs
-        else
-          throw "The option '${builtins.concatStringsSep "." loc}' must be ${type.description}.";
+        else throw "The option '${builtins.concatStringsSep "." loc}' must be ${type.description}.";
     };
   string = checked types.str;
   boolean = checked types.bool;
@@ -42,8 +41,14 @@
   portList = listOf integer;
 
   firewallType = submodule (strict {
-    allowedTCP = mkOption {type = portList; default = [];};
-    allowedUDP = mkOption {type = portList; default = [];};
+    allowedTCP = mkOption {
+      type = portList;
+      default = [];
+    };
+    allowedUDP = mkOption {
+      type = portList;
+      default = [];
+    };
     forwardPolicy = mkOption {
       type = enum ["drop" "accept"];
       default = "drop";
@@ -51,7 +56,10 @@
   });
 
   kernelType = submodule (strict {
-    modules = mkOption {type = stringList; default = [];};
+    modules = mkOption {
+      type = stringList;
+      default = [];
+    };
     sysctl = mkOption {
       type = attrsOf (oneOf string integer);
       default = {};
@@ -65,9 +73,18 @@
       type = enum ["env" "json" "toml"];
       default = "env";
     };
-    required = mkOption {type = stringList; default = [];};
-    optional = mkOption {type = stringList; default = [];};
-    units = mkOption {type = stringList; default = [];};
+    required = mkOption {
+      type = stringList;
+      default = [];
+    };
+    optional = mkOption {
+      type = stringList;
+      default = [];
+    };
+    units = mkOption {
+      type = stringList;
+      default = [];
+    };
     reload = mkOption {
       type = enum ["restart" "reload" "none"];
       default = "restart";
@@ -79,16 +96,37 @@
   # remain the authority for its provenance.
   credentialType = submodule (strict {
     name = mkOption {type = string;};
-    source = mkOption {type = nullable string; default = null;};
-    ciphertext = mkOption {type = nullable string; default = null;};
-    units = mkOption {type = stringList; default = [];};
-    encrypted = mkOption {type = boolean; default = false;};
-    encryptedFile = mkOption {type = nullable (oneOf (checked types.path) string); default = null;};
+    source = mkOption {
+      type = nullable string;
+      default = null;
+    };
+    ciphertext = mkOption {
+      type = nullable string;
+      default = null;
+    };
+    units = mkOption {
+      type = stringList;
+      default = [];
+    };
+    encrypted = mkOption {
+      type = boolean;
+      default = false;
+    };
+    encryptedFile = mkOption {
+      type = nullable (oneOf (checked types.path) string);
+      default = null;
+    };
   });
 
   configType = submodule (strict {
-    artifacts = mkOption {type = listOf artifactType; default = [];};
-    credentials = mkOption {type = listOf credentialType; default = [];};
+    artifacts = mkOption {
+      type = listOf artifactType;
+      default = [];
+    };
+    credentials = mkOption {
+      type = listOf credentialType;
+      default = [];
+    };
   });
 
   hostPathType = submodule (strict {
@@ -97,39 +135,96 @@
   });
 
   permissionsType = submodule (strict {
-    capabilities = mkOption {type = stringList; default = [];};
+    capabilities = mkOption {
+      type = stringList;
+      default = [];
+    };
     network = mkOption {
       type = nullable (enum ["private" "private-outbound" "host"]);
       default = null;
     };
-    "tcp-bind" = mkOption {type = portList; default = [];};
-    "tcp-connect" = mkOption {type = portList; default = [];};
-    devices = mkOption {type = stringList; default = [];};
-    "host-paths" = mkOption {type = listOf hostPathType; default = [];};
-    "cgroup-delegate" = mkOption {type = boolean; default = false;};
-    "privileged-users" = mkOption {type = boolean; default = false;};
-    "kernel-modules" = mkOption {type = stringList; default = [];};
+    "tcp-bind" = mkOption {
+      type = portList;
+      default = [];
+    };
+    "tcp-connect" = mkOption {
+      type = portList;
+      default = [];
+    };
+    devices = mkOption {
+      type = stringList;
+      default = [];
+    };
+    "host-paths" = mkOption {
+      type = listOf hostPathType;
+      default = [];
+    };
+    "cgroup-delegate" = mkOption {
+      type = boolean;
+      default = false;
+    };
+    "privileged-users" = mkOption {
+      type = boolean;
+      default = false;
+    };
+    "kernel-modules" = mkOption {
+      type = stringList;
+      default = [];
+    };
     syscalls = mkOption {
       type = nullable (enum ["restricted" "system-service" "privileged"]);
       default = null;
     };
-    "security-label" = mkOption {type = nullable string; default = null;};
+    "security-label" = mkOption {
+      type = nullable string;
+      default = null;
+    };
   });
 
   exposeOptions = {
-    target = mkOption {type = nullable string; default = null;};
+    target = mkOption {
+      type = nullable string;
+      default = null;
+    };
     # The unit's suffix selects the concrete systemd submodule.  The legacy
     # renderer evaluates those concrete typed submodules after synthesizing
     # its security and side-effect fields.
-    units = mkOption {type = attrsOf attrs; default = {};};
-    kernel = mkOption {type = kernelType; default = {};};
-    firewall = mkOption {type = firewallType; default = {};};
-    images = mkOption {type = listOf attrs; default = [];};
-    permissions = mkOption {type = permissionsType; default = {};};
-    config = mkOption {type = configType; default = {};};
-    provides = mkOption {type = listOf attrs; default = [];};
-    uses = mkOption {type = listOf attrs; default = [];};
-    prepareHostPathDirectories = mkOption {type = stringList; default = [];};
+    units = mkOption {
+      type = attrsOf attrs;
+      default = {};
+    };
+    kernel = mkOption {
+      type = kernelType;
+      default = {};
+    };
+    firewall = mkOption {
+      type = firewallType;
+      default = {};
+    };
+    images = mkOption {
+      type = listOf attrs;
+      default = [];
+    };
+    permissions = mkOption {
+      type = permissionsType;
+      default = {};
+    };
+    config = mkOption {
+      type = configType;
+      default = {};
+    };
+    provides = mkOption {
+      type = listOf attrs;
+      default = [];
+    };
+    uses = mkOption {
+      type = listOf attrs;
+      default = [];
+    };
+    prepareHostPathDirectories = mkOption {
+      type = stringList;
+      default = [];
+    };
   };
 in {
   inherit exposeOptions;
@@ -150,5 +245,7 @@ in {
         }
       ];
       inherit lib;
-    }).config.packageExpose;
+    })
+    .config
+    .packageExpose;
 }

@@ -133,8 +133,21 @@ nix build .#packages.x86_64-linux.acme-server-image-qcow2
 The raw output contains `aos-<system>.img.zst` and `image-info.json`. The outer
 zstd stream keeps fixed partition headroom and the empty inactive slot out of
 the transfer while the metadata separately binds both the compressed object
-and reconstructed GPT disk. Converted outputs contain the corresponding disk
-file. Preserve the image metadata with every distributed format.
+and reconstructed GPT disk. Secure Boot plus dm-verity systems also expose
+`system.build.recoveryUkiA`,
+`system.build.recoveryUkiB`, and `system.build.recoveryBundle`. The bundle has a
+fixed `aos/recovery/` layout containing the ten cataloged payload components,
+the db-signed manifest, and its detached signature. Preserve it with the
+release if removable-media recovery is supported. Converted outputs contain
+the corresponding disk file. Preserve the image metadata with every
+distributed format.
+
+The raw-image builder calculates ESP capacity from the installed normal and
+recovery set plus one complete inactive-slot transaction. Inspect
+`espBudget.installedBytes`, `espBudget.transactionBytes`,
+`espBudget.requiredBytes`, and `espBudget.partitionBytes` in `image-info.json`
+when changing UKI contents or recovery tooling; a build fails instead of
+silently producing an ESP that cannot stage the transaction.
 
 ## Validate the release artifact
 

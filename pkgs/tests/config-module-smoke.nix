@@ -1,5 +1,8 @@
 ##! Package config-output smoke fixture.
-{mkDerivation, bash}:
+{
+  mkDerivation,
+  bash,
+}:
 mkDerivation {
   pname = "config-module-smoke";
   version = "0";

@@ -36869,6 +36869,8 @@ mod cache_upload_tests {
             sbat: Vec::new(),
             expected_pcr11: None,
             ukis: Vec::new(),
+            recovery_ukis: Vec::new(),
+            recovery_bundle: None,
             root_image: None,
             root_verity: None,
             root_hash: None,

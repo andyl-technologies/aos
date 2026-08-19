@@ -1024,10 +1024,7 @@ pub async fn provision(
         // A prior AOS rule may itself be the drifted entry. A fresh identity
         // repairs that state without colliding with or first removing any
         // existing rule, preserving cleanup protection at every crash point.
-        let lifecycle_rule = format!(
-            "aos-abandoned-multipart-{}",
-            uuid::Uuid::new_v4().simple()
-        );
+        let lifecycle_rule = format!("aos-abandoned-multipart-{}", uuid::Uuid::new_v4().simple());
         run_wrangler(
             assets,
             &r2_multipart_lifecycle_add_args(bucket, &lifecycle_rule),

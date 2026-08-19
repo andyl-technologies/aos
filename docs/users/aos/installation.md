@@ -44,7 +44,9 @@ AOS_TOKEN=REPLACE_WITH_TOKEN aos image list \
 Use `aos --json image list` or `aos --json image show` for automation. The
 record includes the immutable download URL, format, target compatibility,
 media type, compression, exact size, SHA-256, release-signature and boot
-verification states, and the associated integrity-bound `image-info.json`.
+verification states, the associated integrity-bound `image-info.json`, and,
+for Secure Boot plus dm-verity images, paired recovery UKI and authenticated
+recovery-bundle metadata.
 
 ## Choose an image format
 
@@ -314,6 +316,10 @@ If first boot stops before the target, inspect the units and state in
 - The stock disk carries `root-a` and `root-b`; durable image updates stage the
   inactive slot and its UKI, then rely on sd-boot boot counting to accept or
   fall back from the candidate.
+- Secure Boot plus dm-verity images also carry signed, uncounted recovery A and
+  B entries. The image build exposes the matching fixed-layout removable-media
+  payload as `system.build.recoveryBundle`; retain it with the deployed release
+  if offline inactive-slot restoration is part of the recovery plan.
 - General `host.nix` settings are activated as numbered configuration
   generations after the first-boot storage phase. Keep an image-baked or
   out-of-band recovery path when moving network and access policy to runtime.

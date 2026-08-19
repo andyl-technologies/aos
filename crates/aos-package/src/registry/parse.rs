@@ -258,6 +258,8 @@ fn package_metas_for_platform(
                     sbat: img.sbat.clone(),
                     expected_pcr11: img.expected_pcr11.clone(),
                     ukis: img.ukis.clone(),
+                    recovery_ukis: img.recovery_ukis.clone(),
+                    recovery_bundle: img.recovery_bundle.clone(),
                     root_image: img.root_image.clone(),
                     root_verity: img.root_verity.clone(),
                     root_hash: img.root_hash.clone(),

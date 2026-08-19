@@ -23,10 +23,12 @@
       pathString = toString path;
       base = baseNameOf path;
     in
-      base != "target"
+      base
+      != "target"
       && base != ".git"
       && (
-        pathString == repoRootString
+        pathString
+        == repoRootString
         || lib.hasPrefix "${repoRootString}/crates" pathString
         || pathString == "${repoRootString}/docs"
         || pathString == "${repoRootString}/docs/rfcs"

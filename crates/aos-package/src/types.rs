@@ -75,6 +75,9 @@ pub const FEATURE_CONFIG_MODULE_V1: &str = "config-module-v1";
 /// Registry feature flag for slot-specific A/B UKI measurement metadata.
 pub const FEATURE_UKI_SLOTS_V1: &str = "uki-slots-v1";
 
+/// Registry feature flag for signed, slot-paired recovery UKI metadata.
+pub const FEATURE_RECOVERY_UKIS_V1: &str = "recovery-ukis-v1";
+
 const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_EXPOSE_V1,
     FEATURE_EXPOSE_ARTIFACT_V1,
@@ -90,6 +93,7 @@ const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_ATTESTATION_V1,
     FEATURE_CONFIG_MODULE_V1,
     FEATURE_UKI_SLOTS_V1,
+    FEATURE_RECOVERY_UKIS_V1,
 ];
 
 const LANDLOCK_WRITABLE_TEMP_PREFIXES: &[&str] = &["/tmp", "/var/tmp"];
@@ -699,6 +703,13 @@ pub fn validate_supported_package_meta_with(
     }
     if meta.images.iter().any(|image| !image.ukis.is_empty()) {
         require_feature(meta, FEATURE_UKI_SLOTS_V1)?;
+    }
+    if meta
+        .images
+        .iter()
+        .any(|image| !image.recovery_ukis.is_empty())
+    {
+        require_feature(meta, FEATURE_RECOVERY_UKIS_V1)?;
     }
     for image in &meta.images {
         validate_image_entry(image)
@@ -1792,7 +1803,151 @@ fn validate_image_entry(image: &SysrootImageEntry) -> Result<()> {
     }
     validate_image_verity_entry(image)?;
     validate_image_uki_entries(image)?;
+    validate_recovery_uki_entries(image)?;
+    validate_recovery_bundle(image)?;
     Ok(())
+}
+
+fn validate_recovery_bundle(image: &SysrootImageEntry) -> Result<()> {
+    let Some(bundle) = &image.recovery_bundle else {
+        if !image.recovery_ukis.is_empty() {
+            bail!(
+                "image '{}' recovery UKIs require a bundle manifest",
+                image.store_path
+            );
+        }
+        return Ok(());
+    };
+    if image.recovery_ukis.len() != 2
+        || bundle.schema != "aos.recovery-bundle/v1"
+        || bundle.release != image.delivery.release
+        || bundle.architecture != image.delivery.architecture
+        || bundle.platform != image.delivery.platform
+        || bundle.module_abi == 0
+        || bundle.recovery_abi == 0
+        || image
+            .recovery_ukis
+            .iter()
+            .any(|entry| entry.recovery_abi != bundle.recovery_abi)
+    {
+        bail!(
+            "image '{}' has an inconsistent recovery bundle identity",
+            image.store_path
+        );
+    }
+    let expected = [
+        (RecoveryBundleComponentId::RootImage, "root.img"),
+        (RecoveryBundleComponentId::RootVerity, "root.verity"),
+        (RecoveryBundleComponentId::RootHash, "root.roothash"),
+        (RecoveryBundleComponentId::NormalUkiA, "uki-a.efi"),
+        (RecoveryBundleComponentId::NormalUkiB, "uki-b.efi"),
+        (RecoveryBundleComponentId::RecoveryUkiA, "recovery-a.efi"),
+        (RecoveryBundleComponentId::RecoveryUkiB, "recovery-b.efi"),
+        (RecoveryBundleComponentId::RecoveryEntryA, "recovery-a.conf"),
+        (RecoveryBundleComponentId::RecoveryEntryB, "recovery-b.conf"),
+        (RecoveryBundleComponentId::ImageMetadata, "image-info.json"),
+    ];
+    if bundle.components.len() != expected.len() {
+        bail!(
+            "image '{}' recovery bundle has an incomplete component set",
+            image.store_path
+        );
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    for component in &bundle.components {
+        if !ids.insert(component.id)
+            || component.byte_size == 0
+            || !is_lower_sha256(&component.sha256)
+        {
+            bail!(
+                "image '{}' has malformed recovery bundle components",
+                image.store_path
+            );
+        }
+        let expected_path = expected
+            .iter()
+            .find_map(|(id, path)| (*id == component.id).then_some(*path))
+            .context("recovery bundle contains an unknown component identifier")?;
+        if component.path != expected_path {
+            bail!(
+                "image '{}' recovery bundle uses a noncanonical component path",
+                image.store_path
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_recovery_uki_entries(image: &SysrootImageEntry) -> Result<()> {
+    if image.recovery_ukis.is_empty() {
+        return Ok(());
+    }
+    if image.ukis.len() != 2 || image.root_verity.is_none() || image.root_hash.is_none() {
+        bail!(
+            "image '{}' recovery UKIs require a complete A/B verity image",
+            image.store_path
+        );
+    }
+    let mut copies = std::collections::BTreeSet::new();
+    let mut abi = None;
+    let mut release = None;
+    for recovery in &image.recovery_ukis {
+        if !copies.insert(recovery.copy) {
+            bail!(
+                "image '{}' repeats recovery copy {:?}",
+                image.store_path,
+                recovery.copy
+            );
+        }
+        let (uki_path, entry_path) = match recovery.copy {
+            UkiSlot::A => ("recovery-a.efi", "recovery-a.conf"),
+            UkiSlot::B => ("recovery-b.efi", "recovery-b.conf"),
+        };
+        if recovery.path != uki_path || recovery.entry_path != entry_path {
+            bail!(
+                "image '{}' has noncanonical recovery paths",
+                image.store_path
+            );
+        }
+        if recovery.byte_size == 0
+            || recovery.recovery_abi == 0
+            || recovery.release.is_empty()
+            || recovery.sbat.is_empty()
+            || !is_lower_sha256(&recovery.sha256)
+            || !is_lower_sha256(&recovery.sb_signer_cert_sha256)
+        {
+            bail!(
+                "image '{}' has malformed recovery metadata",
+                image.store_path
+            );
+        }
+        if abi
+            .replace(recovery.recovery_abi)
+            .is_some_and(|old| old != recovery.recovery_abi)
+            || release
+                .replace(recovery.release.as_str())
+                .is_some_and(|old| old != recovery.release)
+        {
+            bail!(
+                "image '{}' mixes recovery release identities",
+                image.store_path
+            );
+        }
+    }
+    if copies.len() != 2 || !copies.contains(&UkiSlot::A) || !copies.contains(&UkiSlot::B) {
+        bail!(
+            "image '{}' recovery metadata must contain exactly copies a and b",
+            image.store_path
+        );
+    }
+    Ok(())
+}
+
+fn is_lower_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn validate_image_uki_entries(image: &SysrootImageEntry) -> Result<()> {
@@ -2845,7 +3000,9 @@ pub use aos_registry_surface::manifest::{
 // `aos_package::types::SysrootImageEntry` is unchanged.
 pub use aos_registry_surface::manifest::{
     ImageCompression, ImageDelivery, ImageInfoReference, ImageTarget, ImageUkiIdentity,
-    ImageVerificationState, SbatEntry, SysrootImageEntry, SysrootUkiEntry, UkiSlot,
+    ImageVerificationState, RecoveryBundleComponent, RecoveryBundleComponentId,
+    RecoveryBundleManifest, RecoveryUkiEntry, SbatEntry, SysrootImageEntry, SysrootUkiEntry,
+    UkiSlot,
 };
 
 #[cfg(test)]
@@ -2974,6 +3131,38 @@ pub enum ImageSlot {
     B,
 }
 
+/// Persisted evidence for one signed, uncounted recovery copy on the ESP.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryGeneration {
+    /// A/B slot whose update transaction owns this recovery copy.
+    pub copy: ImageSlot,
+    /// Fixed ESP-relative recovery UKI path.
+    pub uki_path: String,
+    /// Fixed ESP-relative Type-1 loader-entry path.
+    pub entry_path: String,
+    /// Relative source-artifact path authenticated by the release catalog.
+    pub source_path: String,
+    /// Lowercase hexadecimal SHA-256 of the installed recovery UKI.
+    pub sha256: String,
+    /// Exact installed recovery UKI size in bytes.
+    pub byte_size: u64,
+    /// Signed release identity carried by the recovery UKI.
+    pub release: String,
+    /// Recovery interface and artifact compatibility ABI.
+    pub recovery_abi: u32,
+}
+
+/// Durable evidence that an inactive recovery-copy publication is unfinished.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryPublication {
+    /// Inactive slot being replaced by the image transaction.
+    pub target: ImageSlot,
+    /// Fully authenticated recovery artifact intended for that slot.
+    pub artifact: RecoveryGeneration,
+}
+
 /// One measured, signed image-generation: kernel + initrd + base lib +
 /// evaluator + render-core, delivered as an A/B UKI and tracked in the TPM
 /// PCR-11 policy recorded for an image generation.
@@ -3035,6 +3224,9 @@ pub struct ImageGeneration {
     /// in [`Self::expected_pcr11`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initrd_pcr11: Option<String>,
+    /// Signed recovery copy atomically published with this normal generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<RecoveryGeneration>,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
 }
@@ -3066,6 +3258,12 @@ pub struct ImageGenerationState {
     /// cleared on its first successful boot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<u32>,
+    /// Slot whose paired recovery copy was last accepted by normal boot commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_known_good: Option<ImageSlot>,
+    /// Recoverable evidence for an incomplete inactive recovery publication.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_pending: Option<RecoveryPublication>,
     /// All recorded image-generations, in creation order.
     #[serde(default)]
     pub generations: Vec<ImageGeneration>,
@@ -3967,6 +4165,8 @@ last_update = "2026-02-13T10:30:00Z"
                     sbat: Vec::new(),
                     expected_pcr11: None,
                     ukis: Vec::new(),
+                    recovery_ukis: Vec::new(),
+                    recovery_bundle: None,
                     root_image: None,
                     root_verity: None,
                     root_hash: None,
@@ -4902,6 +5102,8 @@ last_update = "2026-02-13T10:30:00Z"
             sbat: Vec::new(),
             expected_pcr11: None,
             ukis: Vec::new(),
+            recovery_ukis: Vec::new(),
+            recovery_bundle: None,
             root_image: Some("root.img".into()),
             root_verity: Some("root.verity".into()),
             root_hash: Some(
@@ -5659,6 +5861,8 @@ provenance = "provenance/firewall.jsonl"
             running: 1,
             default: 1,
             pending: Some(2),
+            recovery_known_good: None,
+            recovery_pending: None,
             generations: vec![
                 ImageGeneration {
                     number: 1,
@@ -5676,6 +5880,7 @@ provenance = "provenance/firewall.jsonl"
                     root_verity_roothash: Some("deadbeef".into()),
                     expected_pcr11: None,
                     initrd_pcr11: None,
+                    recovery: None,
                     created_at: "2026-06-01T00:00:00Z".into(),
                 },
                 ImageGeneration {
@@ -5694,6 +5899,7 @@ provenance = "provenance/firewall.jsonl"
                     root_verity_roothash: None,
                     expected_pcr11: None,
                     initrd_pcr11: None,
+                    recovery: None,
                     created_at: "2026-06-02T00:00:00Z".into(),
                 },
             ],

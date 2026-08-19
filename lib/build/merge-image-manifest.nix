@@ -31,7 +31,8 @@
     baselineHas = builtins.hasAttr name baselineValues;
     candidateHas = builtins.hasAttr name candidateValues;
   in
-    baselineHas != candidateHas
+    baselineHas
+    != candidateHas
     || (candidateHas && candidateValues.${name} != baselineValues.${name});
 
   jobScriptChangedForUnit = unit: let
@@ -58,12 +59,27 @@
         if changed name
         then
           if builtins.hasAttr name candidateValues
-          then [{inherit name; value = candidateValues.${name};}]
+          then [
+            {
+              inherit name;
+              value = candidateValues.${name};
+            }
+          ]
           else []
         else if builtins.hasAttr name imageValues
-        then [{inherit name; value = imageValues.${name};}]
+        then [
+          {
+            inherit name;
+            value = imageValues.${name};
+          }
+        ]
         else if builtins.hasAttr name candidateValues
-        then [{inherit name; value = candidateValues.${name};}]
+        then [
+          {
+            inherit name;
+            value = candidateValues.${name};
+          }
+        ]
         else [])
       (builtins.attrNames (imageValues // baselineValues // candidateValues)));
   mergeImageDefaults = imageValues: baselineValues: candidateValues:
@@ -105,7 +121,8 @@
       pathIsAncestor removedPath mergedPath
       || pathIsAncestor mergedPath removedPath)
     (builtins.attrNames mergedEtc);
-  removedEtc = builtins.filter
+  removedEtc =
+    builtins.filter
     (name:
       !(builtins.hasAttr name mergedEtc)
       && !structurallyMasked name)
@@ -120,39 +137,46 @@ in
     users = builtins.attrValues mergedUsers;
     presets = builtins.attrValues mergedPresets;
     storePaths = builtins.attrNames mergedStorePaths;
-    ownership = candidate.ownership // {
-      etc = mergeOwnersBy
-        etcChangedFromBaseline
-        mergedEtc
-        imageManifest.etc
-        imageManifest.ownership.etc
-        candidate.ownership.etc;
-      units = mergeOwnersBy
-        unitChangedFromBaseline
-        mergedUnits
-        imageManifest.units
-        imageManifest.ownership.units
-        candidate.ownership.units;
-      jobScripts = mergeOwners
-        imageManifest.jobScripts
-        baseline.jobScripts
-        candidate.jobScripts
-        imageManifest.ownership.jobScripts
-        candidate.ownership.jobScripts;
-      users = mergeOwners
-        imageUsers
-        baselineUsers
-        candidateUsers
-        imageManifest.ownership.users
-        candidate.ownership.users;
-      presets = mergeOwners
-        imagePresets
-        baselinePresets
-        candidatePresets
-        imageManifest.ownership.presets
-        candidate.ownership.presets;
-      # An immutable image path remains image-owned when host configuration
-      # also references it.
-      storePaths = candidate.ownership.storePaths // imageManifest.ownership.storePaths;
-    };
+    ownership =
+      candidate.ownership
+      // {
+        etc =
+          mergeOwnersBy
+          etcChangedFromBaseline
+          mergedEtc
+          imageManifest.etc
+          imageManifest.ownership.etc
+          candidate.ownership.etc;
+        units =
+          mergeOwnersBy
+          unitChangedFromBaseline
+          mergedUnits
+          imageManifest.units
+          imageManifest.ownership.units
+          candidate.ownership.units;
+        jobScripts =
+          mergeOwners
+          imageManifest.jobScripts
+          baseline.jobScripts
+          candidate.jobScripts
+          imageManifest.ownership.jobScripts
+          candidate.ownership.jobScripts;
+        users =
+          mergeOwners
+          imageUsers
+          baselineUsers
+          candidateUsers
+          imageManifest.ownership.users
+          candidate.ownership.users;
+        presets =
+          mergeOwners
+          imagePresets
+          baselinePresets
+          candidatePresets
+          imageManifest.ownership.presets
+          candidate.ownership.presets;
+        # An immutable image path remains image-owned when host configuration
+        # also references it.
+        storePaths = candidate.ownership.storePaths // imageManifest.ownership.storePaths;
+      };
   }

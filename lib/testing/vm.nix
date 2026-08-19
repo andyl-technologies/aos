@@ -641,136 +641,136 @@
     memory ? null,
     seedSELinuxDisabledConfig ? true,
   }:
-      if rootfsDeps != null
-      then
-        mkHeadlessTest {
-          inherit
-            name
-            testScript
-            rootfsDeps
-            ;
-          memory =
-            if memory != null
-            then memory
-            else 256;
-        }
-      else if system != null
-      then let
-        systemDisk = mkTestDisk {inherit system seedSELinuxDisabledConfig;};
-        systemKernel = system.config.system.build.kernel;
-        systemInitrd = system.config.system.build.initrd;
-
-        # Compose Python check fragments into the test source, then
-        # append the user's testScript if provided. Both halves are
-        # Python now; see lib/testing/checks.nix:composeChecks.
-        checksPy =
-          if checks != []
-          then checksLib.composeChecks {inherit groupName checks;}
-          else "";
-        composedTestPy =
-          if checksPy != "" && testScript != null
-          then checksPy + "\n" + testScript
-          else if checksPy != ""
-          then checksPy
-          else if testScript != null
-          then testScript
-          else throw "mkVMTest '${name}': must provide either testScript or checks (or both)";
-
-        effectiveMemory =
+    if rootfsDeps != null
+    then
+      mkHeadlessTest {
+        inherit
+          name
+          testScript
+          rootfsDeps
+          ;
+        memory =
           if memory != null
           then memory
-          else 2048;
+          else 256;
+      }
+    else if system != null
+    then let
+      systemDisk = mkTestDisk {inherit system seedSELinuxDisabledConfig;};
+      systemKernel = system.config.system.build.kernel;
+      systemInitrd = system.config.system.build.initrd;
 
-        # Driver manifest. The aos-test-driver consumes this JSON to
-        # build one FirecrackerMachine; the testScript runs as a
-        # Python module via runpy with `vm` exposed as a global. See
-        # the v1 spec ("Manifest schema") for the full field list.
-        manifest = {
-          inherit name timeout;
-          machines = [
-            {
-              name = "vm";
-              transport = "firecracker";
-              # The driver feeds this to Firecracker as the boot kernel, which
-              # must be the uncompressed vmlinux ELF — sourced from the kernel's
-              # separate `vmlinux` output (the system's `out` /boot has only the
-              # compressed vmlinuz). Matches the system's own kernel build.
-              kernel = builtins.toString systemKernel.vmlinux;
-              initrd = "${builtins.toString systemInitrd}/initrd.img";
-              disk = "${builtins.toString systemDisk}/disk.img";
-              # Single-VM tests bake all config into the system /etc; no metadata
-              # channel because machine identity is baked into the image.
-              metadata = null;
-              memory_mib = effectiveMemory;
-              vcpu_count = 2;
-            }
-          ];
-        };
-        manifestFile = pkgs.writeTextFile {
-          name = "aos-vm-test-${name}-manifest.json";
-          text = builtins.toJSON manifest;
-          destination = "/manifest.json";
-        };
-        testPyFile = pkgs.writeTextFile {
-          name = "aos-vm-test-${name}-test.py";
-          text = composedTestPy;
-          destination = "/test.py";
-        };
+      # Compose Python check fragments into the test source, then
+      # append the user's testScript if provided. Both halves are
+      # Python now; see lib/testing/checks.nix:composeChecks.
+      checksPy =
+        if checks != []
+        then checksLib.composeChecks {inherit groupName checks;}
+        else "";
+      composedTestPy =
+        if checksPy != "" && testScript != null
+        then checksPy + "\n" + testScript
+        else if checksPy != ""
+        then checksPy
+        else if testScript != null
+        then testScript
+        else throw "mkVMTest '${name}': must provide either testScript or checks (or both)";
 
-        driverBuildDeps = [
-          pkgs.coreutils
-          firecracker
-          pkgs.socat
-          pkgs.python3
-          pkgs.aos-test-driver
+      effectiveMemory =
+        if memory != null
+        then memory
+        else 2048;
+
+      # Driver manifest. The aos-test-driver consumes this JSON to
+      # build one FirecrackerMachine; the testScript runs as a
+      # Python module via runpy with `vm` exposed as a global. See
+      # the v1 spec ("Manifest schema") for the full field list.
+      manifest = {
+        inherit name timeout;
+        machines = [
+          {
+            name = "vm";
+            transport = "firecracker";
+            # The driver feeds this to Firecracker as the boot kernel, which
+            # must be the uncompressed vmlinux ELF — sourced from the kernel's
+            # separate `vmlinux` output (the system's `out` /boot has only the
+            # compressed vmlinuz). Matches the system's own kernel build.
+            kernel = builtins.toString systemKernel.vmlinux;
+            initrd = "${builtins.toString systemInitrd}/initrd.img";
+            disk = "${builtins.toString systemDisk}/disk.img";
+            # Single-VM tests bake all config into the system /etc; no metadata
+            # channel because machine identity is baked into the image.
+            metadata = null;
+            memory_mib = effectiveMemory;
+            vcpu_count = 2;
+          }
+        ];
+      };
+      manifestFile = pkgs.writeTextFile {
+        name = "aos-vm-test-${name}-manifest.json";
+        text = builtins.toJSON manifest;
+        destination = "/manifest.json";
+      };
+      testPyFile = pkgs.writeTextFile {
+        name = "aos-vm-test-${name}-test.py";
+        text = composedTestPy;
+        destination = "/test.py";
+      };
+
+      driverBuildDeps = [
+        pkgs.coreutils
+        firecracker
+        pkgs.socat
+        pkgs.python3
+        pkgs.aos-test-driver
+      ];
+
+      # -----------------------------------------------------------------------
+      # Firecracker driver script (system mode)
+      # -----------------------------------------------------------------------
+      # The host-side glue is now thin: write manifest + test.py into
+      # $TMPDIR, exec aos-test-driver, copy logs into $out. Boot
+      # plumbing (Firecracker JSON, vsock handshake, agent wait,
+      # shutdown) lives in aos_test_driver/firecracker.py.
+      firecrackerDriverScript = ''
+        set -eu
+
+        # AOS build libs can conflict with the driver's child processes
+        # (Firecracker, python's own runtime linker). Match what the
+        # bash driver did.
+        unset LD_LIBRARY_PATH
+
+        cp ${manifestFile}/manifest.json "$TMPDIR/manifest.json"
+        cp ${testPyFile}/test.py         "$TMPDIR/test.py"
+
+        ${pkgs.aos-test-driver}/bin/aos-test-driver \
+          --manifest "$TMPDIR/manifest.json" \
+          --test     "$TMPDIR/test.py"
+
+        mkdir -p "$out"
+        for log in "$TMPDIR"/*-serial.log "$TMPDIR"/*-firecracker.log; do
+          [ -f "$log" ] && cp "$log" "$out/"
+        done
+        echo PASS > "$out/result"
+      '';
+    in
+      pkgs.mkDerivation {
+        pname = "aos-vm-test-${name}";
+        version = "0";
+        src = null;
+
+        buildDeps = driverBuildDeps;
+
+        phases = [
+          {
+            name = "test";
+            script = firecrackerDriverScript;
+          }
         ];
 
-        # -----------------------------------------------------------------------
-        # Firecracker driver script (system mode)
-        # -----------------------------------------------------------------------
-        # The host-side glue is now thin: write manifest + test.py into
-        # $TMPDIR, exec aos-test-driver, copy logs into $out. Boot
-        # plumbing (Firecracker JSON, vsock handshake, agent wait,
-        # shutdown) lives in aos_test_driver/firecracker.py.
-        firecrackerDriverScript = ''
-          set -eu
-
-          # AOS build libs can conflict with the driver's child processes
-          # (Firecracker, python's own runtime linker). Match what the
-          # bash driver did.
-          unset LD_LIBRARY_PATH
-
-          cp ${manifestFile}/manifest.json "$TMPDIR/manifest.json"
-          cp ${testPyFile}/test.py         "$TMPDIR/test.py"
-
-          ${pkgs.aos-test-driver}/bin/aos-test-driver \
-            --manifest "$TMPDIR/manifest.json" \
-            --test     "$TMPDIR/test.py"
-
-          mkdir -p "$out"
-          for log in "$TMPDIR"/*-serial.log "$TMPDIR"/*-firecracker.log; do
-            [ -f "$log" ] && cp "$log" "$out/"
-          done
-          echo PASS > "$out/result"
-        '';
-      in
-        pkgs.mkDerivation {
-          pname = "aos-vm-test-${name}";
-          version = "0";
-          src = null;
-
-          buildDeps = driverBuildDeps;
-
-          phases = [
-            {
-              name = "test";
-              script = firecrackerDriverScript;
-            }
-          ];
-
-          requiredSystemFeatures = ["kvm"];
-        }
-      else throw "mkVMTest '${name}': must provide either 'system' (for full VM tests) or 'rootfsDeps' (for headless tests)";
+        requiredSystemFeatures = ["kvm"];
+      }
+    else throw "mkVMTest '${name}': must provide either 'system' (for full VM tests) or 'rootfsDeps' (for headless tests)";
 in {
   inherit mkVMTest mkTestDisk;
 }

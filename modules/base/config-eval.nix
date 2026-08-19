@@ -827,7 +827,14 @@ in {
         ${espSync}/bin/aos-sync-esps
 
         ${pkgs.jq}/bin/jq --argjson running "$running" \
-          '.default = $running | .pending = null' "$state" > "''${state}.new"
+          '.default = $running
+           | .pending = null
+           | .recovery_pending = null
+           | ([.generations[] | select(.number == $running)][0]) as $generation
+           | if ($generation.recovery // null) != null
+             then .recovery_known_good = $generation.slot
+             else .
+             end' "$state" > "''${state}.new"
         ${pkgs.coreutils}/bin/sync "''${state}.new"
         mv "''${state}.new" "$state"
         ${pkgs.coreutils}/bin/sync "$(dirname "$state")"

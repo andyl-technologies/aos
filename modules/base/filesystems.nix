@@ -50,12 +50,16 @@
     "# EFI System Partition — FAT32 so UEFI firmware can read it."
     "${cfg.espDevice}  /boot  vfat  noauto,nofail,ro,noatime,fmask=0077,dmask=0077  0  0"
     ""
-    (if cfg.zfs.enable then ''
-      # /var is a native ZFS dataset mounted by zfs-mount.service.
-    '' else ''
-      # /var — persistent mutable state (partition created by systemd-repart)
-      /dev/disk/by-partlabel/var  /var  ext4  rw,relatime,nosuid,nodev  0  2
-    '')
+    (
+      if cfg.zfs.enable
+      then ''
+        # /var is a native ZFS dataset mounted by zfs-mount.service.
+      ''
+      else ''
+        # /var — persistent mutable state (partition created by systemd-repart)
+        /dev/disk/by-partlabel/var  /var  ext4  rw,relatime,nosuid,nodev  0  2
+      ''
+    )
     ""
     "# tmpfs mounts"
     "tmpfs  /tmp  tmpfs  nosuid,nodev,noexec,mode=1777,size=50%  0  0"

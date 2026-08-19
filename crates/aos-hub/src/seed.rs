@@ -56,7 +56,7 @@ use crate::db::{
 };
 use crate::domain::{Permission, Principal, Role, Scope};
 use crate::fetch::LocalFsFetch;
-use crate::surface::object::{ObjectKind, Oid, TreeEntry, encode_loose, encode_tree, hash_object};
+use crate::surface::object::{encode_loose, encode_tree, hash_object, ObjectKind, Oid, TreeEntry};
 use crate::surface::sshsig;
 use aos_hub_core::service::RouteReservationKey;
 
@@ -951,9 +951,9 @@ fn write_signed_surface(root: &Path, key: &SigningKey, trust_key: &str) -> Resul
 
 fn seed_system_images() -> Result<Vec<aos_registry_surface::manifest::ImageEntry>> {
     use aos_registry_surface::manifest::{
-        ImageCompression, ImageDelivery, ImageEntry, ImageInfoReference, ImageTarget,
-        ImageUkiIdentity, ImageVerificationState, immutable_image_info_object_key,
-        immutable_image_object_key,
+        immutable_image_info_object_key, immutable_image_object_key, ImageCompression,
+        ImageDelivery, ImageEntry, ImageInfoReference, ImageTarget, ImageUkiIdentity,
+        ImageVerificationState,
     };
     use sha2::{Digest as _, Sha256};
 
@@ -1018,6 +1018,8 @@ fn seed_system_images() -> Result<Vec<aos_registry_surface::manifest::ImageEntry
             sbat: Vec::new(),
             expected_pcr11: None,
             ukis: Vec::new(),
+            recovery_ukis: Vec::new(),
+            recovery_bundle: None,
             root_image: None,
             root_verity: None,
             root_hash: None,

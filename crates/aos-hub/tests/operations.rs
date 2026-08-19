@@ -580,9 +580,14 @@ async fn concurrent_pointer_uploads_share_the_phase_transition() {
             "mutable_pointer",
         ),
     ];
-    let (status, publication) =
-        begin_publication(&app, &token, "acme/infra/prod/cdn", "pointer-race", &objects)
-            .await;
+    let (status, publication) = begin_publication(
+        &app,
+        &token,
+        "acme/infra/prod/cdn",
+        "pointer-race",
+        &objects,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{publication}");
 
     let (status, _) = upload_publication_object(

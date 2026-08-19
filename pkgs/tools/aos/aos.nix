@@ -97,7 +97,7 @@ in
       inherit src;
       name = "aos-vendor-${version}";
       sourceRoot = "source/crates";
-      hash = "sha256-7UbWLsqtTDGrusSXa2YfKT5VI8MqsRStJze9z0gctjo=";
+      hash = "sha256-nwEvuWQPu98b6w5O/yM0d0XYHYhoGyuf0gn+XLzZ6P0=";
     };
 
     # cmake + libssh2: git2's vendored libgit2 is compiled from source here
@@ -112,6 +112,12 @@ in
     runtimeDeps = [openssl zlib aos-landlock aos-selinux-run aos-verity-root-guard aos-ebpf-net-policy aos-ebpf-lsm-policy checkpolicy policycoreutils semodule-utils tpm2-tools] ++ runtimeTools;
 
     preBuild = ''
+      # Keep the integration-test executable below the bounded verifier-
+      # capture limit. Cargo's test profile is separate from dev; strip any
+      # linked dependency DWARF in addition to the workspace's size-optimized
+      # test profile. The shipped release artifact is built independently
+      # above and is unaffected.
+      export CARGO_PROFILE_TEST_STRIP=debuginfo
       export OPENSSL_DIR="${openssl}"
       export OPENSSL_LIB_DIR="${openssl}/lib"
       export OPENSSL_INCLUDE_DIR="${openssl}/include"

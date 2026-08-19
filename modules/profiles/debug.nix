@@ -79,33 +79,10 @@ in {
             exec ${pkgs.bash}/bin/bash -l
           '';
 
-      # Mask the sulogin-based recovery units in the initrd. The debug
-      # shells below already run an always-on autologin root shell on
-      # every console (tty0/ttyS0). When a first-boot provisioning failure
-      # drops stage-1 to maintenance, systemd ALSO starts
-      # emergency.service — sulogin on /dev/console. With the baked-in
-      # cmdline `console=ttyS0 console=tty0`, /dev/console resolves to
-      # the foreground VT (tty1), which is the very screen
-      # debug-shell-console is already on (it opens tty0, the
-      # current-VT alias). Two processes reading one TTY split the
-      # operator's keystrokes, so typed commands come back garbled
-      # (e.g. `lsblk` → `bk`). The autologin shells are the recovery
-      # console here, so sulogin is redundant — mask it (and rescue)
-      # to leave a single reader per console.
-      #
-      # Gated on `autologin` (this whole block is): the debug-shell-*
-      # units only exist when autologin is on, so that is exactly when
-      # masking is safe. Without autologin — production, or
-      # `debug.enable` alone — there are no initrd shells, and
-      # emergency.service must stay unmasked as the sole recovery console.
-      boot.initrd.systemd.maskedUnits = [
-        "emergency.service"
-        "rescue.service"
-      ];
-
       # Initrd debug shells — start early so you can inspect systemd
-      # state before switch-root. One on the serial console (ttyS0)
-      # and one on the VGA console (tty0 / GTK window).
+      # state before switch-root. These explicit opt-in gettys replace the
+      # base initrd's masked sulogin services. One runs on the serial console
+      # (ttyS0) and one on the VGA console (tty0 / GTK window).
       boot.initrd.systemd.services."debug-shell-serial" = {
         description = "Initrd Debug Shell on ttyS0";
         wantedBy = ["sysinit.target"];

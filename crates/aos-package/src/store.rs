@@ -1163,6 +1163,7 @@ mod tests {
             root_verity_roothash: None,
             expected_pcr11: None,
             initrd_pcr11: None,
+            recovery: None,
             created_at: "2026-08-04T00:00:00Z".to_string(),
         }
     }
@@ -1175,6 +1176,8 @@ mod tests {
             running: 3,
             default: 3,
             pending: None,
+            recovery_known_good: None,
+            recovery_pending: None,
             generations: vec![
                 image_generation(1, ImageSlot::A, 7),
                 image_generation(2, ImageSlot::B, 7),
@@ -1221,6 +1224,8 @@ mod tests {
             running: 3,
             default: 3,
             pending: None,
+            recovery_known_good: None,
+            recovery_pending: None,
             generations,
         };
         let configs = ConfigGenerationState {
@@ -1249,6 +1254,8 @@ mod tests {
             running: 4,
             default: 4,
             pending: None,
+            recovery_known_good: None,
+            recovery_pending: None,
             generations: vec![
                 image_generation(1, ImageSlot::A, 1),
                 image_generation(2, ImageSlot::A, 2),
@@ -1276,6 +1283,8 @@ mod tests {
             running: 4,
             default: 4,
             pending: None,
+            recovery_known_good: None,
+            recovery_pending: None,
             generations: vec![
                 image_generation(1, ImageSlot::A, 1),
                 image_generation(2, ImageSlot::A, 2),
