@@ -41,14 +41,15 @@ CAMPAIGN KNOWLEDGE PLANE
   adaptive and persistent, never part of configuration identity
 
 OPERATIONAL PLACEMENT PLANE
-  workers + leases + CPU/RAM + cache locality -> where/when work runs
+  executor reservations + CPU/RAM + cache locality -> where/when work runs
   opportunistic, host-dependent, never part of modeled state
 ```
 
 - **[CMOD-1]** Data from the campaign or placement plane MUST affect modeled
   execution only through a validated `Selection` recorded in the schedule.
-- **[CMOD-2]** Host wall time, worker identity, process ID, lease state, fleet
-  size, completion arrival order, local cache inventory, and S3 location MUST
+- **[CMOD-2]** Host wall time, executor identity, process ID, reservation state,
+  completion arrival order, local cache inventory, backend driver, and object
+  placement MUST
   NOT enter a `ScenarioDef`, `Decision`, `ConfigurationId`, checkpoint identity,
   event-log canonical projection, or reproduction artifact.
 - **[CMOD-3]** Guidance MAY choose which proposal to issue next and which
@@ -120,20 +121,22 @@ completeness for reach.
   CLI and structured API MUST NOT render it as proof that no failing branch
   exists unless all relevant finite domains and horizons were exhausted.
 
-## 00.6 Local-first execution and future distribution
+## 00.6 Single-host execution and stable component seams
 
-The initial implementation is deliberately local-first:
+The supported implementation is deliberately single-host:
 
-- one daemon owns campaign planning;
-- workers are local QEMU worlds;
+- one coordinator owns campaign planning and the campaign ref;
+- one local executor owns QEMU worlds and host resource admission;
 - hot branching uses on-host copy-on-write;
-- durable closures use a local filesystem content store;
-- an S3-compatible object API is an allowed next backend;
-- worker-host distribution is deferred.
+- durable closures use a composable content-store graph;
+- directory and S3-compatible drivers are initial leaf backends;
+- direct and local RPC component adapters share one contract;
+- multi-host scheduling is not implemented.
 
-The data plane nevertheless uses location-independent attempt and observation
-objects. A future worker host can fetch a parent closure, restore it once, and
-perform local hot fanout without changing campaign semantics.
+Attempt and observation objects are location-independent because they must
+survive daemon restart, archival transfer, backend changes, and direct/RPC
+adapter substitution. The same property leaves a clean seam for a separately
+specified future coordinator without introducing cluster behavior here.
 
 - **[CMOD-9]** No initial local implementation API may require a native process
   handle, host path, or in-memory Rust object in a durable `Attempt` or

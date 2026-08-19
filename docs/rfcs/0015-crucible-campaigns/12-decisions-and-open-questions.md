@@ -13,11 +13,11 @@ points to an immutable `CampaignSnapshot`, which in turn names immutable
 policy, fact-log, frontier, index, and retention objects by digest. Advancing a
 campaign creates objects first and atomically moves the reference last.
 
-This gives readers a consistent view, makes replication content-addressed, and
+This gives readers a consistent view, makes archival transfer content-addressed, and
 allows every historical campaign state to be retained or reconstructed.
 
 Rejected: a mutable database row per branch. That representation obscures
-causality, makes partial replication difficult, and couples correctness to one
+causality, makes partial archival difficult, and couples correctness to one
 database engine's transaction boundary.
 
 ### D-2: Scenario mechanism and campaign policy are separate
@@ -48,11 +48,11 @@ convergence.
 
 Rejected: treating the daemon's in-memory queue as campaign truth.
 
-### D-4: Workers claim attempts, not semantic nodes
+### D-4: Executors receive attempts, not semantic nodes
 
 A semantic branch node describes a reproducible state and path. An `AttemptId`
-describes one execution of a proposal from that node. Leases and retries are
-keyed by attempt, so a crashed worker cannot corrupt node identity and an
+describes one execution of a proposal from that node. Reservations and retries
+are keyed by attempt, so a crashed executor cannot corrupt node identity and an
 operator can distinguish duplicate execution from duplicate discovery.
 
 ### D-5: Guest and environment exploration use one typed choice protocol
@@ -133,8 +133,8 @@ counters, and policy-local statistics. Candidates become proposals only when
 demanded by capacity or feedback.
 
 These continuations are serializable state machines, not language closures or
-native function pointers. They can be resumed after daemon restart or on
-another compatible worker.
+native function pointers. They can be resumed after coordinator restart and
+submitted again to the local executor through either supported adapter.
 
 ### D-12: Execution has hot, exact, and thin realization tiers
 
@@ -187,36 +187,42 @@ continues. Such a child would not correspond to a single scenario state.
 Hot fork is deliberately host-local and ephemeral. The exact closure includes
 all VM, environment, control-plane, continuation, disk, and identity state
 needed for portable restore. Durable closure export is the bridge to
-hibernation, long-lived midpoint debugging, maintenance migration, and future
-cross-node campaigns.
+hibernation, long-lived midpoint debugging, archival, and offline maintenance
+transfer.
 
-### D-17: Durable storage is content-addressed with local and S3-compatible backends
+### D-17: Durable storage is a composable content-store graph
 
-The initial stores are an on-disk object store and an S3-compatible object
-store behind the same immutable-object contract. Large memory and disk state is
-represented by manifests over chunks or extents, permitting deduplication,
-partial transfer, verification, and later delta-aware optimization.
+Directory and S3-compatible storage are initial leaf drivers behind separate
+immutable-blob and mutable-ref traits. Verified, routed, tiered, cached,
+mirrored, packed, compressed, encrypted, quota, and metrics layers compose into
+an acyclic operational store graph. Large memory and disk state is represented
+by manifests over logical pages or extents whose IDs do not depend on physical
+pack geometry or backend placement.
 
-The backend never defines campaign semantics. Replication moves immutable
-objects and advances refs with compare-and-swap.
+Drivers and composition layers never define campaign semantics. Archival
+transfer moves authenticated logical objects and advances the one authoritative
+destination ref with compare-and-swap.
 
-### D-18: One mutable ref is the synchronization boundary
+### D-18: One mutable ref and one coordinator are the synchronization boundary
 
 All objects are uploaded and verified before a campaign ref is advanced. A
 reader either observes the old complete snapshot or the new complete snapshot.
-Conflicting writers merge fact sets and re-project under the pinned policy;
-they do not overwrite facts.
+Exactly one coordinator owns that ref. An unexpected CAS conflict is a stale
+command or ownership defect, not an invitation to merge concurrent histories.
+Deriving another campaign creates another ref sharing immutable objects.
 
-### D-19: Network fanout is deferred, but the model is location-independent
+### D-19: The local executor contract is implemented; network fanout is not
 
-The first scheduler is a single-host daemon exploiting cheap QEMU forks and
-locality. Worker contracts, claims, snapshots, object manifests, and
-continuations do not encode local process pointers or filesystem-only
-assumptions, so a later coordinator can place attempts across nodes without
-redefining campaign identity.
+The supported scheduler is a single coordinator using one local executor and
+cheap QEMU forks. `CampaignService`, the pure `PlannerEngine`, and
+`ExecutorService` are normative language-neutral component contracts with
+direct and local RPC adapters. Attempts, results, snapshots, manifests, and
+continuations contain IDs rather than process pointers or filesystem paths.
 
-This RFC does not implement transport, cross-node admission, or cluster
-consensus.
+This RFC implements the local transport and conformance boundary but not
+multi-host placement, membership, cross-node admission, leader election,
+partitions, remote page service, or cluster consensus. Those are owned by a
+future system that can be written independently of the local executor.
 
 ### D-20: Campaigns are first-class user-facing objects
 
@@ -308,6 +314,19 @@ A checkpoint need not contain a choice opportunity, and a branch point need not
 have a checkpoint or support hot fork. Conflating these operations would make
 cache state affect the temporal graph.
 
+### D-28: Planning is a pure versioned component transition
+
+The complete pre-step `CampaignSnapshotId`, policy, planner engine identity, and
+explicit planning budget form the planner input. Validated branch requests,
+proposals, accounting, and explanation form its output. The coordinator records
+the accepted step in a child snapshot. The first planner is the closed Rust
+implementation; arbitrary callbacks and a general-purpose embedded campaign
+language are deferred.
+
+This makes campaign planning usable through a language-neutral component
+contract without serializing native closures or granting a plugin authority
+over refs, executors, QEMU, clocks, or stores.
+
 ## Deliberately rejected representations
 
 The following patterns are outside the design even if they appear convenient
@@ -316,6 +335,8 @@ for a prototype:
 - one pre-created scheduler job for every possible branch;
 - eager job creation for every value in an explicit finite request;
 - in-memory closures as persisted frontier entries;
+- a planner plugin that performs unrecorded I/O or publishes campaign facts
+  directly;
 - separate explicit-fork and adaptive-expansion data models;
 - mutable branch rows whose last writer wins;
 - a shared writable QCOW2 overlay, shared observation ring, or shared control
@@ -394,12 +415,13 @@ determinism without forfeiting most local parallelism.
 Evidence required: reproducibility under deliberately permuted worker completion
 orders and throughput comparison with streaming mode.
 
-### OQ-7: Which S3-compatible semantics are required for the first backend?
+### OQ-7: Which capability profile is required for each initial store leaf?
 
-The store contract assumes immutable puts, verified gets, conditional ref
-updates, and listing only for repair or collection. Provider differences in
-conditional requests and read-after-write behavior must be captured by a
-conformance suite rather than leaked into campaign logic.
+The immutable and ref contracts require different capabilities. Directory and
+S3-compatible leaves vary in durable flush, conditional requests, multipart
+resume, range read, and repair enumeration. Those differences must be captured
+by leaf capabilities and the composition conformance suite rather than leaked
+into campaign logic.
 
 Evidence required: backend tests against the supported local emulator and at
 least one production-compatible service.
@@ -407,9 +429,10 @@ least one production-compatible service.
 ### OQ-8: Which operational events belong in canonical campaign history?
 
 Semantic observations and selections are canonical; CPU utilization and queue
-latency are ordinarily operational. Some placement facts may affect permitted
-claims or explain performance. The implementation must finalize a small,
-versioned boundary before cross-node execution is added.
+latency are ordinarily operational. Some executor-capability facts may affect
+admission or explain performance. The implementation must finalize the small,
+versioned coordinator/executor boundary without making those facts planning
+inputs.
 
 Evidence required: replay and audit exercises showing which facts are needed to
 explain a result without making worker scheduling part of scenario identity.

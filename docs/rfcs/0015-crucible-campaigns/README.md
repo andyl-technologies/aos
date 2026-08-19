@@ -19,9 +19,11 @@ retain that state as a hot or durable checkpoint, explore a small and changing
 subset of a vast choice space, feed descendant observations back into the
 exploration policy, and revisit an earlier checkpoint to admit additional
 branches. It unifies systematic search, probabilistic sampling,
-coverage-guided fuzzing, performance optimization, manual branching, hibernation,
-failure retention, and eventual multi-host work distribution over the same
-content-addressed temporal graph.
+coverage-guided fuzzing, performance optimization, manual branching,
+hibernation, and failure retention over the same content-addressed temporal
+graph. The supported deployment is one coordinator and one local executor;
+their language-neutral contract is implemented now without implementing
+multi-host scheduling.
 
 The core model is intentionally small:
 
@@ -48,8 +50,8 @@ caches. They affect cost, never branch identity.
 ## Problem
 
 RFC-0010 established the deterministic execution model, temporal graph,
-guided exploration, content-addressed campaign storage, and future fleet
-distribution. RFC-0014 adds exact cross-process checkpoint closures and stable,
+guided exploration, content-addressed campaign storage, and a shared-work
+foundation. RFC-0014 adds exact cross-process checkpoint closures and stable,
 typed signal-fault opportunities. Those foundations are necessary but do not
 yet provide the cohesive production model required for extremely wide,
 feedback-directed campaigns:
@@ -67,7 +69,7 @@ feedback-directed campaigns:
 - the current durable exact checkpoint path authenticates and chunks complete
   artifacts but does not provide a cheap live on-host fork of a paused QEMU
   world;
-- the existing shared frontier leases checkpoint nodes, while progressive
+- the existing shared frontier reserves checkpoint nodes, while progressive
   widening must revisit one checkpoint many times and therefore needs
   idempotent attempt-level work;
 - the campaign manifest does not yet name the exploration facts, lazy frontier,
@@ -75,8 +77,8 @@ feedback-directed campaigns:
   complete adaptive campaign.
 
 Without a single model for those concerns, search, fuzzing, optimization,
-manual branching, debugging, and future distributed execution would grow
-separate control planes and subtly different replay semantics.
+manual branching, debugging, and external coordinator implementations would
+grow separate control planes and subtly different replay semantics.
 
 ## Design thesis
 
@@ -108,8 +110,9 @@ Scenario -> ChoiceOpportunity -> BranchPoint -> BranchRequest
                     one CAS-updated ref
 ```
 
-Workers pull bounded `Attempt` objects. They do not enumerate the entire state
-space and do not own campaign policy. A local daemon materializes each attempt
+The coordinator submits bounded `Attempt` objects to the local executor. Neither
+component enumerates the entire state space, and the executor does not own
+campaign policy. The executor materializes each attempt
 from the cheapest correct realization: a paused hot-fork template, a durable
 exact closure, or thin replay. Descendant observations update campaign
 knowledge and may make an ancestor branch point eligible to yield more
@@ -142,8 +145,8 @@ This RFC preserves RFC-0010's identity and determinism contracts:
 - a configuration remains exactly `(ScenarioDef, Schedule)`;
 - temporal-graph edges remain recorded deterministic decisions;
 - `instantiate` remains the one semantic realization operation;
-- materialization and worker placement never enter configuration identity;
-- every finding remains reproducible without a campaign, daemon, fleet, or
+- materialization and executor placement never enter configuration identity;
+- every finding remains reproducible without a campaign, daemon, worker pool, or
   shared store.
 
 It refines three RFC-0010 control-plane decisions:
@@ -152,9 +155,9 @@ It refines three RFC-0010 control-plane decisions:
    It is the projection of **open branch points and their expansion
    continuations**, and one configuration may yield additional attempts
    repeatedly.
-2. Fleet claims are keyed by immutable `AttemptId`, not only by checkpoint
-   identity. A parent configuration may have many independently claimable
-   attempts over its lifetime.
+2. Local execution assignments are keyed by immutable `AttemptId`, not only by
+   checkpoint identity. A parent configuration may have many independently
+   executable attempts over its lifetime.
 3. The persistent campaign head names a complete `CampaignSnapshot`, including
    graph, exploration, observation, pin, and accounting roots. The existing
    corpus, coverage, findings, genesis, and provenance roots remain part of that
@@ -183,22 +186,21 @@ effects into arbitrary callbacks.
 - **[CAM-5]** Permit descendant feedback to revisit an immutable ancestor and
   admit more candidates without mutating or merging VM state.
 - **[CAM-6]** Make a campaign fully pausable, resumable, branchable, derivable,
-  inspectable, replicable, and garbage-collectable from its content-addressed
+  inspectable, archivable, transferable, and garbage-collectable from its content-addressed
   snapshot.
 - **[CAM-7]** Make the common on-host branch path share paused QEMU memory pages,
   immutable disk state, log prefixes, and host continuation state copy-on-write.
 - **[CAM-8]** Preserve a portable durable exact closure for hibernation,
-  midpoint debugging, failure retention, maintenance migration, and future
-  worker-host distribution.
+  midpoint debugging, failure retention, and offline maintenance transfer.
 - **[CAM-9]** Bound runnable branches by host resources while allowing millions
   of dormant logical continuations and pending possibilities.
 - **[CAM-10]** Define a user-facing campaign file, CLI, daemon API, event stream,
   status model, and artifact format that all project the same underlying data.
 - **[CAM-11]** Keep the Apache host and GPL QEMU/plugin in separate processes
   with only versioned socket and shared-memory protocols across the boundary.
-- **[CAM-12]** Permit a future multi-host executor to consume the same attempt
-  and observation contracts without making network fanout part of the initial
-  implementation.
+- **[CAM-12]** Implement a language-neutral coordinator/planner/local-executor
+  contract whose in-process and local RPC adapters are semantically equivalent,
+  without implementing multi-host scheduling.
 - **[CAM-13]** Require independent, evidence-backed manual acceptance,
   destructive recovery drills, and long-running realistic dogfood campaigns in
   addition to automated conformance before campaigns or hot fork become
@@ -211,19 +213,23 @@ effects into arbitrary callbacks.
 
 - The first implementation does not build a multi-host campaign coordinator,
   remote page server, post-copy migration system, or network fanout service.
+- This RFC does not embed a general-purpose campaign programming language or
+  accept arbitrary in-process planner callbacks. A bounded pure planner
+  contract permits a separately reviewed future engine.
 - The first implementation does not estimate real-world failure probability
   from a guidance-biased bug-hunting campaign. Statistically valid estimation
   requires the explicit probability rules in
   [`03-exploration-and-guidance.md`](03-exploration-and-guidance.md).
-- This RFC does not merge two live mutable VM states. Campaign merge is union of
-  immutable facts and graph objects; selection between branches is not a VM
-  state merge.
+- This RFC does not merge live mutable VM states or concurrent campaign-writer
+  histories. `derive` creates another named ref sharing immutable facts and
+  graph objects; selection between branches is never a VM-state merge.
 - This RFC does not let guest-provided code, closures, scripts, native pointers,
   or QEMU-private structures enter canonical choice or campaign data.
 - This RFC does not make every latent choice a live process or even a stored
   temporal-graph node. A child becomes a graph node only after its attempt
   produces a canonical configuration.
-- This RFC does not permit host wall time, worker arrival order, fleet size, or
+- This RFC does not permit host wall time, completion arrival order, executor
+  capacity, or
   cache placement to affect an individual run's state or reproduction artifact.
 - This RFC does not promise that arbitrary multithreaded QEMU state is safe to
   `fork(2)`. Hot forking is admitted only through the explicit quiescence,
@@ -281,34 +287,37 @@ effects into arbitrary callbacks.
    guidance, and statistical validity.
 5. [`04-lazy-frontier-and-daemon.md`](04-lazy-frontier-and-daemon.md) defines
    persistent iterators, attempt scheduling, feedback, daemon ownership,
-   backpressure, and future worker contracts.
-6. [`05-hot-fork-and-checkpoints.md`](05-hot-fork-and-checkpoints.md) defines
+   backpressure, and local recovery.
+6. [`04a-coordinator-executor-contract.md`](04a-coordinator-executor-contract.md)
+   defines the language-neutral campaign, planner, and local-executor component
+   contracts shared by direct and RPC clients.
+7. [`05-hot-fork-and-checkpoints.md`](05-hot-fork-and-checkpoints.md) defines
    single- and multi-node QEMU hot forks, host continuation cloning, durable
    checkpoints, hibernation, and migration.
-7. [`06-storage-replication-and-gc.md`](06-storage-replication-and-gc.md) defines
-   local and S3-compatible stores, Merkle replication, pinning, cache tiers,
-   leases, and garbage collection.
-8. [`07-user-experience-and-apis.md`](07-user-experience-and-apis.md) defines the
+8. [`06-storage-replication-and-gc.md`](06-storage-replication-and-gc.md) defines
+   content-store traits, pluggable leaf backends, tiering, routing, packing,
+   pinning, archival transfer, and garbage collection.
+9. [`07-user-experience-and-apis.md`](07-user-experience-and-apis.md) defines the
    campaign file, CLI, daemon API, views, steering, and compatibility with
    existing commands.
-9. [`08-observability-measurement-debugging.md`](08-observability-measurement-debugging.md)
+10. [`08-observability-measurement-debugging.md`](08-observability-measurement-debugging.md)
    defines barriers, measurements, properties, metrics, selection evidence,
    retained failure state, and debugger branches.
-10. [`09-security-compatibility-and-operations.md`](09-security-compatibility-and-operations.md)
+11. [`09-security-compatibility-and-operations.md`](09-security-compatibility-and-operations.md)
     defines trust, bounds, sensitive state, provenance, upgrades, and operational
     failure handling.
-11. [`10-performance-and-validation.md`](10-performance-and-validation.md)
+12. [`10-performance-and-validation.md`](10-performance-and-validation.md)
     defines cost models, required metrics, conformance gates, and acceptance
     targets.
-12. [`11-implementation-plan.md`](11-implementation-plan.md) sequences the
+13. [`11-implementation-plan.md`](11-implementation-plan.md) sequences the
     implementation intended to follow this documentation review.
-13. [`12-decisions-and-open-questions.md`](12-decisions-and-open-questions.md)
+14. [`12-decisions-and-open-questions.md`](12-decisions-and-open-questions.md)
     records resolved decisions and the few questions intentionally left for
     measured implementation spikes.
-14. [`13-worked-network-campaign.md`](13-worked-network-campaign.md) walks one
+15. [`13-worked-network-campaign.md`](13-worked-network-campaign.md) walks one
     network-disruption campaign from scenario authoring through adaptive
     branching, selection, hibernation, and reproduction.
-15. [`14-manual-validation-and-dogfooding.md`](14-manual-validation-and-dogfooding.md)
+16. [`14-manual-validation-and-dogfooding.md`](14-manual-validation-and-dogfooding.md)
     defines independent operator acceptance, realistic dogfood, destructive
     recovery, evidence bundles, and release-blocking manual gates.
 
@@ -321,8 +330,9 @@ effects into arbitrary callbacks.
 | `SEL` | Selectables, choice domains, and guest/environment protocol |
 | `GUIDE` | Candidate generation, guidance, probability, and optimization |
 | `LAZY` | Lazy frontier, continuations, daemon, attempts, and feedback |
+| `CCOMP` | Coordinator, planner, executor, language-neutral wire contract, and component conformance |
 | `HFORK` | Hot QEMU fork and multi-node world cloning |
-| `CSTORE` | Durable storage, replication, pinning, and garbage collection |
+| `CSTORE` | Content stores, tiering, routing, packing, archival transfer, pinning, and garbage collection |
 | `CAPI` | User-facing schema, CLI, API, and event stream |
 | `CMEAS` | Measurement, observability, findings, and debugging |
 | `CSEC` | Security, compatibility, provenance, and operations |

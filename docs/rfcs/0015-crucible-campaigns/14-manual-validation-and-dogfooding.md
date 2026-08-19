@@ -126,7 +126,7 @@ manual-flight-manifest
   operational telemetry and resource-pressure timeline
   expected and observed finding/replay identities
   destructive-action injection records
-  hibernate/export/import/migration/GC plans and results
+  component mode, hibernate/export/import/transfer/GC plans and results
   defects, surprises, documentation gaps, and workarounds
   final claim checklist and sign-offs
 ```
@@ -256,12 +256,19 @@ fault and guest response from the bundle.
 - **[CMAN-12]** An independent investigator MUST reproduce and explain at least
   one finding solely from its exported bundle and published documentation.
 
-## 14.7 Hibernation, transfer, and maintenance flight
+## 14.7 Component-boundary, hibernation, and maintenance flight
 
-The operator hibernates a running campaign with hot templates and active lazy
-continuations:
+The operator first runs the same bounded campaign once through the direct
+coordinator/executor client and once with those components separated over the
+supported same-host RPC transport. Canonical snapshots, attempts, observations,
+findings, and explanations must match. The operator then independently restarts
+the coordinator and executor, confirms resubmission of incomplete attempts, and
+uses only `CampaignService` for ordinary campaign control.
 
-1. request hibernation to the local or S3-compatible backend;
+The operator next hibernates a running campaign with hot templates and active
+lazy continuations:
+
+1. request hibernation under a configured logical durability policy;
 2. observe required hot templates become exact closures;
 3. verify all required objects before the campaign ref advances;
 4. terminate all QEMU and daemon processes;
@@ -270,7 +277,8 @@ continuations:
    attempt accounting;
 7. continue far enough to prove descendant feedback reopens an ancestor;
 8. export an executable or debug closure and inspect its sensitive-data report;
-9. import on another compatible maintenance host or clean store namespace;
+9. import from another configured store into a clean compatible maintenance
+   environment or store namespace;
 10. resume or debug there and compare the authenticated configuration; and
 11. attempt restore with deliberately incompatible provenance and confirm
     fail-closed diagnostics before guest resume.
@@ -298,13 +306,15 @@ Required injections include:
 | Injection | Expected operator-visible result |
 | --- | --- |
 | Kill one running child | Attempt is retried or localized; no partial graph edge or reward appears |
-| Kill the daemon before observation commit | Restart projects from facts and safely resolves the attempt lease |
+| Kill the coordinator before observation commit | Restart projects from facts, discards stale reservations, and safely resubmits the attempt |
+| Kill the local executor while the coordinator remains live | Coordinator reports operational failure and idempotently resubmits without creating a modeled result |
 | Kill the daemon during snapshot publication | Named ref resolves to the complete old or complete new snapshot |
 | Reboot with a paused or hibernating campaign | Supported recovery path identifies exactly what is resumable |
 | Exhaust campaign-store space during exact capture | Prior ref and finding remain valid; partial staging is reclaimable |
-| Remove S3 availability during multipart upload | Upload resumes or aborts idempotently without publishing an incomplete closure |
+| Remove an archival leaf during multipart upload | Upload resumes or aborts idempotently without publishing an incomplete closure or satisfying durability |
 | Expire store credentials during read/write | Status distinguishes authorization from absence/corruption and preserves state |
-| Corrupt one replicated object | Authentication localizes the object and refuses use before restore/resume |
+| Corrupt one tier copy while another remains valid | Status distinguishes corruption from a miss, refuses corrupt bytes, and follows the declared repair/fallback policy |
+| Interrupt pack/index publication or repacking | Old index generation remains readable; incomplete packs remain unreachable and reclaimable |
 | Fail one VM during atomic world fork | No partial world becomes visible; template remains usable or is invalidated explicitly |
 | Alias one child ring or disk overlay in a fault build | Child readiness rejects the resource before guest execution |
 | Exceed process, memory, or descriptor budget | Backpressure/demotion is visible; strict semantic priority remains unchanged |
@@ -319,7 +329,7 @@ public surfaces.
   table on both the constrained host and each backend whose failure semantics it
   targets. Recovery MUST preserve the last authenticated campaign state and
   leave no unexplained live child or retained writable resource.
-- **[CMAN-16]** Any recovery requiring object deletion, lease editing, ref
+- **[CMAN-16]** Any recovery requiring object deletion, reservation editing, ref
   rewriting, or process signaling outside documented commands is a release-
   blocking operability defect.
 
@@ -368,17 +378,22 @@ Starting from the completed dogfood campaign, the operator:
 
 1. pins a finding, a Pareto branch, one user-selected midpoint, and a metadata-
    only historical snapshot;
-2. requests metadata, finding, debug, executable, and mirror replication plans
+2. requests metadata, finding, debug, executable, and mirror closure plans
    and compares their closure sizes;
-3. produces a GC plan while a transfer and attempt protection root are active;
+3. derives a second campaign sharing objects, then produces a store-wide GC
+   plan while a transfer, write-back journal, and attempt protection root are
+   active;
 4. confirms the plan retains every expected root and identifies cache-only
    exact closures separately from semantic objects;
 5. intentionally proposes unpinning the last fast-debug closure and verifies
    the impact warning;
 6. cancels the first plan without deletion;
-7. changes one pin, regenerates the plan, and confirms the old plan is stale;
-8. applies the new plan after its grace/confirmation boundary; and
-9. replays every retained finding and inspects metadata-only history afterward.
+7. changes one pin and the physical inventory generation, regenerates the plan,
+   and confirms the old plan is stale;
+8. repacks a sparse pack while concurrent readers verify live logical objects;
+9. applies the new plan after its grace/confirmation boundary; and
+10. replays every retained finding and inspects both derived campaigns and
+    metadata-only history afterward.
 
 - **[CMAN-19]** Manual GC acceptance MUST prove plan/apply separation, stale-plan
   rejection, protection of in-flight roots, explicit loss-of-acceleration
@@ -466,11 +481,11 @@ Manual validation begins before the final CLI phase:
 | Implementation phase | Required manual evidence |
 | --- | --- |
 | Phase 0 | Tabletop of the lifecycle, destructive drill, claims, and evidence manifest |
-| Phase 1 | Offline create/inspect/derive/merge/pause snapshot flight using canonical objects |
+| Phase 1 | Offline create/inspect/derive/stale-command/pause snapshot flight using canonical objects and linear ancestry |
 | Phase 2 | Real guest registers choices, blocks for selections, rejects mismatch, and replays replies |
 | Phase 3 | Human cross-check of guest markers, modeled network evidence, metric windows, objectives, and finding evidence |
-| Phase 4 | Local operator flight through lazy widening, additive finite branching, edge deduplication, backpressure, restart, steering, and explanation |
-| Phase 5 | Hibernate/resume, backend outage, transfer, import, corruption, pin, and GC flights |
+| Phase 4 | Direct/RPC component equivalence plus local operator flight through lazy widening, additive finite branching, edge deduplication, backpressure, independent coordinator/executor restart, steering, and explanation |
+| Phase 5 | Hibernate/resume, composed-backend outage, tier promotion/eviction, packing/repacking, archival transfer, import, corruption, pin, and store-wide GC flights |
 | Phase 6 | Lab audit of QEMU quiescence, mappings, descriptors, rings, disks, COW dirties, fallback, and repeated children |
 | Phase 7 | Atomic multi-machine hot fork, massive-parallelism pressure, deep templates, and 24-hour dogfood flight |
 | Phase 8 | Independent public-porcelain branch/derive terminology, statistical-intervention, usability, and finding-handoff flight |

@@ -38,9 +38,11 @@ This is an illustrative interface, not permission to store trait objects. The
 durable representation is a closed, versioned `CandidateGeneratorSpec` plus
 canonical facts from which its cursor and statistics are derived.
 
-- **[GUIDE-1]** Candidate generation MUST be a pure function of the choice
-  opportunity, branch point, branch request, policy, campaign seed, admitted
-  proposal set, and named observation basis.
+- **[GUIDE-1]** Candidate generation MUST be a pure function of the named
+  planner engine/artifact and state, choice opportunity, branch point, branch
+  request, policy, campaign seed, explicit planning budget, and canonical
+  bounded `CampaignPlanningView`. Direct and RPC planner adapters receive the
+  same logical view.
 - **[GUIDE-2]** Generator implementation version and parameters MUST be included
   in `CampaignPolicyId` and every resulting proposal's provenance.
 
@@ -201,10 +203,10 @@ Measurements remain separate from properties:
 - objectives map measurements to minimize/maximize directions;
 - guidance decides how objectives and novelty affect future work.
 
-- **[GUIDE-10]** Adaptive normalization MUST NOT depend on worker completion
+- **[GUIDE-10]** Adaptive normalization MUST NOT depend on executor completion
   arrival order. Strict mode folds observations in deterministic attempt order;
   streaming mode records the exact observation basis used by each planner step.
-- **[GUIDE-11]** Host CPU time, wall-clock duration, worker queue delay, and
+- **[GUIDE-11]** Host CPU time, wall-clock duration, executor queue delay, and
   checkpoint-restore latency MUST NOT be scenario-performance objectives. They
   may appear only in operational telemetry.
 

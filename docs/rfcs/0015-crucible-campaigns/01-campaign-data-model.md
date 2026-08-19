@@ -22,6 +22,17 @@ CampaignLineageId = H(
 CampaignPolicyId = H(canonical CampaignPolicy)
 
 CampaignSnapshotId = H(canonical CampaignSnapshot)
+
+CampaignViewId = H(canonical CampaignPlanningView)
+
+PlannerInvocationId = H(
+  PlannerEngineId,
+  PolicyArtifactId,
+  CampaignPolicyId,
+  PlannerStateId,
+  CampaignViewId,
+  PlanningBudget
+)
 ```
 
 The human campaign name is not an identity component. It is a mutable reference
@@ -73,7 +84,7 @@ campaign can receive more work without changing its original identity.
 ```rust,illustrative
 pub struct CampaignSnapshot {
     pub schema_version: u32,
-    pub parents: Vec<CampaignSnapshotId>,
+    pub parent: Option<CampaignSnapshotId>,
     pub lineage: CampaignLineageId,
     pub active_policy: CampaignPolicyId,
     pub graph_root: ContentHash,
@@ -86,6 +97,12 @@ pub struct CampaignSnapshot {
     pub accounting_root: ContentHash,
 }
 ```
+
+Snapshot ancestry for one campaign ref is linear in this RFC because exactly
+one coordinator owns that ref. `derive` creates another named ref at an existing
+snapshot; it does not create a multi-parent merge commit. Immutable facts may be
+shared by any number of refs without giving more than one writer authority over
+any ref.
 
 The roots name immutable canonical maps or sets:
 
@@ -106,7 +123,7 @@ The roots name immutable canonical maps or sets:
   snapshot ID to another. Objects MUST be published and authenticated before the
   ref is advanced.
 - **[CMOD-14]** A snapshot MUST be readable without any daemon-local queue,
-  lease, PID, socket, hot-fork handle, or filesystem path.
+  reservation, PID, socket, hot-fork handle, or filesystem path.
 
 ## 01.4 Campaign facts
 
@@ -133,18 +150,53 @@ may summarize them, but the facts remain sufficient to rebuild it.
 `PlannerStep` makes adaptation explicit:
 
 ```rust,illustrative
+pub struct CampaignPlanningView {
+    pub graph_root: ContentHash,
+    pub exploration_root: ContentHash,
+    pub observations_root: ContentHash,
+    pub corpus_root: ContentHash,
+    pub coverage_root: ContentHash,
+    pub findings_root: ContentHash,
+    pub accounting_root: ContentHash,
+}
+```
+
+The planning view contains every canonical input permitted to affect proposal
+order. It deliberately excludes pins, physical retention, materializations,
+store placement, and operational state. A policy that uses finding retention or
+debugging state must first model the relevant semantic fact in one of the
+included roots; it cannot observe a physical pin implicitly.
+
+```rust,illustrative
 pub struct PlannerStep {
     pub parent: Option<PlannerStepId>,
+    pub invocation: PlannerInvocationId,
     pub policy: CampaignPolicyId,
-    pub observation_basis: ContentHash,
+    pub engine: PlannerEngineId,
+    pub policy_artifact: PolicyArtifactId,
+    pub input_view: CampaignViewId,
+    pub budget: PlanningBudget,
     pub selected_branch_point: BranchPointId,
+    pub selected_source: BranchRequestId,
     pub issued_proposals: Vec<ProposalId>,
+    pub coordinator_accounting: PlanningAccounting,
     pub score_evidence: GuidanceEvidence,
 }
 ```
 
+`input_view` is the complete immutable semantic pre-step basis. Naming only the
+observation root is insufficient because fairness, prior proposals, stop
+conditions, and budget consumption can all affect the next proposal. Naming the
+whole snapshot would be too broad because a storage-tier or pin change must not
+perturb strict proposal order. The post-step snapshot includes the accepted
+planner step, preserving an acyclic history. Accounting is recomputed by the
+coordinator from accepted outputs and the input view; a planner's resource-usage
+report is diagnostic only.
+
 - **[CMOD-15]** Every adaptive proposal MUST be reachable from a planner step
-  that names the exact observation root and policy used to produce it.
+  that names the complete planning view, engine and policy artifact, policy,
+  explicit planning budget, selected candidate source, coordinator-computed
+  accounting result, and evidence used to produce it.
 - **[CMOD-16]** Rebuilding projections from the same facts MUST produce the same
   canonical frontier, statistics, and reports. Projection caches that disagree
   are corrupt and MUST be rejected.
@@ -181,10 +233,7 @@ pub struct BranchBudget {
 }
 
 pub enum BranchRequestCause {
-    Planner {
-        policy: CampaignPolicyId,
-        observation_basis: ContentHash,
-    },
+    Planner(PlannerInvocationId),
     Operator(CampaignCommandId),
     Debugger(DebugSessionId),
     ExhaustivePolicy(CampaignPolicyId),
@@ -196,8 +245,9 @@ pub struct Proposal {
     pub domain: ChoiceDomainId,
     pub value: ChoiceValue,
     pub policy: CampaignPolicyId,
+    pub planner_invocation: Option<PlannerInvocationId>,
     pub ordinal: u64,
-    pub guidance_basis: ContentHash,
+    pub guidance_basis: CampaignViewId,
 }
 
 pub struct BranchEdge {
@@ -262,8 +312,9 @@ Planner cause names policy and observation basis directly rather than the
 `PlannerStepId` that records resulting proposals. This keeps the content graph
 acyclic while preserving the full causal chain.
 
-`AttemptId` is the digest of the canonical `Attempt` semantic inputs. Lease
-owner, retry number, start time, preferred materialization, branch request, and
+`AttemptId` is the digest of the canonical `Attempt` semantic inputs. Executor,
+reservation generation, retry number, start time, preferred materialization,
+branch request, and
 proposal cause are excluded. Separate `AttemptAdmission` facts link every
 proposal that justified the attempt. Exactly one `ExecutionBasis` says which
 proposal spent the attempt budget and fixes statistical sampling provenance;
@@ -278,7 +329,8 @@ determinism defect.
   proposal exists. It is admitted after execution produces and authenticates the
   child configuration.
 - **[CMOD-19]** Modeled timeout, crash, assertion failure, and successful stop
-  are observation outcomes. Worker loss, daemon restart, lease expiry, and store
+  are observation outcomes. QEMU/executor loss, daemon restart, reservation
+  loss, and store
   unavailability are operational outcomes and MUST NOT be assigned modeled
   reward.
 ## 01.6 Derived continuation state

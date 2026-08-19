@@ -188,8 +188,9 @@ snapshot-published
 Operational telemetry includes:
 
 ```text
-attempt-leased/retried
-worker-started/stopped
+attempt-reserved/retried
+executor/QEMU-started/stopped
+planner-invoked/rejected/timed-out
 hot-template-created/evicted
 fork/restore/replay latency
 dirty RSS and overlay bytes
@@ -220,7 +221,7 @@ pub struct Finding {
 
 The signature includes property/assertion identity, stable guest or QEMU failure
 class, relevant target/opportunity, and canonical causal evidence. It excludes
-worker, PID, wall time, and materialization tier. Rediscovery unions occurrence
+executor, PID, wall time, and materialization tier. Rediscovery unions occurrence
 observations into one cluster.
 
 - **[CMEAS-11]** Every finding MUST carry a self-contained `(scenario, seed,
@@ -269,7 +270,8 @@ Why was this value legal?
 Which producer offered it?
 Which finite or generated source proposed it, and why was that request issued?
 Did another request cause deduplicate onto the same semantic edge?
-Which observation snapshot and scores caused the planner to choose it?
+Which planner invocation, planning view, engine artifact, budget, and scores
+caused the coordinator to accept it?
 Which checkpoint realized the parent?
 What exact selection entered the schedule?
 Which effects and guest-visible outcomes followed?
@@ -277,5 +279,7 @@ How was reward credited to ancestors?
 Why was the branch retained, pruned, or made a finding?
 ```
 
-- **[CMEAS-14]** Explainability data MUST be content-addressed evidence already
-  used by the planner, not a best-effort reconstruction from current policy.
+- **[CMEAS-14]** Explainability data MUST name the accepted planner invocation,
+  bounded planning view, engine/artifact, coordinator validation and accounting,
+  and content-addressed evidence actually used for the step, not a best-effort
+  reconstruction from current policy or an unverified planner claim.
