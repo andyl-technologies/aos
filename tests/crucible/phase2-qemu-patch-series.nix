@@ -608,6 +608,20 @@
       enforces = "DET-1,DET-29,QEMU-43";
       capability = "sim mode reaches RCU quiescence at its bounded deterministic RR execution boundaries without host-timed translation-block exits";
     }
+    {
+      file = "0088-crucible-deterministic-host-kick-boundary.patch";
+      catalogName = "crucible-deterministic-host-kick-boundary";
+      class = "D";
+      enforces = "DET-1,DET-29,QEMU-43";
+      capability = "state-free host latency hints cannot end an active sim translation block, while between-slice and committed stop, unplug, halted, stopped, and interrupt-request kicks retain immediate progress";
+    }
+    {
+      file = "0089-crucible-exact-boundary-vcpu-introspection.patch";
+      catalogName = "crucible-exact-boundary-vcpu-introspection";
+      class = "D";
+      enforces = "DET-1,QFP-REG-1,QFP-STATE-2";
+      capability = "exact BQL-held main-loop boundaries read every quiescent vCPU register file and the committed RR cursor without a current vCPU, while arbitrary unowned contexts remain rejected";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
