@@ -201,10 +201,13 @@ nor credited twice and that the lazy frontier continues from the same state.
 ### Steer without rewriting history
 
 While the campaign remains useful, the operator grants an additional bounded
-budget, increases exploration around a route-churn region, pins one suspicious
-branch, and activates a revised survivor policy. Inspection must show the old
-planner steps under the old policy and subsequent steps under the new policy.
-Strict-mode history remains reproducible; no prior proposal changes reason.
+budget, adds a three-value finite branch request to a large integral domain,
+increases generated exploration around a route-churn region, pins one suspicious
+branch, and activates a revised survivor policy. Inspection must show the finite
+and generated sources independently, deduplicate a value proposed by both onto
+one semantic edge, show the old planner steps under the old policy, and show
+subsequent steps under the new policy. Strict-mode history remains reproducible;
+no prior request or proposal changes reason.
 
 ### Stop and seal
 
@@ -413,28 +416,71 @@ deferred only with an issue and explicit reviewer disposition.
   and operations owners. A failed or blocked safety/recovery task prevents
   release.
 
-## 14.12 Phase-by-phase manual gates
+## 14.12 Explicit branch and derivation acceptance
+
+The operator performs this flight at a pending guest integer opportunity whose
+legal domain is much larger than the active worker pool:
+
+1. inspect the opportunity, its parent `BranchPoint`, generated source,
+   expansion statistics, and available realization tiers;
+2. issue a finite request with the same stop condition for three values,
+   including one already admitted by the generated source;
+3. confirm publication creates one request/continuation, not three immediate
+   worker jobs or QEMU children;
+4. grant capacity one slot at a time and observe lazy proposal/attempt creation;
+5. confirm the duplicate value has two causes but one branch edge, execution,
+   child configuration, and reward credit;
+6. confirm the original generated continuation remains open and resumes after
+   feedback;
+7. try `branch --all` against the huge domain and verify rejection before a
+   request or snapshot is published;
+8. derive two otherwise identical strict runs with hot fork enabled and
+   disabled, proving edge and result identity is independent of realization
+   tier;
+9. inspect a retained checkpoint with no pending opportunity and confirm it is
+   not presented as a branch point;
+10. derive a new campaign from the snapshot with a revised policy and confirm
+    that it shares objects without adding an edge to the source campaign; and
+11. run a statistical report and confirm an operator execution basis is
+    excluded or separately labeled unless a predeclared estimator admitted it,
+    while a later duplicate operator cause does not reclassify an earlier valid
+    policy sample.
+
+The flight uses `branch`, `derive`, and supported debug-selection surfaces. It
+records any deprecated `fork` alias output only to verify that the UI translates
+it unambiguously to `branch`; no evidence may use “fork” without saying whether
+it means semantic branch, campaign derivation, or QEMU hot fork.
+
+- **[CMAN-21]** Operator acceptance MUST prove additive finite and generated
+  sources, lazy admission, duplicate-edge/credit deduplication, huge-domain
+  `--all` rejection, and statistical intervention labeling through supported
+  public views.
+- **[CMAN-22]** Operator acceptance MUST prove that branch, derive, hot-fork
+  realization, and debug mutation have distinct effects and terminology, and
+  that checkpoint and branch-point presence are independent.
+
+## 14.13 Phase-by-phase manual gates
 
 Manual validation begins before the final CLI phase:
 
 | Implementation phase | Required manual evidence |
 | --- | --- |
 | Phase 0 | Tabletop of the lifecycle, destructive drill, claims, and evidence manifest |
-| Phase 1 | Offline create/inspect/fork/merge/pause snapshot flight using canonical objects |
+| Phase 1 | Offline create/inspect/derive/merge/pause snapshot flight using canonical objects |
 | Phase 2 | Real guest registers choices, blocks for selections, rejects mismatch, and replays replies |
 | Phase 3 | Human cross-check of guest markers, modeled network evidence, metric windows, objectives, and finding evidence |
-| Phase 4 | Local operator flight through lazy widening, backpressure, restart, steering, and explanation |
+| Phase 4 | Local operator flight through lazy widening, additive finite branching, edge deduplication, backpressure, restart, steering, and explanation |
 | Phase 5 | Hibernate/resume, backend outage, transfer, import, corruption, pin, and GC flights |
 | Phase 6 | Lab audit of QEMU quiescence, mappings, descriptors, rings, disks, COW dirties, fallback, and repeated children |
-| Phase 7 | Atomic multi-machine fork, massive-parallelism pressure, deep templates, and 24-hour dogfood flight |
-| Phase 8 | Independent public-porcelain usability and finding-handoff flight |
+| Phase 7 | Atomic multi-machine hot fork, massive-parallelism pressure, deep templates, and 24-hour dogfood flight |
+| Phase 8 | Independent public-porcelain branch/derive terminology, statistical-intervention, usability, and finding-handoff flight |
 | Phase 9 | Full 72-hour release-candidate flight, destructive drill, maintenance transfer, cleanup, and sign-off |
 
 An implementation phase may land behind an inactive development capability
 before its operator flight. It may not be described as usable, become a default,
 or satisfy the next release milestone until its manual evidence is accepted.
 
-## 14.13 Runbook template
+## 14.14 Runbook template
 
 Each checked-in manual runbook uses this structure:
 
@@ -461,7 +507,7 @@ Runbooks are versioned with the implementation and reviewed like protocol
 fixtures. A material UI, command, storage, or recovery change updates the
 affected runbook and requires the corresponding flight before release.
 
-## 14.14 Relationship to automated testing
+## 14.15 Relationship to automated testing
 
 Manual and automated validation form a loop:
 

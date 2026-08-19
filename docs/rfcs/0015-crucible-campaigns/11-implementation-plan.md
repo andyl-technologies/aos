@@ -26,7 +26,9 @@ default campaign path until its listed gates pass.
 ## 11.2 Phase 0 — RFC review and executable contracts
 
 - [ ] **T-CAM-0.1** Review and accept the campaign vocabulary, three-plane
-  boundary, scenario/campaign split, and strict versus streaming claims.
+  boundary, scenario/campaign split, `ChoiceOpportunity`/`BranchPoint`/
+  `ExpansionState` separation, branch/derive/hot-fork terminology, and strict
+  versus streaming claims.
 - [ ] **T-CAM-0.2** Resolve the measured QEMU fork spike questions in §12 without
   weakening the fail-closed capability contract.
 - [ ] **T-CAM-0.3** Freeze requirement-to-gate mapping and assign every new wire
@@ -61,7 +63,7 @@ Primary crates: `crucible`, `crucible-cas`, and codec-only API types.
 - [ ] **T-CAM-1.6** Add schema corruption, authoring-order canonicalization,
   merge, crash-window, and provenance-lineage tests.
 - [ ] **T-CAM-1.7** Run the §14 Phase 1 offline model flight: create, inspect,
-  fork, merge, pause, resume, and audit snapshots using only public object/API
+  derive, merge, pause, resume, and audit snapshots using only public object/API
   surfaces, and publish its evidence bundle.
 
 **Gates:** `gate:campaign-model`, `gate:content-address`,
@@ -77,9 +79,9 @@ Primary crates: `crucible`, `crucible-protocol`, `crucible-shmem`,
 - [ ] **T-CAM-2.1** Implement Boolean, discrete, and integer domains; stable
   alternatives; units/scales; landmarks; choice groups; constraints; limits;
   domain hashing; and validation.
-- [ ] **T-CAM-2.2** Implement `SelectableDeclaration`, `ChoicePoint`,
-  `ChoiceClassId`, `ChoiceOffer`, `ChoiceValue`, `Selection`, and canonical
-  schedule encoding.
+- [ ] **T-CAM-2.2** Implement `SelectableDeclaration`, `ChoiceOpportunity`,
+  `ChoiceClassId`, `BranchPoint`, `ChoiceValue`, `Selection`, and canonical
+  schedule encoding with branch-point identity separated from materialization.
 - [ ] **T-CAM-2.3** Normalize genuine explorable decisions through the selection
   envelope and provide an explicit offline migration/rejection policy for older
   schedule artifacts.
@@ -89,7 +91,7 @@ Primary crates: `crucible`, `crucible-protocol`, `crucible-shmem`,
   expectations, support bounded narrowed runtime offers, and checkpoint pending
   requests exactly.
 - [ ] **T-CAM-2.6** Adapt RFC-0014 Boolean outcome, transition, and parameter
-  search surfaces to publish environment choice points without weakening typed
+  search surfaces to publish environment choice opportunities without weakening typed
   effect adapters.
 - [ ] **T-CAM-2.7** Route application randomness through the integer selectable
   model and remove the parallel raw-width exploration path.
@@ -131,15 +133,18 @@ extensions under `gate:abi-conformance`.
 Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
 `crucible-daemon`.
 
-- [ ] **T-CAM-4.1** Implement generator specs for all/discrete, boundary,
+- [ ] **T-CAM-4.1** Implement bounded finite and versioned generated
+  `CandidateSource` forms plus generator specs for all/discrete, boundary,
   stratified, logarithmic, permuted, progressive integer, and corpus mutation.
-- [ ] **T-CAM-4.2** Implement proposal, attempt, observation, credit, planner
-  step, expansion projection, and continuation state.
+- [ ] **T-CAM-4.2** Implement branch request/cause, branch-edge deduplication,
+  immutable attempt execution basis, additional-cause association, proposal,
+  attempt, observation, credit, planner step, branch-point `ExpansionState`, and
+  per-source continuation state.
 - [ ] **T-CAM-4.3** Implement progressive-widening exact rational rules,
   interval refinement, deterministic PUCT, coverage/rarity/assertion/objective
   guidance, and path backpropagation.
-- [ ] **T-CAM-4.4** Replace checkpoint-once frontier authority with an
-  attempt-level rebuildable queue and TTL lease hints.
+- [ ] **T-CAM-4.4** Replace checkpoint-once frontier authority with branch-point
+  source continuations, an attempt-level rebuildable queue, and TTL lease hints.
 - [ ] **T-CAM-4.5** Implement `CampaignSupervisor`, `CampaignProjector`,
   `ProposalPlanner`, `AttemptQueue`, and a bounded local `WorkerPool`.
 - [ ] **T-CAM-4.6** Implement strict and streaming commit modes, restart
@@ -148,10 +153,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
 - [ ] **T-CAM-4.7** Implement hierarchical per-event promotion and existing
   minimization integration.
 - [ ] **T-CAM-4.8** Complete the §14 Phase 4 local operator flight through lazy
-  widening, live status, explanation, bounded pressure, pause/restart/resume,
-  steering, and graceful stop.
+  widening, additive finite branching, edge deduplication, live status,
+  explanation, bounded pressure, pause/restart/resume, steering, and graceful
+  stop.
 
-**Gates:** `gate:lazy-frontier`, `gate:attempt-idempotence`,
+**Gates:** `gate:branch-point-model`, `gate:lazy-frontier`, `gate:attempt-idempotence`,
 `gate:campaign-replay`, `gate:campaign-statistics`, `gate:harness-lint`.
 
 **Manual gate:** accepted §14 Phase 4 local campaign flight.
@@ -252,13 +258,16 @@ non-default before this gate.
 Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
 
 - [ ] **T-CAM-8.1** Implement campaign create/validate/start/pause/resume/stop,
-  budget, steer, fork, status, and watch.
+  budget, steer, semantic `branch`, campaign `derive`, status, and watch, with
+  `fork` only as a deprecated compatibility alias for `branch` if needed.
 - [ ] **T-CAM-8.2** Implement graph/frontier/choices/findings/explain/compare
-  queries with pagination and versioned JSON.
+  queries with branch-point/source/provenance views, pagination, and versioned
+  JSON.
 - [ ] **T-CAM-8.3** Implement pin/unpin, replay/debug, export/import,
   push/pull/sync, and plan/apply GC.
 - [ ] **T-CAM-8.4** Route existing run/search/fuzz/save/resume/fork/replay/triage
-  through common campaign primitives and remove parallel state models.
+  through common branch-request and campaign primitives and remove parallel
+  explicit-fork/search-expansion state models.
 - [ ] **T-CAM-8.5** Publish user documentation and the worked network campaign
   as an executable fixture.
 - [ ] **T-CAM-8.6** Have an operator who did not implement the feature complete
@@ -298,6 +307,8 @@ evidence.
 This RFC is implemented only when:
 
 - typed environment and guest choices use one selection model;
+- explicit finite branches and generated exploration use one branch-point,
+  request, edge, and lazy expansion model with provenance-preserving dedup;
 - large integral domains are explored lazily with feedback and progressive
   widening;
 - campaign pause/restart reconstructs the complete frontier and knowledge;
@@ -308,7 +319,7 @@ This RFC is implemented only when:
 - user-facing campaign commands operate on the one snapshot model;
 - an independent operator completes the public lifecycle and another
   investigator reproduces a finding solely from its exported bundle;
-- destructive process, host, store, credential, pressure, fork, and GC drills
+- destructive process, host, store, credential, pressure, hot-fork, and GC drills
   preserve the last authenticated state and require no private repair;
 - the realistic 72-hour dogfood flight sustains useful parallelism, steering,
   hibernation, handoff, and clean resource accounting;
@@ -321,18 +332,18 @@ area mapping ensures that no part of the RFC is merely aspirational:
 
 | Requirements | Primary phases | Primary gates |
 | --- | --- | --- |
-| `CAM-1..13` | 1–9 | campaign model, replay, continuity, ABI, license boundary, manual acceptance |
-| `CMOD-1..22` | 1, 4 | campaign model, content address, attempt idempotence, continuity |
-| `SEL-1..20` | 2 | typed choice, ABI conformance, end-to-end determinism |
-| `GUIDE-1..20` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
-| `LAZY-1..18` | 4 | lazy frontier, attempt idempotence, campaign replay |
+| `CAM-1..14` | 1–9 | campaign model, replay, continuity, ABI, license boundary, manual acceptance |
+| `CMOD-1..28` | 1, 2, 4 | campaign model, content address, attempt idempotence, continuity |
+| `SEL-1..21` | 2 | typed choice, ABI conformance, end-to-end determinism |
+| `GUIDE-1..24` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
+| `LAZY-1..19` | 4 | lazy frontier, attempt idempotence, campaign replay |
 | `HFORK-1..24` | 6, 7 | hot-fork equivalence/isolation/scaling, world-fork atomicity, ABI/license |
 | `CSTORE-1..22` | 1, 5 | store equivalence, replication, exact-closure streaming, continuity |
-| `CAPI-1..10` | 8 | CLI/API contracts, continuity, campaign replay |
+| `CAPI-1..13` | 8 | CLI/API contracts, continuity, campaign replay |
 | `CMEAS-1..14` | 3, 8 | campaign model, replay, ABI conformance |
 | `CSEC-1..12` | 1–9 | license boundary, ABI conformance, isolation, store equivalence |
-| `CPERF-1..7` | 4–7, 9 | lazy frontier, hot-fork scaling/equivalence, exact-closure streaming |
-| `CMAN-1..20` | 0–9 | operator acceptance, destructive recovery, dogfood, campaign replay |
+| `CPERF-1..8` | 4–7, 9 | branch-point model, lazy frontier, hot-fork scaling/equivalence, exact-closure streaming |
+| `CMAN-1..22` | 0–9 | operator acceptance, destructive recovery, dogfood, campaign replay |
 
 The executable traceability check required by T-CAM-0.4 must expand every range,
 name at least one implementing task and test for each requirement, reject stale

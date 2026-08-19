@@ -106,7 +106,7 @@ packet-loss faults, while `latency_us` is active for latency steps. The
 constraint result and schema version are part of the proposal evidence.
 
 The second fault uses the same definitions but derives different
-`ChoiceInstanceId` values from the later parent and phase. It may also admit a
+`ChoiceOpportunityId` values from the later parent and phase. It may also admit a
 disk stall or guest memory-fault selectable if the scenario declares those
 environment adapters. They enter the same path and policy; no special
 cross-fault scheduler is required.
@@ -204,7 +204,7 @@ immutable local template. If any member cannot prepare safely, it emits an
 explanatory operational event and creates an exact checkpoint closure instead.
 The semantic node is the same in either case.
 
-### 2. Open only the initial useful alternatives
+### 2. Discover branch points and open only useful alternatives
 
 The planner does not compute the Cartesian product of every guest and
 environment value. Each selectable's candidate generator emits a small,
@@ -212,25 +212,49 @@ deterministic set of anchors. Constraints compose compatible candidates into
 proposals, and the policy admits only enough proposals to fill available
 capacity and its initial widening allowance.
 
+At the pending selection boundary, each typed `ChoiceOpportunity` is paired
+with the authenticated parent configuration to create a `BranchPoint`. The
+campaign's requests, proposals, observations, statistics, and candidate-source
+continuations for that location form its `ExpansionState`. They do not alter the
+parent scenario state.
+
 Conceptually, the frontier begins like this:
 
 ```text
-fault.transport.ready
-├── link_down / retain_and_probe / default timers
-├── link_down / withdraw_then_relearn / default timers
-├── packet_loss=100bps / retain_and_probe / default timers
-├── latency=10ms / retain_and_probe / default timers
-└── continuation: unexplored fault and response candidates
+fault.transport.ready @ configuration C0
+└── ◇ first-disruption response/fault branch group
+    ├── link_down / retain_and_probe / default timers
+    ├── link_down / withdraw_then_relearn / default timers
+    ├── packet_loss=100bps / retain_and_probe / default timers
+    ├── latency=10ms / retain_and_probe / default timers
+    └── generated continuation: more fault and response candidates
 ```
 
 The final line is compact continuation state, not thousands of queued branch
 records. It records exactly how to generate the next candidate when widening
 or capacity asks for one.
 
-### 3. Fork children into private worlds
+An operator investigating a suspected timer threshold can add a bounded finite
+source without replacing that continuation:
 
-For each admitted proposal, the daemon requests a child from the prepared
-world. Guest RAM is initially shared as copy-on-write pages. The child receives
+```text
+crucible campaign branch network-recovery \
+  --at C0 \
+  --point recovery.hold_down_us \
+  --values 18000,20000,22000 \
+  --attempts 3
+```
+
+The legal hold-down domain still contains millions of values; only the request
+has cardinality three. The three values are pulled under ordinary daemon
+backpressure. If `20000` was already proposed by the adaptive generator, both
+causes appear in the explanation for one semantic edge and no duplicate child
+is admitted.
+
+### 3. Realize branch attempts as private QEMU children
+
+For each newly admitted semantic attempt, the daemon requests a child from the
+prepared world. Guest RAM is initially shared as copy-on-write pages. The child receives
 new sockets, rings, epochs, run directories, overlay disks, process identities,
 and fabric endpoints before it becomes runnable. The parent remains frozen.
 
@@ -272,7 +296,7 @@ promising but exhibits occasional route churn. The policy can:
   front; and
 - increase priority for novel fault shapes or near-property failures.
 
-That feedback generates new proposals from suspended continuations. It does not
+That feedback generates new proposals from suspended source continuations. It does not
 mutate prior paths or invent a node before a concrete candidate is admitted.
 
 ### 6. Continue survivors through a second fault
@@ -326,7 +350,7 @@ A useful status view emphasizes semantic progress:
 ```text
 Campaign: network-recovery        Mode: strict       Snapshot: 7f4d…
 Attempts: 18,432 / 100,000        Running: 251       Ready: lazy
-Decision nodes: 3,981             Continuations: 612 Findings: 4
+Branch points: 3,981              Continuations: 612 Findings: 4
 Realizations: 37 hot templates, 29 exact closures, 3,915 recipes
 Pareto front: 23 paths            Store: 48 GiB logical / 9.7 GiB physical
 
@@ -344,6 +368,15 @@ crucible campaign frontier network-recovery --explain
 crucible campaign compare network-recovery --pareto
 crucible campaign graph network-recovery --around finding:loop-004
 ```
+
+Branch-point inspection distinguishes the operator's finite request from the
+policy generator, reports their remaining candidates independently, and shows
+their shared edge for any duplicate value. The operator request is labeled an
+intervention when its proposal is the attempt's execution basis: it contributes
+to bug-finding and performance comparison, but a later statistical report
+excludes it unless a confirmation policy explicitly models that selection
+mechanism. If the policy had already admitted the attempt, the operator proposal
+is only an additional cause and does not reclassify the original sample.
 
 Steering creates a new policy snapshot. For example, an operator may add a
 budget to the route-churn region or pin a suspected branch. The previous
@@ -390,7 +423,7 @@ At the end of this search policy, Crucible may claim:
 It may not claim exhaustive coverage of the integer products merely because
 progressive widening stopped, nor estimate real-world probabilities from the
 adaptive sample without a declared target model and valid estimator. A later
-confirmation campaign can branch from selected checkpoints and use a fixed or
+confirmation campaign can derive from selected checkpoints and use a fixed or
 recorded probabilistic policy to make those statistical claims.
 
 ## Why the pieces form one model
@@ -399,6 +432,6 @@ This campaign has one scenario graph, one typed choice vocabulary, one record
 of realized selections, one lazy frontier, and one immutable evidence history.
 Cheap QEMU forks make broad local exploration practical; exact closures make
 important states durable and portable; adaptive scheduling decides where the
-next fork is valuable; and guest measurements close the feedback loop. None of
-those mechanisms substitutes for another, and none changes the semantic path
-being explored.
+next semantic branch is valuable; and guest measurements close the feedback
+loop. None of those mechanisms substitutes for another, and none changes the
+semantic path being explored.

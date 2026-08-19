@@ -30,7 +30,7 @@ such as `network-recovery -> CampaignSnapshotId`.
 - **[CMOD-10]** A policy revision MUST NOT change existing configuration IDs.
   Every proposal MUST name the policy revision that issued it.
 - **[CMOD-11]** A QEMU, Crucible, guest protocol, shared-memory protocol, scenario
-  schema, or exact-closure compatibility change MUST fork a new lineage unless
+  schema, or exact-closure compatibility change MUST begin a new lineage unless
   the relevant version contract explicitly admits the old representation.
 
 ## 01.2 Campaign policy
@@ -91,8 +91,8 @@ The roots name immutable canonical maps or sets:
 
 | Root | Contents |
 | --- | --- |
-| `graph_root` | Configurations, schedule edges, choice-point locations, and graph metadata. |
-| `exploration_root` | Proposal and planner-step facts, generator specifications, and derived continuation snapshots. |
+| `graph_root` | Configurations, branch points, schedule edges, and graph metadata. |
+| `exploration_root` | Branch requests, proposals, planner-step facts, candidate-source specifications, and derived expansion-state snapshots. |
 | `observations_root` | Attempt results, measurements, properties, coverage projections, and causal evidence. |
 | `corpus_root` | Retained configurations and reproduction artifacts worth further mutation. |
 | `coverage_root` | Grow-only union of canonical coverage identities. |
@@ -112,9 +112,11 @@ The roots name immutable canonical maps or sets:
 
 ```rust,illustrative
 pub enum CampaignFact {
-    ChoiceDiscovered(ChoicePoint),
+    ChoiceOpportunityDiscovered(ChoiceOpportunity),
+    BranchRequestIssued(BranchRequest),
     PlannerAdvanced(PlannerStep),
     ProposalIssued(Proposal),
+    AttemptAdmitted(AttemptAdmission),
     ObservationPublished(Observation),
     FindingPublished(Finding),
     PolicyActivated(PolicyActivation),
@@ -135,7 +137,7 @@ pub struct PlannerStep {
     pub parent: Option<PlannerStepId>,
     pub policy: CampaignPolicyId,
     pub observation_basis: ContentHash,
-    pub selected_expansion: ExpansionKey,
+    pub selected_branch_point: BranchPointId,
     pub issued_proposals: Vec<ProposalId>,
     pub score_evidence: GuidanceEvidence,
 }
@@ -147,16 +149,50 @@ pub struct PlannerStep {
   canonical frontier, statistics, and reports. Projection caches that disagree
   are corrupt and MUST be rejected.
 
-## 01.5 Expansion, proposal, attempt, and observation
+## 01.5 Branch point, request, proposal, attempt, and observation
 
 ```rust,illustrative
-pub struct ExpansionKey {
+pub struct BranchPoint {
+    pub id: BranchPointId,
     pub parent: ConfigurationId,
-    pub choice_point: ChoicePointId,
+    pub opportunity: ChoiceOpportunityId,
+}
+
+pub struct BranchRequest {
+    pub branch_point: BranchPointId,
+    pub source: CandidateSource,
+    pub cause: BranchRequestCause,
+    pub budget: BranchBudget,
+    pub stop: StopCondition,
+}
+
+pub enum CandidateSource {
+    Finite {
+        values: CanonicalSet<ChoiceValue>,
+    },
+    Generated {
+        generator: CandidateGeneratorSpecId,
+    },
+}
+
+pub struct BranchBudget {
+    pub maximum_proposals: u64,
+    pub maximum_attempts: u64,
+}
+
+pub enum BranchRequestCause {
+    Planner {
+        policy: CampaignPolicyId,
+        observation_basis: ContentHash,
+    },
+    Operator(CampaignCommandId),
+    Debugger(DebugSessionId),
+    ExhaustivePolicy(CampaignPolicyId),
 }
 
 pub struct Proposal {
-    pub expansion: ExpansionKey,
+    pub branch_point: BranchPointId,
+    pub request: BranchRequestId,
     pub domain: ChoiceDomainId,
     pub value: ChoiceValue,
     pub policy: CampaignPolicyId,
@@ -164,29 +200,77 @@ pub struct Proposal {
     pub guidance_basis: ContentHash,
 }
 
+pub struct BranchEdge {
+    pub branch_point: BranchPointId,
+    pub domain: ChoiceDomainId,
+    pub value: ChoiceValue,
+}
+
 pub struct Attempt {
-    pub proposal: ProposalId,
+    pub edge: BranchEdgeId,
     pub parent: ConfigurationId,
     pub selection: Selection,
     pub stop: StopCondition,
 }
 
+pub struct AttemptAdmission {
+    pub attempt: AttemptId,
+    pub proposal: ProposalId,
+    pub role: AttemptAdmissionRole,
+}
+
+pub enum AttemptAdmissionRole {
+    ExecutionBasis,
+    AdditionalCause,
+}
+
 pub struct Observation {
     pub attempt: AttemptId,
     pub child: ConfigurationId,
-    pub path: Vec<SelectionId>,
+    pub path: Vec<BranchEdgeId>,
     pub stop: StopOutcome,
     pub measurements: MeasurementSetId,
     pub properties: PropertyVerdictSetId,
     pub coverage: CoverageProjectionId,
-    pub discovered_choices: Vec<ChoicePointId>,
+    pub discovered_choices: Vec<ChoiceOpportunityId>,
 }
 ```
 
-`AttemptId` is a digest of semantic attempt inputs. Lease owner, retry number,
-start time, and preferred materialization are excluded. A repeated attempt may
-produce identical bytes and deduplicate. If it does not, the replay oracle
-localizes a determinism defect.
+`BranchPointId` is the digest of `(parent, opportunity)`. `BranchEdgeId` is the
+digest of the canonical `BranchEdge`. The completed observation binds that edge
+to its authenticated child configuration in the temporal graph. Request cause
+and proposal provenance are intentionally absent from both identities. If a
+policy generator and an operator's finite request both emit the same value, both
+proposal facts remain visible but they converge on one branch edge and one
+semantic attempt when stop and other execution inputs also match. Requests with
+different stop conditions still share the edge but may admit distinct attempts.
+This is campaign-knowledge deduplication, not a loss of audit history.
+
+A finite source is bounded by the request even when the selectable's legal
+domain is enormous. For example, an operator may request `{0, 20_000, 500_000}`
+from an integer domain containing billions of values. A generated source names
+a versioned deterministic generator and derives its continuation from facts.
+Both sources are consumed lazily under `BranchBudget`; neither creates all
+attempts at request publication time.
+
+`maximum_proposals` bounds values emitted by that request, including values that
+deduplicate against prior work. `maximum_attempts` bounds new semantic attempts
+that request may cause. Attaching a new proposal cause to an already admitted
+edge consumes no attempt and never re-executes it merely to satisfy provenance.
+
+Planner cause names policy and observation basis directly rather than the
+`PlannerStepId` that records resulting proposals. This keeps the content graph
+acyclic while preserving the full causal chain.
+
+`AttemptId` is the digest of the canonical `Attempt` semantic inputs. Lease
+owner, retry number, start time, preferred materialization, branch request, and
+proposal cause are excluded. Separate `AttemptAdmission` facts link every
+proposal that justified the attempt. Exactly one `ExecutionBasis` says which
+proposal spent the attempt budget and fixes statistical sampling provenance;
+later duplicates are `AdditionalCause` and cannot trigger execution or
+retroactively change estimator eligibility. A repeated attempt may produce
+identical bytes and deduplicate. If it does not, the replay oracle localizes a
+determinism defect.
 
 - **[CMOD-17]** A proposal MUST validate its value against the named domain
   before an attempt can be admitted.
@@ -197,19 +281,18 @@ localizes a determinism defect.
   are observation outcomes. Worker loss, daemon restart, lease expiry, and store
   unavailability are operational outcomes and MUST NOT be assigned modeled
   reward.
-
 ## 01.6 Derived continuation state
 
-For one `ExpansionKey`, the projection computes:
+For one `BranchPointId`, the campaign projects an `ExpansionState`:
 
 ```rust,illustrative
-pub struct ExpansionContinuation {
-    pub expansion: ExpansionKey,
-    pub generator: CandidateGeneratorId,
+pub struct ExpansionState {
+    pub branch_point: BranchPointId,
+    pub requests: ContentHash,
     pub proposals: ContentHash,
     pub observations: ContentHash,
     pub statistics: ExpansionStatistics,
-    pub state: ContinuationState,
+    pub continuations: MerkleMap<BranchRequestId, ContinuationState>,
 }
 
 pub enum ContinuationState {
@@ -221,10 +304,13 @@ pub enum ContinuationState {
 }
 ```
 
-This object may be cached, but it is derived from the policy, choice point,
-proposals, and observations. A static generator's next cursor is the first
-unissued ordinal. An adaptive generator additionally derives its interval tree,
-per-arm rewards, and widening eligibility from observations.
+This object may be cached, but it is derived from branch requests, policy,
+choice opportunity, proposals, and observations. A finite source's next cursor
+is the first unissued value in canonical request order. A generated source
+additionally derives its interval tree, per-arm rewards, and widening
+eligibility from observations. Adding a finite operator request does not close,
+replace, or reset any generated continuation already attached to the branch
+point.
 
 ## 01.7 Lifecycle
 
@@ -234,7 +320,7 @@ daemon process:
 ```text
 created -> running -> paused -> running -> quiescent/completed
                \                    /
-                -> forked lineage --
+                -> derived campaign --
 ```
 
 `pause` stops new attempt issuance and chooses a declared active-attempt policy:
@@ -250,5 +336,27 @@ sealed it.
 - **[CMOD-21]** Steering future exploration MUST publish a new policy object and
   activation fact. It MUST NOT rewrite prior proposals, observations, or
   findings.
-- **[CMOD-22]** Forking a campaign from an older snapshot creates a new named ref
-  sharing all immutable reachable objects. It MUST NOT copy the object closure.
+- **[CMOD-22]** Deriving a campaign from an older snapshot or configuration
+  creates a new named ref sharing all immutable reachable objects. It MUST NOT
+  copy the object closure.
+- **[CMOD-23]** `BranchPointId` MUST identify the pair of a parent
+  `ConfigurationId` and stable `ChoiceOpportunityId`. Campaign policy, request
+  cause, candidate source, and materialization tier MUST NOT enter that ID.
+- **[CMOD-24]** The semantic edge for one legal selected value at a branch point
+  MUST deduplicate regardless of whether planner, operator, debugger, or
+  exhaustive requests proposed it. Every proposal cause remains separately
+  auditable as campaign knowledge.
+- **[CMOD-25]** Creating semantic alternatives, deriving a named campaign,
+  hot-forking a QEMU realization, and mutating a debugger session MUST remain
+  distinct operations in canonical schemas, APIs, CLI output, and audit facts.
+- **[CMOD-26]** Checkpoint presence and hot-fork eligibility MUST be
+  materialization metadata. Neither may create, remove, or change a semantic
+  branch point or edge.
+- **[CMOD-27]** A finite `CandidateSource` MUST have an explicit cardinality
+  bound and validate every value before publication. Publishing a branch
+  request MUST NOT eagerly create its proposals, attempts, configurations, or
+  QEMU children.
+- **[CMOD-28]** Each admitted attempt MUST have exactly one immutable
+  `ExecutionBasis`. Additional request causes MUST NOT consume another attempt,
+  change sampling provenance, or trigger another execution. Conflicting
+  execution bases are a campaign-integrity error.

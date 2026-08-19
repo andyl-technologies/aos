@@ -141,7 +141,7 @@ property verdict set
 measurement definitions and exact samples
 aggregated metric vector
 coverage projection
-discovered choice points
+discovered choice opportunities and branch points
 event-log range and evidence digests
 ```
 
@@ -173,7 +173,8 @@ The canonical campaign event vocabulary includes:
 campaign-created
 policy-activated
 budget-granted
-choice-discovered
+choice-opportunity-discovered
+branch-request-issued
 proposal-issued
 attempt-observed
 credit-applied
@@ -250,9 +251,10 @@ registers, memory, device state, event history, signals, bindings, selections,
 and metrics does not change the run.
 
 Resume, step, or selection override from the retained configuration creates a
-new canonical campaign branch only if it uses an admitted scenario choice.
-Arbitrary register/memory writes, skipped events, and QMP mutations create a
-non-canonical debugger branch with explicit provenance.
+new canonical campaign branch only if it publishes a debugger-caused
+`BranchRequest` at a declared branch point. Arbitrary register/memory writes,
+skipped events, and QMP mutations create a non-canonical derived debug session
+with explicit provenance.
 
 - **[CMEAS-13]** Debugger actions MUST never mutate the retained campaign object
   or exact closure. Every writable session receives private overlays and host
@@ -265,7 +267,8 @@ For any configuration or proposal, the system can answer:
 ```text
 Why was this value legal?
 Which producer offered it?
-Which generator proposed it?
+Which finite or generated source proposed it, and why was that request issued?
+Did another request cause deduplicate onto the same semantic edge?
 Which observation snapshot and scores caused the planner to choose it?
 Which checkpoint realized the parent?
 What exact selection entered the schedule?
