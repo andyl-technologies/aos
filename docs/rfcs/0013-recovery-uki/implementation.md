@@ -7,9 +7,12 @@ invariants.
 
 ## Implementation status
 
-Phases 1 through 8 are implemented. Final fleet qualification remains in
-progress; the implementation details and remaining release prerequisite are
-recorded below. Every base initrd now carries an impossible root
+Phases 1 through 8 are implemented, and the complete measured-boot fleet
+qualification exercises the normal A/B path, both recovery copies, interrupted
+publication, signed-media restore, identity rejection, TPM policy, and real
+counted-root corruption with known-good fallback. The implementation details
+and continuing deployment escrow prerequisite are recorded below. Every base
+initrd now carries an impossible root
 password hash and masks the upstream interactive emergency and rescue
 services. The debug profile retains separate, explicitly enabled direct
 gettys; its stage-2 empty root password remains part of that development-only
