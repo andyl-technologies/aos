@@ -1,0 +1,2131 @@
+//! Coordinator mutation, planner, and incremental-history repository tests.
+
+use super::*;
+
+#[test]
+fn create_and_control_form_linear_authenticated_history() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("network-recovery", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    assert_eq!(
+        repository.state("network-recovery").expect("state"),
+        CampaignState::Created
+    );
+
+    let resume = command(
+        "resume",
+        genesis.snapshot_id(),
+        CampaignControlAction::Resume,
+    );
+    let resumed = repository
+        .apply_control("network-recovery", &resume)
+        .expect("resume");
+    assert_eq!(resumed.prior_snapshot, genesis.snapshot_id());
+    assert_eq!(
+        repository.state("network-recovery").expect("state"),
+        CampaignState::Running
+    );
+
+    let pause = command(
+        "pause",
+        resumed.new_snapshot,
+        CampaignControlAction::Pause(crate::ActiveAttemptPolicy::Drain),
+    );
+    let paused = repository
+        .apply_control("network-recovery", &pause)
+        .expect("pause");
+    assert_eq!(
+        repository.state("network-recovery").expect("state"),
+        CampaignState::Paused
+    );
+    assert_ne!(paused.new_snapshot, resumed.new_snapshot);
+}
+
+#[test]
+fn policy_activation_cannot_change_campaign_reproducibility_mode() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("policy-mode", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let streaming = CampaignPolicy::new(
+        policy.scenario(),
+        policy.campaign_seed(),
+        CampaignMode::Streaming,
+        policy.explorer().clone(),
+        policy.choice_policies().clone(),
+        policy.objectives().clone(),
+        policy.guidance().clone(),
+        policy.stop_conditions().clone(),
+        policy.fairness(),
+        policy.retention(),
+        policy.admits_scenario_defaults(),
+    )
+    .expect("streaming policy");
+    let streaming = CampaignPolicyId::from_content_id(
+        repository
+            .publish_policy(&streaming)
+            .expect("publish streaming policy"),
+    )
+    .expect("streaming policy id");
+    let activate = command(
+        "policy-mode-change",
+        genesis.snapshot_id(),
+        CampaignControlAction::ActivatePolicy(streaming),
+    );
+
+    assert!(matches!(
+        repository.apply_control("policy-mode", &activate),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "activated-policy-mode-mismatch"
+        })
+    ));
+    assert_eq!(
+        repository
+            .head("policy-mode")
+            .expect("unchanged policy head")
+            .snapshot_id(),
+        genesis.snapshot_id()
+    );
+
+    let parent = repository
+        .read_snapshot(genesis.content_id())
+        .expect("policy parent");
+    let control = CampaignFact::ControlRequested(activate.clone());
+    let control_content = repository.put_fact(&control).expect("put forged control");
+    let mut accounting = repository
+        .merkle
+        .insert(
+            parent.snapshot.roots().accounting,
+            map_key_hash("accounting.command", activate.command.as_hash()),
+            control_content,
+        )
+        .expect("forged command accounting");
+    let activation = CampaignFact::PolicyActivated(
+        PolicyActivation::new(policy.id().expect("prior policy"), streaming)
+            .expect("forged activation"),
+    );
+    let activation_content = repository
+        .put_fact(&activation)
+        .expect("put forged activation");
+    accounting = repository
+        .insert_fact(accounting, &activation, activation_content)
+        .expect("forged activation accounting");
+    let mut roots = parent.snapshot.roots();
+    roots.accounting = accounting.content_id();
+    let forged = CampaignSnapshot::successor(
+        genesis.snapshot_id(),
+        parent.snapshot.lineage(),
+        streaming,
+        roots,
+        CampaignFactId::from_content_id(control_content).expect("control fact id"),
+    )
+    .expect("forged mode-change successor");
+    let forged_content = repository
+        .put_snapshot(&forged)
+        .expect("put forged mode-change successor");
+    assert!(matches!(
+        repository.validate_complete_head(forged_content),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "activated-policy-mode-mismatch"
+        })
+    ));
+}
+
+#[test]
+fn planner_no_work_is_owned_replayable_and_state_continuous() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("planner-owner", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let engine = PlannerEngine::new("closed-rust", 1, 1, BTreeSet::new()).expect("planner engine");
+    let initial_state = PlannerState::new(
+        engine.id().expect("engine id"),
+        "closed-rust-state",
+        1,
+        vec![0],
+    )
+    .expect("initial state");
+    let (engine, artifact, invocation) = planner_basis(
+        &repository,
+        "planner-owner",
+        genesis.snapshot_id(),
+        initial_state,
+    );
+    let next_state = PlannerState::new(
+        engine.id().expect("engine id"),
+        "closed-rust-state",
+        1,
+        vec![1],
+    )
+    .expect("next state");
+    let proposal = no_work_proposal(invocation.id().expect("invocation id"), next_state.clone());
+    let measured = PlanningUsage {
+        branch_requests: 0,
+        proposals: 0,
+        input_objects: 0,
+        input_bytes: 0,
+        fuel: 5,
+    };
+    let accepted = repository
+        .accept_planner_step("planner-owner", genesis.snapshot_id(), &proposal, measured)
+        .expect("accept planner step");
+    assert!(!accepted.replayed);
+    let step = repository
+        .load_planner_step(accepted.step)
+        .expect("load accepted step");
+    assert_eq!(step.parent(), None);
+    assert_eq!(step.usage_claim(), proposal.usage_claim());
+    assert_eq!(step.accounting().input_objects, measured.input_objects);
+    assert_eq!(step.accounting().input_bytes, measured.input_bytes);
+    assert_eq!(step.accounting().fuel, measured.fuel);
+
+    let accepted_head = repository.head("planner-owner").expect("accepted head");
+    assert_eq!(
+        accepted_head
+            .snapshot()
+            .planning_view()
+            .id()
+            .expect("accepted planning view"),
+        invocation.input_view()
+    );
+    assert_eq!(
+        repository
+            .merkle
+            .inspect_shallow(accepted_head.snapshot().roots().coordination)
+            .expect("planner coordination root")
+            .entry_count(),
+        3
+    );
+    let replay = repository
+        .accept_planner_step("planner-owner", genesis.snapshot_id(), &proposal, measured)
+        .expect("replay planner step");
+    assert!(replay.replayed);
+    assert_eq!(replay.step, accepted.step);
+    assert_eq!(replay.new_snapshot, accepted.new_snapshot);
+
+    let conflicting = no_work_proposal(
+        invocation.id().expect("invocation id"),
+        PlannerState::new(
+            engine.id().expect("engine id"),
+            "closed-rust-state",
+            1,
+            vec![9],
+        )
+        .expect("conflicting state"),
+    );
+    assert!(matches!(
+        repository.accept_planner_step(
+            "planner-owner",
+            genesis.snapshot_id(),
+            &conflicting,
+            measured,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "planner-invocation-result-conflict"
+        })
+    ));
+    let oversized = PlanningUsage {
+        input_bytes: 8193,
+        ..measured
+    };
+    assert!(matches!(
+        repository.accept_planner_step(
+            "planner-owner",
+            genesis.snapshot_id(),
+            &proposal,
+            oversized,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "planner-step-invocation-budget-exceeded"
+        })
+    ));
+
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "planner-state-continuity",
+    );
+    let requested = repository
+        .submit_known_branch_request("planner-owner", accepted.new_snapshot, &request)
+        .expect("submit intervening request");
+    let wrong_input_state = PlannerState::new(
+        engine.id().expect("engine id"),
+        "closed-rust-state",
+        1,
+        vec![99],
+    )
+    .expect("wrong input state");
+    assert!(matches!(
+        repository.prepare_planner_invocation(
+            "planner-owner",
+            requested.new_snapshot,
+            &engine,
+            &artifact,
+            &wrong_input_state,
+            None,
+            16,
+            PlanningBudget::new(4, 4, 16, 8192, 100).expect("planner budget"),
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "planner-step-parent-state-discontinuity"
+        })
+    ));
+
+    let (_, _, next_invocation) = planner_basis(
+        &repository,
+        "planner-owner",
+        requested.new_snapshot,
+        next_state.clone(),
+    );
+    assert_eq!(
+        next_invocation.policy_artifact(),
+        artifact.id().expect("artifact id")
+    );
+    let final_state = PlannerState::new(
+        engine.id().expect("engine id"),
+        "closed-rust-state",
+        1,
+        vec![2],
+    )
+    .expect("final state");
+    let second_proposal = no_work_proposal(
+        next_invocation.id().expect("next invocation id"),
+        final_state.clone(),
+    );
+    let second_measured = PlanningUsage {
+        branch_requests: 0,
+        proposals: 0,
+        input_objects: next_invocation.scan_page().input_objects(),
+        input_bytes: next_invocation.scan_page().input_bytes(),
+        fuel: measured.fuel,
+    };
+    let second = repository
+        .accept_planner_step(
+            "planner-owner",
+            requested.new_snapshot,
+            &second_proposal,
+            second_measured,
+        )
+        .expect("second planner step");
+    assert_eq!(
+        repository
+            .load_planner_step(second.step)
+            .expect("second step")
+            .parent(),
+        Some(accepted.step)
+    );
+
+    let missing_invocation = PlannerInvocationId::from_content_id(ContentId::for_bytes(
+        ObjectKind::Policy,
+        2,
+        b"missing parent invocation",
+    ))
+    .expect("missing invocation id");
+    let accepted_accounting = PlanningAccounting {
+        branch_requests: 0,
+        proposals: 0,
+        attempts: 0,
+        deduplicated: 0,
+        input_objects: second_measured.input_objects,
+        input_bytes: second_measured.input_bytes,
+        fuel: second_measured.fuel,
+    };
+    let incomplete_parent = PlannerStep::new(
+        None,
+        missing_invocation,
+        next_invocation.policy(),
+        next_invocation.engine(),
+        next_invocation.policy_artifact(),
+        next_invocation.input_view(),
+        PlannerDisposition::NoWork,
+        next_invocation.planner_state(),
+        second_proposal.usage_claim(),
+        accepted_accounting,
+        second_proposal.explanation().clone(),
+    )
+    .expect("incomplete parent");
+    let incomplete_parent_content = repository
+        .put_planner_step(&incomplete_parent)
+        .expect("put incomplete parent");
+    let incomplete_parent_id =
+        PlannerStepId::from_content_id(incomplete_parent_content).expect("parent id");
+    let child = PlannerStep::new(
+        Some(incomplete_parent_id),
+        next_invocation.id().expect("next invocation id"),
+        next_invocation.policy(),
+        next_invocation.engine(),
+        next_invocation.policy_artifact(),
+        next_invocation.input_view(),
+        PlannerDisposition::NoWork,
+        final_state.id().expect("final state id"),
+        second_proposal.usage_claim(),
+        accepted_accounting,
+        second_proposal.explanation().clone(),
+    )
+    .expect("child step");
+    let child_content = repository.put_planner_step(&child).expect("put child");
+    let child_id = PlannerStepId::from_content_id(child_content).expect("child id");
+    assert!(matches!(
+        repository.load_planner_step(child_id),
+        Err(CampaignRepositoryError::Store(StoreError::NotFound { .. }))
+    ));
+}
+
+#[test]
+fn planner_scan_results_are_bound_to_exact_served_pages() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("planner-pages", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let first_request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "first-planner-page-request",
+    );
+    let first = repository
+        .submit_known_branch_request("planner-pages", genesis.snapshot_id(), &first_request)
+        .expect("first request");
+    let second_request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "second-planner-page-request",
+    );
+    let second = repository
+        .submit_known_branch_request("planner-pages", first.new_snapshot, &second_request)
+        .expect("second request");
+
+    let mut expected_positions = [
+        PlanningScanPosition::new(
+            first_request.branch_point(),
+            first_request.id().expect("first request id"),
+        ),
+        PlanningScanPosition::new(
+            second_request.branch_point(),
+            second_request.id().expect("second request id"),
+        ),
+    ];
+    expected_positions.sort();
+    let engine = PlannerEngine::new("closed-rust", 1, 1, BTreeSet::new()).expect("planner engine");
+    let initial_state = PlannerState::new(
+        engine.id().expect("engine id"),
+        "closed-rust-state",
+        1,
+        vec![0],
+    )
+    .expect("initial state");
+    let (engine, artifact, invocation) = planner_basis_with_page(
+        &repository,
+        "planner-pages",
+        second.new_snapshot,
+        initial_state.clone(),
+        None,
+        1,
+    );
+    assert_eq!(invocation.scan_page().positions(), &expected_positions[..1]);
+    assert!(!invocation.scan_page().complete());
+    assert!(matches!(
+        repository.prepare_planner_invocation(
+            "planner-pages",
+            second.new_snapshot,
+            &engine,
+            &artifact,
+            &initial_state,
+            Some(expected_positions[0]),
+            1,
+            PlanningBudget::new(4, 4, 16, 8192, 100).expect("planner budget"),
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "planner-invocation-scan-start-mismatch"
+        })
+    ));
+    let measured = PlanningUsage {
+        branch_requests: 0,
+        proposals: 0,
+        input_objects: invocation.scan_page().input_objects(),
+        input_bytes: invocation.scan_page().input_bytes(),
+        fuel: 1,
+    };
+    let next_state = PlannerState::new(
+        engine.id().expect("engine id"),
+        "closed-rust-state",
+        1,
+        vec![1],
+    )
+    .expect("next state");
+    repository
+        .put_planner_state(&next_state)
+        .expect("put forged-step state");
+    let false_eof_page = PlanningScanPage::new(
+        None,
+        invocation.scan_page().limit(),
+        invocation.scan_page().positions().to_vec(),
+        true,
+        invocation.scan_page().input_bytes(),
+    )
+    .expect("false EOF page");
+    let false_eof_invocation = PlannerInvocation::new(
+        invocation.engine(),
+        invocation.policy_artifact(),
+        invocation.policy(),
+        invocation.planner_state(),
+        invocation.input_view(),
+        false_eof_page,
+        invocation.budget(),
+    )
+    .expect("false EOF invocation");
+    repository
+        .put_planner_invocation(&false_eof_invocation)
+        .expect("put false EOF invocation");
+    let false_eof_accounting = PlanningAccounting {
+        branch_requests: 0,
+        proposals: 0,
+        attempts: 0,
+        deduplicated: 0,
+        input_objects: false_eof_invocation.scan_page().input_objects(),
+        input_bytes: false_eof_invocation.scan_page().input_bytes(),
+        fuel: 1,
+    };
+    let false_eof_step = PlannerStep::new(
+        None,
+        false_eof_invocation.id().expect("false EOF invocation id"),
+        false_eof_invocation.policy(),
+        false_eof_invocation.engine(),
+        false_eof_invocation.policy_artifact(),
+        false_eof_invocation.input_view(),
+        PlannerDisposition::NoWork,
+        next_state.id().expect("next state id"),
+        measured,
+        false_eof_accounting,
+        GuidanceEvidence::new(BTreeMap::new()).expect("false EOF evidence"),
+    )
+    .expect("false EOF step");
+    let false_eof_step_content = repository
+        .put_planner_step(&false_eof_step)
+        .expect("put false EOF step");
+    assert!(matches!(
+        repository.load_planner_step(
+            PlannerStepId::from_content_id(false_eof_step_content).expect("false EOF step id"),
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "planner-invocation-scan-page-mismatch"
+        })
+    ));
+    let jump = PlannerStepProposal::new(
+        invocation.id().expect("invocation id"),
+        next_state.clone(),
+        measured,
+        GuidanceEvidence::new(BTreeMap::new()).expect("jump evidence"),
+        PlannerProposalDisposition::ContinueScan {
+            cursor: crate::PlanningScanCursor::new(
+                invocation.input_view(),
+                Some(expected_positions[1]),
+            ),
+        },
+    )
+    .expect("jump proposal");
+    assert!(matches!(
+        repository.accept_planner_step("planner-pages", second.new_snapshot, &jump, measured,),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "planner-step-disposition-does-not-match-served-page"
+        })
+    ));
+
+    let false_eof = no_work_proposal(invocation.id().expect("invocation id"), next_state.clone());
+    assert!(matches!(
+        repository.accept_planner_step("planner-pages", second.new_snapshot, &false_eof, measured,),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "planner-step-disposition-does-not-match-served-page"
+        })
+    ));
+
+    let continuation = PlannerStepProposal::new(
+        invocation.id().expect("invocation id"),
+        next_state.clone(),
+        measured,
+        GuidanceEvidence::new(BTreeMap::new()).expect("continuation evidence"),
+        PlannerProposalDisposition::ContinueScan {
+            cursor: crate::PlanningScanCursor::new(
+                invocation.input_view(),
+                Some(expected_positions[0]),
+            ),
+        },
+    )
+    .expect("continuation proposal");
+    let continued = repository
+        .accept_planner_step(
+            "planner-pages",
+            second.new_snapshot,
+            &continuation,
+            measured,
+        )
+        .expect("accept continuation");
+    let next_invocation = repository
+        .prepare_planner_invocation(
+            "planner-pages",
+            continued.new_snapshot,
+            &engine,
+            &artifact,
+            &next_state,
+            Some(expected_positions[0]),
+            1,
+            PlanningBudget::new(4, 4, 16, 8192, 100).expect("planner budget"),
+        )
+        .expect("prepare final page");
+    assert_eq!(
+        next_invocation.scan_page().positions(),
+        &expected_positions[1..]
+    );
+    assert!(next_invocation.scan_page().complete());
+    let final_measured = PlanningUsage {
+        branch_requests: 0,
+        proposals: 0,
+        input_objects: next_invocation.scan_page().input_objects(),
+        input_bytes: next_invocation.scan_page().input_bytes(),
+        fuel: 1,
+    };
+    let done = no_work_proposal(
+        next_invocation.id().expect("next invocation id"),
+        PlannerState::new(
+            engine.id().expect("engine id"),
+            "closed-rust-state",
+            1,
+            vec![2],
+        )
+        .expect("done state"),
+    );
+    let finished = repository
+        .accept_planner_step(
+            "planner-pages",
+            continued.new_snapshot,
+            &done,
+            final_measured,
+        )
+        .expect("accept EOF");
+    assert!(matches!(
+        repository.prepare_planner_invocation(
+            "planner-pages",
+            finished.new_snapshot,
+            &engine,
+            &artifact,
+            done.next_state(),
+            None,
+            1,
+            PlanningBudget::new(4, 4, 16, 8192, 100).expect("planner budget"),
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "planner-invocation-reopens-complete-view"
+        })
+    ));
+}
+
+#[test]
+fn planner_issue_atomically_admits_attempts_and_deduplicates_replay() {
+    let (repository, lineage, policy, blobs) = counted_fixture();
+    let genesis = repository
+        .create("planner-issue", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let source_request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "planner-issue-source",
+    );
+    let requested = repository
+        .submit_known_branch_request("planner-issue", genesis.snapshot_id(), &source_request)
+        .expect("submit source request");
+    let engine = PlannerEngine::new("closed-rust", 1, 1, BTreeSet::new()).expect("planner engine");
+    let initial_state = PlannerState::new(
+        engine.id().expect("engine id"),
+        "closed-rust-state",
+        1,
+        vec![0],
+    )
+    .expect("initial state");
+    let (engine, artifact, invocation) = planner_basis(
+        &repository,
+        "planner-issue",
+        requested.new_snapshot,
+        initial_state,
+    );
+    assert!(invocation.scan_page().complete());
+
+    let planner_request = BranchRequest::new(
+        source_request.branch_point(),
+        source_request.parent(),
+        source_request.opportunity(),
+        source_request.domain(),
+        source_request.source().clone(),
+        BranchRequestCause::Planner(invocation.id().expect("invocation id")),
+        source_request.budget(),
+        source_request.stop().clone(),
+    )
+    .expect("planner request");
+    let first_proposal = Proposal::new(
+        source_request.branch_point(),
+        source_request.id().expect("source request id"),
+        source_request.domain(),
+        ChoiceValue::Boolean(false),
+        policy.id().expect("policy id"),
+        Some(invocation.id().expect("invocation id")),
+        1,
+        invocation.input_view(),
+    )
+    .expect("first proposal");
+    let first_state = PlannerState::new(
+        engine.id().expect("engine id"),
+        "closed-rust-state",
+        1,
+        vec![1],
+    )
+    .expect("first state");
+    let first_usage = PlanningUsage {
+        branch_requests: 1,
+        proposals: 1,
+        input_objects: invocation.scan_page().input_objects(),
+        input_bytes: invocation.scan_page().input_bytes(),
+        fuel: 3,
+    };
+    let first_step = PlannerStepProposal::new(
+        invocation.id().expect("invocation id"),
+        first_state.clone(),
+        first_usage,
+        GuidanceEvidence::new(BTreeMap::from([("score".to_owned(), 7)])).expect("evidence"),
+        PlannerProposalDisposition::Issue {
+            selected: PlanningScanPosition::new(
+                source_request.branch_point(),
+                source_request.id().expect("source request id"),
+            ),
+            branch_requests: vec![planner_request.clone()],
+            proposals: vec![first_proposal.clone()],
+        },
+    )
+    .expect("first issue");
+    let skipped_proposal = Proposal::new(
+        source_request.branch_point(),
+        source_request.id().expect("source request id"),
+        source_request.domain(),
+        ChoiceValue::Boolean(true),
+        policy.id().expect("policy id"),
+        Some(invocation.id().expect("invocation id")),
+        3,
+        invocation.input_view(),
+    )
+    .expect("skipped proposal");
+    let invalid_usage = PlanningUsage {
+        branch_requests: 1,
+        proposals: 2,
+        input_objects: invocation.scan_page().input_objects(),
+        input_bytes: invocation.scan_page().input_bytes(),
+        fuel: 4,
+    };
+    let invalid_step = PlannerStepProposal::new(
+        invocation.id().expect("invocation id"),
+        first_state.clone(),
+        invalid_usage,
+        GuidanceEvidence::new(BTreeMap::new()).expect("invalid evidence"),
+        PlannerProposalDisposition::Issue {
+            selected: PlanningScanPosition::new(
+                source_request.branch_point(),
+                source_request.id().expect("source request id"),
+            ),
+            branch_requests: vec![planner_request.clone()],
+            proposals: vec![first_proposal.clone(), skipped_proposal],
+        },
+    )
+    .expect("structurally valid late-invalid issue");
+    let objects_before_rejection = blobs.object_count().expect("count before rejection");
+    let rejected = repository.accept_planner_step(
+        "planner-issue",
+        requested.new_snapshot,
+        &invalid_step,
+        invalid_usage,
+    );
+    assert!(
+        matches!(
+            rejected,
+            Err(CampaignRepositoryError::Codec(
+                CampaignCodecError::InvalidValue {
+                    reason: "proposal disagrees with its request, source, domain, or budget"
+                }
+            ))
+        ),
+        "unexpected preflight result: {rejected:?}"
+    );
+    assert_eq!(
+        blobs.object_count().expect("count after rejection"),
+        objects_before_rejection,
+        "semantic preflight must reject the complete batch before publication"
+    );
+
+    let wrong_engine =
+        PlannerEngine::new("wrong-engine", 1, 1, BTreeSet::new()).expect("wrong engine");
+    repository
+        .put_planner_engine(&wrong_engine)
+        .expect("publish wrong engine");
+    let wrong_state = PlannerState::new(
+        wrong_engine.id().expect("wrong engine id"),
+        "wrong-engine-state",
+        1,
+        vec![1],
+    )
+    .expect("wrong-engine state");
+    let wrong_state_step = PlannerStepProposal::new(
+        invocation.id().expect("invocation id"),
+        wrong_state,
+        first_usage,
+        GuidanceEvidence::new(BTreeMap::new()).expect("wrong-state evidence"),
+        PlannerProposalDisposition::Issue {
+            selected: PlanningScanPosition::new(
+                source_request.branch_point(),
+                source_request.id().expect("source request id"),
+            ),
+            branch_requests: vec![planner_request.clone()],
+            proposals: vec![first_proposal.clone()],
+        },
+    )
+    .expect("wrong-state issue");
+    let objects_before_wrong_state = blobs.object_count().expect("count before wrong state");
+    assert!(matches!(
+        repository.accept_planner_step(
+            "planner-issue",
+            requested.new_snapshot,
+            &wrong_state_step,
+            first_usage,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "planner-step-next-state-engine-mismatch"
+        })
+    ));
+    assert_eq!(
+        blobs.object_count().expect("count after wrong state"),
+        objects_before_wrong_state,
+        "complete Issue preflight must validate next-state continuity before publication"
+    );
+
+    let first = repository
+        .accept_planner_step(
+            "planner-issue",
+            requested.new_snapshot,
+            &first_step,
+            first_usage,
+        )
+        .expect("accept first issue");
+    assert!(matches!(
+        repository.load_planner_step(first.step),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "planner-issue-requires-snapshot-owner"
+        })
+    ));
+    let accepted_first = repository
+        .load_planner_step_at(first.new_snapshot, first.step)
+        .expect("load first issue");
+    assert_eq!(accepted_first.accounting().branch_requests, 1);
+    assert_eq!(accepted_first.accounting().proposals, 1);
+    assert_eq!(accepted_first.accounting().attempts, 1);
+    assert_eq!(accepted_first.accounting().deduplicated, 0);
+    assert_eq!(
+        accepted_first.issued_branch_requests(),
+        [planner_request.id().expect("planner request id")]
+    );
+    assert_eq!(
+        accepted_first.issued_proposals(),
+        [first_proposal.id().expect("first proposal id")]
+    );
+    repository
+        .load_proposal(first_proposal.id().expect("first proposal id"))
+        .expect("load first proposal");
+
+    let first_head = repository.head("planner-issue").expect("first issue head");
+    let mut forged_roots = first_head.snapshot().roots();
+    forged_roots.accounting = repository
+        .merkle
+        .insert(
+            forged_roots.accounting,
+            CampaignHash::derive("test", b"extra planner issue accounting"),
+            first.step.content_id(),
+        )
+        .expect("forged accounting root")
+        .content_id();
+    let forged = CampaignSnapshot::successor(
+        requested.new_snapshot,
+        first_head.snapshot().lineage(),
+        first_head.snapshot().active_policy(),
+        forged_roots,
+        first_head
+            .snapshot()
+            .transition()
+            .expect("first issue transition"),
+    )
+    .expect("forged issue successor");
+    let forged_content = repository
+        .put_snapshot(&forged)
+        .expect("put forged issue successor");
+    let objects_before_validation = blobs.object_count().expect("count objects before import");
+    assert!(matches!(
+        repository.validate_complete_head(forged_content),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "planner-issue-root-delta-mismatch"
+        })
+    ));
+    assert_eq!(
+        blobs.object_count().expect("count objects after import"),
+        objects_before_validation,
+        "invalid imported projection validation must be read-only"
+    );
+
+    let (_, _, second_invocation) = planner_basis(
+        &repository,
+        "planner-issue",
+        first.new_snapshot,
+        first_state.clone(),
+    );
+    let ancestry_usage = PlanningUsage {
+        branch_requests: 0,
+        proposals: 0,
+        input_objects: second_invocation.scan_page().input_objects(),
+        input_bytes: second_invocation.scan_page().input_bytes(),
+        fuel: 1,
+    };
+    let ancestry_child = PlannerStep::new(
+        Some(first.step),
+        second_invocation.id().expect("second invocation id"),
+        second_invocation.policy(),
+        second_invocation.engine(),
+        second_invocation.policy_artifact(),
+        second_invocation.input_view(),
+        PlannerDisposition::NoWork,
+        first_state.id().expect("first state id"),
+        ancestry_usage,
+        PlanningAccounting {
+            branch_requests: 0,
+            proposals: 0,
+            attempts: 0,
+            deduplicated: 0,
+            input_objects: ancestry_usage.input_objects,
+            input_bytes: ancestry_usage.input_bytes,
+            fuel: ancestry_usage.fuel,
+        },
+        GuidanceEvidence::new(BTreeMap::new()).expect("ancestry evidence"),
+    )
+    .expect("non-issue ancestry child");
+    let ancestry_child_content = repository
+        .put_planner_step(&ancestry_child)
+        .expect("put non-issue ancestry child");
+    assert!(matches!(
+        repository.load_planner_step(
+            PlannerStepId::from_content_id(ancestry_child_content).expect("ancestry child id")
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "planner-issue-requires-snapshot-owner"
+        })
+    ));
+
+    let second_proposal = Proposal::new(
+        planner_request.branch_point(),
+        planner_request.id().expect("planner request id"),
+        planner_request.domain(),
+        ChoiceValue::Boolean(false),
+        policy.id().expect("policy id"),
+        Some(second_invocation.id().expect("second invocation id")),
+        1,
+        second_invocation.input_view(),
+    )
+    .expect("second proposal");
+    let second_usage = PlanningUsage {
+        branch_requests: 0,
+        proposals: 1,
+        input_objects: second_invocation.scan_page().input_objects(),
+        input_bytes: second_invocation.scan_page().input_bytes(),
+        fuel: 3,
+    };
+    let second_step = PlannerStepProposal::new(
+        second_invocation.id().expect("second invocation id"),
+        PlannerState::new(
+            engine.id().expect("engine id"),
+            "closed-rust-state",
+            1,
+            vec![2],
+        )
+        .expect("second state"),
+        second_usage,
+        GuidanceEvidence::new(BTreeMap::from([("score".to_owned(), 7)])).expect("evidence"),
+        PlannerProposalDisposition::Issue {
+            selected: PlanningScanPosition::new(
+                planner_request.branch_point(),
+                planner_request.id().expect("planner request id"),
+            ),
+            branch_requests: Vec::new(),
+            proposals: vec![second_proposal],
+        },
+    )
+    .expect("second issue");
+    let second = repository
+        .accept_planner_step(
+            "planner-issue",
+            first.new_snapshot,
+            &second_step,
+            second_usage,
+        )
+        .expect("accept deduplicated issue");
+    let accepted_second = repository
+        .load_planner_step_at(second.new_snapshot, second.step)
+        .expect("load second issue");
+    assert_eq!(accepted_second.accounting().attempts, 0);
+    assert_eq!(accepted_second.accounting().deduplicated, 1);
+
+    let replay = repository
+        .accept_planner_step(
+            "planner-issue",
+            requested.new_snapshot,
+            &first_step,
+            first_usage,
+        )
+        .expect("replay first issue");
+    assert!(replay.replayed);
+    assert_eq!(replay.step, first.step);
+    assert_eq!(replay.new_snapshot, first.new_snapshot);
+    assert_eq!(artifact.engine(), engine.id().expect("engine id"));
+}
+
+#[test]
+fn planner_cursor_and_imported_root_fail_closed() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("planner-forgery", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let engine = PlannerEngine::new("closed-rust", 1, 1, BTreeSet::new()).expect("planner engine");
+    let initial_state = PlannerState::new(
+        engine.id().expect("engine id"),
+        "closed-rust-state",
+        1,
+        vec![0],
+    )
+    .expect("initial state");
+    let (engine, _, invocation) = planner_basis(
+        &repository,
+        "planner-forgery",
+        genesis.snapshot_id(),
+        initial_state,
+    );
+    let fabricated_source = BranchRequestId::from_content_id(ContentId::for_bytes(
+        ObjectKind::CampaignFact,
+        1,
+        b"fabricated planner cursor",
+    ))
+    .expect("fabricated source");
+    let cursor_proposal = PlannerStepProposal::new(
+        invocation.id().expect("invocation id"),
+        PlannerState::new(
+            engine.id().expect("engine id"),
+            "closed-rust-state",
+            1,
+            vec![1],
+        )
+        .expect("next state"),
+        PlanningUsage {
+            branch_requests: 0,
+            proposals: 0,
+            input_objects: 1,
+            input_bytes: 1,
+            fuel: 1,
+        },
+        GuidanceEvidence::new(BTreeMap::new()).expect("cursor evidence"),
+        PlannerProposalDisposition::ContinueScan {
+            cursor: crate::PlanningScanCursor::new(
+                invocation.input_view(),
+                Some(crate::PlanningScanPosition::new(
+                    crate::BranchPointId::from_hash(CampaignHash::derive(
+                        "test",
+                        b"fabricated branch point",
+                    )),
+                    fabricated_source,
+                )),
+            ),
+        },
+    )
+    .expect("cursor proposal");
+    let measured = PlanningUsage {
+        branch_requests: 0,
+        proposals: 0,
+        input_objects: 0,
+        input_bytes: 0,
+        fuel: 1,
+    };
+    assert!(matches!(
+        repository.accept_planner_step(
+            "planner-forgery",
+            genesis.snapshot_id(),
+            &cursor_proposal,
+            measured,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "planner-step-scan-cursor-is-not-authoritative"
+        })
+    ));
+
+    let accepted_proposal = no_work_proposal(
+        invocation.id().expect("invocation id"),
+        cursor_proposal.next_state().clone(),
+    );
+    let accepted = repository
+        .accept_planner_step(
+            "planner-forgery",
+            genesis.snapshot_id(),
+            &accepted_proposal,
+            measured,
+        )
+        .expect("accept no-work step");
+    let accepted_head = repository.head("planner-forgery").expect("accepted head");
+    let extra_key = CampaignHash::derive("test", b"forged planner index");
+    let forged_coordination = repository
+        .merkle
+        .insert(
+            accepted_head.snapshot().roots().coordination,
+            extra_key,
+            accepted.step.content_id(),
+        )
+        .expect("forged root")
+        .content_id();
+    let mut forged_roots = accepted_head.snapshot().roots();
+    forged_roots.coordination = forged_coordination;
+    let transition = repository
+        .put_fact(&CampaignFact::PlannerAdvanced(accepted.step))
+        .expect("planner fact");
+    let forged = CampaignSnapshot::successor(
+        genesis.snapshot_id(),
+        genesis.snapshot().lineage(),
+        genesis.snapshot().active_policy(),
+        forged_roots,
+        CampaignFactId::from_content_id(transition).expect("fact id"),
+    )
+    .expect("forged snapshot");
+    let forged_content = repository
+        .put_snapshot(&forged)
+        .expect("put forged snapshot");
+    assert!(matches!(
+        repository.validate_complete_head(forged_content),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "planner-step-transition-coordination-root-mismatch"
+        })
+    ));
+}
+
+#[test]
+fn choice_discovery_is_exact_replayable_and_required_before_branching() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("choice-discovery", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "choice-discovery",
+    );
+    assert!(matches!(
+        repository.submit_branch_request("choice-discovery", genesis.snapshot_id(), &request),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "branch-request-opportunity-is-not-authoritative-campaign-knowledge"
+        })
+    ));
+    assert_eq!(
+        repository
+            .head("choice-discovery")
+            .expect("unchanged genesis")
+            .snapshot_id(),
+        genesis.snapshot_id()
+    );
+
+    let discovered = repository
+        .discover_choice_opportunity(
+            "choice-discovery",
+            genesis.snapshot_id(),
+            request.parent(),
+            request.opportunity(),
+        )
+        .expect("discover choice");
+    assert!(!discovered.replayed);
+    assert_eq!(discovered.prior_snapshot, genesis.snapshot_id());
+    assert_eq!(discovered.parent, request.parent());
+    assert_eq!(discovered.branch_point, request.branch_point());
+    let discovery_snapshot = repository
+        .read_snapshot(discovered.new_snapshot.content_id())
+        .expect("discovery snapshot");
+    assert_eq!(
+        repository
+            .merkle
+            .get(
+                discovery_snapshot.snapshot.roots().graph,
+                authoritative_choice_key(request.opportunity()),
+            )
+            .expect("authoritative choice membership"),
+        Some(request.opportunity().content_id())
+    );
+    assert_eq!(
+        repository
+            .merkle
+            .get(
+                discovery_snapshot.snapshot.roots().graph,
+                branch_point_opportunity_key(request.branch_point(), request.opportunity()),
+            )
+            .expect("scoped choice membership"),
+        Some(request.opportunity().content_id())
+    );
+
+    let accepted = repository
+        .submit_branch_request("choice-discovery", discovered.new_snapshot, &request)
+        .expect("submit known request");
+    let replay = repository
+        .discover_choice_opportunity(
+            "choice-discovery",
+            genesis.snapshot_id(),
+            request.parent(),
+            request.opportunity(),
+        )
+        .expect("replay discovery before stale check");
+    assert!(replay.replayed);
+    assert_eq!(replay.new_snapshot, discovered.new_snapshot);
+    assert_eq!(
+        repository
+            .head("choice-discovery")
+            .expect("branch head remains current")
+            .snapshot_id(),
+        accepted.new_snapshot
+    );
+
+    let mut forged_roots = discovery_snapshot.snapshot.roots();
+    forged_roots.graph = repository
+        .merkle
+        .insert(
+            forged_roots.graph,
+            map_key_content("graph.forged-choice", request.opportunity().content_id()),
+            request.opportunity().content_id(),
+        )
+        .expect("forged discovery graph")
+        .content_id();
+    let forged = CampaignSnapshot::successor(
+        genesis.snapshot_id(),
+        discovery_snapshot.snapshot.lineage(),
+        discovery_snapshot.snapshot.active_policy(),
+        forged_roots,
+        discovery_snapshot
+            .snapshot
+            .transition()
+            .expect("discovery transition"),
+    )
+    .expect("forged discovery successor");
+    let forged_content = repository
+        .put_snapshot(&forged)
+        .expect("put forged discovery successor");
+    assert!(matches!(
+        repository.validate_complete_head(forged_content),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "choice-discovery-graph-root-mismatch"
+        })
+    ));
+}
+
+#[test]
+fn choice_authority_is_scoped_to_the_exact_parent_branch_point() {
+    let (repository, lineage, policy) = fixture();
+    let (genesis, admitted, observation) =
+        admitted_observation_fixture(&repository, &lineage, &policy, "choice-parent-scope");
+    let observed = repository
+        .publish_observation("choice-parent-scope", admitted.new_snapshot, &observation)
+        .expect("publish child observation");
+
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "genesis-only-choice",
+    );
+    let discovered = repository
+        .discover_choice_opportunity(
+            "choice-parent-scope",
+            observed.new_snapshot,
+            request.parent(),
+            request.opportunity(),
+        )
+        .expect("discover choice only at genesis");
+    let opportunity = repository
+        .load_choice_opportunity(request.opportunity())
+        .expect("load opportunity");
+    let cross_parent = BranchRequest::new(
+        opportunity.branch_point_id(observation.child()),
+        observation.child_content(),
+        request.opportunity(),
+        request.domain(),
+        request.source().clone(),
+        request.cause(),
+        request.budget(),
+        request.stop().clone(),
+    )
+    .expect("cross-parent request");
+    assert!(matches!(
+        repository.submit_branch_request(
+            "choice-parent-scope",
+            discovered.new_snapshot,
+            &cross_parent,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "branch-request-opportunity-is-not-authoritative-campaign-knowledge"
+        })
+    ));
+    assert_eq!(
+        repository
+            .head("choice-parent-scope")
+            .expect("unchanged scoped head")
+            .snapshot_id(),
+        discovered.new_snapshot
+    );
+    assert_ne!(genesis, observed.new_snapshot);
+}
+
+#[test]
+fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
+    let shared = [41; 32];
+    assert!(matches!(
+        CampaignRepository::with_component_authorities(
+            Arc::new(MemoryBlobBackend::new("equal-authority", 1024)),
+            Arc::new(MemoryRefBackend::new()),
+            PlannerAuthorityKey::from_bytes(shared).expect("shared planner authority"),
+            DebuggerAuthorityKey::from_bytes(shared).expect("shared debugger authority"),
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "component-authority-keys-must-be-distinct"
+        })
+    ));
+    let (repository, lineage, policy, blobs, planner_key, debugger_key) = authorized_fixture();
+    assert!(PlannerAuthorityKey::from_bytes([0; 32]).is_err());
+    assert!(DebuggerAuthorityKey::from_bytes([0; 32]).is_err());
+
+    let debugger_genesis = repository
+        .create("debugger-authority", &lineage, &policy, &BTreeMap::new())
+        .expect("create debugger campaign");
+    let operator_request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "debugger-authority",
+    );
+    let session = DebugSessionId::from_hash(CampaignHash::derive(
+        "test-debug-session",
+        b"debugger-authority",
+    ));
+    let debugger_request = BranchRequest::new(
+        operator_request.branch_point(),
+        operator_request.parent(),
+        operator_request.opportunity(),
+        operator_request.domain(),
+        operator_request.source().clone(),
+        BranchRequestCause::Debugger(session),
+        operator_request.budget(),
+        operator_request.stop().clone(),
+    )
+    .expect("debugger request");
+    assert!(matches!(
+        repository.submit_operator_branch_request(
+            "debugger-authority",
+            debugger_genesis.snapshot_id(),
+            &debugger_request,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "branch-request-cause-requires-authority-specific-adapter"
+        })
+    ));
+    let discovered = repository
+        .discover_choice_opportunity(
+            "debugger-authority",
+            debugger_genesis.snapshot_id(),
+            debugger_request.parent(),
+            debugger_request.opportunity(),
+        )
+        .expect("discover debugger choice");
+
+    let wrong_debugger_key =
+        DebuggerAuthorityKey::from_bytes([29; 32]).expect("wrong debugger key");
+    let wrong_debugger = DebuggerSubmission::authorize(
+        &wrong_debugger_key,
+        discovered.new_snapshot,
+        session,
+        debugger_request.clone(),
+    )
+    .expect("wrong debugger submission");
+    let objects_before_debugger_rejection = blobs
+        .object_count()
+        .expect("debugger objects before rejection");
+    assert!(matches!(
+        repository.submit_debugger_branch_request("debugger-authority", &wrong_debugger),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "debugger-submission-authentication-failed"
+        })
+    ));
+    assert_eq!(
+        blobs
+            .object_count()
+            .expect("debugger objects after rejection"),
+        objects_before_debugger_rejection
+    );
+
+    let debugger_submission = DebuggerSubmission::authorize(
+        &debugger_key,
+        discovered.new_snapshot,
+        session,
+        debugger_request,
+    )
+    .expect("authorize debugger submission");
+    let debugger_bytes = debugger_submission.canonical_bytes();
+    assert_eq!(
+        CampaignHash::derive(
+            "crucible.test.debugger-submission-vector.v1",
+            &debugger_bytes,
+        )
+        .to_hex(),
+        "3142d32d1e725e1af17323de02b80a106411705968e29a1598648943fb1e6858",
+    );
+    let decoded_debugger =
+        DebuggerSubmission::from_canonical_bytes(&debugger_bytes).expect("decode debugger");
+    assert_eq!(decoded_debugger, debugger_submission);
+    assert!(decoded_debugger.verify(&debugger_key));
+    assert!(!decoded_debugger.verify(&wrong_debugger_key));
+    let mut tampered_debugger_bytes = debugger_bytes;
+    let last = tampered_debugger_bytes
+        .last_mut()
+        .expect("debugger submission has an authentication tag");
+    *last ^= 1;
+    let tampered_debugger = DebuggerSubmission::from_canonical_bytes(&tampered_debugger_bytes)
+        .expect("tampered tag remains structurally canonical");
+    assert!(!tampered_debugger.verify(&debugger_key));
+    let accepted_debugger = repository
+        .submit_debugger_branch_request("debugger-authority", &decoded_debugger)
+        .expect("accept debugger submission");
+    assert_eq!(accepted_debugger.prior_snapshot, discovered.new_snapshot);
+
+    let planner_genesis = repository
+        .create("planner-authority", &lineage, &policy, &BTreeMap::new())
+        .expect("create planner campaign");
+    let engine = PlannerEngine::new("closed-rust", 1, 1, BTreeSet::new()).expect("planner engine");
+    let initial_state = PlannerState::new(
+        engine.id().expect("engine id"),
+        "closed-rust-state",
+        1,
+        vec![0],
+    )
+    .expect("initial state");
+    let (engine, _artifact, invocation) = planner_basis(
+        &repository,
+        "planner-authority",
+        planner_genesis.snapshot_id(),
+        initial_state,
+    );
+    let next_state = PlannerState::new(
+        engine.id().expect("engine id"),
+        "closed-rust-state",
+        1,
+        vec![1],
+    )
+    .expect("next state");
+    let proposal = no_work_proposal(invocation.id().expect("invocation id"), next_state);
+    let measured = PlanningUsage {
+        branch_requests: 0,
+        proposals: 0,
+        input_objects: 0,
+        input_bytes: 0,
+        fuel: 5,
+    };
+    let wrong_planner_key = PlannerAuthorityKey::from_bytes([31; 32]).expect("wrong planner key");
+    let wrong_planner = PlannerSubmission::authorize(
+        &wrong_planner_key,
+        planner_genesis.snapshot_id(),
+        proposal.clone(),
+        measured,
+    )
+    .expect("wrong planner submission");
+    let objects_before_planner_rejection = blobs
+        .object_count()
+        .expect("planner objects before rejection");
+    assert!(matches!(
+        repository.accept_planner_submission("planner-authority", &wrong_planner),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "planner-submission-authentication-failed"
+        })
+    ));
+    assert_eq!(
+        blobs
+            .object_count()
+            .expect("planner objects after rejection"),
+        objects_before_planner_rejection
+    );
+    assert_eq!(
+        repository
+            .head("planner-authority")
+            .expect("unchanged planner head")
+            .snapshot_id(),
+        planner_genesis.snapshot_id()
+    );
+
+    let planner_submission = PlannerSubmission::authorize(
+        &planner_key,
+        planner_genesis.snapshot_id(),
+        proposal,
+        measured,
+    )
+    .expect("authorize planner submission");
+    let planner_bytes = planner_submission.canonical_bytes();
+    assert_eq!(
+        CampaignHash::derive("crucible.test.planner-submission-vector.v1", &planner_bytes,)
+            .to_hex(),
+        "d37f925254ebe9d6254e156dcb376f1ab18082a6b15517e7cce67be5023ea058",
+    );
+    let decoded_planner =
+        PlannerSubmission::from_canonical_bytes(&planner_bytes).expect("decode planner");
+    assert_eq!(decoded_planner, planner_submission);
+    assert!(decoded_planner.verify(&planner_key));
+    assert!(!decoded_planner.verify(&wrong_planner_key));
+    let accepted_planner = repository
+        .accept_planner_submission("planner-authority", &decoded_planner)
+        .expect("accept planner submission");
+    assert_eq!(
+        accepted_planner.prior_snapshot,
+        planner_genesis.snapshot_id()
+    );
+}
+
+#[test]
+fn branch_request_is_one_lazy_exact_root_delta_and_replays() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("lazy", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "retry-choice",
+    );
+
+    let discovered = repository
+        .discover_choice_opportunity(
+            "lazy",
+            genesis.snapshot_id(),
+            request.parent(),
+            request.opportunity(),
+        )
+        .expect("discover request opportunity");
+    let accepted = repository
+        .submit_branch_request("lazy", discovered.new_snapshot, &request)
+        .expect("submit request");
+    assert!(!accepted.replayed);
+    assert_eq!(accepted.prior_snapshot, discovered.new_snapshot);
+    assert_eq!(accepted.request, request.id().expect("request id"));
+
+    let requested = repository.head("lazy").expect("requested head");
+    let prior_roots = repository
+        .read_snapshot(discovered.new_snapshot.content_id())
+        .expect("discovery snapshot")
+        .snapshot
+        .roots();
+    let next_roots = requested.snapshot().roots();
+    assert_eq!(prior_roots.graph, next_roots.graph);
+    assert_eq!(prior_roots.observations, next_roots.observations);
+    assert_eq!(prior_roots.corpus, next_roots.corpus);
+    assert_eq!(prior_roots.coverage, next_roots.coverage);
+    assert_eq!(prior_roots.findings, next_roots.findings);
+    assert_eq!(prior_roots.pins, next_roots.pins);
+    assert_ne!(prior_roots.accounting, next_roots.accounting);
+    let BranchRequestCause::Operator(command_id) = request.cause() else {
+        panic!("operator request")
+    };
+    assert_eq!(
+        repository
+            .merkle
+            .get(
+                next_roots.accounting,
+                map_key_hash("accounting.command", command_id.as_hash()),
+            )
+            .expect("command index"),
+        requested
+            .snapshot()
+            .transition()
+            .map(CampaignFactId::content_id)
+    );
+    assert_ne!(prior_roots.exploration, next_roots.exploration);
+    let entries = repository
+        .merkle
+        .verify_closure_objects(next_roots.exploration)
+        .expect("exploration closure");
+    assert_eq!(
+        entries.values,
+        BTreeSet::from([accepted.request.content_id()])
+    );
+
+    let resume = command(
+        "resume-after-request",
+        accepted.new_snapshot,
+        CampaignControlAction::Resume,
+    );
+    repository.apply_control("lazy", &resume).expect("resume");
+    let replay = repository
+        .submit_known_branch_request("lazy", genesis.snapshot_id(), &request)
+        .expect("replay request");
+    assert!(replay.replayed);
+    assert_eq!(replay.prior_snapshot, accepted.prior_snapshot);
+    assert_eq!(replay.new_snapshot, accepted.new_snapshot);
+
+    let reused_command = BranchRequest::new(
+        request.branch_point(),
+        request.parent(),
+        request.opportunity(),
+        request.domain(),
+        CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(true)]))
+            .expect("changed finite source"),
+        request.cause(),
+        BranchBudget::new(1, 1).expect("changed budget"),
+        StopCondition::Terminal,
+    )
+    .expect("changed request");
+    let current = repository.head("lazy").expect("current head");
+    assert!(matches!(
+        repository.submit_known_branch_request("lazy", current.snapshot_id(), &reused_command),
+        Err(CampaignRepositoryError::CommandReuse)
+    ));
+
+    let BranchRequestCause::Operator(command_id) = request.cause() else {
+        panic!("operator request")
+    };
+    let reused_control = ControlRequest {
+        command: command_id,
+        expected_snapshot: current.snapshot_id(),
+        action: CampaignControlAction::Complete,
+    };
+    assert!(matches!(
+        repository.apply_control("lazy", &reused_control),
+        Err(CampaignRepositoryError::CommandReuse)
+    ));
+}
+
+#[test]
+fn ten_thousand_mixed_mutations_use_incremental_validation_and_replay_indexes() {
+    const MUTATIONS: u64 = 10_000;
+
+    let (repository, lineage, policy, _) = fixture_with_quota(512 * 1024 * 1024);
+    let genesis = repository
+        .create("branch-scale", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let template = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "branch-scale-template",
+    );
+    let mut snapshot = genesis.snapshot_id();
+    let mut first_request = None;
+    let mut first_request_result = None;
+    let mut first_control = None;
+    let mut first_control_result = None;
+    for ordinal in 0..MUTATIONS {
+        if ordinal % 2 == 0 {
+            let request = BranchRequest::new(
+                template.branch_point(),
+                template.parent(),
+                template.opportunity(),
+                template.domain(),
+                template.source().clone(),
+                BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(
+                    CampaignHash::derive("test.branch-scale", &ordinal.to_be_bytes()),
+                )),
+                template.budget(),
+                template.stop().clone(),
+            )
+            .expect("scaled request");
+            let result = repository
+                .submit_known_branch_request("branch-scale", snapshot, &request)
+                .expect("submit scaled request");
+            if first_request.is_none() {
+                first_request = Some(request.clone());
+                first_request_result = Some(result.clone());
+            }
+            snapshot = result.new_snapshot;
+        } else {
+            let control_ordinal = ordinal / 2;
+            let action = if control_ordinal % 2 == 0 {
+                CampaignControlAction::Resume
+            } else {
+                CampaignControlAction::Pause(crate::ActiveAttemptPolicy::Drain)
+            };
+            let request = ControlRequest {
+                command: crate::CampaignCommandId::from_hash(CampaignHash::derive(
+                    "test.control-scale",
+                    &ordinal.to_be_bytes(),
+                )),
+                expected_snapshot: snapshot,
+                action,
+            };
+            let result = repository
+                .apply_control("branch-scale", &request)
+                .expect("apply scaled control");
+            if first_control.is_none() {
+                first_control = Some(request.clone());
+                first_control_result = Some(result.clone());
+            }
+            snapshot = result.new_snapshot;
+        }
+    }
+
+    let head = repository.head("branch-scale").expect("scaled head");
+    assert_eq!(head.snapshot_id(), snapshot);
+    assert_eq!(
+        repository
+            .merkle
+            .inspect_shallow(head.snapshot().roots().exploration)
+            .expect("scaled exploration root")
+            .entry_count(),
+        MUTATIONS / 2
+    );
+    assert_eq!(
+        repository
+            .merkle
+            .inspect_shallow(head.snapshot().roots().accounting)
+            .expect("scaled accounting root")
+            .entry_count(),
+        MUTATIONS
+    );
+    assert_eq!(
+        repository
+            .merkle
+            .inspect_shallow(head.snapshot().roots().coordination)
+            .expect("scaled coordination root")
+            .entry_count(),
+        MUTATIONS
+    );
+    assert_eq!(
+        repository
+            .validated_heads
+            .lock()
+            .expect("validation checkpoints")
+            .len(),
+        1
+    );
+    assert_eq!(
+        repository.state("branch-scale").expect("scaled state"),
+        CampaignState::Paused
+    );
+
+    let first_request = first_request.expect("first request");
+    let expected_request = first_request_result.expect("first request result");
+    let replayed_request = repository
+        .submit_known_branch_request("branch-scale", genesis.snapshot_id(), &first_request)
+        .expect("deep request replay");
+    assert!(replayed_request.replayed);
+    assert_eq!(replayed_request.new_snapshot, expected_request.new_snapshot);
+
+    let first_control = first_control.expect("first control");
+    let expected_control = first_control_result.expect("first control result");
+    let replayed_control = repository
+        .apply_control("branch-scale", &first_control)
+        .expect("deep control replay");
+    assert!(replayed_control.replayed);
+    assert_eq!(replayed_control.new_snapshot, expected_control.new_snapshot);
+}
+
+#[test]
+fn discarded_validation_checkpoints_rebuild_from_the_immutable_head() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("checkpoint-rebuild", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "checkpoint-rebuild",
+    );
+    let requested = repository
+        .submit_known_branch_request("checkpoint-rebuild", genesis.snapshot_id(), &request)
+        .expect("submit request");
+
+    repository
+        .validated_heads
+        .lock()
+        .expect("validation checkpoints")
+        .clear();
+    let loaded = repository.head("checkpoint-rebuild").expect("rebuild head");
+
+    assert_eq!(loaded.snapshot_id(), requested.new_snapshot);
+    {
+        let checkpoints = repository
+            .validated_heads
+            .lock()
+            .expect("rebuilt validation checkpoints");
+        assert_eq!(checkpoints.len(), 1);
+        assert!(checkpoints.contains_key(&requested.new_snapshot.content_id()));
+    }
+
+    // Eviction may race between an initial head validation and a later
+    // lifecycle/transaction lookup. Absence is a cache miss, not an
+    // integrity failure, so the immutable head is revalidated on demand.
+    repository
+        .validated_heads
+        .lock()
+        .expect("validation checkpoints")
+        .clear();
+    assert_eq!(
+        repository
+            .current_lifecycle(requested.new_snapshot.content_id())
+            .expect("rebuild lifecycle after eviction")
+            .visible,
+        CampaignState::Created
+    );
+}
+
+#[test]
+fn local_successors_enforce_the_restart_ancestry_limit() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("ancestry-limit", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    repository
+        .validated_heads
+        .lock()
+        .expect("validation checkpoints")
+        .get_mut(&genesis.content_id())
+        .expect("genesis checkpoint")
+        .ancestry_depth = MAX_SNAPSHOT_ANCESTRY;
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "ancestry-limit",
+    );
+
+    assert!(matches!(
+        repository.submit_known_branch_request("ancestry-limit", genesis.snapshot_id(), &request),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "snapshot-ancestry-limit"
+        })
+    ));
+    assert_eq!(
+        repository
+            .head("ancestry-limit")
+            .expect("unchanged head")
+            .snapshot_id(),
+        genesis.snapshot_id()
+    );
+}
+
+#[test]
+fn conservative_closure_limit_rebases_through_complete_validation() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("closure-rebase", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "closure-rebase",
+    );
+    let discovered = repository
+        .discover_choice_opportunity(
+            "closure-rebase",
+            genesis.snapshot_id(),
+            request.parent(),
+            request.opportunity(),
+        )
+        .expect("discover closure-rebase opportunity");
+    repository
+        .validated_heads
+        .lock()
+        .expect("validation checkpoints")
+        .get_mut(&discovered.new_snapshot.content_id())
+        .expect("discovery checkpoint")
+        .closure_objects = MAX_CLOSURE_OBJECTS - MAX_SIMPLE_SUCCESSOR_GROWTH - 1;
+
+    let accepted = repository
+        .submit_branch_request("closure-rebase", discovered.new_snapshot, &request)
+        .expect("full-validation rebase");
+    let checkpoints = repository
+        .validated_heads
+        .lock()
+        .expect("validation checkpoints");
+    assert_eq!(checkpoints.len(), 1);
+    let checkpoint = checkpoints
+        .get(&accepted.new_snapshot.content_id())
+        .expect("rebased child checkpoint");
+    assert_eq!(checkpoint.ancestry_depth, 3);
+    assert!(checkpoint.closure_objects < MAX_CLOSURE_OBJECTS);
+}
+
+#[test]
+fn reused_active_policy_generator_is_an_incremental_closure_anchor() {
+    const GENERATOR_DEPTH: u32 = 256;
+
+    let (repository, lineage, _) = fixture();
+    let leaf =
+        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All).expect("leaf generator");
+    let mut generator = leaf.id().expect("leaf generator id");
+    let mut generators = BTreeMap::from([(generator, leaf)]);
+    for ordinal in 2..=GENERATOR_DEPTH {
+        let parent = CandidateGeneratorSpec::new(
+            ordinal,
+            CandidateGeneratorAlgorithm::OrderedMixture {
+                components: vec![
+                    WeightedGenerator::new(generator, 1).expect("generator component"),
+                ],
+            },
+        )
+        .expect("parent generator");
+        generator = parent.id().expect("parent generator id");
+        generators.insert(generator, parent);
+    }
+    let policy = policy_with_generator(lineage.scenario(), generator);
+    let genesis = repository
+        .create("generator-anchor", &lineage, &policy, &generators)
+        .expect("create generator campaign");
+    let template = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "generator-anchor-template",
+    );
+    let request = BranchRequest::new(
+        template.branch_point(),
+        template.parent(),
+        template.opportunity(),
+        template.domain(),
+        CandidateSource::generated(generator),
+        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            b"generator-anchor",
+        ))),
+        template.budget(),
+        template.stop().clone(),
+    )
+    .expect("generated request");
+
+    let discovered = repository
+        .discover_choice_opportunity(
+            "generator-anchor",
+            genesis.snapshot_id(),
+            request.parent(),
+            request.opportunity(),
+        )
+        .expect("discover generator request opportunity");
+    repository
+        .validated_heads
+        .lock()
+        .expect("validation checkpoints")
+        .get_mut(&discovered.new_snapshot.content_id())
+        .expect("discovery checkpoint")
+        .closure_objects = MAX_CLOSURE_OBJECTS - MAX_SIMPLE_SUCCESSOR_GROWTH - 32;
+    let accepted = repository
+        .submit_branch_request("generator-anchor", discovered.new_snapshot, &request)
+        .expect("accept anchored generator request");
+    let checkpoints = repository
+        .validated_heads
+        .lock()
+        .expect("validation checkpoints");
+    let checkpoint = checkpoints
+        .get(&accepted.new_snapshot.content_id())
+        .expect("incremental child checkpoint");
+
+    assert!(
+        checkpoint.closure_objects > MAX_CLOSURE_OBJECTS / 2,
+        "reused generator closure forced an unnecessary complete rebase"
+    );
+}
+
+#[test]
+fn imported_successor_must_carry_the_exact_parent_result_locator() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("result-locator", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let first_request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "result-locator-first",
+    );
+    let first = repository
+        .submit_known_branch_request("result-locator", genesis.snapshot_id(), &first_request)
+        .expect("first request");
+    let second_request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "result-locator-second",
+    );
+    let second = repository
+        .submit_known_branch_request("result-locator", first.new_snapshot, &second_request)
+        .expect("second request");
+    let third_request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "result-locator-third",
+    );
+    let third = repository
+        .submit_known_branch_request("result-locator", second.new_snapshot, &third_request)
+        .expect("third request");
+
+    let parent = repository
+        .read_snapshot(third.prior_snapshot.content_id())
+        .expect("parent snapshot");
+    let valid = repository
+        .read_snapshot(third.new_snapshot.content_id())
+        .expect("valid child snapshot");
+    let mut roots = valid.snapshot.roots();
+    roots.coordination = parent.snapshot.roots().coordination;
+    let forged = CampaignSnapshot::successor(
+        third.prior_snapshot,
+        valid.snapshot.lineage(),
+        valid.snapshot.active_policy(),
+        roots,
+        valid.snapshot.transition().expect("child transition"),
+    )
+    .expect("forged child");
+    let forged_content = repository.put_snapshot(&forged).expect("put forged child");
+
+    match repository.validate_complete_head(forged_content) {
+        Err(CampaignRepositoryError::Integrity { reason }) => assert_eq!(
+            reason,
+            "branch-request-transition-coordination-root-mismatch"
+        ),
+        other => panic!("unexpected forged-result-locator validation: {other:?}"),
+    }
+}
+
+#[test]
+fn conflicted_successors_are_never_promoted_as_validated_heads() {
+    let (fixture_repository, lineage, policy, blobs) = counted_fixture();
+    drop(fixture_repository);
+    let refs = Arc::new(ConflictAfterCreateRefBackend::new());
+    let repository = CampaignRepository::new(blobs, refs.clone());
+    let genesis = repository
+        .create("checkpoint-conflict", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "checkpoint-conflict",
+    );
+    refs.arm();
+
+    assert!(matches!(
+        repository.submit_known_branch_request(
+            "checkpoint-conflict",
+            genesis.snapshot_id(),
+            &request,
+        ),
+        Err(CampaignRepositoryError::RefConflict { .. })
+    ));
+    let checkpoints = repository
+        .validated_heads
+        .lock()
+        .expect("validation checkpoints");
+    assert_eq!(checkpoints.len(), 1);
+    assert!(checkpoints.contains_key(&genesis.content_id()));
+}
+
+#[test]
+fn finite_proposal_is_an_exact_indexed_delta_and_replays_before_staleness() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("finite-proposal", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "finite-proposal",
+    );
+    let requested = repository
+        .submit_known_branch_request("finite-proposal", genesis.snapshot_id(), &request)
+        .expect("submit request");
+    let request_head = repository.head("finite-proposal").expect("request head");
+
+    let wrong_order = finite_proposal(
+        &request,
+        &policy,
+        &request_head,
+        ChoiceValue::Boolean(true),
+        1,
+    );
+    assert!(matches!(
+        repository.issue_proposal("finite-proposal", requested.new_snapshot, &wrong_order,),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "proposal-value-does-not-match-finite-source-order"
+        })
+    ));
+
+    let first = finite_proposal(
+        &request,
+        &policy,
+        &request_head,
+        ChoiceValue::Boolean(false),
+        1,
+    );
+    let accepted = repository
+        .issue_proposal("finite-proposal", requested.new_snapshot, &first)
+        .expect("issue proposal");
+    assert!(!accepted.replayed);
+    assert_eq!(accepted.proposal, first.id().expect("proposal id"));
+    assert_eq!(
+        repository
+            .load_proposal(accepted.proposal)
+            .expect("load proposal"),
+        first
+    );
+
+    let proposal_head = repository.head("finite-proposal").expect("proposal head");
+    let prior = request_head.snapshot().roots();
+    let next = proposal_head.snapshot().roots();
+    assert_ne!(prior.exploration, next.exploration);
+    assert_eq!(prior.graph, next.graph);
+    assert_eq!(prior.observations, next.observations);
+    assert_eq!(prior.corpus, next.corpus);
+    assert_eq!(prior.coverage, next.coverage);
+    assert_eq!(prior.findings, next.findings);
+    assert_eq!(prior.pins, next.pins);
+    assert_eq!(prior.accounting, next.accounting);
+    assert_eq!(
+        repository
+            .merkle
+            .inspect_shallow(next.exploration)
+            .expect("exploration root")
+            .entry_count(),
+        4
+    );
+
+    let replay = repository
+        .issue_proposal("finite-proposal", genesis.snapshot_id(), &first)
+        .expect("replay proposal");
+    assert!(replay.replayed);
+    assert_eq!(replay.prior_snapshot, accepted.prior_snapshot);
+    assert_eq!(replay.new_snapshot, accepted.new_snapshot);
+}
