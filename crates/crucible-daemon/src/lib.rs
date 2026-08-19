@@ -15,7 +15,10 @@
 //! idempotent scheduling, completion, and cancellation;
 //! [`repository_admission`] is its read-only production semantic boundary.
 //! [`executor_worker`] resolves accepted assignments, delegates execution, and
-//! publishes immutable observation candidates.
+//! publishes immutable observation candidates; [`crucible_artifact`] strictly
+//! translates opaque campaign payloads into Crucible execution-model values;
+//! [`crucible_execution`] supplies the typed runner boundary used by the local
+//! QEMU/session adapter.
 //! Future modules split session hosting, API transport, and diagnostics.
 
 #![forbid(unsafe_code)]
@@ -24,6 +27,8 @@
 
 pub mod assignment_ledger;
 pub mod control_responsiveness;
+pub mod crucible_artifact;
+pub mod crucible_execution;
 pub mod executor_loopback;
 pub mod executor_supervisor;
 pub mod executor_worker;
@@ -37,6 +42,16 @@ pub use assignment_ledger::{
 pub use control_responsiveness::{
     DAEMON_CONTROL_RESPONSIVE_QUANTUM_BOUND, DaemonControlResponsiveRoute,
     validate_daemon_control_responsiveness,
+};
+pub use crucible_artifact::{
+    CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V1, CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V1,
+    CrucibleArtifactError, decode_crucible_configuration_artifact,
+    decode_crucible_scenario_artifact, encode_crucible_configuration_artifact,
+    encode_crucible_scenario_artifact,
+};
+pub use crucible_execution::{
+    CrucibleAttemptExecution, CrucibleExecutionModel, CrucibleExecutionModelError,
+    CrucibleExecutionRunner, CrucibleResolvedAttemptStart,
 };
 pub use executor_loopback::{
     LoopbackExecutorProtocolError, LoopbackExecutorServerError, LoopbackExecutorService,
