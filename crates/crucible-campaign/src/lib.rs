@@ -38,8 +38,9 @@ pub use choice::{
 pub use codec::CampaignCodecError;
 pub use execution::{
     AssignmentId, AttemptResourceLimits, DaemonEpoch, ExecutionId, ExecutionRetentionIntent,
-    ExecutorClient, ExecutorClientError, ExecutorRejection, ExecutorService,
-    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
+    ExecutorClient, ExecutorClientError, ExecutorCompatibilityProfile, ExecutorRejection,
+    ExecutorService, MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES, SubmitAttemptDisposition,
+    SubmitAttemptRequest, SubmitAttemptResponse,
 };
 pub use exploration::{
     Attempt, AttemptAdmission, AttemptAdmissionRole, AttemptStart, BranchBudget, BranchPath,

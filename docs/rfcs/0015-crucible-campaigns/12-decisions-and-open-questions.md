@@ -511,9 +511,10 @@ the exact execution basis; resource/retention changes fail as incompatible and
 the same `AttemptId` in another lineage remains independent. A completed
 observation is returned only after read-only reauthentication against that
 request. Temporary input absence yields `unavailable-input`; semantic mismatch
-discards the operational completion and permits reexecution. Cancellation and
-completion use exact execution-bound conditional transitions, and conflicting
-second observations fail rather than selecting a winner.
+discards the operational completion and permits reexecution. Authorization
+failure yields `unauthorized` without discarding or reexecuting it. Cancellation
+and completion use exact execution-bound conditional transitions, and
+conflicting second observations fail rather than selecting a winner.
 
 Mutable publication errors are reconciled by reloading the exact record. A
 directory reload re-fsyncs the containing directory before confirming a state
@@ -527,7 +528,30 @@ plus a per-execution deterministic-quanta ceiling.
 This ledger is operational acceleration, not campaign truth. Deleting it may
 duplicate unfinished execution but cannot change canonical attempts,
 observations, findings, or campaign refs. The supervisor receives a read-only
-admission validator and no mutable campaign-ref authority.
+admission validator and no mutable campaign-ref authority. That adapter carries
+an immutable executor profile and requires exact lineage agreement on the
+Crucible/QEMU identities, complete protocol map, scenario schema, and exact
+closure schema before admission.
+
+### D-38: Local executor loopback uses a minimal versioned Unix frame
+
+The single-host executor conformance adapter carries the same strict canonical
+`SubmitAttempt` bodies as direct invocation in a fixed 16-byte Unix-stream
+header: eight versioned magic bytes, one directional message kind, three zero
+reserved bytes, and one big-endian body length. The body is rejected above 4
+KiB before allocation. Both server and client strictly decode it, and the client
+authenticates every response against its exact request. Configurable nonzero
+absolute read/write deadlines (at most one hour) bound partial, drip-progress,
+and non-reading peers, and the server shuts down both directions before
+returning any protocol, service, or I/O error.
+
+This is a language-neutral local RPC binding, not a second semantic schema and
+not a distributed transport. It carries no host paths, descriptors, native
+layouts, large artifacts, credentials, or QEMU objects. A long-lived server may
+repeat the one-exchange function on a connection and closes that connection on
+any framing, service, or semantic error. The external campaign-service API may
+still use RFC-0010's HTTP/2 gRPC/Connect-style binding; local executor completion
+does not depend on adopting a language framework.
 
 ## Deliberately rejected representations
 

@@ -26,15 +26,16 @@ use crate::{
     ChoiceDomain, ChoiceDomainId, ChoiceGroup, ChoiceGroupId, ChoiceOpportunity,
     ChoiceOpportunityId, ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId,
     ControlRequest, CoverageProjection, CoverageProjectionId, DaemonEpoch, DebuggerAuthorityKey,
-    DebuggerSubmission, ExpansionState, ExpansionStateId, MeasurementSet, MeasurementSetId,
-    MerkleMap, MerkleMapRoot, ObjectEnvelope, Observation, ObservationId, PlannerAuthorityKey,
-    PlannerDisposition, PlannerEngine, PlannerInvocation, PlannerInvocationId,
-    PlannerProposalDisposition, PlannerState, PlannerStep, PlannerStepId, PlannerStepProposal,
-    PlannerSubmission, PlanningAccounting, PlanningBudget, PlanningScanPage, PlanningScanPosition,
-    PlanningUsage, PolicyActivation, PolicyArtifact, PropertyVerdict, PropertyVerdictSet,
-    PropertyVerdictSetId, Proposal, ProposalId, ScenarioArtifact, ScenarioArtifactId,
-    ScenarioDefId, SelectableDeclaration, SelectableId, Selection, SelectionId, StopCondition,
-    StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
+    DebuggerSubmission, ExecutorCompatibilityProfile, ExecutorRejection, ExpansionState,
+    ExpansionStateId, MeasurementSet, MeasurementSetId, MerkleMap, MerkleMapRoot, ObjectEnvelope,
+    Observation, ObservationId, PlannerAuthorityKey, PlannerDisposition, PlannerEngine,
+    PlannerInvocation, PlannerInvocationId, PlannerProposalDisposition, PlannerState, PlannerStep,
+    PlannerStepId, PlannerStepProposal, PlannerSubmission, PlanningAccounting, PlanningBudget,
+    PlanningScanPage, PlanningScanPosition, PlanningUsage, PolicyActivation, PolicyArtifact,
+    PropertyVerdict, PropertyVerdictSet, PropertyVerdictSetId, Proposal, ProposalId,
+    ScenarioArtifact, ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, SelectableId,
+    Selection, SelectionId, StopCondition, StopOutcome, SubmitAttemptDisposition,
+    SubmitAttemptRequest, SubmitAttemptResponse,
 };
 
 const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;
@@ -280,6 +281,53 @@ pub enum CampaignRepositoryError {
     /// A local coordinator synchronization primitive was poisoned.
     #[error("campaign coordinator lock was poisoned")]
     Poisoned,
+}
+
+impl CampaignRepositoryError {
+    /// Maps read-only executor validation failure into the wire rejection vocabulary.
+    ///
+    /// Missing or temporarily unreadable immutable input remains retryable under
+    /// a fresh assignment. Authenticated incompatibility and corrupt canonical
+    /// structure fail stably, while backend authorization remains distinct.
+    #[must_use]
+    pub fn executor_rejection(&self) -> ExecutorRejection {
+        match self {
+            Self::Store(error) => store_executor_rejection(error),
+            Self::Merkle(crate::CampaignStoreError::Store(error)) => {
+                store_executor_rejection(error)
+            }
+            Self::NotFound | Self::Poisoned => ExecutorRejection::UnavailableInput,
+            Self::Codec(_)
+            | Self::Merkle(_)
+            | Self::AlreadyExists
+            | Self::Stale { .. }
+            | Self::CommandReuse
+            | Self::RefConflict { .. }
+            | Self::Integrity { .. }
+            | Self::InvalidTransition { .. } => ExecutorRejection::Incompatible,
+        }
+    }
+}
+
+fn store_executor_rejection(error: &StoreError) -> ExecutorRejection {
+    match error {
+        StoreError::NotFound { .. }
+        | StoreError::Quota
+        | StoreError::Unavailable
+        | StoreError::Poisoned { .. }
+        | StoreError::Io { .. }
+        | StoreError::StreamIo { .. } => ExecutorRejection::UnavailableInput,
+        StoreError::Unauthorized => ExecutorRejection::Unauthorized,
+        StoreError::Corrupt { .. }
+        | StoreError::InvalidId
+        | StoreError::InvalidRefName { .. }
+        | StoreError::InvalidRange { .. }
+        | StoreError::InvalidComposition { .. }
+        | StoreError::InvalidGraph { .. }
+        | StoreError::Incompatible
+        | StoreError::InvalidSourceLength { .. }
+        | StoreError::Unsupported { .. } => ExecutorRejection::Incompatible,
+    }
 }
 
 /// Repository and sole-writer transaction boundary for local campaigns.
@@ -4023,6 +4071,24 @@ mod tests {
         repository
             .validate_executor_request(&request)
             .expect("valid executor request");
+        let profile = ExecutorCompatibilityProfile::from_lineage(&lineage);
+        repository
+            .validate_executor_request_with_profile(&request, &profile)
+            .expect("exact executor profile");
+        let mismatched_profile = ExecutorCompatibilityProfile::new(
+            lineage.crucible_version(),
+            "different-qemu-build",
+            lineage.protocol_versions().clone(),
+            lineage.scenario_schema(),
+            lineage.exact_closure_schema(),
+        )
+        .expect("mismatched executor profile");
+        assert!(matches!(
+            repository.validate_executor_request_with_profile(&request, &mismatched_profile),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "executor-compatibility-profile-mismatch"
+            })
+        ));
         let completed = SubmitAttemptResponse::new(
             &request,
             SubmitAttemptDisposition::AlreadyCompleted {
@@ -4132,6 +4198,28 @@ mod tests {
                 reason: "executor-attempt-lineage-mismatch"
             })
         ));
+    }
+
+    #[test]
+    fn executor_validation_errors_preserve_retry_and_authorization_meaning() {
+        let missing = ContentId::for_bytes(ObjectKind::CampaignFact, 1, b"missing-input");
+        assert_eq!(
+            CampaignRepositoryError::Store(StoreError::NotFound { id: missing })
+                .executor_rejection(),
+            ExecutorRejection::UnavailableInput
+        );
+        assert_eq!(
+            CampaignRepositoryError::Store(StoreError::Unauthorized).executor_rejection(),
+            ExecutorRejection::Unauthorized
+        );
+        assert_eq!(
+            integrity("invalid-executor-closure").executor_rejection(),
+            ExecutorRejection::Incompatible
+        );
+        assert_eq!(
+            CampaignRepositoryError::Poisoned.executor_rejection(),
+            ExecutorRejection::UnavailableInput
+        );
     }
 
     #[test]

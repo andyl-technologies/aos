@@ -116,10 +116,13 @@ specifies:
 - capability negotiation;
 - golden request, response, event, and rejection vectors.
 
-The RPC binding follows RFC-0010's HTTP/2 gRPC/Connect-style transport. A JSON
-projection is provided for debugging and CLI structured output; canonical
-campaign object bytes retain their own codec. Large artifacts do not travel in
-control messages.
+The external campaign-service binding follows RFC-0010's HTTP/2
+gRPC/Connect-style transport. The single-host executor conformance binding is a
+smaller versioned Unix-stream frame carrying the byte-identical canonical
+component messages; adopting a language framework is not a prerequisite for
+the local executor boundary. A JSON projection is provided for debugging and
+CLI structured output; canonical campaign object bytes retain their own codec.
+Large artifacts do not travel in control messages.
 
 Local-only acceleration may use a negotiated ancillary Unix-socket operation
 to pass an already validated descriptor. Such an operation is optional, never
@@ -387,9 +390,30 @@ attempt closure for every outcome. Before accepting `already-completed`, it
 also loads the full observation closure, requires its `AttemptId` to equal the
 request, and requires the attempt start and observed child to belong to the
 named lineage's exact `ScenarioArtifactId`, not merely the same semantic
-`ScenarioDefId`. The production repository admission adapter, loopback
-transport, and QEMU worker remain subsequent implementation checkpoints and
-must consume these exact canonical bytes and validators.
+`ScenarioDefId`. The repository-backed admission adapter and strict loopback
+transport consume these exact canonical bytes and validators. The QEMU worker
+remains a subsequent implementation checkpoint.
+
+The bounded loopback binding is:
+
+```text
+ExecutorLoopbackFrameV1 = magic[8] | kind:u8 | reserved[3] |
+                          body_length:u32be | canonical_body[body_length]
+
+kind = submit-attempt-request(1) | submit-attempt-response(2)
+magic = "CRUCEX01"
+```
+
+The body limit is 4 KiB and is checked before allocation. Reserved bytes must
+be zero, message kind is directional, canonical decoding is strict, and the
+client authenticates the response against the exact request. The frame carries
+no paths, descriptors, large artifacts, credentials, native layout, or QEMU
+objects. Direct and loopback adapters invoke the same `ExecutorService` and
+checked-client validation path. Both directions have configurable nonzero
+absolute operation deadlines, capped at one hour; progress does not reset a
+deadline, so partial/drip headers and bodies or a peer that stops reading cannot
+pin a connection indefinitely. Any framing, semantic, I/O, or service error
+shuts down both stream directions before the server returns.
 
 The single-host daemon persists two bounded operational record families:
 
@@ -427,7 +451,9 @@ content-addressed `AttemptId` is equal. Stale/canceled state is replaceable.
 Completed operational state is reauthenticated against the exact request before
 reuse: temporarily unavailable input yields `unavailable-input`, while a
 present but incompatible completion is discarded and reexecuted because the
-ledger is acceleration rather than campaign truth. Hard slot, aggregate vCPU,
+ledger is acceleration rather than campaign truth. Authorization failure yields
+`unauthorized` without discarding the completion or starting replacement work.
+Hard slot, aggregate vCPU,
 resident-memory, and writable-disk limits plus a per-execution quanta ceiling
 produce stable `incompatible` or `backpressure` outcomes without unbounded
 queues.
@@ -443,12 +469,18 @@ assignment lookup similarly re-fsyncs the parent before treating an existing
 record as a durable exact replay.
 
 Admission is a required read-only executor boundary that authenticates the
-attempt closure and host compatibility before capacity reservation. The
-repository exposes that exact immutable request validator separately from
+attempt closure and host compatibility before capacity reservation. Its
+immutable local profile must exactly match the lineage's Crucible version, QEMU
+build identity, complete protocol-version map, scenario schema, and exact
+closure schema. The repository exposes that exact immutable request validator
+separately from
 response validation, and the supervisor accepts it through a narrow admission
 trait rather than receiving campaign mutable-ref authority.
 `AllowAllAttemptAdmission` exists only for already-authenticated compositions
-and component tests; it is not a production trust boundary.
+and component tests; it is not a production trust boundary. The production
+repository adapter maps missing, temporarily unavailable, or poisoned input to
+`unavailable-input`, preserves backend authorization failure as `unauthorized`,
+and maps corrupt or semantically incompatible closure data to `incompatible`.
 
 An `AssignmentId`, `ExecutionId`, executor identity, coordinator epoch, retry
 count, PID, materialization tier, and wall time are operational. They never

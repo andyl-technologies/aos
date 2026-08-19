@@ -614,6 +614,38 @@ fn durable_completions_are_reauthenticated_or_discarded_before_reuse() {
         Some(AttemptRuntimeState::Completed { .. })
     ));
 
+    let unauthorized_request = SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([0x3b; 16]).expect("assignment"),
+        second_epoch,
+        completed_request.lineage(),
+        completed_request.attempt(),
+        completed_request.resources(),
+        completed_request.retention(),
+    )
+    .expect("unauthorized request");
+    let mut unauthorized = LocalExecutorSupervisor::new(
+        completed_ledger(0x3c),
+        CompletionValidator(Err(CompletionValidationFailure::Unauthorized)),
+        second_epoch,
+        ExecutorCapacity::new(1, 1, 2048, 4096, 64).expect("capacity"),
+    );
+    assert_eq!(
+        unauthorized
+            .submit_attempt(&unauthorized_request)
+            .expect("unauthorized completion rejection")
+            .disposition(),
+        SubmitAttemptDisposition::Rejected {
+            reason: ExecutorRejection::Unauthorized
+        }
+    );
+    assert!(matches!(
+        unauthorized
+            .ledger()
+            .load_attempt(execution_key(&unauthorized_request))
+            .expect("unauthorized completion remains"),
+        Some(AttemptRuntimeState::Completed { .. })
+    ));
+
     let incompatible_request = SubmitAttemptRequest::new(
         AssignmentId::from_bytes([0x39; 16]).expect("assignment"),
         second_epoch,
