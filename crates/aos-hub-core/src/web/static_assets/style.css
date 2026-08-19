@@ -527,6 +527,7 @@ form.pkg-search select {
  * widget wrapper adds a syntax-highlight overlay and a custom autocomplete. */
 .filter-field {
   position: relative;
+  isolation: isolate;
   display: inline-block;
   width: 100%;
   max-width: 52rem;
