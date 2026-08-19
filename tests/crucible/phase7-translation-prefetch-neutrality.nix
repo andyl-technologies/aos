@@ -8,8 +8,11 @@
 }: let
   series = import ../../pkgs/emulation/qemu-patches/_series.nix;
   patchName = "0046-crucible-translation-prefetch-helper.patch";
-  priorPatchFiles = builtins.filter (patch: patch != patchName) series.patchFiles;
+  patchIndex = lib.findFirstIndex (patch: patch == patchName) (throw "translation-prefetch patch is absent from the QEMU series") series.patchFiles;
+  priorPatchFiles = lib.take patchIndex series.patchFiles;
+  laterPatchFiles = lib.drop (patchIndex + 1) series.patchFiles;
   priorPatchList = builtins.concatStringsSep " " priorPatchFiles;
+  laterPatchList = builtins.concatStringsSep " " laterPatchFiles;
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   idleInitramfs = import ./phase2-qemu-live-plugin-quantum-guest.nix {inherit pkgs;};
@@ -92,6 +95,11 @@ in
           patch --batch --fuzz=0 -p1 \
             -d "$qemu_source" \
             -i ${../../pkgs/emulation/qemu-patches/0046-crucible-translation-prefetch-helper.patch}
+          for later_patch in ${laterPatchList}; do
+            patch --batch --fuzz=0 -p1 \
+              -d "$qemu_source" \
+              -i "${../../pkgs/emulation/qemu-patches}/$later_patch"
+          done
           grep -Fq 'crucible_translation_prefetch_generate' \
             "$qemu_source/accel/tcg/crucible-translation-prefetch.c"
           patched_fixture_exercised=true
