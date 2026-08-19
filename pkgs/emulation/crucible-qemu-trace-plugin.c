@@ -87,6 +87,9 @@ static bool extended_fingerprint;
 static bool capture_memory_events;
 static bool definition_only;
 static bool definition_emitted;
+static bool definition_pause_requested;
+static bool definition_callback_completed;
+static int definition_pause_status = -1;
 static bool post_boundary_samples;
 static bool trace_rr_switch_events = true;
 static bool det_ipi_probe;
@@ -840,6 +843,9 @@ record_definition(void)
       "{\"kind\":\"definition\""
       ",\"schema\":\"" TRACE_FINGERPRINT_SCHEMA "\""
       ",\"definition_only\":true"
+      ",\"definition_pause_requested\":%s"
+      ",\"definition_callback_completed\":%s"
+      ",\"definition_pause_status\":%d"
       ",\"retired\":%" PRIu64
       ",\"observed_icount\":%" PRIu64
       ",\"observed_non_running\":%s"
@@ -859,6 +865,9 @@ record_definition(void)
       ",\"process_argv_digest\":\"%s\""
       ",\"process_argv_status\":%d"
       ",\"register_counts\":[",
+      definition_pause_requested ? "true" : "false",
+      definition_callback_completed ? "true" : "false",
+      definition_pause_status,
       retired,
       observed_icount,
       observed_non_running ? "true" : "false",
@@ -2049,12 +2058,47 @@ on_tb_translate(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
 }
 
 static void
+on_definition_paused(int status, void *userdata)
+{
+  (void)userdata;
+
+  definition_callback_completed = true;
+  definition_pause_status = status;
+  if (status != 0) {
+    qemu_plugin_outs(
+        "crucible-qemu-trace-plugin: genesis pause callback failed\n");
+    qemu_plugin_request_shutdown(1);
+    return;
+  }
+
+  record_definition();
+  if (!definition_emitted) {
+    qemu_plugin_outs(
+        "crucible-qemu-trace-plugin: genesis definition was incomplete\n");
+    qemu_plugin_request_shutdown(1);
+  }
+}
+
+static void
 on_vcpu_init(qemu_plugin_id_t id, unsigned int vcpu_index)
 {
   (void)id;
 
   if (extended_fingerprint) {
     (void)init_register_set(vcpu_index);
+  }
+  if (definition_only && !definition_pause_requested &&
+      all_register_sets_initialized()) {
+    definition_pause_requested = true;
+    const int status = qemu_plugin_crucible_request_terminal_pause(
+        on_definition_paused, NULL);
+
+    if (status != 0) {
+      definition_pause_status = status;
+      qemu_plugin_outs(
+          "crucible-qemu-trace-plugin: genesis pause request failed\n");
+      qemu_plugin_request_shutdown(1);
+    }
   }
 }
 
@@ -2074,7 +2118,6 @@ on_plugin_exit(qemu_plugin_id_t id, void *userdata)
       record_terminal_final();
     }
   } else if (definition_only) {
-    record_definition();
     if (!definition_emitted) {
       qemu_plugin_outs(
           "crucible-qemu-trace-plugin: definition record was not emitted\n");

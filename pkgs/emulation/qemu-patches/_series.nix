@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "453ad7e559a64294b65ec08b0c905c7347d6a29393a0b3cb8708e2fccc6f181d";
+  patchBranchBundleSha256 = "90cc516af978dc7a5320ceeb25ac34be112c45420401fa36e54f5b6ff55e308d";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "b5bf0a99dd6152728e93f339cf9689769471ad73";
+  patchBranchHeadCommit = "593687ed5ff9c4a2f07acc0d987295b8c0542c71";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -785,6 +785,16 @@ let
       class = "D";
       enforces = "DET-1,QFP-REG-1,QFP-REG-2,FAULT-EVIDENCE";
       capability = "exact RR ownership gates canonical register observation; every realized CPU manifest is validated; rejected register commands preserve every canonical GDB register byte and all six mutation side-effect counters";
+    }
+    {
+      file = "0086-crucible-genesis-observation-boundary.patch";
+      branchSubject = "crucible: admit genesis observation boundary";
+      branchCommit = "593687ed5ff9c4a2f07acc0d987295b8c0542c71";
+      branchTree = "669eb1ea3cc4852951fb5ae82147dec3ccda5507";
+      catalogName = "crucible-genesis-observation-boundary";
+      class = "D";
+      enforces = "DET-1,QFP-REG-1,QFP-STATE-2";
+      capability = "the BQL-held prelaunch genesis boundary admits complete all-vCPU architectural observation only at exact raw icount zero";
     }
   ];
   catalogOnlyCapabilities = [
