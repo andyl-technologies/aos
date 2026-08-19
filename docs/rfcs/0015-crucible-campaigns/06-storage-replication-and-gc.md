@@ -153,6 +153,14 @@ verification and atomic replacement under the local lock, then flushes the ref
 directory. Rename without the required file and directory durability steps is
 not a successful durable put.
 
+If publication creates directory ancestors, it flushes every new directory and
+the first pre-existing ancestor that contains the new chain before reporting
+durability. An idempotent put that finds an existing authenticated object still
+flushes its containing directory before returning a durable receipt; this
+matters when a prior attempt installed the name but failed its directory flush.
+An error after a ref replacement may be an indeterminate commit, so the sole
+coordinator re-reads the authoritative ref before deciding whether to retry.
+
 - **[CSTORE-7]** The directory backend MUST leave either no object or a complete
   authenticated object after interruption; same-filesystem staging debris is
   unreachable and reclaimable.
