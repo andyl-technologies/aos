@@ -12,15 +12,15 @@
 //!
 //! ```text
 //! nix-instantiate --store dummy:// --eval --strict --json --pure-eval \
-//!   --option restrict-eval true \                  # read only the eval root + store
+//!   --option restrict-eval true \                  # read only explicit store roots
 //!   --option allow-import-from-derivation false \  # no IFD ⇒ no build sneaks in
-//!   -I <root> \
-//!   -f <root>/entry.nix manifest
+//!   -I /nix/store/<hash>-nix-source \
+//!   -f /nix/store/<hash>-nix-source/entry.nix manifest
 //! ```
 //!
 //! `--pure-eval` removes ambient evaluator inputs such as `currentTime`,
 //! `currentSystem`, and environment variables. `restrict-eval` independently
-//! confines filesystem reads to the explicit store/eval roots, while
+//! confines filesystem reads to explicit store roots, while
 //! `allow-import-from-derivation = false` prevents evaluation from triggering a
 //! build. The base library, host module, facts module, and package modules are
 //! all explicit paths admitted below.
@@ -60,7 +60,7 @@ pub const DEFAULT_FACTS_PATH: &str = "/run/aos-metadata/facts.json";
 /// `aos-eval.service`; this type does not create the scope, it only invokes the
 /// evaluator and classifies.
 pub struct StockNixEvaluator {
-    /// The eval root (`-I` search path and `entry.nix` location).
+    /// The mutable staging root for generated evaluator source.
     root: PathBuf,
     /// `verbose > 0` adds `--show-trace`.
     verbose: u8,
@@ -150,19 +150,28 @@ impl StockNixEvaluator {
         )
     }
 
-    /// Writes `entry.nix` into the eval root.
+    /// Writes the generated Nix source into a dedicated staging directory.
     pub(super) fn write_entry(&self, attempt: &EvalAttempt<'_>) -> Result<PathBuf> {
-        let entry = self.root.join("entry.nix");
-        std::fs::create_dir_all(&self.root)
-            .with_context(|| format!("creating eval root {}", self.root.display()))?;
+        let source_root = self.root.join("nix-source");
+        let entry = source_root.join("entry.nix");
+        std::fs::create_dir_all(&source_root)
+            .with_context(|| format!("creating eval source root {}", source_root.display()))?;
         if let Some(facts_json) = attempt.facts_json {
             let raw = std::fs::read(facts_json)
                 .with_context(|| format!("reading facts {}", facts_json.display()))?;
             let facts: crate::metadata::fetcher::Facts = serde_json::from_slice(&raw)
                 .with_context(|| format!("parsing facts {}", facts_json.display()))?;
             let rendered = crate::metadata::facts_render::render_host_facts_nix(&facts);
-            std::fs::write(self.root.join("host-facts.nix"), rendered)
+            std::fs::write(source_root.join("host-facts.nix"), rendered)
                 .context("writing rendered host facts module")?;
+        } else {
+            match std::fs::remove_file(source_root.join("host-facts.nix")) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).context("removing stale rendered host facts module");
+                }
+            }
         }
         std::fs::write(&entry, self.render_entry_nix(attempt))
             .with_context(|| format!("writing {}", entry.display()))?;
@@ -172,16 +181,20 @@ impl StockNixEvaluator {
 
 impl NixEvaluator for StockNixEvaluator {
     fn evaluate(&self, attempt: &EvalAttempt<'_>) -> Result<EvalClass> {
-        let entry = self.write_entry(attempt)?;
+        let staged_entry = self.write_entry(attempt)?;
+        let staged_source = staged_entry
+            .parent()
+            .context("generated evaluator entry has no source directory")?;
+        let source = super::add_fixed_input_to_store(staged_source)
+            .context("pinning generated evaluator source before pure evaluation")?;
+        let entry = source.join("entry.nix");
 
         let mut cmd = pure_eval_command()?;
 
-        // Every path `entry.nix` imports must be an allowed restrict-eval root,
-        // otherwise the import faults with "access to path … is forbidden in
-        // restricted mode". The eval root holds `entry.nix`; the base-lib, the
-        // verified `host.nix`, and each provider's config-output are imported by
-        // store path and so must each be added as an `-I` root.
-        cmd.arg("-I").arg(&self.root);
+        // Pure evaluation admits only immutable source roots. Pinning the
+        // generated entry and facts together also binds their relative import
+        // to the exact bytes used for this iteration.
+        cmd.arg("-I").arg(&source);
         cmd.arg("-I").arg(attempt.base_lib);
         cmd.arg("-I").arg(attempt.host_nix);
         for member in attempt.working_set {
@@ -999,9 +1012,10 @@ mod tests {
             iteration: 0,
         };
 
-        let entry = evaluator.write_entry(&attempt).unwrap();
-        let entry = std::fs::read_to_string(entry).unwrap();
-        let facts = std::fs::read_to_string(root.join("host-facts.nix")).unwrap();
+        let entry_path = evaluator.write_entry(&attempt).unwrap();
+        assert_eq!(entry_path, root.join("nix-source/entry.nix"));
+        let entry = std::fs::read_to_string(entry_path).unwrap();
+        let facts = std::fs::read_to_string(root.join("nix-source/host-facts.nix")).unwrap();
         assert!(entry.contains("factsModules = [ factsModule ]"), "{entry}");
         assert!(
             entry.contains("factsModule = import ./host-facts.nix"),
