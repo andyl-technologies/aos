@@ -163,6 +163,43 @@ impl CampaignRepository {
         Err(integrity("snapshot-ancestry-limit"))
     }
 
+    pub(super) fn find_planner_step_result(
+        &self,
+        mut content_id: ContentId,
+        invocation: PlannerInvocationId,
+    ) -> Result<Option<PlannerStepResult>, CampaignRepositoryError> {
+        let mut visited = BTreeSet::new();
+        for _ in 0..MAX_SNAPSHOT_ANCESTRY {
+            if !visited.insert(content_id) {
+                return Err(integrity("snapshot-ancestry-cycle"));
+            }
+            let loaded = self.read_snapshot(content_id)?;
+            if let Some(transition_content) = optional_child(&loaded.envelope, "transition") {
+                let transition = self.read_fact(transition_content)?;
+                if let CampaignFact::PlannerAdvanced(step_id) = transition {
+                    let step = self.read_planner_step(step_id.content_id())?;
+                    if step.invocation() == invocation {
+                        let prior_snapshot = loaded
+                            .snapshot
+                            .parent()
+                            .ok_or_else(|| integrity("planner-step-transition-has-no-parent"))?;
+                        return Ok(Some(PlannerStepResult {
+                            prior_snapshot,
+                            new_snapshot: CampaignSnapshotId::from_content_id(content_id)?,
+                            step: step_id,
+                            replayed: true,
+                        }));
+                    }
+                }
+            }
+            let Some(parent) = optional_child(&loaded.envelope, "parent") else {
+                return Ok(None);
+            };
+            content_id = parent;
+        }
+        Err(integrity("snapshot-ancestry-limit"))
+    }
+
     pub(super) fn mutation_command_exists(
         &self,
         mut content_id: ContentId,
@@ -234,7 +271,8 @@ impl CampaignRepository {
                         }
                         CampaignFact::BranchRequestIssued(_)
                         | CampaignFact::ProposalIssued(_)
-                        | CampaignFact::AttemptAdmitted(_) => {}
+                        | CampaignFact::AttemptAdmitted(_)
+                        | CampaignFact::PlannerAdvanced(_) => {}
                         _ => {
                             return Err(integrity("snapshot-transition-type-is-not-implemented"));
                         }

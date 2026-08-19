@@ -373,6 +373,7 @@ content_object_id!(
 content_object_id!(
     CampaignSnapshotId,
     ObjectKind::CampaignSnapshot,
+    2,
     "crucible.campaign.snapshot",
     "Identifies one immutable campaign snapshot."
 );
@@ -403,13 +404,14 @@ content_object_id!(
 content_object_id!(
     PlannerInvocationId,
     ObjectKind::Policy,
+    2,
     "crucible.campaign.planner-invocation",
     "Identifies one pure planner invocation basis."
 );
 content_object_id!(
     PlannerStepId,
     ObjectKind::CampaignFact,
-    2,
+    3,
     "crucible.campaign.planner-step",
     "Identifies one coordinator-accepted planner step."
 );

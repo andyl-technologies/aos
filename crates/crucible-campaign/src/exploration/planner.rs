@@ -13,6 +13,10 @@ pub struct PlanningAccounting {
     pub attempts: u64,
     /// Proposals that reused an existing semantic edge/attempt.
     pub deduplicated: u64,
+    /// Canonical input objects admitted by the coordinator.
+    pub input_objects: u64,
+    /// Canonical input bytes admitted by the coordinator.
+    pub input_bytes: u64,
     /// Deterministic planner fuel consumed.
     pub fuel: u64,
 }
@@ -56,6 +60,8 @@ impl Canonical for PlanningAccounting {
         self.proposals.encode(encoder);
         self.attempts.encode(encoder);
         self.deduplicated.encode(encoder);
+        self.input_objects.encode(encoder);
+        self.input_bytes.encode(encoder);
         self.fuel.encode(encoder);
     }
 
@@ -65,6 +71,8 @@ impl Canonical for PlanningAccounting {
             proposals: u64::decode(decoder)?,
             attempts: u64::decode(decoder)?,
             deduplicated: u64::decode(decoder)?,
+            input_objects: u64::decode(decoder)?,
+            input_bytes: u64::decode(decoder)?,
             fuel: u64::decode(decoder)?,
         })
     }
@@ -159,6 +167,126 @@ impl Canonical for PlanningScanPosition {
             BranchPointId::decode(decoder)?,
             BranchRequestId::decode(decoder)?,
         ))
+    }
+}
+
+/// Exact bounded continuation page served to one pure planner invocation.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PlanningScanPage {
+    after: Option<PlanningScanPosition>,
+    limit: u32,
+    positions: Vec<PlanningScanPosition>,
+    complete: bool,
+    input_bytes: u64,
+}
+
+impl PlanningScanPage {
+    /// Builds a canonical page in strict continuation-key order.
+    ///
+    /// `complete` means the page reaches EOF. A non-complete page must fill its
+    /// declared limit so transport chunking cannot manufacture a scan boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a zero/oversized limit, an empty or
+    /// short non-complete page, non-increasing positions, a position at or
+    /// before `after`, or inconsistent canonical input bytes.
+    pub fn new(
+        after: Option<PlanningScanPosition>,
+        limit: u32,
+        positions: Vec<PlanningScanPosition>,
+        complete: bool,
+        input_bytes: u64,
+    ) -> Result<Self, CampaignCodecError> {
+        let limit_usize =
+            usize::try_from(limit).map_err(|_| CampaignCodecError::LimitExceeded {
+                limit: "planner-scan-page-item-count",
+            })?;
+        if limit_usize == 0
+            || limit_usize > MAX_EXPANSION_PAGE_ITEMS
+            || positions.len() > limit_usize
+            || (!complete && positions.len() != limit_usize)
+            || positions.windows(2).any(|pair| pair[0] >= pair[1])
+            || after.is_some_and(|after| positions.iter().any(|position| *position <= after))
+            || (positions.is_empty() != (input_bytes == 0))
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "planner scan page is empty, unordered, oversized, or inconsistent",
+            });
+        }
+        Ok(Self {
+            after,
+            limit,
+            positions,
+            complete,
+            input_bytes,
+        })
+    }
+
+    /// Returns the prior completely scanned position, if any.
+    #[must_use]
+    pub const fn after(&self) -> Option<PlanningScanPosition> {
+        self.after
+    }
+
+    /// Returns the maximum positions requested from the coordinator.
+    #[must_use]
+    pub const fn limit(&self) -> u32 {
+        self.limit
+    }
+
+    /// Returns exact served positions in canonical scan order.
+    #[must_use]
+    pub fn positions(&self) -> &[PlanningScanPosition] {
+        &self.positions
+    }
+
+    /// Returns whether this page reaches the end of the immutable view.
+    #[must_use]
+    pub const fn complete(&self) -> bool {
+        self.complete
+    }
+
+    /// Returns the exact number of served input objects.
+    #[must_use]
+    pub fn input_objects(&self) -> u64 {
+        self.positions.len() as u64
+    }
+
+    /// Returns the sum of canonical served request-body bytes.
+    #[must_use]
+    pub const fn input_bytes(&self) -> u64 {
+        self.input_bytes
+    }
+
+    /// Returns the last served position, if any.
+    #[must_use]
+    pub fn last(&self) -> Option<PlanningScanPosition> {
+        self.positions.last().copied()
+    }
+}
+
+impl Canonical for PlanningScanPage {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.after.encode(encoder);
+        self.limit.encode(encoder);
+        self.positions.encode(encoder);
+        self.complete.encode(encoder);
+        self.input_bytes.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Self::new(
+            Option::decode(decoder)?,
+            u32::decode(decoder)?,
+            decoder.sequence_bounded(
+                MAX_EXPANSION_PAGE_ITEMS,
+                "planner-scan-page-item-count",
+                PlanningScanPosition::decode,
+            )?,
+            bool::decode(decoder)?,
+            u64::decode(decoder)?,
+        )
     }
 }
 
@@ -652,6 +780,7 @@ pub struct PlannerStep {
     input_view: CampaignViewId,
     disposition: PlannerDisposition,
     next_state: PlannerStateId,
+    usage_claim: PlanningUsage,
     accounting: PlanningAccounting,
     evidence: GuidanceEvidence,
 }
@@ -673,6 +802,7 @@ impl PlannerStep {
         input_view: CampaignViewId,
         disposition: PlannerDisposition,
         next_state: PlannerStateId,
+        usage_claim: PlanningUsage,
         accounting: PlanningAccounting,
         evidence: GuidanceEvidence,
     ) -> Result<Self, CampaignCodecError> {
@@ -687,6 +817,7 @@ impl PlannerStep {
             input_view,
             disposition,
             next_state,
+            usage_claim,
             accounting,
             evidence,
         })
@@ -766,6 +897,12 @@ impl PlannerStep {
     #[must_use]
     pub const fn next_state(&self) -> PlannerStateId {
         self.next_state
+    }
+
+    /// Returns planner-claimed diagnostic resource use.
+    #[must_use]
+    pub const fn usage_claim(&self) -> PlanningUsage {
+        self.usage_claim
     }
 
     /// Returns coordinator-computed accepted accounting.
@@ -870,6 +1007,7 @@ impl Canonical for PlannerStep {
         self.input_view.encode(encoder);
         self.disposition.encode(encoder);
         self.next_state.encode(encoder);
+        self.usage_claim.encode(encoder);
         self.accounting.encode(encoder);
         self.evidence.encode(encoder);
     }
@@ -885,6 +1023,7 @@ impl Canonical for PlannerStep {
             CampaignViewId::decode(decoder)?,
             PlannerDisposition::decode(decoder)?,
             PlannerStateId::decode(decoder)?,
+            PlanningUsage::decode(decoder)?,
             PlanningAccounting::decode(decoder)?,
             GuidanceEvidence::decode(decoder)?,
         )

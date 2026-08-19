@@ -26,14 +26,17 @@ use crate::{
     ChoiceDomainId, ChoiceGroup, ChoiceGroupId, ChoiceOpportunity, ChoiceOpportunityId,
     ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId, ControlRequest,
     ExpansionState, ExpansionStateId, MerkleMap, MerkleMapRoot, ObjectEnvelope, PlannerDisposition,
-    PlannerInvocation, PlannerInvocationId, PlannerState, PlannerStep, PlannerStepId,
-    PolicyActivation, PolicyArtifact, Proposal, ProposalId, ScenarioArtifact, ScenarioArtifactId,
-    ScenarioDefId, SelectableDeclaration, SelectableId, Selection, SelectionId,
+    PlannerEngine, PlannerInvocation, PlannerInvocationId, PlannerProposalDisposition,
+    PlannerState, PlannerStep, PlannerStepId, PlannerStepProposal, PlanningAccounting,
+    PlanningBudget, PlanningScanPage, PlanningScanPosition, PlanningUsage, PolicyActivation,
+    PolicyArtifact, Proposal, ProposalId, ScenarioArtifact, ScenarioArtifactId, ScenarioDefId,
+    SelectableDeclaration, SelectableId, Selection, SelectionId,
 };
 
 const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;
 const MAX_SNAPSHOT_ANCESTRY: usize = 100_000;
 const MAX_CLOSURE_OBJECTS: usize = 1_000_000;
+const PLANNER_SCAN_STORAGE_PAGE_ITEMS: usize = 10_000;
 
 /// Authenticated current value of one named campaign ref.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,6 +123,19 @@ pub struct AttemptAdmissionResult {
     /// Exact execution-basis or additional-cause record.
     pub admission: AttemptAdmissionId,
     /// Whether this call observed a previously committed admission.
+    pub replayed: bool,
+}
+
+/// Stable response for an accepted or idempotently replayed planner step.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlannerStepResult {
+    /// Snapshot that first accepted this planner step.
+    pub prior_snapshot: CampaignSnapshotId,
+    /// Snapshot first produced by accepting this planner step.
+    pub new_snapshot: CampaignSnapshotId,
+    /// Exact coordinator-accepted planner-step identity.
+    pub step: PlannerStepId,
+    /// Whether this call observed a previously committed invocation result.
     pub replayed: bool,
 }
 
@@ -313,6 +329,21 @@ fn proposal_value_key(request: BranchRequestId, value: &crate::ChoiceValue) -> C
     CampaignHash::derive("crucible.campaign-proposal-request-value.v1", &bytes)
 }
 
+fn planner_step_key(step: PlannerStepId) -> CampaignHash {
+    map_key_content("coordination.planner-step", step.content_id())
+}
+
+fn planner_invocation_result_key(invocation: PlannerInvocationId) -> CampaignHash {
+    map_key_content(
+        "coordination.planner-invocation-result",
+        invocation.content_id(),
+    )
+}
+
+fn planner_head_key() -> CampaignHash {
+    CampaignHash::derive("crucible.campaign-coordination-planner-head.v1", b"")
+}
+
 fn admission_sequence_key() -> CampaignHash {
     CampaignHash::derive("crucible.campaign-admission-sequence.v1", b"")
 }
@@ -386,7 +417,7 @@ fn optional_child(envelope: &ObjectEnvelope, role: &str) -> Option<ContentId> {
         .map(crate::ChildReference::id)
 }
 
-fn snapshot_roots(snapshot: &CampaignSnapshot) -> [ContentId; 8] {
+fn snapshot_roots(snapshot: &CampaignSnapshot) -> [ContentId; 9] {
     let roots = snapshot.roots();
     [
         roots.graph,
@@ -397,6 +428,7 @@ fn snapshot_roots(snapshot: &CampaignSnapshot) -> [ContentId; 8] {
         roots.findings,
         roots.pins,
         roots.accounting,
+        roots.coordination,
     ]
 }
 
@@ -440,9 +472,10 @@ mod tests {
         BooleanDomain, BranchBudget, BudgetGrant, CampaignFactId, CampaignMode,
         CampaignPlanningView, CampaignSeed, CandidateGeneratorAlgorithm, ChoiceClassContext,
         ChoiceCoordinate, ChoicePolicy, ChoiceSource, ChoiceValue, ConfigurationId,
-        ContinuationState, ExplorerPolicy, FairnessPolicy, PlannerEngine, PlanningBudget,
-        ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy, ScenarioDefId, StopCondition,
-        WeightedGenerator,
+        ContinuationState, ExplorerPolicy, FairnessPolicy, GuidanceEvidence, PlannerEngine,
+        PlannerProposalDisposition, PlannerState, PlannerStepProposal, PlanningBudget,
+        PlanningUsage, PolicyArtifact, ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy,
+        ScenarioDefId, StopCondition, WeightedGenerator,
     };
 
     fn fixture() -> (CampaignRepository, CampaignLineage, CampaignPolicy) {
@@ -661,6 +694,76 @@ mod tests {
         (selection, path, attempt)
     }
 
+    fn planner_basis(
+        repository: &CampaignRepository,
+        name: &str,
+        snapshot: CampaignSnapshotId,
+        state: PlannerState,
+    ) -> (PlannerEngine, PolicyArtifact, PlannerInvocation) {
+        planner_basis_with_page(repository, name, snapshot, state, None, 16)
+    }
+
+    fn planner_basis_with_page(
+        repository: &CampaignRepository,
+        name: &str,
+        snapshot: CampaignSnapshotId,
+        state: PlannerState,
+        scan_after: Option<PlanningScanPosition>,
+        scan_limit: u32,
+    ) -> (PlannerEngine, PolicyArtifact, PlannerInvocation) {
+        let engine =
+            PlannerEngine::new("closed-rust", 1, 1, BTreeSet::new()).expect("planner engine");
+        assert_eq!(state.engine(), engine.id().expect("engine id"));
+        let dependency_bytes = b"closed planner dependency".to_vec();
+        let dependency = ContentId::for_bytes(ObjectKind::Trace, 1, &dependency_bytes);
+        repository
+            .blobs
+            .put_if_absent(dependency, &BlobHandle::from_bytes(dependency_bytes))
+            .expect("planner dependency");
+        let artifact = PolicyArtifact::new(
+            engine.id().expect("engine id"),
+            1,
+            dependency,
+            BTreeSet::new(),
+            BTreeMap::new(),
+        )
+        .expect("planner artifact");
+        let invocation = repository
+            .prepare_planner_invocation(
+                name,
+                snapshot,
+                &engine,
+                &artifact,
+                &state,
+                scan_after,
+                scan_limit,
+                PlanningBudget::new(4, 4, 16, 8192, 100).expect("planner budget"),
+            )
+            .expect("prepare planner invocation");
+        (engine, artifact, invocation)
+    }
+
+    fn no_work_proposal(
+        invocation: PlannerInvocationId,
+        next_state: PlannerState,
+    ) -> PlannerStepProposal {
+        PlannerStepProposal::new(
+            invocation,
+            next_state,
+            PlanningUsage {
+                branch_requests: 0,
+                proposals: 0,
+                input_objects: 8,
+                input_bytes: 512,
+                fuel: 4,
+            },
+            GuidanceEvidence::new(BTreeMap::from([("score".to_owned(), 1000)]))
+                .expect("planner evidence"),
+            PlannerProposalDisposition::NoWork,
+        )
+        .expect("no-work proposal")
+    }
+
     #[test]
     fn create_and_control_form_linear_authenticated_history() {
         let (repository, lineage, policy) = fixture();
@@ -699,6 +802,632 @@ mod tests {
             CampaignState::Paused
         );
         assert_ne!(paused.new_snapshot, resumed.new_snapshot);
+    }
+
+    #[test]
+    fn planner_no_work_is_owned_replayable_and_state_continuous() {
+        let (repository, lineage, policy) = fixture();
+        let genesis = repository
+            .create("planner-owner", &lineage, &policy, &BTreeMap::new())
+            .expect("create");
+        let engine =
+            PlannerEngine::new("closed-rust", 1, 1, BTreeSet::new()).expect("planner engine");
+        let initial_state = PlannerState::new(
+            engine.id().expect("engine id"),
+            "closed-rust-state",
+            1,
+            vec![0],
+        )
+        .expect("initial state");
+        let (engine, artifact, invocation) = planner_basis(
+            &repository,
+            "planner-owner",
+            genesis.snapshot_id(),
+            initial_state,
+        );
+        let next_state = PlannerState::new(
+            engine.id().expect("engine id"),
+            "closed-rust-state",
+            1,
+            vec![1],
+        )
+        .expect("next state");
+        let proposal =
+            no_work_proposal(invocation.id().expect("invocation id"), next_state.clone());
+        let measured = PlanningUsage {
+            branch_requests: 0,
+            proposals: 0,
+            input_objects: 0,
+            input_bytes: 0,
+            fuel: 5,
+        };
+        let accepted = repository
+            .accept_planner_step("planner-owner", genesis.snapshot_id(), &proposal, measured)
+            .expect("accept planner step");
+        assert!(!accepted.replayed);
+        let step = repository
+            .load_planner_step(accepted.step)
+            .expect("load accepted step");
+        assert_eq!(step.parent(), None);
+        assert_eq!(step.usage_claim(), proposal.usage_claim());
+        assert_eq!(step.accounting().input_objects, measured.input_objects);
+        assert_eq!(step.accounting().input_bytes, measured.input_bytes);
+        assert_eq!(step.accounting().fuel, measured.fuel);
+
+        let accepted_head = repository.head("planner-owner").expect("accepted head");
+        assert_eq!(
+            accepted_head
+                .snapshot()
+                .planning_view()
+                .id()
+                .expect("accepted planning view"),
+            invocation.input_view()
+        );
+        assert_eq!(
+            repository
+                .merkle
+                .inspect_shallow(accepted_head.snapshot().roots().coordination)
+                .expect("planner coordination root")
+                .entry_count(),
+            3
+        );
+        let replay = repository
+            .accept_planner_step("planner-owner", genesis.snapshot_id(), &proposal, measured)
+            .expect("replay planner step");
+        assert!(replay.replayed);
+        assert_eq!(replay.step, accepted.step);
+        assert_eq!(replay.new_snapshot, accepted.new_snapshot);
+
+        let conflicting = no_work_proposal(
+            invocation.id().expect("invocation id"),
+            PlannerState::new(
+                engine.id().expect("engine id"),
+                "closed-rust-state",
+                1,
+                vec![9],
+            )
+            .expect("conflicting state"),
+        );
+        assert!(matches!(
+            repository.accept_planner_step(
+                "planner-owner",
+                genesis.snapshot_id(),
+                &conflicting,
+                measured,
+            ),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "planner-invocation-result-conflict"
+            })
+        ));
+        let oversized = PlanningUsage {
+            input_bytes: 8193,
+            ..measured
+        };
+        assert!(matches!(
+            repository.accept_planner_step(
+                "planner-owner",
+                genesis.snapshot_id(),
+                &proposal,
+                oversized,
+            ),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "planner-step-invocation-budget-exceeded"
+            })
+        ));
+
+        let request = branch_request(
+            &repository,
+            &lineage,
+            lineage.genesis_content(),
+            lineage.genesis(),
+            "planner-state-continuity",
+        );
+        let requested = repository
+            .submit_branch_request("planner-owner", accepted.new_snapshot, &request)
+            .expect("submit intervening request");
+        let wrong_input_state = PlannerState::new(
+            engine.id().expect("engine id"),
+            "closed-rust-state",
+            1,
+            vec![99],
+        )
+        .expect("wrong input state");
+        assert!(matches!(
+            repository.prepare_planner_invocation(
+                "planner-owner",
+                requested.new_snapshot,
+                &engine,
+                &artifact,
+                &wrong_input_state,
+                None,
+                16,
+                PlanningBudget::new(4, 4, 16, 8192, 100).expect("planner budget"),
+            ),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "planner-step-parent-state-discontinuity"
+            })
+        ));
+
+        let (_, _, next_invocation) = planner_basis(
+            &repository,
+            "planner-owner",
+            requested.new_snapshot,
+            next_state.clone(),
+        );
+        assert_eq!(
+            next_invocation.policy_artifact(),
+            artifact.id().expect("artifact id")
+        );
+        let final_state = PlannerState::new(
+            engine.id().expect("engine id"),
+            "closed-rust-state",
+            1,
+            vec![2],
+        )
+        .expect("final state");
+        let second_proposal = no_work_proposal(
+            next_invocation.id().expect("next invocation id"),
+            final_state.clone(),
+        );
+        let second_measured = PlanningUsage {
+            branch_requests: 0,
+            proposals: 0,
+            input_objects: next_invocation.scan_page().input_objects(),
+            input_bytes: next_invocation.scan_page().input_bytes(),
+            fuel: measured.fuel,
+        };
+        let second = repository
+            .accept_planner_step(
+                "planner-owner",
+                requested.new_snapshot,
+                &second_proposal,
+                second_measured,
+            )
+            .expect("second planner step");
+        assert_eq!(
+            repository
+                .load_planner_step(second.step)
+                .expect("second step")
+                .parent(),
+            Some(accepted.step)
+        );
+
+        let missing_invocation = PlannerInvocationId::from_content_id(ContentId::for_bytes(
+            ObjectKind::Policy,
+            2,
+            b"missing parent invocation",
+        ))
+        .expect("missing invocation id");
+        let accepted_accounting = PlanningAccounting {
+            branch_requests: 0,
+            proposals: 0,
+            attempts: 0,
+            deduplicated: 0,
+            input_objects: second_measured.input_objects,
+            input_bytes: second_measured.input_bytes,
+            fuel: second_measured.fuel,
+        };
+        let incomplete_parent = PlannerStep::new(
+            None,
+            missing_invocation,
+            next_invocation.policy(),
+            next_invocation.engine(),
+            next_invocation.policy_artifact(),
+            next_invocation.input_view(),
+            PlannerDisposition::NoWork,
+            next_invocation.planner_state(),
+            second_proposal.usage_claim(),
+            accepted_accounting,
+            second_proposal.explanation().clone(),
+        )
+        .expect("incomplete parent");
+        let incomplete_parent_content = repository
+            .put_planner_step(&incomplete_parent)
+            .expect("put incomplete parent");
+        let incomplete_parent_id =
+            PlannerStepId::from_content_id(incomplete_parent_content).expect("parent id");
+        let child = PlannerStep::new(
+            Some(incomplete_parent_id),
+            next_invocation.id().expect("next invocation id"),
+            next_invocation.policy(),
+            next_invocation.engine(),
+            next_invocation.policy_artifact(),
+            next_invocation.input_view(),
+            PlannerDisposition::NoWork,
+            final_state.id().expect("final state id"),
+            second_proposal.usage_claim(),
+            accepted_accounting,
+            second_proposal.explanation().clone(),
+        )
+        .expect("child step");
+        let child_content = repository.put_planner_step(&child).expect("put child");
+        let child_id = PlannerStepId::from_content_id(child_content).expect("child id");
+        assert!(matches!(
+            repository.load_planner_step(child_id),
+            Err(CampaignRepositoryError::Store(StoreError::NotFound { .. }))
+        ));
+    }
+
+    #[test]
+    fn planner_scan_results_are_bound_to_exact_served_pages() {
+        let (repository, lineage, policy) = fixture();
+        let genesis = repository
+            .create("planner-pages", &lineage, &policy, &BTreeMap::new())
+            .expect("create");
+        let first_request = branch_request(
+            &repository,
+            &lineage,
+            lineage.genesis_content(),
+            lineage.genesis(),
+            "first-planner-page-request",
+        );
+        let first = repository
+            .submit_branch_request("planner-pages", genesis.snapshot_id(), &first_request)
+            .expect("first request");
+        let second_request = branch_request(
+            &repository,
+            &lineage,
+            lineage.genesis_content(),
+            lineage.genesis(),
+            "second-planner-page-request",
+        );
+        let second = repository
+            .submit_branch_request("planner-pages", first.new_snapshot, &second_request)
+            .expect("second request");
+
+        let mut expected_positions = [
+            PlanningScanPosition::new(
+                first_request.branch_point(),
+                first_request.id().expect("first request id"),
+            ),
+            PlanningScanPosition::new(
+                second_request.branch_point(),
+                second_request.id().expect("second request id"),
+            ),
+        ];
+        expected_positions.sort();
+        let engine =
+            PlannerEngine::new("closed-rust", 1, 1, BTreeSet::new()).expect("planner engine");
+        let initial_state = PlannerState::new(
+            engine.id().expect("engine id"),
+            "closed-rust-state",
+            1,
+            vec![0],
+        )
+        .expect("initial state");
+        let (engine, artifact, invocation) = planner_basis_with_page(
+            &repository,
+            "planner-pages",
+            second.new_snapshot,
+            initial_state.clone(),
+            None,
+            1,
+        );
+        assert_eq!(invocation.scan_page().positions(), &expected_positions[..1]);
+        assert!(!invocation.scan_page().complete());
+        assert!(matches!(
+            repository.prepare_planner_invocation(
+                "planner-pages",
+                second.new_snapshot,
+                &engine,
+                &artifact,
+                &initial_state,
+                Some(expected_positions[0]),
+                1,
+                PlanningBudget::new(4, 4, 16, 8192, 100).expect("planner budget"),
+            ),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "planner-invocation-scan-start-mismatch"
+            })
+        ));
+        let measured = PlanningUsage {
+            branch_requests: 0,
+            proposals: 0,
+            input_objects: invocation.scan_page().input_objects(),
+            input_bytes: invocation.scan_page().input_bytes(),
+            fuel: 1,
+        };
+        let next_state = PlannerState::new(
+            engine.id().expect("engine id"),
+            "closed-rust-state",
+            1,
+            vec![1],
+        )
+        .expect("next state");
+        repository
+            .put_planner_state(&next_state)
+            .expect("put forged-step state");
+        let false_eof_page = PlanningScanPage::new(
+            None,
+            invocation.scan_page().limit(),
+            invocation.scan_page().positions().to_vec(),
+            true,
+            invocation.scan_page().input_bytes(),
+        )
+        .expect("false EOF page");
+        let false_eof_invocation = PlannerInvocation::new(
+            invocation.engine(),
+            invocation.policy_artifact(),
+            invocation.policy(),
+            invocation.planner_state(),
+            invocation.input_view(),
+            false_eof_page,
+            invocation.budget(),
+        )
+        .expect("false EOF invocation");
+        repository
+            .put_planner_invocation(&false_eof_invocation)
+            .expect("put false EOF invocation");
+        let false_eof_accounting = PlanningAccounting {
+            branch_requests: 0,
+            proposals: 0,
+            attempts: 0,
+            deduplicated: 0,
+            input_objects: false_eof_invocation.scan_page().input_objects(),
+            input_bytes: false_eof_invocation.scan_page().input_bytes(),
+            fuel: 1,
+        };
+        let false_eof_step = PlannerStep::new(
+            None,
+            false_eof_invocation.id().expect("false EOF invocation id"),
+            false_eof_invocation.policy(),
+            false_eof_invocation.engine(),
+            false_eof_invocation.policy_artifact(),
+            false_eof_invocation.input_view(),
+            PlannerDisposition::NoWork,
+            next_state.id().expect("next state id"),
+            measured,
+            false_eof_accounting,
+            GuidanceEvidence::new(BTreeMap::new()).expect("false EOF evidence"),
+        )
+        .expect("false EOF step");
+        let false_eof_step_content = repository
+            .put_planner_step(&false_eof_step)
+            .expect("put false EOF step");
+        assert!(matches!(
+            repository.load_planner_step(
+                PlannerStepId::from_content_id(false_eof_step_content).expect("false EOF step id"),
+            ),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "planner-invocation-scan-page-mismatch"
+            })
+        ));
+        let jump = PlannerStepProposal::new(
+            invocation.id().expect("invocation id"),
+            next_state.clone(),
+            measured,
+            GuidanceEvidence::new(BTreeMap::new()).expect("jump evidence"),
+            PlannerProposalDisposition::ContinueScan {
+                cursor: crate::PlanningScanCursor::new(
+                    invocation.input_view(),
+                    Some(expected_positions[1]),
+                ),
+            },
+        )
+        .expect("jump proposal");
+        assert!(matches!(
+            repository.accept_planner_step("planner-pages", second.new_snapshot, &jump, measured,),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "planner-step-disposition-does-not-match-served-page"
+            })
+        ));
+
+        let false_eof =
+            no_work_proposal(invocation.id().expect("invocation id"), next_state.clone());
+        assert!(matches!(
+            repository.accept_planner_step(
+                "planner-pages",
+                second.new_snapshot,
+                &false_eof,
+                measured,
+            ),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "planner-step-disposition-does-not-match-served-page"
+            })
+        ));
+
+        let continuation = PlannerStepProposal::new(
+            invocation.id().expect("invocation id"),
+            next_state.clone(),
+            measured,
+            GuidanceEvidence::new(BTreeMap::new()).expect("continuation evidence"),
+            PlannerProposalDisposition::ContinueScan {
+                cursor: crate::PlanningScanCursor::new(
+                    invocation.input_view(),
+                    Some(expected_positions[0]),
+                ),
+            },
+        )
+        .expect("continuation proposal");
+        let continued = repository
+            .accept_planner_step(
+                "planner-pages",
+                second.new_snapshot,
+                &continuation,
+                measured,
+            )
+            .expect("accept continuation");
+        let next_invocation = repository
+            .prepare_planner_invocation(
+                "planner-pages",
+                continued.new_snapshot,
+                &engine,
+                &artifact,
+                &next_state,
+                Some(expected_positions[0]),
+                1,
+                PlanningBudget::new(4, 4, 16, 8192, 100).expect("planner budget"),
+            )
+            .expect("prepare final page");
+        assert_eq!(
+            next_invocation.scan_page().positions(),
+            &expected_positions[1..]
+        );
+        assert!(next_invocation.scan_page().complete());
+        let final_measured = PlanningUsage {
+            branch_requests: 0,
+            proposals: 0,
+            input_objects: next_invocation.scan_page().input_objects(),
+            input_bytes: next_invocation.scan_page().input_bytes(),
+            fuel: 1,
+        };
+        let done = no_work_proposal(
+            next_invocation.id().expect("next invocation id"),
+            PlannerState::new(
+                engine.id().expect("engine id"),
+                "closed-rust-state",
+                1,
+                vec![2],
+            )
+            .expect("done state"),
+        );
+        let finished = repository
+            .accept_planner_step(
+                "planner-pages",
+                continued.new_snapshot,
+                &done,
+                final_measured,
+            )
+            .expect("accept EOF");
+        assert!(matches!(
+            repository.prepare_planner_invocation(
+                "planner-pages",
+                finished.new_snapshot,
+                &engine,
+                &artifact,
+                done.next_state(),
+                None,
+                1,
+                PlanningBudget::new(4, 4, 16, 8192, 100).expect("planner budget"),
+            ),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "planner-invocation-reopens-complete-view"
+            })
+        ));
+    }
+
+    #[test]
+    fn planner_cursor_and_imported_root_fail_closed() {
+        let (repository, lineage, policy) = fixture();
+        let genesis = repository
+            .create("planner-forgery", &lineage, &policy, &BTreeMap::new())
+            .expect("create");
+        let engine =
+            PlannerEngine::new("closed-rust", 1, 1, BTreeSet::new()).expect("planner engine");
+        let initial_state = PlannerState::new(
+            engine.id().expect("engine id"),
+            "closed-rust-state",
+            1,
+            vec![0],
+        )
+        .expect("initial state");
+        let (engine, _, invocation) = planner_basis(
+            &repository,
+            "planner-forgery",
+            genesis.snapshot_id(),
+            initial_state,
+        );
+        let fabricated_source = BranchRequestId::from_content_id(ContentId::for_bytes(
+            ObjectKind::CampaignFact,
+            1,
+            b"fabricated planner cursor",
+        ))
+        .expect("fabricated source");
+        let cursor_proposal = PlannerStepProposal::new(
+            invocation.id().expect("invocation id"),
+            PlannerState::new(
+                engine.id().expect("engine id"),
+                "closed-rust-state",
+                1,
+                vec![1],
+            )
+            .expect("next state"),
+            PlanningUsage {
+                branch_requests: 0,
+                proposals: 0,
+                input_objects: 1,
+                input_bytes: 1,
+                fuel: 1,
+            },
+            GuidanceEvidence::new(BTreeMap::new()).expect("cursor evidence"),
+            PlannerProposalDisposition::ContinueScan {
+                cursor: crate::PlanningScanCursor::new(
+                    invocation.input_view(),
+                    Some(crate::PlanningScanPosition::new(
+                        crate::BranchPointId::from_hash(CampaignHash::derive(
+                            "test",
+                            b"fabricated branch point",
+                        )),
+                        fabricated_source,
+                    )),
+                ),
+            },
+        )
+        .expect("cursor proposal");
+        let measured = PlanningUsage {
+            branch_requests: 0,
+            proposals: 0,
+            input_objects: 0,
+            input_bytes: 0,
+            fuel: 1,
+        };
+        assert!(matches!(
+            repository.accept_planner_step(
+                "planner-forgery",
+                genesis.snapshot_id(),
+                &cursor_proposal,
+                measured,
+            ),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "planner-step-scan-cursor-is-not-authoritative"
+            })
+        ));
+
+        let accepted_proposal = no_work_proposal(
+            invocation.id().expect("invocation id"),
+            cursor_proposal.next_state().clone(),
+        );
+        let accepted = repository
+            .accept_planner_step(
+                "planner-forgery",
+                genesis.snapshot_id(),
+                &accepted_proposal,
+                measured,
+            )
+            .expect("accept no-work step");
+        let accepted_head = repository.head("planner-forgery").expect("accepted head");
+        let extra_key = CampaignHash::derive("test", b"forged planner index");
+        let forged_coordination = repository
+            .merkle
+            .insert(
+                accepted_head.snapshot().roots().coordination,
+                extra_key,
+                accepted.step.content_id(),
+            )
+            .expect("forged root")
+            .content_id();
+        let mut forged_roots = accepted_head.snapshot().roots();
+        forged_roots.coordination = forged_coordination;
+        let transition = repository
+            .put_fact(&CampaignFact::PlannerAdvanced(accepted.step))
+            .expect("planner fact");
+        let forged = CampaignSnapshot::successor(
+            genesis.snapshot_id(),
+            genesis.snapshot().lineage(),
+            genesis.snapshot().active_policy(),
+            forged_roots,
+            CampaignFactId::from_content_id(transition).expect("fact id"),
+        )
+        .expect("forged snapshot");
+        let forged_content = repository
+            .put_snapshot(&forged)
+            .expect("put forged snapshot");
+        assert!(matches!(
+            repository.validate_complete_head(forged_content),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "planner-step-transition-coordination-root-mismatch"
+            })
+        ));
     }
 
     #[test]
@@ -1512,7 +2241,7 @@ mod tests {
         );
         let stale = CampaignSnapshotId::from_content_id(ContentId::for_bytes(
             ObjectKind::CampaignSnapshot,
-            1,
+            2,
             b"stale-request",
         ))
         .expect("stale id");
@@ -1834,7 +2563,7 @@ mod tests {
             "stale",
             CampaignSnapshotId::from_content_id(ContentId::for_bytes(
                 ObjectKind::CampaignSnapshot,
-                1,
+                2,
                 b"stale",
             ))
             .expect("stale snapshot id"),
@@ -1952,7 +2681,7 @@ mod tests {
             .expect("create");
         let missing_parent = CampaignSnapshotId::from_content_id(ContentId::for_bytes(
             ObjectKind::CampaignSnapshot,
-            1,
+            2,
             b"missing-parent",
         ))
         .expect("parent id");
@@ -2081,6 +2810,7 @@ mod tests {
                 findings: empty,
                 pins: empty,
                 accounting: empty,
+                coordination: empty,
             },
         )
         .expect("malformed genesis");
@@ -2255,6 +2985,7 @@ mod tests {
             policy.id().expect("policy id"),
             state.id().expect("state id"),
             view.id().expect("view id"),
+            PlanningScanPage::new(None, 1, Vec::new(), true, 0).expect("scan page"),
             PlanningBudget::new(1, 1, 1, 1, 1).expect("budget"),
         )
         .expect("invocation");

@@ -35,7 +35,8 @@ pub use exploration::{
     BranchRequest, BranchRequestCause, CandidateSource, ContinuationState, ExpansionState,
     ExpansionStatistics, FeedbackWait, FiniteCandidateSource, GuidanceEvidence, PlannerDisposition,
     PlannerProposalDisposition, PlannerStep, PlannerStepProposal, PlanningAccounting,
-    PlanningScanCursor, PlanningScanPosition, PlanningUsage, Proposal, StopCondition,
+    PlanningScanCursor, PlanningScanPage, PlanningScanPosition, PlanningUsage, Proposal,
+    StopCondition,
 };
 pub use identity::{
     AlternativeId, AttemptAdmissionId, AttemptId, BranchEdgeId, BranchPathId, BranchPointId,
@@ -64,7 +65,8 @@ pub use policy::{
 };
 pub use repository::{
     AttemptAdmissionResult, BranchRequestResult, CampaignCommandResult, CampaignHead,
-    CampaignRepository, CampaignRepositoryError, ProposalResult, ResolvedSelection,
+    CampaignRepository, CampaignRepositoryError, PlannerStepResult, ProposalResult,
+    ResolvedSelection,
 };
 
 #[cfg(test)]

@@ -175,7 +175,7 @@ pub struct PlannerRequest {
     pub planner_state: PlannerStateId,
     pub input_view: CampaignViewId,
     pub input_bundle: CampaignPlanningBundle,
-    pub scan_page: Option<PlanningScanPage>,
+    pub scan_page: PlanningScanPage,
     pub budget: PlanningBudget,
     pub engine: PlannerEngineId,
 }
@@ -211,6 +211,16 @@ diagnostic planner output but never substitutes for coordinator accounting.
 The accepted step replaces by-value outputs with authenticated IDs and uses the
 corresponding closed `PlannerDisposition`; only its `Issue` variant names a
 selected source or semantic outputs.
+Accepted steps retain both the untrusted planner `usage_claim` and distinct
+coordinator accounting for output counts, admitted/deduplicated attempts, input
+objects, input bytes, and deterministic fuel. The coordinator advances only the
+snapshot's non-semantic `coordination_root` for `ContinueScan` and `NoWork`, so
+the next invocation resumes the byte-identical planning view. The transition is
+an exact three-index update: step identity, invocation result, and current
+planner head. Reusing an invocation with different result bytes is a
+determinism failure; importing extra or missing coordination entries fails
+closed. `Issue` remains disabled until the same transaction can preserve the
+existing sole-writer request, proposal, and admission contracts.
 Planner code cannot issue commands directly. A future engine implemented in
 another language is a supervised replaceable component identified by its
 artifact, engine, protocol, and parameter versions.
@@ -224,9 +234,21 @@ return byte-identical canonical output; disagreement is a planner-determinism
 failure.
 
 A globally ordered frontier need not fit in one bundle. The coordinator serves
-snapshot-bound pages in canonical continuation-key order. Portable planner
-state carries the scan cursor, best candidate and score evidence accumulated so
-far, immutable view identity, and remaining fuel. The engine may suspend with
+snapshot-bound pages in canonical continuation-key order. The invocation ID
+commits to the exact prior cursor, page limit, ordered request positions, EOF
+bit, and sum of canonical served request-body bytes. The input bundle contains
+exactly those served request bodies in that scan segment and their authenticated
+interpretation dependencies, with no additional scan candidate. On acceptance
+and imported snapshot validation, the coordinator owner recomputes the page
+from the named view. `ContinueScan` is valid only before EOF and must return the
+last served position; `NoWork` is valid only at EOF. Coordinator accounting
+must equal the committed served object and byte counts. The coordinator derives
+the next page start from durable planner history: `None` for the first page or
+after a semantic-view change, and exactly the prior `ContinueScan` cursor for a
+same-view continuation. It rejects reopening a same-view scan after `NoWork`.
+Portable planner state carries the scan cursor, best candidate and score
+evidence accumulated so far, immutable view identity, and remaining fuel. The
+engine may suspend with
 `ContinueScan`; changing page size or RPC chunking must yield the same eventual
 selection and evidence. A page from another view, a skipped key, or a cursor
 replay with different bytes is rejected.

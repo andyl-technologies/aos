@@ -329,6 +329,28 @@ This makes campaign planning usable through a language-neutral component
 contract without serializing native closures or granting a plugin authority
 over refs, executors, QEMU, clocks, or stores.
 
+### D-29: Durable coordination is outside semantic planner input
+
+Planner-step replay indexes and the current portable planner head live in a
+dedicated authenticated `coordination_root`. The root is part of snapshot
+identity and closure traversal but excluded from `CampaignPlanningView`.
+Therefore persisting `ContinueScan` cannot perturb the view identity whose next
+page it resumes. Snapshot schema v2 makes this ninth root explicit and rejects
+the former layout rather than overloading exploration, accounting, or pins.
+
+### D-30: Planner scan outcomes bind an exact served page
+
+`PlannerInvocation` schema v2 includes a required `PlanningScanPage`: the
+authoritative prior position, requested limit, ordered served positions, EOF
+bit, and canonical served request-body byte count. The coordinator recomputes
+that page from the immutable planning view before accepting a result and when
+validating an imported successor. `ContinueScan` must name the last served
+position of a non-EOF page; `NoWork` requires EOF. This makes skipped keys,
+premature EOF, and planner-claimed input accounting non-authoritative. The
+authenticated planner head derives the only permitted start: `None` for a first
+or changed-view page, or the exact prior same-view continuation cursor. A
+completed same-view scan cannot be reopened.
+
 ## Deliberately rejected representations
 
 The following patterns are outside the design even if they appear convenient
