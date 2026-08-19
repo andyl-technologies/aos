@@ -1,0 +1,28 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index 54ed19223..9736a46a1 100644
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -46,11 +46,23 @@
+ #include "system/crucible-sim-ipi.h"
+ #include "system/crucible-sim-preemption.h"
+ 
++static bool rr_crucible_sim_mode(void);
++
+ /* Kick all RR vCPUs */
+ void rr_kick_vcpu_thread(CPUState *unused)
+ {
+     CPUState *cpu;
+ 
++    if (rr_crucible_sim_mode() &&
++        icount_crucible_rr_switch_quantum() != 0) {
++        /*
++         * Host work and main-loop notifications may request a generic vCPU
++         * kick at host-dependent times.  The deterministic RR budget already
++         * returns to the BQL within a finite quantum, where pending work is
++         * drained without changing the guest instruction coordinate.
++         */
++        return;
++    }
+     CPU_FOREACH(cpu) {
+         cpu_exit(cpu);
+     };

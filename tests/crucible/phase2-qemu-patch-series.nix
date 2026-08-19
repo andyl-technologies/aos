@@ -608,6 +608,13 @@
       enforces = "DET-1,DET-29,QEMU-43";
       capability = "sim mode reaches RCU quiescence at its bounded deterministic RR execution boundaries without host-timed translation-block exits";
     }
+    {
+      file = "0088-crucible-deterministic-host-kick-boundary.patch";
+      catalogName = "crucible-deterministic-host-kick-boundary";
+      class = "D";
+      enforces = "DET-1,DET-29,QEMU-43";
+      capability = "generic host work and main-loop notifications wait for the next bounded deterministic RR boundary instead of asynchronously ending a sim translation block";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

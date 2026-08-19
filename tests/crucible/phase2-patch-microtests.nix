@@ -125,6 +125,51 @@
       }
     ];
   };
+  qemuDeterministicHostKickBoundary = pkgs.mkDerivation {
+    pname = "crucible-phase2-qemu-deterministic-host-kick-boundary";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.gnugrep pkgs.tar pkgs.xz];
+    phases = [
+      {
+        name = "verify-deterministic-host-kick-boundary";
+        script = ''
+          set -eu
+          mkdir -p "$out" "$TMPDIR/stock-qemu"
+
+          grep -q '^PASS$' "${qemuNvcpuFingerprint}/result"
+          grep -q '^real_qemu_adversary=second-run-host-cpu-load$' \
+            "${qemuNvcpuFingerprint}/result"
+          grep -q '^real_qemu_comparison=canonical-rust-stream$' \
+            "${qemuNvcpuFingerprint}/result"
+          grep -q '^PASS$' \
+            "${qemuNvcpuFingerprint}/fingerprint-compare.result"
+
+          tar -xf ${qemuPackage.src} -C "$TMPDIR/stock-qemu"
+          stock_rr="$TMPDIR/stock-qemu/qemu-${qemuPackage.version}/accel/tcg/tcg-accel-ops-rr.c"
+          grep -q 'void rr_kick_vcpu_thread(CPUState \*unused)' "$stock_rr"
+          ! grep -q 'static bool rr_crucible_sim_mode(void);' "$stock_rr"
+
+          cat > "$out/result" <<'RESULT'
+          PASS
+          gate=gate:patch-microtests
+          patch=0088-crucible-deterministic-host-kick-boundary.patch
+          patched_fixture_exercised=true
+          stock_negative_control=true
+          qemu_package=${qemuPackage}
+          qemu_package_version=${qemuPackage.version}
+          real_smp_vcpus=4
+          host_load_adversary=true
+          canonical_trace_byte_identical=true
+          deterministic_ipi_evidence=true
+          generic_host_kick_deferred_to_rr_boundary=true
+          host_work_latency_bounded_by_rr_quantum=true
+          ordinary_qemu_generic_kick_preserved=true
+          RESULT
+        '';
+      }
+    ];
+  };
   patchFiles =
     builtins.sort builtins.lessThan
     (builtins.filter
@@ -650,6 +695,10 @@
     {
       patch = "0087-crucible-deterministic-rcu-quiescence.patch";
       check = qemuDeterministicRcuQuiescence;
+    }
+    {
+      patch = "0088-crucible-deterministic-host-kick-boundary.patch";
+      check = qemuDeterministicHostKickBoundary;
     }
   ];
 

@@ -1337,6 +1337,27 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   prior forced-kick statement unchanged.
 - **Risk:** D.
 
+### crucible-deterministic-host-kick-boundary — bound generic host work
+
+- **Patch:** `0088-crucible-deterministic-host-kick-boundary.patch`.
+- **Enforces:** [DET-1], [DET-29], [QEMU-43].
+- **Mechanism:** QEMU's generic RR vCPU kick keeps its immediate all-vCPU
+  `cpu_exit()` loop unless precise Crucible sim mode has a nonzero pinned RR
+  quantum. In that bounded mode, host work and main-loop notifications remain
+  level triggered and wait for the next finite deterministic RR return to the
+  BQL. Their host arrival time therefore cannot choose a translation-block
+  endpoint or change where a pending architectural interrupt becomes visible.
+- **Micro-test:** the production four-vCPU fingerprint workload compares two
+  exact-horizon executions while only the second has sustained host CPU load.
+  It requires equal canonical all-vCPU, RR, deterministic-IPI, RAM, and device
+  evidence and bounded QMP stop/teardown. Stock QEMU supplies the immediate-kick
+  negative control.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — non-sim accelerators, imprecise
+  icount, and configurations without a pinned quantum execute the existing kick
+  loop unchanged. The guarded path changes scheduling only for the deterministic
+  sim configuration that already guarantees a finite return.
+- **Risk:** D.
+
 ### crucible-whitebox-guest-write — return synchronous doorbell replies
 
 - **Enforces:** [PLUG-34], [PLUG-51], [GHC-32], [GHC-37].
