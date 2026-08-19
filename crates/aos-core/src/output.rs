@@ -253,6 +253,7 @@ impl Printer {
 
 /// Reports an operation whose total work is not measurable in advance.
 pub struct ActivityProgress {
+    printer: Printer,
     progress: ProgressBar,
     started: Instant,
 }
@@ -277,6 +278,7 @@ impl ActivityProgress {
             ProgressRenderer::Hidden => progress.set_draw_target(ProgressDrawTarget::hidden()),
         }
         Self {
+            printer,
             progress,
             started: Instant::now(),
         }
@@ -293,6 +295,11 @@ impl ActivityProgress {
     /// they migrate to the printer-owned renderer.
     pub fn finish_and_clear(self) {
         self.finish();
+    }
+
+    /// Emits a warning without corrupting an active terminal spinner.
+    pub fn warning(&self, message: &str) {
+        self.progress.suspend(|| self.printer.warning(message));
     }
 
     /// Returns the wall-clock duration since reporting began.
