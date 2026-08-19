@@ -12,6 +12,7 @@
 //!
 //! ```text
 //! nix-instantiate --eval --strict --json --pure-eval \
+//!   --extra-experimental-features 'nix-command flakes' \
 //!   --option restrict-eval true \                  # read only explicit store roots
 //!   --option allow-import-from-derivation false \  # no IFD ⇒ no build sneaks in
 //!   --option allowed-uris path:/nix/store/ \
@@ -294,6 +295,7 @@ fn configure_pure_eval_command(command: &mut Command) {
         command.arg("--store").arg(store);
     }
     command
+        .args(["--extra-experimental-features", "nix-command flakes"])
         .args(["--eval", "--strict", "--json", "--pure-eval"])
         .args(["--option", "restrict-eval", "true"])
         .args(["--option", "allow-import-from-derivation", "false"])
@@ -1174,6 +1176,10 @@ mod tests {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         assert!(args.iter().any(|arg| arg == "--pure-eval"), "{args:?}");
+        assert!(
+            args.windows(2)
+                .any(|args| { args == ["--extra-experimental-features", "nix-command flakes"] })
+        );
         assert!(
             args.windows(3)
                 .any(|args| { args == ["--option", "restrict-eval", "true"] })
