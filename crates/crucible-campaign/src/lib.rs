@@ -13,6 +13,7 @@
 mod artifact;
 mod choice;
 mod codec;
+mod exploration;
 mod identity;
 mod merkle;
 mod model;
@@ -29,16 +30,22 @@ pub use choice::{
     ModelSampleVerifier, SelectableDeclaration, Selection, SelectionOrigin,
 };
 pub use codec::CampaignCodecError;
+pub use exploration::{
+    Attempt, AttemptAdmission, AttemptAdmissionRole, AttemptStart, BranchBudget, BranchPath,
+    BranchRequest, BranchRequestCause, CandidateSource, ContinuationState, ExpansionState,
+    ExpansionStatistics, FiniteCandidateSource, GuidanceEvidence, PlannerStep, PlanningAccounting,
+    Proposal, StopCondition,
+};
 pub use identity::{
-    AlternativeId, AttemptId, BranchEdgeId, BranchPathId, BranchPointId, BranchRequestId,
-    CampaignCommandId, CampaignFactId, CampaignHash, CampaignLineageId, CampaignPolicyId,
-    CampaignSnapshotId, CampaignViewId, CandidateGeneratorSpecId, ChoiceClassId, ChoiceDomainId,
-    ChoiceDomainSemanticId, ChoiceGroupId, ChoiceOpportunityId, ChoiceOpportunitySemanticId,
-    ChoiceRngStreamId, ConfigurationArtifactId, ConfigurationId, CoverageProjectionId, CreditId,
-    DebugSessionId, ExpansionStateId, FindingId, MeasurementSetId, ObservationId, PlannerEngineId,
-    PlannerInvocationId, PlannerStateId, PlannerStepId, PolicyArtifactId, ProbabilityModelId,
-    PropertyVerdictSetId, ProposalId, ScenarioArtifactId, ScenarioDefId, SelectableId,
-    SelectableSemanticId, SelectionId,
+    AlternativeId, AttemptAdmissionId, AttemptId, BranchEdgeId, BranchPathId, BranchPointId,
+    BranchRequestId, CampaignCommandId, CampaignFactId, CampaignHash, CampaignLineageId,
+    CampaignPolicyId, CampaignSnapshotId, CampaignViewId, CandidateGeneratorSpecId, ChoiceClassId,
+    ChoiceDomainId, ChoiceDomainSemanticId, ChoiceGroupId, ChoiceOpportunityId,
+    ChoiceOpportunitySemanticId, ChoiceRngStreamId, ConfigurationArtifactId, ConfigurationId,
+    CoverageProjectionId, CreditId, DebugSessionId, ExpansionStateId, FindingId, MeasurementSetId,
+    ObservationId, PlannerEngineId, PlannerInvocationId, PlannerStateId, PlannerStepId,
+    PolicyArtifactId, ProbabilityModelId, PropertyVerdictSetId, ProposalId, ScenarioArtifactId,
+    ScenarioDefId, SelectableId, SelectableSemanticId, SelectionId,
 };
 pub use merkle::{CampaignStoreError, MerkleMap, MerkleMapPage, MerkleMapRoot};
 pub use model::{
@@ -55,8 +62,8 @@ pub use policy::{
     RetentionPolicy, WeightedGenerator,
 };
 pub use repository::{
-    CampaignCommandResult, CampaignHead, CampaignRepository, CampaignRepositoryError,
-    ResolvedSelection,
+    BranchRequestResult, CampaignCommandResult, CampaignHead, CampaignRepository,
+    CampaignRepositoryError, ResolvedSelection,
 };
 
 #[cfg(test)]

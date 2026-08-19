@@ -15,9 +15,10 @@ use crate::choice::{
 };
 use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::{
-    CampaignCodecError, CampaignControlAction, CampaignFact, CampaignLineage, CampaignPlanningView,
-    CampaignPolicy, CampaignSnapshot, ConfigurationArtifact, PlannerEngine, PlannerInvocation,
-    PlannerState, PolicyArtifact, ScenarioArtifact,
+    Attempt, AttemptAdmission, BranchPath, BranchRequest, CampaignCodecError,
+    CampaignControlAction, CampaignFact, CampaignLineage, CampaignPlanningView, CampaignPolicy,
+    CampaignSnapshot, ConfigurationArtifact, ExpansionState, PlannerEngine, PlannerInvocation,
+    PlannerState, PlannerStep, PolicyArtifact, Proposal, ScenarioArtifact,
 };
 
 pub use crucible_cas::content_envelope::ContentChild as ChildReference;
@@ -63,11 +64,25 @@ pub enum CampaignRecordKind {
     ScenarioArtifact,
     /// Exact genesis or branch configuration retained by the graph.
     ConfigurationArtifact,
+    /// Additive finite or generated source at one branch point.
+    BranchRequest,
+    /// One value proposed from a branch request.
+    Proposal,
+    /// Authenticated ordered semantic edge path.
+    BranchPath,
+    /// Immutable semantic execution attempt.
+    Attempt,
+    /// Immutable execution basis or additional cause.
+    AttemptAdmission,
+    /// Coordinator-accepted pure planner step.
+    PlannerStep,
+    /// Rebuildable branch-point expansion projection.
+    ExpansionState,
 }
 
 impl CampaignRecordKind {
     /// Every campaign record schema admitted by this crate.
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 25] = [
         Self::Lineage,
         Self::Policy,
         Self::Snapshot,
@@ -86,6 +101,13 @@ impl CampaignRecordKind {
         Self::CandidateGeneratorSpec,
         Self::ScenarioArtifact,
         Self::ConfigurationArtifact,
+        Self::BranchRequest,
+        Self::Proposal,
+        Self::BranchPath,
+        Self::Attempt,
+        Self::AttemptAdmission,
+        Self::PlannerStep,
+        Self::ExpansionState,
     ];
 
     /// Returns the globally registered canonical schema name.
@@ -110,6 +132,13 @@ impl CampaignRecordKind {
             Self::CandidateGeneratorSpec => "crucible.campaign.candidate-generator-spec",
             Self::ScenarioArtifact => "crucible.campaign.scenario-artifact",
             Self::ConfigurationArtifact => "crucible.campaign.configuration-artifact",
+            Self::BranchRequest => "crucible.campaign.branch-request",
+            Self::Proposal => "crucible.campaign.proposal",
+            Self::BranchPath => "crucible.campaign.branch-path",
+            Self::Attempt => "crucible.campaign.attempt",
+            Self::AttemptAdmission => "crucible.campaign.attempt-admission",
+            Self::PlannerStep => "crucible.campaign.planner-step",
+            Self::ExpansionState => "crucible.campaign.expansion-state",
         }
     }
 
@@ -139,6 +168,7 @@ impl CampaignRecordKind {
             Self::MerkleNode => ObjectKind::MerkleNode,
             Self::ScenarioArtifact => ObjectKind::Scenario,
             Self::ConfigurationArtifact => ObjectKind::Configuration,
+            Self::ExpansionState => ObjectKind::Projection,
             Self::Lineage
             | Self::Fact
             | Self::PlanningView
@@ -146,7 +176,13 @@ impl CampaignRecordKind {
             | Self::SelectableDeclaration
             | Self::ChoiceOpportunity
             | Self::ChoiceGroup
-            | Self::Selection => ObjectKind::CampaignFact,
+            | Self::Selection
+            | Self::BranchRequest
+            | Self::Proposal
+            | Self::BranchPath
+            | Self::Attempt
+            | Self::AttemptAdmission
+            | Self::PlannerStep => ObjectKind::CampaignFact,
         }
     }
 }
@@ -172,6 +208,13 @@ impl Canonical for CampaignRecordKind {
             Self::CandidateGeneratorSpec => 15,
             Self::ScenarioArtifact => 16,
             Self::ConfigurationArtifact => 17,
+            Self::BranchRequest => 18,
+            Self::Proposal => 19,
+            Self::BranchPath => 20,
+            Self::Attempt => 21,
+            Self::AttemptAdmission => 22,
+            Self::PlannerStep => 23,
+            Self::ExpansionState => 24,
         });
     }
 
@@ -195,6 +238,13 @@ impl Canonical for CampaignRecordKind {
             15 => Ok(Self::CandidateGeneratorSpec),
             16 => Ok(Self::ScenarioArtifact),
             17 => Ok(Self::ConfigurationArtifact),
+            18 => Ok(Self::BranchRequest),
+            19 => Ok(Self::Proposal),
+            20 => Ok(Self::BranchPath),
+            21 => Ok(Self::Attempt),
+            22 => Ok(Self::AttemptAdmission),
+            23 => Ok(Self::PlannerStep),
+            24 => Ok(Self::ExpansionState),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-record-kind",
                 tag,
@@ -443,6 +493,34 @@ fn expected_children(
             let value = ConfigurationArtifact::from_canonical_bytes(body)?;
             content_children(value.content_children())
         }
+        CampaignRecordKind::BranchRequest => {
+            let value = BranchRequest::from_canonical_bytes(body)?;
+            content_children(value.content_children())
+        }
+        CampaignRecordKind::Proposal => {
+            let value = Proposal::from_canonical_bytes(body)?;
+            content_children(value.content_children())
+        }
+        CampaignRecordKind::BranchPath => {
+            codec::decode::<BranchPath>(body)?;
+            Ok(BTreeSet::new())
+        }
+        CampaignRecordKind::Attempt => {
+            let value = codec::decode::<Attempt>(body)?;
+            content_children(value.content_children())
+        }
+        CampaignRecordKind::AttemptAdmission => {
+            let value = codec::decode::<AttemptAdmission>(body)?;
+            content_children(value.content_children())
+        }
+        CampaignRecordKind::PlannerStep => {
+            let value = codec::decode::<PlannerStep>(body)?;
+            content_children(value.content_children())
+        }
+        CampaignRecordKind::ExpansionState => {
+            let value = codec::decode::<ExpansionState>(body)?;
+            content_children(value.content_children())
+        }
         CampaignRecordKind::MerkleNode => Err(CampaignCodecError::InvalidValue {
             reason: "opaque campaign record requires its owning validator",
         }),
@@ -482,7 +560,9 @@ fn fact_children(fact: &CampaignFact) -> Result<BTreeSet<ContentChild>, Campaign
         CampaignFact::BranchRequestIssued(id) => vec![("branch-request", id.content_id())],
         CampaignFact::PlannerAdvanced(id) => vec![("planner-step", id.content_id())],
         CampaignFact::ProposalIssued(id) => vec![("proposal", id.content_id())],
-        CampaignFact::AttemptAdmitted { attempt, .. } => vec![("attempt", attempt.content_id())],
+        CampaignFact::AttemptAdmitted(admission) => {
+            vec![("attempt-admission", admission.content_id())]
+        }
         CampaignFact::AttemptClosed { attempt, .. } => vec![("attempt", attempt.content_id())],
         CampaignFact::ObservationPublished(id) => vec![("observation", id.content_id())],
         CampaignFact::FindingPublished(id) => vec![("finding", id.content_id())],

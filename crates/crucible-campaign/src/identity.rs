@@ -500,8 +500,10 @@ semantic_id!(
     BranchEdgeId,
     "Identifies one semantic selected edge at a branch point."
 );
-semantic_id!(
+content_object_id!(
     BranchPathId,
+    ObjectKind::CampaignFact,
+    "crucible.campaign.branch-path",
     "Identifies one ordered authenticated branch-edge path."
 );
 content_object_id!(
@@ -509,6 +511,12 @@ content_object_id!(
     ObjectKind::CampaignFact,
     "crucible.campaign.attempt",
     "Identifies one immutable semantic execution attempt."
+);
+content_object_id!(
+    AttemptAdmissionId,
+    ObjectKind::CampaignFact,
+    "crucible.campaign.attempt-admission",
+    "Identifies one immutable attempt admission or additional cause."
 );
 content_object_id!(
     ObservationId,

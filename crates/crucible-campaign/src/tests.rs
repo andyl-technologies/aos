@@ -178,6 +178,13 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             CampaignRecordKind::ScenarioArtifact | CampaignRecordKind::ConfigurationArtifact => {
                 "crucible-campaign::artifact"
             }
+            CampaignRecordKind::BranchRequest
+            | CampaignRecordKind::Proposal
+            | CampaignRecordKind::BranchPath
+            | CampaignRecordKind::Attempt
+            | CampaignRecordKind::AttemptAdmission
+            | CampaignRecordKind::PlannerStep
+            | CampaignRecordKind::ExpansionState => "crucible-campaign::exploration",
             _ => "crucible-campaign::object",
         };
         assert_eq!(row[2], expected_owner);
@@ -418,14 +425,30 @@ fn command_and_fact_identities_bind_payload_and_admission_order() {
     assert_ne!(request.request_digest(), different.request_digest());
 
     let attempt = stored_id!(AttemptId, ObjectKind::CampaignFact, "attempt");
-    let first = CampaignFact::AttemptAdmitted {
-        attempt,
-        ordinal: AdmissionOrdinal::new(7),
-    };
-    let second = CampaignFact::AttemptAdmitted {
-        attempt,
-        ordinal: AdmissionOrdinal::new(8),
-    };
+    let first = CampaignFact::AttemptAdmitted(
+        AttemptAdmission::new(
+            attempt,
+            AttemptAdmissionRole::ExecutionBasis {
+                proposal: None,
+                cause: BranchRequestCause::Operator(command),
+                admission_ordinal: AdmissionOrdinal::new(7),
+            },
+        )
+        .id()
+        .expect("first admission id"),
+    );
+    let second = CampaignFact::AttemptAdmitted(
+        AttemptAdmission::new(
+            attempt,
+            AttemptAdmissionRole::ExecutionBasis {
+                proposal: None,
+                cause: BranchRequestCause::Operator(command),
+                admission_ordinal: AdmissionOrdinal::new(8),
+            },
+        )
+        .id()
+        .expect("second admission id"),
+    );
     assert_ne!(first.id(), second.id());
     assert_eq!(
         CampaignFact::from_canonical_bytes(&first.canonical_bytes()).expect("canonical fact"),
@@ -867,6 +890,206 @@ fn opportunities_and_selections_fail_closed_on_domain_drift() {
         selection.validate_replay(&opportunity, &declaration_domain),
         Err(CampaignCodecError::InvalidValue { .. })
     ));
+}
+
+#[test]
+fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
+    let scenario = ScenarioDefId::from_hash(hash("scenario"));
+    let scenario_artifact = ScenarioArtifact::new(scenario, 1, b"scenario".to_vec())
+        .expect("scenario artifact")
+        .id()
+        .expect("scenario artifact id");
+    let parent_configuration = ConfigurationId::from_hash(hash("parent configuration"));
+    let parent = ConfigurationArtifact::new(
+        scenario,
+        scenario_artifact,
+        parent_configuration,
+        1,
+        b"parent".to_vec(),
+    )
+    .expect("parent artifact");
+    let domain = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(0),
+            IntegerValue::Unsigned(10),
+            1,
+            Some("ms".to_owned()),
+            ExactRational::new(1, 1).expect("scale"),
+            vec![IntegerValue::Unsigned(0), IntegerValue::Unsigned(10)],
+        )
+        .expect("domain"),
+    );
+    let declaration = selectable_fixture(
+        "retry-delay",
+        domain.clone(),
+        ChoiceValue::Integer(IntegerValue::Unsigned(0)),
+    );
+    let opportunity = ChoiceOpportunity::new(
+        scenario,
+        &declaration,
+        &domain,
+        ChoiceCoordinate {
+            scheduler: hash("scheduler"),
+            producer: hash("producer"),
+        },
+        "retry-1",
+        None,
+    )
+    .expect("opportunity");
+    let branch_point = opportunity.branch_point_id(parent_configuration);
+    let cause = BranchRequestCause::Operator(CampaignCommandId::from_hash(hash("command")));
+    let request = BranchRequest::new(
+        branch_point,
+        parent.id().expect("parent id"),
+        opportunity.id().expect("opportunity id"),
+        domain.id().expect("domain id"),
+        CandidateSource::finite(BTreeSet::from([
+            ChoiceValue::Integer(IntegerValue::Unsigned(0)),
+            ChoiceValue::Integer(IntegerValue::Unsigned(10)),
+        ]))
+        .expect("finite source"),
+        cause,
+        BranchBudget::new(2, 2).expect("budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("request");
+    request
+        .validate_resolved(&parent, &opportunity, &domain)
+        .expect("resolved request");
+    let request_envelope = ObjectEnvelope::for_record(
+        CampaignRecordKind::BranchRequest,
+        super::object::content_children(request.content_children()).expect("request children"),
+        request.canonical_bytes(),
+    )
+    .expect("request envelope");
+    assert_eq!(
+        ObjectEnvelope::from_canonical_bytes(&request_envelope.canonical_bytes())
+            .expect("request decode"),
+        request_envelope
+    );
+
+    let proposal = Proposal::new(
+        branch_point,
+        request.id().expect("request id"),
+        domain.id().expect("domain id"),
+        ChoiceValue::Integer(IntegerValue::Unsigned(10)),
+        stored_id!(CampaignPolicyId, ObjectKind::Policy, "policy"),
+        None,
+        1,
+        stored_id!(CampaignViewId, ObjectKind::CampaignFact, "view"),
+    )
+    .expect("proposal");
+    proposal
+        .validate_resolved(&request, &domain)
+        .expect("resolved proposal");
+    let outside_source = Proposal::new(
+        branch_point,
+        request.id().expect("request id"),
+        domain.id().expect("domain id"),
+        ChoiceValue::Integer(IntegerValue::Unsigned(5)),
+        stored_id!(CampaignPolicyId, ObjectKind::Policy, "policy"),
+        None,
+        1,
+        stored_id!(CampaignViewId, ObjectKind::CampaignFact, "view"),
+    )
+    .expect("legal-domain proposal");
+    assert!(outside_source.validate_resolved(&request, &domain).is_err());
+    let over_budget = Proposal::new(
+        branch_point,
+        request.id().expect("request id"),
+        domain.id().expect("domain id"),
+        ChoiceValue::Integer(IntegerValue::Unsigned(10)),
+        stored_id!(CampaignPolicyId, ObjectKind::Policy, "policy"),
+        None,
+        3,
+        stored_id!(CampaignViewId, ObjectKind::CampaignFact, "view"),
+    )
+    .expect("over-budget proposal");
+    assert!(over_budget.validate_resolved(&request, &domain).is_err());
+
+    let selection = Selection::new_campaign_branch(
+        &opportunity,
+        &domain,
+        proposal.value().clone(),
+        branch_point,
+    )
+    .expect("selection");
+    let edge = match selection.origin() {
+        SelectionOrigin::CampaignBranch { edge, .. } => edge,
+        _ => panic!("campaign branch selection"),
+    };
+    let path = BranchPath::new(vec![edge]).expect("path");
+    let attempt = Attempt::new(
+        AttemptStart::Branch {
+            edge,
+            parent: parent.id().expect("parent id"),
+            selection: selection.id().expect("selection id"),
+        },
+        path.id().expect("path id"),
+        StopCondition::NextChoice,
+    )
+    .expect("attempt");
+    let basis = AttemptAdmission::new(
+        attempt.id().expect("attempt id"),
+        AttemptAdmissionRole::ExecutionBasis {
+            proposal: Some(proposal.id().expect("proposal id")),
+            cause,
+            admission_ordinal: AdmissionOrdinal::new(1),
+        },
+    );
+    let additional = AttemptAdmission::new(
+        attempt.id().expect("attempt id"),
+        AttemptAdmissionRole::AdditionalCause {
+            proposal: proposal.id().expect("proposal id"),
+        },
+    );
+    assert_ne!(basis.id(), additional.id());
+
+    let illegal = BranchRequest::new(
+        branch_point,
+        parent.id().expect("parent id"),
+        opportunity.id().expect("opportunity id"),
+        domain.id().expect("domain id"),
+        CandidateSource::finite(BTreeSet::from([ChoiceValue::Integer(
+            IntegerValue::Unsigned(11),
+        )]))
+        .expect("bounded source"),
+        cause,
+        BranchBudget::new(1, 1).expect("budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("structural request");
+    assert!(
+        illegal
+            .validate_resolved(&parent, &opportunity, &domain)
+            .is_err()
+    );
+
+    let request_id = request.id().expect("request id");
+    let expansion = ExpansionState::new(
+        branch_point,
+        content("request-root"),
+        content("proposal-root"),
+        content("observation-root"),
+        ExpansionStatistics::default(),
+        BTreeMap::from([(request_id, ContinuationState::Ready)]),
+    )
+    .expect("expansion state");
+    let expansion_envelope = ObjectEnvelope::for_record(
+        CampaignRecordKind::ExpansionState,
+        super::object::content_children(expansion.content_children()).expect("expansion children"),
+        expansion.canonical_bytes(),
+    )
+    .expect("expansion envelope");
+    assert!(
+        expansion_envelope
+            .children()
+            .iter()
+            .any(|child| child.role() == "continuation.00000000"
+                && child.id() == request_id.content_id())
+    );
 }
 
 struct ParityModel {

@@ -315,3 +315,33 @@ After daemon restart:
   continuation ready, but MUST NOT eagerly enqueue all of its values. The daemon
   polls it only under proposal-buffer, attempt-budget, and resource backpressure,
   including when the request was explicitly issued by an operator.
+
+## 04.11 Atomic branch-request acceptance
+
+The first local coordinator transaction is intentionally smaller than planner
+polling. `SubmitBranchRequest(name, expected_snapshot, request)` performs this
+exact sequence under the campaign's sole-writer boundary:
+
+1. authenticate the current snapshot and complete reachable closure;
+2. return the original transition if the exact `BranchRequestId` already occurs
+   in ancestry, before evaluating the caller's now-stale precondition;
+3. validate the exact parent configuration, opportunity, effective domain,
+   finite values or generator, and cause closure;
+4. prove the parent is the exact artifact indexed by its semantic identity in
+   the campaign graph and that planner/policy causes use the active policy;
+5. publish the immutable request and `BranchRequestIssued` fact;
+6. add exactly `BranchRequestId -> BranchRequest` to the exploration Merkle
+   root while preserving lineage, policy, and every other root;
+7. publish the successor snapshot and compare-and-swap the campaign ref last.
+
+The acceptance transition creates no proposal, branch edge, attempt, executor
+reservation, or VM. A projector/planner later pulls one source continuation
+under current budget and backpressure. An imported successor is accepted only
+if replaying the transition over its parent produces the exact exploration-root
+delta and no unrelated root or policy change.
+
+- **[LAZY-20]** Exact branch-request replay MUST precede stale-snapshot rejection
+  and return the originally committed prior/new snapshot pair.
+- **[LAZY-21]** Branch-request acceptance MUST be an exact one-key exploration
+  delta. Candidate enumeration and attempt admission are separate later
+  transitions.

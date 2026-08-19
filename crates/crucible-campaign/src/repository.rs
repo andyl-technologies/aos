@@ -17,13 +17,16 @@ use crucible_cas::content_store::{
 use thiserror::Error;
 
 use crate::{
-    CampaignCodecError, CampaignControlAction, CampaignFact, CampaignHash, CampaignLineage,
-    CampaignLineageId, CampaignPolicy, CampaignPolicyId, CampaignSnapshot, CampaignSnapshotId,
-    CampaignState, CandidateGeneratorSpec, CandidateGeneratorSpecId, ChoiceDomain, ChoiceGroup,
-    ChoiceGroupId, ChoiceOpportunity, ChoiceOpportunityId, ConfigurationArtifact,
-    ConfigurationArtifactId, ConfigurationId, ControlRequest, MerkleMap, MerkleMapRoot,
-    ObjectEnvelope, PlannerInvocation, PlannerInvocationId, PlannerState, PolicyActivation,
-    PolicyArtifact, ScenarioArtifact, ScenarioArtifactId, ScenarioDefId, SelectableDeclaration,
+    Attempt, AttemptAdmission, AttemptAdmissionRole, AttemptStart, BranchPath, BranchRequest,
+    BranchRequestCause, BranchRequestId, CampaignCodecError, CampaignControlAction, CampaignFact,
+    CampaignHash, CampaignLineage, CampaignLineageId, CampaignPolicy, CampaignPolicyId,
+    CampaignSnapshot, CampaignSnapshotId, CampaignState, CandidateGeneratorAlgorithm,
+    CandidateGeneratorSpec, CandidateGeneratorSpecId, CandidateSource, ChoiceDomain,
+    ChoiceDomainId, ChoiceGroup, ChoiceGroupId, ChoiceOpportunity, ChoiceOpportunityId,
+    ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId, ControlRequest,
+    ExpansionState, MerkleMap, MerkleMapRoot, ObjectEnvelope, PlannerInvocation,
+    PlannerInvocationId, PlannerState, PlannerStep, PolicyActivation, PolicyArtifact, Proposal,
+    ScenarioArtifact, ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, SelectableId,
     Selection, SelectionId,
 };
 
@@ -73,6 +76,19 @@ pub struct CampaignCommandResult {
     /// Snapshot first produced by the accepted command.
     pub new_snapshot: CampaignSnapshotId,
     /// Whether this call observed a previously committed command.
+    pub replayed: bool,
+}
+
+/// Stable response for an accepted or idempotently replayed branch request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BranchRequestResult {
+    /// Snapshot that first accepted this request.
+    pub prior_snapshot: CampaignSnapshotId,
+    /// Snapshot first produced by accepting this request.
+    pub new_snapshot: CampaignSnapshotId,
+    /// Exact immutable request identity.
+    pub request: BranchRequestId,
+    /// Whether this call observed a previously committed request.
     pub replayed: bool,
 }
 
@@ -326,6 +342,32 @@ impl CampaignRepository {
         self.read_configuration_artifact(id.content_id())
     }
 
+    /// Loads an exact selectable declaration.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error for a missing, corrupt, or
+    /// wrongly typed declaration.
+    pub fn load_selectable(
+        &self,
+        id: SelectableId,
+    ) -> Result<SelectableDeclaration, CampaignRepositoryError> {
+        self.read_selectable(id.content_id())
+    }
+
+    /// Loads an exact choice domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error for a missing, corrupt, or
+    /// wrongly typed domain.
+    pub fn load_choice_domain(
+        &self,
+        id: ChoiceDomainId,
+    ) -> Result<ChoiceDomain, CampaignRepositoryError> {
+        self.read_choice_domain(id.content_id())
+    }
+
     /// Loads and resolves a choice opportunity against its declaration/domain.
     ///
     /// # Errors
@@ -401,6 +443,101 @@ impl CampaignRepository {
         Ok(invocation)
     }
 
+    /// Submits one additive, lazily consumed branch request.
+    ///
+    /// Acceptance stores the request in the exploration root and records one
+    /// transition fact. It does not enumerate candidates, create proposals, or
+    /// admit attempts. Repeating an already accepted exact request returns its
+    /// original transition even when later snapshots are current.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid request closure, a parent configuration
+    /// outside the campaign graph, a stale precondition, publication failure,
+    /// or final authoritative-ref conflict.
+    pub fn submit_branch_request(
+        &self,
+        name: &str,
+        expected_snapshot: CampaignSnapshotId,
+        request: &BranchRequest,
+    ) -> Result<BranchRequestResult, CampaignRepositoryError> {
+        let _guard = self.lock_mutation()?;
+        let campaign_ref = campaign_ref(name)?;
+        let current_content = self
+            .refs
+            .read_ref(&campaign_ref)?
+            .ok_or(CampaignRepositoryError::NotFound)?;
+        let current = self.read_snapshot(current_content)?;
+        self.validate_complete_head(current_content)?;
+
+        let request_id = request.id()?;
+        if let Some(result) = self.find_branch_request_result(current_content, request_id)? {
+            return Ok(result);
+        }
+        if let BranchRequestCause::Operator(command) = request.cause()
+            && self.mutation_command_exists(current_content, command)?
+        {
+            return Err(CampaignRepositoryError::CommandReuse);
+        }
+
+        let current_id = CampaignSnapshotId::from_content_id(current_content)?;
+        if expected_snapshot != current_id {
+            return Err(CampaignRepositoryError::Stale {
+                expected: expected_snapshot,
+                current: current_id,
+            });
+        }
+        let parent = self.validate_branch_request_references(request)?;
+        self.validate_branch_request_campaign_scope(&current, request, &parent)?;
+
+        let request_content = self.put_branch_request(request)?;
+        if request_content != request_id.content_id() {
+            return Err(integrity("branch-request-publication-id-mismatch"));
+        }
+        let request_key = map_key_content("exploration.branch-request", request_content);
+        if self
+            .merkle
+            .get(current.snapshot.roots().exploration, request_key)?
+            .is_some()
+        {
+            return Err(integrity("branch-request-index-has-no-ancestry-transition"));
+        }
+        let exploration = self.merkle.insert(
+            current.snapshot.roots().exploration,
+            request_key,
+            request_content,
+        )?;
+
+        let fact = CampaignFact::BranchRequestIssued(request_id);
+        let transition_content = self.put_fact(&fact)?;
+        let mut roots = current.snapshot.roots();
+        roots.exploration = exploration.content_id();
+        let next = CampaignSnapshot::successor(
+            current_id,
+            current.snapshot.lineage(),
+            current.snapshot.active_policy(),
+            roots,
+            crate::CampaignFactId::from_content_id(transition_content)?,
+        )?;
+        let next_content = self.put_snapshot(&next)?;
+        self.validate_complete_head(next_content)?;
+
+        match self
+            .refs
+            .compare_exchange(&campaign_ref, Some(current_content), next_content)?
+        {
+            RefCasOutcome::Advanced { .. } => Ok(BranchRequestResult {
+                prior_snapshot: current_id,
+                new_snapshot: CampaignSnapshotId::from_content_id(next_content)?,
+                request: request_id,
+                replayed: false,
+            }),
+            RefCasOutcome::Conflict { current, .. } => {
+                Err(CampaignRepositoryError::RefConflict { current })
+            }
+        }
+    }
+
     /// Applies one idempotent lifecycle, policy, or budget command.
     ///
     /// Command lookup happens before stale-precondition checking. Replaying the
@@ -438,6 +575,9 @@ impl CampaignRepository {
                 return Err(CampaignRepositoryError::CommandReuse);
             }
             return self.find_command_result(current_content, request, true);
+        }
+        if self.mutation_command_exists(current_content, request.command)? {
+            return Err(CampaignRepositoryError::CommandReuse);
         }
 
         let current_id = CampaignSnapshotId::from_content_id(current_content)?;
@@ -589,6 +729,104 @@ impl CampaignRepository {
         ConfigurationArtifactId::from_content_id(content).map_err(Into::into)
     }
 
+    /// Publishes an exact choice domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns a canonical or store error if the domain cannot be placed and
+    /// authenticated.
+    pub fn publish_choice_domain(
+        &self,
+        domain: &ChoiceDomain,
+    ) -> Result<ChoiceDomainId, CampaignRepositoryError> {
+        let content = self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::ChoiceDomain,
+            BTreeSet::new(),
+            domain.canonical_bytes(),
+        )?)?;
+        self.verify_campaign_closure(content)?;
+        ChoiceDomainId::from_content_id(content).map_err(Into::into)
+    }
+
+    /// Publishes an exact selectable declaration.
+    ///
+    /// # Errors
+    ///
+    /// Returns a canonical or store error if the declaration cannot be placed
+    /// and authenticated.
+    pub fn publish_selectable(
+        &self,
+        selectable: &SelectableDeclaration,
+    ) -> Result<SelectableId, CampaignRepositoryError> {
+        let content = self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::SelectableDeclaration,
+            BTreeSet::new(),
+            selectable.canonical_bytes(),
+        )?)?;
+        self.verify_campaign_closure(content)?;
+        SelectableId::from_content_id(content).map_err(Into::into)
+    }
+
+    /// Publishes a choice opportunity after resolving its declaration/domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns a canonical, store, or integrity error if either dependency is
+    /// absent or the opportunity's copied semantic fields disagree.
+    pub fn publish_choice_opportunity(
+        &self,
+        opportunity: &ChoiceOpportunity,
+    ) -> Result<ChoiceOpportunityId, CampaignRepositoryError> {
+        let content = self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::ChoiceOpportunity,
+            crate::object::content_children(opportunity.content_children())?,
+            crate::codec::encode(opportunity),
+        )?)?;
+        self.verify_campaign_closure(content)?;
+        ChoiceOpportunityId::from_content_id(content).map_err(Into::into)
+    }
+
+    /// Publishes a simultaneous choice group after resolving every declaration.
+    ///
+    /// # Errors
+    ///
+    /// Returns a canonical, store, or integrity error if a declaration is
+    /// absent or disagrees with the group's effective domain.
+    pub fn publish_choice_group(
+        &self,
+        group: &ChoiceGroup,
+    ) -> Result<ChoiceGroupId, CampaignRepositoryError> {
+        let content = self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::ChoiceGroup,
+            crate::object::content_children(group.content_children())?,
+            crate::codec::encode(group),
+        )?)?;
+        self.verify_campaign_closure(content)?;
+        ChoiceGroupId::from_content_id(content).map_err(Into::into)
+    }
+
+    /// Publishes a selection after validating its opportunity and legal domain.
+    ///
+    /// Model-sampled selections remain subject to their pure model verifier at
+    /// execution time; their self-contained model identity is checked here.
+    ///
+    /// # Errors
+    ///
+    /// Returns a canonical, store, or integrity error for an absent dependency,
+    /// illegal value, or invalid origin evidence.
+    pub fn publish_selection(
+        &self,
+        selection: &Selection,
+    ) -> Result<SelectionId, CampaignRepositoryError> {
+        let content = self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::Selection,
+            crate::object::content_children(selection.content_children())?,
+            selection.canonical_bytes(),
+        )?)?;
+        self.verify_campaign_closure(content)?;
+        SelectionId::from_content_id(content).map_err(Into::into)
+    }
+
     fn insert_fact(
         &self,
         root: MerkleMapRoot,
@@ -639,6 +877,73 @@ impl CampaignRepository {
         Err(integrity("snapshot-ancestry-limit"))
     }
 
+    fn find_branch_request_result(
+        &self,
+        mut content_id: ContentId,
+        request: BranchRequestId,
+    ) -> Result<Option<BranchRequestResult>, CampaignRepositoryError> {
+        let mut visited = BTreeSet::new();
+        for _ in 0..MAX_SNAPSHOT_ANCESTRY {
+            if !visited.insert(content_id) {
+                return Err(integrity("snapshot-ancestry-cycle"));
+            }
+            let loaded = self.read_snapshot(content_id)?;
+            if let Some(transition_content) = optional_child(&loaded.envelope, "transition") {
+                let transition = self.read_fact(transition_content)?;
+                if transition == CampaignFact::BranchRequestIssued(request) {
+                    let prior_snapshot = loaded
+                        .snapshot
+                        .parent()
+                        .ok_or_else(|| integrity("branch-request-transition-has-no-parent"))?;
+                    return Ok(Some(BranchRequestResult {
+                        prior_snapshot,
+                        new_snapshot: CampaignSnapshotId::from_content_id(content_id)?,
+                        request,
+                        replayed: true,
+                    }));
+                }
+            }
+            let Some(parent) = optional_child(&loaded.envelope, "parent") else {
+                return Ok(None);
+            };
+            content_id = parent;
+        }
+        Err(integrity("snapshot-ancestry-limit"))
+    }
+
+    fn mutation_command_exists(
+        &self,
+        mut content_id: ContentId,
+        command: crate::CampaignCommandId,
+    ) -> Result<bool, CampaignRepositoryError> {
+        let mut visited = BTreeSet::new();
+        for _ in 0..MAX_SNAPSHOT_ANCESTRY {
+            if !visited.insert(content_id) {
+                return Err(integrity("snapshot-ancestry-cycle"));
+            }
+            let loaded = self.read_snapshot(content_id)?;
+            if let Some(transition_content) = optional_child(&loaded.envelope, "transition") {
+                match self.read_fact(transition_content)? {
+                    CampaignFact::ControlRequested(request) if request.command == command => {
+                        return Ok(true);
+                    }
+                    CampaignFact::BranchRequestIssued(request) => {
+                        let request = self.read_branch_request(request.content_id())?;
+                        if request.cause() == BranchRequestCause::Operator(command) {
+                            return Ok(true);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let Some(parent) = optional_child(&loaded.envelope, "parent") else {
+                return Ok(false);
+            };
+            content_id = parent;
+        }
+        Err(integrity("snapshot-ancestry-limit"))
+    }
+
     fn project_state(
         &self,
         mut content_id: ContentId,
@@ -668,13 +973,18 @@ impl CampaignRepository {
                         return Err(integrity("parent-logical-id-mismatch"));
                     }
                     let transition = self.read_fact(transition_content)?;
-                    let CampaignFact::ControlRequested(request) = transition else {
-                        return Err(integrity("snapshot-transition-is-not-control-fact"));
-                    };
-                    if request.expected_snapshot != parent_id {
-                        return Err(integrity("transition-precondition-parent-mismatch"));
+                    match transition {
+                        CampaignFact::ControlRequested(request) => {
+                            if request.expected_snapshot != parent_id {
+                                return Err(integrity("transition-precondition-parent-mismatch"));
+                            }
+                            actions.push(request.action);
+                        }
+                        CampaignFact::BranchRequestIssued(_) => {}
+                        _ => {
+                            return Err(integrity("snapshot-transition-type-is-not-implemented"));
+                        }
                     }
-                    actions.push(request.action);
                     content_id = parent_content;
                 }
                 _ => return Err(integrity("snapshot-parent-transition-shape")),
@@ -699,6 +1009,17 @@ impl CampaignRepository {
             crate::CampaignRecordKind::CandidateGeneratorSpec,
             crate::object::content_children(generator.content_children())?,
             generator.canonical_bytes(),
+        )?)
+    }
+
+    fn put_branch_request(
+        &self,
+        request: &BranchRequest,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::BranchRequest,
+            crate::object::content_children(request.content_children())?,
+            request.canonical_bytes(),
         )?)
     }
 
@@ -783,6 +1104,7 @@ impl CampaignRepository {
     ) -> Result<(), CampaignRepositoryError> {
         let mut snapshots = BTreeSet::new();
         let mut verified_roots = BTreeSet::new();
+        let mut seen_commands = BTreeSet::new();
         let mut expected_lineage = None;
         let mut actions = Vec::new();
 
@@ -813,20 +1135,40 @@ impl CampaignRepository {
                 }
                 (Some(parent), Some(transition)) => {
                     let transition_fact = self.read_fact(transition.content_id())?;
-                    let CampaignFact::ControlRequested(request) = transition_fact else {
-                        return Err(integrity("snapshot-transition-is-not-control-fact"));
-                    };
-                    if request.expected_snapshot != parent {
-                        return Err(integrity("transition-precondition-parent-mismatch"));
-                    }
                     let parent_snapshot = self.read_snapshot(parent.content_id())?;
-                    self.validate_control_successor(
-                        &parent_snapshot,
-                        &loaded,
-                        transition.content_id(),
-                        &request,
-                    )?;
-                    actions.push(request.action);
+                    match transition_fact {
+                        CampaignFact::ControlRequested(request) => {
+                            if !seen_commands.insert(request.command) {
+                                return Err(integrity("snapshot-ancestry-reused-mutation-command"));
+                            }
+                            if request.expected_snapshot != parent {
+                                return Err(integrity("transition-precondition-parent-mismatch"));
+                            }
+                            self.validate_control_successor(
+                                &parent_snapshot,
+                                &loaded,
+                                transition.content_id(),
+                                &request,
+                            )?;
+                            actions.push(request.action);
+                        }
+                        CampaignFact::BranchRequestIssued(request) => {
+                            let request_record = self.read_branch_request(request.content_id())?;
+                            if let BranchRequestCause::Operator(command) = request_record.cause()
+                                && !seen_commands.insert(command)
+                            {
+                                return Err(integrity("snapshot-ancestry-reused-mutation-command"));
+                            }
+                            self.validate_branch_request_successor(
+                                &parent_snapshot,
+                                &loaded,
+                                request,
+                            )?;
+                        }
+                        _ => {
+                            return Err(integrity("snapshot-transition-type-is-not-implemented"));
+                        }
+                    }
                     content_id = parent.content_id();
                 }
                 _ => return Err(integrity("snapshot-parent-transition-shape")),
@@ -938,6 +1280,65 @@ impl CampaignRepository {
         Ok(())
     }
 
+    fn validate_branch_request_successor(
+        &self,
+        parent: &LoadedSnapshot,
+        child: &LoadedSnapshot,
+        request: BranchRequestId,
+    ) -> Result<(), CampaignRepositoryError> {
+        if child.snapshot.lineage() != parent.snapshot.lineage()
+            || child.snapshot.active_policy() != parent.snapshot.active_policy()
+        {
+            return Err(integrity(
+                "branch-request-transition-changed-campaign-basis",
+            ));
+        }
+
+        let prior_roots = parent.snapshot.roots();
+        let next_roots = child.snapshot.roots();
+        if prior_roots.graph != next_roots.graph
+            || prior_roots.observations != next_roots.observations
+            || prior_roots.corpus != next_roots.corpus
+            || prior_roots.coverage != next_roots.coverage
+            || prior_roots.findings != next_roots.findings
+            || prior_roots.pins != next_roots.pins
+            || prior_roots.accounting != next_roots.accounting
+        {
+            return Err(integrity(
+                "branch-request-transition-changed-unrelated-root",
+            ));
+        }
+
+        let request_content = request.content_id();
+        let request_record = self.read_branch_request(request_content)?;
+        let parent_configuration =
+            self.read_configuration_artifact(request_record.parent().content_id())?;
+        self.validate_branch_request_campaign_scope(
+            parent,
+            &request_record,
+            &parent_configuration,
+        )?;
+        let request_key = map_key_content("exploration.branch-request", request_content);
+        if self
+            .merkle
+            .get(prior_roots.exploration, request_key)?
+            .is_some()
+        {
+            return Err(integrity("branch-request-transition-reused-request"));
+        }
+        let upserts = BTreeMap::from([(request_key, request_content)]);
+        if !self.merkle.equals_after_upserts(
+            prior_roots.exploration,
+            next_roots.exploration,
+            &upserts,
+        )? {
+            return Err(integrity(
+                "branch-request-transition-exploration-root-mismatch",
+            ));
+        }
+        Ok(())
+    }
+
     fn validate_snapshot_references_once(
         &self,
         loaded: &LoadedSnapshot,
@@ -1018,6 +1419,24 @@ impl CampaignRepository {
                 }
                 crate::CampaignRecordKind::ConfigurationArtifact => {
                     self.read_configuration_artifact(id)?;
+                }
+                crate::CampaignRecordKind::BranchRequest => {
+                    self.read_branch_request(id)?;
+                }
+                crate::CampaignRecordKind::Proposal => {
+                    self.read_proposal(id)?;
+                }
+                crate::CampaignRecordKind::Attempt => {
+                    self.read_attempt(id)?;
+                }
+                crate::CampaignRecordKind::AttemptAdmission => {
+                    self.read_attempt_admission(id)?;
+                }
+                crate::CampaignRecordKind::PlannerStep => {
+                    self.read_planner_step(id)?;
+                }
+                crate::CampaignRecordKind::ExpansionState => {
+                    self.read_expansion_state(id)?;
                 }
                 crate::CampaignRecordKind::PolicyArtifact => {
                     self.validate_policy_artifact_references(&envelope)?;
@@ -1181,18 +1600,368 @@ impl CampaignRepository {
                     )?;
                 }
             }
-            CampaignFact::BranchRequestIssued(_)
-            | CampaignFact::PlannerAdvanced(_)
-            | CampaignFact::ProposalIssued(_)
-            | CampaignFact::AttemptAdmitted { .. }
-            | CampaignFact::AttemptClosed { .. }
-            | CampaignFact::ObservationPublished(_)
-            | CampaignFact::FindingPublished(_) => {
+            CampaignFact::BranchRequestIssued(id) => {
+                self.read_branch_request(id.content_id())?;
+            }
+            CampaignFact::PlannerAdvanced(id) => {
+                self.read_planner_step(id.content_id())?;
+            }
+            CampaignFact::ProposalIssued(id) => {
+                self.read_proposal(id.content_id())?;
+            }
+            CampaignFact::AttemptAdmitted(admission) => {
+                self.read_attempt_admission(admission.content_id())?;
+            }
+            CampaignFact::AttemptClosed { attempt, .. } => {
+                self.require_record_kind(attempt.content_id(), crate::CampaignRecordKind::Attempt)?;
+            }
+            CampaignFact::ObservationPublished(_) | CampaignFact::FindingPublished(_) => {
                 return Err(integrity("campaign-fact-record-type-is-not-implemented"));
             }
             CampaignFact::BudgetGranted(_) | CampaignFact::PinChanged(_) => {}
         }
         Ok(())
+    }
+
+    fn read_branch_request(&self, id: ContentId) -> Result<BranchRequest, CampaignRepositoryError> {
+        let envelope = self.require_record_kind(id, crate::CampaignRecordKind::BranchRequest)?;
+        let request = BranchRequest::from_canonical_bytes(envelope.body())?;
+        if request.id()?.content_id() != id {
+            return Err(integrity("branch-request-envelope-shape"));
+        }
+        self.validate_branch_request_references(&request)?;
+        Ok(request)
+    }
+
+    fn validate_branch_request_references(
+        &self,
+        request: &BranchRequest,
+    ) -> Result<ConfigurationArtifact, CampaignRepositoryError> {
+        let parent = self.read_configuration_artifact(request.parent().content_id())?;
+        let opportunity = self.read_opportunity(request.opportunity().content_id())?;
+        let domain = self.read_choice_domain(request.domain().content_id())?;
+        request.validate_resolved(&parent, &opportunity, &domain)?;
+        match request.source() {
+            CandidateSource::Finite(_) => {}
+            CandidateSource::Generated(generator) => {
+                self.validate_generator_for_domain(*generator, &domain)?;
+            }
+        }
+        match request.cause() {
+            BranchRequestCause::Planner(invocation) => {
+                self.load_planner_invocation(invocation)?;
+            }
+            BranchRequestCause::ExhaustivePolicy(policy) => {
+                self.read_policy(policy.content_id())?;
+            }
+            BranchRequestCause::Operator(_) | BranchRequestCause::Debugger(_) => {}
+        }
+        Ok(parent)
+    }
+
+    fn validate_generator_for_domain(
+        &self,
+        root: CandidateGeneratorSpecId,
+        domain: &ChoiceDomain,
+    ) -> Result<(), CampaignRepositoryError> {
+        let mut stack = vec![(root, 0_usize)];
+        let mut visited = BTreeSet::new();
+        while let Some((id, depth)) = stack.pop() {
+            if depth > 1024 || visited.len() >= MAX_CLOSURE_OBJECTS {
+                return Err(integrity("candidate-generator-validation-limit"));
+            }
+            if !visited.insert(id) {
+                continue;
+            }
+            let generator = self.read_generator(id.content_id())?;
+            match generator.algorithm() {
+                CandidateGeneratorAlgorithm::All
+                    if matches!(domain, ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_)) => {}
+                CandidateGeneratorAlgorithm::WeightedCategorical { weights } => {
+                    let ChoiceDomain::Discrete(discrete) = domain else {
+                        return Err(integrity("candidate-generator-domain-family-mismatch"));
+                    };
+                    if weights
+                        .keys()
+                        .any(|alternative| !discrete.alternatives().contains_key(alternative))
+                    {
+                        return Err(integrity(
+                            "candidate-generator-discrete-alternative-mismatch",
+                        ));
+                    }
+                }
+                CandidateGeneratorAlgorithm::StratifiedInteger { .. }
+                | CandidateGeneratorAlgorithm::BoundaryInteger
+                | CandidateGeneratorAlgorithm::LogInteger { .. }
+                | CandidateGeneratorAlgorithm::PermutedInteger
+                | CandidateGeneratorAlgorithm::ProgressiveInteger { .. }
+                | CandidateGeneratorAlgorithm::MutateNearCorpus { .. }
+                    if matches!(domain, ChoiceDomain::Integer(_)) => {}
+                CandidateGeneratorAlgorithm::OrderedMixture { components } => {
+                    stack.extend(
+                        components
+                            .iter()
+                            .rev()
+                            .map(|component| (component.generator(), depth + 1)),
+                    );
+                }
+                _ => return Err(integrity("candidate-generator-domain-family-mismatch")),
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_branch_request_campaign_scope(
+        &self,
+        snapshot: &LoadedSnapshot,
+        request: &BranchRequest,
+        parent: &ConfigurationArtifact,
+    ) -> Result<(), CampaignRepositoryError> {
+        let lineage = self.read_lineage(required_child(&snapshot.envelope, "lineage")?)?;
+        if parent.scenario() != lineage.scenario() {
+            return Err(integrity("branch-request-parent-scenario-mismatch"));
+        }
+        let expected_parent = self.merkle.get(
+            snapshot.snapshot.roots().graph,
+            map_key_hash("graph.configuration", parent.configuration().as_hash()),
+        )?;
+        if expected_parent != Some(request.parent().content_id()) {
+            return Err(integrity("branch-request-parent-is-not-in-campaign-graph"));
+        }
+
+        match request.cause() {
+            BranchRequestCause::Planner(invocation) => {
+                let invocation = self.load_planner_invocation(invocation)?;
+                if invocation.policy() != snapshot.snapshot.active_policy() {
+                    return Err(integrity("branch-request-planner-policy-is-not-active"));
+                }
+                if invocation.input_view() != snapshot.snapshot.planning_view().id()? {
+                    return Err(integrity("branch-request-planner-view-is-not-current"));
+                }
+            }
+            BranchRequestCause::ExhaustivePolicy(policy)
+                if policy != snapshot.snapshot.active_policy() =>
+            {
+                return Err(integrity("branch-request-policy-is-not-active"));
+            }
+            BranchRequestCause::ExhaustivePolicy(_)
+            | BranchRequestCause::Operator(_)
+            | BranchRequestCause::Debugger(_) => {}
+        }
+
+        if let CandidateSource::Generated(generator) = request.source()
+            && matches!(
+                request.cause(),
+                BranchRequestCause::Planner(_) | BranchRequestCause::ExhaustivePolicy(_)
+            )
+        {
+            let opportunity = self.read_opportunity(request.opportunity().content_id())?;
+            let declaration = self.read_selectable(opportunity.declaration().content_id())?;
+            let policy = self.read_policy(snapshot.snapshot.active_policy().content_id())?;
+            let selected = policy.choice_policies().get(declaration.name());
+            if selected.map(crate::ChoicePolicy::generator) != Some(*generator) {
+                return Err(integrity(
+                    "branch-request-generator-is-not-selected-by-active-policy",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn read_proposal(&self, id: ContentId) -> Result<Proposal, CampaignRepositoryError> {
+        let envelope = self.require_record_kind(id, crate::CampaignRecordKind::Proposal)?;
+        let proposal = Proposal::from_canonical_bytes(envelope.body())?;
+        if proposal.id()?.content_id() != id {
+            return Err(integrity("proposal-envelope-shape"));
+        }
+        let request = self.read_branch_request(proposal.request().content_id())?;
+        let domain = self.read_choice_domain(proposal.domain().content_id())?;
+        proposal.validate_resolved(&request, &domain)?;
+        self.read_policy(proposal.policy().content_id())?;
+        self.require_record_kind(
+            proposal.guidance_basis().content_id(),
+            crate::CampaignRecordKind::PlanningView,
+        )?;
+        if let Some(invocation) = proposal.planner_invocation() {
+            let invocation = self.load_planner_invocation(invocation)?;
+            if invocation.policy() != proposal.policy()
+                || invocation.input_view() != proposal.guidance_basis()
+            {
+                return Err(integrity("proposal-planner-invocation-mismatch"));
+            }
+        }
+        Ok(proposal)
+    }
+
+    fn read_attempt(&self, id: ContentId) -> Result<Attempt, CampaignRepositoryError> {
+        let envelope = self.require_record_kind(id, crate::CampaignRecordKind::Attempt)?;
+        let attempt = crate::codec::decode::<Attempt>(envelope.body())?;
+        if attempt.id()?.content_id() != id {
+            return Err(integrity("attempt-envelope-shape"));
+        }
+        let path = self.read_branch_path(attempt.path().content_id())?;
+        match attempt.start() {
+            AttemptStart::Discover { configuration } => {
+                self.read_configuration_artifact(configuration.content_id())?;
+            }
+            AttemptStart::Branch {
+                edge,
+                parent,
+                selection,
+            } => {
+                if path.edges().last() != Some(&edge) {
+                    return Err(integrity("attempt-branch-path-terminal-edge-mismatch"));
+                }
+                let parent = self.read_configuration_artifact(parent.content_id())?;
+                let resolved = self.resolve_selection(selection)?;
+                let branch_point = resolved
+                    .opportunity()
+                    .branch_point_id(parent.configuration());
+                resolved.selection().validate_branch_replay(
+                    resolved.opportunity(),
+                    resolved.domain(),
+                    branch_point,
+                )?;
+                if let crate::SelectionOrigin::CampaignBranch {
+                    edge: selected_edge,
+                    ..
+                } = resolved.selection().origin()
+                    && selected_edge != edge
+                {
+                    return Err(integrity("attempt-branch-edge-mismatch"));
+                }
+            }
+        }
+        Ok(attempt)
+    }
+
+    fn read_branch_path(&self, id: ContentId) -> Result<BranchPath, CampaignRepositoryError> {
+        let envelope = self.require_record_kind(id, crate::CampaignRecordKind::BranchPath)?;
+        let path = crate::codec::decode::<BranchPath>(envelope.body())?;
+        if path.id()?.content_id() != id {
+            return Err(integrity("branch-path-envelope-shape"));
+        }
+        Ok(path)
+    }
+
+    fn validate_proposal_attempt_equivalence(
+        &self,
+        proposal: &Proposal,
+        attempt: &Attempt,
+    ) -> Result<BranchRequest, CampaignRepositoryError> {
+        let request = self.read_branch_request(proposal.request().content_id())?;
+        let AttemptStart::Branch {
+            edge: _,
+            parent,
+            selection,
+        } = attempt.start()
+        else {
+            return Err(integrity("proposal-cannot-admit-discovery-attempt"));
+        };
+        let resolved = self.resolve_selection(selection)?;
+        if parent != request.parent()
+            || attempt.stop() != request.stop()
+            || resolved.opportunity().id()? != request.opportunity()
+            || resolved.domain().id()? != request.domain()
+            || resolved.selection().value() != proposal.value()
+        {
+            return Err(integrity("proposal-attempt-semantic-mismatch"));
+        }
+        Ok(request)
+    }
+
+    fn read_attempt_admission(
+        &self,
+        id: ContentId,
+    ) -> Result<AttemptAdmission, CampaignRepositoryError> {
+        let envelope = self.require_record_kind(id, crate::CampaignRecordKind::AttemptAdmission)?;
+        let admission = crate::codec::decode::<AttemptAdmission>(envelope.body())?;
+        if admission.id()?.content_id() != id {
+            return Err(integrity("attempt-admission-envelope-shape"));
+        }
+        let attempt = self.read_attempt(admission.attempt().content_id())?;
+        match admission.role() {
+            AttemptAdmissionRole::ExecutionBasis {
+                proposal: Some(proposal),
+                cause,
+                ..
+            } => {
+                let proposal = self.read_proposal(proposal.content_id())?;
+                let request = self.validate_proposal_attempt_equivalence(&proposal, &attempt)?;
+                if request.cause() != cause {
+                    return Err(integrity("attempt-execution-basis-mismatch"));
+                }
+            }
+            AttemptAdmissionRole::ExecutionBasis { proposal: None, .. }
+                if !matches!(attempt.start(), AttemptStart::Discover { .. }) =>
+            {
+                return Err(integrity("branch-attempt-execution-basis-has-no-proposal"));
+            }
+            AttemptAdmissionRole::ExecutionBasis { .. } => {}
+            AttemptAdmissionRole::AdditionalCause { proposal } => {
+                let proposal = self.read_proposal(proposal.content_id())?;
+                self.validate_proposal_attempt_equivalence(&proposal, &attempt)?;
+            }
+        }
+        Ok(admission)
+    }
+
+    fn read_planner_step(&self, id: ContentId) -> Result<PlannerStep, CampaignRepositoryError> {
+        let envelope = self.require_record_kind(id, crate::CampaignRecordKind::PlannerStep)?;
+        let step = crate::codec::decode::<PlannerStep>(envelope.body())?;
+        if step.id()?.content_id() != id {
+            return Err(integrity("planner-step-envelope-shape"));
+        }
+        let invocation = self.load_planner_invocation(step.invocation())?;
+        if invocation.engine() != step.engine()
+            || invocation.policy_artifact() != step.policy_artifact()
+            || invocation.policy() != step.policy()
+            || invocation.input_view() != step.input_view()
+        {
+            return Err(integrity("planner-step-invocation-mismatch"));
+        }
+        let source = self.read_branch_request(step.selected_source().content_id())?;
+        if source.branch_point() != step.selected_branch_point() {
+            return Err(integrity("planner-step-source-branch-point-mismatch"));
+        }
+        for proposal in step.issued_proposals() {
+            let proposal = self.read_proposal(proposal.content_id())?;
+            if proposal.request() != step.selected_source()
+                || proposal.planner_invocation() != Some(step.invocation())
+            {
+                return Err(integrity("planner-step-proposal-mismatch"));
+            }
+        }
+        self.require_record_kind(
+            step.next_state().content_id(),
+            crate::CampaignRecordKind::PlannerState,
+        )?;
+        if let Some(parent) = step.parent() {
+            self.require_record_kind(parent.content_id(), crate::CampaignRecordKind::PlannerStep)?;
+        }
+        Err(integrity(
+            "planner-step-coordinator-validation-is-not-implemented",
+        ))
+    }
+
+    fn read_expansion_state(
+        &self,
+        id: ContentId,
+    ) -> Result<ExpansionState, CampaignRepositoryError> {
+        let envelope = self.require_record_kind(id, crate::CampaignRecordKind::ExpansionState)?;
+        let state = crate::codec::decode::<ExpansionState>(envelope.body())?;
+        if state.id()?.content_id() != id {
+            return Err(integrity("expansion-state-envelope-shape"));
+        }
+        for request in state.continuations().keys() {
+            let request = self.read_branch_request(request.content_id())?;
+            if request.branch_point() != state.branch_point() {
+                return Err(integrity("expansion-state-request-branch-point-mismatch"));
+            }
+        }
+        Err(integrity(
+            "expansion-state-projector-validation-is-not-implemented",
+        ))
     }
 
     fn require_record_kind(
@@ -1487,6 +2256,7 @@ const fn is_campaign_record_kind(kind: ObjectKind) -> bool {
             | ObjectKind::Policy
             | ObjectKind::Scenario
             | ObjectKind::Configuration
+            | ObjectKind::Projection
     )
 }
 
@@ -1504,10 +2274,11 @@ mod tests {
     use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
 
     use crate::{
-        BudgetGrant, CampaignFactId, CampaignMode, CampaignPlanningView, CampaignSeed,
-        CandidateGeneratorAlgorithm, ChoicePolicy, ConfigurationId, ExplorerPolicy, FairnessPolicy,
-        PlannerEngine, PlanningBudget, ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy,
-        ScenarioDefId, WeightedGenerator,
+        BooleanDomain, BranchBudget, BudgetGrant, CampaignFactId, CampaignMode,
+        CampaignPlanningView, CampaignSeed, CandidateGeneratorAlgorithm, ChoiceClassContext,
+        ChoiceCoordinate, ChoicePolicy, ChoiceSource, ChoiceValue, ConfigurationId, ExplorerPolicy,
+        FairnessPolicy, PlannerEngine, PlanningBudget, ProgressiveWideningPolicy, PuctPolicy,
+        RetentionPolicy, ScenarioDefId, StopCondition, WeightedGenerator,
     };
 
     fn fixture() -> (CampaignRepository, CampaignLineage, CampaignPolicy) {
@@ -1609,6 +2380,68 @@ mod tests {
         .expect("generator policy")
     }
 
+    fn branch_request(
+        repository: &CampaignRepository,
+        lineage: &CampaignLineage,
+        parent: ConfigurationArtifactId,
+        parent_configuration: ConfigurationId,
+        command: &str,
+    ) -> BranchRequest {
+        let domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain"));
+        let declaration = SelectableDeclaration::new(
+            "product.network.retry",
+            ChoiceSource::Workload {
+                producer: "network-product".to_owned(),
+            },
+            domain.clone(),
+            ChoiceValue::Boolean(false),
+            ChoiceClassContext::new(BTreeSet::from(["network-recovery".to_owned()]))
+                .expect("choice class"),
+            BTreeSet::new(),
+            true,
+        )
+        .expect("declaration");
+        repository
+            .publish_choice_domain(&domain)
+            .expect("publish domain");
+        repository
+            .publish_selectable(&declaration)
+            .expect("publish declaration");
+        let opportunity = ChoiceOpportunity::new(
+            lineage.scenario(),
+            &declaration,
+            &domain,
+            ChoiceCoordinate {
+                scheduler: CampaignHash::derive("test", command.as_bytes()),
+                producer: CampaignHash::derive("test", b"network-product"),
+            },
+            command,
+            None,
+        )
+        .expect("opportunity");
+        repository
+            .publish_choice_opportunity(&opportunity)
+            .expect("publish opportunity");
+
+        BranchRequest::new(
+            opportunity.branch_point_id(parent_configuration),
+            parent,
+            opportunity.id().expect("opportunity id"),
+            domain.id().expect("domain id"),
+            CandidateSource::finite(BTreeSet::from([
+                ChoiceValue::Boolean(false),
+                ChoiceValue::Boolean(true),
+            ]))
+            .expect("finite source"),
+            BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(
+                CampaignHash::derive("test", command.as_bytes()),
+            )),
+            BranchBudget::new(2, 2).expect("branch budget"),
+            StopCondition::NextChoice,
+        )
+        .expect("branch request")
+    }
+
     #[test]
     fn create_and_control_form_linear_authenticated_history() {
         let (repository, lineage, policy) = fixture();
@@ -1647,6 +2480,373 @@ mod tests {
             CampaignState::Paused
         );
         assert_ne!(paused.new_snapshot, resumed.new_snapshot);
+    }
+
+    #[test]
+    fn branch_request_is_one_lazy_exact_root_delta_and_replays() {
+        let (repository, lineage, policy) = fixture();
+        let genesis = repository
+            .create("lazy", &lineage, &policy, &BTreeMap::new())
+            .expect("create");
+        let request = branch_request(
+            &repository,
+            &lineage,
+            lineage.genesis_content(),
+            lineage.genesis(),
+            "retry-choice",
+        );
+
+        let accepted = repository
+            .submit_branch_request("lazy", genesis.snapshot_id(), &request)
+            .expect("submit request");
+        assert!(!accepted.replayed);
+        assert_eq!(accepted.prior_snapshot, genesis.snapshot_id());
+        assert_eq!(accepted.request, request.id().expect("request id"));
+
+        let requested = repository.head("lazy").expect("requested head");
+        let prior_roots = genesis.snapshot().roots();
+        let next_roots = requested.snapshot().roots();
+        assert_eq!(prior_roots.graph, next_roots.graph);
+        assert_eq!(prior_roots.observations, next_roots.observations);
+        assert_eq!(prior_roots.corpus, next_roots.corpus);
+        assert_eq!(prior_roots.coverage, next_roots.coverage);
+        assert_eq!(prior_roots.findings, next_roots.findings);
+        assert_eq!(prior_roots.pins, next_roots.pins);
+        assert_eq!(prior_roots.accounting, next_roots.accounting);
+        assert_ne!(prior_roots.exploration, next_roots.exploration);
+        let entries = repository
+            .merkle
+            .verify_closure_objects(next_roots.exploration)
+            .expect("exploration closure");
+        assert_eq!(
+            entries.values,
+            BTreeSet::from([accepted.request.content_id()])
+        );
+
+        let resume = command(
+            "resume-after-request",
+            accepted.new_snapshot,
+            CampaignControlAction::Resume,
+        );
+        repository.apply_control("lazy", &resume).expect("resume");
+        let replay = repository
+            .submit_branch_request("lazy", genesis.snapshot_id(), &request)
+            .expect("replay request");
+        assert!(replay.replayed);
+        assert_eq!(replay.prior_snapshot, accepted.prior_snapshot);
+        assert_eq!(replay.new_snapshot, accepted.new_snapshot);
+
+        let reused_command = BranchRequest::new(
+            request.branch_point(),
+            request.parent(),
+            request.opportunity(),
+            request.domain(),
+            CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(true)]))
+                .expect("changed finite source"),
+            request.cause(),
+            BranchBudget::new(1, 1).expect("changed budget"),
+            StopCondition::Terminal,
+        )
+        .expect("changed request");
+        let current = repository.head("lazy").expect("current head");
+        assert!(matches!(
+            repository.submit_branch_request("lazy", current.snapshot_id(), &reused_command),
+            Err(CampaignRepositoryError::CommandReuse)
+        ));
+
+        let BranchRequestCause::Operator(command_id) = request.cause() else {
+            panic!("operator request")
+        };
+        let reused_control = ControlRequest {
+            command: command_id,
+            expected_snapshot: current.snapshot_id(),
+            action: CampaignControlAction::Complete,
+        };
+        assert!(matches!(
+            repository.apply_control("lazy", &reused_control),
+            Err(CampaignRepositoryError::CommandReuse)
+        ));
+    }
+
+    #[test]
+    fn branch_request_staleness_and_campaign_scope_fail_before_ref_advance() {
+        let (repository, lineage, policy) = fixture();
+        let genesis = repository
+            .create("scope", &lineage, &policy, &BTreeMap::new())
+            .expect("create");
+        let request = branch_request(
+            &repository,
+            &lineage,
+            lineage.genesis_content(),
+            lineage.genesis(),
+            "stale-request",
+        );
+        let stale = CampaignSnapshotId::from_content_id(ContentId::for_bytes(
+            ObjectKind::CampaignSnapshot,
+            1,
+            b"stale-request",
+        ))
+        .expect("stale id");
+        assert!(matches!(
+            repository.submit_branch_request("scope", stale, &request),
+            Err(CampaignRepositoryError::Stale { .. })
+        ));
+        assert_eq!(
+            repository.head("scope").expect("head").snapshot_id(),
+            genesis.snapshot_id()
+        );
+
+        let outside_configuration =
+            ConfigurationId::from_hash(CampaignHash::derive("test", b"outside-configuration"));
+        let outside = repository
+            .publish_configuration_artifact(
+                lineage.scenario(),
+                lineage.scenario_content(),
+                outside_configuration,
+                1,
+                b"outside".to_vec(),
+            )
+            .expect("outside configuration");
+        let outside_request = branch_request(
+            &repository,
+            &lineage,
+            outside,
+            outside_configuration,
+            "outside-request",
+        );
+        assert!(matches!(
+            repository.submit_branch_request("scope", genesis.snapshot_id(), &outside_request),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "branch-request-parent-is-not-in-campaign-graph"
+            })
+        ));
+        assert_eq!(
+            repository.head("scope").expect("head").snapshot_id(),
+            genesis.snapshot_id()
+        );
+    }
+
+    #[test]
+    fn generated_branch_requests_validate_the_complete_domain_compatible_spec() {
+        let (repository, lineage, policy) = fixture();
+        let genesis = repository
+            .create("generators", &lineage, &policy, &BTreeMap::new())
+            .expect("create");
+        let finite = branch_request(
+            &repository,
+            &lineage,
+            lineage.genesis_content(),
+            lineage.genesis(),
+            "generator-opportunity",
+        );
+        let integer = CandidateGeneratorSpec::new(
+            1,
+            CandidateGeneratorAlgorithm::ProgressiveInteger {
+                initial_strata: 2,
+                feedback_interval: 1,
+            },
+        )
+        .expect("integer generator");
+        let integer_id = repository
+            .publish_generator(&integer)
+            .expect("publish integer generator");
+        let incompatible = BranchRequest::new(
+            finite.branch_point(),
+            finite.parent(),
+            finite.opportunity(),
+            finite.domain(),
+            CandidateSource::generated(integer_id),
+            BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(
+                CampaignHash::derive("test", b"incompatible-generator"),
+            )),
+            BranchBudget::new(2, 2).expect("budget"),
+            StopCondition::NextChoice,
+        )
+        .expect("incompatible request");
+        assert!(matches!(
+            repository.submit_branch_request("generators", genesis.snapshot_id(), &incompatible,),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "candidate-generator-domain-family-mismatch"
+            })
+        ));
+
+        let mixture = CandidateGeneratorSpec::new(
+            1,
+            CandidateGeneratorAlgorithm::OrderedMixture {
+                components: vec![WeightedGenerator::new(integer_id, 1).expect("component")],
+            },
+        )
+        .expect("mixture");
+        let mixture_id = repository
+            .publish_generator(&mixture)
+            .expect("publish mixture");
+        let incompatible_mixture = BranchRequest::new(
+            finite.branch_point(),
+            finite.parent(),
+            finite.opportunity(),
+            finite.domain(),
+            CandidateSource::generated(mixture_id),
+            BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(
+                CampaignHash::derive("test", b"incompatible-mixture"),
+            )),
+            BranchBudget::new(2, 2).expect("budget"),
+            StopCondition::NextChoice,
+        )
+        .expect("mixture request");
+        assert!(matches!(
+            repository.submit_branch_request(
+                "generators",
+                genesis.snapshot_id(),
+                &incompatible_mixture,
+            ),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "candidate-generator-domain-family-mismatch"
+            })
+        ));
+
+        let all = CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All)
+            .expect("all generator");
+        let all_id = repository
+            .publish_generator(&all)
+            .expect("publish all generator");
+        let valid = BranchRequest::new(
+            finite.branch_point(),
+            finite.parent(),
+            finite.opportunity(),
+            finite.domain(),
+            CandidateSource::generated(all_id),
+            BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(
+                CampaignHash::derive("test", b"valid-generator"),
+            )),
+            BranchBudget::new(2, 2).expect("budget"),
+            StopCondition::NextChoice,
+        )
+        .expect("valid generated request");
+        repository
+            .submit_branch_request("generators", genesis.snapshot_id(), &valid)
+            .expect("accept compatible generator");
+    }
+
+    #[test]
+    fn ancestry_rejects_branch_request_with_an_unrelated_root_change() {
+        let (repository, lineage, policy) = fixture();
+        let genesis = repository
+            .create("forged-request", &lineage, &policy, &BTreeMap::new())
+            .expect("create");
+        let request = branch_request(
+            &repository,
+            &lineage,
+            lineage.genesis_content(),
+            lineage.genesis(),
+            "forged-request",
+        );
+        let request_content = repository
+            .put_branch_request(&request)
+            .expect("put request");
+        let request_id = BranchRequestId::from_content_id(request_content).expect("request id");
+        let transition_content = repository
+            .put_fact(&CampaignFact::BranchRequestIssued(request_id))
+            .expect("put transition");
+        let mut roots = genesis.snapshot().roots();
+        roots.exploration = repository
+            .merkle
+            .insert(
+                roots.exploration,
+                map_key_content("exploration.branch-request", request_content),
+                request_content,
+            )
+            .expect("request root")
+            .content_id();
+        roots.accounting = repository
+            .merkle
+            .insert(
+                roots.accounting,
+                map_key_content("accounting.forged", request_content),
+                request_content,
+            )
+            .expect("forged accounting root")
+            .content_id();
+        let forged = CampaignSnapshot::successor(
+            genesis.snapshot_id(),
+            genesis.snapshot().lineage(),
+            genesis.snapshot().active_policy(),
+            roots,
+            CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        )
+        .expect("forged snapshot");
+        let forged_content = repository
+            .put_snapshot(&forged)
+            .expect("put forged snapshot");
+
+        assert!(matches!(
+            repository.validate_complete_head(forged_content),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "branch-request-transition-changed-unrelated-root"
+            })
+        ));
+    }
+
+    #[test]
+    fn imported_ancestry_rejects_cross_type_mutation_command_reuse() {
+        let (repository, lineage, policy) = fixture();
+        let genesis = repository
+            .create("duplicate-command", &lineage, &policy, &BTreeMap::new())
+            .expect("create");
+        let request = branch_request(
+            &repository,
+            &lineage,
+            lineage.genesis_content(),
+            lineage.genesis(),
+            "shared-command",
+        );
+        let accepted = repository
+            .submit_branch_request("duplicate-command", genesis.snapshot_id(), &request)
+            .expect("accept request");
+        let head = repository.head("duplicate-command").expect("head");
+        let BranchRequestCause::Operator(command_id) = request.cause() else {
+            panic!("operator request")
+        };
+        let control = ControlRequest {
+            command: command_id,
+            expected_snapshot: accepted.new_snapshot,
+            action: CampaignControlAction::Resume,
+        };
+        let transition_content = repository
+            .put_fact(&CampaignFact::ControlRequested(control.clone()))
+            .expect("put control");
+        let mut roots = head.snapshot().roots();
+        roots.accounting = repository
+            .merkle
+            .insert(
+                roots.accounting,
+                map_key_hash("accounting.command", command_id.as_hash()),
+                transition_content,
+            )
+            .expect("accounting root")
+            .content_id();
+        let forged = CampaignSnapshot::successor(
+            accepted.new_snapshot,
+            head.snapshot().lineage(),
+            head.snapshot().active_policy(),
+            roots,
+            CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        )
+        .expect("forged snapshot");
+        let forged_content = repository
+            .put_snapshot(&forged)
+            .expect("put forged snapshot");
+        let campaign_ref = campaign_ref("duplicate-command").expect("campaign ref");
+        repository
+            .refs
+            .compare_exchange(&campaign_ref, Some(head.content_id()), forged_content)
+            .expect("forge ref");
+
+        assert!(matches!(
+            repository.head("duplicate-command"),
+            Err(CampaignRepositoryError::Integrity {
+                reason: "snapshot-ancestry-reused-mutation-command"
+            })
+        ));
     }
 
     #[test]
@@ -1918,7 +3118,7 @@ mod tests {
         assert!(matches!(
             repository.head("noncontrol"),
             Err(CampaignRepositoryError::Integrity {
-                reason: "snapshot-transition-is-not-control-fact"
+                reason: "snapshot-transition-type-is-not-implemented"
             })
         ));
     }
@@ -2148,7 +3348,7 @@ mod tests {
         assert!(matches!(
             repository.verify_campaign_closure(fact_content),
             Err(CampaignRepositoryError::Integrity {
-                reason: "campaign-fact-record-type-is-not-implemented"
+                reason: "campaign-child-record-kind-mismatch"
             })
         ));
     }
