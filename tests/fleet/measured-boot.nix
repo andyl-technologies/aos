@@ -1616,30 +1616,66 @@ in {
           ) == recovery_entries
           assert var_source() == "/dev/mapper/var"
 
-      # Firmware may skip a rejected entry and continue to the normal default;
-      # absence of the recovery banner plus a healthy enforcing boot proves the
-      # modified PE was not executed.
+      # A normal boot is intentionally fail-closed when its paired recovery
+      # artifact cannot be authenticated. Make the untouched recovery copy the
+      # fallback instead: reaching its signed copy identity proves both that
+      # firmware rejected the modified PE and that the retained copy remains
+      # usable. The authenticated maintenance shell then repairs only the
+      # damaged recovery artifact before normal boot resumes.
       for copy in ["a", "b"]:
+          retained = "b" if copy == "a" else "a"
           target.succeed(f"""
               {MOUNT} -o remount,rw /boot
               cp /boot/EFI/AOS/recovery-{copy}.efi /var/recovery-{copy}.efi.qualified
               printf X | dd of=/boot/EFI/AOS/recovery-{copy}.efi bs=1 seek=4096 conv=notrunc
               sync /boot
               {MOUNT} -o remount,ro /boot
+              {BOOTCTL} set-default recovery-{retained}.conf
               {BOOTCTL} set-oneshot recovery-{copy}.conf
               sync
           """)
-          transcript = target.relaunch_with_smbios_oem_strings([], timeout=600)
-          wait_multi_user(f"normal fallback after tampered recovery {copy.upper()}")
-          assert "AOS signed recovery environment" not in transcript, transcript[-12000:]
-          assert var_source() == "/dev/mapper/var"
-          target.succeed(f"""
-              {MOUNT} -o remount,rw /boot
-              cp /var/recovery-{copy}.efi.qualified /boot/EFI/AOS/recovery-{copy}.efi
-              sync /boot
-              {MOUNT} -o remount,ro /boot
-              rm -f /var/recovery-{copy}.efi.qualified
+          transcript = relaunch_recovery_console()
+          assert "AOS signed recovery environment" in transcript, transcript[-12000:]
+
+          offset = serial_offset()
+          target.send_serial("1\n")
+          status_transcript = wait_serial(
+              f"recovery-copy: {retained.upper()}", offset
+          )
+          assert f"recovery-copy: {copy.upper()}" not in status_transcript
+
+          offset = serial_offset()
+          target.send_serial("7\n")
+          wait_serial("AOS /var recovery key:", offset)
+          offset = serial_offset()
+          target.send_serial(recovery_key + "\n")
+          wait_serial("persistent state authenticated and mounted at /var", offset)
+          offset = serial_offset()
+          target.send_serial("8\n")
+          wait_serial("AOS authenticated maintenance shell", offset)
+          offset = serial_offset()
+          target.send_serial(f"""
+              set -e
+              mount -t vfat -o rw /dev/disk/by-partlabel/ESP /run/aos-recovery/esp
+              cp /var/recovery-{copy}.efi.qualified /run/aos-recovery/esp/EFI/AOS/recovery-{copy}.efi
+              sync
+              mount -o remount,rw,nosuid,nodev,noexec /sys/firmware/efi/efivars
+              bootctl --esp-path /run/aos-recovery/esp set-default {stable_a_name}
+              mount -o remount,ro,nosuid,nodev,noexec /sys/firmware/efi/efivars
+              umount /run/aos-recovery/esp
+              echo AOS_RECOVERY_COPY_REPAIRED
+              exit
           """)
+          repair_transcript = wait_serial(
+              "maintenance session ended; persistent state is locked", offset
+          )
+          assert "AOS_RECOVERY_COPY_REPAIRED" in repair_transcript, repair_transcript[-12000:]
+
+          target.send_serial("p\n")
+          target.relaunch_with_smbios_oem_strings([], timeout=600)
+          wait_multi_user(f"normal boot after repairing recovery {copy.upper()}")
+          assert var_source() == "/dev/mapper/var"
+          target.succeed(f"rm -f /var/recovery-{copy}.efi.qualified")
 
       # ════ 8. A real corrupt counted root fails and falls back ════
       recovery_a_before = target.succeed(

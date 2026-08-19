@@ -439,8 +439,10 @@ material from temporary storage, and return to the bounded menu.
 ### 6.2 Maintenance shell
 
 Only an authenticated recovery session may start the maintenance shell. The
-shell receives an explicit PATH of AOS-built tools, no automatic network, and a
-clear banner describing the mounted state and selected recovery copy.
+shell receives an explicit PATH of AOS-built tools, including the fixed
+mount/unmount and file-copy tools needed to repair authenticated persistent and
+ESP state, no automatic network, and a clear banner describing the mounted
+state and selected recovery copy.
 
 Ending the shell unmounts `/var`, closes the mapping, clears session evidence,
 and returns to the menu or powers off. A shell exit must not implicitly bless a
