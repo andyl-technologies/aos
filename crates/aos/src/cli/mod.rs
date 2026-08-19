@@ -36,7 +36,20 @@ pub use test::*;
 
 use std::path::PathBuf;
 
-use clap::{ArgAction, Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum ProgressChoice {
+    /// Select terminal or stable-line rendering automatically.
+    #[default]
+    Auto,
+    /// Always render an updating terminal display.
+    Tty,
+    /// Always emit stable newline-delimited updates.
+    Plain,
+    /// Disable progress updates.
+    Off,
+}
 
 #[derive(Parser)]
 #[command(name = "aos", about = "AOS build tool", version)]
@@ -55,6 +68,10 @@ pub struct Cli {
     /// Output as JSON
     #[arg(long, global = true)]
     pub json: bool,
+
+    /// Control progress rendering.
+    #[arg(long, global = true, value_enum, default_value_t)]
+    pub progress: ProgressChoice,
 }
 
 #[derive(Subcommand)]

@@ -15,8 +15,12 @@
 //! `indicatif`.
 
 use console::Style;
-use indicatif::{ProgressBar, ProgressStyle};
-use std::time::Duration;
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+const PLAIN_PROGRESS_INTERVAL: Duration = Duration::from_secs(30);
+const PLAIN_PROGRESS_PERCENT_STEP: u64 = 10;
 
 /// Determines how the CLI renders output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,12 +36,27 @@ pub enum OutputMode {
     Verbose,
 }
 
+/// Controls how long-running operation progress is rendered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ProgressMode {
+    /// Uses an updating display on a terminal and stable lines elsewhere.
+    #[default]
+    Auto,
+    /// Always uses an updating terminal display.
+    Tty,
+    /// Always emits stable, newline-delimited progress updates.
+    Plain,
+    /// Suppresses progress while retaining final results and errors.
+    Off,
+}
+
 /// Central output handler that respects `--json`, `--quiet`, and `--verbose`
 /// flags.  All user-facing text should flow through a `Printer` so that the
 /// output mode is honoured consistently.
 #[derive(Clone)]
 pub struct Printer {
     mode: OutputMode,
+    progress_mode: ProgressMode,
     // Styles (only used in Normal / Verbose modes).
     style_info: Style,
     style_success: Style,
@@ -65,6 +84,7 @@ impl Printer {
 
         Self {
             mode,
+            progress_mode: ProgressMode::Auto,
             style_info: Style::new().cyan(),
             style_success: Style::new().green().bold(),
             style_warning: Style::new().yellow(),
@@ -74,9 +94,29 @@ impl Printer {
         }
     }
 
+    /// Overrides the progress renderer selected for long-running operations.
+    #[must_use]
+    pub fn with_progress_mode(mut self, progress_mode: ProgressMode) -> Self {
+        self.progress_mode = progress_mode;
+        self
+    }
+
     /// Returns the active [`OutputMode`].
     pub fn mode(&self) -> OutputMode {
         self.mode
+    }
+
+    /// Returns the configured long-running operation progress mode.
+    pub fn progress_mode(&self) -> ProgressMode {
+        self.progress_mode
+    }
+
+    /// Starts reporting a byte-oriented transfer.
+    ///
+    /// Human-readable progress is written to stderr. Quiet and JSON output
+    /// modes return a silent reporter so stdout remains stable for scripts.
+    pub fn transfer(&self, action: &str, total_bytes: u64) -> TransferProgress {
+        TransferProgress::new(self.clone(), action, total_bytes)
     }
 
     // ------------------------------------------------------------------
@@ -196,6 +236,176 @@ impl Printer {
         } else {
             false
         }
+    }
+}
+
+#[derive(Debug)]
+struct PlainProgressState {
+    last_emit: Instant,
+    last_percent_bucket: u64,
+}
+
+/// Reports the lifecycle of one byte-oriented transfer.
+///
+/// A reporter may render as an updating terminal line, stable log lines, or
+/// no output according to its parent [`Printer`]. Dropping it always clears an
+/// active terminal line; callers should still use [`finish`](Self::finish) or
+/// [`abandon`](Self::abandon) to communicate the terminal state explicitly.
+pub struct TransferProgress {
+    printer: Printer,
+    action: String,
+    total_bytes: u64,
+    progress: ProgressBar,
+    plain: Option<Mutex<PlainProgressState>>,
+    started: Instant,
+}
+
+impl TransferProgress {
+    fn new(printer: Printer, action: &str, total_bytes: u64) -> Self {
+        let renderer = match (printer.mode, printer.progress_mode) {
+            (OutputMode::Quiet | OutputMode::Json, _) | (_, ProgressMode::Off) => {
+                ProgressRenderer::Hidden
+            }
+            (_, ProgressMode::Tty) => ProgressRenderer::Tty,
+            (_, ProgressMode::Plain) => ProgressRenderer::Plain,
+            (_, ProgressMode::Auto) if atty::is(atty::Stream::Stderr) => ProgressRenderer::Tty,
+            _ => ProgressRenderer::Plain,
+        };
+        let progress = ProgressBar::new(total_bytes);
+        let plain = match renderer {
+            ProgressRenderer::Tty => {
+                let style = ProgressStyle::with_template(
+                    "{spinner:.cyan} {msg}  {bytes}/{total_bytes}  {percent:>3}%  {binary_bytes_per_sec}  ETA {eta}",
+                )
+                .unwrap_or_else(|_| ProgressStyle::default_bar())
+                .progress_chars("=> ");
+                progress.set_style(style);
+                progress.set_message(action.to_string());
+                progress.enable_steady_tick(Duration::from_millis(120));
+                None
+            }
+            ProgressRenderer::Plain => {
+                progress.set_draw_target(ProgressDrawTarget::hidden());
+                printer.info(&format!("{action} ({})", format_bytes(total_bytes)));
+                Some(Mutex::new(PlainProgressState {
+                    last_emit: Instant::now(),
+                    last_percent_bucket: 0,
+                }))
+            }
+            ProgressRenderer::Hidden => {
+                progress.set_draw_target(ProgressDrawTarget::hidden());
+                None
+            }
+        };
+        Self {
+            printer,
+            action: action.to_string(),
+            total_bytes,
+            progress,
+            plain,
+            started: Instant::now(),
+        }
+    }
+
+    /// Changes the phase label without resetting byte progress.
+    pub fn phase(&mut self, action: &str) {
+        self.action.clear();
+        self.action.push_str(action);
+        self.progress.set_message(action.to_string());
+        if self.plain.is_some() {
+            self.printer.info(action);
+        }
+    }
+
+    /// Sets the number of bytes already completed.
+    pub fn set_position(&self, bytes: u64) {
+        self.progress.set_position(bytes.min(self.total_bytes));
+        self.maybe_emit_plain(bytes);
+    }
+
+    /// Advances the operation by `bytes` bytes.
+    pub fn inc(&self, bytes: u64) {
+        self.progress.inc(bytes);
+        self.maybe_emit_plain(self.progress.position());
+    }
+
+    /// Emits a warning without corrupting an active terminal progress line.
+    pub fn warning(&self, message: &str) {
+        self.progress.suspend(|| self.printer.warning(message));
+    }
+
+    /// Clears dynamic output after a successful operation.
+    pub fn finish(self) {
+        self.progress.finish_and_clear();
+    }
+
+    /// Clears dynamic output and emits a stable interruption or failure note.
+    pub fn abandon(self, message: &str) {
+        self.progress.finish_and_clear();
+        self.printer.warning(message);
+    }
+
+    /// Returns the wall-clock duration since reporting began.
+    pub fn elapsed(&self) -> Duration {
+        self.started.elapsed()
+    }
+
+    fn maybe_emit_plain(&self, bytes: u64) {
+        let Some(plain) = &self.plain else {
+            return;
+        };
+        let Ok(mut state) = plain.lock() else {
+            return;
+        };
+        let percent = if self.total_bytes == 0 {
+            0
+        } else {
+            bytes.saturating_mul(100) / self.total_bytes
+        };
+        let bucket = percent / PLAIN_PROGRESS_PERCENT_STEP;
+        let now = Instant::now();
+        if bucket <= state.last_percent_bucket
+            && now.duration_since(state.last_emit) < PLAIN_PROGRESS_INTERVAL
+        {
+            return;
+        }
+        state.last_percent_bucket = bucket;
+        state.last_emit = now;
+        self.printer.info(&format!(
+            "{}: {}/{} ({}%)",
+            self.action,
+            format_bytes(bytes.min(self.total_bytes)),
+            format_bytes(self.total_bytes),
+            percent.min(100),
+        ));
+    }
+}
+
+impl Drop for TransferProgress {
+    fn drop(&mut self) {
+        self.progress.finish_and_clear();
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ProgressRenderer {
+    Tty,
+    Plain,
+    Hidden,
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
     }
 }
 
