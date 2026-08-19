@@ -208,14 +208,18 @@ codec remains responsible for the stronger record-specific correspondence.
 
 ```rust,illustrative
 pub enum CampaignFact {
-    ChoiceOpportunityDiscovered(ChoiceOpportunity),
-    BranchRequestIssued(BranchRequest),
-    PlannerAdvanced(PlannerStep),
-    ProposalIssued(Proposal),
-    AttemptAdmitted(AttemptAdmission),
-    AttemptClosed(NonModeledAttemptDisposition),
-    ObservationPublished(Observation),
-    FindingPublished(Finding),
+    ChoiceOpportunityDiscovered(ChoiceOpportunityId),
+    BranchRequestIssued(BranchRequestId),
+    PlannerAdvanced(PlannerStepId),
+    ProposalIssued(ProposalId),
+    AttemptAdmitted(AttemptAdmissionId),
+    AttemptClosed {
+        attempt: AttemptId,
+        ordinal: AdmissionOrdinal,
+        disposition: NonModeledAttemptDisposition,
+    },
+    ObservationPublished(ObservationId),
+    FindingPublished(FindingId),
     PolicyActivated(PolicyActivation),
     BudgetGranted(BudgetGrant),
     ControlRequested(ControlRequest),
@@ -262,10 +266,10 @@ pub struct PlannerStep {
     pub engine: PlannerEngineId,
     pub policy_artifact: PolicyArtifactId,
     pub input_view: CampaignViewId,
-    pub budget: PlanningBudget,
     pub selected_branch_point: BranchPointId,
     pub selected_source: BranchRequestId,
     pub issued_proposals: Vec<ProposalId>,
+    pub next_state: PlannerStateId,
     pub coordinator_accounting: PlanningAccounting,
     pub score_evidence: GuidanceEvidence,
 }
@@ -299,6 +303,9 @@ pub struct BranchPoint {
 
 pub struct BranchRequest {
     pub branch_point: BranchPointId,
+    pub parent: ConfigurationArtifactId,
+    pub opportunity: ChoiceOpportunityId,
+    pub domain: ChoiceDomainId,
     pub source: CandidateSource,
     pub cause: BranchRequestCause,
     pub budget: BranchBudget,
@@ -306,12 +313,13 @@ pub struct BranchRequest {
 }
 
 pub enum CandidateSource {
-    Finite {
-        values: CanonicalSet<ChoiceValue>,
-    },
-    Generated {
-        generator: CandidateGeneratorSpecId,
-    },
+    Finite(FiniteCandidateSource),
+    Generated(CandidateGeneratorSpecId),
+}
+
+pub struct FiniteCandidateSource {
+    // Private; constructed only through a nonempty, bounded validator.
+    values: CanonicalSet<ChoiceValue>,
 }
 
 pub struct BranchBudget {
@@ -339,7 +347,7 @@ pub struct Proposal {
 
 pub struct BranchEdge {
     pub branch_point: BranchPointId,
-    pub domain: ChoiceDomainId,
+    pub domain: ChoiceDomainSemanticId,
     pub value: ChoiceValue,
 }
 
@@ -351,12 +359,12 @@ pub struct Attempt {
 
 pub enum AttemptStart {
     Discover {
-        configuration: ConfigurationId,
+        configuration: ConfigurationArtifactId,
     },
     Branch {
         edge: BranchEdgeId,
-        parent: ConfigurationId,
-        selection: Selection,
+        parent: ConfigurationArtifactId,
+        selection: SelectionId,
     },
 }
 
@@ -392,8 +400,12 @@ pub struct Observation {
 }
 ```
 
-`BranchPointId` is the digest of `(parent, opportunity)`. `BranchEdgeId` is the
-digest of the canonical `BranchEdge`. The completed observation binds that edge
+`BranchPointId` is the semantic digest of `(parent configuration identity,
+opportunity semantics)`. A branch request additionally carries exact parent,
+opportunity, and effective-domain object IDs so closure validation can prove
+that semantic identity before publication. `BranchEdgeId` is the digest of the
+canonical edge using `ChoiceDomainSemanticId`, so presentation-only domain
+changes do not split a semantic branch. The completed observation binds that edge
 to its authenticated child configuration in the temporal graph. Request cause
 and proposal provenance are intentionally absent from both identities. If a
 policy generator and an operator's finite request both emit the same value, both
@@ -456,11 +468,11 @@ For one `BranchPointId`, the campaign projects an `ExpansionState`:
 ```rust,illustrative
 pub struct ExpansionState {
     pub branch_point: BranchPointId,
-    pub requests: ContentHash,
-    pub proposals: ContentHash,
-    pub observations: ContentHash,
+    pub request_root: ContentId,
+    pub proposal_root: ContentId,
+    pub observation_root: ContentId,
     pub statistics: ExpansionStatistics,
-    pub continuations: MerkleMap<BranchRequestId, ContinuationState>,
+    pub continuations: CanonicalMap<BranchRequestId, ContinuationState>,
 }
 
 pub enum ContinuationState {
@@ -479,6 +491,18 @@ additionally derives its interval tree, per-arm rewards, and widening
 eligibility from observations. Adding a finite operator request does not close,
 replace, or reset any generated continuation already attached to the branch
 point.
+
+The canonical map embedded in one expansion-state page is bounded. A projector
+with more continuations emits a paged Merkle projection rather than constructing
+an unbounded in-memory value; page boundaries are excluded from planning
+semantics.
+
+Landing a structural canonical codec does not make a derived record admissible.
+Until the coordinator owner can recompute planner accounting, planner-state
+continuity, request-root membership, statistics, and readiness from the named
+input roots, repository closure validation fails closed for `PlannerStep` and
+`ExpansionState`. This prevents a structurally valid cache from becoming
+canonical evidence before its semantic owner validator exists.
 
 ## 01.7 Lifecycle
 

@@ -2,9 +2,9 @@
 
 use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::{
-    AttemptId, BranchRequestId, CampaignCodecError, CampaignCommandId, CampaignFactId,
-    CampaignHash, CampaignPolicyId, CampaignSnapshotId, ChoiceOpportunityId, ConfigurationId,
-    FindingId, ObservationId, PlannerStepId, ProposalId,
+    AttemptAdmissionId, AttemptId, BranchRequestId, CampaignCodecError, CampaignCommandId,
+    CampaignFactId, CampaignHash, CampaignPolicyId, CampaignSnapshotId, ChoiceOpportunityId,
+    ConfigurationId, FindingId, ObservationId, PlannerStepId, ProposalId,
 };
 
 use super::AdmissionOrdinal;
@@ -441,13 +441,8 @@ pub enum CampaignFact {
     PlannerAdvanced(PlannerStepId),
     /// A candidate proposal was issued.
     ProposalIssued(ProposalId),
-    /// A semantic attempt received its unique execution basis.
-    AttemptAdmitted {
-        /// Admitted semantic attempt.
-        attempt: AttemptId,
-        /// Global strict-mode order.
-        ordinal: AdmissionOrdinal,
-    },
+    /// A semantic attempt received an execution basis or additional cause.
+    AttemptAdmitted(AttemptAdmissionId),
     /// A coordinator decision closed an ordinal without a modeled observation.
     AttemptClosed {
         /// Admitted semantic attempt.
@@ -539,10 +534,9 @@ impl Canonical for CampaignFact {
                 encoder.u8(3);
                 id.encode(encoder);
             }
-            Self::AttemptAdmitted { attempt, ordinal } => {
+            Self::AttemptAdmitted(admission) => {
                 encoder.u8(4);
-                attempt.encode(encoder);
-                ordinal.encode(encoder);
+                admission.encode(encoder);
             }
             Self::ObservationPublished(id) => {
                 encoder.u8(5);
@@ -587,10 +581,7 @@ impl Canonical for CampaignFact {
             1 => BranchRequestId::decode(decoder).map(Self::BranchRequestIssued),
             2 => PlannerStepId::decode(decoder).map(Self::PlannerAdvanced),
             3 => ProposalId::decode(decoder).map(Self::ProposalIssued),
-            4 => Ok(Self::AttemptAdmitted {
-                attempt: AttemptId::decode(decoder)?,
-                ordinal: AdmissionOrdinal::decode(decoder)?,
-            }),
+            4 => AttemptAdmissionId::decode(decoder).map(Self::AttemptAdmitted),
             5 => ObservationId::decode(decoder).map(Self::ObservationPublished),
             6 => FindingId::decode(decoder).map(Self::FindingPublished),
             7 => PolicyActivation::decode(decoder).map(Self::PolicyActivated),
