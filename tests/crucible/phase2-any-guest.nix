@@ -381,6 +381,7 @@ in
       QEMU = "${pkgs.qemu-crucible}/bin/qemu-system-x86_64";
       QEMU_IMG = "${pkgs.qemu-crucible}/bin/qemu-img";
       CADENCE = "100000000";
+      RR_SWITCH_QUANTUM = "4096";
 
       phases = [
         {
@@ -554,7 +555,7 @@ in
                 -monitor none \
                 -machine q35 \
                 -accel sim,thread=single \
-                -icount shift=0,sleep=off,align=off \
+                -icount shift=0,sleep=off,align=off,rr_switch_quantum="$RR_SWITCH_QUANTUM" \
                 -cpu qemu64,-rdrand,-rdseed \
                 -m 256 \
                 -smp 1 \
@@ -591,7 +592,7 @@ in
                     -monitor none \
                     -machine q35 \
                     -accel sim,thread=single \
-                    -icount shift=0,sleep=off,align=off \
+                    -icount shift=0,sleep=off,align=off,rr_switch_quantum="$RR_SWITCH_QUANTUM" \
                     -cpu qemu64,-rdrand,-rdseed \
                     -m 256 \
                     -smp 1 \
@@ -628,13 +629,20 @@ in
               qmp_quit "$qmp_socket"
               wait_for_qemu_exit "$label"
 
-              jq -e -s '
-                length >= 1
-                and all(.[]; (
+              jq --argjson rr_switch_quantum "$RR_SWITCH_QUANTUM" -e -s '
+                [ .[] | select(.final != true) ] as $samples
+                | [ .[] | select(.final == true) ] as $finals
+                | ($samples | length) >= 1
+                and ($finals | length) == 1
+                and all($samples[]; (
                   .tracked_vcpus == 1
                   and .stop_at == 0
                   and .sample_register_failures == 0
                   and .register_read_failures == 0
+                  and .rr_current_vcpu == 0
+                  and .rr_switch_quantum == $rr_switch_quantum
+                  and .rr_cursor_valid == true
+                  and .rr_cursor_position < .rr_switch_quantum
                   and .ram_bytes > 0
                   and .memory_events_enabled == false
                   and .device_event_capture == false
@@ -645,8 +653,16 @@ in
                   and (.register_counts | length) == 1
                   and .register_counts[0] > 0
                 ))
-                and any(.[]; .final != true)
-                and any(.[]; .final == true)
+                and all($finals[]; (
+                  .tracked_vcpus == 1
+                  and .stop_at == 0
+                  and .sample_register_failures == 1
+                  and .register_read_failures == 1
+                  and (.register_digests | length) == 1
+                  and .register_digests[0] == "0000000000000000000000000000000000000000000000000000000000000000"
+                  and (.register_file_bytes | length) == 1
+                  and .register_file_bytes[0] == 0
+                ))
               ' "$trace" >/dev/null || fail "$label trace failed any-guest structural assertions"
 
               jq -c 'select(.final != true)' "$trace" > "$TMPDIR/trace-$label-cadence.jsonl"
@@ -725,6 +741,8 @@ in
               echo whitebox_live_doorbell_events=0
               echo whitebox_contract_source=checks.crucible.phase2.qemuPluginWhiteboxDoorbell
               echo trace_plugin=host-side-black-box-fingerprint
+              echo rr_switch_quantum="$RR_SWITCH_QUANTUM"
+              echo exit_sample_register_policy=explicitly-rejected-outside-stopped-boundary
               echo qemu_package_version=${pkgs.qemu-crucible.version}
             } > "$out/result"
           '';
