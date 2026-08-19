@@ -221,6 +221,18 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         assert_eq!(submission[3], "component-message");
         owned_campaign_schemas.insert(schema);
     }
+    for schema in [
+        "crucible.campaign.submit-attempt-request",
+        "crucible.campaign.submit-attempt-response",
+    ] {
+        let message = rows
+            .get(schema)
+            .unwrap_or_else(|| panic!("missing executor component schema {schema}"));
+        assert_eq!(message[1], "1");
+        assert_eq!(message[2], "crucible-campaign::execution");
+        assert_eq!(message[3], "component-message");
+        owned_campaign_schemas.insert(schema);
+    }
     for schema in rows.keys() {
         if schema.starts_with("crucible.campaign.") {
             assert!(

@@ -29,6 +29,8 @@ crucible.campaign.planner-step	3	crucible-campaign::exploration	campaign-fact	ga
 crucible.campaign.planner-step-proposal	1	crucible-campaign::exploration	component-message	gate:component-contract
 crucible.campaign.planner-submission	1	crucible-campaign::authority	component-message	gate:component-contract
 crucible.campaign.debugger-submission	1	crucible-campaign::authority	component-message	gate:component-contract
+crucible.campaign.submit-attempt-request	1	crucible-campaign::execution	component-message	gate:component-contract
+crucible.campaign.submit-attempt-response	1	crucible-campaign::execution	component-message	gate:component-contract
 crucible.campaign.expansion-state	2	crucible-campaign::exploration	projection	gate:lazy-frontier,gate:content-address
 crucible.campaign.measurement-set	1	crucible-campaign::observation	observation	gate:campaign-replay,gate:content-address
 crucible.campaign.property-verdict-set	1	crucible-campaign::observation	observation	gate:campaign-replay,gate:content-address

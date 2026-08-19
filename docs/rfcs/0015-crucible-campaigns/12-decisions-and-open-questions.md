@@ -467,6 +467,29 @@ daemon chooses a fresh nonzero epoch, rebuilds claimable attempts from the
 current snapshot, and may duplicate unfinished execution; canonical
 observation conditional-create remains the semantic idempotence boundary.
 
+### D-36: The attempt record is the executor's immutable specification
+
+`SubmitAttempt` names the canonical `AttemptId` and its campaign lineage rather
+than introducing a second `AttemptSpecId` that could drift from campaign
+semantics. Resource ceilings, retention intent, assignment, execution, and
+daemon-epoch identities remain operational fields in a bounded component
+message and never alter the attempt or its modeled result.
+
+The executor response commits to a domain-separated digest of every canonical
+request field in addition to repeating the assignment, epoch, and attempt.
+This makes an assignment retry exact and prevents a syntactically valid
+response from being replayed after resource or retention inputs change. Normal
+executor refusal is a stable protocol outcome; failure to produce a response
+is a separate transport or service error.
+
+Coordinators never call an implementor-facing service without the checked
+client wrapper used by both direct and RPC compositions. The wrapper rejects a
+cross-request response, and repository validation separately authenticates the
+attempt and lineage plus any claimed completed observation. Exact assignment
+replay returns the original response. Changed bytes under the same assignment
+return a non-retryable conflict; transient backpressure or unavailable input is
+retried under a fresh assignment so the original response remains immutable.
+
 ## Deliberately rejected representations
 
 The following patterns are outside the design even if they appear convenient

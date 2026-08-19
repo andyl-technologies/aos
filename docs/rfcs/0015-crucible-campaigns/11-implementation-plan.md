@@ -194,8 +194,17 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   submission messages with separate operational keys, public authority-specific
   direct adapters, zero-write authentication failure, and an exact replayable
   choice-discovery owner required before branching. Loopback RPC, service-level
-  principal plumbing, capability negotiation, executor assignment, and the
-  complete component conformance gate remain open.
+  principal plumbing, and capability negotiation remain open. The executor
+  checkpoint now provides strict 4-KiB canonical `SubmitAttempt` request and
+  response messages, nonzero operational assignment/execution/epoch IDs,
+  explicit resource and retention fields, exact-request digest binding, stable
+  retry/conflict outcomes, golden vectors, malformed-input rejection, an
+  implementor-facing service trait, and one checked coordinator client for
+  direct and RPC use. Repository validation authenticates the attempt and
+  lineage for every response and the complete observation/attempt/lineage
+  correspondence before accepting `already-completed`. The daemon assignment
+  ledger, completion/cancellation, loopback adapter, and complete component
+  conformance gate remain open.
 - [x] **T-CAM-4.10** Replace repeated full-history validation on local owner
   mutations with bounded immutable validated-head/lifecycle checkpoints and
   authenticated membership and result-locator indexes; promote only after ref
