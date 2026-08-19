@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "44aafd380ee0eaed12a7baf3f9fb98d87bb0d1f60c078ed1e867aa7d3f5ec595";
+  patchBranchBundleSha256 = "6d8ec7b1b45a723e65cfa4ad37b0879fec1120f74628cc28d998a2c32a2955b1";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "eae515e268ec284f1773e72d926860d1178962c1";
+  patchBranchHeadCommit = "779b2730b1bcf9cdfaeba38524fb6fa363cb8ea5";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -805,6 +805,16 @@ let
       class = "D";
       enforces = "DET-1,DET-29,QEMU-43";
       capability = "sim mode reaches RCU quiescence at its bounded deterministic RR execution boundaries without host-timed translation-block exits";
+    }
+    {
+      file = "0088-crucible-deterministic-host-kick-boundary.patch";
+      branchSubject = "crucible: defer generic host kicks in sim";
+      branchCommit = "779b2730b1bcf9cdfaeba38524fb6fa363cb8ea5";
+      branchTree = "7a7ceac98a79cdefda213774efab5d6e9c75328d";
+      catalogName = "crucible-deterministic-host-kick-boundary";
+      class = "D";
+      enforces = "DET-1,DET-29,QEMU-43";
+      capability = "generic host work and main-loop notifications wait for the next bounded deterministic RR boundary instead of asynchronously ending a sim translation block";
     }
   ];
   catalogOnlyCapabilities = [

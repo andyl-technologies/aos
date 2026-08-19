@@ -401,6 +401,11 @@ produce live patched-QEMU architectural or device evidence.
   interrupt-visibility boundaries in sim mode, while bounding natural
   quiescence by the pinned deterministic RR quantum and preserving the stock
   path outside sim mode.
+- [x] **T-QEMU-0088** Implement
+  [`crucible-deterministic-host-kick-boundary`](14-qemu-fault-patches/39-deterministic-host-kick-boundary.md):
+  defer generic host work and main-loop kick requests to the next finite RR
+  return in bounded sim mode, preserve level-triggered control progress, and
+  retain the immediate upstream kick in every other configuration.
 - [x] **T-QEMU-0060** Implement
   [`crucible-block-typed-errors`](14-qemu-fault-patches/14-block-typed-errors.md):
   the closed block result ABI, exact Linux errno translation, malformed-result

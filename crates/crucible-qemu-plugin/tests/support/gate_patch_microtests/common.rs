@@ -101,6 +101,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0085-crucible-register-rejection-atomicity.patch",
         "0086-crucible-genesis-observation-boundary.patch",
         "0087-crucible-deterministic-rcu-quiescence.patch",
+        "0088-crucible-deterministic-host-kick-boundary.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

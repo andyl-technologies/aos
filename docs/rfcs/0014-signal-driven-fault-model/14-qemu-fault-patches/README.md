@@ -1,6 +1,6 @@
 # 14 — QEMU fault-mutation patch series
 
-The complete node adapter and its exact-checkpoint handoff require thirty-eight new single-purpose patches after the
+The complete node adapter and its exact-checkpoint handoff require thirty-nine new single-purpose patches after the
 currently carried `0046-crucible-translation-prefetch-helper.patch`. Each patch
 has its own specification in this directory and remains part of the one atomic
 RFC-0014 implementation PR.
@@ -54,6 +54,7 @@ and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-pa
 | [`0085-crucible-register-rejection-atomicity`](36-register-rejection-atomicity.md) | Prove exact RR ownership and whole-machine architectural atomicity for rejected register commands | Determinism-critical fault rejection |
 | [`0086-crucible-genesis-observation-boundary`](37-genesis-observation-boundary.md) | Admit all-vCPU definition sampling under the BQL only at the exact prelaunch genesis boundary | Determinism-critical observation |
 | [`0087-crucible-deterministic-rcu-quiescence`](38-deterministic-rcu-quiescence.md) | Prevent host-timed forced RCU kicks from changing guest interrupt visibility in sim mode | Determinism-critical scheduler execution |
+| [`0088-crucible-deterministic-host-kick-boundary`](39-deterministic-host-kick-boundary.md) | Defer generic host work and main-loop kicks to the bounded deterministic RR boundary | Determinism-critical scheduler execution |
 
 The numbers are reserved by this RFC. If the existing series grows before
 implementation, the PR may renumber the files while preserving this exact order
@@ -105,7 +106,9 @@ weakening live RR ownership or relying on plugin-exit behavior. Patch `0087`
 then removes the remaining host-timed translation-block exit from sim mode:
 forced RCU progress waits for the next bounded deterministic RR execution
 boundary instead of asynchronously changing where a pending interrupt becomes
-guest-visible.
+guest-visible. Patch `0088` applies the same bounded rule to QEMU's generic RR
+kick entry point, so host work and main-loop notification timing cannot end the
+active translation block at a host-selected guest instruction.
 
 ## 14.2 Process and license boundary
 
