@@ -710,7 +710,5 @@ fn cache_surface(path: &str) -> aos_proto_types::SurfaceRef {
     }
 }
 fn reload() {
-    if let Some(window) = leptos::web_sys::window() {
-        let _ = window.location().reload();
-    }
+    crate::app::refresh();
 }
