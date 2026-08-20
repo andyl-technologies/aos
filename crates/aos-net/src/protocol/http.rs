@@ -214,14 +214,16 @@ impl HttpProtocol {
 
         let status = response.status().as_u16();
 
-        if resumed && status == 200 {
-            resume_offset = 0;
-            resumed = false;
-        }
-
         if status >= 400 {
             let body = response.text().await.unwrap_or_default();
             anyhow::bail!("HTTP {} for {}: {}", status, request.url, body);
+        }
+
+        if resumed && status == 200 {
+            resume_offset = 0;
+            resumed = false;
+        } else if resumed {
+            validate_resumed_response(&response, resume_offset, &request.url)?;
         }
 
         let content_length = response.content_length();
@@ -287,16 +289,20 @@ impl HttpProtocol {
 
         let status = response.status().as_u16();
 
-        // If we attempted resume but got 200 (not 206), server doesn't support it.
-        if resumed && status == 200 {
-            resume_offset = 0;
-            resumed = false;
-        }
-
         // Check for error status.
         if status >= 400 {
             let body = response.text().await.unwrap_or_default();
             anyhow::bail!("HTTP {} for {}: {}", status, request.url, body);
+        }
+
+        // A full response safely restarts the destination. A partial response
+        // must prove that it begins at the existing file boundary; blindly
+        // appending a mismatched range would create a corrupt object.
+        if resumed && status == 200 {
+            resume_offset = 0;
+            resumed = false;
+        } else if resumed {
+            validate_resumed_response(&response, resume_offset, &request.url)?;
         }
 
         let content_length = response.content_length();
@@ -561,6 +567,44 @@ impl HttpProtocol {
             resumed: false,
         })
     }
+}
+
+/// Verifies that a ranged response is safe to append to a partial file.
+fn validate_resumed_response(
+    response: &reqwest::Response,
+    expected_start: u64,
+    url: &str,
+) -> Result<()> {
+    if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+        anyhow::bail!(
+            "resume for {url} returned HTTP {}, expected 206 Partial Content",
+            response.status()
+        );
+    }
+
+    let content_range = response
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| anyhow::anyhow!("resumed response for {url} omitted Content-Range"))?;
+    let range = content_range
+        .strip_prefix("bytes ")
+        .and_then(|value| value.split_once('/').map(|(range, _)| range))
+        .and_then(|range| range.split_once('-'))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "resumed response for {url} has invalid Content-Range {content_range:?}"
+            )
+        })?;
+    let actual_start = range.0.parse::<u64>().with_context(|| {
+        format!("resumed response for {url} has invalid Content-Range {content_range:?}")
+    })?;
+    if actual_start != expected_start {
+        anyhow::bail!(
+            "resumed response for {url} starts at byte {actual_start}, expected {expected_start}"
+        );
+    }
+    Ok(())
 }
 
 /// Stream a response body to a file, creating parent directories.
