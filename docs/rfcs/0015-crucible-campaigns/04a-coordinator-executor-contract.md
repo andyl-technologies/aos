@@ -499,8 +499,10 @@ genesis snapshots anchor one canonical empty choice-index Merkle root; every
 explicit or observation-driven discovery updates that root in the same
 snapshot transition as the authoritative and branch-point-scoped graph keys.
 Imported legacy version-2 snapshots without this optional index remain valid,
-but the query fails closed with `InvalidRequest` until a new discovery upgrades
-the head. The exclusive cursor is a `ChoiceOpportunityId`, `limit` is in
+but the query fails closed with `InvalidRequest` until an explicit complete
+migration is implemented. Ordinary discoveries preserve the unindexed legacy
+shape rather than synthesizing a partial index. The exclusive cursor is a
+`ChoiceOpportunityId`, `limit` is in
 `1..=8`, and the result contains IDs only. The separately authorized
 `GetGraphObject` call uses `CampaignChoiceEntryV1`'s deterministic graph key to
 return the strict opportunity envelope. Declaration and domain bodies are not

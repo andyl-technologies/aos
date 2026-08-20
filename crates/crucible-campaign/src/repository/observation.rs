@@ -156,12 +156,16 @@ impl CampaignRepository {
             });
         }
 
+        let maintain_choice_index = self
+            .merkle
+            .get(current.snapshot.roots().graph, choice_index_anchor_key())?
+            .is_some();
         let projection = self.project_observation(
             &current,
             observation_id.content_id(),
             observation,
             &mut choice_cache,
-            true,
+            maintain_choice_index,
         )?;
         self.preflight_observation_closure(&current, observation, &mut choice_cache)?;
         let observation_content = self.put_observation(observation)?;
@@ -257,12 +261,8 @@ impl CampaignRepository {
             &observation,
             choice_cache,
             self.merkle
-                .get(next.graph, choice_index_anchor_key())?
-                .is_some()
-                || self
-                    .merkle
-                    .get(prior.graph, choice_index_anchor_key())?
-                    .is_some(),
+                .get(prior.graph, choice_index_anchor_key())?
+                .is_some(),
         )?;
         for (before, after, upserts, reason) in [
             (

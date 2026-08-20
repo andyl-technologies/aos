@@ -316,7 +316,8 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   A nested choice index is anchored in the graph root and updated atomically by
   explicit and observation-driven discovery. `QueryChoices` pages at most eight
   opportunity IDs with one exact anchor proof and one exact range/EOF proof;
-  legacy heads without the optional index fail closed until upgraded.
+  legacy heads without the optional index fail closed until a future explicit
+  complete migration and ordinary mutations never create a partial index.
   A separate choice-object read authenticates the opportunity's authoritative
   graph membership and returns only its exact declaration or effective domain;
   arbitrary non-graph reads remain unavailable.

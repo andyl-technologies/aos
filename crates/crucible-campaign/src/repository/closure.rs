@@ -632,21 +632,6 @@ impl CampaignRepository {
             return Err(integrity("choice-discovery-reused-opportunity"));
         }
         let prior_choice_index = self.merkle.get(prior.graph, choice_index_anchor_key())?;
-        let base_choice_index = match prior_choice_index {
-            Some(index) => index,
-            None => MerkleMap::empty_content_id()?,
-        };
-        let next_choice_index = self.merkle.root_after_upserts(
-            base_choice_index,
-            &BTreeMap::from([(
-                choice_index_order_key(opportunity_id),
-                opportunity_id.content_id(),
-            )]),
-        )?;
-        let next_has_choice_index = self
-            .merkle
-            .get(next.graph, choice_index_anchor_key())?
-            .is_some();
         let mut upserts = BTreeMap::from([
             (
                 authoritative_choice_key(opportunity_id),
@@ -654,7 +639,14 @@ impl CampaignRepository {
             ),
             (scoped_key, opportunity_id.content_id()),
         ]);
-        if prior_choice_index.is_some() || next_has_choice_index {
+        if let Some(prior_choice_index) = prior_choice_index {
+            let next_choice_index = self.merkle.root_after_upserts(
+                prior_choice_index,
+                &BTreeMap::from([(
+                    choice_index_order_key(opportunity_id),
+                    opportunity_id.content_id(),
+                )]),
+            )?;
             upserts.insert(choice_index_anchor_key(), next_choice_index);
         }
         if !self

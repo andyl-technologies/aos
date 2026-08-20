@@ -608,12 +608,14 @@ impl CampaignRepository {
         let choice_index = self
             .merkle
             .get(prior_graph, choice_index_anchor_key())?
-            .unwrap_or(self.merkle.empty()?.content_id());
-        let choice_index = self.merkle.insert(
-            choice_index,
-            choice_index_order_key(opportunity),
-            opportunity.content_id(),
-        )?;
+            .map(|choice_index| {
+                self.merkle.insert(
+                    choice_index,
+                    choice_index_order_key(opportunity),
+                    opportunity.content_id(),
+                )
+            })
+            .transpose()?;
         let graph = self.merkle.insert(
             prior_graph,
             authoritative_choice_key(opportunity),
@@ -622,11 +624,14 @@ impl CampaignRepository {
         let graph = self
             .merkle
             .insert(graph.content_id(), choice_key, opportunity.content_id())?;
-        let graph = self.merkle.insert(
-            graph.content_id(),
-            choice_index_anchor_key(),
-            choice_index.content_id(),
-        )?;
+        let graph = match choice_index {
+            Some(choice_index) => self.merkle.insert(
+                graph.content_id(),
+                choice_index_anchor_key(),
+                choice_index.content_id(),
+            )?,
+            None => graph,
+        };
         let fact = CampaignFact::ChoiceOpportunityDiscovered {
             parent,
             branch_point,
