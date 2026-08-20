@@ -325,7 +325,8 @@ their authority and idempotency rules are defined in
 [`04a-coordinator-executor-contract.md`](04a-coordinator-executor-contract.md).
 
 The direct service contract implements strict request-bound `CreateCampaign`,
-`DeriveCampaign`, `GetCampaign`, coalesced `WatchCampaign`, snapshot-bound
+`DeriveCampaign`, `GetCampaign`, historical `GetSnapshot`, coalesced
+`WatchCampaign`, snapshot-bound
 `QueryGraph`,
 `ApplyCampaignCommand`, and operator
 `SubmitBranchRequest`
@@ -363,6 +364,12 @@ and whether that snapshot differs from the cursor. Unknown or stale cursors
 return the current head, so implementations may coalesce intermediate advances.
 Canonical facts are fetched by object ID; the watch stream itself is not
 authoritative and may coalesce status updates.
+
+`GetSnapshot` returns an exact current or historical snapshot only after
+authenticating the current named head and proving the requested ID occurs in
+that bounded immutable ancestry. The checked client reconstructs the snapshot
+identity from the returned canonical body. Authorization grants the complete
+snapshot metadata and all root IDs, but not the bodies those IDs name.
 
 `QueryGraph` pages only the graph root of one exact current snapshot. Its
 exclusive key cursor is valid only when it names an entry in that root, and a

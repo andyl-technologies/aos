@@ -18,10 +18,11 @@ use crucible_campaign::{
     ChoiceValue, ConfigurationArtifactId, ConfigurationId, ControlRequest, CreateCampaignRequest,
     CreateCampaignResponse, DeriveCampaignRequest, DeriveCampaignResponse, ExactRational,
     ExplorerPolicy, FairnessPolicy, GetCampaignRequest, GetCampaignResponse,
-    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, MerkleMap, ProgressiveWideningPolicy, PuctPolicy,
-    QueryCampaignGraphRequest, QueryCampaignGraphResponse, RepositoryCampaignService,
-    RetentionPolicy, ScenarioArtifactId, ScenarioDefId, StopCondition, SubmitCampaignBranchRequest,
-    SubmitCampaignBranchResponse, WatchCampaignRequest, WatchCampaignResponse,
+    GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
+    MerkleMap, ProgressiveWideningPolicy, PuctPolicy, QueryCampaignGraphRequest,
+    QueryCampaignGraphResponse, RepositoryCampaignService, RetentionPolicy, ScenarioArtifactId,
+    ScenarioDefId, StopCondition, SubmitCampaignBranchRequest, SubmitCampaignBranchResponse,
+    WatchCampaignRequest, WatchCampaignResponse,
 };
 use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind};
 
@@ -77,6 +78,16 @@ impl CampaignService for FixedCampaignService {
             CampaignState::Running,
         )
         .expect("get response"))
+    }
+
+    fn get_campaign_snapshot(
+        &self,
+        request: &GetCampaignSnapshotRequest,
+    ) -> Result<GetCampaignSnapshotResponse, Self::Error> {
+        Ok(
+            GetCampaignSnapshotResponse::new(request, fixed_query_snapshot().0)
+                .expect("snapshot response"),
+        )
     }
 
     fn watch_campaign(
@@ -151,6 +162,13 @@ fn direct_and_loopback_campaign_services_are_identical() {
     let create = create_request("network-recovery-create");
     let derive = derive_request("network-recovery", "network-recovery-derived");
     let get = get_request("network-recovery");
+    let get_snapshot = snapshot_request(
+        "network-recovery",
+        fixed_query_snapshot()
+            .0
+            .id()
+            .expect("fixed snapshot identity"),
+    );
     let watch = watch_request("network-recovery", Some(snapshot("prior")));
     let query = graph_query_request(
         "network-recovery",
@@ -167,6 +185,9 @@ fn direct_and_loopback_campaign_services_are_identical() {
     let expected_create = direct.create_campaign(&create).expect("direct create");
     let expected_derive = direct.derive_campaign(&derive).expect("direct derive");
     let expected_get = direct.get_campaign(&get).expect("direct get");
+    let expected_snapshot = direct
+        .get_campaign_snapshot(&get_snapshot)
+        .expect("direct snapshot");
     let expected_watch = direct.watch_campaign(&watch).expect("direct watch");
     let expected_query = direct
         .query_campaign_graph(&query)
@@ -178,7 +199,7 @@ fn direct_and_loopback_campaign_services_are_identical() {
 
     let (client_stream, mut server_stream) = UnixStream::pair().expect("stream pair");
     let server = thread::spawn(move || {
-        for _ in 0..7 {
+        for _ in 0..8 {
             serve_loopback_campaign_once(&mut server_stream, &FixedCampaignService)
                 .expect("serve campaign request");
         }
@@ -198,6 +219,12 @@ fn direct_and_loopback_campaign_services_are_identical() {
     assert_eq!(
         client.get_campaign(&get).expect("loopback get"),
         expected_get
+    );
+    assert_eq!(
+        client
+            .get_campaign_snapshot(&get_snapshot)
+            .expect("loopback snapshot"),
+        expected_snapshot
     );
     assert_eq!(
         client.watch_campaign(&watch).expect("loopback watch"),
@@ -260,7 +287,7 @@ fn campaign_loopback_frame_header_is_frozen_and_malformed_headers_close() {
     .expect("write frame");
     let mut bytes = [0_u8; 19];
     reader.read_exact(&mut bytes).expect("read frame");
-    assert_eq!(&bytes, b"CRUCCS06\x01\0\0\0\0\0\0\x03abc");
+    assert_eq!(&bytes, b"CRUCCS07\x01\0\0\0\0\0\0\x03abc");
 
     for (kind, reserved, length, reason) in [
         (
@@ -301,6 +328,7 @@ fn campaign_loopback_frame_header_is_frozen_and_malformed_headers_close() {
         b"CRUCCS03",
         b"CRUCCS04",
         b"CRUCCS05",
+        b"CRUCCS06",
     ] {
         let (mut legacy_client, mut legacy_server) =
             UnixStream::pair().expect("legacy stream pair");
@@ -411,6 +439,13 @@ impl CampaignService for WrongGetService {
         _request: &GetCampaignRequest,
     ) -> Result<GetCampaignResponse, Self::Error> {
         Ok(self.response.clone())
+    }
+
+    fn get_campaign_snapshot(
+        &self,
+        _request: &GetCampaignSnapshotRequest,
+    ) -> Result<GetCampaignSnapshotResponse, Self::Error> {
+        unreachable!("test service only handles GetCampaign")
     }
 
     fn watch_campaign(
@@ -716,6 +751,7 @@ fn authenticated_loopback_binds_kernel_peer_to_the_claimed_principal() {
 #[test]
 fn campaign_loopback_preserves_authorization_before_repository_access() {
     let request = get_request("absent");
+    let get_snapshot = snapshot_request("absent", snapshot("absent"));
     let watch = watch_request("absent", None);
     let query = graph_query_request("absent", snapshot("absent"), None, 1);
     let direct_repository = CampaignRepository::new(
@@ -728,6 +764,12 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
     let direct = CampaignClient::new(RepositoryCampaignService::new(&direct_repository, DenyAll));
     assert!(matches!(
         direct.get_campaign(&request),
+        Err(crucible_campaign::CampaignClientError::Service(
+            crucible_campaign::CampaignServiceFailure::Unauthorized
+        ))
+    ));
+    assert!(matches!(
+        direct.get_campaign_snapshot(&get_snapshot),
         Err(crucible_campaign::CampaignClientError::Service(
             crucible_campaign::CampaignServiceFailure::Unauthorized
         ))
@@ -752,7 +794,7 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
             Arc::new(MemoryRefBackend::new()),
         );
         let service = RepositoryCampaignService::new(&repository, DenyAll);
-        for _ in 0..3 {
+        for _ in 0..4 {
             serve_loopback_campaign_once(&mut server_stream, &service)
                 .expect("serve denied request");
         }
@@ -762,6 +804,12 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
 
     assert!(matches!(
         client.get_campaign(&request),
+        Err(crucible_campaign::CampaignClientError::Service(
+            crucible_campaign::CampaignServiceFailure::Unauthorized
+        ))
+    ));
+    assert!(matches!(
+        client.get_campaign_snapshot(&get_snapshot),
         Err(crucible_campaign::CampaignClientError::Service(
             crucible_campaign::CampaignServiceFailure::Unauthorized
         ))
@@ -874,6 +922,31 @@ fn verifier_import_then_create_works_on_a_blank_repository() {
     assert_eq!(unknown_cursor.snapshot(), resumed.new_snapshot());
     assert!(unknown_cursor.advanced());
 
+    let historical = client
+        .get_campaign_snapshot(&snapshot_request("blank-imported", created.snapshot()))
+        .expect("historical snapshot");
+    assert_eq!(historical.snapshot(), created.snapshot());
+    assert_eq!(
+        historical
+            .snapshot_body()
+            .id()
+            .expect("historical body identity"),
+        created.snapshot()
+    );
+    let current_snapshot = client
+        .get_campaign_snapshot(&snapshot_request("blank-imported", resumed.new_snapshot()))
+        .expect("current snapshot");
+    assert_eq!(current_snapshot.snapshot(), resumed.new_snapshot());
+    assert!(matches!(
+        client.get_campaign_snapshot(&snapshot_request(
+            "blank-imported",
+            snapshot("not-in-campaign"),
+        )),
+        Err(crucible_campaign::CampaignClientError::Service(
+            crucible_campaign::CampaignServiceFailure::InvalidRequest
+        ))
+    ));
+
     let graph = client
         .query_campaign_graph(&graph_query_request(
             "blank-imported",
@@ -929,6 +1002,22 @@ fn verifier_import_then_create_works_on_a_blank_repository() {
     let derived = client.derive_campaign(&derive).expect("derive campaign");
     assert!(!derived.replayed());
     assert_eq!(derived.source_snapshot(), resumed.new_snapshot());
+    assert!(matches!(
+        client.get_campaign_snapshot(&snapshot_request("blank-imported", derived.new_snapshot(),)),
+        Err(crucible_campaign::CampaignClientError::Service(
+            crucible_campaign::CampaignServiceFailure::InvalidRequest
+        ))
+    ));
+    assert_eq!(
+        client
+            .get_campaign_snapshot(&snapshot_request(
+                "blank-imported-derived",
+                derived.new_snapshot(),
+            ))
+            .expect("derived campaign snapshot")
+            .snapshot(),
+        derived.new_snapshot()
+    );
     assert_eq!(
         client
             .derive_campaign(&derive)
@@ -993,6 +1082,15 @@ fn principal() -> CampaignPrincipal {
 fn get_request(name: &str) -> GetCampaignRequest {
     GetCampaignRequest::new(principal(), CampaignName::new(name).expect("campaign name"))
         .expect("get request")
+}
+
+fn snapshot_request(name: &str, snapshot: CampaignSnapshotId) -> GetCampaignSnapshotRequest {
+    GetCampaignSnapshotRequest::new(
+        principal(),
+        CampaignName::new(name).expect("campaign name"),
+        snapshot,
+    )
+    .expect("snapshot request")
 }
 
 fn derive_request(source: &str, target: &str) -> DeriveCampaignRequest {

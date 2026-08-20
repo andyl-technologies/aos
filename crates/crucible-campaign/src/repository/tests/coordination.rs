@@ -570,7 +570,7 @@ fn derivation_rejects_foreign_sources_and_existing_different_basis_before_writes
             None,
         ),
         Err(CampaignRepositoryError::InvalidRequest {
-            reason: "derived snapshot is not in the named source campaign"
+            reason: "campaign snapshot is not in the named history"
         })
     ));
     assert_eq!(
