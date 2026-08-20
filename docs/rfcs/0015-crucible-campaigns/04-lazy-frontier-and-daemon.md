@@ -446,6 +446,14 @@ nested path set under
 snapshot. Canonical observation incorporation adds the complete path under the
 exact child configuration; convergence retains all distinct path identities.
 Legacy edge-only paths remain admissible only for one-edge genesis requests.
+For atomic planner `Issue`, the pure planner ranks only the semantic
+branch-point/source continuation. The coordinator chooses the member with the
+lowest `BranchPathId` ordering key from the exact parent set. The
+chosen member must be a scoped version-2 path; a lowest legacy member fails
+closed without scanning an unbounded historical prefix. The coordinator
+appends the selected terminal segment and records that cumulative path in the
+derived attempt. This owner rule is independent of page boundaries and is
+recomputed identically for imported successors.
 
 If no execution basis exists for `AttemptId`, the transition spends one unit of
 the proposal request's `maximum_attempts`, assigns the next one-based global
@@ -662,3 +670,8 @@ change.
   admission MUST require its complete prefix in the exact parent configuration
   set, MUST retain every convergent path, and MUST reject a missing, foreign,
   legacy, or terminal-scope-mismatched prefix before advancing the campaign.
+- **[LAZY-44]** Atomic planner `Issue` MUST derive its parent prefix as the
+  lowest ordering-key member of the exact authenticated path set and MUST fail
+  closed unless that member is scoped version 2. The pure planner MUST NOT
+  invent or influence that prefix, and local publication, exact replay, and
+  imported owner recomputation MUST derive the same cumulative attempt path.

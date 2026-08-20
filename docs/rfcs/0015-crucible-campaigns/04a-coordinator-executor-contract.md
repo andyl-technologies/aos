@@ -821,6 +821,10 @@ derived selections/paths/attempts, execution-basis or additional-cause
 admissions, coordinator accounting, and the three coordination indexes. Local
 publication and imported-snapshot validation use the same owner projection;
 extra, missing, cross-invocation, or selection-mismatched facts fail closed.
+For a non-genesis selected source, path derivation appends the selected edge to
+the lowest `BranchPathId` ordering-key member of the exact parent
+configuration's authenticated path set. That member must be scoped version 2;
+the pure planner does not carry or choose this owner-only prefix.
 Local acceptance MUST complete a read-only semantic preflight of the output,
 coordinator accounting, next-state engine continuity, and prospective step
 before publishing any output body or Merkle node; imported validation MUST

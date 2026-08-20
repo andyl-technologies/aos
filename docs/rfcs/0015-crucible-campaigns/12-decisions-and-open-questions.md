@@ -361,7 +361,7 @@ completed same-view scan cannot be reopened.
 An accepted finite-source `Issue` is one `PlannerAdvanced` snapshot transition,
 not a sequence of separately visible request, proposal, and admission facts.
 The coordinator inserts planner-caused requests and selected-source proposals,
-derives each selection, one-edge genesis path, and semantic attempt, then
+derives each selection, the canonical cumulative path, and semantic attempt, then
 assigns execution-basis or additional-cause admission in proposal order. The
 result updates exploration, accounting, and coordination roots together and
 records exact admitted/deduplicated counts. Imported successors replay the same
@@ -370,11 +370,12 @@ mismatch. A pure preflight validates the complete batch, accounting, next-state
 engine, and prospective step before local publication. Imported recomputation
 writes nothing. Repeated generator graphs are cached by generator/domain pair
 under an aggregate one-million-record validation budget per projection.
-Generated enumeration and planner-issued non-genesis path selection remain
-fail-closed rather than acquiring a planner-only bypass. Direct admission uses
-the observation-owned configuration-to-path index to authenticate cumulative
-non-genesis prefixes. Standalone loading of every schema-v4
-step fails closed because retained request-snapshot ownership is
+History-dependent generated enumeration remains fail-closed rather than
+acquiring a planner-only bypass. Direct admission uses the observation-owned
+configuration-to-path index to authenticate cumulative non-genesis prefixes;
+planner `Issue` deterministically selects the lowest member from that same exact
+set and requires it to be scoped version 2. Standalone loading of every
+schema-v4 step fails closed because retained request-snapshot ownership is
 transition-scoped; an `Issue` also depends on admission and deduplication
 authority in snapshot roots. Authoritative loading names the snapshot whose
 complete ancestry and coordination membership are validated.

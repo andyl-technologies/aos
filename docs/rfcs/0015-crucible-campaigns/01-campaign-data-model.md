@@ -551,7 +551,12 @@ prefix identity must be a member of that exact parent configuration's
 authenticated nested path set in the source snapshot's observation root.
 Canonical `ObservationCredited` incorporation adds the observation's complete
 path to its exact child configuration set. The nested set retains every path to
-a convergent configuration rather than selecting one graph parent.
+a convergent configuration rather than selecting one graph parent. Direct
+admission authenticates its caller-supplied prefix. Atomic planner `Issue`
+keeps path choice outside the pure planner protocol and deterministically uses
+the member with the lowest `BranchPathId` ordering key. That member must be a
+scoped version-2 path or planner admission fails closed; imported owner
+recomputation derives the same path from the immutable parent snapshot.
 
 `BranchPointId` is the semantic digest of `(parent configuration identity,
 opportunity semantics)`. A branch request additionally carries exact parent,
@@ -757,10 +762,11 @@ bounded inputs and fuel, derives the parent from the authenticated planner-head
 index, and validates exact replay and imported-root deltas. `Issue` atomically
 composes the sole-writer request, proposal, deterministic attempt, admission,
 accounting, and coordination projections. Generated proposal enumeration and
-planner-issued non-genesis path selection remain fail-closed until their
-dedicated owners land; direct `AdmitProposal` already authenticates cumulative
-non-genesis paths. This prevents a structurally valid result from becoming
-canonical evidence before its semantic owner validator exists.
+history-dependent generated proposal enumeration remain fail-closed until their
+dedicated owners land. Direct `AdmitProposal` authenticates caller-supplied
+cumulative paths, while planner `Issue` derives its canonical cumulative path
+from the same owner index. This prevents a structurally valid result from
+becoming canonical evidence before its semantic owner validator exists.
 
 ## 01.7 Lifecycle
 
