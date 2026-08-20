@@ -6924,6 +6924,88 @@ impl Database {
             .await
     }
 
+    /// Refreshes exact placement evidence for an object in the current ready publication.
+    ///
+    /// This is the bounded repair counterpart to upload-time evidence recording.
+    /// It cannot change a declaration or attach evidence to a retired, non-current,
+    /// optional, or unreconciled placement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for mismatched evidence, a stale publication or placement,
+    /// malformed input, or a database failure.
+    pub async fn refresh_ready_registry_publication_object_presence(
+        &self,
+        publication_id: &str,
+        surface_object_id: i64,
+        placement_id: i64,
+        observed_hash: &str,
+        observed_size: i64,
+        etag: &str,
+        observed_at: i64,
+    ) -> Result<()> {
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        validate_key_bytes(observed_hash, "observed object hash", 128)?;
+        validate_key_bytes(etag, "observed object ETag", 255)?;
+        if observed_size < 0 {
+            bail!("observed object size cannot be negative");
+        }
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "DELETE FROM object_placements
+                     WHERE surface_object_id = ?2 AND placement_id = ?3
+                       AND registry_id = (SELECT registry_id
+                         FROM registry_publications WHERE publication_id = ?1)",
+                    vals![publication_id, surface_object_id, placement_id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "INSERT INTO object_placements
+                     (surface_object_id, cache_id, registry_id, placement_id,
+                      state, observed_hash, observed_size, etag,
+                      observed_inventory_generation, observed_at,
+                      catalog_object_resource_version)
+                     SELECT object.id, NULL, publication.registry_id, placement.id,
+                            'present', ?4, ?5, ?6, publication.ordinal, ?7,
+                            object.resource_version
+                     FROM registry_publications publication
+                     JOIN registry_publication_state current
+                       ON current.registry_id = publication.registry_id
+                      AND current.current_publication_id = publication.publication_id
+                     JOIN registry_publication_objects declared
+                       ON declared.publication_id = publication.publication_id
+                      AND declared.surface_object_id = ?2
+                     JOIN surface_objects object
+                       ON object.id = declared.surface_object_id
+                      AND object.registry_id = publication.registry_id
+                     JOIN registry_publication_placements required
+                       ON required.publication_id = publication.publication_id
+                      AND required.placement_id = ?3
+                      AND required.required = 1 AND required.state = 'ready'
+                     JOIN surface_placement_effective placement
+                       ON placement.id = required.placement_id
+                      AND placement.registry_id = publication.registry_id
+                      AND placement.mutable_publication_id = publication.publication_id
+                     WHERE publication.publication_id = ?1
+                       AND publication.state = 'ready'
+                       AND declared.expected_hash = ?4
+                       AND declared.expected_size = ?5",
+                    vals![
+                        publication_id,
+                        surface_object_id,
+                        placement_id,
+                        observed_hash,
+                        observed_size,
+                        etag,
+                        observed_at
+                    ],
+                )
+                .expecting(1),
+            ])
+            .await
+    }
+
     /// Reports whether every required placement has exact evidence for a class.
     ///
     /// # Errors
