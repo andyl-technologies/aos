@@ -199,12 +199,8 @@ pub async fn index_and_record_from_placement(
             if crate::url_guard::is_fetch_error(&err) {
                 db.mark_index_stale(registry.id, &detail).await?;
             } else {
-                db.mark_index_failed_if_generation(
-                    registry.id,
-                    starting_generation,
-                    &detail,
-                )
-                .await?;
+                db.mark_index_failed_if_generation(registry.id, starting_generation, &detail)
+                    .await?;
             }
             Err(err)
         }
