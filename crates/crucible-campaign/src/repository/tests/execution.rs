@@ -126,6 +126,44 @@ fn attempt_admission_assigns_one_basis_and_deduplicates_later_causes() {
         })
     ));
 
+    let AttemptStart::Branch {
+        edge,
+        parent,
+        selection: selection_id,
+    } = attempt.start()
+    else {
+        panic!("branch attempt")
+    };
+    let wrong_scope = BranchPath::new(vec![crate::BranchPathSegment::new(
+        crate::BranchPointId::from_hash(CampaignHash::derive("test", b"wrong-path-branch-point")),
+        edge,
+    )])
+    .expect("wrong-scope path");
+    repository
+        .put_branch_path(&wrong_scope)
+        .expect("publish wrong-scope path");
+    let wrong_scope_attempt = Attempt::new(
+        AttemptStart::Branch {
+            edge,
+            parent,
+            selection: selection_id,
+        },
+        wrong_scope.id().expect("wrong-scope path id"),
+        attempt.stop().clone(),
+    )
+    .expect("wrong-scope attempt");
+    let wrong_scope_attempt_id = repository
+        .put_attempt(&wrong_scope_attempt)
+        .expect("publish wrong-scope attempt");
+    assert!(matches!(
+        repository.load_attempt(
+            AttemptId::from_content_id(wrong_scope_attempt_id).expect("wrong-scope attempt id")
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "attempt-branch-path-terminal-scope-mismatch"
+        })
+    ));
+
     let second_proposal = finite_proposal(
         &request,
         &policy,

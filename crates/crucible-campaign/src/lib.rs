@@ -72,11 +72,11 @@ pub use executor_capability::{
 };
 pub use exploration::{
     Attempt, AttemptAdmission, AttemptAdmissionRole, AttemptStart, BranchBudget, BranchPath,
-    BranchRequest, BranchRequestCause, CandidateSource, ContinuationProjection, ContinuationState,
-    ExpansionState, ExpansionStatistics, FeedbackWait, FiniteCandidateSource, GuidanceEvidence,
-    PlannerDisposition, PlannerProposalDisposition, PlannerStep, PlannerStepProposal,
-    PlanningAccounting, PlanningScanCursor, PlanningScanPage, PlanningScanPosition, PlanningUsage,
-    Proposal, StopCondition,
+    BranchPathSegment, BranchRequest, BranchRequestCause, CandidateSource, ContinuationProjection,
+    ContinuationState, ExpansionState, ExpansionStatistics, FeedbackWait, FiniteCandidateSource,
+    GuidanceEvidence, PlannerDisposition, PlannerProposalDisposition, PlannerStep,
+    PlannerStepProposal, PlanningAccounting, PlanningScanCursor, PlanningScanPage,
+    PlanningScanPosition, PlanningUsage, Proposal, StopCondition,
 };
 pub use identity::{
     AlternativeId, AttemptAdmissionId, AttemptId, BranchEdgeId, BranchPathId, BranchPointId,

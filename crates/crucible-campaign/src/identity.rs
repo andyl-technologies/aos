@@ -524,8 +524,9 @@ semantic_id!(
 content_object_id!(
     BranchPathId,
     ObjectKind::CampaignFact,
+    [1, 2],
     "crucible.campaign.branch-path",
-    "Identifies one ordered authenticated branch-edge path."
+    "Identifies one ordered authenticated branch path; version 1 edge-only IDs remain decodable for history compatibility."
 );
 content_object_id!(
     AttemptId,

@@ -613,7 +613,10 @@ impl CampaignRepository {
         let crate::SelectionOrigin::CampaignBranch { edge, .. } = selection.origin() else {
             return Err(integrity("planner-issue-selection-is-not-campaign-branch"));
         };
-        let path = BranchPath::new(vec![edge])?;
+        let path = BranchPath::new(vec![crate::BranchPathSegment::new(
+            proposal.branch_point(),
+            edge,
+        )])?;
         let attempt = Attempt::new(
             AttemptStart::Branch {
                 edge,

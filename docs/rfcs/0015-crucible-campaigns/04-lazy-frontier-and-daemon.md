@@ -219,6 +219,11 @@ without adding reservation fields to semantic identity.
 Every attempt carries the ordered branch-edge path by which it was admitted. On
 canonical completion, the projector credits its observation to the expansion
 state at each branch point on that path. No in-memory MCTS stack is required.
+New schema-v2 paths carry exact `(BranchPointId, BranchEdgeId)` segments because
+an edge digest is deliberately non-invertible. Legacy schema-v1 edge-only paths
+remain identity-preserving historical inputs; the current single-edge genesis
+owner can recover their point from the authenticated request, while nested
+feedback requires a fully scoped v2 path.
 
 ```text
 root branch point B0
@@ -429,9 +434,11 @@ selection, branch path, semantic attempt, request, and stop condition, then
 recomputes the role rather than accepting a caller-supplied role or ordinal.
 
 During the transaction-first implementation stage, only a genesis-parent path
-of exactly one selected edge is admitted. Non-genesis branch paths remain
-fail-closed until observation incorporation maintains the authoritative parent
-configuration-to-path index used to authenticate the prefix.
+of exactly one selected edge is admitted. New paths encode that edge together
+with the request's exact branch point and owner validation rejects a mismatching
+terminal scope. Non-genesis branch paths remain fail-closed until observation
+incorporation maintains the authoritative parent configuration-to-path index
+used to authenticate the prefix.
 
 If no execution basis exists for `AttemptId`, the transition spends one unit of
 the proposal request's `maximum_attempts`, assigns the next one-based global

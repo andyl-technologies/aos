@@ -697,11 +697,7 @@ impl CampaignRepository {
         &self,
         path: &BranchPath,
     ) -> Result<ContentId, CampaignRepositoryError> {
-        self.put_envelope(ObjectEnvelope::for_record(
-            crate::CampaignRecordKind::BranchPath,
-            BTreeSet::new(),
-            path.canonical_bytes(),
-        )?)
+        self.put_envelope(ObjectEnvelope::for_branch_path(path)?)
     }
 
     pub(super) fn put_attempt(
@@ -1537,6 +1533,12 @@ impl CampaignRepository {
                 {
                     return Err(integrity("attempt-branch-edge-mismatch"));
                 }
+                if path.segments().is_some_and(|segments| {
+                    segments.last().copied()
+                        != Some(crate::BranchPathSegment::new(branch_point, edge))
+                }) {
+                    return Err(integrity("attempt-branch-path-terminal-scope-mismatch"));
+                }
             }
         }
         Ok(attempt)
@@ -1778,7 +1780,12 @@ impl CampaignRepository {
         };
         let path = self.read_branch_path(attempt_record.path().content_id())?;
         let lineage = self.read_lineage(required_child(&snapshot.envelope, "lineage")?)?;
-        if request.parent() != lineage.genesis_content() || path.edges() != [edge] {
+        if request.parent() != lineage.genesis_content()
+            || path.edges() != [edge]
+            || path.segments().is_some_and(|segments| {
+                segments != [crate::BranchPathSegment::new(request.branch_point(), edge)]
+            })
+        {
             return Err(integrity(
                 "proposal-admission-branch-path-owner-is-not-implemented",
             ));
