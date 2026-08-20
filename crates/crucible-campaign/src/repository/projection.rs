@@ -1,9 +1,10 @@
 //! Owner-recomputed, snapshot-bound campaign projection pages.
 
 use super::*;
-use crate::ChoiceValue;
+use crate::{ChoiceValue, IntegerDomain, IntegerRepresentation, IntegerValue};
 
 const PROJECTION_SCAN_PAGE_ITEMS: usize = 10_000;
+const MAX_STATIC_GENERATOR_CANDIDATES: usize = 512;
 
 struct FiniteExpansionInputs {
     requests: ContentId,
@@ -47,19 +48,36 @@ impl CampaignRepository {
             .generator()
             .ok_or_else(|| integrity("candidate-source-kind-is-invalid"))?;
         let spec = self.read_generator(generator.content_id())?;
-        if spec.implementation_version() != crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION {
-            return Ok(None);
-        }
-        match (spec.algorithm(), domain) {
-            (CandidateGeneratorAlgorithm::All, ChoiceDomain::Boolean(_)) => Ok(Some(2)),
-            (CandidateGeneratorAlgorithm::All, ChoiceDomain::Discrete(discrete)) => {
-                u64::try_from(discrete.alternatives().len())
-                    .map(Some)
-                    .map_err(|_| integrity("candidate-source-cardinality-overflow"))
-            }
-            (CandidateGeneratorAlgorithm::All, ChoiceDomain::Integer(_)) => {
-                Err(integrity("candidate-generator-domain-family-mismatch"))
-            }
+        match (spec.algorithm(), spec.implementation_version(), domain) {
+            (
+                CandidateGeneratorAlgorithm::All,
+                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Boolean(_),
+            ) => Ok(Some(2)),
+            (
+                CandidateGeneratorAlgorithm::All,
+                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Discrete(discrete),
+            ) => u64::try_from(discrete.alternatives().len())
+                .map(Some)
+                .map_err(|_| integrity("candidate-source-cardinality-overflow")),
+            (
+                CandidateGeneratorAlgorithm::All,
+                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(_),
+            )
+            | (
+                CandidateGeneratorAlgorithm::BoundaryInteger,
+                crate::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
+            ) => Err(integrity("candidate-generator-domain-family-mismatch")),
+            (
+                CandidateGeneratorAlgorithm::BoundaryInteger,
+                crate::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(integer),
+            ) => u64::try_from(self.boundary_integer_candidates(request, integer)?.len())
+                .map(Some)
+                .map_err(|_| integrity("candidate-source-cardinality-overflow")),
             _ => Ok(None),
         }
     }
@@ -90,16 +108,21 @@ impl CampaignRepository {
             .generator()
             .ok_or_else(|| integrity("candidate-source-kind-is-invalid"))?;
         let spec = self.read_generator(generator.content_id())?;
-        if spec.implementation_version() != crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION {
-            return Ok(None);
-        }
-        match (spec.algorithm(), domain) {
-            (CandidateGeneratorAlgorithm::All, ChoiceDomain::Boolean(_)) => match index {
+        match (spec.algorithm(), spec.implementation_version(), domain) {
+            (
+                CandidateGeneratorAlgorithm::All,
+                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Boolean(_),
+            ) => match index {
                 0 => Ok(Some(ChoiceValue::Boolean(false))),
                 1 => Ok(Some(ChoiceValue::Boolean(true))),
                 _ => Err(integrity("proposal-ordinal-exceeds-source-cardinality")),
             },
-            (CandidateGeneratorAlgorithm::All, ChoiceDomain::Discrete(discrete)) => discrete
+            (
+                CandidateGeneratorAlgorithm::All,
+                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Discrete(discrete),
+            ) => discrete
                 .alternatives()
                 .keys()
                 .nth(index)
@@ -107,11 +130,100 @@ impl CampaignRepository {
                 .map(ChoiceValue::Discrete)
                 .map(Some)
                 .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality")),
-            (CandidateGeneratorAlgorithm::All, ChoiceDomain::Integer(_)) => {
-                Err(integrity("candidate-generator-domain-family-mismatch"))
-            }
+            (
+                CandidateGeneratorAlgorithm::All,
+                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(_),
+            )
+            | (
+                CandidateGeneratorAlgorithm::BoundaryInteger,
+                crate::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
+            ) => Err(integrity("candidate-generator-domain-family-mismatch")),
+            (
+                CandidateGeneratorAlgorithm::BoundaryInteger,
+                crate::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(integer),
+            ) => self
+                .boundary_integer_candidates(request, integer)?
+                .get(index)
+                .copied()
+                .map(ChoiceValue::Integer)
+                .map(Some)
+                .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality")),
             _ => Ok(None),
         }
+    }
+
+    fn boundary_integer_candidates(
+        &self,
+        request: &BranchRequest,
+        domain: &IntegerDomain,
+    ) -> Result<Vec<IntegerValue>, CampaignRepositoryError> {
+        if domain.landmarks().len() > crate::BOUNDARY_INTEGER_GENERATOR_MAX_LANDMARKS {
+            return Err(integrity("boundary-generator-landmark-limit"));
+        }
+        let opportunity = self.read_opportunity(request.opportunity().content_id())?;
+        let ChoiceValue::Integer(default) = opportunity.default() else {
+            return Err(integrity("boundary-generator-default-is-not-integer"));
+        };
+        let mut values = Vec::new();
+        let mut seen = BTreeSet::new();
+        push_boundary_candidate(&mut values, &mut seen, domain, domain.minimum())?;
+        push_boundary_candidate(&mut values, &mut seen, domain, domain.maximum())?;
+        push_boundary_candidate(&mut values, &mut seen, domain, *default)?;
+        for landmark in domain.landmarks() {
+            push_boundary_candidate(&mut values, &mut seen, domain, *landmark)?;
+        }
+
+        let anchors = values.clone();
+        for anchor in anchors {
+            if let Some(lower) = integer_step_neighbor(anchor, domain.step(), false) {
+                push_boundary_candidate(&mut values, &mut seen, domain, lower)?;
+            }
+            if let Some(upper) = integer_step_neighbor(anchor, domain.step(), true) {
+                push_boundary_candidate(&mut values, &mut seen, domain, upper)?;
+            }
+        }
+
+        match domain.representation() {
+            IntegerRepresentation::Unsigned64 => {
+                for exponent in 0..64 {
+                    if let Some(value) = 1_u64.checked_shl(exponent) {
+                        push_boundary_candidate(
+                            &mut values,
+                            &mut seen,
+                            domain,
+                            IntegerValue::Unsigned(value),
+                        )?;
+                    }
+                }
+            }
+            IntegerRepresentation::Signed64 => {
+                for exponent in 0..64 {
+                    if exponent < 63 {
+                        push_boundary_candidate(
+                            &mut values,
+                            &mut seen,
+                            domain,
+                            IntegerValue::Signed(1_i64 << exponent),
+                        )?;
+                    }
+                    let negative = if exponent == 63 {
+                        i64::MIN
+                    } else {
+                        -(1_i64 << exponent)
+                    };
+                    push_boundary_candidate(
+                        &mut values,
+                        &mut seen,
+                        domain,
+                        IntegerValue::Signed(negative),
+                    )?;
+                }
+            }
+        }
+        Ok(values)
     }
 
     pub(super) fn frontier_index_after(
@@ -181,10 +293,10 @@ impl CampaignRepository {
     ///
     /// The page is derived from one authenticated historical or current
     /// snapshot. Its cursor is meaningful only for that immutable snapshot and
-    /// branch point. Implementation-version 2 `all` generators over Boolean and discrete
-    /// domains share the finite-source path. History-dependent generators and
-    /// observation-bearing views remain fail-closed until their semantic owners
-    /// are implemented.
+    /// branch point. Implementation-version 2 `all` generators and
+    /// implementation-version 3 boundary-integer generators share the
+    /// finite-source path. History-dependent generators and observation-bearing
+    /// views remain fail-closed until their semantic owners are implemented.
     ///
     /// # Errors
     ///
@@ -492,4 +604,42 @@ impl CampaignRepository {
 
 fn projection_order_key(id: ContentId) -> CampaignHash {
     CampaignHash::from_bytes(id.digest())
+}
+
+fn push_boundary_candidate(
+    values: &mut Vec<IntegerValue>,
+    seen: &mut BTreeSet<IntegerValue>,
+    domain: &IntegerDomain,
+    value: IntegerValue,
+) -> Result<(), CampaignRepositoryError> {
+    if domain.contains_integer(value) && seen.insert(value) {
+        if values.len() == MAX_STATIC_GENERATOR_CANDIDATES {
+            return Err(integrity("static-generator-candidate-limit"));
+        }
+        values.push(value);
+    }
+    Ok(())
+}
+
+fn integer_step_neighbor(value: IntegerValue, step: u64, add: bool) -> Option<IntegerValue> {
+    match value {
+        IntegerValue::Signed(value) => {
+            let value = i128::from(value);
+            let step = i128::from(step);
+            let neighbor = if add {
+                value.checked_add(step)?
+            } else {
+                value.checked_sub(step)?
+            };
+            i64::try_from(neighbor).ok().map(IntegerValue::Signed)
+        }
+        IntegerValue::Unsigned(value) => {
+            let neighbor = if add {
+                value.checked_add(step)?
+            } else {
+                value.checked_sub(step)?
+            };
+            Some(IntegerValue::Unsigned(neighbor))
+        }
+    }
 }

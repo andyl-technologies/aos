@@ -106,6 +106,18 @@ unknown implementation versions remain suspended rather than being
 reinterpreted as version 2; this preserves owner validation of histories
 created before executable enumeration landed.
 
+Generator implementation-version 3 defines static `boundary_integer` order.
+It emits the inclusive minimum, inclusive maximum, opportunity default, and
+declared landmarks in canonical numeric order. It then visits those deduplicated
+anchors in that order and emits each legal one-step lower and upper neighbor.
+Finally it emits legal powers of two by ascending exponent; unsigned domains use
+positive powers, while signed domains try the positive value before the negative
+value at each exponent and include `i64::MIN` as the negative `2^63`. Every
+candidate is filtered through the exact stepped domain and first occurrence
+wins. This implementation accepts at most 64 declared landmarks and derives at
+most 512 candidates, keeping proposal and restart owner validation bounded. It
+needs no stored cursor or feedback.
+
 Generators compose as a fixed ordered mixture with integer weights. Duplicate
 values deduplicate by `(BranchPointId, ChoiceDomainId, ChoiceValue)`; the
 generator advances until it yields a new value or proves exhaustion. Distinct

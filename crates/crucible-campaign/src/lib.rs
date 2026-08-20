@@ -114,6 +114,7 @@ pub use planner_service::{
     SupervisedPlannerExecution,
 };
 pub use policy::{
+    BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, BOUNDARY_INTEGER_GENERATOR_MAX_LANDMARKS,
     CampaignMode, CampaignPolicy, CampaignSeed, CandidateGeneratorAlgorithm,
     CandidateGeneratorSpec, ChoicePolicy, ExactRational, ExplorerPolicy, FairnessPolicy,
     GuidanceWeight, Objective, ObjectiveGoal, ProgressiveWideningPolicy, PuctPolicy,
