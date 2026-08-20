@@ -186,14 +186,27 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   primitive that validates cgroup-v2 and sticky cancellation descriptors,
   places the child before QEMU executes, applies a per-file size backstop, and
   refuses implicit image-tool provisioning on the guarded spawn path.
-  Campaign-level supervisor ownership, the concrete cgroup factory and
-  persistent reaper, aggregate filesystem quota, execution-quantum charging,
-  pinned run-directory ownership, the modeled attempt driver, concrete session
-  wiring, and responsive multi-slot scheduling remain open. Validated launch
-  commands now expose and exact-check their fixed vCPU, guest-memory,
-  exact-VMState writable minimum, and root-overlay requirements against an
-  admitted resource ceiling; the concrete session must invoke that check before
-  spawn.
+  The Linux authority now creates one exact child below a pinned
+  operator-delegated unified cgroup-v2 root, fails closed unless CPU, memory,
+  and process controllers are delegated, installs exact
+  CPU-rate/memory/no-swap/task ceilings, mints the
+  sealed child contract, and retains cgroup kill/event authority for future
+  cancellation and reap supervision. Root, configured-group, and failed-setup
+  cleanup owners retain one exclusive delegated-namespace lock and pinned
+  parent/child identities; setup and release errors return the remaining
+  authority instead of dropping it. Process membership is fixed-memory and
+  bounded to 65,536 tasks, with process-generation identity checked on both
+  sides of the scan, and all other cgroup pseudo-file reads are byte-bounded.
+  Campaign-level supervisor ownership, the persistent cancellation watcher and
+  identity-preserving reaper/quarantine, aggregate filesystem quota,
+  execution-quantum charging, pinned run-directory ownership, the modeled
+  attempt driver, distinct unprivileged QEMU credentials that cannot mutate the
+  delegated cgroup hierarchy, concrete session wiring, and responsive
+  multi-slot scheduling remain open. The authority remains crate-internal until
+  those security boundaries are composed. Validated launch commands now
+  expose and exact-check their fixed vCPU, guest-memory, exact-VMState writable
+  minimum, and root-overlay requirements against an admitted resource ceiling;
+  the concrete session must invoke that check before spawn.
 - [ ] **T-CAM-4.6** Implement strict and streaming commit modes, restart
   recovery, duplicate/conflict handling, backpressure, pagination, and
   projection rebuilding; implement snapshot-bound paged planner scans whose

@@ -766,17 +766,39 @@ Checkpoint-store lookups receive the same cancellation signal, must bound their
 blocking work, and are cancellation-checked before, during, and after each
 call.
 
-The QEMU process layer provides the first sealed child-side primitive needed by
-the concrete host guard. It accepts only an internally authenticated cgroup-v2
-`cgroup.procs` descriptor and a nonblocking cancellation eventfd, writes the
-forked child into the cgroup, checks cancellation without consuming it, and
-installs a per-file `RLIMIT_FSIZE` defense before `exec`. Its guarded spawn
-variant refuses implicit `qemu-img` work and requires an already-provisioned
-non-symlink VMState container. This primitive is not yet the production guard:
-the cgroup factory and persistent cancellation reaper, aggregate filesystem
-quota, execution-quantum charging backend, launch-command resource-profile
-admission, pinned run-directory ownership, and concrete session wiring remain
-mandatory before the guarded path may launch a campaign QEMU.
+The QEMU process layer provides a sealed child-side primitive and the first
+operator-delegated Linux cgroup-v2 authority needed by the concrete host guard.
+The authority creates exactly one named child below a pinned unified cgroup-v2
+root, fails closed unless `cpu`, `memory`, and `pids` are exposed and delegated,
+installs exact `cpu.max`, `memory.max`, disabled-swap, and `pids.max` controls,
+and mints the otherwise-unconstructible child contract from fresh
+`cgroup.procs` and sticky nonblocking eventfd descriptors. It holds one
+nonblocking exclusive lock on the delegated child namespace across root,
+configured-group, and failed-setup cleanup authorities; a valid delegation MUST
+not grant a non-cooperating writer access to that same namespace. Once a child
+directory exists, every setup error retains its pinned cleanup authority, and a
+failed release returns that authority instead of dropping it. The authority
+retains independent `cgroup.kill` and `cgroup.events` access for
+cancellation/reap supervision, authenticates exact process-generation
+membership before and after a fixed-memory scan bounded to 65,536 tasks, and
+byte-bounds every other pseudo-file read. It pins parent and child directory
+identities instead of trusting mutable paths and removes the child under the
+namespace lock only after `populated 0` is observed and its named identity is
+reauthenticated. The CPU controller caps aggregate CPU time; exact virtual-CPU
+count is separately checked against the validated launch command. The child
+writes itself into the cgroup, checks cancellation without consuming it, and
+installs a per-file `RLIMIT_FSIZE` defense before `exec`. Guarded spawn refuses
+implicit `qemu-img` work and requires an already-provisioned non-symlink VMState
+container.
+
+This authority is not yet the production guard. The persistent cancellation
+watcher and identity-preserving reap/quarantine owner, aggregate filesystem
+quota, execution-quantum charging backend, invocation of launch-command
+resource-profile admission, pinned run-directory ownership, and child
+credential separation that leaves only the supervisor able to mutate the
+delegated cgroup hierarchy remain mandatory, as does concrete session wiring,
+before the guarded path may launch a campaign QEMU. Until then the cgroup
+authority remains crate-internal.
 
 Every validated `QemuLaunchCommand` also exposes a stable operational resource
 baseline derived from its fixed `-smp`, guest RAM, exact-VMState virtual size,
