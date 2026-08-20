@@ -1336,6 +1336,16 @@ impl QemuNode {
         self.child.reaped()
     }
 
+    /// Consumes this failed node and transfers its direct-child wait authority.
+    ///
+    /// This crate-internal handoff deliberately drops every modeled channel and
+    /// live-backend capability. The returned child must be authenticated and
+    /// transferred to the attempt's cgroup reaper before any resource guard is
+    /// released.
+    pub(crate) fn into_direct_child_for_quarantine(self) -> QemuNodeChild {
+        self.child
+    }
+
     /// Returns the operating-system process identifier of this QEMU generation.
     #[must_use]
     pub fn process_id(&self) -> u32 {

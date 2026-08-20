@@ -347,6 +347,18 @@ where
         self.shutdown_active_node_for("shutdown active realized QEMU node")
     }
 
+    /// Removes the active node after guarded shutdown failed to attest reap.
+    ///
+    /// The caller must transfer the returned node into a resource-owning
+    /// quarantine before releasing attempt capacity. This method performs no
+    /// shutdown operation and returns `None` when no live node is installed.
+    // crucible-lint: allow rust-allow -- this sealed handoff is consumed by the next concrete guard-composition slice.
+    #[allow(dead_code)]
+    pub(crate) fn take_active_node_for_quarantine(&mut self) -> Option<L::Node> {
+        self.observation_sealed = false;
+        self.active_node.take()
+    }
+
     fn launch_and_install(
         &mut self,
         config: &Configuration,
