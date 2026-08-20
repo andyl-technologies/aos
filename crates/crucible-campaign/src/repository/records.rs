@@ -1222,8 +1222,17 @@ impl CampaignRepository {
                         return Err(integrity("permuted-generator-cardinality-limit"));
                     }
                 }
-                CandidateGeneratorAlgorithm::ProgressiveInteger { .. }
-                | CandidateGeneratorAlgorithm::MutateNearCorpus { .. }
+                CandidateGeneratorAlgorithm::ProgressiveInteger { initial_strata, .. }
+                    if matches!(domain, ChoiceDomain::Integer(_)) =>
+                {
+                    if generator.implementation_version()
+                        == crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                        && *initial_strata > crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA
+                    {
+                        return Err(integrity("progressive-generator-initial-strata-limit"));
+                    }
+                }
+                CandidateGeneratorAlgorithm::MutateNearCorpus { .. }
                     if matches!(domain, ChoiceDomain::Integer(_)) => {}
                 CandidateGeneratorAlgorithm::OrderedMixture { components } => {
                     stack.extend(
@@ -1339,8 +1348,12 @@ impl CampaignRepository {
             }
         }
 
+        let completed_visits = self.branch_completed_visits(
+            snapshot.snapshot.roots().observations,
+            request.branch_point(),
+        )?;
         let expected = self
-            .static_candidate_at(&request, &domain, proposal.ordinal())?
+            .candidate_at_with_feedback(&request, &domain, proposal.ordinal(), completed_visits)?
             .ok_or_else(|| integrity("generated-proposal-enumerator-is-not-implemented"))?;
         if &expected != proposal.value() {
             return Err(integrity("proposal-value-does-not-match-source-order"));

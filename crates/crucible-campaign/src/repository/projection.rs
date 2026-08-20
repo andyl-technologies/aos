@@ -1,5 +1,8 @@
 //! Owner-recomputed, snapshot-bound campaign projection pages.
 
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
+
 use super::*;
 use crate::{ChoiceValue, IntegerDomain, IntegerRepresentation, IntegerValue};
 
@@ -21,6 +24,101 @@ struct MixtureComponentState {
     weight: u64,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum CandidateSourceProfile {
+    Static {
+        count: u64,
+    },
+    ProgressiveInteger {
+        count: u64,
+        initial_count: u64,
+        feedback_interval: u64,
+        exhausts_domain: bool,
+    },
+}
+
+impl CandidateSourceProfile {
+    const fn count(self) -> u64 {
+        match self {
+            Self::Static { count } | Self::ProgressiveInteger { count, .. } => count,
+        }
+    }
+
+    fn available_count(self, completed_visits: u64) -> Result<u64, CampaignRepositoryError> {
+        match self {
+            Self::Static { count } => Ok(count),
+            Self::ProgressiveInteger {
+                count,
+                initial_count,
+                feedback_interval,
+                ..
+            } => initial_count
+                .checked_add(completed_visits / feedback_interval)
+                .map(|available| available.min(count))
+                .ok_or_else(|| integrity("progressive-generator-availability-overflow")),
+        }
+    }
+
+    fn required_visits(self, proposed: u64) -> Result<Option<u64>, CampaignRepositoryError> {
+        let Self::ProgressiveInteger {
+            initial_count,
+            feedback_interval,
+            ..
+        } = self
+        else {
+            return Ok(None);
+        };
+        if proposed < initial_count {
+            return Ok(None);
+        }
+        proposed
+            .checked_sub(initial_count)
+            .and_then(|refinements| refinements.checked_add(1))
+            .and_then(|refinements| refinements.checked_mul(feedback_interval))
+            .map(Some)
+            .ok_or_else(|| integrity("progressive-generator-feedback-threshold-overflow"))
+    }
+
+    const fn exhausts_at_count(self) -> bool {
+        match self {
+            Self::Static { .. } => true,
+            Self::ProgressiveInteger {
+                exhausts_domain, ..
+            } => exhausts_domain,
+        }
+    }
+
+    pub(super) const fn requires_feedback_index(self) -> bool {
+        matches!(self, Self::ProgressiveInteger { .. })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RefinementGap {
+    lower: u128,
+    upper: u128,
+}
+
+impl RefinementGap {
+    const fn len(self) -> u128 {
+        self.upper - self.lower + 1
+    }
+}
+
+impl Ord for RefinementGap {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.len()
+            .cmp(&other.len())
+            .then_with(|| other.lower.cmp(&self.lower))
+    }
+}
+
+impl PartialOrd for RefinementGap {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl CampaignRepository {
     pub(super) fn initial_continuation_state(
         &self,
@@ -28,12 +126,60 @@ impl CampaignRepository {
     ) -> Result<crate::ContinuationState, CampaignRepositoryError> {
         let domain = self.read_choice_domain(request.domain().content_id())?;
         Ok(
-            if self.static_candidate_count(request, &domain)?.is_some() {
+            if self.candidate_source_profile(request, &domain)?.is_some() {
                 crate::ContinuationState::Ready
             } else {
                 crate::ContinuationState::Open
             },
         )
+    }
+
+    pub(super) fn candidate_source_profile(
+        &self,
+        request: &BranchRequest,
+        domain: &ChoiceDomain,
+    ) -> Result<Option<CandidateSourceProfile>, CampaignRepositoryError> {
+        if let Some(count) = self.static_candidate_count(request, domain)? {
+            return Ok(Some(CandidateSourceProfile::Static { count }));
+        }
+        let Some(generator) = request.source().generator() else {
+            return Ok(None);
+        };
+        let spec = self.read_generator(generator.content_id())?;
+        let (
+            CandidateGeneratorAlgorithm::ProgressiveInteger {
+                initial_strata,
+                feedback_interval,
+            },
+            crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+            ChoiceDomain::Integer(integer),
+        ) = (spec.algorithm(), spec.implementation_version(), domain)
+        else {
+            return Ok(None);
+        };
+        if *initial_strata > crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA {
+            return Err(integrity("progressive-generator-initial-strata-limit"));
+        }
+        if request.budget().maximum_proposals() > crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_PROPOSALS
+        {
+            return Err(integrity("progressive-generator-proposal-limit"));
+        }
+
+        let budget = request.budget().maximum_proposals();
+        let cardinality = integer.cardinality();
+        let count = u64::try_from(cardinality.min(u128::from(budget)))
+            .map_err(|_| integrity("candidate-source-cardinality-overflow"))?;
+        let initial_count = count.min(u64::from(*initial_strata));
+        count
+            .checked_sub(initial_count)
+            .and_then(|refinements| refinements.checked_mul(*feedback_interval))
+            .ok_or_else(|| integrity("progressive-generator-feedback-threshold-overflow"))?;
+        Ok(Some(CandidateSourceProfile::ProgressiveInteger {
+            count,
+            initial_count,
+            feedback_interval: *feedback_interval,
+            exhausts_domain: cardinality <= u128::from(budget),
+        }))
     }
 
     /// Resolves the exact cardinality of a history-independent source.
@@ -283,6 +429,44 @@ impl CampaignRepository {
                 .map(Some),
             _ => Ok(None),
         }
+    }
+
+    pub(super) fn candidate_at_with_feedback(
+        &self,
+        request: &BranchRequest,
+        domain: &ChoiceDomain,
+        ordinal: u64,
+        completed_visits: u64,
+    ) -> Result<Option<ChoiceValue>, CampaignRepositoryError> {
+        let Some(profile) = self.candidate_source_profile(request, domain)? else {
+            return Ok(None);
+        };
+        if ordinal == 0 || ordinal > profile.count() {
+            return Err(integrity("proposal-ordinal-exceeds-source-cardinality"));
+        }
+        if ordinal > profile.available_count(completed_visits)? {
+            return Err(integrity("progressive-generator-feedback-is-insufficient"));
+        }
+        if let Some(value) = self.static_candidate_at(request, domain, ordinal)? {
+            return Ok(Some(value));
+        }
+
+        let generator = request
+            .source()
+            .generator()
+            .ok_or_else(|| integrity("candidate-source-kind-is-invalid"))?;
+        let spec = self.read_generator(generator.content_id())?;
+        let (
+            CandidateGeneratorAlgorithm::ProgressiveInteger { initial_strata, .. },
+            crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+            ChoiceDomain::Integer(integer),
+        ) = (spec.algorithm(), spec.implementation_version(), domain)
+        else {
+            return Ok(None);
+        };
+        progressive_integer_candidate(*initial_strata, integer, ordinal)
+            .map(ChoiceValue::Integer)
+            .map(Some)
     }
 
     fn weighted_categorical_candidates(
@@ -665,6 +849,149 @@ impl CampaignRepository {
         }
     }
 
+    pub(super) fn branch_request_index_after(
+        &self,
+        exploration_root: ContentId,
+        requests: &[(BranchRequestId, crate::BranchPointId)],
+        publish: bool,
+    ) -> Result<Option<ContentId>, CampaignRepositoryError> {
+        let index = match self
+            .merkle
+            .get(exploration_root, branch_request_index_anchor_key())?
+        {
+            Some(index) => index,
+            None if requests.is_empty() => return Ok(None),
+            None => MerkleMap::empty_content_id()?,
+        };
+        let mut projected_entry_count =
+            usize::try_from(self.merkle.inspect_shallow(index)?.entry_count())
+                .map_err(|_| integrity("feedback-branch-request-index-limit"))?;
+        let mut grouped = BTreeMap::<crate::BranchPointId, Vec<BranchRequestId>>::new();
+        for (request, branch_point) in requests {
+            grouped.entry(*branch_point).or_default().push(*request);
+        }
+        let mut index_upserts = BTreeMap::new();
+        for (branch_point, branch_requests) in grouped {
+            let branch_key = branch_request_index_branch_key(branch_point);
+            let existing_branch_root = self.merkle.get(index, branch_key)?;
+            let mut branch_root = existing_branch_root.unwrap_or(MerkleMap::empty_content_id()?);
+            if existing_branch_root.is_none() {
+                projected_entry_count = projected_entry_count
+                    .checked_add(1)
+                    .ok_or_else(|| integrity("feedback-branch-request-index-limit"))?;
+            }
+            let upserts = branch_requests
+                .into_iter()
+                .map(|request| (frontier_index_order_key(request), request.content_id()))
+                .collect::<BTreeMap<_, _>>();
+            for (key, value) in &upserts {
+                if let Some(existing) = self.merkle.get(branch_root, *key)?
+                    && existing != *value
+                {
+                    return Err(integrity("branch-request-point-index-conflict"));
+                }
+                let request = BranchRequestId::from_content_id(*value)?;
+                let membership_key = branch_request_index_membership_key(request);
+                if let Some(existing) = self.merkle.get(index, membership_key)? {
+                    if existing != *value {
+                        return Err(integrity("feedback-branch-request-index-conflict"));
+                    }
+                } else {
+                    projected_entry_count = projected_entry_count
+                        .checked_add(1)
+                        .ok_or_else(|| integrity("feedback-branch-request-index-limit"))?;
+                }
+                index_upserts.insert(membership_key, *value);
+            }
+            branch_root = if publish {
+                let mut root = branch_root;
+                for (key, value) in upserts {
+                    root = self.merkle.insert(root, key, value)?.content_id();
+                }
+                root
+            } else {
+                self.merkle.root_after_upserts(branch_root, &upserts)?
+            };
+            index_upserts.insert(branch_key, branch_root);
+        }
+        if projected_entry_count > MAX_FEEDBACK_FRONTIER_UPDATES {
+            return Err(integrity("feedback-branch-request-index-limit"));
+        }
+        if publish {
+            let mut root = index;
+            for (key, value) in index_upserts {
+                root = self.merkle.insert(root, key, value)?.content_id();
+            }
+            Ok(Some(root))
+        } else {
+            self.merkle
+                .root_after_upserts(index, &index_upserts)
+                .map(Some)
+                .map_err(Into::into)
+        }
+    }
+
+    /// Returns the bounded authoritative request set indexed at one branch point.
+    pub(super) fn branch_point_requests(
+        &self,
+        exploration_root: ContentId,
+        branch_point: crate::BranchPointId,
+        remaining: &mut usize,
+    ) -> Result<Vec<BranchRequestId>, CampaignRepositoryError> {
+        let Some(index) = self
+            .merkle
+            .get(exploration_root, branch_request_index_anchor_key())?
+        else {
+            return Ok(Vec::new());
+        };
+        let index_entry_count = usize::try_from(self.merkle.inspect_shallow(index)?.entry_count())
+            .map_err(|_| integrity("feedback-branch-request-index-limit"))?;
+        if index_entry_count > MAX_FEEDBACK_FRONTIER_UPDATES {
+            return Err(integrity("feedback-branch-request-index-limit"));
+        }
+        let Some(branch_root) = self
+            .merkle
+            .get(index, branch_request_index_branch_key(branch_point))?
+        else {
+            return Ok(Vec::new());
+        };
+        let entry_count = usize::try_from(self.merkle.inspect_shallow(branch_root)?.entry_count())
+            .map_err(|_| integrity("feedback-frontier-update-limit"))?;
+        *remaining = remaining
+            .checked_sub(entry_count)
+            .ok_or_else(|| integrity("feedback-frontier-update-limit"))?;
+
+        let mut requests = Vec::with_capacity(entry_count);
+        let mut after = None;
+        loop {
+            let page = self
+                .merkle
+                .scan(branch_root, after, PROJECTION_SCAN_PAGE_ITEMS)?;
+            for (key, value) in page.entries() {
+                let request = BranchRequestId::from_content_id(*value)?;
+                if *key != frontier_index_order_key(request) {
+                    return Err(integrity("branch-request-point-index-mismatch"));
+                }
+                if self
+                    .merkle
+                    .get(index, branch_request_index_membership_key(request))?
+                    != Some(request.content_id())
+                {
+                    return Err(integrity("feedback-branch-request-membership-mismatch"));
+                }
+                requests.push(request);
+            }
+            let Some(next) = page.next_after() else {
+                break;
+            };
+            after = Some(next);
+        }
+        if requests.len() != entry_count {
+            return Err(integrity("branch-request-point-index-count-mismatch"));
+        }
+        Ok(requests)
+    }
+
     pub(super) fn validate_frontier_projection(
         &self,
         frontier_index: ContentId,
@@ -736,6 +1063,7 @@ impl CampaignRepository {
         let (continuations, next_after) = self.finite_continuation_page(
             view.exploration(),
             view.accounting(),
+            view.observations(),
             inputs.requests,
             page_after,
             page_size,
@@ -780,7 +1108,7 @@ impl CampaignRepository {
                     let request = self.read_branch_request(*value)?;
                     if request.branch_point() == branch_point {
                         let domain = self.read_choice_domain(request.domain().content_id())?;
-                        if self.static_candidate_count(&request, &domain)?.is_none() {
+                        if self.candidate_source_profile(&request, &domain)?.is_none() {
                             return Err(integrity(
                                 "generated-expansion-projector-is-not-implemented",
                             ));
@@ -853,7 +1181,7 @@ impl CampaignRepository {
         })
     }
 
-    fn branch_completed_visits(
+    pub(super) fn branch_completed_visits(
         &self,
         observation_root: ContentId,
         branch_point: crate::BranchPointId,
@@ -871,6 +1199,7 @@ impl CampaignRepository {
         &self,
         exploration_root: ContentId,
         accounting_root: ContentId,
+        observation_root: ContentId,
         request_root: ContentId,
         page_after: Option<BranchRequestId>,
         page_size: u32,
@@ -901,8 +1230,13 @@ impl CampaignRepository {
             }
             let request_id = BranchRequestId::from_content_id(*value)?;
             let request = self.read_branch_request(*value)?;
-            let state =
-                self.continuation_state(exploration_root, accounting_root, request_id, &request)?;
+            let state = self.continuation_state(
+                exploration_root,
+                accounting_root,
+                observation_root,
+                request_id,
+                &request,
+            )?;
             continuations.insert(request_id, state);
         }
         let next_after = if page.next_after().is_some() {
@@ -917,13 +1251,34 @@ impl CampaignRepository {
         &self,
         exploration_root: ContentId,
         accounting_root: ContentId,
+        observation_root: ContentId,
         request_id: BranchRequestId,
         request: &BranchRequest,
     ) -> Result<crate::ContinuationState, CampaignRepositoryError> {
+        let completed_visits =
+            self.branch_completed_visits(observation_root, request.branch_point())?;
+        self.continuation_state_with_completed_visits(
+            exploration_root,
+            accounting_root,
+            request_id,
+            request,
+            completed_visits,
+        )
+    }
+
+    pub(super) fn continuation_state_with_completed_visits(
+        &self,
+        exploration_root: ContentId,
+        accounting_root: ContentId,
+        request_id: BranchRequestId,
+        request: &BranchRequest,
+        completed_visits: u64,
+    ) -> Result<crate::ContinuationState, CampaignRepositoryError> {
         let domain = self.read_choice_domain(request.domain().content_id())?;
-        let value_count = self
-            .static_candidate_count(request, &domain)?
+        let profile = self
+            .candidate_source_profile(request, &domain)?
             .ok_or_else(|| integrity("generated-expansion-projector-is-not-implemented"))?;
+        let value_count = profile.count();
         let maximum_proposals = request.budget().maximum_proposals();
         let check_count = value_count.min(maximum_proposals);
         let mut proposed = 0_u64;
@@ -979,15 +1334,13 @@ impl CampaignRepository {
             }
         }
 
-        if pending {
-            Ok(crate::ContinuationState::Open)
-        } else if proposed == value_count {
-            Ok(crate::ContinuationState::Exhausted)
-        } else if proposed >= maximum_proposals {
-            Ok(crate::ContinuationState::Closed)
-        } else {
-            Ok(crate::ContinuationState::Ready)
-        }
+        continuation_state_after_progress(
+            profile,
+            proposed,
+            pending,
+            maximum_proposals,
+            completed_visits,
+        )
     }
 
     pub(super) fn put_expansion_state(
@@ -1008,6 +1361,37 @@ fn projection_order_key(id: ContentId) -> CampaignHash {
 
 fn candidate_index(ordinal: u64) -> Result<usize, CampaignRepositoryError> {
     usize::try_from(ordinal - 1).map_err(|_| integrity("proposal-ordinal-is-not-canonical"))
+}
+
+pub(super) fn continuation_state_after_progress(
+    profile: CandidateSourceProfile,
+    proposed: u64,
+    pending: bool,
+    maximum_proposals: u64,
+    completed_visits: u64,
+) -> Result<crate::ContinuationState, CampaignRepositoryError> {
+    if pending {
+        return Ok(crate::ContinuationState::Open);
+    }
+    if proposed == profile.count() {
+        return Ok(if profile.exhausts_at_count() {
+            crate::ContinuationState::Exhausted
+        } else {
+            crate::ContinuationState::Closed
+        });
+    }
+    if proposed >= maximum_proposals {
+        return Ok(crate::ContinuationState::Closed);
+    }
+    if proposed < profile.available_count(completed_visits)? {
+        return Ok(crate::ContinuationState::Ready);
+    }
+    let required = profile
+        .required_visits(proposed)?
+        .ok_or_else(|| integrity("candidate-source-readiness-is-inconsistent"))?;
+    Ok(crate::ContinuationState::WaitingForFeedback(
+        crate::FeedbackWait::new(completed_visits, required)?,
+    ))
 }
 
 fn next_mixture_component(
@@ -1219,6 +1603,14 @@ fn stratified_integer_candidate(
     domain: &IntegerDomain,
     ordinal: u64,
 ) -> Result<IntegerValue, CampaignRepositoryError> {
+    integer_candidate_at_offset(domain, stratified_integer_offset(strata, domain, ordinal)?)
+}
+
+fn stratified_integer_offset(
+    strata: u32,
+    domain: &IntegerDomain,
+    ordinal: u64,
+) -> Result<u128, CampaignRepositoryError> {
     let candidate_count = stratified_integer_candidate_count(strata, domain)?;
     if ordinal == 0 || ordinal > candidate_count {
         return Err(integrity("proposal-ordinal-exceeds-source-cardinality"));
@@ -1236,7 +1628,94 @@ fn stratified_integer_candidate(
             .ok_or_else(|| integrity("candidate-source-cardinality-overflow"))?
             / u128::from(candidate_count - 1)
     };
-    integer_candidate_at_offset(domain, offset)
+    Ok(offset)
+}
+
+fn progressive_integer_candidate(
+    initial_strata: u32,
+    domain: &IntegerDomain,
+    ordinal: u64,
+) -> Result<IntegerValue, CampaignRepositoryError> {
+    if initial_strata > crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA {
+        return Err(integrity("progressive-generator-initial-strata-limit"));
+    }
+    if ordinal == 0 || ordinal > crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_PROPOSALS {
+        return Err(integrity("proposal-ordinal-exceeds-source-cardinality"));
+    }
+    let initial_count = u64::try_from(domain.cardinality().min(u128::from(initial_strata)))
+        .map_err(|_| integrity("candidate-source-cardinality-overflow"))?;
+    if ordinal <= initial_count {
+        return stratified_integer_candidate(initial_strata, domain, ordinal);
+    }
+
+    let mut selected = BTreeSet::new();
+    for initial_ordinal in 1..=initial_count {
+        selected.insert(stratified_integer_offset(
+            initial_strata,
+            domain,
+            initial_ordinal,
+        )?);
+    }
+    let mut gaps = progressive_refinement_gaps(domain.cardinality(), &selected)?;
+    let refinements = ordinal
+        .checked_sub(initial_count)
+        .ok_or_else(|| integrity("progressive-generator-ordinal-underflow"))?;
+    let mut selected_offset = None;
+    for _ in 0..refinements {
+        let gap = gaps
+            .pop()
+            .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality"))?;
+        let midpoint = gap
+            .lower
+            .checked_add((gap.len() - 1) / 2)
+            .ok_or_else(|| integrity("candidate-source-cardinality-overflow"))?;
+        if midpoint > gap.lower {
+            gaps.push(RefinementGap {
+                lower: gap.lower,
+                upper: midpoint - 1,
+            });
+        }
+        if midpoint < gap.upper {
+            gaps.push(RefinementGap {
+                lower: midpoint + 1,
+                upper: gap.upper,
+            });
+        }
+        selected_offset = Some(midpoint);
+    }
+    integer_candidate_at_offset(
+        domain,
+        selected_offset.ok_or_else(|| integrity("progressive-generator-refinement-is-empty"))?,
+    )
+}
+
+fn progressive_refinement_gaps(
+    cardinality: u128,
+    selected: &BTreeSet<u128>,
+) -> Result<BinaryHeap<RefinementGap>, CampaignRepositoryError> {
+    let maximum = cardinality
+        .checked_sub(1)
+        .ok_or_else(|| integrity("candidate-source-cardinality-overflow"))?;
+    let mut gaps = BinaryHeap::new();
+    let mut prior = None;
+    for offset in selected.iter().copied() {
+        let lower = prior.map_or(0, |value: u128| value + 1);
+        if lower < offset {
+            gaps.push(RefinementGap {
+                lower,
+                upper: offset - 1,
+            });
+        }
+        prior = Some(offset);
+    }
+    let lower = prior.map_or(0, |value| value + 1);
+    if lower <= maximum {
+        gaps.push(RefinementGap {
+            lower,
+            upper: maximum,
+        });
+    }
+    Ok(gaps)
 }
 
 fn integer_candidate_at_offset(

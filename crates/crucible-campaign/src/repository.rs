@@ -51,8 +51,10 @@ const MAX_SELECTION_RESOLUTION_RECORDS: usize = 4_096;
 const MAX_SELECTION_RESOLUTION_BYTES: usize = 128 * 1024 * 1024;
 const _: () =
     assert!(MAX_CHOICE_VALIDATION_CACHE_ENTRIES >= crate::observation::MAX_DISCOVERED_CHOICES);
-const MAX_SIMPLE_SUCCESSOR_GROWTH: usize = 512;
+const MAX_SIMPLE_SUCCESSOR_GROWTH: usize = 1_024;
 const MAX_PLANNER_ISSUE_SUCCESSOR_GROWTH: usize = 4_000_000;
+// One observation may wake at most this many indexed feedback continuations.
+const MAX_FEEDBACK_FRONTIER_UPDATES: usize = 65_536;
 // One fixed-depth trie insertion rewrites at most one node per digest nibble.
 const MERKLE_UPDATE_NODE_UPPER: usize = 64;
 // Graph has three fixed keys, observations six, corpus/coverage/coordination one
@@ -65,6 +67,8 @@ const MAX_OBSERVATION_SUCCESSOR_GROWTH: usize = ((3 * crate::observation::MAX_DI
     + OBSERVATION_FIXED_OWNER_UPSERTS)
     * MERKLE_UPDATE_NODE_UPPER)
     + (crate::exploration::MAX_BRANCH_PATH_EDGES * ((2 * MERKLE_UPDATE_NODE_UPPER) + 1))
+    + (MAX_FEEDBACK_FRONTIER_UPDATES * (MERKLE_UPDATE_NODE_UPPER + 1))
+    + MERKLE_UPDATE_NODE_UPPER
     + (2 * MERKLE_UPDATE_NODE_UPPER)
     + 1;
 
@@ -812,6 +816,22 @@ pub(crate) fn frontier_index_order_key(request: BranchRequestId) -> CampaignHash
     CampaignHash::from_bytes(request.content_id().digest())
 }
 
+fn branch_request_index_anchor_key() -> CampaignHash {
+    CampaignHash::derive("crucible.campaign-exploration-branch-request-index.v1", b"")
+}
+
+/// Derives the nested request-index slot for one semantic branch point.
+fn branch_request_index_branch_key(branch_point: crate::BranchPointId) -> CampaignHash {
+    CampaignHash::derive(
+        "crucible.campaign-exploration-branch-request-point.v1",
+        &branch_point.as_hash().as_bytes(),
+    )
+}
+
+fn branch_request_index_membership_key(request: BranchRequestId) -> CampaignHash {
+    map_key_content("exploration.feedback-branch-request", request.content_id())
+}
+
 fn choice_discovery_result_key(
     parent: ConfigurationArtifactId,
     opportunity: ChoiceOpportunityId,
@@ -861,6 +881,7 @@ fn observation_successor_growth(
     choice_count: usize,
     credit_count: usize,
     indexes_path: bool,
+    frontier_update_count: usize,
 ) -> Result<usize, CampaignRepositoryError> {
     let owner_upserts = choice_count
         .checked_mul(3)
@@ -880,6 +901,18 @@ fn observation_successor_growth(
                 0
             };
             path_nodes.checked_add(nodes)
+        })
+        .and_then(|nodes| {
+            frontier_update_count
+                .checked_mul(MERKLE_UPDATE_NODE_UPPER + 1)
+                .and_then(|updates| nodes.checked_add(updates))
+        })
+        .and_then(|nodes| {
+            if frontier_update_count == 0 {
+                Some(nodes)
+            } else {
+                nodes.checked_add(MERKLE_UPDATE_NODE_UPPER)
+            }
         })
         .and_then(|nodes| nodes.checked_add(1))
         .ok_or_else(|| integrity("observation-successor-growth-overflow"))?;
