@@ -12793,8 +12793,8 @@ impl Database {
     /// Returns whether the last good index contains a signed image catalog.
     ///
     /// The indexer uses this to disable its metadata-only incremental path:
-    /// every refresh of an image-bearing registry must re-read and re-hash the
-    /// exact release objects before restoring serving visibility.
+    /// every refresh of an image-bearing registry must revalidate the exact
+    /// release objects before restoring serving visibility.
     ///
     /// # Errors
     ///
@@ -12980,6 +12980,61 @@ impl Database {
             )
             .await?
             .map(|row| row.get(0))
+            .transpose()
+    }
+
+    /// Returns publication-verified identity evidence for one object placement.
+    ///
+    /// The result exists only when the current publication declared the exact
+    /// object, the selected required placement reached `ready`, and its
+    /// persisted presence still matches the declaration byte-for-byte.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed keys or a database failure.
+    pub async fn registry_publication_verified_object_at_placement(
+        &self,
+        publication_id: &str,
+        placement_id: i64,
+        object_key: &str,
+    ) -> Result<Option<VerifiedRegistryImageObject>> {
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        validate_key_bytes(object_key, "surface object key", 512)?;
+        self.backend
+            .query_opt(
+                "SELECT declared.expected_hash, declared.expected_size, presence.etag
+                 FROM registry_publications publication
+                 JOIN registry_publication_objects declared
+                   ON declared.publication_id = publication.publication_id
+                 JOIN surface_objects object
+                   ON object.id = declared.surface_object_id
+                  AND object.registry_id = publication.registry_id
+                 JOIN registry_publication_placements required
+                   ON required.publication_id = publication.publication_id
+                  AND required.placement_id = ?2
+                  AND required.required = 1 AND required.state = 'ready'
+                 JOIN object_placements presence
+                   ON presence.surface_object_id = object.id
+                  AND presence.placement_id = required.placement_id
+                  AND presence.registry_id = publication.registry_id
+                 WHERE publication.publication_id = ?1
+                   AND publication.state = 'ready'
+                   AND object.object_key = ?3
+                   AND presence.state = 'present'
+                   AND presence.observed_hash = declared.expected_hash
+                   AND presence.observed_size = declared.expected_size
+                   AND presence.etag IS NOT NULL",
+                &vals![publication_id, placement_id, object_key],
+            )
+            .await?
+            .map(|row| {
+                Ok(VerifiedRegistryImageObject {
+                    object_key: object_key.to_string(),
+                    sha256: row.get(0)?,
+                    byte_size: row.get(1)?,
+                    strong_etag: row.get(2)?,
+                })
+            })
             .transpose()
     }
 
