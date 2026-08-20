@@ -70,6 +70,8 @@ where
             .map_err(QemuAsyncDriverError::Target)?;
         return Ok(QemuAsyncNodeStepReport {
             outcome: QemuAsyncNodeStepOutcome::Crashed { status, shutdown },
+            final_state: None,
+            inbound_frames_consumed: 0,
             emitted_frames: Vec::new(),
             yielded_before_quantum: true,
             yielded_after_quantum: false,
@@ -88,6 +90,8 @@ where
         outcome: QemuAsyncNodeStepOutcome::Completed {
             advance: completion.outcome,
         },
+        final_state: Some(completion.final_state),
+        inbound_frames_consumed: completion.inbound_frames_consumed,
         emitted_frames: completion.emitted_frames,
         yielded_before_quantum: true,
         yielded_after_quantum: true,
