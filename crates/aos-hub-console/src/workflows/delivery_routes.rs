@@ -17,6 +17,8 @@ use super::access_policy::{
     access_policy_name, canonical_path, AccessPolicyFields, AccessPolicySignals,
 };
 use super::cache_integrations::CacheIntegrationWorkflow;
+use super::organization_scope::surface_authorization_scope;
+use super::storage_gateways::{endpoint_option_label, gateway_option_label};
 
 /// Renders route workflows and delegates unrelated pages onward.
 #[component]
@@ -99,6 +101,14 @@ struct RouteSignals {
     access: AccessPolicySignals,
 }
 
+#[derive(Clone, Debug)]
+struct RouteCreateChoices {
+    endpoints: Vec<aos_proto_types::DeliveryEndpoint>,
+    placements: Vec<aos_proto_types::Placement>,
+    policies: Vec<aos_proto_types::PlacementPolicy>,
+    gateways: Vec<aos_proto_types::StorageGateway>,
+}
+
 impl RouteSignals {
     fn empty() -> Self {
         Self {
@@ -172,11 +182,182 @@ fn RouteFields(signals: RouteSignals, immutable_identity: bool) -> impl IntoView
 
 #[component]
 fn RouteCreate(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl IntoView {
+    let choices_client = client.clone();
+    let choices_surface = surface.clone();
+    let choices = LocalResource::new(move || {
+        let client = choices_client.clone();
+        let surface = choices_surface.clone();
+        async move { load_route_create_choices(&client, &surface).await }
+    });
+
+    view! {
+        <Suspense fallback=move || view! { <section class="panel editor-panel"><p class="loading-row">"Loading endpoints, placements, and gateways…"</p></section> }>
+            {move || {
+                let client = client.clone();
+                let surface = surface.clone();
+                Suspend::new(async move {
+                    match choices.await.as_ref() {
+                        Ok(choices) => view! { <RouteCreateForm client=client surface=surface choices=choices.clone()/> }.into_any(),
+                        Err(detail) => view! { <section class="panel editor-panel"><InlineError detail=detail.clone()/></section> }.into_any(),
+                    }
+                })
+            }}
+        </Suspense>
+    }
+}
+
+async fn load_route_create_choices(
+    client: &ApiClient,
+    surface: &aos_proto_types::SurfaceRef,
+) -> Result<RouteCreateChoices, String> {
+    let topology = client
+        .call::<_, aos_proto_types::GetSurfaceTopologyResponse>(
+            aos_proto_types::TOPOLOGY_SERVICE_GET_SURFACE_TOPOLOGY_PATH,
+            &aos_proto_types::GetSurfaceTopologyRequest {
+                surface: Some(surface.clone()),
+            },
+        )
+        .await
+        .map_err(|failure| failure.to_string())?;
+    let (owner_scope_key, organization) = surface_authorization_scope(client, surface).await?;
+    let endpoint_scope = owner_scope_key.clone();
+    let endpoints = client
+        .collect_pages::<_, aos_proto_types::ListDeliveryEndpointsResponse, _, _, _>(
+            aos_proto_types::DELIVERY_SERVICE_LIST_DELIVERY_ENDPOINTS_PATH,
+            move |page_token| aos_proto_types::ListTopologyResourcesRequest {
+                owner_scope_key: endpoint_scope.clone(),
+                page_size: 100,
+                page_token,
+            },
+            |response| (response.delivery_endpoints, response.next_page_token),
+        )
+        .await
+        .map_err(|failure| failure.to_string())?;
+    let bindings = client
+        .collect_pages::<_, aos_proto_types::ListStorageBindingsResponse, _, _, _>(
+            aos_proto_types::STORAGE_BINDING_SERVICE_LIST_STORAGE_BINDINGS_PATH,
+            move |page_token| aos_proto_types::ListStorageBindingsRequest {
+                owner_scope_key: owner_scope_key.clone(),
+                page_size: 100,
+                page_token,
+            },
+            |response| (response.storage_bindings, response.next_page_token),
+        )
+        .await
+        .map_err(|failure| failure.to_string())?;
+
+    let mut gateways = Vec::new();
+    for binding in bindings {
+        let Some(spec) = binding.spec else {
+            continue;
+        };
+        let storage_binding = match organization.as_ref() {
+            Some(org_slug) => aos_proto_types::StorageBindingRef {
+                target: Some(aos_proto_types::storage_binding_ref::Target::Organization(
+                    aos_proto_types::OrganizationStorageBindingRef {
+                        org_slug: org_slug.clone(),
+                        name: spec.name,
+                    },
+                )),
+            },
+            None => aos_proto_types::StorageBindingRef {
+                target: Some(aos_proto_types::storage_binding_ref::Target::InstanceDefault(true)),
+            },
+        };
+        let mut binding_gateways = client
+            .collect_pages::<_, aos_proto_types::ListStorageGatewaysResponse, _, _, _>(
+                aos_proto_types::DELIVERY_SERVICE_LIST_STORAGE_GATEWAYS_PATH,
+                move |page_token| aos_proto_types::ListStorageGatewaysRequest {
+                    storage_binding: Some(storage_binding.clone()),
+                    page_size: 100,
+                    page_token,
+                },
+                |response| (response.storage_gateways, response.next_page_token),
+            )
+            .await
+            .map_err(|failure| failure.to_string())?;
+        gateways.append(&mut binding_gateways);
+        if organization.is_none() {
+            break;
+        }
+    }
+
+    Ok(RouteCreateChoices {
+        endpoints,
+        placements: topology.placements,
+        policies: topology.placement_policies,
+        gateways,
+    })
+}
+
+#[component]
+fn RouteCreateForm(
+    client: ApiClient,
+    surface: aos_proto_types::SurfaceRef,
+    choices: RouteCreateChoices,
+) -> impl IntoView {
     let stable_id = RwSignal::new(String::new());
     let signals = RouteSignals::empty();
+    if let Some(endpoint) = choices.endpoints.first() {
+        signals.endpoint_id.set(endpoint.stable_id.clone());
+        signals
+            .endpoint_generation
+            .set(endpoint.desired_generation.to_string());
+    }
+    if let Some(placement) = choices.placements.first() {
+        signals.target_ref.set(placement.name.clone());
+    }
+    if let Some(gateway) = choices.gateways.first() {
+        signals.gateway_ref.set(format!(
+            "{}@{}",
+            gateway.stable_id, gateway.desired_generation
+        ));
+    }
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let endpoint_choices = choices.endpoints.clone();
+    let selected_endpoints = choices.endpoints;
+    let direct_placement_choices = choices.placements.clone();
+    let hub_placement_choices = choices.placements;
+    let policy_choices = choices.policies.clone();
+    let selected_placements = hub_placement_choices.clone();
+    let selected_policies = choices.policies;
+    let gateway_choices = choices.gateways.clone();
+    let selected_gateways = choices.gateways;
+    let on_endpoint_change = move |event| {
+        let value = event_target_value(&event);
+        signals.endpoint_id.set(value.clone());
+        let generation = selected_endpoints
+            .iter()
+            .find(|endpoint| endpoint.stable_id == value)
+            .map(|endpoint| endpoint.desired_generation)
+            .unwrap_or_default();
+        signals.endpoint_generation.set(generation.to_string());
+        if let Some(gateway) = selected_gateways.iter().find(|gateway| {
+            gateway.desired.as_ref().is_some_and(|revision| {
+                revision.endpoint_id == value && revision.endpoint_generation == generation
+            })
+        }) {
+            signals.gateway_ref.set(format!(
+                "{}@{}",
+                gateway.stable_id, gateway.desired_generation
+            ));
+        }
+    };
+    let on_target_kind_change = Callback::new(move |value: String| {
+        signals.target_kind.set(value.clone());
+        let target = if value == "policy" {
+            selected_policies
+                .first()
+                .map(|policy| format!("{}@{}", policy.name, policy.current_revision))
+        } else {
+            selected_placements
+                .first()
+                .map(|placement| placement.name.clone())
+        };
+        signals.target_ref.set(target.unwrap_or_default());
+    });
     let plan_client = client.clone();
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
@@ -212,7 +393,7 @@ fn RouteCreate(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl 
         error,
         busy,
     );
-    view! { <section class="panel editor-panel"><h2>"Create delivery route"</h2><form class="editor-form" on:submit=on_plan><label><span>"Stable route ID"</span><input prop:value=move || stable_id.get() on:input=move |event| stable_id.set(event_target_value(&event))/></label><RouteFields signals=signals immutable_identity=false/><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review route"</button></div></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section> }
+    view! { <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Guided setup"</p><h2>"Create delivery route"</h2><p>"Choose named topology resources; exact stable IDs and generations are pinned automatically."</p></div></div><form class="editor-form" on:submit=on_plan><label><span>"Stable route ID"</span><input prop:value=move || stable_id.get() on:input=move |event| stable_id.set(event_target_value(&event))/></label><label><span>"Delivery endpoint"</span><select required prop:value=move || signals.endpoint_id.get() on:change=on_endpoint_change>{endpoint_choices.iter().map(|endpoint| view! { <option value=endpoint.stable_id.clone()>{endpoint_option_label(endpoint)}</option> }).collect_view()}</select>{endpoint_choices.is_empty().then(|| view! { <small>"No delivery endpoints are available in this surface's owner scope."</small> })}</label><label><span>"Endpoint generation"</span><input readonly aria-readonly="true" prop:value=move || signals.endpoint_generation.get()/></label><label><span>"Base path"</span><input required prop:value=move || signals.base_path.get() on:input=move |event| signals.base_path.set(event_target_value(&event))/></label><label><span>"Delivery mode"</span><select prop:value=move || signals.mode.get() on:change=move |event| signals.mode.set(event_target_value(&event))><option value="hub-proxy">"Hub proxy"</option><option value="hub-redirect">"Hub redirect"</option><option value="direct">"Direct gateway"</option></select></label>{move || if signals.mode.get() == "direct" { view! { <label><span>"Placement"</span><select required prop:value=move || signals.target_ref.get() on:change=move |event| signals.target_ref.set(event_target_value(&event))>{direct_placement_choices.iter().map(|placement| view! { <option value=placement.name.clone()>{format!("{} · {}", placement.name, placement.storage_binding_name)}</option> }).collect_view()}</select></label><label><span>"Storage gateway"</span><select required prop:value=move || signals.gateway_ref.get() on:change=move |event| signals.gateway_ref.set(event_target_value(&event))>{gateway_choices.iter().map(|gateway| view! { <option value=format!("{}@{}", gateway.stable_id, gateway.desired_generation)>{gateway_option_label(gateway)}</option> }).collect_view()}</select>{gateway_choices.is_empty().then(|| view! { <small>"No storage gateways are available. Create one from Hub settings or the owning organization first."</small> })}</label> }.into_any() } else { let on_target_kind_change = on_target_kind_change.clone(); let policy_choices = policy_choices.clone(); let hub_placement_choices = hub_placement_choices.clone(); view! { <label><span>"Target kind"</span><select prop:value=move || signals.target_kind.get() on:change=move |event| on_target_kind_change.run(event_target_value(&event))><option value="placement">"Placement"</option><option value="policy">"Placement policy revision"</option></select></label>{move || { let policy_choices = policy_choices.clone(); let hub_placement_choices = hub_placement_choices.clone(); if signals.target_kind.get() == "policy" { view! { <label><span>"Placement policy"</span><select required prop:value=move || signals.target_ref.get() on:change=move |event| signals.target_ref.set(event_target_value(&event))>{policy_choices.iter().map(|policy| view! { <option value=format!("{}@{}", policy.name, policy.current_revision)>{format!("{} · revision {}", policy.name, policy.current_revision)}</option> }).collect_view()}</select></label> }.into_any() } else { view! { <label><span>"Placement"</span><select required prop:value=move || signals.target_ref.get() on:change=move |event| signals.target_ref.set(event_target_value(&event))>{hub_placement_choices.iter().map(|placement| view! { <option value=placement.name.clone()>{format!("{} · {}", placement.name, placement.storage_binding_name)}</option> }).collect_view()}</select></label> }.into_any() }}}<AccessPolicyFields signals=signals.access allow_hub_auth=true/> }.into_any() }}<label class="checkbox-field"><input type="checkbox" prop:checked=move || signals.serves_git.get() on:change=move |event| signals.serves_git.set(event_target_checked(&event))/><span>"Serve Git"</span></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || signals.serves_cache.get() on:change=move |event| signals.serves_cache.set(event_target_checked(&event))/><span>"Serve Nix cache"</span></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || signals.serves_web.get() on:change=move |event| signals.serves_web.set(event_target_checked(&event))/><span>"Serve Web"</span></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get() || signals.endpoint_id.get().is_empty() || signals.target_ref.get().is_empty()>"Review route"</button></div></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section> }
 }
 
 #[component]

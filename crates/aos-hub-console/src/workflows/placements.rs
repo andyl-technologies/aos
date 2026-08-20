@@ -14,7 +14,9 @@ use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
 use super::delivery_routes::DeliveryRouteWorkflow;
+use super::organization_scope::surface_authorization_scope;
 use super::placement_policies::{PlacementEquivalencePanel, PlacementPolicyPanel};
+use super::storage_gateways::storage_binding_option_label;
 
 /// Renders placement workflows and delegates unrelated pages onward.
 #[component]
@@ -61,6 +63,13 @@ fn Placements(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl I
     let authority_surface = surface.clone();
     let replication_surface = surface.clone();
     let diagnostics_surface = surface.clone();
+    let binding_client = client.clone();
+    let binding_surface = surface.clone();
+    let bindings = LocalResource::new(move || {
+        let client = binding_client.clone();
+        let surface = binding_surface.clone();
+        async move { load_surface_storage_bindings(&client, &surface).await }
+    });
     let create_surface = surface;
 
     view! {
@@ -86,15 +95,56 @@ fn Placements(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl I
             <PlacementPolicyPanel client=client.clone() surface=create_surface.clone()/>
             <PlacementEquivalencePanel client=client.clone() surface=create_surface.clone()/>
             <PlacementReplication client=client.clone() surface=replication_surface/>
-            {can_manage.then(|| view! { <PlacementCreate client=client surface=create_surface/> })}
+            {can_manage.then(|| view! {
+                <Suspense fallback=move || view! { <section class="panel editor-panel"><p class="loading-row">"Loading storage bindings…"</p></section> }>
+                    {move || {
+                        let client = client.clone();
+                        let surface = create_surface.clone();
+                        Suspend::new(async move {
+                            match bindings.await.as_ref() {
+                                Ok(bindings) => view! { <PlacementCreate client=client surface=surface bindings=bindings.clone()/> }.into_any(),
+                                Err(detail) => view! { <section class="panel editor-panel"><InlineError detail=detail.clone()/></section> }.into_any(),
+                            }
+                        })
+                    }}
+                </Suspense>
+            })}
         </div>
     }
 }
 
+async fn load_surface_storage_bindings(
+    client: &ApiClient,
+    surface: &aos_proto_types::SurfaceRef,
+) -> Result<Vec<aos_proto_types::StorageBinding>, String> {
+    let (owner_scope_key, _) = surface_authorization_scope(client, surface).await?;
+    client
+        .collect_pages::<_, aos_proto_types::ListStorageBindingsResponse, _, _, _>(
+            aos_proto_types::STORAGE_BINDING_SERVICE_LIST_STORAGE_BINDINGS_PATH,
+            move |page_token| aos_proto_types::ListStorageBindingsRequest {
+                owner_scope_key: owner_scope_key.clone(),
+                page_size: 100,
+                page_token,
+            },
+            |response| (response.storage_bindings, response.next_page_token),
+        )
+        .await
+        .map_err(|failure| failure.to_string())
+}
+
 #[component]
-fn PlacementCreate(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl IntoView {
+fn PlacementCreate(
+    client: ApiClient,
+    surface: aos_proto_types::SurfaceRef,
+    bindings: Vec<aos_proto_types::StorageBinding>,
+) -> impl IntoView {
     let name = RwSignal::new(String::new());
-    let binding = RwSignal::new(String::new());
+    let binding = RwSignal::new(
+        bindings
+            .first()
+            .map(|binding| binding.stable_id.clone())
+            .unwrap_or_default(),
+    );
     let prefix = RwSignal::new(String::new());
     let kind = RwSignal::new("complete".to_string());
     let state = RwSignal::new("active".to_string());
@@ -166,7 +216,7 @@ fn PlacementCreate(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> i
     );
 
     view! {
-        <section class="panel editor-panel"><h2>"Create placement"</h2><form class="editor-form" on:submit=on_plan><label><span>"Name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label><label><span>"Storage binding ID"</span><input required prop:value=move || binding.get() on:input=move |event| binding.set(event_target_value(&event))/></label><label><span>"Object prefix"</span><input required prop:value=move || prefix.get() on:input=move |event| prefix.set(event_target_value(&event))/></label><label><span>"Kind"</span><select prop:value=move || kind.get() on:change=move |event| kind.set(event_target_value(&event))><option value="complete">"Complete"</option><option value="shard">"Shard"</option><option value="archive">"Archive"</option></select></label><label><span>"Desired state"</span><select prop:value=move || state.get() on:change=move |event| state.set(event_target_value(&event))><option value="active">"Active"</option><option value="draining">"Draining"</option><option value="offline">"Offline"</option></select></label><label><span>"Read order"</span><input required type="number" prop:value=move || read_order.get() on:input=move |event| read_order.set(event_target_value(&event))/></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || read_enabled.get() on:change=move |event| read_enabled.set(event_target_checked(&event))/><span>"Enable reads"</span></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || conditional_writes.get() on:change=move |event| conditional_writes.set(event_target_checked(&event))/><span>"Require conditional writes"</span></label>{move || (kind.get() == "shard").then(|| view! { <label><span>"Hash range start"</span><input required type="number" min="0" max="65535" prop:value=move || range_start.get() on:input=move |event| range_start.set(event_target_value(&event))/></label><label><span>"Hash range end"</span><input required type="number" min="1" max="65536" prop:value=move || range_end.get() on:input=move |event| range_end.set(event_target_value(&event))/></label> })}<div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review placement"</button></div></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section>
+        <section class="panel editor-panel"><h2>"Create placement"</h2><form class="editor-form" on:submit=on_plan><label><span>"Name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label><label><span>"Storage binding"</span><select required prop:value=move || binding.get() on:change=move |event| binding.set(event_target_value(&event))>{bindings.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{storage_binding_option_label(choice)}</option> }).collect_view()}</select>{bindings.is_empty().then(|| view! { <small>"No compatible storage bindings exist in this surface's owner scope."</small> })}</label><label><span>"Object prefix"</span><input required prop:value=move || prefix.get() on:input=move |event| prefix.set(event_target_value(&event))/></label><label><span>"Kind"</span><select prop:value=move || kind.get() on:change=move |event| kind.set(event_target_value(&event))><option value="complete">"Complete"</option><option value="shard">"Shard"</option><option value="archive">"Archive"</option></select></label><label><span>"Desired state"</span><select prop:value=move || state.get() on:change=move |event| state.set(event_target_value(&event))><option value="active">"Active"</option><option value="draining">"Draining"</option><option value="offline">"Offline"</option></select></label><label><span>"Read order"</span><input required type="number" prop:value=move || read_order.get() on:input=move |event| read_order.set(event_target_value(&event))/></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || read_enabled.get() on:change=move |event| read_enabled.set(event_target_checked(&event))/><span>"Enable reads"</span></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || conditional_writes.get() on:change=move |event| conditional_writes.set(event_target_checked(&event))/><span>"Require conditional writes"</span></label>{move || (kind.get() == "shard").then(|| view! { <label><span>"Hash range start"</span><input required type="number" min="0" max="65535" prop:value=move || range_start.get() on:input=move |event| range_start.set(event_target_value(&event))/></label><label><span>"Hash range end"</span><input required type="number" min="1" max="65536" prop:value=move || range_end.get() on:input=move |event| range_end.set(event_target_value(&event))/></label> })}<div class="form-actions"><button class="button" type="submit" disabled=move || busy.get() || binding.get().is_empty()>"Review placement"</button></div></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section>
     }
 }
 
