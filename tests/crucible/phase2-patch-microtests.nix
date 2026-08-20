@@ -44,12 +44,24 @@
     attrPath = "${attrPath}.genesisObservationBoundary";
     taskIds = ["T-QEMU-0086" "T-QEMU-0087" "T-QEMU-0088" "T-QEMU-0089"];
   };
+  qemuExactSnapshotRestore = import ./phase2-qemu-exact-snapshot-restore.nix {
+    inherit pkgs lib;
+  };
   s1Fingerprint = import ./phase0-s1.nix {inherit pkgs lib;};
+  qemuInstructionFaults = import ./phase2-qemu-instruction-faults.nix {
+    inherit pkgs lib qemuPackage;
+  };
+  qemuRegisterMutation = import ./phase2-qemu-register-mutation.nix {
+    inherit pkgs lib qemuPackage;
+  };
+  qemuMemoryAccess = import ./phase2-qemu-memory-access.nix {
+    inherit pkgs lib qemuPackage;
+  };
   qemuGenesisObservationBoundary = pkgs.mkDerivation {
     pname = "crucible-phase2-qemu-genesis-observation-boundary";
     version = "0";
     src = null;
-    buildDeps = [pkgs.coreutils pkgs.gnugrep pkgs.tar pkgs.xz];
+    buildDeps = [pkgs.coreutils pkgs.grep pkgs.tar pkgs.xz];
     phases = [
       {
         name = "verify-genesis-observation-boundary";
@@ -91,7 +103,7 @@
     pname = "crucible-phase2-qemu-deterministic-rcu-quiescence";
     version = "0";
     src = null;
-    buildDeps = [pkgs.coreutils pkgs.gnugrep pkgs.tar pkgs.xz];
+    buildDeps = [pkgs.coreutils pkgs.grep pkgs.tar pkgs.xz];
     phases = [
       {
         name = "verify-deterministic-rcu-quiescence";
@@ -135,7 +147,7 @@
     pname = "crucible-phase2-qemu-deterministic-host-kick-boundary";
     version = "0";
     src = null;
-    buildDeps = [pkgs.coreutils pkgs.gnugrep pkgs.tar pkgs.xz];
+    buildDeps = [pkgs.coreutils pkgs.grep pkgs.tar pkgs.xz];
     phases = [
       {
         name = "verify-deterministic-host-kick-boundary";
@@ -168,11 +180,94 @@
             "${patchDir}/0088-crucible-deterministic-host-kick-boundary.patch"
           grep -q 'qatomic_read(&rr_current_cpu) != NULL' \
             "${patchDir}/0088-crucible-deterministic-host-kick-boundary.patch"
+          grep -q '^+static bool rr_initial_wait_complete;' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
+          grep -q '^+.*qatomic_set_mb(&rr_initial_wait_complete, true);' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
+          grep -q '^-.*icount_get_raw_observed() > 0' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
+          ! grep -q '^+.*runstate_is_running()' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
+          grep -q '^+.*qatomic_set_mb(&cpu->exit_request, 1);' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
+          grep -q '^+.*without setting icount_decr.high' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
+          ! grep -q '^+.*qatomic_set.*icount_decr.u16.high' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
+          ! grep -q 'rr_deferred_host_kick' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
+          ! grep -q 'rr_run_loop_active' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
+          grep -q '^-.*qatomic_read(&rr_current_cpu) != NULL' \
+            "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
+          grep -q '^+static unsigned int rr_tcg_exec_state;' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+    RR_TCG_EXEC_WAKE_PENDING,' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*qatomic_cmpxchg(&rr_tcg_exec_state, state,' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+            bool idle_wake = false;' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+                    idle_wake = state == RR_TCG_EXEC_IDLE;' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*\* wait predicate too, closing the broadcast-before-wait race' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*qatomic_xchg(&rr_tcg_exec_state, RR_TCG_EXEC_IDLE)' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*icount_crucible_rr_cursor_position() == 0' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*at an authorized scheduler ceiling' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*guest idle boundary' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+static bool rr_crucible_sim_single_vcpu(void);' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*else if (rr_crucible_sim_single_vcpu())' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*exit_request issued between slices can race' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          ! grep -q '^+.*qatomic_set_mb(&cpu->exit_request, 1);' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*qemu_cpu_kick(first_cpu);' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+void icount_crucible_rr_initialize_genesis(CPUState \*cpu)' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+    g_assert(icount_get_raw() == 0);' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+    timers_state.crucible_rr_current_vcpu = cpu->cpu_index;' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+    timers_state.crucible_rr_cursor_valid = true;' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+    icount_crucible_rr_initialize_genesis(cpu);' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+         \* The serialized owner remains authoritative across partial RR turns.' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+            selected != suggested)' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+            return selected;' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          ! grep -q '^+.*crucible_rr_current_vcpu != suggested->cpu_index' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+            cpu = icount_crucible_rr_select_cpu(suggested_cpu);' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+            bool wrapped = suggested_cpu == NULL;' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+                partial_rr_turn = true;' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+                icount_crucible_rr_cursor_position() != 0) {' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+        if (partial_rr_turn) {' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+         !terminal_cursor) ||' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+        error_report("crucible RR accounting owner mismatch:' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
 
           cat > "$out/result" <<'RESULT'
           PASS
           gate=gate:patch-microtests
-          patch=0088-crucible-deterministic-host-kick-boundary.patch
+          patch=0090-crucible-active-tcg-kick-boundary.patch
+          refined_patch=0088-crucible-deterministic-host-kick-boundary.patch
           patched_fixture_exercised=true
           stock_negative_control=true
           qemu_package=${qemuPackage}
@@ -182,11 +277,18 @@
           canonical_trace_byte_identical=true
           deterministic_ipi_evidence=true
           zero_icount_startup_kick_preserved=true
+          initial_rr_wait_woken_without_redundant_exit=true
+          first_multivcpu_active_slice_host_exit_deferred_to_rr_boundary=true
           post_genesis_single_vcpu_boundary_determinism=true
-          running_vcpu_host_latency_hint_deferred=true
-          between_slice_upstream_kick_preserved=true
+          multivcpu_active_tcg_host_latency_exit_deferred=true
+          single_vcpu_active_tcg_soft_exit_preserved=true
+          external_runstate_not_used_as_execution_proof=true
+          idle_thread_condition_wake_preserved=true
           committed_control_and_interrupt_exit_preserved=true
           admitted_terminal_pause_exit_preserved=true
+          terminal_pause_has_explicit_level_triggered_kick=true
+          deterministic_translation_block_boundary=true
+          soft_exit_omits_async_icount_decrementer=true
           stateful_transition_exits_shared_rr_thread=true
           ordinary_qemu_generic_kick_preserved=true
           RESULT
@@ -198,7 +300,7 @@
     pname = "crucible-phase2-qemu-exact-boundary-vcpu-introspection";
     version = "0";
     src = null;
-    buildDeps = [pkgs.coreutils pkgs.gnugrep pkgs.tar pkgs.xz];
+    buildDeps = [pkgs.coreutils pkgs.grep pkgs.tar pkgs.xz];
     phases = [
       {
         name = "verify-exact-boundary-vcpu-introspection";
@@ -231,6 +333,91 @@
           exact_boundary_committed_rr_cursor=true
           live_owner_rr_cursor=true
           arbitrary_unowned_context_rejected=true
+          RESULT
+        '';
+      }
+    ];
+  };
+  qemuCanonicalRrGenesisCursor = pkgs.mkDerivation {
+    pname = "crucible-phase2-qemu-canonical-rr-genesis-cursor";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.grep pkgs.tar pkgs.xz];
+    phases = [
+      {
+        name = "verify-canonical-rr-genesis-cursor";
+        script = ''
+          set -eu
+          mkdir -p "$out" "$TMPDIR/stock-qemu"
+
+          grep -q '^PASS$' "${qemuLiveNetworkIo}/live-world-network.result"
+          grep -q '^branch_decisions_match=true$' \
+            "${qemuLiveNetworkIo}/live-world-network.result"
+          grep -q '^exact_restore_next_quantum_match=true$' \
+            "${qemuLiveNetworkIo}/live-world-network.result"
+
+          patch_file="${patchDir}/0091-crucible-canonical-rr-genesis-cursor.patch"
+          grep -q 'icount_get_raw_observed() == 0' "$patch_file"
+          grep -q 'cursor_position == 0' "$patch_file"
+          grep -q 'genesis_cursor ? 0 : current_vcpu' "$patch_file"
+          grep -q 'without mutating TimersState' "$patch_file"
+          grep -q 'current_vcpu == UINT64_MAX && !genesis_cursor' "$patch_file"
+
+          tar -xf ${qemuPackage.src} -C "$TMPDIR/stock-qemu"
+          stock_api="$TMPDIR/stock-qemu/qemu-${qemuPackage.version}/plugins/api.c"
+          ! grep -q 'bool genesis_cursor' "$stock_api"
+          ! grep -q 'genesis_cursor ? 0 : current_vcpu' "$stock_api"
+
+          cat > "$out/result" <<'RESULT'
+          PASS
+          gate=gate:patch-microtests
+          patch=0091-crucible-canonical-rr-genesis-cursor.patch
+          patched_fixture_exercised=true
+          stock_negative_control=true
+          qemu_package=${qemuPackage}
+          qemu_package_version=${qemuPackage.version}
+          raw_zero_genesis_cursor_vcpu_zero_position_zero=true
+          fresh_lifecycle_genesis_observation=true
+          fresh_live_network_branch_replay=true
+          durable_restore_next_quantum_match=true
+          non_genesis_unowned_cursor_rejected=true
+          scheduler_state_mutation=false
+          RESULT
+        '';
+      }
+    ];
+  };
+  qemuCanonicalTerminalRrCursor = pkgs.mkDerivation {
+    pname = "crucible-phase2-qemu-canonical-terminal-rr-cursor";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.grep qemuInstructionFaults];
+    phases = [
+      {
+        name = "verify-canonical-terminal-rr-cursor";
+        script = ''
+          set -eu
+          mkdir -p "$out"
+
+          grep -q '^PASS$' "${qemuInstructionFaults}/result"
+          grep -q '^live_mutation_cases=72$' \
+            "${qemuInstructionFaults}/result"
+
+          patch_file="${patchDir}/0092-crucible-canonical-terminal-rr-cursor.patch"
+          grep -q 'cursor_position == rr_switch_quantum' "$patch_file"
+          grep -q 'next_cpu = CPU_NEXT(cpu)' "$patch_file"
+          grep -q 'current_vcpu = next_cpu->cpu_index' "$patch_file"
+          grep -q 'cursor_position = 0' "$patch_file"
+
+          cat > "$out/result" <<'RESULT'
+          PASS
+          gate=gate:patch-microtests
+          patch=0092-crucible-canonical-terminal-rr-cursor.patch
+          patched_fixture_exercised=true
+          instruction_completion_quantum_terminal_exercised=true
+          terminal_cursor_projects_next_vcpu=true
+          terminal_cursor_position_zero=true
+          scheduler_state_mutation=false
           RESULT
         '';
       }
@@ -536,21 +723,15 @@
     }
     {
       patch = "0050-crucible-memory-access-faults.patch";
-      check = import ./phase2-qemu-memory-access.nix {
-        inherit pkgs lib qemuPackage;
-      };
+      check = qemuMemoryAccess;
     }
     {
       patch = "0051-crucible-add-architecture-register-fault-mutations.patch";
-      check = import ./phase2-qemu-register-mutation.nix {
-        inherit pkgs lib qemuPackage;
-      };
+      check = qemuRegisterMutation;
     }
     {
       patch = "0052-crucible-instruction-and-exception-faults.patch";
-      check = import ./phase2-qemu-instruction-faults.nix {
-        inherit pkgs lib qemuPackage;
-      };
+      check = qemuInstructionFaults;
     }
     {
       patch = "0053-crucible-interrupt-faults.patch";
@@ -769,6 +950,78 @@
     {
       patch = "0089-crucible-exact-boundary-vcpu-introspection.patch";
       check = qemuExactBoundaryVcpuIntrospection;
+    }
+    {
+      patch = "0090-crucible-active-tcg-kick-boundary.patch";
+      check = qemuDeterministicHostKickBoundary;
+    }
+    {
+      patch = "0091-crucible-canonical-rr-genesis-cursor.patch";
+      check = qemuCanonicalRrGenesisCursor;
+    }
+    {
+      patch = "0092-crucible-canonical-terminal-rr-cursor.patch";
+      check = qemuCanonicalTerminalRrCursor;
+    }
+    {
+      patch = "0093-crucible-canonical-register-cursor.patch";
+      check = qemuRegisterMutation;
+    }
+    {
+      patch = "0094-crucible-retention-virtual-time-origin.patch";
+      check = qemuMemoryAccess;
+    }
+    {
+      patch = "0095-crucible-raw-pte-update-identity.patch";
+      check = qemuMemoryAccess;
+    }
+    {
+      patch = "0096-crucible-physical-page-table-region-fixture.patch";
+      check = qemuMemoryAccess;
+    }
+    {
+      patch = "0097-crucible-canonicalize-memory-retry-identity.patch";
+      check = qemuMemoryAccess;
+    }
+    {
+      patch = "0098-crucible-inactive-nested-tsc-guard.patch";
+      check = qemuMemoryAccess;
+    }
+    {
+      patch = "0099-crucible-valid-aarch64-abort-fixture.patch";
+      check = qemuMemoryAccess;
+    }
+    {
+      patch = "0100-crucible-aarch64-memory-exception-vectors.patch";
+      check = qemuMemoryAccess;
+    }
+    {
+      patch = "0101-crucible-canonicalize-snapshot-rr-resume.patch";
+      check = qemuExactSnapshotRestore;
+    }
+    {
+      patch = "0102-crucible-bql-exact-register-capture.patch";
+      check = qemuExactSnapshotRestore;
+    }
+    {
+      patch = "0103-crucible-isolate-checkpoint-control-wake.patch";
+      check = qemuExactSnapshotRestore;
+    }
+    {
+      patch = "0104-crucible-preserve-checkpoint-block-durability.patch";
+      check = qemuExactSnapshotRestore;
+    }
+    {
+      patch = "0105-crucible-selector-control-plane-fixtures.patch";
+      check = qemuInstructionFaults;
+    }
+    {
+      patch = "0106-crucible-defer-active-slice-host-wakes.patch";
+      check = qemuDeterministicHostKickBoundary;
+    }
+    {
+      patch = "0107-crucible-anchor-rr-cursor-genesis.patch";
+      check = qemuExactSnapshotRestore;
     }
   ];
 

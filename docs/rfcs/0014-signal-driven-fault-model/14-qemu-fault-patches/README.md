@@ -1,6 +1,6 @@
 # 14 — QEMU fault-mutation patch series
 
-The complete node adapter and its exact-checkpoint handoff require forty new single-purpose patches after the
+The complete node adapter and its exact-checkpoint handoff require fifty-five new single-purpose patches after the
 currently carried `0046-crucible-translation-prefetch-helper.patch`. Each patch
 has its own specification in this directory and remains part of the one atomic
 RFC-0014 implementation PR.
@@ -56,6 +56,24 @@ and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-pa
 | [`0087-crucible-deterministic-rcu-quiescence`](38-deterministic-rcu-quiescence.md) | Prevent host-timed forced RCU kicks from changing guest interrupt visibility in sim mode | Determinism-critical scheduler execution |
 | [`0088-crucible-deterministic-host-kick-boundary`](39-deterministic-host-kick-boundary.md) | Defer state-free latency hints while preserving committed control and interrupt progress | Determinism-critical scheduler execution |
 | [`0089-crucible-exact-boundary-vcpu-introspection`](40-exact-boundary-vcpu-introspection.md) | Admit quiescent all-vCPU registers and the committed RR cursor at exact control boundaries | Determinism-critical checkpoint observation |
+| [`0090-crucible-active-tcg-kick-boundary`](41-active-tcg-kick-boundary.md) | Prove active guest execution and defer host service to the finite RR boundary | Determinism-critical scheduler execution |
+| [`0091-crucible-canonical-rr-genesis-cursor`](42-canonical-rr-genesis-cursor.md) | Expose the unique raw-zero scheduler coordinate before first vCPU selection | Determinism-critical checkpoint observation |
+| [`0092-crucible-canonical-terminal-rr-cursor`](43-canonical-terminal-rr-cursor.md) | Project a live quantum-terminal observation onto the scheduler's next committed coordinate | Determinism-critical execution fingerprinting |
+| [`0093-crucible-canonical-register-cursor`](44-canonical-register-cursor.md) | Advance after-instruction register evidence onto its canonical committed RR coordinate | Determinism-critical register evidence |
+| [`0094-crucible-retention-virtual-time-origin`](45-retention-virtual-time-origin.md) | Anchor retention installation and expiry in authoritative virtual nanoseconds | Determinism-critical memory-fault timing |
+| [`0095-crucible-raw-pte-update-identity`](46-raw-pte-update-identity.md) | Preserve backing PTE identity across transient corrected page-walk faults | Determinism-critical memory-fault progress |
+| [`0096-crucible-physical-page-table-region-fixture`](47-physical-page-table-region-fixture.md) | Target persistent page-table regions by descriptor GPA in live tests | Feature-contract regression coverage |
+| [`0097-crucible-canonical-memory-retry-identity`](48-canonical-memory-retry-identity.md) | Exclude TB-local ordinals from durable memory retry identity | Determinism-critical memory-fault retry |
+| [`0098-crucible-inactive-nested-tsc-guard`](49-inactive-nested-tsc-guard.md) | Avoid nested TSC sampling when guest-clock faults are inactive | Determinism-critical inactive-path parity |
+| [`0099-crucible-valid-aarch64-abort-fixture`](50-valid-aarch64-abort-fixture.md) | Exercise poison exceptions and retries with an architecturally valid AArch64 data abort | Feature-contract regression coverage |
+| [`0100-crucible-aarch64-memory-exception-vectors`](51-aarch64-memory-exception-vectors.md) | Admit AArch64 memory exceptions through their matching architectural vectors | Determinism-critical memory-fault validation |
+| [`0101-crucible-canonicalize-snapshot-rr-resume`](52-canonical-snapshot-rr-resume.md) | Preserve the serialized RR owner and intra-turn position after source-side snapshot creation | Determinism-critical checkpoint continuation |
+| [`0102-crucible-bql-exact-register-capture`](53-bql-exact-register-capture.md) | Admit quiescent BQL-held register capture while snapshot RR reselection is pending | Determinism-critical checkpoint observation |
+| [`0103-crucible-isolate-checkpoint-control-wake`](54-checkpoint-control-wake-isolation.md) | Hand native stop to the main loop without resuming parked block requests | Determinism-critical checkpoint I/O isolation |
+| [`0104-crucible-preserve-checkpoint-block-durability`](55-checkpoint-block-durability.md) | Preserve volatile Apache durability state across QEMU's synthetic stop flush | Determinism-critical checkpoint durability |
+| [`0105-crucible-selector-control-plane-fixtures`](56-selector-control-plane-fixtures.md) | Isolate live selector-admission fixtures from installed data-plane faults | Feature-contract regression coverage |
+| [`0106-crucible-defer-active-slice-host-wakes`](57-defer-active-slice-host-wakes.md) | Defer state-free host wakes across every multi-vCPU bounded RR slice | Determinism-critical scheduler execution |
+| [`0107-crucible-anchor-rr-cursor-genesis`](58-anchor-rr-cursor-genesis.md) | Establish the serialized RR cursor before the first execution budget | Determinism-critical scheduler state |
 
 The numbers are reserved by this RFC. If the existing series grows before
 implementation, the PR may renumber the files while preserving this exact order
@@ -114,6 +132,22 @@ all-vCPU exit of the shared RR execution thread.
 Patch `0089` then admits authoritative quiescent all-vCPU registers and the
 committed RR cursor from exact deterministic control boundaries even when the
 main-loop callback has no current vCPU; live unowned contexts remain rejected.
+Patch `0090` replaces the pre-runnable RR pointer approximation in patch
+`0088` with deterministic translation-block-boundary exits and an explicit
+initial-wait completion flag. State-free kicks publish `exit_request` without
+setting the asynchronous icount decrementer, so the current block completes
+before host work is serviced; startup condition-variable wakeups and immediate
+exits for committed state remain intact.
+Patch `0091` closes the remaining fresh-process checkpoint gap. Before the
+first runnable selection, serialized RR state intentionally has no current
+owner, but its unique next coordinate is vCPU 0 at position 0. The formal
+cursor API exposes that coordinate only at the exact raw-zero boundary and
+does not modify scheduler state; every later invalid owner remains rejected.
+Patch `0107` closes the corresponding execution-state gap: the RR thread now
+commits the fresh guest's vCPU 0, position 0 cursor before computing its first
+budget. Host-driven startup work can no longer choose the virtual cursor
+origin, a loop-local restart cannot discard a partial turn, and a cursor
+restored from VMState remains authoritative.
 
 ## 14.2 Process and license boundary
 

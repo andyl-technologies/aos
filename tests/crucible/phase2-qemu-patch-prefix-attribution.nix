@@ -431,6 +431,78 @@
       kind = "recorded";
       symbols = [];
     };
+    "0090-crucible-active-tcg-kick-boundary.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0091-crucible-canonical-rr-genesis-cursor.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0092-crucible-canonical-terminal-rr-cursor.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0093-crucible-canonical-register-cursor.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0094-crucible-retention-virtual-time-origin.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0095-crucible-raw-pte-update-identity.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0096-crucible-physical-page-table-region-fixture.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0097-crucible-canonicalize-memory-retry-identity.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0098-crucible-inactive-nested-tsc-guard.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0099-crucible-valid-aarch64-abort-fixture.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0100-crucible-aarch64-memory-exception-vectors.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0101-crucible-canonicalize-snapshot-rr-resume.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0102-crucible-bql-exact-register-capture.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0103-crucible-isolate-checkpoint-control-wake.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0104-crucible-preserve-checkpoint-block-durability.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0105-crucible-selector-control-plane-fixtures.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0106-crucible-defer-active-slice-host-wakes.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0107-crucible-anchor-rr-cursor-genesis.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

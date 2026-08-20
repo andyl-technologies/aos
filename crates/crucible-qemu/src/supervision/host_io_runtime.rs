@@ -47,7 +47,9 @@ use crate::{
 };
 use deadline::AdvanceWaitDeadline;
 
+mod boundary;
 mod deadline;
+use boundary::*;
 
 /// Default host poll interval while awaiting a plugin-published quantum boundary.
 ///
@@ -71,8 +73,10 @@ pub struct QemuLiveHostIoRuntime {
     vm_slot: u32,
     poll_interval: Duration,
     advance_wait_deadline: AdvanceWaitDeadline,
-    /// Plugin publication generation observed immediately before the advance wake.
-    advance_wake_publish_generation: Option<u32>,
+    /// Plugin generation observed before host-serviced device work wakes QEMU.
+    device_wake_publish_generation: Option<u32>,
+    /// Zero-length idle coordinate left by an exact checkpoint pause.
+    checkpoint_idle_coordinate: Option<u64>,
     block: Option<BlockIoServicing>,
     ninep: Option<NinepIoServicing>,
     accelerator: Option<QemuLiveAcceleratorServicer>,
@@ -207,7 +211,8 @@ impl QemuLiveHostIoRuntime {
             vm_slot,
             poll_interval,
             advance_wait_deadline: AdvanceWaitDeadline::default(),
-            advance_wake_publish_generation: None,
+            device_wake_publish_generation: None,
+            checkpoint_idle_coordinate: None,
             block: None,
             ninep: None,
             accelerator: None,
@@ -360,15 +365,14 @@ impl QemuLiveHostIoRuntime {
 
     /// Polls the node slot for a quantum boundary within a bounded attempt count.
     ///
-    /// Signals the plugin wake eventfd once before polling so a vCPU parked in its
-    /// between-quanta idle wait observes the ceiling the node just published.
+    /// Signals the plugin wake eventfd once before polling.
     ///
-    /// A normal advance deliberately does not request a control boundary. An idle
-    /// callback treats such a request as an instruction to return to QEMU's main
-    /// loop without authorizing the queued idle-time jump. If QEMU then remains
-    /// parked, the very request intended to prove wake consumption can strand the
-    /// advance. Instead, the runtime records the plugin-owned publication
-    /// generation and requires a later publication before accepting a boundary.
+    /// Publishing the scheduler ceiling already wakes and orders the plugin's
+    /// idle futex. A node parked at a later deterministic deadline therefore
+    /// needs no additional main-loop acknowledgement: the published idle state
+    /// remains a valid boundary for every smaller ceiling. Only device work
+    /// serviced while polling can invalidate the observed state, so that path
+    /// records the plugin generation and requires a later publication.
     fn poll_advance_completion(
         &mut self,
         timeout: Duration,
@@ -379,26 +383,35 @@ impl QemuLiveHostIoRuntime {
                 "timeout deadline overflow",
             ));
         }
-        let snapshot = self
+        self.device_wake_publish_generation = None;
+        let initial = self
             .region
             .node_slot(self.vm_slot)
             .map_err(map_slot_error)?
             .snapshot();
-        self.advance_wake_publish_generation = Some(snapshot.publish_gen);
-        self.write_wake_doorbell()?;
+        self.checkpoint_idle_coordinate = checkpoint_idle_coordinate(&initial);
+        if self.checkpoint_idle_coordinate.is_some() {
+            // A QMP-resumed checkpoint retains the plugin's completed
+            // all-halted edge. An acknowledged control boundary republishes
+            // the coordinate and re-arms that edge before the fresh ceiling
+            // may be classified; a bare doorbell cannot make that transition.
+            let _request = self.signal_wake()?;
+        } else {
+            self.write_wake_doorbell()?;
+        }
         self.repoll_advance_completion(timeout)
     }
 
     /// Polls for a quantum boundary after the initial plugin wake was sent.
     ///
-    /// A change from the publication generation captured by
-    /// [`Self::poll_advance_completion`] proves that the plugin observed the
-    /// wake. Later device completions ring only the eventfd and do not replace
-    /// this one-shot fence. The completed-quantum clamp performs a separate
-    /// post-device control-token handshake before this runtime returns.
+    /// A host-serviced device transition rings the eventfd and records the
+    /// preceding plugin generation. A later generation proves QEMU consumed
+    /// that transition before the runtime accepts a boundary. The
+    /// completed-quantum clamp performs a separate post-device control-token
+    /// handshake before this runtime returns.
     fn repoll_advance_completion(
         &mut self,
-        _timeout: Duration,
+        timeout: Duration,
     ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
         let remaining = self.advance_wait_deadline.remaining().ok_or_else(|| {
             QemuAsyncDriverRuntimeError::new(
@@ -418,38 +431,60 @@ impl QemuLiveHostIoRuntime {
                 .map_err(map_slot_error)?
                 .snapshot();
             if self
-                .advance_wake_publish_generation
+                .device_wake_publish_generation
                 .is_some_and(|generation| snapshot.publish_gen != generation)
             {
-                self.advance_wake_publish_generation = None;
+                self.device_wake_publish_generation = None;
+            }
+            let checkpoint_idle_unreleased = checkpoint_idle_publication_is_unreleased(
+                self.checkpoint_idle_coordinate,
+                &snapshot,
+            );
+            if !checkpoint_idle_unreleased {
+                self.checkpoint_idle_coordinate = None;
             }
             // Service block I/O before classifying the boundary: a guest blocked
             // on a probe read cannot reach the ceiling until its response is
             // delivered, so draining and delivering at the observed icount is what
             // lets the advance make progress.
-            self.service_block_io(&snapshot)?;
-            self.service_ninep_io(&snapshot)?;
-            self.service_accelerator_io(&snapshot)?;
+            let block_progress = self.service_block_io(&snapshot)?;
+            let ninep_progress = self.service_ninep_io(&snapshot)?;
+            let accelerator_progress = self.service_accelerator_io(&snapshot)?;
+            if (block_progress || ninep_progress || accelerator_progress)
+                && self.device_wake_publish_generation.is_none()
+            {
+                self.device_wake_publish_generation = Some(snapshot.publish_gen);
+            }
             self.publish_device_completion_deadline()?;
             let idle = idle_state_from_snapshot(snapshot);
-            let wake_unacknowledged = advance_wake_publication_is_unobserved(
-                self.advance_wake_publish_generation,
+            let wake_unacknowledged = device_wake_publication_is_unobserved(
+                self.device_wake_publish_generation,
                 &snapshot,
             );
-            match classify_after_host_wake(&idle, snapshot.max_advance_icount, wake_unacknowledged)
-            {
+            let boundary = if checkpoint_idle_unreleased {
+                QuantumBoundary::Pending
+            } else {
+                classify_after_host_wake(&idle, snapshot.max_advance_icount, wake_unacknowledged)
+            };
+            match boundary {
                 QuantumBoundary::Reached { .. } | QuantumBoundary::Paused { .. } => {
-                    self.clamp_completed_quantum(&snapshot)?;
+                    self.checkpoint_idle_coordinate = None;
+                    self.clamp_completed_quantum(&snapshot, timeout)?;
                     self.service_console_output()?;
                     return Ok(QemuAsyncWaitOutcome::Completed);
                 }
                 QuantumBoundary::Pending => {
                     if snapshot.status == STATUS_DONE {
-                        self.advance_wake_publish_generation = None;
+                        self.device_wake_publish_generation = None;
+                        self.checkpoint_idle_coordinate = None;
                         return Ok(QemuAsyncWaitOutcome::Completed);
                     }
-                    if self.advance_wake_publish_generation.is_none() && attempt % 16 == 15 {
-                        self.write_wake_doorbell()?;
+                    if self.device_wake_publish_generation.is_none() && attempt % 16 == 15 {
+                        if checkpoint_idle_unreleased {
+                            let _request = self.signal_wake()?;
+                        } else {
+                            self.write_wake_doorbell()?;
+                        }
                     }
                 }
             }
@@ -469,6 +504,7 @@ impl QemuLiveHostIoRuntime {
     fn clamp_completed_quantum(
         &mut self,
         snapshot: &crucible_shmem::NodeSlotSnapshot,
+        timeout: Duration,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         let ceiling =
             authorize_advance_ceiling(snapshot.current_icount, snapshot.current_icount, None)
@@ -494,20 +530,22 @@ impl QemuLiveHostIoRuntime {
         // readiness observation stable: any newly submitted coroutine is
         // already represented by `device_io_active` before the quantum returns.
         let request = self.signal_wake()?;
-        let remaining = self.advance_wait_deadline.remaining().ok_or_else(|| {
-            QemuAsyncDriverRuntimeError::new(
-                "acknowledge completed-quantum clamp",
-                "advance deadline expired before the clamp probe",
-            )
-        })?;
-        let attempts = bounded_poll_attempts(remaining, self.poll_interval);
+        // Boundary discovery and revocation acknowledgement are distinct
+        // liveness phases. A quantum may consume nearly all of its discovery
+        // budget under a heavily loaded TCG host; carrying only the residual
+        // milliseconds into this mandatory odd-token handshake would make a
+        // correct guest outcome depend on host contention. Give the handshake
+        // its own bounded policy interval. Neither interval enters canonical
+        // state or changes the exact guest coordinate.
+        let attempts = bounded_poll_attempts(timeout, self.poll_interval);
         let mut last_observed_state = None;
         let mut boundary_acknowledged = false;
-        let expected_idle_wake_icount = if snapshot.status == STATUS_IDLE {
+        let initial_idle_wake_icount = if snapshot.status == STATUS_IDLE {
             snapshot.idle_wake_icount
         } else {
             snapshot.current_icount
         };
+        let mut device_progress_observed = false;
         for attempt in 0..attempts {
             self.service_console_output()?;
             let observed = self
@@ -519,9 +557,16 @@ impl QemuLiveHostIoRuntime {
             let ninep_progress = self.service_ninep_io(&observed)?;
             let accelerator_progress = self.service_accelerator_io(&observed)?;
             let device_progress = block_progress || ninep_progress || accelerator_progress;
+            device_progress_observed |= device_progress;
+            let expected_idle_wake_icount = if device_progress_observed {
+                snapshot.current_icount
+            } else {
+                initial_idle_wake_icount
+            };
             last_observed_state = Some((
                 observed.control_boundary_ack,
                 observed.current_icount,
+                observed.max_advance_icount,
                 observed.idle_wake_icount,
                 observed.status,
                 observed.device_io_active,
@@ -534,11 +579,13 @@ impl QemuLiveHostIoRuntime {
                 boundary_acknowledged = true;
             }
             // The control callback publishes the exact clamped coordinate
-            // before release-acknowledging the request. A node that was already
-            // idle must retain its future deadline so `finish_quantum` can prove
-            // the early pause against the original horizon; a previously
-            // running node is fenced idle at the current coordinate. In both
-            // cases, newly serviced device work requires another observation.
+            // before release-acknowledging the request. A node that retained a
+            // future idle deadline may only tighten it. A node with no retained
+            // future may immediately republish QEMU's fresh exact deadline from
+            // its re-armed all-halted callback; accepting both states prevents
+            // host observation timing from selecting liveness. Servicing device
+            // work invalidates the retained deadline and requires another
+            // observation after the current-coordinate fence.
             if completed_quantum_clamp_is_settled(
                 boundary_acknowledged,
                 snapshot.current_icount,
@@ -562,12 +609,17 @@ impl QemuLiveHostIoRuntime {
         Err(QemuAsyncDriverRuntimeError::new(
             "acknowledge completed-quantum clamp",
             format!(
-                "QEMU did not publish the post-device control boundary within {remaining:?}: requested token {request}, expected current icount {}, expected idle wake icount {expected_idle_wake_icount}, last observation {}",
+                "QEMU did not publish the post-device control boundary within {timeout:?}: requested token {request}, expected current icount {}, retained-or-current idle wake icount {}, last observation {}",
                 snapshot.current_icount,
+                if device_progress_observed {
+                    snapshot.current_icount
+                } else {
+                    initial_idle_wake_icount
+                },
                 last_observed_state.map_or_else(
                     || String::from("none"),
-                    |(ack, current, idle_wake, status, device_active, device_progress)| format!(
-                        "token {ack}, current icount {current}, idle wake icount {idle_wake}, status {status}, device I/O active {device_active}, device progress {device_progress}"
+                    |(ack, current, max_advance, idle_wake, status, device_active, device_progress)| format!(
+                        "token {ack}, current icount {current}, max advance icount {max_advance}, idle wake icount {idle_wake}, status {status}, device I/O active {device_active}, device progress {device_progress}",
                     ),
                 )
             ),
@@ -759,6 +811,58 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
             == 0)
     }
 
+    fn probe_checkpoint_device_io(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<bool, QemuAsyncDriverRuntimeError> {
+        if timeout.is_zero() {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "probe checkpoint device boundary",
+                "checkpoint device probe timeout is zero",
+            ));
+        }
+        let request = self.signal_wake()?;
+        let attempts = bounded_poll_attempts(timeout, self.poll_interval);
+        let mut last_observed = None;
+        for attempt in 0..attempts {
+            self.service_console_output()?;
+            let snapshot = self
+                .region
+                .node_slot(self.vm_slot)
+                .map_err(map_slot_error)?
+                .snapshot();
+            let block_progress = self.service_block_io(&snapshot)?;
+            let ninep_progress = self.service_ninep_io(&snapshot)?;
+            let accelerator_progress = self.service_accelerator_io(&snapshot)?;
+            let device_progress = block_progress || ninep_progress || accelerator_progress;
+            self.publish_device_completion_deadline()?;
+            last_observed = Some((
+                snapshot.control_boundary_ack,
+                snapshot.current_icount,
+                snapshot.device_io_active,
+                device_progress,
+            ));
+            if control_boundary_request_is_acknowledged(request, &snapshot) {
+                return Ok(!device_progress && snapshot.device_io_active == 0);
+            }
+            if attempt + 1 < attempts {
+                thread::sleep(self.poll_interval);
+            }
+        }
+        Err(QemuAsyncDriverRuntimeError::new(
+            "probe checkpoint device boundary",
+            format!(
+                "QEMU did not acknowledge control token {request} within {timeout:?}; last observation {}",
+                last_observed.map_or_else(
+                    || String::from("none"),
+                    |(ack, current, active, progress)| format!(
+                        "token {ack}, current icount {current}, device I/O active {active}, device progress {progress}"
+                    ),
+                )
+            ),
+        ))
+    }
+
     /// Requests an exact plugin boundary and hands QEMU's execution path to QMP.
     fn quiesce_for_checkpoint(
         &mut self,
@@ -770,11 +874,45 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 "checkpoint pause timeout is zero",
             ));
         }
+        let mut deadline = AdvanceWaitDeadline::default();
+        if !deadline.start(timeout) {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "quiesce for checkpoint",
+                "checkpoint pause timeout exceeds the host supervision clock range",
+            ));
+        }
+        let mut initial_snapshot = self
+            .region
+            .node_slot(self.vm_slot)
+            .map_err(map_slot_error)?
+            .snapshot();
+        let reached_boundary_control_wake = initial_snapshot.status != STATUS_IDLE;
+
+        if reached_boundary_control_wake {
+            // Warm realization pulses the main-loop doorbell while connecting
+            // QMP. Its final two-pass callback can still own QEMU's coalescing
+            // token after the primer thread joins. Fence that ordinary control
+            // work before publishing pause; otherwise the old callback can run
+            // before pause is visible, clear the token, and strand the reached-
+            // ceiling vCPU on its condition variable indefinitely.
+            self.probe_checkpoint_device_io(timeout)?;
+            initial_snapshot = self
+                .region
+                .node_slot(self.vm_slot)
+                .map_err(map_slot_error)?
+                .snapshot();
+        }
+        let remaining = deadline.remaining().unwrap_or_default();
+        if remaining.is_zero() {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "quiesce for checkpoint",
+                "pre-pause control fence exhausted the checkpoint pause timeout",
+            ));
+        }
         let slot = self
             .region
             .node_slot(self.vm_slot)
             .map_err(map_slot_error)?;
-        let initial_snapshot = slot.snapshot();
         let initial_publish_gen = initial_snapshot.publish_gen;
         if let Err(source) = self.region.header().request_pause([slot]) {
             return self.fail_checkpoint_pause(QemuAsyncDriverRuntimeError::new(
@@ -782,11 +920,10 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 source.to_string(),
             ));
         }
-        // Revoke the unused tail of the preceding quantum before any wake can
-        // make an idle vCPU runnable. The pause flag is already visible, and a
-        // later normal quantum must publish a fresh ceiling; retaining the old
-        // future ceiling here would permit one in-flight TCG slice before the
-        // main loop consumes the checkpoint control fd.
+        // Revoke the unused tail of the preceding quantum. Publishing this
+        // ceiling also wakes the scheduler futex, so the plugin observes the
+        // already-visible pause without a main-loop eventfd wake. A later
+        // normal quantum must publish a fresh ceiling.
         let checkpoint_ceiling = authorize_advance_ceiling(
             initial_snapshot.current_icount,
             initial_snapshot.current_icount,
@@ -805,29 +942,49 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 source.to_string(),
             ));
         }
-        let mut wake_control_boundary_ack = match self.signal_wake() {
-            Ok(request) => Some(request),
-            Err(source) => return self.fail_checkpoint_pause(source),
-        };
-        let attempts = bounded_poll_attempts(timeout, self.poll_interval);
+        let device_servicers_attached =
+            self.block.is_some() || self.ninep.is_some() || self.accelerator.is_some();
+        let zero_length_idle_control_wake = device_servicers_attached
+            && initial_snapshot.status == STATUS_IDLE
+            && initial_snapshot.idle_wake_icount == initial_snapshot.current_icount;
+        let tokenized_checkpoint_control_wake =
+            reached_boundary_control_wake || zero_length_idle_control_wake;
+        if tokenized_checkpoint_control_wake
+            || checkpoint_pause_requires_control_doorbell(
+                &initial_snapshot,
+                device_servicers_attached,
+            )
+        {
+            // A reached-ceiling publication is parked on QEMU's condition
+            // variable rather than the scheduler futex, so the clamped ceiling
+            // cannot make it observe the pause. The pre-pause fence publishes
+            // an idle-looking control boundary without changing that underlying
+            // wait, so preserve the original reached-state provenance here.
+            // Ring the main-loop doorbell in that state even with devices
+            // attached: QEMU's two-pass control boundary orders any resulting
+            // device bottom half before it publishes quiescence. An originally
+            // idle device VM with a future deadline retains the stricter
+            // no-doorbell path to avoid admitting a latent waiter. A zero-length
+            // idle publication has no futex edge left to observe pause and uses
+            // the same tokenized two-pass handoff as a reached boundary.
+            let wake = if tokenized_checkpoint_control_wake {
+                // The paired token makes a vCPU resume callback yield without
+                // interpreting this control edge as guest authorization.
+                self.signal_wake().map(|_request| ())
+            } else {
+                self.write_wake_doorbell()
+            };
+            if let Err(source) = wake {
+                return self.fail_checkpoint_pause(source);
+            }
+        }
+        let attempts = bounded_poll_attempts(remaining, self.poll_interval);
         let mut last_observed = None;
         for attempt in 0..attempts {
             let snapshot = match self.region.node_slot(self.vm_slot).map_err(map_slot_error) {
                 Ok(slot) => slot.snapshot(),
                 Err(source) => return self.fail_checkpoint_pause(source),
             };
-            if wake_control_boundary_ack
-                .is_some_and(|request| control_boundary_request_is_acknowledged(request, &snapshot))
-            {
-                wake_control_boundary_ack = None;
-            }
-            last_observed = Some((
-                snapshot.publish_gen,
-                snapshot.status,
-                snapshot.current_icount,
-                snapshot.idle_wake_icount,
-                snapshot.device_io_active,
-            ));
             // A request can enter QEMU's device coroutine in the main-loop
             // slice between the plugin's exact pause publication and native
             // stop consuming its queued request. The RR fence prevents any
@@ -846,47 +1003,80 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 Err(source) => return self.fail_checkpoint_pause(source),
             };
             let device_progress = block_progress || ninep_progress || accelerator_progress;
-            if device_progress && wake_control_boundary_ack.is_none() {
-                // Each servicing path signals QEMU after publishing its
-                // response. The snapshot predates consumption of that wake,
-                // so it cannot prove that the guest is quiesced even when it
-                // contains an earlier pause acknowledgement.
-                wake_control_boundary_ack = match self.signal_wake() {
-                    Ok(request) => Some(request),
-                    Err(source) => return self.fail_checkpoint_pause(source),
-                };
-            }
             if let Err(source) = self.publish_device_completion_deadline() {
                 return self.fail_checkpoint_pause(source);
             }
-            if wake_control_boundary_ack.is_none()
-                && snapshot.status == crucible_shmem::STATUS_IDLE
-                && snapshot.idle_wake_icount == snapshot.current_icount
-                && snapshot.device_io_active == 0
+            // Servicing a device or publishing its next completion deadline can
+            // wake QEMU and cause a fresh plugin boundary after `snapshot` was
+            // read. Decide only from a post-service acquire snapshot; using the
+            // stale pre-service state allowed checkpoint assembly to observe a
+            // transient reached slot immediately after this method returned.
+            let settled_snapshot = match self.region.node_slot(self.vm_slot).map_err(map_slot_error)
             {
+                Ok(slot) => slot.snapshot(),
+                Err(source) => return self.fail_checkpoint_pause(source),
+            };
+            last_observed = Some((
+                settled_snapshot.publish_gen,
+                settled_snapshot.status,
+                settled_snapshot.current_icount,
+                settled_snapshot.idle_wake_icount,
+                settled_snapshot.device_io_active,
+                settled_snapshot.control_boundary_ack,
+                self.region.header().pause_requested(),
+            ));
+            if settled_snapshot.publish_gen != initial_publish_gen
+                && !device_progress
+                && settled_snapshot.status == crucible_shmem::STATUS_IDLE
+                && settled_snapshot.idle_wake_icount == settled_snapshot.current_icount
+                && settled_snapshot.device_io_active == 0
+            {
+                // The plugin has queued native VM stop from the exact futex
+                // callback. Wake QEMU's main loop so it can consume that
+                // request and release the BQL to QMP. The patched block driver
+                // suppresses request-coroutine wakeups while this stop is
+                // pending, so the handoff cannot admit post-pause I/O.
+                self.write_wake_doorbell()?;
                 return Ok(());
             }
             if attempt + 1 < attempts {
-                if wake_control_boundary_ack.is_none() {
-                    wake_control_boundary_ack = match self.signal_wake() {
-                        Ok(request) => Some(request),
-                        Err(source) => return self.fail_checkpoint_pause(source),
-                    };
+                // Publishing the clamped ceiling already wakes the plugin's
+                // scheduler futex. Do not ring the main-loop eventfd here: a
+                // control-only wake can admit a latent block poll after the
+                // readiness probe and create a future completion that cannot
+                // retire at the frozen checkpoint coordinate. A reached
+                // boundary is different: QMP-connect wake pulsing may have
+                // consumed the coalesced callback token just before the pause
+                // request. Re-publish its acknowledged token periodically so
+                // coalescing cannot lose the required handoff.
+                if tokenized_checkpoint_control_wake
+                    && attempt % 16 == 15
+                    && let Err(source) = self.signal_wake()
+                {
+                    return self.fail_checkpoint_pause(source);
                 }
                 thread::sleep(self.poll_interval);
             }
         }
         let detail = last_observed.map_or_else(
             || String::from("no node-slot snapshot was observed"),
-            |(publish_gen, status, current_icount, idle_wake_icount, device_io_active)| {
+            |(
+                publish_gen,
+                status,
+                current_icount,
+                idle_wake_icount,
+                device_io_active,
+                control_ack,
+                pause_requested,
+            )| {
                 format!(
-                    "initial publish generation {initial_publish_gen}, last publish generation {publish_gen}, status {status}, current icount {current_icount}, idle wake icount {idle_wake_icount}, device I/O active {device_io_active}"
+                    "initial publish generation {initial_publish_gen}, last publish generation {publish_gen}, status {status}, current icount {current_icount}, idle wake icount {idle_wake_icount}, device I/O active {device_io_active}, control serial {control_ack}, pause requested {pause_requested}"
                 )
             },
         );
         self.fail_checkpoint_pause(QemuAsyncDriverRuntimeError::new(
             "await checkpoint pause",
-            format!("plugin did not acknowledge an exact boundary within {timeout:?}: {detail}"),
+            format!("plugin did not acknowledge an exact boundary within {remaining:?}: {detail}"),
         ))
     }
 
@@ -1302,75 +1492,6 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
     }
 }
 
-/// Returns the number of poll attempts that fit within `timeout`, at least one.
-fn bounded_poll_attempts(timeout: Duration, poll_interval: Duration) -> u64 {
-    let interval = poll_interval.as_micros().max(1);
-    let budget = timeout.as_micros();
-    u64::try_from(budget / interval).unwrap_or(u64::MAX).max(1)
-}
-
-/// Classifies a snapshot only after QEMU acknowledges the latest host wake.
-///
-/// The initial quantum wake and a servicing pass that publishes a response can
-/// both make an idle guest runnable. A snapshot from before QEMU consumes that
-/// wake no longer proves that the guest remains parked, even if it describes an
-/// otherwise complete boundary. Treating it as pending forces the poll loop to
-/// observe a later stable plugin publication first.
-fn classify_after_host_wake(
-    idle: &crate::QemuNodeIdleState,
-    ceiling: u64,
-    wake_unacknowledged: bool,
-) -> QuantumBoundary {
-    if wake_unacknowledged {
-        QuantumBoundary::Pending
-    } else {
-        classify_quantum_boundary(idle, ceiling)
-    }
-}
-
-/// Returns whether the plugin has not yet published after the host wake.
-fn advance_wake_publication_is_unobserved(
-    initial_generation: Option<u32>,
-    snapshot: &crucible_shmem::NodeSlotSnapshot,
-) -> bool {
-    initial_generation.is_some_and(|generation| snapshot.publish_gen == generation)
-}
-
-/// Returns whether the plugin release-acknowledged an even host request.
-///
-/// Other runtime operations may complete their own handshakes while an advance
-/// is polling. Consequently, the observed odd token may be a later
-/// acknowledgement rather than the request's immediate successor. Tokens use
-/// wrapping serial-number order: an odd value less than half the `u32` space
-/// ahead of `request` acknowledges it, while the odd predecessor is stale.
-fn control_boundary_request_is_acknowledged(
-    request: u32,
-    snapshot: &crucible_shmem::NodeSlotSnapshot,
-) -> bool {
-    let observed = snapshot.control_boundary_ack;
-    let forward_distance = observed.wrapping_sub(request);
-    request & 1 == 0
-        && observed & 1 == 1
-        && forward_distance != 0
-        && forward_distance < (1_u32 << 31)
-}
-
-/// Returns whether a post-device clamp publication is safe to expose.
-fn completed_quantum_clamp_is_settled(
-    boundary_acknowledged: bool,
-    expected_current_icount: u64,
-    expected_idle_wake_icount: u64,
-    device_progress: bool,
-    snapshot: &crucible_shmem::NodeSlotSnapshot,
-) -> bool {
-    boundary_acknowledged
-        && !device_progress
-        && snapshot.current_icount == expected_current_icount
-        && snapshot.status == STATUS_IDLE
-        && snapshot.idle_wake_icount == expected_idle_wake_icount
-        && snapshot.device_io_active == 0
-}
-
 /// Maps a node-slot access failure to a runtime await error.
 fn map_slot_error(source: MappedSetupRegionAccessError) -> QemuAsyncDriverRuntimeError {
     QemuAsyncDriverRuntimeError::new("poll advance completion", source.to_string())
@@ -1400,147 +1521,5 @@ pub enum QemuLiveHostIoRuntimeError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bounded_poll_attempts_is_at_least_one() {
-        assert_eq!(
-            bounded_poll_attempts(Duration::ZERO, Duration::from_millis(1)),
-            1
-        );
-        assert_eq!(
-            bounded_poll_attempts(Duration::from_micros(1), Duration::from_millis(1)),
-            1
-        );
-    }
-
-    #[test]
-    fn bounded_poll_attempts_divides_the_budget() {
-        assert_eq!(
-            bounded_poll_attempts(Duration::from_millis(10), Duration::from_millis(1)),
-            10
-        );
-        assert_eq!(
-            bounded_poll_attempts(Duration::from_millis(1), Duration::from_micros(250)),
-            4
-        );
-    }
-
-    #[test]
-    fn bounded_poll_attempts_tolerates_a_zero_interval() {
-        assert_eq!(
-            bounded_poll_attempts(Duration::from_millis(1), Duration::ZERO),
-            1000
-        );
-    }
-
-    #[test]
-    fn unacknowledged_host_wake_invalidates_an_idle_snapshot() {
-        let idle = crate::QemuNodeIdleState {
-            current_icount: crucible::Icount { retired: 40 },
-            next_deadline: Some(crucible::Icount { retired: 200 }),
-        };
-
-        assert_eq!(
-            classify_after_host_wake(&idle, 100, false),
-            QuantumBoundary::Paused {
-                at: 40,
-                deadline: 200,
-            }
-        );
-        assert_eq!(
-            classify_after_host_wake(&idle, 100, true),
-            QuantumBoundary::Pending
-        );
-    }
-
-    #[test]
-    fn advance_requires_a_plugin_publication_after_its_wake() {
-        let slot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM);
-        let initial = slot.snapshot();
-        assert!(advance_wake_publication_is_unobserved(
-            Some(initial.publish_gen),
-            &initial,
-        ));
-
-        slot.publish_control_boundary(0, 0, 0)
-            .unwrap_or_else(|error| panic!("control boundary should publish: {error}"));
-        let published = slot.snapshot();
-        assert!(!advance_wake_publication_is_unobserved(
-            Some(initial.publish_gen),
-            &published,
-        ));
-
-        assert!(!advance_wake_publication_is_unobserved(None, &initial));
-    }
-
-    #[test]
-    fn advance_accepts_its_control_acknowledgement_and_later_serials() {
-        let slot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM);
-        let request = slot
-            .request_control_boundary()
-            .unwrap_or_else(|error| panic!("control request should publish: {error}"));
-        slot.publish_control_boundary(0, 0, 0)
-            .unwrap_or_else(|error| panic!("control boundary should publish: {error}"));
-        slot.acknowledge_control_boundary();
-        let acknowledged_with_publication = slot.snapshot();
-
-        let mut later_acknowledgement = acknowledged_with_publication;
-        later_acknowledgement.control_boundary_ack = request.wrapping_add(3);
-        assert!(control_boundary_request_is_acknowledged(
-            request,
-            &later_acknowledgement,
-        ));
-
-        let mut stale_acknowledgement = acknowledged_with_publication;
-        stale_acknowledgement.control_boundary_ack = request.wrapping_sub(1);
-        assert!(!control_boundary_request_is_acknowledged(
-            request,
-            &stale_acknowledgement,
-        ));
-    }
-
-    #[test]
-    fn control_acknowledgement_order_wraps_without_accepting_stale_serials() {
-        let mut snapshot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM).snapshot();
-        snapshot.control_boundary_ack = 1;
-        assert!(control_boundary_request_is_acknowledged(0, &snapshot));
-
-        snapshot.control_boundary_ack = u32::MAX;
-        assert!(!control_boundary_request_is_acknowledged(0, &snapshot));
-    }
-
-    #[test]
-    fn completed_clamp_accepts_preserved_future_idle_deadline() {
-        let slot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM);
-        slot.arm_external_state_restore_ceiling(200)
-            .unwrap_or_else(|error| panic!("idle ceiling should publish: {error}"));
-        slot.publish_idle(40, 200, 0)
-            .unwrap_or_else(|error| panic!("idle state should publish: {error}"));
-        let snapshot = slot.snapshot();
-
-        assert!(completed_quantum_clamp_is_settled(
-            true, 40, 200, false, &snapshot,
-        ));
-        assert!(!completed_quantum_clamp_is_settled(
-            true, 40, 40, false, &snapshot,
-        ));
-    }
-
-    #[test]
-    fn completed_clamp_rejects_unacknowledged_or_active_boundary() {
-        let slot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM);
-        let snapshot = slot.snapshot();
-
-        assert!(completed_quantum_clamp_is_settled(
-            true, 0, 0, false, &snapshot,
-        ));
-        assert!(!completed_quantum_clamp_is_settled(
-            false, 0, 0, false, &snapshot,
-        ));
-        assert!(!completed_quantum_clamp_is_settled(
-            true, 0, 0, true, &snapshot,
-        ));
-    }
-}
+#[path = "host_io_runtime_tests.rs"]
+mod tests;

@@ -1,0 +1,90 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index fccb3f282..4103f247a 100644
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -48,31 +48,31 @@
+ 
+ static bool rr_crucible_sim_mode(void);
+ static CPUState *rr_current_cpu;
++static bool rr_initial_wait_complete;
+ 
+ /* Kick all RR vCPUs */
+ void rr_kick_vcpu_thread(CPUState *unused)
+ {
+     CPUState *cpu;
++    bool initial_wait_complete = qatomic_read(&rr_initial_wait_complete);
+     bool stateful_exit = false;
+ 
+     if (rr_crucible_sim_mode() &&
+-        icount_crucible_rr_switch_quantum() != 0 &&
+-        icount_get_raw_observed() > 0 &&
+-        qatomic_read(&rr_current_cpu) != NULL) {
++        icount_crucible_rr_switch_quantum() != 0) {
+         /*
+          * Host work and main-loop notifications may request a generic vCPU
+-         * kick at host-dependent times.  Do not end a running translation
+-         * block for those latency hints: the deterministic RR budget reaches
+-         * a finite boundary where level-triggered work is observed.
++         * kick at host-dependent times.  Do not asynchronously end the
++         * current translation block for those latency hints.  Publishing only
++         * exit_request lets the block finish at its deterministic endpoint;
++         * cpu_exec observes the request before starting another block.
+          *
+-         * Before the first guest instruction, cpu_resume() clears the stop
+-         * flags before issuing the kick that starts the RR thread.  That kick
+-         * cannot choose an architectural coordinate because none exists yet,
+-         * and a single-vCPU loop has no alternate RR CPU to force progress.
+-         * Retain upstream behavior at icount zero; once execution begins, the
+-         * pinned finite quantum supplies the deterministic return boundary.
+-         * Between slices, retain the kick so an already-waiting RR thread
+-         * receives the exit request needed to re-enter its run loop.
++         * Before the RR thread completes its initial stopped wait,
++         * qemu_cpu_kick() has already broadcast the halt condition needed to
++         * start it.  An additional exit request in that interval can survive
++         * into first-exit normalization and strand startup.  Suppress only
++         * the asynchronous decrementer side effect; no guest coordinate
++         * exists yet.  The condition broadcast still starts the RR thread,
++         * and the soft exit request is normalized before first execution.
+          *
+          * Stop, unplug, and halted transitions are different.  Their state is
+          * already committed before qemu_cpu_kick(), and a stopped or sleeping
+@@ -85,7 +85,7 @@ void rr_kick_vcpu_thread(CPUState *unused)
+         CPU_FOREACH(cpu) {
+             if (qemu_plugin_crucible_terminal_pause_pending() ||
+                 cpu->stop || cpu->unplug || cpu->halted ||
+-                cpu->stopped ||
++                (initial_wait_complete && cpu->stopped) ||
+                 qatomic_read(&cpu->interrupt_request)) {
+                 stateful_exit = true;
+                 break;
+@@ -95,11 +95,21 @@ void rr_kick_vcpu_thread(CPUState *unused)
+             /*
+              * RR vCPUs share one host thread.  The committed transition may
+              * target a non-current vCPU, so exit every CPUState exactly as
+-             * upstream does to guarantee that the active TCG slice returns.
++             * upstream does to guarantee that the active TCG batch returns.
+              */
+             CPU_FOREACH(cpu) {
+                 cpu_exit(cpu);
+             }
++        } else {
++            /*
++             * Preserve the wake request without setting icount_decr.high.
++             * The running CPU therefore exits after its current deterministic
++             * translation block, while an idle RR thread was already woken by
++             * qemu_cpu_kick()'s condition broadcast.
++             */
++            CPU_FOREACH(cpu) {
++                qatomic_set_mb(&cpu->exit_request, 1);
++            }
+         }
+         return;
+     }
+@@ -837,6 +847,7 @@ static void *rr_cpu_thread_fn(void *arg)
+             qemu_wait_io_event_common(cpu);
+         }
+     }
++    qatomic_set_mb(&rr_initial_wait_complete, true);
+ 
+     rr_start_kick_timer();
+ 

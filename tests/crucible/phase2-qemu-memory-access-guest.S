@@ -317,23 +317,23 @@ nested_vmcb:
     .quad 0x11d000
     .org nested_vmcb + 0x400
     .word 0x10
-    .word 0xc093
+    .word 0x0c93
     .long 0xffffffff
     .quad 0
     .word 0x08
-    .word 0xa09b
+    .word 0x0a9b
     .long 0xffffffff
     .quad 0
     .word 0x10
-    .word 0xc093
+    .word 0x0c93
     .long 0xffffffff
     .quad 0
     .word 0x10
-    .word 0xc093
+    .word 0x0c93
     .long 0xffffffff
     .quad 0
     .org nested_vmcb + 0x4d0
-    .quad 0x500
+    .quad 0x1500
     .org nested_vmcb + 0x548
     .quad 0x20
     .quad 0x200000
@@ -390,31 +390,31 @@ nested_l2_code_pt:
 
 .align 4096
 nested_npt_pml4:
-    .quad 0x11e003
+    .quad 0x11e007
     .fill 511, 8, 0
 .align 4096
 nested_npt_pdpt:
-    .quad 0x11f003
+    .quad 0x11f007
     .fill 511, 8, 0
 .align 4096
 nested_npt_pd:
-    .quad 0x83
-    .quad 0x120003
+    .quad 0x87
+    .quad 0x120007
     .fill 510, 8, 0
 .align 4096
 .global nested_npt_pt
 nested_npt_pt:
-    .quad 0x117003
-    .quad 0x118003
-    .quad 0x119003
-    .quad 0x11a003
-    .quad 0x11b003
-    .quad 0x11c003
+    .quad 0x117007
+    .quad 0x118007
+    .quad 0x119007
+    .quad 0x11a007
+    .quad 0x11b007
+    .quad 0x11c007
     .fill 250, 8, 0
-    .quad 0x102003
-    .quad 0x121003
-    .quad 0x122003
-    .quad 0x108003
+    .quad 0x102007
+    .quad 0x121007
+    .quad 0x122007
+    .quad 0x108007
     .fill 252, 8, 0
 
 .align 4096

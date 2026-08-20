@@ -109,7 +109,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         .with_kernel_cmdline_prefix("console=ttyS0 quiet net.ifnames=0 init=/init")
         .with_run_ceiling_icount(12_000_000_000)
         .with_quantum_budget(4_000_000_000)
-        .with_completion_timeout(Duration::from_secs(180));
+        // The canonical cursor preserves every partial 4B-instruction turn.
+        // Host load can therefore make the real-time execution exceed the old
+        // three-minute allowance without changing any guest coordinate.
+        .with_completion_timeout(Duration::from_secs(360));
     let mut lifecycle = build_production_vm_lifecycle_loop(&scenario, &source, &config)?;
     let mut configuration = crucible::Configuration::genesis(scenario.clone());
     let mut network_decisions = 0_usize;

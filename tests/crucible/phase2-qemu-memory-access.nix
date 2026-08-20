@@ -177,7 +177,7 @@ in
                 *) exit 1 ;;
               esac
               set +e
-              timeout 120 $binary $machine -accel sim -icount shift=0 \
+              timeout -k 5 120 $binary $machine -accel sim -icount shift=0 \
                 -smp 1 -nographic -no-reboot -serial none -monitor none \
                 -kernel "$guest" \
                 -plugin "$PWD/crucible-memory-access.so,address=$address,result=$result,expected=$expected,kind=$kind,classes=$classes,length=$length,mask=$mask,replacement=$replacement,atomic=$atomic" \
@@ -298,7 +298,7 @@ in
                 replacement=a5a5a5a5a5a5a5a5
               fi
               set +e
-              timeout 120 $binary $machine $accel -icount shift=0 \
+              timeout -k 5 120 $binary $machine $accel -icount shift=0 \
                 -smp 1 -nographic -no-reboot -serial none -monitor none \
                 -kernel "$guest" \
                 -plugin "$PWD/crucible-memory-access.so,address=$address,result=$result,expected=$expected,kind=1,classes=$classes,length=$length,mask=$mask,replacement=$replacement,atomic=0,scenario=$scenario" \
@@ -392,7 +392,7 @@ in
                 plugin_suffix=',translated=1'
               fi
               set +e
-              timeout 180 ${qemuPackage}/bin/qemu-system-x86_64 \
+              timeout -k 5 180 ${qemuPackage}/bin/qemu-system-x86_64 \
                 -nodefaults -no-user-config -display none -monitor none \
                 -serial stdio -no-reboot \
                 -machine q35 -accel sim,thread=single \
@@ -421,7 +421,7 @@ in
 
             if should_run stock; then
               set +e
-              timeout 5 ${referenceQemu}/bin/qemu-system-x86_64 \
+              timeout -k 5 5 ${referenceQemu}/bin/qemu-system-x86_64 \
               -machine pc -m 64M -accel tcg -icount shift=0 -smp 1 \
               -nographic -no-reboot -serial none -monitor none \
               -kernel guest-x86-1.elf \

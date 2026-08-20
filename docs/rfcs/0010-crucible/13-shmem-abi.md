@@ -1131,14 +1131,38 @@ The plugin republishes the callback's exact logical/raw coordinate through the
 `publish_gen` seqlock before release-storing the request's odd successor. At a
 clamped scheduler ceiling this publication is exact idle: it retains an
 existing future idle deadline, or uses the current coordinate when fencing a
-previously running node. Below the ceiling it preserves the prior vCPU
-classification. Device activity remains an independent field.
+previously running node. The re-armed all-halted callback may then tighten a
+retained future deadline to QEMU's newly recomputed minimum exact local event;
+the host admits that later publication only when it remains strictly after the
+current coordinate and does not extend the retained deadline. When the control
+publication retained no future deadline, a subsequent all-halted publication
+may install any fresh exact future deadline. The host accepts both the transient
+current-coordinate publication and that later publication so observation timing
+cannot strand the clamp acknowledgement. In every case `max_advance_icount`
+remains clamped at the current coordinate, so the descriptive deadline does not
+authorize guest execution before the next scheduler quantum. Below the ceiling
+the control publication preserves the prior vCPU classification. Device
+activity remains an independent field.
 
 The host accepts the immediate odd successor or a later odd token in wrapping
-serial-number order. A completed-quantum clamp additionally requires that the
-acknowledged snapshot is idle at the clamped coordinate with no active device
-I/O. This prevents a pre-wake idle snapshot, a post-device transient, or an
-overlapping handshake from escaping as a completed scheduler boundary.
+serial-number order. A completed-quantum clamp additionally requires the exact
+clamped current coordinate and ceiling, a canonical idle deadline, and no
+active device I/O. The acknowledged publication is normally idle. A delayed
+vCPU-resume edge may transiently republish `STATUS_RUNNING` afterward; the host
+also accepts that state only when the exact clamp still prevents dispatch and
+the retained future idle deadline proves that the resume edge did not replace
+the acknowledged boundary. A running state with a current-coordinate deadline
+remains non-canonical. These checks prevent a pre-wake idle snapshot, a
+post-device transient, or an overlapping handshake from escaping as a
+completed scheduler boundary.
+
+Boundary discovery and completed-quantum revocation acknowledgement use two
+separate bounded host-liveness intervals. A heavily contended TCG process may
+reach the exact guest boundary near the end of the discovery interval; the
+mandatory eventfd drain and odd-token acknowledgement therefore receive a
+fresh bounded interval instead of inheriting only the discovery interval's
+residual host time. These intervals never enter canonical state and do not
+alter the clamped guest coordinate or deadline.
 
 ## 13.8 Versioning and conformance
 

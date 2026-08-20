@@ -1692,13 +1692,15 @@ record_rr_switch_event(void)
 static void
 maybe_command_det_ipi_probe(
     uint64_t delivery_icount,
+    unsigned int src_vcpu,
     unsigned int dst_vcpu,
     unsigned int delivery_mode)
 {
-  const unsigned int target_vcpu = dst_vcpu == 0 ? 1 : 0;
+  const unsigned int target_vcpu = (src_vcpu + 1) % tracked_vcpus;
 
   if (!det_ipi_probe || det_ipi_probe_commanded || tracked_vcpus < 2 ||
-      delivery_mode != 6 || dst_vcpu >= tracked_vcpus ||
+      delivery_mode != 6 || src_vcpu >= tracked_vcpus ||
+      dst_vcpu >= tracked_vcpus ||
       target_vcpu >= tracked_vcpus) {
     return;
   }
@@ -1754,7 +1756,8 @@ on_det_ipi_delivery(
       vector);
   fflush(trace_file);
 
-  maybe_command_det_ipi_probe(delivery_icount, dst_vcpu, delivery_mode);
+  maybe_command_det_ipi_probe(
+      delivery_icount, src_vcpu, dst_vcpu, delivery_mode);
 }
 
 static void

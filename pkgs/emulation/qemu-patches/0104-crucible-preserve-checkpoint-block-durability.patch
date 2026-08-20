@@ -1,0 +1,22 @@
+diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
+index ec70c3c63..6d33dc601 100644
+--- a/block/crucible-shmem.c
++++ b/block/crucible-shmem.c
+@@ -654,6 +654,17 @@ crucible_shmem_co_flush(BlockDriverState *bs)
+ {
+     int ret;
+ 
++    if (qemu_plugin_crucible_vmstop_pending()) {
++        /*
++         * Exact checkpoint captures the plugin transport and Apache-side
++         * durability continuation as state.  QEMU's synthetic stop-time flush
++         * must neither mutate that continuation nor create a request after the
++         * host proved the transport quiescent.  Guest-issued flushes and
++         * ordinary QEMU stops retain the production request path below.
++         */
++        return 0;
++    }
++
+     ret = crucible_shmem_submit_and_wait(bs, QEMU_PLUGIN_BLK_OP_FLUSH,
+                                          0, NULL, 0, NULL, 0);
+     if (ret < 0) {

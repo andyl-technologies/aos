@@ -1865,10 +1865,10 @@ mod tests {
     #[tokio::test]
     async fn transient_surface_error_records_pending_not_failed() {
         let db = Database::open_in_memory().await.unwrap();
-        let id = db.register_registry("acme/app", &[], false).await.unwrap();
-        let registry = db.registry_by_slug("acme/app").await.unwrap().unwrap();
+        let id = db.register_registry("acme-app", &[], false).await.unwrap();
+        let registry = db.registry_by_slug("acme-app").await.unwrap().unwrap();
         let fetch = FailingFetch {
-            error: "R2 get acme/app/info/refs: get: We encountered an internal error. \
+            error: "R2 get acme-app/info/refs: get: We encountered an internal error. \
                     Please try again. (10001)"
                 .into(),
         };
@@ -1903,8 +1903,8 @@ mod tests {
     #[tokio::test]
     async fn permanent_surface_error_still_fails() {
         let db = Database::open_in_memory().await.unwrap();
-        db.register_registry("acme/bad", &[], false).await.unwrap();
-        let registry = db.registry_by_slug("acme/bad").await.unwrap().unwrap();
+        db.register_registry("acme-bad", &[], false).await.unwrap();
+        let registry = db.registry_by_slug("acme-bad").await.unwrap().unwrap();
         // A non-transient error (e.g. a malformed surface) is a real failure.
         let fetch = FailingFetch {
             error: "objects/ab/cd is corrupt".into(),
