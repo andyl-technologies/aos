@@ -1238,27 +1238,32 @@ pub fn account_page(
     if tokens.is_empty() {
         body.push_str("<p class=\"dim\">No provisioning tokens.</p>\n");
     } else {
-        let rows: Vec<Vec<String>> = tokens
-            .iter()
-            .map(|(id, scope, perms)| {
-                vec![
-                    format!("<code>{}</code>", escape(id)),
-                    format!("<code>{}</code>", escape(scope)),
-                    escape(
-                        &perms
-                            .iter()
-                            .map(|p| p.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                    ),
-                    format!(
-                        "<a href=\"/{}/-/settings/tokens\">manage →</a>",
-                        escape(scope)
-                    ),
-                ]
-            })
-            .collect();
-        body.push_str(&table(&["id", "scope", "permissions", ""], &rows));
+        body.push_str("<div class=\"token-list\">\n");
+        for (id, scope, permissions) in tokens {
+            let short_id = id.chars().take(12).collect::<String>();
+            let suffix = (id.chars().count() > 12).then_some("…").unwrap_or("");
+            let _ = writeln!(
+                body,
+                "<section class=\"token-item\"><div class=\"token-head\">\
+                 <code class=\"token-id\" title=\"{}\">{}{}</code>\
+                 <code class=\"token-scope\">{}</code>\
+                 <a class=\"token-manage\" href=\"/{}/-/settings/tokens\">manage →</a></div>\
+                 <div class=\"token-permissions\"><span class=\"dim\">permissions</span> {}</div></section>",
+                escape(id),
+                escape(&short_id),
+                suffix,
+                escape(scope),
+                escape(scope),
+                escape(
+                    &permissions
+                        .iter()
+                        .map(|permission| permission.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
+        }
+        body.push_str("</div>\n");
     }
 
     body.push_str(
@@ -1372,4 +1377,35 @@ pub fn invitation_acceptance_page(
         &StateLine::timed(started),
         &indicator(email),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn account_tokens_use_stacked_bounded_rows() {
+        let id = "0123456789abcdef0123456789abcdef".to_string();
+        let tokens = vec![(
+            id.clone(),
+            "andyl/main".to_string(),
+            vec![Permission::Read, Permission::Publish],
+        )];
+
+        let html = account_page(
+            "user@example.test",
+            "csrf",
+            &tokens,
+            true,
+            None,
+            Instant::now(),
+        );
+
+        assert!(html.contains("class=\"token-list\""));
+        assert!(html.contains("class=\"token-head\""));
+        assert!(html.contains("class=\"token-permissions\""));
+        assert!(html.contains(&format!("title=\"{id}\"")));
+        assert!(html.contains(">0123456789ab…</code>"));
+        assert!(!html.contains("<th>permissions</th>"));
+    }
 }
