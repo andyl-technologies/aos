@@ -787,18 +787,22 @@ namespace lock only after `populated 0` is observed and its named identity is
 reauthenticated. The CPU controller caps aggregate CPU time; exact virtual-CPU
 count is separately checked against the validated launch command. The child
 writes itself into the cgroup, checks cancellation without consuming it, and
-installs a per-file `RLIMIT_FSIZE` defense before `exec`. Guarded spawn refuses
-implicit `qemu-img` work and requires an already-provisioned non-symlink VMState
-container.
+installs a per-file `RLIMIT_FSIZE` defense before `exec`. It then clears every
+supplementary group and switches its real, effective, and saved user/group IDs
+to configured non-root values. Admission requires both IDs to differ from every
+real, effective, and saved supervisor user/group identity and its bounded
+supplementary-group set. `no_new_privs` is set before the credential switch so a
+later `exec` cannot regain privilege. Guarded spawn refuses implicit `qemu-img`
+work and requires an already-provisioned non-symlink VMState container. The
+delegated hierarchy MUST NOT grant those child credentials an independent write
+path back to its controls.
 
 This authority is not yet the production guard. The persistent cancellation
 watcher and identity-preserving reap/quarantine owner, aggregate filesystem
 quota, execution-quantum charging backend, invocation of launch-command
-resource-profile admission, pinned run-directory ownership, and child
-credential separation that leaves only the supervisor able to mutate the
-delegated cgroup hierarchy remain mandatory, as does concrete session wiring,
-before the guarded path may launch a campaign QEMU. Until then the cgroup
-authority remains crate-internal.
+resource-profile admission, pinned run-directory ownership, and concrete
+session wiring remain mandatory before the guarded path may launch a campaign
+QEMU. Until then the cgroup authority remains crate-internal.
 
 Every validated `QemuLaunchCommand` also exposes a stable operational resource
 baseline derived from its fixed `-smp`, guest RAM, exact-VMState virtual size,

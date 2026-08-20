@@ -58,8 +58,8 @@ mod host_worker_pool;
 mod inertness;
 mod launch;
 #[cfg(target_os = "linux")]
-// This sealed authority remains internal until child credential separation,
-// persistent reap/quarantine, aggregate quota, and session wiring land.
+// This sealed authority remains internal until persistent reap/quarantine,
+// aggregate quota, quantum charging, and session wiring land.
 #[allow(dead_code)]
 mod linux_cgroup;
 #[cfg(target_os = "linux")]

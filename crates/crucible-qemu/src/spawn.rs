@@ -24,6 +24,7 @@ use crate::{
 
 const CHILD_SOURCE_FD_MIN: RawFd = QEMU_PLUGIN_WAKE_FD + 1;
 const CGROUP_ATTACH_SELF: &[u8] = b"0\n";
+const MAX_SUPERVISOR_GROUPS: usize = 65_536;
 
 /// Owned pre-exec contract for one attempt-contained child process.
 ///
@@ -31,16 +32,138 @@ const CGROUP_ATTACH_SELF: &[u8] = b"0\n";
 /// cancellation descriptor is a nonblocking eventfd that becomes readable
 /// once cancellation wins. Both descriptors must be opened by the supervising
 /// resource guard and remain owned by that guard independently of this
-/// per-spawn duplicate.
+/// per-spawn duplicate. A production contract also carries validated non-root
+/// child credentials; pre-exec clears supplementary groups, sets
+/// `no_new_privs`, and switches every user/group identity after attaching the
+/// child to the cgroup.
 #[derive(Debug)]
 pub struct QemuChildProcessContract {
     cgroup_procs: OwnedFd,
     cancellation_event: OwnedFd,
     maximum_file_bytes: u64,
+    credentials: Option<QemuChildCredentials>,
+}
+
+/// Distinct unprivileged credentials installed in a guarded QEMU child.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct QemuChildCredentials {
+    user_id: libc::uid_t,
+    group_id: libc::gid_t,
+}
+
+struct SupervisorCredentials {
+    user_ids: [libc::uid_t; 3],
+    group_ids: [libc::gid_t; 3],
+    supplementary_group_ids: Vec<libc::gid_t>,
+}
+
+impl QemuChildCredentials {
+    /// Validates credentials that cannot retain the supervisor's identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError::InvalidChildCredentials`] when either ID is
+    /// root, the user ID equals any real, effective, or saved daemon user, or
+    /// the group ID equals any real, effective, saved, or supplementary daemon
+    /// group. Returns
+    /// [`QemuSpawnError::Io`] when the daemon group set cannot be inspected
+    /// within its explicit bound.
+    pub(crate) fn new(user_id: libc::uid_t, group_id: libc::gid_t) -> Result<Self, QemuSpawnError> {
+        let supervisor = current_supervisor_credentials()?;
+        if user_id == 0
+            || group_id == 0
+            || supervisor.user_ids.contains(&user_id)
+            || supervisor.group_ids.contains(&group_id)
+            || supervisor.supplementary_group_ids.contains(&group_id)
+        {
+            return Err(QemuSpawnError::InvalidChildCredentials { user_id, group_id });
+        }
+        Ok(Self { user_id, group_id })
+    }
+}
+
+fn current_supervisor_credentials() -> Result<SupervisorCredentials, QemuSpawnError> {
+    let mut real_user_id = 0;
+    let mut effective_user_id = 0;
+    let mut saved_user_id = 0;
+    let users_read = unsafe {
+        // SAFETY: all three pointers name writable uid_t values.
+        libc::getresuid(
+            &mut real_user_id,
+            &mut effective_user_id,
+            &mut saved_user_id,
+        )
+    };
+    if users_read != 0 {
+        return Err(last_io_error("inspect supervisor user credentials"));
+    }
+    let mut real_group_id = 0;
+    let mut effective_group_id = 0;
+    let mut saved_group_id = 0;
+    let groups_read = unsafe {
+        // SAFETY: all three pointers name writable gid_t values.
+        libc::getresgid(
+            &mut real_group_id,
+            &mut effective_group_id,
+            &mut saved_group_id,
+        )
+    };
+    if groups_read != 0 {
+        return Err(last_io_error("inspect supervisor group credentials"));
+    }
+    Ok(SupervisorCredentials {
+        user_ids: [real_user_id, effective_user_id, saved_user_id],
+        group_ids: [real_group_id, effective_group_id, saved_group_id],
+        supplementary_group_ids: current_supplementary_groups()?,
+    })
+}
+
+fn current_supplementary_groups() -> Result<Vec<libc::gid_t>, QemuSpawnError> {
+    let count = unsafe {
+        // SAFETY: a zero count permits a null list and returns its required size.
+        libc::getgroups(0, std::ptr::null_mut())
+    };
+    if count < 0 {
+        return Err(last_io_error("inspect supervisor supplementary groups"));
+    }
+    let count = usize::try_from(count).map_err(|source| QemuSpawnError::Io {
+        operation: "bound supervisor supplementary groups",
+        source: io::Error::new(io::ErrorKind::InvalidData, source),
+    })?;
+    if count > MAX_SUPERVISOR_GROUPS {
+        return Err(QemuSpawnError::Io {
+            operation: "bound supervisor supplementary groups",
+            source: io::Error::new(
+                io::ErrorKind::InvalidData,
+                "supervisor supplementary groups exceed the supported bound",
+            ),
+        });
+    }
+    let mut groups = vec![0; count];
+    if count == 0 {
+        return Ok(groups);
+    }
+    let returned = unsafe {
+        // SAFETY: `groups` contains exactly `count` writable gid_t elements.
+        libc::getgroups(count as libc::c_int, groups.as_mut_ptr())
+    };
+    if returned < 0 {
+        return Err(last_io_error("read supervisor supplementary groups"));
+    }
+    if usize::try_from(returned).ok() != Some(count) {
+        return Err(QemuSpawnError::Io {
+            operation: "read supervisor supplementary groups",
+            source: io::Error::new(
+                io::ErrorKind::InvalidData,
+                "supervisor supplementary groups changed while inspected",
+            ),
+        });
+    }
+    Ok(groups)
 }
 
 impl QemuChildProcessContract {
-    /// Builds one child-side cgroup, cancellation, and file-size contract.
+    /// Builds one child-side containment and credential contract.
     ///
     /// # Errors
     ///
@@ -49,6 +172,7 @@ impl QemuChildProcessContract {
         cgroup_procs: OwnedFd,
         cancellation_event: OwnedFd,
         maximum_file_bytes: u64,
+        credentials: QemuChildCredentials,
     ) -> Result<Self, QemuSpawnError> {
         validate_cgroup_procs_fd(cgroup_procs.as_raw_fd())?;
         validate_cancellation_eventfd(cancellation_event.as_raw_fd())?;
@@ -56,6 +180,7 @@ impl QemuChildProcessContract {
             cgroup_procs,
             cancellation_event,
             maximum_file_bytes,
+            credentials: Some(credentials),
         })
     }
 
@@ -69,6 +194,7 @@ impl QemuChildProcessContract {
             cgroup_procs,
             cancellation_event,
             maximum_file_bytes,
+            credentials: None,
         }
     }
 }
@@ -225,6 +351,16 @@ pub enum QemuSpawnError {
     MissingPreparedVmState {
         /// Required exact-VMState container path.
         path: PathBuf,
+    },
+    /// The guarded child would retain root or a supervisor credential.
+    #[error(
+        "QEMU child credentials must be non-root and distinct from the supervisor: {user_id}:{group_id}"
+    )]
+    InvalidChildCredentials {
+        /// Requested child user ID.
+        user_id: libc::uid_t,
+        /// Requested child group ID.
+        group_id: libc::gid_t,
     },
 }
 
@@ -498,6 +634,7 @@ fn spawn_process_with_resources(
         cgroup_procs: contract.cgroup_procs.as_raw_fd(),
         cancellation_event: contract.cancellation_event.as_raw_fd(),
         maximum_file_bytes: contract.maximum_file_bytes,
+        credentials: contract.credentials,
     });
 
     let mut command = Command::new(executable);
@@ -515,9 +652,9 @@ fn spawn_process_with_resources(
     }
 
     // SAFETY: the closure only calls async-signal-safe syscalls between fork
-    // and exec: `write`, `poll`, `setrlimit`, `prctl`, `getppid`, `dup2`, and
-    // `close`. It captures only integers and raw descriptor numbers, not
-    // heap-owning Rust values.
+    // and exec: `write`, `poll`, `setrlimit`, raw credential syscalls, `prctl`,
+    // `getppid`, `dup2`, and `close`. It captures only integers and raw
+    // descriptor numbers, not heap-owning Rust values.
     unsafe {
         command.pre_exec(move || {
             if let Some(contract) = process_contract {
@@ -537,6 +674,7 @@ struct ChildProcessContractRaw {
     cgroup_procs: RawFd,
     cancellation_event: RawFd,
     maximum_file_bytes: u64,
+    credentials: Option<QemuChildCredentials>,
 }
 
 fn install_attempt_process_contract(contract: ChildProcessContractRaw) -> io::Result<()> {
@@ -586,6 +724,57 @@ fn install_attempt_process_contract(contract: ChildProcessContractRaw) -> io::Re
         libc::setrlimit(libc::RLIMIT_FSIZE, &file_limit)
     };
     if limited != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let no_new_privileges = unsafe {
+        // SAFETY: PR_SET_NO_NEW_PRIVS takes scalar arguments and permanently
+        // prevents this child from regaining privilege across exec.
+        libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
+    };
+    if no_new_privileges != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if let Some(credentials) = contract.credentials {
+        install_child_credentials(credentials)?;
+    }
+    Ok(())
+}
+
+fn install_child_credentials(credentials: QemuChildCredentials) -> io::Result<()> {
+    let groups_cleared = unsafe {
+        // SAFETY: the raw Linux syscall receives a zero count and null array,
+        // so it removes every supplementary group without dereferencing data.
+        libc::syscall(
+            libc::SYS_setgroups,
+            0_usize,
+            std::ptr::null::<libc::gid_t>(),
+        )
+    };
+    if groups_cleared != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let group_changed = unsafe {
+        // SAFETY: the raw Linux syscall takes three scalar group IDs.
+        libc::syscall(
+            libc::SYS_setresgid,
+            credentials.group_id,
+            credentials.group_id,
+            credentials.group_id,
+        )
+    };
+    if group_changed != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let user_changed = unsafe {
+        // SAFETY: the raw Linux syscall takes three scalar user IDs.
+        libc::syscall(
+            libc::SYS_setresuid,
+            credentials.user_id,
+            credentials.user_id,
+            credentials.user_id,
+        )
+    };
+    if user_changed != 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())
