@@ -43,6 +43,15 @@ pub struct StaticFileIdentity {
 /// backend-relative `nar/...` URLs recorded in the narinfo `URL` field.
 #[async_trait]
 pub trait CacheBackend: Send + Sync {
+    /// Returns the shared transfer manager owned by this backend, when exposed.
+    ///
+    /// Higher-level batch and multipart orchestration uses the same manager so
+    /// connection limits and retry policy remain consistent with ordinary
+    /// object operations.
+    fn transfer_manager(&self) -> Option<&TransferEngine> {
+        None
+    }
+
     /// Checks whether a backend-relative cache object exists.
     ///
     /// `relative_path` is rooted at the binary cache/origin root, for example

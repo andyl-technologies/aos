@@ -14,7 +14,6 @@
 //!   is used as an upload endpoint.
 
 use std::{
-    fs::File,
     io::Read as _,
     sync::{
         Arc,
@@ -250,6 +249,10 @@ impl HttpBackend {
 
 #[async_trait]
 impl CacheBackend for HttpBackend {
+    fn transfer_manager(&self) -> Option<&TransferEngine> {
+        Some(self.engine.as_ref())
+    }
+
     async fn exists(&self, relative_path: &str) -> Result<bool> {
         let url = self.static_file_url(relative_path);
         let req = self.add_headers(TransferRequest::head(&url));
@@ -373,7 +376,7 @@ impl CacheBackend for HttpBackend {
             return match self.create_object_upload(&path, data.len() as u64).await? {
                 Some(upload_url) => self.upload_to_admitted_url(&upload_url, data).await,
                 None if self.supports_multipart() => {
-                    crate::push::upload_nar_multipart(self, filename, data).await
+                    crate::push::upload_nar_multipart(self, filename, data.to_vec()).await
                 }
                 None => anyhow::bail!("Hub requires unsupported multipart for this NAR upload"),
             };
@@ -858,58 +861,13 @@ impl CacheBackend for HttpBackend {
                     "AOS server did not negotiate multipart support for large static file {relative_path}"
                 );
             }
-            let (upload_id, part_size) =
-                self.initiate_multipart(relative_path, size, sha256).await?;
-            let upload = async {
-                let part_size = usize::try_from(part_size)
-                    .context("multipart part size exceeds local address space")?;
-                anyhow::ensure!(
-                    (5 * 1024 * 1024..=16 * 1024 * 1024).contains(&part_size),
-                    "AOS server returned an unsafe multipart part size"
-                );
-                let mut file = File::open(source)
-                    .with_context(|| format!("opening static file {}", source.display()))?;
-                let mut parts = Vec::new();
-                let mut part_number = 1_u32;
-                loop {
-                    let mut bytes = vec![0_u8; part_size];
-                    let mut filled = 0;
-                    while filled < bytes.len() {
-                        let count = file.read(&mut bytes[filled..])?;
-                        if count == 0 {
-                            break;
-                        }
-                        filled += count;
-                    }
-                    if filled == 0 {
-                        break;
-                    }
-                    bytes.truncate(filled);
-                    parts.push(
-                        self.upload_part(relative_path, &upload_id, part_number, &bytes)
-                            .await?,
-                    );
-                    part_number = part_number
-                        .checked_add(1)
-                        .context("static-file multipart part count overflow")?;
-                    anyhow::ensure!(
-                        part_number <= 10_001,
-                        "static-file multipart exceeds 10,000 parts"
-                    );
-                }
-                self.complete_multipart(relative_path, &upload_id, &parts)
-                    .await
-            }
-            .await;
-            if let Err(error) = upload {
-                let abort = self.abort_multipart(relative_path, &upload_id).await;
-                if let Err(abort_error) = abort {
-                    return Err(error).context(format!(
-                        "multipart static upload failed; abort also failed: {abort_error:#}"
-                    ));
-                }
-                return Err(error);
-            }
+            crate::push::upload_multipart_source(
+                self,
+                relative_path,
+                aos_net::MultipartSource::File(source.to_path_buf()),
+                sha256,
+            )
+            .await?;
             return Ok(());
         }
 

@@ -112,6 +112,17 @@
     import fs from "node:fs";
     import path from "node:path";
     const BASE = "http://127.0.0.1:8799";
+
+    function humanSize(bytes) {
+      const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+      let value = bytes;
+      let unit = 0;
+      while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024;
+        unit += 1;
+      }
+      return unit === 0 ? `''${bytes} B` : `''${value.toFixed(1)} ''${units[unit]}`;
+    }
     const fixtureRoot = process.env.AOS_HUB_E2E_IMAGE_FIXTURE;
     if (!fixtureRoot) throw new Error("AOS_HUB_E2E_IMAGE_FIXTURE is required");
     const objects = {};
@@ -340,8 +351,8 @@
         || !imagesHtml.includes("2026.3.0")
         || !imagesHtml.includes("stable")
         || !imagesHtml.includes("x86_64")
-        || !imagesHtml.includes("qemu-kvm")
-        || !imagesHtml.includes(`''${(rawBytes.length / (1024 * 1024)).toFixed(1)} MiB`)
+        || !imagesHtml.includes("QEMU/KVM")
+        || !imagesHtml.includes(humanSize(rawBytes.length))
         || !imagesHtml.includes(rawSha256)
         || !imagesHtml.includes("verified")
         || !imagesHtml.includes("signed, unverified")
