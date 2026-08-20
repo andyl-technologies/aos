@@ -212,7 +212,7 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   latches closure while its worker retains authority until empty.
   Campaign-level supervisor ownership, direct-child identity-preserving
   reaper/quarantine composition, aggregate filesystem quota, execution-quantum
-  counter implementation, pinned run-directory ownership, the modeled attempt
+  counter composition, pinned run-directory ownership, the modeled attempt
   driver, concrete session wiring, and responsive multi-slot scheduling remain
   open.
   The authority remains crate-internal until those security boundaries are
@@ -321,7 +321,7 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   above immutable ceilings, and unsupported locality. The local supervisor
   facade refuses startup unless advertised ceilings exactly equal enforced
   slots, CPU, memory, disk, and execution-quanta limits. The concrete host
-  resource guard and quantum counter, modeled driver, the versioned
+  resource guard's quantum-counter composition, modeled driver, the versioned
   paused-restore reset of the plugin coverage novelty bitmap/ring plus host
   consumer state, coverage-aware live advancement and canonical coverage
   projection, hot-fork realization,

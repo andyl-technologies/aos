@@ -51,6 +51,53 @@ pub trait QemuAttemptOperationalBoundary {
     fn charge_execution_quantum(&mut self) -> Result<(), QemuVmRealizationError>;
 }
 
+/// Checked per-attempt execution-quantum counter for concrete resource guards.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QemuExecutionQuantumCounter {
+    ceiling: u64,
+    charged: u64,
+}
+
+impl QemuExecutionQuantumCounter {
+    /// Creates a zero-spent counter from the admitted resource limits.
+    #[must_use]
+    pub const fn new(resources: AttemptResourceLimits) -> Self {
+        Self {
+            ceiling: resources.maximum_execution_quanta(),
+            charged: 0,
+        }
+    }
+
+    /// Returns the exact admitted quantum ceiling.
+    #[must_use]
+    pub const fn ceiling(self) -> u64 {
+        self.ceiling
+    }
+
+    /// Returns the number of quanta charged so far.
+    #[must_use]
+    pub const fn charged(self) -> u64 {
+        self.charged
+    }
+
+    /// Charges one quantum before guest progress.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError::Executor`] without changing the
+    /// counter when the exact admitted ceiling has already been spent.
+    pub fn charge(&mut self) -> Result<(), QemuVmRealizationError> {
+        if self.charged >= self.ceiling {
+            return Err(QemuVmRealizationError::Executor {
+                operation: "charge QEMU execution quantum",
+                message: String::from("execution quantum ceiling is exhausted"),
+            });
+        }
+        self.charged += 1;
+        Ok(())
+    }
+}
+
 /// Operational guard installed before one attempt can launch QEMU.
 ///
 /// A conforming guard owns the host-side CPU, memory, writable-disk, and
