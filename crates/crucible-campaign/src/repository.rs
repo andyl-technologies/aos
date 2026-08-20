@@ -19,9 +19,9 @@ use thiserror::Error;
 use crate::{
     AdmissionOrdinal, Attempt, AttemptAdmission, AttemptAdmissionId, AttemptAdmissionRole,
     AttemptId, AttemptStart, BranchPath, BranchPathId, BranchRequest, BranchRequestCause,
-    BranchRequestId, CampaignCodecError, CampaignControlAction, CampaignFact, CampaignHash,
-    CampaignLineage, CampaignLineageId, CampaignMode, CampaignPlanningView, CampaignPolicy,
-    CampaignPolicyId, CampaignSnapshot, CampaignSnapshotId, CampaignState,
+    BranchRequestId, CampaignCodecError, CampaignControlAction, CampaignDerivation, CampaignFact,
+    CampaignHash, CampaignLineage, CampaignLineageId, CampaignMode, CampaignPlanningView,
+    CampaignPolicy, CampaignPolicyId, CampaignSnapshot, CampaignSnapshotId, CampaignState,
     CandidateGeneratorAlgorithm, CandidateGeneratorSpec, CandidateGeneratorSpecId, CandidateSource,
     ChoiceDomain, ChoiceDomainId, ChoiceGroup, ChoiceGroupId, ChoiceOpportunity,
     ChoiceOpportunityId, ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId,
@@ -103,6 +103,19 @@ pub struct CampaignCommandResult {
     /// Snapshot first produced by the accepted command.
     pub new_snapshot: CampaignSnapshotId,
     /// Whether this call observed a previously committed command.
+    pub replayed: bool,
+}
+
+/// Stable response for a newly derived or idempotently replayed campaign ref.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignDerivationResult {
+    /// Exact authenticated source snapshot.
+    pub source_snapshot: CampaignSnapshotId,
+    /// First snapshot owned by the derived ref.
+    pub new_snapshot: CampaignSnapshotId,
+    /// Policy active at the derived snapshot.
+    pub active_policy: CampaignPolicyId,
+    /// Whether this call observed a previously committed derivation.
     pub replayed: bool,
 }
 
@@ -498,6 +511,12 @@ pub enum CampaignRepositoryError {
         /// Current physical ref value observed by compare-and-swap.
         current: Option<ContentId>,
     },
+    /// Caller-supplied semantic input does not name an admissible operation.
+    #[error("campaign request is invalid: {reason}")]
+    InvalidRequest {
+        /// Stable invalid-input category.
+        reason: &'static str,
+    },
     /// An object closure or snapshot transition is internally inconsistent.
     #[error("campaign repository integrity failure: {reason}")]
     Integrity {
@@ -535,6 +554,7 @@ impl CampaignRepositoryError {
             | Self::Stale { .. }
             | Self::CommandReuse
             | Self::RefConflict { .. }
+            | Self::InvalidRequest { .. }
             | Self::Integrity { .. }
             | Self::InvalidTransition { .. } => ExecutorRejection::Incompatible,
         }
@@ -633,6 +653,13 @@ struct ValidationCheckpoint {
     closure_objects: usize,
     lifecycle: ProjectedState,
     genesis: ContentId,
+    derived_branch: Option<DerivedBranchCheckpoint>,
+}
+
+#[derive(Clone, Copy)]
+struct DerivedBranchCheckpoint {
+    snapshot: ContentId,
+    derivation: CampaignDerivation,
 }
 
 impl ProjectedState {

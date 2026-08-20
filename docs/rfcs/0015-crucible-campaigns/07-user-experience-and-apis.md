@@ -158,10 +158,13 @@ below the configured exhaustive-cardinality ceiling. A request may target one
 value to follow a path or several values to branch it. It does not disable an
 existing generated source at that branch point.
 
-`derive` creates a new named campaign ref that shares immutable objects with
-the source snapshot and can activate a different future policy. It neither
-creates a branch edge nor QEMU-forks a process. **Hot fork** remains the daemon's
-QEMU realization detail. `fork` may remain a deprecated CLI alias for `branch`
+`derive` creates a new named campaign ref whose first owned snapshot is an
+audited successor of the exact source snapshot. It shares the source's immutable
+semantic roots, leaves the source ref unchanged, and can atomically activate a
+compatible future policy. The returned source and new snapshot IDs make that
+edge explicit. It neither creates a branch edge nor QEMU-forks a process. **Hot
+fork** remains the daemon's QEMU realization detail. `fork` may remain a
+deprecated CLI alias for `branch`
 during migration, but structured APIs, stored facts, help, and new documentation
 use the distinct terms.
 
@@ -169,7 +172,8 @@ use the distinct terms.
   snapshot IDs and emit an equivalent structured result.
 - **[CAPI-4]** Retrying a mutation of an existing campaign with the same command
   ID MUST be idempotent. Creation is idempotent by canonical campaign name and
-  an exact lineage/policy basis.
+  an exact lineage/policy basis; derivation is idempotent by target name and the
+  exact source-snapshot/policy basis.
 
 ## 07.4 Inspection
 
@@ -321,15 +325,18 @@ their authority and idempotency rules are defined in
 [`04a-coordinator-executor-contract.md`](04a-coordinator-executor-contract.md).
 
 The direct service contract implements strict request-bound `CreateCampaign`,
-`GetCampaign`, `ApplyCampaignCommand`, and operator `SubmitBranchRequest`
+`DeriveCampaign`, `GetCampaign`, `ApplyCampaignCommand`, and operator
+`SubmitBranchRequest`
 messages over the semantic repository owner. Creation carries the complete
 bounded lineage/policy basis and exactly replays the authenticated
 genesis for a semantically identical named retry after later mutations. It is
 preceded by a narrow execution-model verifier-backed import of the large
 scenario/configuration artifacts and generator closure named by the request;
-those immutable objects do not travel in the campaign control message. It is
-not yet user porcelain: the nested CLI,
-derive operation, paged inspection, and watch stream remain required before the
+those immutable objects do not travel in the campaign control message.
+Derivation creates an audited successor rooted at an authenticated snapshot in
+the named source history, authorizes both names, leaves the source unchanged,
+and exactly replays by target name after later target mutations or restart. It
+is not yet user porcelain: the nested CLI, paged inspection, and watch stream remain required before the
 service is complete. The bounded versioned Unix-stream loopback binding is now
 implemented with a request-bound stable error envelope preserving authorization,
 conflict, transition, resource, availability, and integrity meaning. Nested CLI

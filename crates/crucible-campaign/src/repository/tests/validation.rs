@@ -686,6 +686,141 @@ fn head_rejects_forged_control_successors_and_noncontrol_transitions() {
 }
 
 #[test]
+fn imported_derivation_rejects_changed_semantic_roots() {
+    let (repository, lineage, policy) = fixture();
+    let source = repository
+        .create("forged-derive-source", &lineage, &policy, &BTreeMap::new())
+        .expect("create source");
+    let loaded_source = repository
+        .read_snapshot(source.content_id())
+        .expect("load source");
+    let transition_content = repository
+        .put_fact(&CampaignFact::CampaignDerived(CampaignDerivation::new(
+            source.snapshot_id(),
+            source.snapshot().active_policy(),
+        )))
+        .expect("put derivation fact");
+    let mut roots = source.snapshot().roots();
+    roots.coordination = repository
+        .coordination_with_parent_result(source.content_id(), &loaded_source)
+        .expect("coordination root");
+    roots.coverage = roots.graph;
+    let forged = CampaignSnapshot::successor(
+        source.snapshot_id(),
+        source.snapshot().lineage(),
+        source.snapshot().active_policy(),
+        roots,
+        CampaignFactId::from_content_id(transition_content).expect("transition id"),
+    )
+    .expect("forged derivation");
+    let forged_content = repository
+        .put_snapshot(&forged)
+        .expect("put forged derivation");
+    repository
+        .refs
+        .compare_exchange(
+            &campaign_ref("forged-derive-target").expect("target ref"),
+            None,
+            forged_content,
+        )
+        .expect("install forged target");
+
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert!(matches!(
+        restarted.head("forged-derive-target"),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "derivation-transition-changed-semantic-root"
+        })
+    ));
+}
+
+#[test]
+fn imported_derivation_enforces_the_bounded_generator_closure() {
+    let (repository, lineage, policy, blobs) = counted_fixture();
+    let source = repository
+        .create("bounded-derive-source", &lineage, &policy, &BTreeMap::new())
+        .expect("create source");
+    let mut generator =
+        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All).expect("base generator");
+    let mut generator_id = CandidateGeneratorSpecId::from_content_id(
+        repository
+            .put_generator(&generator)
+            .expect("put base generator"),
+    )
+    .expect("base generator id");
+    for _ in 0..crate::MAX_CREATE_CAMPAIGN_GENERATORS {
+        generator = CandidateGeneratorSpec::new(
+            1,
+            CandidateGeneratorAlgorithm::OrderedMixture {
+                components: vec![
+                    WeightedGenerator::new(generator_id, 1).expect("weighted generator"),
+                ],
+            },
+        )
+        .expect("linked generator");
+        generator_id = CandidateGeneratorSpecId::from_content_id(
+            repository
+                .put_generator(&generator)
+                .expect("put linked generator"),
+        )
+        .expect("linked generator id");
+    }
+    let oversized_policy = policy_with_generator(lineage.scenario(), generator_id);
+    let oversized_policy_id = CampaignPolicyId::from_content_id(
+        repository
+            .put_policy(&oversized_policy)
+            .expect("put oversized policy"),
+    )
+    .expect("oversized policy id");
+    let loaded_source = repository
+        .read_snapshot(source.content_id())
+        .expect("load source");
+    let transition_content = repository
+        .put_fact(&CampaignFact::CampaignDerived(CampaignDerivation::new(
+            source.snapshot_id(),
+            oversized_policy_id,
+        )))
+        .expect("put derivation fact");
+    let mut roots = source.snapshot().roots();
+    roots.coordination = repository
+        .coordination_with_parent_result(source.content_id(), &loaded_source)
+        .expect("coordination root");
+    let forged = CampaignSnapshot::successor(
+        source.snapshot_id(),
+        source.snapshot().lineage(),
+        oversized_policy_id,
+        roots,
+        CampaignFactId::from_content_id(transition_content).expect("transition id"),
+    )
+    .expect("forged derivation");
+    let forged_content = repository
+        .put_snapshot(&forged)
+        .expect("put forged derivation");
+    repository
+        .refs
+        .compare_exchange(
+            &campaign_ref("bounded-derive-target").expect("target ref"),
+            None,
+            forged_content,
+        )
+        .expect("install forged target");
+    let objects_before = blobs.object_count().expect("objects before validation");
+
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert!(matches!(
+        restarted.head("bounded-derive-target"),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "campaign-generator-count-limit"
+        })
+    ));
+    assert_eq!(
+        blobs.object_count().expect("objects after validation"),
+        objects_before,
+        "import validation wrote while rejecting an oversized generator closure"
+    );
+}
+
+#[test]
 fn head_rejects_genesis_without_canonical_configuration_membership() {
     let (repository, lineage, policy) = fixture();
     let lineage_content = repository.put_lineage(&lineage).expect("lineage");

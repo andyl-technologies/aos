@@ -3,7 +3,7 @@
 //! The protocol contains only bounded canonical component messages:
 //!
 //! ```text
-//! CampaignLoopbackFrameV3 = magic[8] | kind:u8 | reserved[3] |
+//! CampaignLoopbackFrameV4 = magic[8] | kind:u8 | reserved[3] |
 //!                           body_length:u32be | canonical_body[body_length]
 //! kind = 1 (GetCampaignRequestV1) |
 //!        2 (GetCampaignResponseV1) |
@@ -13,8 +13,10 @@
 //!        6 (SubmitCampaignBranchResponseV1) |
 //!        7 (CampaignServiceErrorResponseV1) |
 //!        8 (CreateCampaignRequestV1) |
-//!        9 (CreateCampaignResponseV1)
-//! magic = "CRUCCS03"
+//!        9 (CreateCampaignResponseV1) |
+//!       10 (DeriveCampaignRequestV1) |
+//!       11 (DeriveCampaignResponseV1)
+//! magic = "CRUCCS04"
 //! ```
 //!
 //! One mutex serializes complete request/response exchanges so concurrent
@@ -41,12 +43,12 @@ use crucible_campaign::{
     CampaignCodecError, CampaignName, CampaignPrincipal, CampaignPrincipalAuthorizer,
     CampaignRepository, CampaignService, CampaignServiceErrorResponse, CampaignServiceFailure,
     CampaignServiceFailureSource, CampaignServiceOperation, CreateCampaignRequest,
-    CreateCampaignResponse, GetCampaignRequest, GetCampaignResponse,
-    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, RepositoryCampaignService, SubmitCampaignBranchRequest,
-    SubmitCampaignBranchResponse,
+    CreateCampaignResponse, DeriveCampaignRequest, DeriveCampaignResponse, GetCampaignRequest,
+    GetCampaignResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, RepositoryCampaignService,
+    SubmitCampaignBranchRequest, SubmitCampaignBranchResponse,
 };
 
-const FRAME_MAGIC: &[u8; 8] = b"CRUCCS03";
+const FRAME_MAGIC: &[u8; 8] = b"CRUCCS04";
 const FRAME_HEADER_BYTES: usize = 16;
 const GET_CAMPAIGN_REQUEST_KIND: u8 = 1;
 const GET_CAMPAIGN_RESPONSE_KIND: u8 = 2;
@@ -57,6 +59,8 @@ const SUBMIT_BRANCH_RESPONSE_KIND: u8 = 6;
 const SERVICE_ERROR_RESPONSE_KIND: u8 = 7;
 const CREATE_CAMPAIGN_REQUEST_KIND: u8 = 8;
 const CREATE_CAMPAIGN_RESPONSE_KIND: u8 = 9;
+const DERIVE_CAMPAIGN_REQUEST_KIND: u8 = 10;
+const DERIVE_CAMPAIGN_RESPONSE_KIND: u8 = 11;
 const DEFAULT_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
@@ -222,6 +226,24 @@ impl CampaignService for LoopbackCampaignService {
                 Ok(response)
             },
             CampaignServiceFailure::validate_for_create_campaign,
+        )
+    }
+
+    fn derive_campaign(
+        &self,
+        request: &DeriveCampaignRequest,
+    ) -> Result<DeriveCampaignResponse, Self::Error> {
+        self.exchange(
+            DERIVE_CAMPAIGN_REQUEST_KIND,
+            DERIVE_CAMPAIGN_RESPONSE_KIND,
+            request.request_digest(),
+            &request.canonical_bytes(),
+            |response| {
+                let response = DeriveCampaignResponse::from_canonical_bytes(response)?;
+                response.validate_for(request)?;
+                Ok(response)
+            },
+            CampaignServiceFailure::validate_for_derive_campaign,
         )
     }
 
@@ -507,6 +529,34 @@ where
                 Err(error) => {
                     let failure = error.campaign_service_failure();
                     if let Err(error) = failure.validate_for_create_campaign() {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    service_error_response(request.request_digest(), &failure)?
+                }
+            }
+        }
+        DERIVE_CAMPAIGN_REQUEST_KIND => {
+            let request = DeriveCampaignRequest::from_canonical_bytes(&body)?;
+            match service.derive_campaign(&request) {
+                Ok(response) => {
+                    if let Err(error) = response.validate_for(&request) {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    (DERIVE_CAMPAIGN_RESPONSE_KIND, response.canonical_bytes())
+                }
+                Err(error) => {
+                    let failure = error.campaign_service_failure();
+                    if let Err(error) = failure.validate_for_derive_campaign() {
                         return reject_invalid_service_response(
                             stream,
                             request.request_digest(),

@@ -168,7 +168,7 @@ impl CampaignRecordKind {
     pub const fn schema_version(self) -> u32 {
         match self {
             Self::Snapshot => 2,
-            Self::Fact => 2,
+            Self::Fact => 3,
             Self::PlannerInvocation => 2,
             Self::PlannerStep => 4,
             Self::ExpansionState => 2,
@@ -348,8 +348,9 @@ impl ObjectEnvelope {
     ///
     /// Returns [`CampaignCodecError`] if a generated role or envelope is invalid.
     pub fn for_fact(value: &CampaignFact) -> Result<Self, CampaignCodecError> {
-        Self::new(
+        Self::new_versioned(
             CampaignRecordKind::Fact,
+            value.schema_version(),
             fact_children(value)?,
             value.canonical_bytes(),
         )
@@ -368,12 +369,17 @@ impl ObjectEnvelope {
         children: BTreeSet<ContentChild>,
         body: Vec<u8>,
     ) -> Result<Self, CampaignCodecError> {
-        let envelope = ContentEnvelope::new(
-            record_kind.schema_name(),
-            record_kind.schema_version(),
-            children,
-            body,
-        )?;
+        Self::new_versioned(record_kind, record_kind.schema_version(), children, body)
+    }
+
+    fn new_versioned(
+        record_kind: CampaignRecordKind,
+        schema_version: u32,
+        children: BTreeSet<ContentChild>,
+        body: Vec<u8>,
+    ) -> Result<Self, CampaignCodecError> {
+        let envelope =
+            ContentEnvelope::new(record_kind.schema_name(), schema_version, children, body)?;
         Ok(Self {
             record_kind,
             envelope,
@@ -444,7 +450,9 @@ impl ObjectEnvelope {
                 reason: "unknown campaign record schema name",
             },
         )?;
-        if envelope.schema_version() != record_kind.schema_version() {
+        let version_supported = envelope.schema_version() == record_kind.schema_version()
+            || record_kind == CampaignRecordKind::Fact && envelope.schema_version() == 2;
+        if !version_supported {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported campaign record schema version",
             });
@@ -456,6 +464,20 @@ impl ObjectEnvelope {
     }
 
     fn validate_record_body(&self) -> Result<(), CampaignCodecError> {
+        if self.record_kind == CampaignRecordKind::Fact {
+            let version = self
+                .envelope
+                .body()
+                .get(..std::mem::size_of::<u32>())
+                .and_then(|bytes| bytes.try_into().ok())
+                .map(u32::from_be_bytes)
+                .ok_or(CampaignCodecError::Truncated)?;
+            if version != self.envelope.schema_version() {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "campaign fact body and envelope versions differ",
+                });
+            }
+        }
         let expected = expected_children(self.record_kind, self.envelope.body())?;
         if expected != *self.envelope.children() {
             return Err(CampaignCodecError::InvalidValue {
@@ -617,6 +639,10 @@ fn snapshot_children(
 
 fn fact_children(fact: &CampaignFact) -> Result<BTreeSet<ContentChild>, CampaignCodecError> {
     let children = match fact {
+        CampaignFact::CampaignDerived(derivation) => vec![
+            ("source-snapshot", derivation.source().content_id()),
+            ("active-policy", derivation.active_policy().content_id()),
+        ],
         CampaignFact::ChoiceOpportunityDiscovered {
             parent,
             opportunity,

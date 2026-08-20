@@ -946,9 +946,6 @@ impl CampaignRepository {
             return Err(integrity("fact-envelope-shape"));
         }
         let fact = CampaignFact::from_canonical_bytes(envelope.body())?;
-        if ObjectEnvelope::for_fact(&fact)? != envelope || fact.id()?.content_id() != id {
-            return Err(integrity("fact-envelope-shape"));
-        }
         self.validate_fact_references(&fact)?;
         Ok(fact)
     }
@@ -958,6 +955,16 @@ impl CampaignRepository {
         fact: &CampaignFact,
     ) -> Result<(), CampaignRepositoryError> {
         match fact {
+            CampaignFact::CampaignDerived(derivation) => {
+                self.require_record_kind(
+                    derivation.source().content_id(),
+                    crate::CampaignRecordKind::Snapshot,
+                )?;
+                self.require_record_kind(
+                    derivation.active_policy().content_id(),
+                    crate::CampaignRecordKind::Policy,
+                )?;
+            }
             CampaignFact::ChoiceOpportunityDiscovered {
                 parent,
                 opportunity,

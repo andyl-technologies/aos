@@ -158,8 +158,9 @@ pub struct CampaignSnapshot {
 ```
 
 Snapshot ancestry for one campaign ref is linear in this RFC because exactly
-one coordinator owns that ref. `derive` creates another named ref at an existing
-snapshot; it does not create a multi-parent merge commit. Immutable facts may be
+one coordinator owns that ref. `derive` creates another named ref whose first
+owned snapshot is an audited successor of the exact source snapshot; it does
+not create a multi-parent merge commit or mutate the source ref. Immutable facts may be
 shared by any number of refs without giving more than one writer authority over
 any ref. A non-genesis snapshot names exactly one `transition` fact that caused
 the parent-to-child change; a genesis snapshot has neither parent nor
@@ -240,6 +241,7 @@ pub enum CampaignFact {
     BudgetGranted(BudgetGrant),
     ControlRequested(ControlRequest),
     PinChanged(PinChange),
+    CampaignDerived(CampaignDerivation),
 }
 ```
 
@@ -251,9 +253,26 @@ domain closure and bind the opportunity to the campaign scenario and exact
 parent-derived branch point. A branch request must find the exact opportunity
 under its domain-separated `(BranchPointId, ChoiceOpportunityId)` graph key;
 backing-store presence, global opportunity membership, an arbitrary Merkle key,
-or a caller-supplied subset root is insufficient. Campaign-fact schema v2 makes
+or a caller-supplied subset root is insufficient. Campaign-fact schema v2 made
 the explicit discovery parent and branch point part of the fact rather than
 reinterpreting the former layout.
+
+`CampaignDerived` names the exact source snapshot and policy active in the new
+child. Its successor preserves lineage and every semantic root, changes only
+the coordination root by adding the ordinary authenticated parent-result
+locator, and sets its parent to that source. A supplied replacement policy must
+have the same scenario and campaign mode; policy publication and target-ref
+creation are one owner transaction. Exact retries resolve the first derived
+snapshot from the target history even after later target mutations. They are
+bound to that target's most recent founding derivation edge; a locator inherited
+from an ancestor derived campaign cannot replay as the child ref's own result.
+Campaign-
+fact schema v3 adds this transition. Every pre-existing variant continues to
+encode as schema v2, preserving its canonical bytes and `CampaignFactId`; only
+`CampaignDerived` encodes as v3. Schema-v2 fact bodies and envelopes remain
+canonically readable for existing history, while a v2 envelope cannot carry the
+new tag, a v3 body cannot carry an old variant, and body/envelope version
+mismatches fail closed.
 
 Facts are immutable and carry causal references. They may be represented in
 persistent Merkle maps rather than replayed from a flat log. A projection cache
