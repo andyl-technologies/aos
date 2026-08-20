@@ -161,8 +161,40 @@ impl CampaignRepository {
     /// Returns an integrity error for a cycle, excessive ancestry, malformed
     /// transition, or invalid historical state transition.
     pub fn state(&self, name: &str) -> Result<CampaignState, CampaignRepositoryError> {
+        self.head_with_state(name).map(|(_, state)| state)
+    }
+
+    /// Resolves one authenticated head and its lifecycle state from the same snapshot.
+    ///
+    /// Unlike independent [`Self::head`] and [`Self::state`] calls, this method
+    /// cannot mix fields across a concurrent ref advance: lifecycle projection
+    /// is anchored to the exact content ID returned in the head.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignRepositoryError::NotFound`] for an absent name or an
+    /// integrity/store error for an invalid reachable closure or lifecycle.
+    pub fn head_with_state(
+        &self,
+        name: &str,
+    ) -> Result<(CampaignHead, CampaignState), CampaignRepositoryError> {
         let head = self.head(name)?;
-        self.current_lifecycle(head.content_id())
+        let state = self.state_at_snapshot(head.snapshot_id())?;
+        Ok((head, state))
+    }
+
+    /// Projects lifecycle state from one exact authenticated snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an integrity/store error when the snapshot or its reachable
+    /// ancestry is absent, malformed, excessive, or semantically invalid.
+    pub fn state_at_snapshot(
+        &self,
+        snapshot: CampaignSnapshotId,
+    ) -> Result<CampaignState, CampaignRepositoryError> {
+        self.validate_complete_head(snapshot.content_id())?;
+        self.current_lifecycle(snapshot.content_id())
             .map(|state| state.visible)
     }
 

@@ -279,7 +279,15 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   equivalence. A killable production supervisor that enforces fuel, wall-clock,
   and cancellation bounds, the coordinator-owned Merkle-proof guidance bundle,
   concrete closed planner, CampaignService RPC, and service-level principal
-  plumbing remain open. Checked request/response acceptance now retains the
+  plumbing remain open. The first `CampaignService` checkpoint now provides
+  strict principal/name types, 64-MiB canonical request/response messages for
+  authenticated current-head reads, lifecycle/budget/policy control, and
+  additive operator branch submission, exact response-digest binding, a
+  checked direct client, raw golden vectors, and a repository adapter that
+  requires exact-request authentication/authorization before repository
+  access. Create/derive, paged snapshot/graph/frontier/choice/finding queries,
+  explanation/watch, loopback RPC, and CLI wiring remain open. Checked
+  request/response acceptance now retains the
   exact canonical request in a content-addressed envelope (32-MiB and 65,529
   bundle-object initial store profile) and commits both its ID and digest in
   planner-step schema v4. The executor

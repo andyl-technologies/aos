@@ -12,6 +12,7 @@
 
 mod artifact;
 mod authority;
+mod campaign_service;
 mod choice;
 mod codec;
 mod execution;
@@ -29,6 +30,13 @@ mod repository;
 pub use artifact::{ConfigurationArtifact, ScenarioArtifact};
 pub use authority::{
     DebuggerAuthorityKey, DebuggerSubmission, PlannerAuthorityKey, PlannerSubmission,
+};
+pub use campaign_service::{
+    ApplyCampaignCommandRequest, ApplyCampaignCommandResponse, CampaignAuthorizationError,
+    CampaignClient, CampaignClientError, CampaignName, CampaignPrincipal,
+    CampaignPrincipalAuthorizer, CampaignService, CampaignServiceOperation, GetCampaignRequest,
+    GetCampaignResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, RepositoryCampaignService,
+    RepositoryCampaignServiceError, SubmitCampaignBranchRequest, SubmitCampaignBranchResponse,
 };
 pub use choice::{
     BooleanDomain, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain, ChoiceGroup,

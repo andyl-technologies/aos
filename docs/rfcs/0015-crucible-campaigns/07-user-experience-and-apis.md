@@ -318,6 +318,13 @@ executor services are component seams, not additional user control planes;
 their authority and idempotency rules are defined in
 [`04a-coordinator-executor-contract.md`](04a-coordinator-executor-contract.md).
 
+The initial direct service contract implements strict request-bound
+`GetCampaign`, `ApplyCampaignCommand`, and operator `SubmitBranchRequest`
+messages over the semantic repository owner. It is an implementation
+checkpoint, not yet user porcelain: the nested CLI, loopback binding, create/
+derive operations, paged inspection, and watch stream remain required before
+the service is complete.
+
 All mutation requests carry command ID, expected snapshot ID, and authenticated
 principal. CAS conflict responses return the current head and enough detail to
 retry or ask the user to resolve a policy conflict.

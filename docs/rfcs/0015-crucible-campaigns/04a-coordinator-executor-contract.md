@@ -198,6 +198,73 @@ Every mutation carries an idempotent command ID and expected snapshot ID.
 immutable objects remain authoritative. A stale or lost watch cursor therefore
 cannot lose campaign state.
 
+The first strict service checkpoint defines principal-aware `GetCampaign`,
+`ApplyCampaignCommand`, and `SubmitBranchRequest` messages. All use canonical
+schema version 1 and a 64 MiB outer bound:
+
+```text
+GetCampaignRequestV1 = version | principal | campaign
+GetCampaignResponseV1 = version | request_digest | snapshot | lineage |
+                        active_policy | lifecycle_state
+
+ApplyCampaignCommandRequestV1 = version | principal | campaign |
+                                ControlRequestV1
+ApplyCampaignCommandResponseV1 = version | request_digest | prior_snapshot |
+                                 new_snapshot | replayed
+
+SubmitCampaignBranchRequestV1 = version | principal | campaign |
+                                expected_snapshot | BranchRequestV1
+SubmitCampaignBranchResponseV1 = version | request_digest | prior_snapshot |
+                                 new_snapshot | branch_request | replayed
+```
+
+`principal` is a nonempty UTF-8 string of at most 512 bytes whose bytes are
+ASCII alphanumeric or one of `.`, `_`, `-`, `/`, and `:`. `campaign` is a
+nonempty UTF-8 string of at most 512 bytes in the repository reference-name
+profile: slash-separated segments are 1 through 255 bytes, neither `.` nor
+`..`, and contain only ASCII alphanumeric bytes or `.`, `_`, and `-`.
+Decoders reject every value outside these exact profiles.
+
+For command responses, `prior_snapshot` is the accepted command's precondition.
+For branch responses, it is the snapshot that first accepted the immutable
+`BranchRequest`. An exact request replay is resolved by `BranchRequestId` before
+outer snapshot staleness, so a later service call may use another expected
+snapshot while receiving the original acceptance pair with a response digest
+bound to that later call.
+
+The response digest covers every canonical request byte, including the
+principal, campaign name, snapshot precondition, and semantic payload. The
+checked client rejects a response from another request before exposing it. The
+exact language-neutral derivations are:
+
+```text
+get_request_digest =
+  H("crucible.campaign-service.get-campaign.v1", GetCampaignRequestV1)
+apply_request_digest =
+  H("crucible.campaign-service.apply-campaign-command.v1",
+    ApplyCampaignCommandRequestV1)
+branch_request_digest =
+  H("crucible.campaign-service.submit-branch-request.v1",
+    SubmitCampaignBranchRequestV1)
+```
+
+Here `H(domain, value)` is the campaign BLAKE3 domain derivation over the exact
+canonical request bytes, using the same length-framed domain construction as
+other `CampaignHash` derivations. The principal identifier is operational and
+never enters immutable campaign
+state. A conforming direct adapter closes over an authenticated caller
+capability; a transport adapter authenticates its peer or an exact-request
+proof. Authorization receives the exact request digest and fails before any
+repository read or write. Treating the self-asserted principal text alone as
+authentication is non-conforming. The repository-backed adapter then invokes
+the existing `head`/lifecycle, `apply_control`, and operator-only branch owner
+paths, preserving their idempotence and CAS rules.
+
+The remaining create/derive, snapshot/object queries, paged graph/frontier/
+choice/finding inspection, explanation, and resumable watch messages are still
+open. The direct checkpoint does not create an alternate control plane and is
+not yet the CLI endpoint or loopback RPC.
+
 - **[CCOMP-10]** The CLI MUST target `CampaignService` through a client
   abstraction and MUST behave identically whether the endpoint is embedded,
   local RPC, or a compatible future implementation.

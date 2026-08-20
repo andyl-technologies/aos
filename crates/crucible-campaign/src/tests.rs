@@ -259,6 +259,22 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         assert_eq!(message[3], "component-message");
         owned_campaign_schemas.insert(schema);
     }
+    for schema in [
+        "crucible.campaign.get-campaign-request",
+        "crucible.campaign.get-campaign-response",
+        "crucible.campaign.apply-campaign-command-request",
+        "crucible.campaign.apply-campaign-command-response",
+        "crucible.campaign.submit-campaign-branch-request",
+        "crucible.campaign.submit-campaign-branch-response",
+    ] {
+        let message = rows
+            .get(schema)
+            .unwrap_or_else(|| panic!("missing campaign service schema {schema}"));
+        assert_eq!(message[1], "1");
+        assert_eq!(message[2], "crucible-campaign::campaign_service");
+        assert_eq!(message[3], "component-message");
+        owned_campaign_schemas.insert(schema);
+    }
     for (schema, version) in [
         ("crucible.executor.assignment-record", "1"),
         ("crucible.executor.attempt-state-record", "2"),
