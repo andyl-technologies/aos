@@ -182,9 +182,15 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   teardown session. Guarded executor methods receive the guard during every
   blocking realization operation; failed reap transfers enforcement to
   quarantine instead of releasing it, including a failed launch before active
-  backend installation. Campaign-level supervisor
-  ownership, the concrete host resource guard, the modeled attempt driver, and
-  responsive multi-slot scheduling remain open.
+  backend installation. The Linux process layer now has a sealed pre-`exec`
+  primitive that validates cgroup-v2 and sticky cancellation descriptors,
+  places the child before QEMU executes, applies a per-file size backstop, and
+  refuses implicit image-tool provisioning on the guarded spawn path.
+  Campaign-level supervisor ownership, the concrete cgroup factory and
+  persistent reaper, aggregate filesystem quota, execution-quantum charging,
+  launch-profile admission, pinned run-directory ownership, the modeled attempt
+  driver, concrete session wiring, and responsive multi-slot scheduling remain
+  open.
 - [ ] **T-CAM-4.6** Implement strict and streaming commit modes, restart
   recovery, duplicate/conflict handling, backpressure, pagination, and
   projection rebuilding; implement snapshot-bound paged planner scans whose

@@ -23,6 +23,58 @@ use crate::{
 };
 
 const CHILD_SOURCE_FD_MIN: RawFd = QEMU_PLUGIN_WAKE_FD + 1;
+const CGROUP_ATTACH_SELF: &[u8] = b"0\n";
+
+/// Owned pre-exec contract for one attempt-contained child process.
+///
+/// The cgroup descriptor names the attempt's `cgroup.procs` file. The
+/// cancellation descriptor is a nonblocking eventfd that becomes readable
+/// once cancellation wins. Both descriptors must be opened by the supervising
+/// resource guard and remain owned by that guard independently of this
+/// per-spawn duplicate.
+#[derive(Debug)]
+pub struct QemuChildProcessContract {
+    cgroup_procs: OwnedFd,
+    cancellation_event: OwnedFd,
+    maximum_file_bytes: u64,
+}
+
+impl QemuChildProcessContract {
+    /// Builds one child-side cgroup, cancellation, and file-size contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] when either descriptor is invalid.
+    // This sealed constructor lands before its concrete Linux guard caller so
+    // the pre-exec ABI can be reviewed and tested independently.
+    #[allow(dead_code)]
+    pub fn new(
+        cgroup_procs: OwnedFd,
+        cancellation_event: OwnedFd,
+        maximum_file_bytes: u64,
+    ) -> Result<Self, QemuSpawnError> {
+        validate_cgroup_procs_fd(cgroup_procs.as_raw_fd())?;
+        validate_cancellation_eventfd(cancellation_event.as_raw_fd())?;
+        Ok(Self {
+            cgroup_procs,
+            cancellation_event,
+            maximum_file_bytes,
+        })
+    }
+
+    #[cfg(test)]
+    fn for_test(
+        cgroup_procs: OwnedFd,
+        cancellation_event: OwnedFd,
+        maximum_file_bytes: u64,
+    ) -> Self {
+        Self {
+            cgroup_procs,
+            cancellation_event,
+            maximum_file_bytes,
+        }
+    }
+}
 
 /// Host-side descriptors retained after spawning a QEMU child.
 #[derive(Debug)]
@@ -171,6 +223,12 @@ pub enum QemuSpawnError {
         /// Trimmed qemu-img diagnostic output.
         stderr: String,
     },
+    /// The guarded run directory does not contain its pre-provisioned VMState image.
+    #[error("guarded QEMU launch requires pre-provisioned VMState container {path}")]
+    MissingPreparedVmState {
+        /// Required exact-VMState container path.
+        path: PathBuf,
+    },
 }
 
 /// Spawns a validated QEMU launch command in `run_directory`.
@@ -203,11 +261,75 @@ pub fn spawn_qemu_child_with_fds_in_directory(
         child_resources,
         &[],
         "spawn QEMU child",
+        None,
     )?;
     Ok(QemuSpawnedChild {
         child: QemuNodeChild::new(child),
         resources,
     })
+}
+
+/// Spawns QEMU from an already-provisioned run directory under `contract`.
+///
+/// Unlike [`spawn_qemu_child_with_fds_in_directory`], this operation never
+/// invokes `qemu-img` or creates the exact-VMState container. The supervisor
+/// must provision and validate that container under its own bounded service
+/// policy before admitting the attempt. The child writes itself into the
+/// attempt cgroup and checks cancellation in `pre_exec`, before QEMU executes.
+///
+/// # Errors
+///
+/// Returns [`QemuSpawnError`] when the prepared container is absent or not a
+/// regular file, descriptor preparation fails, the pre-exec containment
+/// contract rejects the child, or QEMU cannot be spawned.
+// The guarded composition is intentionally unwired until the next slice adds
+// its cgroup factory, quota, and persistent reaper as one atomic authority.
+#[allow(dead_code)]
+pub fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
+    command: &QemuLaunchCommand,
+    run_directory: impl AsRef<Path>,
+    region_len: u64,
+    contract: &QemuChildProcessContract,
+) -> Result<QemuSpawnedChild, QemuSpawnError> {
+    let run_directory = run_directory.as_ref();
+    validate_prepared_vmstate_container(run_directory)?;
+    let (mut resources, child_resources) = create_spawn_resources(region_len)?;
+    resources.fault_node_hash = command.plugin_fault_node_hash();
+    let child = spawn_process_with_resources(
+        command.executable(),
+        command.args(),
+        Some(run_directory),
+        child_resources,
+        &[],
+        "spawn guarded QEMU child",
+        Some(contract),
+    )?;
+    Ok(QemuSpawnedChild {
+        child: QemuNodeChild::new(child),
+        resources,
+    })
+}
+
+#[allow(dead_code)]
+fn validate_prepared_vmstate_container(run_directory: &Path) -> Result<(), QemuSpawnError> {
+    let path = run_directory.join(crate::DEFAULT_VMSTATE_FILE_NAME);
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.is_file() => Ok(()),
+        Ok(_) => Err(QemuSpawnError::Io {
+            operation: "validate prepared exact-VMState container",
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "exact-VMState container path is not a regular file",
+            ),
+        }),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Err(QemuSpawnError::MissingPreparedVmState { path })
+        }
+        Err(source) => Err(QemuSpawnError::Io {
+            operation: "inspect prepared exact-VMState container",
+            source,
+        }),
+    }
 }
 
 fn prepare_vmstate_container(
@@ -370,6 +492,7 @@ fn spawn_process_with_resources(
     child_resources: QemuSpawnChildResources,
     envs: &[(&str, &str)],
     operation: &'static str,
+    process_contract: Option<&QemuChildProcessContract>,
 ) -> Result<Child, QemuSpawnError> {
     let control_fd = child_resources.control_socket.as_raw_fd();
     let shmem_fd = child_resources.shmem_fd.as_raw_fd();
@@ -378,6 +501,11 @@ fn spawn_process_with_resources(
         // SAFETY: `getpid` has no preconditions.
         libc::getpid()
     };
+    let process_contract = process_contract.map(|contract| ChildProcessContractRaw {
+        cgroup_procs: contract.cgroup_procs.as_raw_fd(),
+        cancellation_event: contract.cancellation_event.as_raw_fd(),
+        maximum_file_bytes: contract.maximum_file_bytes,
+    });
 
     let mut command = Command::new(executable);
     command
@@ -394,10 +522,14 @@ fn spawn_process_with_resources(
     }
 
     // SAFETY: the closure only calls async-signal-safe syscalls between fork
-    // and exec: `prctl`, `getppid`, `dup2`, and `close`. It captures only raw
-    // descriptor numbers, not heap-owning Rust values.
+    // and exec: `write`, `poll`, `setrlimit`, `prctl`, `getppid`, `dup2`, and
+    // `close`. It captures only integers and raw descriptor numbers, not
+    // heap-owning Rust values.
     unsafe {
         command.pre_exec(move || {
+            if let Some(contract) = process_contract {
+                install_attempt_process_contract(contract)?;
+            }
             install_child_process_contract(control_fd, shmem_fd, wake_fd, expected_parent_pid)
         });
     }
@@ -405,6 +537,151 @@ fn spawn_process_with_resources(
     command
         .spawn()
         .map_err(|source| QemuSpawnError::Io { operation, source })
+}
+
+#[derive(Clone, Copy)]
+struct ChildProcessContractRaw {
+    cgroup_procs: RawFd,
+    cancellation_event: RawFd,
+    maximum_file_bytes: u64,
+}
+
+fn install_attempt_process_contract(contract: ChildProcessContractRaw) -> io::Result<()> {
+    let attached = unsafe {
+        // SAFETY: `cgroup_procs` is a live descriptor supplied by the parent,
+        // and the static two-byte buffer remains valid for the syscall.
+        libc::write(
+            contract.cgroup_procs,
+            CGROUP_ATTACH_SELF.as_ptr().cast(),
+            CGROUP_ATTACH_SELF.len(),
+        )
+    };
+    if attached < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if attached != 2 {
+        return Err(io::Error::from_raw_os_error(libc::EIO));
+    }
+
+    let mut cancellation = libc::pollfd {
+        fd: contract.cancellation_event,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let canceled = unsafe {
+        // SAFETY: `cancellation` points to one initialized pollfd. A zero
+        // timeout performs a non-consuming readiness query.
+        libc::poll(&mut cancellation, 1, 0)
+    };
+    if canceled > 0 && cancellation.revents & libc::POLLIN != 0 {
+        return Err(io::Error::from_raw_os_error(libc::ECANCELED));
+    }
+    if canceled < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if cancellation.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+        return Err(io::Error::from_raw_os_error(libc::EBADF));
+    }
+
+    let file_limit = libc::rlimit {
+        rlim_cur: contract.maximum_file_bytes,
+        rlim_max: contract.maximum_file_bytes,
+    };
+    let limited = unsafe {
+        // SAFETY: `file_limit` is initialized and `setrlimit` copies it during
+        // this async-signal-safe syscall.
+        libc::setrlimit(libc::RLIMIT_FSIZE, &file_limit)
+    };
+    if limited != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn validate_cgroup_procs_fd(fd: RawFd) -> Result<(), QemuSpawnError> {
+    validate_live_fd(fd, "validate child cgroup descriptor")?;
+    let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    let status = unsafe {
+        // SAFETY: `filesystem` points to writable storage for one statfs.
+        libc::fstatfs(fd, filesystem.as_mut_ptr())
+    };
+    if status != 0 {
+        return Err(last_io_error("inspect child cgroup filesystem"));
+    }
+    let filesystem = unsafe {
+        // SAFETY: successful fstatfs initialized the complete structure.
+        filesystem.assume_init()
+    };
+    if filesystem.f_type != libc::CGROUP2_SUPER_MAGIC {
+        return Err(QemuSpawnError::Io {
+            operation: "validate child cgroup filesystem",
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "cgroup.procs descriptor is not on cgroup v2",
+            ),
+        });
+    }
+    let target =
+        fs::read_link(PathBuf::from("/proc/self/fd").join(fd.to_string())).map_err(|source| {
+            QemuSpawnError::Io {
+                operation: "resolve child cgroup descriptor",
+                source,
+            }
+        })?;
+    if target.file_name().and_then(|name| name.to_str()) != Some("cgroup.procs") {
+        return Err(QemuSpawnError::Io {
+            operation: "validate child cgroup descriptor target",
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "child cgroup descriptor does not name cgroup.procs",
+            ),
+        });
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn validate_cancellation_eventfd(fd: RawFd) -> Result<(), QemuSpawnError> {
+    let flags = validate_live_fd(fd, "validate child cancellation descriptor")?;
+    if flags & libc::O_NONBLOCK == 0 {
+        return Err(QemuSpawnError::Io {
+            operation: "validate child cancellation descriptor flags",
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "child cancellation eventfd is blocking",
+            ),
+        });
+    }
+    let target =
+        fs::read_link(PathBuf::from("/proc/self/fd").join(fd.to_string())).map_err(|source| {
+            QemuSpawnError::Io {
+                operation: "resolve child cancellation descriptor",
+                source,
+            }
+        })?;
+    if target.to_string_lossy() != "anon_inode:[eventfd]" {
+        return Err(QemuSpawnError::Io {
+            operation: "validate child cancellation descriptor target",
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "child cancellation descriptor is not an eventfd",
+            ),
+        });
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn validate_live_fd(fd: RawFd, operation: &'static str) -> Result<i32, QemuSpawnError> {
+    let flags = unsafe {
+        // SAFETY: `fcntl(F_GETFL)` reads descriptor metadata without pointers.
+        libc::fcntl(fd, libc::F_GETFL)
+    };
+    if flags < 0 {
+        return Err(last_io_error(operation));
+    }
+    Ok(flags)
 }
 
 fn socket_pair() -> Result<(OwnedFd, OwnedFd), QemuSpawnError> {

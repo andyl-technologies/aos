@@ -766,6 +766,18 @@ Checkpoint-store lookups receive the same cancellation signal, must bound their
 blocking work, and are cancellation-checked before, during, and after each
 call.
 
+The QEMU process layer provides the first sealed child-side primitive needed by
+the concrete host guard. It accepts only an internally authenticated cgroup-v2
+`cgroup.procs` descriptor and a nonblocking cancellation eventfd, writes the
+forked child into the cgroup, checks cancellation without consuming it, and
+installs a per-file `RLIMIT_FSIZE` defense before `exec`. Its guarded spawn
+variant refuses implicit `qemu-img` work and requires an already-provisioned
+non-symlink VMState container. This primitive is not yet the production guard:
+the cgroup factory and persistent cancellation reaper, aggregate filesystem
+quota, execution-quantum charging backend, launch-command resource-profile
+admission, pinned run-directory ownership, and concrete session wiring remain
+mandatory before the guarded path may launch a campaign QEMU.
+
 The realization executor owns one unified event log resumed from the realized
 runtime offset. Replay requires the caller's runtime offset to equal that
 installed offset before any backend work; the modeled driver receives only a
