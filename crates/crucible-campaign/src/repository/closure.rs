@@ -979,6 +979,7 @@ impl CampaignRepository {
         let step_content = step_id.content_id();
         let step = self.read_planner_step(step_content)?;
         let request = self.read_planner_request(step.request().content_id())?;
+        self.validate_builtin_planner_step(&request, &step)?;
         if request.expected_snapshot()
             != CampaignSnapshotId::from_content_id(parent.envelope.content_id())?
         {

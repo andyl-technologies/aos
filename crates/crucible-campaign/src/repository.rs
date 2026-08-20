@@ -23,10 +23,10 @@ use crate::{
     CampaignHash, CampaignLineage, CampaignLineageId, CampaignMode, CampaignPlanningView,
     CampaignPolicy, CampaignPolicyId, CampaignSnapshot, CampaignSnapshotId, CampaignState,
     CampaignStoreError, CandidateGeneratorAlgorithm, CandidateGeneratorSpec,
-    CandidateGeneratorSpecId, CandidateSource, ChoiceDomain, ChoiceDomainId, ChoiceGroup,
-    ChoiceGroupId, ChoiceOpportunity, ChoiceOpportunityId, ConfigurationArtifact,
-    ConfigurationArtifactId, ConfigurationId, ContinuationProjection, ControlRequest,
-    CoverageProjection, CoverageProjectionId, DaemonEpoch, DebuggerAuthorityKey,
+    CandidateGeneratorSpecId, CandidateSource, CanonicalFrontierPlanner, ChoiceDomain,
+    ChoiceDomainId, ChoiceGroup, ChoiceGroupId, ChoiceOpportunity, ChoiceOpportunityId,
+    ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId, ContinuationProjection,
+    ControlRequest, CoverageProjection, CoverageProjectionId, DaemonEpoch, DebuggerAuthorityKey,
     DebuggerSubmission, ExecutorCompatibilityProfile, ExecutorRejection, ExpansionCredit,
     ExpansionState, ExpansionStateId, MeasurementSet, MeasurementSetId, MerkleMap,
     MerkleMapLookupProof, MerkleMapPage, MerkleMapPageProof, MerkleMapRoot, ObjectEnvelope,
@@ -35,9 +35,9 @@ use crate::{
     PlannerState, PlannerStep, PlannerStepId, PlannerStepProposal, PlanningAccounting,
     PlanningBudget, PlanningScanPage, PlanningScanPosition, PlanningUsage, PolicyActivation,
     PolicyArtifact, PropertyVerdict, PropertyVerdictSet, PropertyVerdictSetId, Proposal,
-    ProposalId, RetainedPlannerRequestId, ScenarioArtifact, ScenarioArtifactId, ScenarioDefId,
-    SelectableDeclaration, SelectableId, Selection, SelectionId, StopCondition, StopOutcome,
-    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
+    ProposalId, PurePlannerEngine, RetainedPlannerRequestId, ScenarioArtifact, ScenarioArtifactId,
+    ScenarioDefId, SelectableDeclaration, SelectableId, Selection, SelectionId, StopCondition,
+    StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
 };
 
 const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;

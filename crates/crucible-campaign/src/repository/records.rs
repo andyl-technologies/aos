@@ -471,7 +471,9 @@ impl CampaignRepository {
         &self,
         id: RetainedPlannerRequestId,
     ) -> Result<PlannerRequest, CampaignRepositoryError> {
-        self.read_planner_request(id.content_id())
+        let request = self.read_planner_request(id.content_id())?;
+        self.validate_complete_head(request.expected_snapshot().content_id())?;
+        Ok(request)
     }
 
     pub(super) fn read_planner_request(
@@ -491,6 +493,21 @@ impl CampaignRepository {
     pub(super) fn validate_planner_request_inputs(
         &self,
         request: &PlannerRequest,
+    ) -> Result<(), CampaignRepositoryError> {
+        self.validate_planner_request_inputs_with_mode(request, false)
+    }
+
+    pub(super) fn preflight_planner_request_inputs(
+        &self,
+        request: &PlannerRequest,
+    ) -> Result<(), CampaignRepositoryError> {
+        self.validate_planner_request_inputs_with_mode(request, true)
+    }
+
+    fn validate_planner_request_inputs_with_mode(
+        &self,
+        request: &PlannerRequest,
+        allow_unpublished_offers: bool,
     ) -> Result<(), CampaignRepositoryError> {
         self.require_record_kind(
             request.expected_snapshot().content_id(),
@@ -525,11 +542,104 @@ impl CampaignRepository {
         {
             return Err(integrity("planner-request-by-value-basis-mismatch"));
         }
+        let candidate_inputs = request.input_bundle().candidate_inputs(request)?;
+        let unpublished_offers = candidate_inputs
+            .values()
+            .filter_map(|input| input.offer.as_ref())
+            .map(Proposal::id)
+            .collect::<Result<BTreeSet<_>, _>>()?;
         for object_id in request.input_bundle().object_ids() {
-            let stored = self.read_envelope(object_id)?;
-            if request.input_bundle().object(object_id)?.as_ref() != Some(&stored) {
-                return Err(integrity("planner-request-bundle-object-mismatch"));
+            match self.read_envelope(object_id) {
+                Ok(stored) => {
+                    if request.input_bundle().object(object_id)?.as_ref() != Some(&stored) {
+                        return Err(integrity("planner-request-bundle-object-mismatch"));
+                    }
+                }
+                Err(CampaignRepositoryError::Store(StoreError::NotFound { .. }))
+                    if allow_unpublished_offers
+                        && unpublished_offers
+                            .iter()
+                            .any(|offer| offer.content_id() == object_id) => {}
+                Err(error) => return Err(error),
             }
+        }
+        let snapshot = self.read_snapshot(request.expected_snapshot().content_id())?;
+        for (position, input) in candidate_inputs {
+            let expected_projection = self.planner_continuation_projection(&snapshot, position)?;
+            if expected_projection != input.continuation {
+                return Err(integrity("planner-request-candidate-projection-mismatch"));
+            }
+            if let Some(offer) = input.offer {
+                let expected =
+                    self.planner_candidate_input(&snapshot, request.invocation_id()?, position)?;
+                if expected != (input.continuation, Some(offer)) {
+                    return Err(integrity("planner-request-candidate-projection-mismatch"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_builtin_planner_proposal(
+        &self,
+        request: &PlannerRequest,
+        proposal: &PlannerStepProposal,
+    ) -> Result<(), CampaignRepositoryError> {
+        let descriptor = CanonicalFrontierPlanner::descriptor()?;
+        if request.engine() != &descriptor {
+            return Ok(());
+        }
+        let expected = CanonicalFrontierPlanner
+            .plan(request)
+            .map_err(CampaignRepositoryError::Codec)?;
+        if expected.proposal() != proposal {
+            return Err(integrity("builtin-planner-output-mismatch"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_builtin_planner_step(
+        &self,
+        request: &PlannerRequest,
+        step: &PlannerStep,
+    ) -> Result<(), CampaignRepositoryError> {
+        let descriptor = CanonicalFrontierPlanner::descriptor()?;
+        if request.engine() != &descriptor {
+            return Ok(());
+        }
+        let expected = CanonicalFrontierPlanner
+            .plan(request)
+            .map_err(CampaignRepositoryError::Codec)?;
+        let expected = expected.proposal();
+        let next_state = expected.next_state().id()?;
+        let disposition = match expected.disposition() {
+            PlannerProposalDisposition::ContinueScan { cursor } => {
+                PlannerDisposition::ContinueScan { cursor: *cursor }
+            }
+            PlannerProposalDisposition::NoWork => PlannerDisposition::NoWork,
+            PlannerProposalDisposition::Issue {
+                selected,
+                branch_requests,
+                proposals,
+            } => PlannerDisposition::Issue {
+                selected: *selected,
+                issued_branch_requests: branch_requests
+                    .iter()
+                    .map(BranchRequest::id)
+                    .collect::<Result<Vec<_>, _>>()?,
+                issued_proposals: proposals
+                    .iter()
+                    .map(Proposal::id)
+                    .collect::<Result<Vec<_>, _>>()?,
+            },
+        };
+        if step.invocation() != expected.invocation()
+            || step.next_state() != next_state
+            || step.usage_claim() != expected.usage_claim()
+            || step.evidence() != expected.explanation()
+            || step.disposition() != &disposition
+        {
+            return Err(integrity("builtin-planner-step-mismatch"));
         }
         Ok(())
     }

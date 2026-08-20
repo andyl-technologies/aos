@@ -1549,7 +1549,8 @@ impl CampaignRepository {
         {
             return Err(integrity("planner-request-invocation-mismatch"));
         }
-        self.validate_planner_request_inputs(request)?;
+        self.preflight_planner_request_inputs(request)?;
+        self.validate_builtin_planner_proposal(request, proposal)?;
         let next_state_id = proposal.next_state().id()?;
         let disposition = match proposal.disposition() {
             PlannerProposalDisposition::ContinueScan { cursor } => {
@@ -1725,6 +1726,18 @@ impl CampaignRepository {
         if next_state_content != next_state_id.content_id() {
             return Err(integrity("planner-next-state-publication-id-mismatch"));
         }
+        for input in request
+            .input_bundle()
+            .candidate_inputs(request)?
+            .into_values()
+        {
+            if let Some(offer) = input.offer {
+                let offer_content = self.put_proposal(&offer)?;
+                if offer_content != offer.id()?.content_id() {
+                    return Err(integrity("planner-candidate-offer-publication-id-mismatch"));
+                }
+            }
+        }
         let request_content = self.put_planner_request(request)?;
         if request_content != request_id.content_id() {
             return Err(integrity("planner-request-publication-id-mismatch"));
@@ -1827,9 +1840,11 @@ impl CampaignRepository {
     /// Builds the exact store-backed input for one prepared planner invocation.
     ///
     /// The returned request embeds the direct invocation basis by value and
-    /// carries every served branch-request envelope. Additional interpretation
-    /// dependencies and Merkle proof guidance remain a later integration gate.
-    /// This method performs no writes.
+    /// carries every served branch-request envelope. Engines advertising the
+    /// canonical-frontier-offers capability additionally receive the exact
+    /// snapshot-authenticated continuation projection and one owner-computed
+    /// candidate offer for the least Ready source. This method performs no
+    /// writes.
     ///
     /// # Errors
     ///
@@ -1877,17 +1892,41 @@ impl CampaignRepository {
             crate::CampaignRecordKind::PlanningView,
         )?;
 
-        let retained = invocation
+        let engine: PlannerEngine = crate::codec::decode(engine_envelope.body())?;
+        let mut retained = invocation
             .scan_page()
             .positions()
             .iter()
             .map(|position| self.read_envelope(position.source().content_id()))
             .collect::<Result<Vec<_>, _>>()?;
+        if engine
+            .capabilities()
+            .contains(crate::CANONICAL_FRONTIER_OFFERS_CAPABILITY)
+        {
+            let mut first_ready = None;
+            for position in invocation.scan_page().positions() {
+                let projection = self.planner_continuation_projection(&snapshot, *position)?;
+                retained.push(self.read_envelope(projection.id()?.content_id())?);
+                if first_ready.is_none() && projection.state() == crate::ContinuationState::Ready {
+                    first_ready = Some(*position);
+                }
+            }
+            if let Some(position) = first_ready {
+                let (_, offer) =
+                    self.planner_candidate_input(&snapshot, invocation_id, position)?;
+                let offer = offer.ok_or_else(|| integrity("planner-ready-candidate-is-missing"))?;
+                retained.push(ObjectEnvelope::for_record(
+                    crate::CampaignRecordKind::Proposal,
+                    crate::object::content_children(offer.content_children())?,
+                    offer.canonical_bytes(),
+                )?);
+            }
+        }
 
         let request = PlannerRequest::new(
             expected_snapshot,
             invocation,
-            crate::codec::decode(engine_envelope.body())?,
+            engine,
             crate::codec::decode(artifact_envelope.body())?,
             self.read_policy(policy_envelope.content_id())?,
             crate::codec::decode(state_envelope.body())?,
@@ -2060,6 +2099,18 @@ impl CampaignRepository {
         let Some(parent_step) = parent else {
             if invocation.scan_page().after().is_some() {
                 return Err(integrity("planner-invocation-scan-start-mismatch"));
+            }
+            let descriptor = CanonicalFrontierPlanner::descriptor()?;
+            if invocation.engine() == descriptor.id()? {
+                let state = self.require_record_kind(
+                    invocation.planner_state().content_id(),
+                    crate::CampaignRecordKind::PlannerState,
+                )?;
+                if crate::codec::decode::<PlannerState>(state.body())?
+                    != CanonicalFrontierPlanner::initial_state()?
+                {
+                    return Err(integrity("builtin-planner-initial-state-mismatch"));
+                }
             }
             return Ok(());
         };

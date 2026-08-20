@@ -315,6 +315,17 @@ remaining metric vector.
 - **[GUIDE-9]** Duplicate attempts and duplicate observations MUST receive
   credit exactly once.
 
+The first executable closed-planner checkpoint deliberately establishes the
+pure paged frontier loop before adaptive scoring. Engine
+`crucible-canonical-frontier` implementation version 1 receives the
+coordinator's exact authenticated continuation state and next legal candidate
+for every served source, considers only `Ready` sources, and chooses the least
+canonical `PlanningScanPosition`. It carries that offer across pages and issues
+only at EOF. This ordering is deterministic fairness bootstrap behavior, not a
+claim that PUCT is complete. Introducing reward, novelty, finding, prior, or
+edge-visit terms requires the owner-built projections and exact arithmetic
+above and a new engine implementation version.
+
 ## 03.5 Guidance signals and objectives
 
 Built-in observation signals include:

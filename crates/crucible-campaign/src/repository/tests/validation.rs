@@ -1535,6 +1535,30 @@ fn progressive_integer_generator_refines_only_after_exact_feedback() {
         ));
     }
 
+    let planner_state = CanonicalFrontierPlanner::initial_state().expect("planner state");
+    let (_, _, waiting_invocation) = canonical_planner_basis_with_page(
+        &repository,
+        "generated-progressive",
+        current,
+        &planner_state,
+        None,
+        16,
+    );
+    let waiting_request = repository
+        .build_planner_request(
+            current,
+            waiting_invocation.id().expect("waiting invocation id"),
+        )
+        .expect("build waiting planner request");
+    assert_eq!(waiting_request.input_bundle().len(), 2);
+    let waiting_output = CanonicalFrontierPlanner
+        .plan(&waiting_request)
+        .expect("plan waiting frontier");
+    assert!(matches!(
+        waiting_output.proposal().disposition(),
+        PlannerProposalDisposition::NoWork
+    ));
+
     let request_id = request.id().expect("request id");
     let second_request = BranchRequest::new(
         request.branch_point(),

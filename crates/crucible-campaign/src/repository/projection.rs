@@ -24,6 +24,12 @@ struct MixtureComponentState {
     weight: u64,
 }
 
+struct ContinuationProgress {
+    profile: CandidateSourceProfile,
+    proposed: u64,
+    pending: bool,
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum CandidateSourceProfile {
     Static {
@@ -1010,6 +1016,101 @@ impl CampaignRepository {
         Ok(())
     }
 
+    pub(super) fn planner_continuation_projection(
+        &self,
+        snapshot: &LoadedSnapshot,
+        position: crate::PlanningScanPosition,
+    ) -> Result<ContinuationProjection, CampaignRepositoryError> {
+        let frontier = self
+            .merkle
+            .get(
+                snapshot.snapshot.roots().exploration,
+                frontier_index_anchor_key(),
+            )?
+            .ok_or_else(|| integrity("planner-candidate-frontier-index-is-missing"))?;
+        let projection_content = self
+            .merkle
+            .get(frontier, frontier_index_order_key(position.source()))?
+            .ok_or_else(|| integrity("planner-candidate-projection-is-missing"))?;
+        let projection = self.read_continuation_projection(projection_content)?;
+        if projection.request() != position.source()
+            || projection.branch_point() != position.branch_point()
+        {
+            return Err(integrity("planner-candidate-position-mismatch"));
+        }
+        Ok(projection)
+    }
+
+    pub(super) fn planner_candidate_input(
+        &self,
+        snapshot: &LoadedSnapshot,
+        invocation_id: crate::PlannerInvocationId,
+        position: crate::PlanningScanPosition,
+    ) -> Result<(ContinuationProjection, Option<Proposal>), CampaignRepositoryError> {
+        let exploration = snapshot.snapshot.roots().exploration;
+        let accounting = snapshot.snapshot.roots().accounting;
+        let observations = snapshot.snapshot.roots().observations;
+        let projection = self.planner_continuation_projection(snapshot, position)?;
+        let request = self.read_branch_request(position.source().content_id())?;
+
+        let completed_visits =
+            self.branch_completed_visits(observations, request.branch_point())?;
+        let domain = self.read_choice_domain(request.domain().content_id())?;
+        if self.candidate_source_profile(&request, &domain)?.is_none() {
+            let expected = ContinuationProjection::new(
+                position.source(),
+                position.branch_point(),
+                crate::ContinuationState::Open,
+            );
+            if projection != expected {
+                return Err(integrity("planner-candidate-frontier-projection-mismatch"));
+            }
+            return Ok((projection, None));
+        }
+        let progress = self.continuation_progress(
+            exploration,
+            accounting,
+            position.source(),
+            &request,
+            &domain,
+        )?;
+        let state = continuation_state_after_progress(
+            progress.profile,
+            progress.proposed,
+            progress.pending,
+            request.budget().maximum_proposals(),
+            completed_visits,
+        )?;
+        if projection
+            != ContinuationProjection::new(position.source(), position.branch_point(), state)
+        {
+            return Err(integrity("planner-candidate-frontier-projection-mismatch"));
+        }
+
+        let offer = if state == crate::ContinuationState::Ready {
+            let ordinal = progress
+                .proposed
+                .checked_add(1)
+                .ok_or_else(|| integrity("planner-candidate-ordinal-overflow"))?;
+            let value = self
+                .candidate_at_with_feedback(&request, &domain, ordinal, completed_visits)?
+                .ok_or_else(|| integrity("planner-candidate-enumerator-is-not-implemented"))?;
+            Some(Proposal::new(
+                position.branch_point(),
+                position.source(),
+                request.domain(),
+                value,
+                snapshot.snapshot.active_policy(),
+                Some(invocation_id),
+                ordinal,
+                snapshot.snapshot.planning_view().id()?,
+            )?)
+        } else {
+            None
+        };
+        Ok((projection, offer))
+    }
+
     /// Projects and publishes one bounded static-continuation page.
     ///
     /// The page is derived from one authenticated historical or current
@@ -1275,8 +1376,32 @@ impl CampaignRepository {
         completed_visits: u64,
     ) -> Result<crate::ContinuationState, CampaignRepositoryError> {
         let domain = self.read_choice_domain(request.domain().content_id())?;
+        let progress = self.continuation_progress(
+            exploration_root,
+            accounting_root,
+            request_id,
+            request,
+            &domain,
+        )?;
+        continuation_state_after_progress(
+            progress.profile,
+            progress.proposed,
+            progress.pending,
+            request.budget().maximum_proposals(),
+            completed_visits,
+        )
+    }
+
+    fn continuation_progress(
+        &self,
+        exploration_root: ContentId,
+        accounting_root: ContentId,
+        request_id: BranchRequestId,
+        request: &BranchRequest,
+        domain: &ChoiceDomain,
+    ) -> Result<ContinuationProgress, CampaignRepositoryError> {
         let profile = self
-            .candidate_source_profile(request, &domain)?
+            .candidate_source_profile(request, domain)?
             .ok_or_else(|| integrity("generated-expansion-projector-is-not-implemented"))?;
         let value_count = profile.count();
         let maximum_proposals = request.budget().maximum_proposals();
@@ -1334,13 +1459,11 @@ impl CampaignRepository {
             }
         }
 
-        continuation_state_after_progress(
+        Ok(ContinuationProgress {
             profile,
             proposed,
             pending,
-            maximum_proposals,
-            completed_visits,
-        )
+        })
     }
 
     pub(super) fn put_expansion_state(

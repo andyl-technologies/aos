@@ -9,15 +9,15 @@ use crate::{
     AlternativeId, AssignmentId, AttemptResourceLimits, BooleanDomain, BranchBudget, BudgetGrant,
     CampaignAuthorizationError, CampaignFactId, CampaignMode, CampaignName, CampaignPlanningBundle,
     CampaignPlanningView, CampaignPrincipal, CampaignPrincipalAuthorizer, CampaignSeed,
-    CampaignServiceOperation, CandidateGeneratorAlgorithm, ChoiceClassContext, ChoiceCoordinate,
-    ChoicePolicy, ChoiceSource, ChoiceValue, ConfigurationId, ContinuationState, DebugSessionId,
-    DiscreteAlternative, DiscreteDomain, ExecutionId, ExecutionRetentionIntent, ExplorerPolicy,
-    FairnessPolicy, GetCampaignFrontierObjectRequest, GuidanceEvidence, MeasurementSeries,
-    MetricValue, PlannerEngine, PlannerProposalDisposition, PlannerRequest, PlannerResponse,
-    PlannerState, PlannerStepProposal, PlannerSubmission, PlanningBudget, PlanningUsage,
-    PolicyArtifact, ProgressiveWideningPolicy, PropertyEvidence, PuctPolicy,
-    QueryCampaignFrontierRequest, RepositoryCampaignService, RetentionPolicy, ScenarioDefId,
-    StopCondition, WeightedGenerator,
+    CampaignServiceOperation, CandidateGeneratorAlgorithm, CanonicalFrontierPlanner,
+    ChoiceClassContext, ChoiceCoordinate, ChoicePolicy, ChoiceSource, ChoiceValue, ConfigurationId,
+    ContinuationState, DebugSessionId, DiscreteAlternative, DiscreteDomain, ExecutionId,
+    ExecutionRetentionIntent, ExplorerPolicy, FairnessPolicy, GetCampaignFrontierObjectRequest,
+    GuidanceEvidence, MeasurementSeries, MetricValue, PlannerEngine, PlannerProposalDisposition,
+    PlannerRequest, PlannerResponse, PlannerState, PlannerStepProposal, PlannerSubmission,
+    PlanningBudget, PlanningUsage, PolicyArtifact, ProgressiveWideningPolicy, PropertyEvidence,
+    PuctPolicy, PurePlannerEngine, QueryCampaignFrontierRequest, RepositoryCampaignService,
+    RetentionPolicy, ScenarioDefId, StopCondition, WeightedGenerator,
 };
 
 struct AllowCampaignQueries;
@@ -603,6 +603,45 @@ fn planner_basis_with_page(
             PlanningBudget::new(4, 4, 16, 8192, 100).expect("planner budget"),
         )
         .expect("prepare planner invocation");
+    (engine, artifact, invocation)
+}
+
+fn canonical_planner_basis_with_page(
+    repository: &CampaignRepository,
+    name: &str,
+    snapshot: CampaignSnapshotId,
+    state: &PlannerState,
+    scan_after: Option<PlanningScanPosition>,
+    scan_limit: u32,
+) -> (PlannerEngine, PolicyArtifact, PlannerInvocation) {
+    let engine = CanonicalFrontierPlanner::descriptor().expect("canonical planner engine");
+    assert_eq!(state.engine(), engine.id().expect("canonical engine id"));
+    let dependency_bytes = b"canonical frontier planner dependency".to_vec();
+    let dependency = ContentId::for_bytes(ObjectKind::Trace, 1, &dependency_bytes);
+    repository
+        .blobs
+        .put_if_absent(dependency, &BlobHandle::from_bytes(dependency_bytes))
+        .expect("canonical planner dependency");
+    let artifact = PolicyArtifact::new(
+        engine.id().expect("canonical engine id"),
+        1,
+        dependency,
+        BTreeSet::new(),
+        BTreeMap::new(),
+    )
+    .expect("canonical planner artifact");
+    let invocation = repository
+        .prepare_planner_invocation(
+            name,
+            snapshot,
+            &engine,
+            &artifact,
+            state,
+            scan_after,
+            scan_limit,
+            PlanningBudget::new(4, 4, 16, 8192, 100).expect("canonical planner budget"),
+        )
+        .expect("prepare canonical planner invocation");
     (engine, artifact, invocation)
 }
 
