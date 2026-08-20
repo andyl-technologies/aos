@@ -35,8 +35,9 @@ pub use query::{
     CampaignChoiceEntry, CampaignChoiceObject, CampaignChoiceObjectKind, CampaignGraphEntry,
     GetCampaignChoiceObjectRequest, GetCampaignChoiceObjectResponse, GetCampaignGraphObjectRequest,
     GetCampaignGraphObjectResponse, MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS,
-    MAX_CAMPAIGN_QUERY_PAGE_ITEMS, QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
-    QueryCampaignGraphRequest, QueryCampaignGraphResponse,
+    MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_QUERY_PAGE_ITEMS,
+    QueryCampaignChoicesRequest, QueryCampaignChoicesResponse, QueryCampaignFrontierRequest,
+    QueryCampaignFrontierResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
 };
 pub use watch::{WatchCampaignRequest, WatchCampaignResponse};
 
@@ -141,6 +142,8 @@ pub enum CampaignServiceOperation {
     GetCampaignGraphObject,
     /// Read one bounded page from the authenticated discovered-choice index.
     QueryCampaignChoices,
+    /// Read one bounded page from the authenticated continuation frontier.
+    QueryCampaignFrontier,
     /// Read one exact declaration or domain named by an authenticated choice.
     GetCampaignChoiceObject,
     /// Apply one idempotent lifecycle, budget, or policy command.
@@ -366,6 +369,19 @@ impl CampaignServiceFailure {
     /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
     /// or when a stale failure does not describe this query's exact snapshot.
     pub fn validate_for_query_campaign_choices(
+        self,
+        expected_snapshot: CampaignSnapshotId,
+    ) -> Result<(), CampaignCodecError> {
+        self.validate_for_query_campaign_graph(expected_snapshot)
+    }
+
+    /// Validates a failure for one exact campaign frontier query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
+    /// or when a stale failure does not describe this query's exact snapshot.
+    pub fn validate_for_query_campaign_frontier(
         self,
         expected_snapshot: CampaignSnapshotId,
     ) -> Result<(), CampaignCodecError> {
@@ -1345,6 +1361,18 @@ pub trait CampaignService {
         request: &QueryCampaignChoicesRequest,
     ) -> Result<QueryCampaignChoicesResponse, Self::Error>;
 
+    /// Returns one bounded page from the authenticated continuation frontier.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific failure when authorization,
+    /// snapshot precondition, cursor validation, repository access, or
+    /// response construction fails.
+    fn query_campaign_frontier(
+        &self,
+        request: &QueryCampaignFrontierRequest,
+    ) -> Result<QueryCampaignFrontierResponse, Self::Error>;
+
     /// Returns one exact declaration or domain named by a discovered choice.
     ///
     /// # Errors
@@ -1603,6 +1631,32 @@ where
                 let failure = error.campaign_service_failure();
                 failure
                     .validate_for_query_campaign_choices(request.snapshot())
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+        Ok(response)
+    }
+
+    /// Queries one snapshot-bound frontier page and validates both Merkle proofs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignClientError`] when the service fails or answers a
+    /// different request, snapshot, nested index, projection page, or cursor.
+    pub fn query_campaign_frontier(
+        &self,
+        request: &QueryCampaignFrontierRequest,
+    ) -> Result<QueryCampaignFrontierResponse, CampaignClientError> {
+        let response = match self.service.query_campaign_frontier(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_query_campaign_frontier(request.snapshot())
                     .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
                 return Err(failure.into());
             }
@@ -2033,6 +2087,52 @@ where
         )?)
     }
 
+    fn query_campaign_frontier(
+        &self,
+        request: &QueryCampaignFrontierRequest,
+    ) -> Result<QueryCampaignFrontierResponse, Self::Error> {
+        self.authorizer.authorize(
+            request.principal(),
+            CampaignServiceOperation::QueryCampaignFrontier,
+            request.campaign(),
+            request.request_digest(),
+        )?;
+        let head = self.repository.head(request.campaign().as_str())?;
+        if head.snapshot_id() != request.snapshot() {
+            return Err(CampaignRepositoryError::Stale {
+                expected: request.snapshot(),
+                current: head.snapshot_id(),
+            }
+            .into());
+        }
+        let limit = usize::try_from(request.limit()).map_err(|_| {
+            CampaignRepositoryError::InvalidRequest {
+                reason: "campaign-frontier-query-page-size-is-invalid",
+            }
+        })?;
+        let (page, index_proof, page_proof) = self.repository.scan_frontier_page(
+            head.snapshot().roots().exploration,
+            request.after(),
+            limit,
+        )?;
+        let entries = page
+            .entries()
+            .iter()
+            .map(|(_, object)| self.repository.read_continuation_projection(*object))
+            .collect::<Result<Vec<_>, CampaignRepositoryError>>()?;
+        let next_after = page
+            .next_after()
+            .and_then(|_| entries.last().map(|entry| entry.request()));
+        Ok(QueryCampaignFrontierResponse::new(
+            request,
+            head.snapshot().clone(),
+            entries,
+            next_after,
+            index_proof,
+            page_proof,
+        )?)
+    }
+
     fn get_campaign_choice_object(
         &self,
         request: &GetCampaignChoiceObjectRequest,
@@ -2410,6 +2510,13 @@ mod tests {
             unreachable!("test service only handles GetCampaign")
         }
 
+        fn query_campaign_frontier(
+            &self,
+            _request: &QueryCampaignFrontierRequest,
+        ) -> Result<QueryCampaignFrontierResponse, Self::Error> {
+            unreachable!("test service only handles GetCampaign")
+        }
+
         fn get_campaign_choice_object(
             &self,
             _request: &GetCampaignChoiceObjectRequest,
@@ -2518,6 +2625,13 @@ mod tests {
             Err(self.0)
         }
 
+        fn query_campaign_frontier(
+            &self,
+            _request: &QueryCampaignFrontierRequest,
+        ) -> Result<QueryCampaignFrontierResponse, Self::Error> {
+            Err(self.0)
+        }
+
         fn get_campaign_choice_object(
             &self,
             _request: &GetCampaignChoiceObjectRequest,
@@ -2596,6 +2710,13 @@ mod tests {
             &self,
             _request: &QueryCampaignChoicesRequest,
         ) -> Result<QueryCampaignChoicesResponse, Self::Error> {
+            unreachable!("test service only handles ApplyCampaignCommand")
+        }
+
+        fn query_campaign_frontier(
+            &self,
+            _request: &QueryCampaignFrontierRequest,
+        ) -> Result<QueryCampaignFrontierResponse, Self::Error> {
             unreachable!("test service only handles ApplyCampaignCommand")
         }
 

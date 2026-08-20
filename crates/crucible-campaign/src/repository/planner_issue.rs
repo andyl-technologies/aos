@@ -169,6 +169,9 @@ impl CampaignRepository {
 
         let prior_exploration = snapshot.snapshot.roots().exploration;
         let prior_accounting = snapshot.snapshot.roots().accounting;
+        let frontier_index = self
+            .merkle
+            .get(prior_exploration, frontier_index_anchor_key())?;
         let mut exploration_upserts = BTreeMap::new();
         let mut generator_validation = IssueGeneratorValidation::new();
         let mut branch_request_ids = Vec::with_capacity(branch_requests.len());
@@ -197,6 +200,14 @@ impl CampaignRepository {
                 request_content,
                 "planner-issue-reused-branch-request-slot",
             )?;
+            if let Some(frontier_index) = frontier_index
+                && self
+                    .merkle
+                    .get(frontier_index, frontier_index_order_key(request_id))?
+                    .is_some()
+            {
+                return Err(integrity("planner-issue-reused-frontier-slot"));
+            }
             branch_request_ids.push(request_id);
         }
 
@@ -333,6 +344,58 @@ impl CampaignRepository {
                     "planner-issue-reused-admission-slot",
                 )?;
             }
+        }
+
+        if let Some(frontier_index) = frontier_index {
+            let mut frontier_states = BTreeMap::new();
+            for (request, request_id) in branch_requests.iter().zip(branch_request_ids.iter()) {
+                frontier_states.insert(
+                    *request_id,
+                    (
+                        request.branch_point(),
+                        Self::initial_continuation_state(request),
+                    ),
+                );
+            }
+            if let Some(last_proposal) = proposals.last() {
+                if !frontier_states.contains_key(&selected.source()) {
+                    let prior_state = self.finite_continuation_state(
+                        prior_exploration,
+                        prior_accounting,
+                        selected.source(),
+                        &selected_request,
+                    )?;
+                    self.validate_frontier_projection(
+                        frontier_index,
+                        selected.source(),
+                        selected.branch_point(),
+                        prior_state,
+                    )?;
+                }
+                let values = selected_request
+                    .source()
+                    .finite_values()
+                    .ok_or_else(|| integrity("generated-proposal-enumerator-is-not-implemented"))?;
+                let proposed = last_proposal.ordinal();
+                let value_count = u64::try_from(values.len())
+                    .map_err(|_| integrity("planner-issue-finite-value-count-overflow"))?;
+                let state = if proposed == value_count {
+                    crate::ContinuationState::Exhausted
+                } else if proposed >= selected_request.budget().maximum_proposals() {
+                    crate::ContinuationState::Closed
+                } else {
+                    crate::ContinuationState::Ready
+                };
+                frontier_states.insert(selected.source(), (selected.branch_point(), state));
+            }
+            let projections = frontier_states
+                .into_iter()
+                .map(|(request, (branch_point, state))| (request, branch_point, state))
+                .collect::<Vec<_>>();
+            let next_frontier = self
+                .frontier_index_after(prior_exploration, &projections, mode.publishes())?
+                .ok_or_else(|| integrity("planner-issue-frontier-index-disappeared"))?;
+            exploration_upserts.insert(frontier_index_anchor_key(), next_frontier);
         }
 
         let exploration =

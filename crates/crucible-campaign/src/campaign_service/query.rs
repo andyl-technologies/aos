@@ -3,7 +3,9 @@
 use crucible_cas::content_store::ContentId;
 
 use super::*;
-use crate::{ChoiceDomain, ChoiceOpportunity, SelectableDeclaration};
+use crate::{
+    BranchRequestId, ChoiceDomain, ChoiceOpportunity, ContinuationProjection, SelectableDeclaration,
+};
 
 /// Maximum entries returned by one campaign graph page.
 pub const MAX_CAMPAIGN_QUERY_PAGE_ITEMS: u32 = crate::MAX_PROVEN_PAGE_ITEMS as u32;
@@ -13,6 +15,12 @@ pub const MAX_CAMPAIGN_QUERY_PAGE_ITEMS: u32 = crate::MAX_PROVEN_PAGE_ITEMS as u
 /// The smaller limit keeps the worst-case scan proof plus the independent
 /// graph-anchor lookup proof below the 64-MiB component-message bound.
 pub const MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS: u32 = 8;
+
+/// Maximum continuations returned by one proof-bearing frontier page.
+///
+/// The limit keeps the nested-index lookup proof, range proof, and typed
+/// projection bodies below the component-message ceiling.
+pub const MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS: u32 = 8;
 
 /// One choice opportunity admitted into the authenticated campaign graph.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -372,6 +380,315 @@ impl Canonical for QueryCampaignChoicesResponse {
             page_proof: MerkleMapPageProof::decode(decoder)?,
         };
         ensure_message_size(&response, "query-campaign-choices-response-encoded-bytes")?;
+        Ok(response)
+    }
+}
+
+/// Strict request for one current-snapshot page of continuation projections.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueryCampaignFrontierRequest {
+    schema_version: u32,
+    principal: CampaignPrincipal,
+    campaign: CampaignName,
+    snapshot: CampaignSnapshotId,
+    after: Option<BranchRequestId>,
+    limit: u32,
+}
+
+impl QueryCampaignFrontierRequest {
+    /// Builds one bounded snapshot-bound frontier query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when `limit` is zero or exceeds
+    /// [`MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS`], or the encoded request exceeds
+    /// the service message bound.
+    pub fn new(
+        principal: CampaignPrincipal,
+        campaign: CampaignName,
+        snapshot: CampaignSnapshotId,
+        after: Option<BranchRequestId>,
+        limit: u32,
+    ) -> Result<Self, CampaignCodecError> {
+        if limit == 0 || limit > MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "campaign-frontier-query-page-items",
+            });
+        }
+        let request = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            principal,
+            campaign,
+            snapshot,
+            after,
+            limit,
+        };
+        ensure_message_size(&request, "query-campaign-frontier-request-encoded-bytes")?;
+        Ok(request)
+    }
+
+    /// Returns the authenticated operational principal.
+    #[must_use]
+    pub const fn principal(&self) -> &CampaignPrincipal {
+        &self.principal
+    }
+
+    /// Returns the canonical campaign name.
+    #[must_use]
+    pub const fn campaign(&self) -> &CampaignName {
+        &self.campaign
+    }
+
+    /// Returns the exact current snapshot that anchors this query.
+    #[must_use]
+    pub const fn snapshot(&self) -> CampaignSnapshotId {
+        self.snapshot
+    }
+
+    /// Returns the exclusive branch-request cursor.
+    #[must_use]
+    pub const fn after(&self) -> Option<BranchRequestId> {
+        self.after
+    }
+
+    /// Returns the maximum continuation count requested for this page.
+    #[must_use]
+    pub const fn limit(&self) -> u32 {
+        self.limit
+    }
+
+    /// Returns the digest of every canonical request byte.
+    #[must_use]
+    pub fn request_digest(&self) -> CampaignHash {
+        service_request_digest("query-campaign-frontier", self)
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes one strict bounded frontier query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical,
+    /// unsupported, or oversized input.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_message(bytes, "query-campaign-frontier-request-encoded-bytes")
+    }
+}
+
+impl Canonical for QueryCampaignFrontierRequest {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.principal.encode(encoder);
+        self.campaign.encode(encoder);
+        self.snapshot.encode(encoder);
+        self.after.encode(encoder);
+        self.limit.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_service_version(u32::decode(decoder)?)?;
+        Self::new(
+            CampaignPrincipal::decode(decoder)?,
+            CampaignName::decode(decoder)?,
+            CampaignSnapshotId::decode(decoder)?,
+            Option::<BranchRequestId>::decode(decoder)?,
+            u32::decode(decoder)?,
+        )
+    }
+}
+
+/// Request-bound page from the snapshot's authenticated frontier index.
+///
+/// Authorization grants the complete snapshot metadata and the returned
+/// continuation-projection bodies. Branch requests and other object bodies
+/// remain separately authorized.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueryCampaignFrontierResponse {
+    schema_version: u32,
+    request_digest: CampaignHash,
+    snapshot_body: CampaignSnapshot,
+    entries: Vec<ContinuationProjection>,
+    next_after: Option<BranchRequestId>,
+    index_proof: MerkleMapLookupProof,
+    page_proof: MerkleMapPageProof,
+}
+
+impl QueryCampaignFrontierResponse {
+    /// Builds one authenticated frontier response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the snapshot, index proof, page,
+    /// typed projection bodies, cursor, limit, or encoded-size contract fails.
+    pub fn new(
+        request: &QueryCampaignFrontierRequest,
+        snapshot_body: CampaignSnapshot,
+        entries: Vec<ContinuationProjection>,
+        next_after: Option<BranchRequestId>,
+        index_proof: MerkleMapLookupProof,
+        page_proof: MerkleMapPageProof,
+    ) -> Result<Self, CampaignCodecError> {
+        let response = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            request_digest: request.request_digest(),
+            snapshot_body,
+            entries,
+            next_after,
+            index_proof,
+            page_proof,
+        };
+        response.validate_body_for(request)?;
+        ensure_message_size(&response, "query-campaign-frontier-response-encoded-bytes")?;
+        Ok(response)
+    }
+
+    /// Returns the authenticated snapshot body, including all root IDs.
+    #[must_use]
+    pub const fn snapshot_body(&self) -> &CampaignSnapshot {
+        &self.snapshot_body
+    }
+
+    /// Returns continuation projections in canonical request-ID order.
+    #[must_use]
+    pub fn entries(&self) -> &[ContinuationProjection] {
+        &self.entries
+    }
+
+    /// Returns the exclusive cursor for the next page, or `None` at EOF.
+    #[must_use]
+    pub const fn next_after(&self) -> Option<BranchRequestId> {
+        self.next_after
+    }
+
+    /// Validates exact request, snapshot, nested index, bodies, and cursor binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the response belongs to another
+    /// request or differs from either authenticated Merkle proof.
+    pub fn validate_for(
+        &self,
+        request: &QueryCampaignFrontierRequest,
+    ) -> Result<(), CampaignCodecError> {
+        validate_request_digest(self.request_digest, request.request_digest())?;
+        self.validate_body_for(request)
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes one strict bounded frontier response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical,
+    /// unsupported, or oversized input. Use [`Self::validate_for`] before use.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_message(bytes, "query-campaign-frontier-response-encoded-bytes")
+    }
+
+    fn validate_body_for(
+        &self,
+        request: &QueryCampaignFrontierRequest,
+    ) -> Result<(), CampaignCodecError> {
+        let limit =
+            usize::try_from(request.limit()).map_err(|_| CampaignCodecError::LimitExceeded {
+                limit: "campaign-frontier-query-page-items",
+            })?;
+        if self.snapshot_body.id()? != request.snapshot() || self.entries.len() > limit {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign frontier response snapshot or page limit mismatch",
+            });
+        }
+        let index_root = MerkleMap::verify_lookup_proof(
+            self.snapshot_body.roots().exploration,
+            crate::repository::frontier_index_anchor_key(),
+            &self.index_proof,
+        )
+        .map_err(|_| CampaignCodecError::InvalidValue {
+            reason: "campaign frontier index proof is invalid",
+        })?
+        .ok_or(CampaignCodecError::InvalidValue {
+            reason: "campaign snapshot has no authenticated frontier index",
+        })?;
+        let verified = MerkleMap::verify_scan_proof(
+            index_root,
+            request
+                .after()
+                .map(crate::repository::frontier_index_order_key),
+            limit,
+            &self.page_proof,
+        )
+        .map_err(|_| CampaignCodecError::InvalidValue {
+            reason: "campaign frontier page proof is invalid",
+        })?;
+        if verified.entries().len() != self.entries.len() {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign frontier response entry count differs from proof",
+            });
+        }
+        for ((key, value), projection) in verified.entries().iter().zip(&self.entries) {
+            if projection.id()?.content_id() != *value
+                || *key != crate::repository::frontier_index_order_key(projection.request())
+            {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "campaign frontier projection differs from index leaf",
+                });
+            }
+        }
+        let verified_next = if verified.next_after().is_some() {
+            self.entries.last().map(|projection| projection.request())
+        } else {
+            None
+        };
+        if self.next_after != verified_next {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign frontier cursor differs from its Merkle proof",
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Canonical for QueryCampaignFrontierResponse {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.request_digest.encode(encoder);
+        self.snapshot_body.encode(encoder);
+        self.entries.encode(encoder);
+        self.next_after.encode(encoder);
+        self.index_proof.encode(encoder);
+        self.page_proof.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_service_version(u32::decode(decoder)?)?;
+        let response = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            request_digest: CampaignHash::decode(decoder)?,
+            snapshot_body: CampaignSnapshot::decode(decoder)?,
+            entries: decoder.sequence_bounded(
+                usize::try_from(MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS).map_err(|_| {
+                    CampaignCodecError::LimitExceeded {
+                        limit: "campaign-frontier-query-page-items",
+                    }
+                })?,
+                "campaign-query-frontier-items",
+                ContinuationProjection::decode,
+            )?,
+            next_after: Option::<BranchRequestId>::decode(decoder)?,
+            index_proof: MerkleMapLookupProof::decode(decoder)?,
+            page_proof: MerkleMapPageProof::decode(decoder)?,
+        };
+        ensure_message_size(&response, "query-campaign-frontier-response-encoded-bytes")?;
         Ok(response)
     }
 }
@@ -1305,8 +1622,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        BooleanDomain, CampaignRoots, ChoiceClassContext, ChoiceCoordinate, ChoiceSource,
-        ChoiceValue, ConfigurationArtifact, ConfigurationId, ScenarioArtifactId, ScenarioDefId,
+        BooleanDomain, BranchPointId, CampaignRoots, ChoiceClassContext, ChoiceCoordinate,
+        ChoiceSource, ChoiceValue, ConfigurationArtifact, ConfigurationId, ContinuationState,
+        ScenarioArtifactId, ScenarioDefId,
     };
 
     fn snapshot(label: &str) -> CampaignSnapshotId {
@@ -1802,6 +2120,158 @@ mod tests {
                 b"unrelated-choice",
             ))
             .expect("unrelated choice"),
+        );
+        assert!(substituted.validate_for(&request).is_err());
+    }
+
+    #[test]
+    fn frontier_pages_authenticate_projection_bodies_and_exact_eof() {
+        assert!(
+            QueryCampaignFrontierRequest::new(
+                CampaignPrincipal::new("operator:alice").expect("principal"),
+                CampaignName::new("network-recovery").expect("campaign"),
+                snapshot("frontier-limit"),
+                None,
+                MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS + 1,
+            )
+            .is_err()
+        );
+        let backend = Arc::new(MemoryBlobBackend::new("frontier-query", u64::MAX));
+        let map = MerkleMap::new(backend);
+        let empty = map.empty().expect("empty root");
+        let projections = [
+            ("first", ContinuationState::Ready),
+            ("second", ContinuationState::Open),
+        ]
+        .map(|(label, state)| {
+            let request = BranchRequestId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                label.as_bytes(),
+            ))
+            .expect("request id");
+            ContinuationProjection::new(
+                request,
+                BranchPointId::from_hash(CampaignHash::derive(
+                    "campaign-frontier-query-branch-point",
+                    label.as_bytes(),
+                )),
+                state,
+            )
+        });
+        let mut frontier_index = empty;
+        for projection in projections {
+            frontier_index = map
+                .insert(
+                    frontier_index.content_id(),
+                    crate::repository::frontier_index_order_key(projection.request()),
+                    projection.id().expect("projection id").content_id(),
+                )
+                .expect("frontier insert");
+        }
+        let exploration = map
+            .insert(
+                empty.content_id(),
+                crate::repository::frontier_index_anchor_key(),
+                frontier_index.content_id(),
+            )
+            .expect("frontier-index anchor");
+        let roots = CampaignRoots {
+            graph: empty.content_id(),
+            exploration: exploration.content_id(),
+            observations: empty.content_id(),
+            corpus: empty.content_id(),
+            coverage: empty.content_id(),
+            findings: empty.content_id(),
+            pins: empty.content_id(),
+            accounting: empty.content_id(),
+            coordination: empty.content_id(),
+        };
+        let snapshot_body = CampaignSnapshot::genesis(
+            CampaignLineageId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                b"frontier-query-lineage",
+            ))
+            .expect("lineage"),
+            CampaignPolicyId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Policy,
+                1,
+                b"frontier-query-policy",
+            ))
+            .expect("policy"),
+            roots,
+        )
+        .expect("snapshot");
+        let request = QueryCampaignFrontierRequest::new(
+            CampaignPrincipal::new("operator:alice").expect("principal"),
+            CampaignName::new("network-recovery").expect("campaign"),
+            snapshot_body.id().expect("snapshot id"),
+            None,
+            1,
+        )
+        .expect("request");
+        let (_, index_proof) = map
+            .get_with_proof(
+                exploration.content_id(),
+                crate::repository::frontier_index_anchor_key(),
+            )
+            .expect("index proof");
+        let (page, page_proof) = map
+            .scan_with_proof(frontier_index.content_id(), None, 1)
+            .expect("page proof");
+        let entries = page
+            .entries()
+            .iter()
+            .map(|(_, value)| {
+                projections
+                    .iter()
+                    .copied()
+                    .find(|projection| {
+                        projection.id().expect("projection id").content_id() == *value
+                    })
+                    .expect("projection body")
+            })
+            .collect::<Vec<_>>();
+        let next_after = page
+            .next_after()
+            .and_then(|_| entries.last().map(|entry| entry.request()));
+        let response = QueryCampaignFrontierResponse::new(
+            &request,
+            snapshot_body,
+            entries,
+            next_after,
+            index_proof,
+            page_proof,
+        )
+        .expect("response");
+        let decoded =
+            QueryCampaignFrontierResponse::from_canonical_bytes(&response.canonical_bytes())
+                .expect("decode response");
+        decoded.validate_for(&request).expect("verify response");
+        assert_eq!(
+            [
+                blake3::hash(&request.canonical_bytes())
+                    .to_hex()
+                    .to_string(),
+                blake3::hash(&response.canonical_bytes())
+                    .to_hex()
+                    .to_string(),
+            ],
+            [
+                String::from("483028d0eea2e19495841dd35e1d12e209c7f6ab06e37f659e5e1dcd98edbca4"),
+                String::from("ff72a3caeb93adf388ca3bdd3a7a7fed45479a7b033ed3dfac0fdd4ed2485c26"),
+            ]
+        );
+
+        let mut forged_eof = decoded.clone();
+        forged_eof.next_after = None;
+        assert!(forged_eof.validate_for(&request).is_err());
+        let mut substituted = decoded;
+        substituted.entries[0] = ContinuationProjection::new(
+            substituted.entries[0].request(),
+            substituted.entries[0].branch_point(),
+            ContinuationState::Closed,
         );
         assert!(substituted.validate_for(&request).is_err());
     }

@@ -3,7 +3,7 @@
 //! The protocol contains only bounded canonical component messages:
 //!
 //! ```text
-//! CampaignLoopbackFrameV10 = magic[8] | kind:u8 | reserved[3] |
+//! CampaignLoopbackFrameV11 = magic[8] | kind:u8 | reserved[3] |
 //!                           body_length:u32be | canonical_body[body_length]
 //! kind = 1 (GetCampaignRequestV1) |
 //!        2 (GetCampaignResponseV1) |
@@ -27,8 +27,10 @@
 //!       20 (QueryCampaignChoicesRequestV1) |
 //!       21 (QueryCampaignChoicesResponseV1) |
 //!       22 (GetCampaignChoiceObjectRequestV1) |
-//!       23 (GetCampaignChoiceObjectResponseV1)
-//! magic = "CRUCCS10"
+//!       23 (GetCampaignChoiceObjectResponseV1) |
+//!       24 (QueryCampaignFrontierRequestV1) |
+//!       25 (QueryCampaignFrontierResponseV1)
+//! magic = "CRUCCS11"
 //! ```
 //!
 //! One mutex serializes complete request/response exchanges so concurrent
@@ -59,12 +61,13 @@ use crucible_campaign::{
     GetCampaignChoiceObjectRequest, GetCampaignChoiceObjectResponse, GetCampaignGraphObjectRequest,
     GetCampaignGraphObjectResponse, GetCampaignRequest, GetCampaignResponse,
     GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
-    QueryCampaignChoicesRequest, QueryCampaignChoicesResponse, QueryCampaignGraphRequest,
-    QueryCampaignGraphResponse, RepositoryCampaignService, SubmitCampaignBranchRequest,
-    SubmitCampaignBranchResponse, WatchCampaignRequest, WatchCampaignResponse,
+    QueryCampaignChoicesRequest, QueryCampaignChoicesResponse, QueryCampaignFrontierRequest,
+    QueryCampaignFrontierResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
+    RepositoryCampaignService, SubmitCampaignBranchRequest, SubmitCampaignBranchResponse,
+    WatchCampaignRequest, WatchCampaignResponse,
 };
 
-const FRAME_MAGIC: &[u8; 8] = b"CRUCCS10";
+const FRAME_MAGIC: &[u8; 8] = b"CRUCCS11";
 const FRAME_HEADER_BYTES: usize = 16;
 const GET_CAMPAIGN_REQUEST_KIND: u8 = 1;
 const GET_CAMPAIGN_RESPONSE_KIND: u8 = 2;
@@ -89,6 +92,8 @@ const QUERY_CAMPAIGN_CHOICES_REQUEST_KIND: u8 = 20;
 const QUERY_CAMPAIGN_CHOICES_RESPONSE_KIND: u8 = 21;
 const GET_CAMPAIGN_CHOICE_OBJECT_REQUEST_KIND: u8 = 22;
 const GET_CAMPAIGN_CHOICE_OBJECT_RESPONSE_KIND: u8 = 23;
+const QUERY_CAMPAIGN_FRONTIER_REQUEST_KIND: u8 = 24;
+const QUERY_CAMPAIGN_FRONTIER_RESPONSE_KIND: u8 = 25;
 const DEFAULT_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
@@ -380,6 +385,24 @@ impl CampaignService for LoopbackCampaignService {
                 Ok(response)
             },
             |failure| failure.validate_for_query_campaign_choices(request.snapshot()),
+        )
+    }
+
+    fn query_campaign_frontier(
+        &self,
+        request: &QueryCampaignFrontierRequest,
+    ) -> Result<QueryCampaignFrontierResponse, Self::Error> {
+        self.exchange(
+            QUERY_CAMPAIGN_FRONTIER_REQUEST_KIND,
+            QUERY_CAMPAIGN_FRONTIER_RESPONSE_KIND,
+            request.request_digest(),
+            &request.canonical_bytes(),
+            |response| {
+                let response = QueryCampaignFrontierResponse::from_canonical_bytes(response)?;
+                response.validate_for(request)?;
+                Ok(response)
+            },
+            |failure| failure.validate_for_query_campaign_frontier(request.snapshot()),
         )
     }
 
@@ -878,6 +901,39 @@ where
                     let failure = error.campaign_service_failure();
                     if let Err(error) =
                         failure.validate_for_query_campaign_choices(request.snapshot())
+                    {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    service_error_response(request.request_digest(), &failure)?
+                }
+            }
+        }
+        QUERY_CAMPAIGN_FRONTIER_REQUEST_KIND => {
+            let request = QueryCampaignFrontierRequest::from_canonical_bytes(&body)?;
+            match service.query_campaign_frontier(&request) {
+                Ok(response) => {
+                    if let Err(error) = response.validate_for(&request) {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    (
+                        QUERY_CAMPAIGN_FRONTIER_RESPONSE_KIND,
+                        response.canonical_bytes(),
+                    )
+                }
+                Err(error) => {
+                    let failure = error.campaign_service_failure();
+                    if let Err(error) =
+                        failure.validate_for_query_campaign_frontier(request.snapshot())
                     {
                         return reject_invalid_service_response(
                             stream,

@@ -96,6 +96,108 @@ impl Canonical for ContinuationState {
     }
 }
 
+/// Authenticated current continuation state for one branch request.
+///
+/// The record is content addressed and stored behind the snapshot's nested
+/// frontier index. Its snapshot membership, rather than a field in this body,
+/// binds the projection to one immutable campaign state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ContinuationProjection {
+    schema_version: u32,
+    request: BranchRequestId,
+    branch_point: BranchPointId,
+    state: ContinuationState,
+}
+
+impl ContinuationProjection {
+    /// Builds one request-bound continuation projection.
+    #[must_use]
+    pub const fn new(
+        request: BranchRequestId,
+        branch_point: BranchPointId,
+        state: ContinuationState,
+    ) -> Self {
+        Self {
+            schema_version: RECORD_SCHEMA_VERSION,
+            request,
+            branch_point,
+            state,
+        }
+    }
+
+    /// Returns the exact branch request whose state is projected.
+    #[must_use]
+    pub const fn request(self) -> BranchRequestId {
+        self.request
+    }
+
+    /// Returns the semantic branch point that owns the request.
+    #[must_use]
+    pub const fn branch_point(self) -> BranchPointId {
+        self.branch_point
+    }
+
+    /// Returns the request's derived continuation state.
+    #[must_use]
+    pub const fn state(self) -> ContinuationState {
+        self.state
+    }
+
+    /// Returns strict canonical record-body bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes a strict canonical continuation projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical, invalid, or
+    /// oversized bytes.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_exact_record(bytes, "continuation-projection-encoded-bytes")
+    }
+
+    /// Returns the exact content-derived projection identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] if canonical envelope construction fails.
+    pub fn id(&self) -> Result<ContinuationProjectionId, CampaignCodecError> {
+        ContinuationProjectionId::from_content_id(
+            crate::ObjectEnvelope::for_record(
+                crate::CampaignRecordKind::ContinuationProjection,
+                crate::object::content_children(self.content_children())?,
+                self.canonical_bytes(),
+            )?
+            .content_id(),
+        )
+    }
+
+    pub(crate) fn content_children(self) -> [(String, ContentId); 1] {
+        [("request".to_owned(), self.request.content_id())]
+    }
+}
+
+impl Canonical for ContinuationProjection {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.request.encode(encoder);
+        self.branch_point.encode(encoder);
+        self.state.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_schema(u32::decode(decoder)?)?;
+        Ok(Self::new(
+            BranchRequestId::decode(decoder)?,
+            BranchPointId::decode(decoder)?,
+            ContinuationState::decode(decoder)?,
+        ))
+    }
+}
+
 /// Exact integer statistics projected for one semantic branch point.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ExpansionStatistics {

@@ -42,9 +42,10 @@ pub use campaign_service::{
     GetCampaignChoiceObjectResponse, GetCampaignGraphObjectRequest, GetCampaignGraphObjectResponse,
     GetCampaignRequest, GetCampaignResponse, GetCampaignSnapshotRequest,
     GetCampaignSnapshotResponse, MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS,
-    MAX_CAMPAIGN_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
-    MAX_CREATE_CAMPAIGN_GENERATOR_BYTES, MAX_CREATE_CAMPAIGN_GENERATORS,
-    QueryCampaignChoicesRequest, QueryCampaignChoicesResponse, QueryCampaignGraphRequest,
+    MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_QUERY_PAGE_ITEMS,
+    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, MAX_CREATE_CAMPAIGN_GENERATOR_BYTES,
+    MAX_CREATE_CAMPAIGN_GENERATORS, QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
+    QueryCampaignFrontierRequest, QueryCampaignFrontierResponse, QueryCampaignGraphRequest,
     QueryCampaignGraphResponse, RepositoryCampaignService, RepositoryCampaignServiceError,
     SubmitCampaignBranchRequest, SubmitCampaignBranchResponse, WatchCampaignRequest,
     WatchCampaignResponse,
@@ -70,11 +71,11 @@ pub use executor_capability::{
 };
 pub use exploration::{
     Attempt, AttemptAdmission, AttemptAdmissionRole, AttemptStart, BranchBudget, BranchPath,
-    BranchRequest, BranchRequestCause, CandidateSource, ContinuationState, ExpansionState,
-    ExpansionStatistics, FeedbackWait, FiniteCandidateSource, GuidanceEvidence, PlannerDisposition,
-    PlannerProposalDisposition, PlannerStep, PlannerStepProposal, PlanningAccounting,
-    PlanningScanCursor, PlanningScanPage, PlanningScanPosition, PlanningUsage, Proposal,
-    StopCondition,
+    BranchRequest, BranchRequestCause, CandidateSource, ContinuationProjection, ContinuationState,
+    ExpansionState, ExpansionStatistics, FeedbackWait, FiniteCandidateSource, GuidanceEvidence,
+    PlannerDisposition, PlannerProposalDisposition, PlannerStep, PlannerStepProposal,
+    PlanningAccounting, PlanningScanCursor, PlanningScanPage, PlanningScanPosition, PlanningUsage,
+    Proposal, StopCondition,
 };
 pub use identity::{
     AlternativeId, AttemptAdmissionId, AttemptId, BranchEdgeId, BranchPathId, BranchPointId,
@@ -82,10 +83,10 @@ pub use identity::{
     CampaignPolicyId, CampaignSnapshotId, CampaignViewId, CandidateGeneratorSpecId, ChoiceClassId,
     ChoiceDomainId, ChoiceDomainSemanticId, ChoiceGroupId, ChoiceOpportunityId,
     ChoiceOpportunitySemanticId, ChoiceRngStreamId, ConfigurationArtifactId, ConfigurationId,
-    CoverageProjectionId, CreditId, DebugSessionId, ExpansionStateId, FindingId, MeasurementSetId,
-    ObservationId, PlannerEngineId, PlannerInvocationId, PlannerStateId, PlannerStepId,
-    PolicyArtifactId, ProbabilityModelId, PropertyVerdictSetId, ProposalId,
-    RetainedPlannerRequestId, ScenarioArtifactId, ScenarioDefId, SelectableId,
+    ContinuationProjectionId, CoverageProjectionId, CreditId, DebugSessionId, ExpansionStateId,
+    FindingId, MeasurementSetId, ObservationId, PlannerEngineId, PlannerInvocationId,
+    PlannerStateId, PlannerStepId, PolicyArtifactId, ProbabilityModelId, PropertyVerdictSetId,
+    ProposalId, RetainedPlannerRequestId, ScenarioArtifactId, ScenarioDefId, SelectableId,
     SelectableSemanticId, SelectionId,
 };
 pub use merkle::{

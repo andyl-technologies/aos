@@ -15,9 +15,9 @@ use crate::{
     BranchRequestId, CampaignCodecError, CampaignCommandId, CampaignHash, CampaignPolicyId,
     CampaignSnapshotId, CampaignViewId, CandidateGeneratorSpecId, ChoiceDomain, ChoiceDomainId,
     ChoiceOpportunity, ChoiceOpportunityId, ChoiceValue, ConfigurationArtifact,
-    ConfigurationArtifactId, DebugSessionId, ExpansionStateId, PlannerEngineId,
-    PlannerInvocationId, PlannerState, PlannerStateId, PlannerStepId, PolicyArtifactId, ProposalId,
-    RetainedPlannerRequestId, SelectionId,
+    ConfigurationArtifactId, ContinuationProjectionId, DebugSessionId, ExpansionStateId,
+    PlannerEngineId, PlannerInvocationId, PlannerState, PlannerStateId, PlannerStepId,
+    PolicyArtifactId, ProposalId, RetainedPlannerRequestId, SelectionId,
 };
 
 const RECORD_SCHEMA_VERSION: u32 = 1;

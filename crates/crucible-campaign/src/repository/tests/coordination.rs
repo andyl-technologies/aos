@@ -2231,7 +2231,7 @@ fn choice_authority_is_scoped_to_the_exact_parent_branch_point() {
 }
 
 #[test]
-fn legacy_choice_discovery_never_creates_a_partial_choice_index() {
+fn legacy_mutations_never_create_partial_choice_or_frontier_indexes() {
     let (repository, lineage, policy) = fixture();
     let lineage_content = repository.put_lineage(&lineage).expect("lineage");
     let policy_content = repository.put_policy(&policy).expect("policy");
@@ -2315,6 +2315,30 @@ fn legacy_choice_discovery_never_creates_a_partial_choice_index() {
         repository.scan_choice_page(head.snapshot().roots().graph, None, 1),
         Err(CampaignRepositoryError::InvalidRequest {
             reason: "campaign-snapshot-has-no-choice-index"
+        })
+    ));
+
+    let accepted = repository
+        .submit_branch_request("legacy-choice-index", discovered.new_snapshot, &request)
+        .expect("submit request on legacy head");
+    let requested = repository
+        .head("legacy-choice-index")
+        .expect("legacy request successor");
+    assert_eq!(requested.snapshot_id(), accepted.new_snapshot);
+    assert_eq!(
+        repository
+            .merkle
+            .get(
+                requested.snapshot().roots().exploration,
+                frontier_index_anchor_key(),
+            )
+            .expect("frontier-index lookup"),
+        None
+    );
+    assert!(matches!(
+        repository.scan_frontier_page(requested.snapshot().roots().exploration, None, 1),
+        Err(CampaignRepositoryError::InvalidRequest {
+            reason: "campaign-snapshot-has-no-frontier-index"
         })
     ));
 }
@@ -2420,7 +2444,7 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
             &debugger_bytes,
         )
         .to_hex(),
-        "a6a7e2f4ec330f78ccbac6179de7d8ad325ff5e59fb788ce607344adc229135d",
+        "d2f44956312de702fdc6edcb7c4af6387fdfd6f6b80f3d25710041a2b390de06",
     );
     let decoded_debugger =
         DebuggerSubmission::from_canonical_bytes(&debugger_bytes).expect("decode debugger");
@@ -2532,7 +2556,7 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
     assert_eq!(
         CampaignHash::derive("crucible.test.planner-submission-vector.v1", &planner_bytes,)
             .to_hex(),
-        "b62c63e2e31085fd6509f02afa6185f3ca58da2b3db819a1b4861fc8281bc01e",
+        "b45beb55cd125bc1a1fcc44ec1d112c1a641cfa3788b8eeedf7ec461fe882039",
     );
     let decoded_planner =
         PlannerSubmission::from_canonical_bytes(&planner_bytes).expect("decode planner");
@@ -2760,9 +2784,14 @@ fn branch_request_is_one_lazy_exact_root_delta_and_replays() {
         .merkle
         .verify_closure_objects(next_roots.exploration)
         .expect("exploration closure");
+    let frontier_index = repository
+        .merkle
+        .get(next_roots.exploration, frontier_index_anchor_key())
+        .expect("frontier anchor lookup")
+        .expect("frontier index");
     assert_eq!(
         entries.values,
-        BTreeSet::from([accepted.request.content_id()])
+        BTreeSet::from([accepted.request.content_id(), frontier_index])
     );
 
     let resume = command(
@@ -3329,7 +3358,7 @@ fn finite_proposal_is_an_exact_indexed_delta_and_replays_before_staleness() {
             .inspect_shallow(next.exploration)
             .expect("exploration root")
             .entry_count(),
-        4
+        5
     );
 
     let replay = repository

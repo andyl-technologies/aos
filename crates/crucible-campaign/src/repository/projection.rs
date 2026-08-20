@@ -12,6 +12,77 @@ struct FiniteExpansionInputs {
 }
 
 impl CampaignRepository {
+    pub(super) fn initial_continuation_state(request: &BranchRequest) -> crate::ContinuationState {
+        if request.source().finite_values().is_some() {
+            crate::ContinuationState::Ready
+        } else {
+            crate::ContinuationState::Open
+        }
+    }
+
+    pub(super) fn frontier_index_after(
+        &self,
+        exploration_root: ContentId,
+        projections: &[(
+            BranchRequestId,
+            crate::BranchPointId,
+            crate::ContinuationState,
+        )],
+        publish: bool,
+    ) -> Result<Option<ContentId>, CampaignRepositoryError> {
+        let Some(frontier_index) = self
+            .merkle
+            .get(exploration_root, frontier_index_anchor_key())?
+        else {
+            return Ok(None);
+        };
+        let mut upserts = BTreeMap::new();
+        for (request, branch_point, state) in projections {
+            let projection = ContinuationProjection::new(*request, *branch_point, *state);
+            let projection_id = projection.id()?;
+            if publish {
+                let content = self.put_continuation_projection(&projection)?;
+                if content != projection_id.content_id() {
+                    return Err(integrity("continuation-projection-publication-id-mismatch"));
+                }
+            }
+            upserts.insert(
+                frontier_index_order_key(*request),
+                projection_id.content_id(),
+            );
+        }
+        if publish {
+            let mut root = frontier_index;
+            for (key, value) in upserts {
+                root = self.merkle.insert(root, key, value)?.content_id();
+            }
+            Ok(Some(root))
+        } else {
+            self.merkle
+                .root_after_upserts(frontier_index, &upserts)
+                .map(Some)
+                .map_err(Into::into)
+        }
+    }
+
+    pub(super) fn validate_frontier_projection(
+        &self,
+        frontier_index: ContentId,
+        request: BranchRequestId,
+        branch_point: crate::BranchPointId,
+        state: crate::ContinuationState,
+    ) -> Result<(), CampaignRepositoryError> {
+        let content = self
+            .merkle
+            .get(frontier_index, frontier_index_order_key(request))?
+            .ok_or_else(|| integrity("frontier-index-request-is-missing"))?;
+        let projection = self.read_continuation_projection(content)?;
+        if projection != ContinuationProjection::new(request, branch_point, state) {
+            return Err(integrity("frontier-index-projection-mismatch"));
+        }
+        Ok(())
+    }
+
     /// Projects and publishes one bounded finite-continuation page.
     ///
     /// The page is derived from one authenticated historical or current
@@ -237,7 +308,7 @@ impl CampaignRepository {
         Ok((continuations, next_after))
     }
 
-    fn finite_continuation_state(
+    pub(super) fn finite_continuation_state(
         &self,
         exploration_root: ContentId,
         accounting_root: ContentId,

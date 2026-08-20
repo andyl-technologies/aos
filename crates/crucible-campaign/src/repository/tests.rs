@@ -7,15 +7,31 @@ use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
 
 use crate::{
     AlternativeId, AssignmentId, AttemptResourceLimits, BooleanDomain, BranchBudget, BudgetGrant,
-    CampaignFactId, CampaignMode, CampaignPlanningBundle, CampaignPlanningView, CampaignSeed,
-    CandidateGeneratorAlgorithm, ChoiceClassContext, ChoiceCoordinate, ChoicePolicy, ChoiceSource,
-    ChoiceValue, ConfigurationId, ContinuationState, DebugSessionId, DiscreteAlternative,
-    DiscreteDomain, ExecutionId, ExecutionRetentionIntent, ExplorerPolicy, FairnessPolicy,
-    GuidanceEvidence, MeasurementSeries, MetricValue, PlannerEngine, PlannerProposalDisposition,
-    PlannerRequest, PlannerResponse, PlannerState, PlannerStepProposal, PlannerSubmission,
-    PlanningBudget, PlanningUsage, PolicyArtifact, ProgressiveWideningPolicy, PropertyEvidence,
-    PuctPolicy, RetentionPolicy, ScenarioDefId, StopCondition, WeightedGenerator,
+    CampaignAuthorizationError, CampaignFactId, CampaignMode, CampaignName, CampaignPlanningBundle,
+    CampaignPlanningView, CampaignPrincipal, CampaignPrincipalAuthorizer, CampaignSeed,
+    CampaignServiceOperation, CandidateGeneratorAlgorithm, ChoiceClassContext, ChoiceCoordinate,
+    ChoicePolicy, ChoiceSource, ChoiceValue, ConfigurationId, ContinuationState, DebugSessionId,
+    DiscreteAlternative, DiscreteDomain, ExecutionId, ExecutionRetentionIntent, ExplorerPolicy,
+    FairnessPolicy, GuidanceEvidence, MeasurementSeries, MetricValue, PlannerEngine,
+    PlannerProposalDisposition, PlannerRequest, PlannerResponse, PlannerState, PlannerStepProposal,
+    PlannerSubmission, PlanningBudget, PlanningUsage, PolicyArtifact, ProgressiveWideningPolicy,
+    PropertyEvidence, PuctPolicy, QueryCampaignFrontierRequest, RepositoryCampaignService,
+    RetentionPolicy, ScenarioDefId, StopCondition, WeightedGenerator,
 };
+
+struct AllowCampaignQueries;
+
+impl CampaignPrincipalAuthorizer for AllowCampaignQueries {
+    fn authorize(
+        &self,
+        _principal: &CampaignPrincipal,
+        _operation: CampaignServiceOperation,
+        _campaign: &CampaignName,
+        _request_digest: CampaignHash,
+    ) -> Result<(), CampaignAuthorizationError> {
+        Ok(())
+    }
+}
 
 trait TestBranchSubmission {
     fn submit_known_branch_request(

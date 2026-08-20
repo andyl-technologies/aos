@@ -237,6 +237,27 @@ fn ancestry_rejects_branch_request_with_an_unrelated_root_change() {
         )
         .expect("request root")
         .content_id();
+    let next_frontier = repository
+        .frontier_index_after(
+            parent.snapshot.roots().exploration,
+            &[(
+                request_id,
+                request.branch_point(),
+                CampaignRepository::initial_continuation_state(&request),
+            )],
+            true,
+        )
+        .expect("frontier projection")
+        .expect("frontier index");
+    roots.exploration = repository
+        .merkle
+        .insert(
+            roots.exploration,
+            frontier_index_anchor_key(),
+            next_frontier,
+        )
+        .expect("frontier root")
+        .content_id();
     roots.accounting = repository
         .merkle
         .insert(
@@ -264,6 +285,108 @@ fn ancestry_rejects_branch_request_with_an_unrelated_root_change() {
             reason: "branch-request-transition-accounting-root-mismatch"
         })
     ));
+}
+
+#[test]
+fn ancestry_rejects_a_forged_initial_frontier_projection() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("forged-frontier", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "forged-frontier",
+    );
+    let discovered = repository
+        .discover_choice_opportunity(
+            "forged-frontier",
+            genesis.snapshot_id(),
+            request.parent(),
+            request.opportunity(),
+        )
+        .expect("discover forged-frontier opportunity");
+    let parent = repository
+        .read_snapshot(discovered.new_snapshot.content_id())
+        .expect("discovery parent");
+    let request_content = repository
+        .put_branch_request(&request)
+        .expect("put request");
+    let request_id = BranchRequestId::from_content_id(request_content).expect("request id");
+    let transition_content = repository
+        .put_fact(&CampaignFact::BranchRequestIssued(request_id))
+        .expect("put transition");
+
+    let mut roots = parent.snapshot.roots();
+    roots.exploration = repository
+        .merkle
+        .insert(
+            roots.exploration,
+            map_key_content("exploration.branch-request", request_content),
+            request_content,
+        )
+        .expect("request root")
+        .content_id();
+    let forged_frontier = repository
+        .frontier_index_after(
+            parent.snapshot.roots().exploration,
+            &[(
+                request_id,
+                request.branch_point(),
+                ContinuationState::Closed,
+            )],
+            true,
+        )
+        .expect("forged frontier projection")
+        .expect("frontier index");
+    roots.exploration = repository
+        .merkle
+        .insert(
+            roots.exploration,
+            frontier_index_anchor_key(),
+            forged_frontier,
+        )
+        .expect("frontier root")
+        .content_id();
+    let BranchRequestCause::Operator(command) = request.cause() else {
+        panic!("operator request")
+    };
+    roots.accounting = repository
+        .merkle
+        .insert(
+            roots.accounting,
+            map_key_hash("accounting.command", command.as_hash()),
+            transition_content,
+        )
+        .expect("command root")
+        .content_id();
+    roots.coordination = repository
+        .coordination_with_parent_result(discovered.new_snapshot.content_id(), &parent)
+        .expect("coordination root");
+    let forged = CampaignSnapshot::successor(
+        discovered.new_snapshot,
+        parent.snapshot.lineage(),
+        parent.snapshot.active_policy(),
+        roots,
+        CampaignFactId::from_content_id(transition_content).expect("transition id"),
+    )
+    .expect("forged snapshot");
+    let forged_content = repository
+        .put_snapshot(&forged)
+        .expect("put forged snapshot");
+
+    let validation = repository.validate_complete_head(forged_content);
+    assert!(
+        matches!(
+            validation,
+            Err(CampaignRepositoryError::Integrity {
+                reason: "branch-request-transition-exploration-root-mismatch"
+            })
+        ),
+        "unexpected forged frontier validation result: {validation:?}"
+    );
 }
 
 #[test]

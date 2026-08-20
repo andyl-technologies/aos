@@ -659,6 +659,17 @@ impl CampaignRepository {
         )?)
     }
 
+    pub(super) fn put_continuation_projection(
+        &self,
+        projection: &ContinuationProjection,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::ContinuationProjection,
+            crate::object::content_children(projection.content_children())?,
+            projection.canonical_bytes(),
+        )?)
+    }
+
     pub(super) fn put_proposal(
         &self,
         proposal: &Proposal,
@@ -1875,6 +1886,25 @@ impl CampaignRepository {
             return Err(integrity("expansion-state-owner-recomputation-mismatch"));
         }
         Ok(state)
+    }
+
+    pub(crate) fn read_continuation_projection(
+        &self,
+        id: ContentId,
+    ) -> Result<ContinuationProjection, CampaignRepositoryError> {
+        let envelope =
+            self.require_record_kind(id, crate::CampaignRecordKind::ContinuationProjection)?;
+        let projection = ContinuationProjection::from_canonical_bytes(envelope.body())?;
+        if projection.id()?.content_id() != id {
+            return Err(integrity("continuation-projection-envelope-shape"));
+        }
+        let request = self.read_branch_request(projection.request().content_id())?;
+        if request.id()? != projection.request()
+            || request.branch_point() != projection.branch_point()
+        {
+            return Err(integrity("continuation-projection-request-mismatch"));
+        }
+        Ok(projection)
     }
 
     pub(super) fn require_record_kind(

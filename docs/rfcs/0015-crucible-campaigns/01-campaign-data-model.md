@@ -625,7 +625,36 @@ pub enum ContinuationState {
     Exhausted,
     Closed,
 }
+
+pub struct ContinuationProjection {
+    pub request: BranchRequestId,
+    pub branch_point: BranchPointId,
+    pub state: ContinuationState,
+}
 ```
+
+`ContinuationProjection` schema version 1 is the compact authenticated current
+state of one request. New genesis snapshots anchor one canonical empty nested
+frontier index under `exploration_root`. Each nested key is the exact
+`BranchRequestId` content digest and each value is the content ID of the
+corresponding projection. The projection body names its request as a typed
+envelope child, so closure traversal retains the authoritative request without
+store listing.
+
+The snapshot owner updates the nested index in the same transition that issues
+a request, records a proposal, admits a disposition, or accepts an atomic
+planner issue. It independently recomputes the exact old and new states during
+import and restart validation; a mismatching projection is corrupt. A finite
+request starts `Ready`, becomes `Open` while a proposal awaits disposition, and
+returns to `Ready` or becomes `Exhausted` or `Closed` from the exact admitted
+budget and source state. Generated requests start and remain `Open` at this
+checkpoint because deterministic generated-source enumeration and feedback
+ownership remain an implementation-plan gate.
+
+Legacy schema-v2 snapshots without the frontier-index anchor remain readable,
+but proof-bearing frontier queries fail closed. Ordinary mutations preserve
+that unindexed shape and MUST NOT synthesize a partial index; a future migration
+must rebuild and authenticate the complete index atomically.
 
 `FeedbackWait` is constructed only when `completed_visits < required_visits`;
 its fields are private and strict decoding enforces the same invariant. Reaching

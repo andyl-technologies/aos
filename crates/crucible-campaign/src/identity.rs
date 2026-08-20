@@ -576,6 +576,12 @@ content_object_id!(
     "crucible.campaign.expansion-state",
     "Identifies one derived branch expansion-state snapshot."
 );
+content_object_id!(
+    ContinuationProjectionId,
+    ObjectKind::Projection,
+    "crucible.campaign.continuation-projection",
+    "Identifies one authenticated per-request continuation projection."
+);
 semantic_id!(
     CreditId,
     "Identifies one idempotent observation-to-branch credit."

@@ -295,6 +295,7 @@ impl CampaignRepository {
         let policy_content = self.put_policy(policy)?;
         let empty = self.merkle.empty()?.content_id();
         let choice_index = self.merkle.empty()?.content_id();
+        let frontier_index = self.merkle.empty()?.content_id();
         let graph = self.merkle.insert(
             empty,
             map_key_hash("graph.configuration", lineage.genesis().as_hash()),
@@ -308,12 +309,15 @@ impl CampaignRepository {
             map_key_hash("corpus.configuration", lineage.genesis().as_hash()),
             lineage.genesis_content().content_id(),
         )?;
+        let exploration = self
+            .merkle
+            .insert(empty, frontier_index_anchor_key(), frontier_index)?;
         let snapshot = CampaignSnapshot::genesis(
             CampaignLineageId::from_content_id(lineage_content)?,
             CampaignPolicyId::from_content_id(policy_content)?,
             crate::CampaignRoots {
                 graph: graph.content_id(),
-                exploration: empty,
+                exploration: exploration.content_id(),
                 observations: empty,
                 corpus: corpus.content_id(),
                 coverage: empty,
@@ -438,6 +442,33 @@ impl CampaignRepository {
                     reason: "page-cursor-not-in-root",
                 } => CampaignRepositoryError::InvalidRequest {
                     reason: "campaign-choice-query-cursor-is-not-in-index",
+                },
+                error => error.into(),
+            })?;
+        Ok((page, index_proof, page_proof))
+    }
+
+    pub(crate) fn scan_frontier_page(
+        &self,
+        exploration_root: ContentId,
+        after: Option<BranchRequestId>,
+        limit: usize,
+    ) -> Result<(MerkleMapPage, MerkleMapLookupProof, MerkleMapPageProof), CampaignRepositoryError>
+    {
+        let (frontier_index, index_proof) = self
+            .merkle
+            .get_with_proof(exploration_root, frontier_index_anchor_key())?;
+        let frontier_index = frontier_index.ok_or(CampaignRepositoryError::InvalidRequest {
+            reason: "campaign-snapshot-has-no-frontier-index",
+        })?;
+        let (page, page_proof) = self
+            .merkle
+            .scan_with_proof(frontier_index, after.map(frontier_index_order_key), limit)
+            .map_err(|error| match error {
+                CampaignStoreError::InvalidMerkle {
+                    reason: "page-cursor-not-in-root",
+                } => CampaignRepositoryError::InvalidRequest {
+                    reason: "campaign-frontier-query-cursor-is-not-in-index",
                 },
                 error => error.into(),
             })?;
@@ -743,11 +774,39 @@ impl CampaignRepository {
         if request_content != request_id.content_id() {
             return Err(integrity("branch-request-publication-id-mismatch"));
         }
-        let exploration = self.merkle.insert(
+        let mut exploration = self.merkle.insert(
             current.snapshot.roots().exploration,
             request_key,
             request_content,
         )?;
+        if let Some(frontier_index) = self.merkle.get(
+            current.snapshot.roots().exploration,
+            frontier_index_anchor_key(),
+        )? {
+            if self
+                .merkle
+                .get(frontier_index, frontier_index_order_key(request_id))?
+                .is_some()
+            {
+                return Err(integrity("branch-request-frontier-slot-is-not-empty"));
+            }
+            let next_frontier = self
+                .frontier_index_after(
+                    current.snapshot.roots().exploration,
+                    &[(
+                        request_id,
+                        request.branch_point(),
+                        Self::initial_continuation_state(request),
+                    )],
+                    true,
+                )?
+                .ok_or_else(|| integrity("branch-request-frontier-index-disappeared"))?;
+            exploration = self.merkle.insert(
+                exploration.content_id(),
+                frontier_index_anchor_key(),
+                next_frontier,
+            )?;
+        }
 
         let fact = CampaignFact::BranchRequestIssued(request_id);
         let transition_content = self.put_fact(&fact)?;
@@ -928,6 +987,40 @@ impl CampaignRepository {
                 .merkle
                 .insert(exploration.content_id(), key, proposal_content)?;
         }
+        if let Some(frontier_index) = self.merkle.get(
+            current.snapshot.roots().exploration,
+            frontier_index_anchor_key(),
+        )? {
+            let request = self.read_branch_request(proposal.request().content_id())?;
+            let prior_state = self.finite_continuation_state(
+                current.snapshot.roots().exploration,
+                current.snapshot.roots().accounting,
+                proposal.request(),
+                &request,
+            )?;
+            self.validate_frontier_projection(
+                frontier_index,
+                proposal.request(),
+                proposal.branch_point(),
+                prior_state,
+            )?;
+            let next_frontier = self
+                .frontier_index_after(
+                    current.snapshot.roots().exploration,
+                    &[(
+                        proposal.request(),
+                        proposal.branch_point(),
+                        crate::ContinuationState::Open,
+                    )],
+                    true,
+                )?
+                .ok_or_else(|| integrity("proposal-frontier-index-disappeared"))?;
+            exploration = self.merkle.insert(
+                exploration.content_id(),
+                frontier_index_anchor_key(),
+                next_frontier,
+            )?;
+        }
 
         let fact = CampaignFact::ProposalIssued(proposal_id);
         let transition_content = self.put_fact(&fact)?;
@@ -1079,9 +1172,49 @@ impl CampaignRepository {
             accounting = self.merkle.insert(accounting, *key, *value)?.content_id();
         }
 
+        let mut exploration = current.snapshot.roots().exploration;
+        if let Some(frontier_index) = self.merkle.get(exploration, frontier_index_anchor_key())? {
+            let proposal_record = self.read_proposal(proposal.content_id())?;
+            let request = self.read_branch_request(proposal_record.request().content_id())?;
+            let prior_state = self.finite_continuation_state(
+                exploration,
+                current.snapshot.roots().accounting,
+                proposal_record.request(),
+                &request,
+            )?;
+            self.validate_frontier_projection(
+                frontier_index,
+                proposal_record.request(),
+                proposal_record.branch_point(),
+                prior_state,
+            )?;
+            let next_state = self.finite_continuation_state(
+                exploration,
+                accounting,
+                proposal_record.request(),
+                &request,
+            )?;
+            let next_frontier = self
+                .frontier_index_after(
+                    exploration,
+                    &[(
+                        proposal_record.request(),
+                        proposal_record.branch_point(),
+                        next_state,
+                    )],
+                    true,
+                )?
+                .ok_or_else(|| integrity("attempt-admission-frontier-index-disappeared"))?;
+            exploration = self
+                .merkle
+                .insert(exploration, frontier_index_anchor_key(), next_frontier)?
+                .content_id();
+        }
+
         let fact = CampaignFact::AttemptAdmitted(admission_id);
         let transition_content = self.put_fact(&fact)?;
         let mut roots = current.snapshot.roots();
+        roots.exploration = exploration;
         roots.accounting = accounting;
         roots.coordination = self.coordination_with_parent_result(current_content, &current)?;
         let next = CampaignSnapshot::successor(
