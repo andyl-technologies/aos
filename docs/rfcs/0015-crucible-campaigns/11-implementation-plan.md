@@ -163,13 +163,17 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   observations, remain page-size independent to EOF, and rebuild identically
   through a fresh repository. Its bounded process-local reservation table is
   idempotent per worker slot, rejects stale epoch/generation releases, and
-  restarts empty under a fresh daemon epoch. Generated source continuations and
-  supervisor integration remain open. The repository now also maintains a
-  compact snapshot-authenticated continuation projection for each request and
-  serves bounded proof-bearing frontier pages. Finite request/proposal/admission
-  transitions are owner-recomputed during import; generated requests remain
-  conservatively `Open`. Legacy snapshots remain unindexed and queries fail
-  closed rather than constructing a partial index.
+  restarts empty under a fresh daemon epoch. Adaptive generated-source
+  continuations and supervisor integration remain open. The repository now also
+  maintains a compact snapshot-authenticated continuation projection for each
+  request and serves bounded proof-bearing frontier pages. Finite request,
+  proposal, and admission transitions are owner-recomputed during import.
+  Implementation-version 2 `all`
+  generators over Boolean and discrete domains use the same exact ordinal and
+  continuation fold as finite sources; other generated requests remain
+  conservatively `Open` and fail closed when proposal or expansion semantics
+  are requested. Legacy snapshots remain unindexed and queries fail closed
+  rather than constructing a partial index.
 - [ ] **T-CAM-4.5** Implement `CampaignSupervisor`, `CampaignProjector`,
   `ProposalPlanner`, `AttemptQueue`, and a bounded local `WorkerPool`.
   The standalone bounded `AttemptQueue` reservation primitive and the daemon's

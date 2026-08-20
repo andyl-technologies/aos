@@ -1,6 +1,7 @@
 //! Owner-recomputed, snapshot-bound campaign projection pages.
 
 use super::*;
+use crate::ChoiceValue;
 
 const PROJECTION_SCAN_PAGE_ITEMS: usize = 10_000;
 
@@ -12,11 +13,104 @@ struct FiniteExpansionInputs {
 }
 
 impl CampaignRepository {
-    pub(super) fn initial_continuation_state(request: &BranchRequest) -> crate::ContinuationState {
-        if request.source().finite_values().is_some() {
-            crate::ContinuationState::Ready
-        } else {
-            crate::ContinuationState::Open
+    pub(super) fn initial_continuation_state(
+        &self,
+        request: &BranchRequest,
+    ) -> Result<crate::ContinuationState, CampaignRepositoryError> {
+        let domain = self.read_choice_domain(request.domain().content_id())?;
+        Ok(
+            if self.static_candidate_count(request, &domain)?.is_some() {
+                crate::ContinuationState::Ready
+            } else {
+                crate::ContinuationState::Open
+            },
+        )
+    }
+
+    /// Resolves the exact cardinality of a history-independent source.
+    ///
+    /// `None` means that the source requires a generator owner with cursor or
+    /// feedback semantics that this repository checkpoint does not implement.
+    pub(super) fn static_candidate_count(
+        &self,
+        request: &BranchRequest,
+        domain: &ChoiceDomain,
+    ) -> Result<Option<u64>, CampaignRepositoryError> {
+        if let Some(values) = request.source().finite_values() {
+            return u64::try_from(values.len())
+                .map(Some)
+                .map_err(|_| integrity("candidate-source-cardinality-overflow"));
+        }
+
+        let generator = request
+            .source()
+            .generator()
+            .ok_or_else(|| integrity("candidate-source-kind-is-invalid"))?;
+        let spec = self.read_generator(generator.content_id())?;
+        if spec.implementation_version() != crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION {
+            return Ok(None);
+        }
+        match (spec.algorithm(), domain) {
+            (CandidateGeneratorAlgorithm::All, ChoiceDomain::Boolean(_)) => Ok(Some(2)),
+            (CandidateGeneratorAlgorithm::All, ChoiceDomain::Discrete(discrete)) => {
+                u64::try_from(discrete.alternatives().len())
+                    .map(Some)
+                    .map_err(|_| integrity("candidate-source-cardinality-overflow"))
+            }
+            (CandidateGeneratorAlgorithm::All, ChoiceDomain::Integer(_)) => {
+                Err(integrity("candidate-generator-domain-family-mismatch"))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Resolves one one-based candidate ordinal from a history-independent source.
+    pub(super) fn static_candidate_at(
+        &self,
+        request: &BranchRequest,
+        domain: &ChoiceDomain,
+        ordinal: u64,
+    ) -> Result<Option<ChoiceValue>, CampaignRepositoryError> {
+        if ordinal == 0 {
+            return Err(integrity("proposal-ordinal-is-not-canonical"));
+        }
+        let index = usize::try_from(ordinal - 1)
+            .map_err(|_| integrity("proposal-ordinal-is-not-canonical"))?;
+        if let Some(values) = request.source().finite_values() {
+            return values
+                .iter()
+                .nth(index)
+                .cloned()
+                .map(Some)
+                .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality"));
+        }
+
+        let generator = request
+            .source()
+            .generator()
+            .ok_or_else(|| integrity("candidate-source-kind-is-invalid"))?;
+        let spec = self.read_generator(generator.content_id())?;
+        if spec.implementation_version() != crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION {
+            return Ok(None);
+        }
+        match (spec.algorithm(), domain) {
+            (CandidateGeneratorAlgorithm::All, ChoiceDomain::Boolean(_)) => match index {
+                0 => Ok(Some(ChoiceValue::Boolean(false))),
+                1 => Ok(Some(ChoiceValue::Boolean(true))),
+                _ => Err(integrity("proposal-ordinal-exceeds-source-cardinality")),
+            },
+            (CandidateGeneratorAlgorithm::All, ChoiceDomain::Discrete(discrete)) => discrete
+                .alternatives()
+                .keys()
+                .nth(index)
+                .copied()
+                .map(ChoiceValue::Discrete)
+                .map(Some)
+                .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality")),
+            (CandidateGeneratorAlgorithm::All, ChoiceDomain::Integer(_)) => {
+                Err(integrity("candidate-generator-domain-family-mismatch"))
+            }
+            _ => Ok(None),
         }
     }
 
@@ -83,17 +177,19 @@ impl CampaignRepository {
         Ok(())
     }
 
-    /// Projects and publishes one bounded finite-continuation page.
+    /// Projects and publishes one bounded static-continuation page.
     ///
     /// The page is derived from one authenticated historical or current
     /// snapshot. Its cursor is meaningful only for that immutable snapshot and
-    /// branch point. Generated continuations and observation-bearing views
-    /// remain fail-closed until their semantic owners are implemented.
+    /// branch point. Implementation-version 2 `all` generators over Boolean and discrete
+    /// domains share the finite-source path. History-dependent generators and
+    /// observation-bearing views remain fail-closed until their semantic owners
+    /// are implemented.
     ///
     /// # Errors
     ///
     /// Returns an error for an invalid snapshot closure, fabricated or
-    /// cross-branch cursor, invalid page size, generated request, unsupported
+    /// cross-branch cursor, invalid page size, unsupported generated request or
     /// observation input, inconsistent proposal/admission indexes, or store
     /// failure.
     pub fn project_finite_expansion(
@@ -186,7 +282,8 @@ impl CampaignRepository {
                 if *key == map_key_content("exploration.branch-request", *value) {
                     let request = self.read_branch_request(*value)?;
                     if request.branch_point() == branch_point {
-                        if request.source().finite_values().is_none() {
+                        let domain = self.read_choice_domain(request.domain().content_id())?;
+                        if self.static_candidate_count(&request, &domain)?.is_none() {
                             return Err(integrity(
                                 "generated-expansion-projector-is-not-implemented",
                             ));
@@ -292,12 +389,8 @@ impl CampaignRepository {
             }
             let request_id = BranchRequestId::from_content_id(*value)?;
             let request = self.read_branch_request(*value)?;
-            let state = self.finite_continuation_state(
-                exploration_root,
-                accounting_root,
-                request_id,
-                &request,
-            )?;
+            let state =
+                self.continuation_state(exploration_root, accounting_root, request_id, &request)?;
             continuations.insert(request_id, state);
         }
         let next_after = if page.next_after().is_some() {
@@ -308,19 +401,17 @@ impl CampaignRepository {
         Ok((continuations, next_after))
     }
 
-    pub(super) fn finite_continuation_state(
+    pub(super) fn continuation_state(
         &self,
         exploration_root: ContentId,
         accounting_root: ContentId,
         request_id: BranchRequestId,
         request: &BranchRequest,
     ) -> Result<crate::ContinuationState, CampaignRepositoryError> {
-        let values = request
-            .source()
-            .finite_values()
+        let domain = self.read_choice_domain(request.domain().content_id())?;
+        let value_count = self
+            .static_candidate_count(request, &domain)?
             .ok_or_else(|| integrity("generated-expansion-projector-is-not-implemented"))?;
-        let value_count = u64::try_from(values.len())
-            .map_err(|_| integrity("finite-expansion-value-count-overflow"))?;
         let maximum_proposals = request.budget().maximum_proposals();
         let check_count = value_count.min(maximum_proposals);
         let mut proposed = 0_u64;

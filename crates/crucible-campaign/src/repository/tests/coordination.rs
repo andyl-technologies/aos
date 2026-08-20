@@ -3327,7 +3327,7 @@ fn finite_proposal_is_an_exact_indexed_delta_and_replays_before_staleness() {
     assert!(matches!(
         repository.issue_proposal("finite-proposal", requested.new_snapshot, &wrong_order,),
         Err(CampaignRepositoryError::Integrity {
-            reason: "proposal-value-does-not-match-finite-source-order"
+            reason: "proposal-value-does-not-match-source-order"
         })
     ));
 

@@ -353,13 +353,13 @@ impl CampaignRepository {
                     *request_id,
                     (
                         request.branch_point(),
-                        Self::initial_continuation_state(request),
+                        self.initial_continuation_state(request)?,
                     ),
                 );
             }
             if let Some(last_proposal) = proposals.last() {
                 if !frontier_states.contains_key(&selected.source()) {
-                    let prior_state = self.finite_continuation_state(
+                    let prior_state = self.continuation_state(
                         prior_exploration,
                         prior_accounting,
                         selected.source(),
@@ -372,13 +372,10 @@ impl CampaignRepository {
                         prior_state,
                     )?;
                 }
-                let values = selected_request
-                    .source()
-                    .finite_values()
-                    .ok_or_else(|| integrity("generated-proposal-enumerator-is-not-implemented"))?;
                 let proposed = last_proposal.ordinal();
-                let value_count = u64::try_from(values.len())
-                    .map_err(|_| integrity("planner-issue-finite-value-count-overflow"))?;
+                let value_count = self
+                    .static_candidate_count(&selected_request, &selected_domain)?
+                    .ok_or_else(|| integrity("generated-proposal-enumerator-is-not-implemented"))?;
                 let state = if proposed == value_count {
                     crate::ContinuationState::Exhausted
                 } else if proposed >= selected_request.budget().maximum_proposals() {
@@ -493,17 +490,11 @@ impl CampaignRepository {
         {
             return Err(integrity("proposal-campaign-basis-mismatch"));
         }
-        let Some(values) = request.source().finite_values() else {
-            return Err(integrity(
-                "generated-proposal-enumerator-is-not-implemented",
-            ));
-        };
-        let index = usize::try_from(proposal.ordinal() - 1)
-            .map_err(|_| integrity("proposal-ordinal-is-not-canonical"))?;
-        if values.iter().nth(index) != Some(proposal.value()) {
-            return Err(integrity(
-                "proposal-value-does-not-match-finite-source-order",
-            ));
+        let expected = self
+            .static_candidate_at(request, domain, proposal.ordinal())?
+            .ok_or_else(|| integrity("generated-proposal-enumerator-is-not-implemented"))?;
+        if &expected != proposal.value() {
+            return Err(integrity("proposal-value-does-not-match-source-order"));
         }
         Ok(())
     }

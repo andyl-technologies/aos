@@ -145,8 +145,11 @@ fn generated_branch_requests_validate_the_complete_domain_compatible_spec() {
         })
     ));
 
-    let all =
-        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All).expect("all generator");
+    let all = CandidateGeneratorSpec::new(
+        crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::All,
+    )
+    .expect("all generator");
     let all_id = repository
         .publish_generator(&all)
         .expect("publish all generator");
@@ -187,11 +190,297 @@ fn generated_branch_requests_validate_the_complete_domain_compatible_spec() {
     let generated = repository
         .submit_known_branch_request("generators", genesis.snapshot_id(), &valid)
         .expect("accept compatible generator");
+    let ready_id = repository
+        .project_finite_expansion(generated.new_snapshot, valid.branch_point(), None, 10)
+        .expect("project generated all source");
+    let ready = repository
+        .load_expansion_state(ready_id)
+        .expect("load generated projection");
+    assert_eq!(
+        ready.continuations().get(&valid.id().expect("request id")),
+        Some(&ContinuationState::Ready)
+    );
+
+    let generated_head = repository.head("generators").expect("generated head");
+    let wrong_first = finite_proposal(
+        &valid,
+        &policy,
+        &generated_head,
+        ChoiceValue::Boolean(true),
+        1,
+    );
     assert!(matches!(
+        repository.issue_proposal("generators", generated_head.snapshot_id(), &wrong_first,),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "proposal-value-does-not-match-source-order"
+        })
+    ));
+    assert_eq!(
         repository
-            .project_finite_expansion(generated.new_snapshot, valid.branch_point(), None, 10,),
+            .head("generators")
+            .expect("unchanged head")
+            .snapshot_id(),
+        generated_head.snapshot_id()
+    );
+
+    let engine = PlannerEngine::new("closed-rust", 1, 1, BTreeSet::new()).expect("planner engine");
+    let initial_state = PlannerState::new(
+        engine.id().expect("engine id"),
+        "closed-rust-state",
+        1,
+        vec![0],
+    )
+    .expect("planner state");
+    let (engine, _artifact, invocation) = planner_basis(
+        &repository,
+        "generators",
+        generated_head.snapshot_id(),
+        initial_state,
+    );
+    let first = Proposal::new(
+        valid.branch_point(),
+        valid.id().expect("request id"),
+        valid.domain(),
+        ChoiceValue::Boolean(false),
+        policy.id().expect("policy id"),
+        Some(invocation.id().expect("invocation id")),
+        1,
+        invocation.input_view(),
+    )
+    .expect("first generated proposal");
+    let usage = PlanningUsage {
+        branch_requests: 0,
+        proposals: 1,
+        input_objects: invocation.scan_page().input_objects(),
+        input_bytes: invocation.scan_page().input_bytes(),
+        fuel: 1,
+    };
+    let step = PlannerStepProposal::new(
+        invocation.id().expect("invocation id"),
+        PlannerState::new(
+            engine.id().expect("engine id"),
+            "closed-rust-state",
+            1,
+            vec![1],
+        )
+        .expect("next planner state"),
+        usage,
+        GuidanceEvidence::new(BTreeMap::new()).expect("guidance"),
+        PlannerProposalDisposition::Issue {
+            selected: PlanningScanPosition::new(
+                valid.branch_point(),
+                valid.id().expect("request id"),
+            ),
+            branch_requests: Vec::new(),
+            proposals: vec![first],
+        },
+    )
+    .expect("generated planner issue");
+    let first_admitted = repository
+        .accept_planner_step("generators", generated_head.snapshot_id(), &step, usage)
+        .expect("atomically issue and admit first generated proposal");
+    let after_first_id = repository
+        .project_finite_expansion(first_admitted.new_snapshot, valid.branch_point(), None, 10)
+        .expect("project after first generated proposal");
+    let after_first = repository
+        .load_expansion_state(after_first_id)
+        .expect("load first generated continuation");
+    assert_eq!(
+        after_first
+            .continuations()
+            .get(&valid.id().expect("request id")),
+        Some(&ContinuationState::Ready)
+    );
+
+    let first_head = repository.head("generators").expect("first generated head");
+    let second = finite_proposal(&valid, &policy, &first_head, ChoiceValue::Boolean(true), 2);
+    let second_proposed = repository
+        .issue_proposal("generators", first_head.snapshot_id(), &second)
+        .expect("issue second generated proposal");
+    let (selection, path, attempt) = branch_attempt(&repository, &valid, &second);
+    let second_admitted = repository
+        .admit_proposal(
+            "generators",
+            second_proposed.new_snapshot,
+            second_proposed.proposal,
+            &selection,
+            &path,
+            &attempt,
+        )
+        .expect("admit second generated proposal");
+    let exhausted_id = repository
+        .project_finite_expansion(second_admitted.new_snapshot, valid.branch_point(), None, 10)
+        .expect("project exhausted generated source");
+    let exhausted = repository
+        .load_expansion_state(exhausted_id)
+        .expect("load exhausted generated continuation");
+    assert_eq!(
+        exhausted
+            .continuations()
+            .get(&valid.id().expect("request id")),
+        Some(&ContinuationState::Exhausted)
+    );
+
+    let legacy_all = CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All)
+        .expect("legacy all generator");
+    let legacy_all_id = repository
+        .publish_generator(&legacy_all)
+        .expect("publish legacy all generator");
+    let legacy_request = BranchRequest::new(
+        valid.branch_point(),
+        valid.parent(),
+        valid.opportunity(),
+        valid.domain(),
+        CandidateSource::generated(legacy_all_id),
+        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            b"legacy-generator",
+        ))),
+        BranchBudget::new(2, 2).expect("budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("legacy generated request");
+    let legacy_issued = repository
+        .submit_known_branch_request("generators", second_admitted.new_snapshot, &legacy_request)
+        .expect("accept legacy generated request as suspended work");
+    assert_eq!(
+        repository
+            .initial_continuation_state(&legacy_request)
+            .expect("legacy continuation"),
+        ContinuationState::Open
+    );
+    assert!(matches!(
+        repository.project_finite_expansion(
+            legacy_issued.new_snapshot,
+            legacy_request.branch_point(),
+            None,
+            10,
+        ),
         Err(CampaignRepositoryError::Integrity {
             reason: "generated-expansion-projector-is-not-implemented"
+        })
+    ));
+    repository
+        .validated_heads
+        .lock()
+        .expect("validation cache")
+        .clear();
+    assert_eq!(
+        repository
+            .head("generators")
+            .expect("rebuild generated history")
+            .snapshot_id(),
+        legacy_issued.new_snapshot
+    );
+}
+
+#[test]
+fn generated_all_discrete_uses_stable_alternative_order() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("generated-discrete", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let alternative_ids = ["third", "first", "second"].map(|name| {
+        AlternativeId::from_hash(CampaignHash::derive("test-alternative", name.as_bytes()))
+    });
+    let alternatives = alternative_ids
+        .into_iter()
+        .map(|id| {
+            (
+                id,
+                DiscreteAlternative::new(id, "alternative", None).expect("alternative"),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let expected = alternatives.keys().copied().collect::<Vec<_>>();
+    let domain =
+        ChoiceDomain::Discrete(DiscreteDomain::new(1, alternatives).expect("discrete domain"));
+    let declaration = SelectableDeclaration::new(
+        "generated.discrete",
+        ChoiceSource::Workload {
+            producer: "generated-discrete".to_owned(),
+        },
+        domain.clone(),
+        ChoiceValue::Discrete(expected[0]),
+        ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
+        BTreeSet::new(),
+        true,
+    )
+    .expect("declaration");
+    repository
+        .publish_choice_domain(&domain)
+        .expect("publish domain");
+    repository
+        .publish_selectable(&declaration)
+        .expect("publish declaration");
+    let opportunity = ChoiceOpportunity::new(
+        lineage.scenario(),
+        &declaration,
+        &domain,
+        ChoiceCoordinate {
+            scheduler: CampaignHash::derive("test", b"generated-discrete"),
+            producer: CampaignHash::derive("test", b"generated-discrete-producer"),
+        },
+        "generated-discrete",
+        None,
+    )
+    .expect("opportunity");
+    repository
+        .publish_choice_opportunity(&opportunity)
+        .expect("publish opportunity");
+    let generator = CandidateGeneratorSpec::new(
+        crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::All,
+    )
+    .expect("all generator");
+    let generator_id = repository
+        .publish_generator(&generator)
+        .expect("publish generator");
+    let request = BranchRequest::new(
+        opportunity.branch_point_id(lineage.genesis()),
+        lineage.genesis_content(),
+        opportunity.id().expect("opportunity id"),
+        domain.id().expect("domain id"),
+        CandidateSource::generated(generator_id),
+        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            b"generated-discrete-request",
+        ))),
+        BranchBudget::new(3, 3).expect("budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("request");
+    let issued = repository
+        .submit_known_branch_request("generated-discrete", genesis.snapshot_id(), &request)
+        .expect("issue request");
+    let head = repository.head("generated-discrete").expect("request head");
+    let first = finite_proposal(
+        &request,
+        &policy,
+        &head,
+        ChoiceValue::Discrete(expected[0]),
+        1,
+    );
+    let first_issued = repository
+        .issue_proposal("generated-discrete", issued.new_snapshot, &first)
+        .expect("issue first stable alternative");
+    let wrong_second = finite_proposal(
+        &request,
+        &policy,
+        &repository
+            .head("generated-discrete")
+            .expect("proposal head"),
+        ChoiceValue::Discrete(expected[2]),
+        2,
+    );
+    assert!(matches!(
+        repository.issue_proposal(
+            "generated-discrete",
+            first_issued.new_snapshot,
+            &wrong_second,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "proposal-value-does-not-match-source-order"
         })
     ));
 }
@@ -243,7 +532,9 @@ fn ancestry_rejects_branch_request_with_an_unrelated_root_change() {
             &[(
                 request_id,
                 request.branch_point(),
-                CampaignRepository::initial_continuation_state(&request),
+                repository
+                    .initial_continuation_state(&request)
+                    .expect("initial continuation"),
             )],
             true,
         )
