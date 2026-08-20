@@ -180,6 +180,7 @@ impl CampaignRepository {
         let mut exploration_upserts = BTreeMap::new();
         let mut generator_validation = IssueGeneratorValidation::new();
         let mut branch_request_ids = Vec::with_capacity(branch_requests.len());
+        let mut indexed_requests = Vec::new();
         for request in branch_requests {
             self.validate_planner_issue_request(
                 snapshot,
@@ -213,7 +214,26 @@ impl CampaignRepository {
             {
                 return Err(integrity("planner-issue-reused-frontier-slot"));
             }
+            let domain = self.read_choice_domain(request.domain().content_id())?;
+            if self
+                .candidate_source_profile(request, &domain)?
+                .is_some_and(super::projection::CandidateSourceProfile::requires_feedback_index)
+            {
+                if frontier_index.is_none() {
+                    return Err(integrity("progressive-generator-requires-frontier-index"));
+                }
+                indexed_requests.push((request_id, request.branch_point()));
+            }
             branch_request_ids.push(request_id);
+        }
+        if !indexed_requests.is_empty()
+            && let Some(next_index) = self.branch_request_index_after(
+                prior_exploration,
+                &indexed_requests,
+                mode.publishes(),
+            )?
+        {
+            exploration_upserts.insert(branch_request_index_anchor_key(), next_index);
         }
 
         let selected_key = map_key_content(
@@ -369,6 +389,7 @@ impl CampaignRepository {
                     let prior_state = self.continuation_state(
                         prior_exploration,
                         prior_accounting,
+                        snapshot.snapshot.roots().observations,
                         selected.source(),
                         &selected_request,
                     )?;
@@ -380,16 +401,20 @@ impl CampaignRepository {
                     )?;
                 }
                 let proposed = last_proposal.ordinal();
-                let value_count = self
-                    .static_candidate_count(&selected_request, &selected_domain)?
+                let profile = self
+                    .candidate_source_profile(&selected_request, &selected_domain)?
                     .ok_or_else(|| integrity("generated-proposal-enumerator-is-not-implemented"))?;
-                let state = if proposed == value_count {
-                    crate::ContinuationState::Exhausted
-                } else if proposed >= selected_request.budget().maximum_proposals() {
-                    crate::ContinuationState::Closed
-                } else {
-                    crate::ContinuationState::Ready
-                };
+                let completed_visits = self.branch_completed_visits(
+                    snapshot.snapshot.roots().observations,
+                    selected_request.branch_point(),
+                )?;
+                let state = super::projection::continuation_state_after_progress(
+                    profile,
+                    proposed,
+                    false,
+                    selected_request.budget().maximum_proposals(),
+                    completed_visits,
+                )?;
                 frontier_states.insert(selected.source(), (selected.branch_point(), state));
             }
             let projections = frontier_states
@@ -497,8 +522,12 @@ impl CampaignRepository {
         {
             return Err(integrity("proposal-campaign-basis-mismatch"));
         }
+        let completed_visits = self.branch_completed_visits(
+            snapshot.snapshot.roots().observations,
+            request.branch_point(),
+        )?;
         let expected = self
-            .static_candidate_at(request, domain, proposal.ordinal())?
+            .candidate_at_with_feedback(request, domain, proposal.ordinal(), completed_visits)?
             .ok_or_else(|| integrity("generated-proposal-enumerator-is-not-implemented"))?;
         if &expected != proposal.value() {
             return Err(integrity("proposal-value-does-not-match-source-order"));

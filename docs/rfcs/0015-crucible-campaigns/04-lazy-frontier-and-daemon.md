@@ -66,6 +66,10 @@ allowance. Its branch point may be open but low priority for a long period. A
 finite request exhausts when every requested value has been admitted or already
 deduplicated. A complete finite domain is exhausted only when every legal value
 is admitted or the generator supplies an authenticated exhaustion proof.
+`WaitingForFeedback(completed_visits, required_visits)` carries the exact
+current distinct observation-credit count and the next inclusive visit
+threshold; it is not a timer, executor-progress estimate, or mutable wakeup
+counter.
 
 The claimable work set is:
 
@@ -358,8 +362,9 @@ exact sequence under the campaign's sole-writer boundary:
 4. prove the parent is the exact artifact indexed by its semantic identity in
    the campaign graph and that planner/policy causes use the active policy;
 5. publish the immutable request and `BranchRequestIssued` fact;
-6. add exactly `BranchRequestId -> BranchRequest` to the exploration Merkle
-   root while preserving lineage, policy, and every other root;
+6. add `BranchRequestId -> BranchRequest`, update its exact continuation
+   projection, and, for a feedback-gated source, add the request to the
+   branch-point request index used for feedback wakeups;
 7. publish the successor snapshot and compare-and-swap the campaign ref last.
 
 The acceptance transition creates no proposal, branch edge, attempt, executor
@@ -370,9 +375,10 @@ delta and no unrelated root or policy change.
 
 - **[LAZY-20]** Exact branch-request replay MUST precede stale-snapshot rejection
   and return the originally committed prior/new snapshot pair.
-- **[LAZY-21]** Branch-request acceptance MUST be an exact one-key exploration
-  delta. Candidate enumeration and attempt admission are separate later
-  transitions.
+- **[LAZY-21]** Branch-request acceptance MUST add exactly one request
+  membership plus its owner-derived continuation and branch-point request-index
+  projections. Candidate enumeration and attempt admission are separate later
+  transitions, and import MUST reproduce the same exact exploration-root delta.
 
 ## 04.12 Atomic proposal issuance
 
@@ -398,9 +404,12 @@ for discrete weight maps containing at most 256 alternatives and uses the exact
 request-keyed rejection-sampled integer order in §03.2. Implementation-version
 8 `ordered_mixture` recursively composes those finite owners under the exact
 weighted virtual-finish schedule, duplicate suppression, and work/depth/output
-bounds in §03.2. Proposals from every other generated source require the
-selected deterministic generator owner to reproduce the same value and remain
-fail-closed until that owner is implemented.
+bounds in §03.2. Implementation-version 9 `progressive_integer` uses the exact
+stratified-prefix and largest-gap order in §03.2, but an ordinal after the
+initial prefix is valid only when the source snapshot contains its exact
+authenticated completed-visit threshold. Proposals from every other generated
+source require the selected deterministic generator owner to reproduce the same
+value and remain fail-closed until that owner is implemented.
 
 The transition publishes the immutable `Proposal` and `ProposalIssued` fact,
 then makes an exact three-key delta to the exploration root:
@@ -432,7 +441,10 @@ budget, create a graph child, or count as an admitted continuation value.
   domain with at most `2^64 - 1` legal values and implementation-version 7
   `weighted_categorical` over at most 256 exact discrete alternatives and
   implementation-version 8 `ordered_mixture` within its exact recursive work
-  profile. Other generated proposal issuance MUST fail closed unless the named
+  profile. Implementation-version 9 `progressive_integer` also has a
+  deterministic ordinal order, but its refinement ordinals MUST additionally
+  satisfy the exact source-snapshot feedback threshold in §03.2. Other
+  generated proposal issuance MUST fail closed unless the named
   deterministic generator owner reproduces the value from authenticated
   campaign facts.
 - **[LAZY-45]** Weighted-categorical implementation-version 7 MUST derive every
@@ -447,6 +459,17 @@ budget, create a graph child, or count as an admitted continuation value.
   producing children without emitting the value twice, and enforce the exact
   512-value, 8,192-work-unit, and 64-level bounds during local and imported
   owner replay. A suspended child MUST suspend the complete mixture.
+- **[LAZY-47]** Progressive-integer implementation-version 9 MUST index every
+  accepted request under its exact branch point, derive completed visits only
+  from distinct authenticated expansion credits, reject a refinement before
+  its exact threshold without writes, and atomically update every affected
+  continuation projection when a canonical observation adds credit. Imported
+  observation and proposal successors and restart reconstruction MUST reproduce
+  the same frontier state. The complete feedback-request index, including its
+  branch-point slots, MUST remain bounded to 65,536 entries so every admitted
+  history remains projectable by one bounded observation transition. A legacy
+  campaign without the canonical frontier anchor MUST reject version-9 request
+  admission rather than create a partial index over only its newer history.
 
 ## 04.13 Atomic attempt admission
 
@@ -545,8 +568,8 @@ order identical to canonical typed-ID order. The page contains at most
 same snapshot and branch point. `next_after` is present only when another
 request exists and names the last returned request.
 
-Static continuation state is derived without retaining all request values or
-continuations. A static source is an explicit finite source,
+Executable continuation state is derived without retaining all request values
+or continuations. A static source is an explicit finite source,
 implementation-version 2 `all` over a Boolean or discrete domain, or
 implementation-version 3 `boundary_integer`, or implementation-version 4
 `stratified_integer`, or implementation-version 5 `log_integer` over a strictly
@@ -561,6 +584,14 @@ implementation-version 8 `ordered_mixture` over executable finite children:
 - all static values proposed and disposed is `Exhausted`;
 - proposal budget reached before all values are disposed is `Closed`.
 
+Implementation-version 9 `progressive_integer` uses the same pending-proposal
+and budget rules, but readiness is feedback-dependent. Its initial stratified
+prefix is `Ready` immediately. After that prefix, the source is `Ready` only
+when its completed-visit count reaches the next checked threshold, otherwise it
+is `WaitingForFeedback` with the exact current and required counts. Completing
+the bounded stream is `Exhausted` only when the request budget covers the exact
+domain; a truncated stream is `Closed`.
+
 `admitted_children` counts only distinct `ExecutionBasis` admissions rooted
 at the branch point. A pending proposal contributes zero, and an
 `AdditionalCause` contributes an admission record but no new child. This
@@ -568,12 +599,12 @@ statistic therefore means admitted semantic attempts, not realized temporal
 graph configurations; graph-child accounting begins only after authenticated
 execution results exist.
 
-The current static owner deliberately rejects history-dependent generators and
-unknown generator implementation versions. Static readiness and exhaustion are
-observation-independent, so an observation-bearing source view remains
-admissible and its exact observation root is retained in the page. The owner
-projects `completed_visits` from the authenticated nested credit-set entry
-count. The same schema-v4 observation transition maintains a second nested set
+The current owner deliberately rejects unimplemented history-dependent
+generators and unknown generator implementation versions. Static readiness and
+exhaustion are observation-independent, while progressive version 9 consumes
+only the exact authenticated completed-visit count. The owner projects that
+count from the nested credit-set entry count. The same schema-v4 observation
+transition maintains a second nested set
 from each exact child configuration artifact to every authenticated cumulative
 path that reached it; direct non-genesis admission checks membership in that
 set. Reward, novelty, and finding statistics remain zero until their richer
@@ -598,7 +629,7 @@ admission is rejected.
 - **[LAZY-33]** Expansion admitted-child statistics MUST count distinct
   `ExecutionBasis` attempts. `AdditionalCause` deduplication MUST NOT create
   another child or consume another attempt.
-- **[LAZY-34]** The static projector MUST fail closed for generated requests
+- **[LAZY-34]** The expansion projector MUST fail closed for generated requests
   other than implementation-version 2 `all` over Boolean or discrete domains
   and implementation-version 3 `boundary_integer` or implementation-version 4
   `stratified_integer` or implementation-version 5 `log_integer` over a
@@ -606,11 +637,13 @@ admission is rejected.
   `permuted_integer` over an integer domain with at most `2^64 - 1` legal
   values or implementation-version 7 `weighted_categorical` over at most 256
   exact discrete alternatives or implementation-version 8 `ordered_mixture`
-  within its exact recursive work profile. Static continuation state MAY bind a
-  nonempty observation root because its state is independent of feedback. Its
-  completed-visit statistic MUST equal the exact nested credit-set count, and it
-  MUST NOT synthesize reward, novelty, or finding statistics before their
-  canonical owners are implemented.
+  within its exact recursive work profile, or implementation-version 9
+  `progressive_integer` within its exact bounds and feedback thresholds. Static
+  continuation state MAY bind a nonempty observation root because its state is
+  independent of feedback. Every completed-visit statistic and progressive
+  wakeup MUST equal the exact nested credit-set count, and the projector MUST
+  NOT synthesize reward, novelty, or finding statistics before their canonical
+  owners are implemented.
 
 ## 04.15 Atomic observation publication
 
@@ -640,7 +673,7 @@ accounting, strict sequence, or expansion credits. This makes a determinism
 defect durable without allowing arrival order or last-writer-wins mutation to
 rewrite campaign truth.
 
-A canonical completion atomically updates five semantic roots. The graph binds
+A canonical completion atomically updates six semantic roots. The graph binds
 the semantic configuration and any branch edge to the exact child artifact and
 adds discovered choice/branch-point memberships. The corpus retains the child.
 The observation root indexes the attempt result, observation, path, and exact
@@ -649,9 +682,12 @@ in the path it also updates one nested credit set with the immutable
 `ExpansionCredit(observation, branch_point)`. The coverage root adds the immutable
 `CoverageProjectionId`; the grow-only identity union is the deterministic union
 of those records. Accounting binds the attempt and global admission ordinal to
-the observation. In strict mode its sequence entry advances only to the next
-global admission ordinal; streaming and statistical modes accept any completed
-admitted attempt while preserving the exact snapshot basis seen by planning.
+the observation. The exploration root updates every indexed version-9
+progressive request at a credited branch point to its owner-recomputed next
+continuation state; static and suspended requests are unchanged. In strict mode
+the accounting sequence advances only to the next global admission ordinal;
+streaming and statistical modes accept any completed admitted attempt while
+preserving the exact snapshot basis seen by planning.
 
 Imported successors are accepted only when read-only owner recomputation
 derives those exact upserts, every unrelated root and campaign basis is
@@ -666,8 +702,8 @@ change.
   bounded evidence records, and discovered choices. Operational placement and
   retry data MUST NOT enter these identities.
 - **[LAZY-36]** Canonical observation publication MUST require an authenticated
-  `ExecutionBasis` and apply the exact graph, observation, corpus, coverage, and
-  accounting owner deltas while preserving every unrelated root.
+  `ExecutionBasis` and apply the exact graph, exploration, observation, corpus,
+  coverage, and accounting owner deltas while preserving every unrelated root.
 - **[LAZY-37]** Exact observation replay MUST precede stale-snapshot rejection.
   A different result for an already observed attempt MUST be retained as
   determinism-conflict evidence without replacing any canonical semantic fold.

@@ -233,9 +233,13 @@ report them for an exact request-keyed without-replacement order over at most
 256 weighted discrete alternatives. Implementation-version 8
 `ordered_mixture` reports the same states for at most 512 deduplicated values
 from recursively executable finite children under its exact depth and work
-bounds. A mixture containing any suspended child remains conservatively `Open`.
-Other generated sources remain `Open` until their deterministic enumerator and
-feedback owner land. Rich admitted-value, visit, reward, interval, and
+bounds. Implementation-version 9 `progressive_integer` additionally reports
+`WaitingForFeedback(completed_visits, required_visits)` between its bounded
+initial strata and each exact visit-gated largest-gap refinement; it reports
+`Closed`, rather than `Exhausted`, when the request budget truncates the domain.
+A mixture containing any suspended child remains conservatively `Open`. Other
+generated sources remain `Open` until their deterministic enumerator and
+feedback owner land. Rich admitted-value, reward, interval, and
 explanation views and CLI rendering remain open.
 
 The local repository API exposes the same validation boundary at object scale.

@@ -2891,7 +2891,7 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
             &debugger_bytes,
         )
         .to_hex(),
-        "d2f44956312de702fdc6edcb7c4af6387fdfd6f6b80f3d25710041a2b390de06",
+        "79a28994f5be3954adab2a1d8092ff036717e840f70a067a26e506167b446630",
     );
     let decoded_debugger =
         DebuggerSubmission::from_canonical_bytes(&debugger_bytes).expect("decode debugger");
@@ -3003,7 +3003,7 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
     assert_eq!(
         CampaignHash::derive("crucible.test.planner-submission-vector.v1", &planner_bytes,)
             .to_hex(),
-        "b45beb55cd125bc1a1fcc44ec1d112c1a641cfa3788b8eeedf7ec461fe882039",
+        "7ef3e193d9b56bc42612cabb9a788900349830e49e2cca58b25602ea9539d7a5",
     );
     let decoded_planner =
         PlannerSubmission::from_canonical_bytes(&planner_bytes).expect("decode planner");
@@ -3168,7 +3168,7 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
 }
 
 #[test]
-fn branch_request_is_one_lazy_exact_root_delta_and_replays() {
+fn branch_request_is_one_lazy_exact_indexed_delta_and_replays() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository
         .create("lazy", &lineage, &policy, &BTreeMap::new())
@@ -3236,9 +3236,18 @@ fn branch_request_is_one_lazy_exact_root_delta_and_replays() {
         .get(next_roots.exploration, frontier_index_anchor_key())
         .expect("frontier anchor lookup")
         .expect("frontier index");
+    let branch_request_index = repository
+        .merkle
+        .get(next_roots.exploration, branch_request_index_anchor_key())
+        .expect("branch-request anchor lookup")
+        .expect("branch-request index");
     assert_eq!(
         entries.values,
-        BTreeSet::from([accepted.request.content_id(), frontier_index])
+        BTreeSet::from([
+            accepted.request.content_id(),
+            frontier_index,
+            branch_request_index,
+        ])
     );
 
     let resume = command(
@@ -3380,8 +3389,8 @@ fn ten_thousand_mixed_mutations_use_incremental_validation_and_replay_indexes() 
             .inspect_shallow(head.snapshot().roots().exploration)
             .expect("scaled exploration root")
             .entry_count(),
-        // One permanent entry anchors the nested frontier projection index.
-        (MUTATIONS / 2) + 1
+        // Two permanent entries anchor the frontier and branch-request indexes.
+        (MUTATIONS / 2) + 2
     );
     assert_eq!(
         repository
@@ -3806,7 +3815,7 @@ fn finite_proposal_is_an_exact_indexed_delta_and_replays_before_staleness() {
             .inspect_shallow(next.exploration)
             .expect("exploration root")
             .entry_count(),
-        5
+        6
     );
 
     let replay = repository

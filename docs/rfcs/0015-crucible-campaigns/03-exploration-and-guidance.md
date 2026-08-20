@@ -180,10 +180,34 @@ This preserves exact integer weights without expanding them into repeated
 entries, makes duplicate suppression independent of map insertion order, and
 reconstructs the same mixture after restart.
 
+Generator implementation-version 9 defines feedback-gated
+`progressive_integer` over a stepped integer domain. Let `C` be the exact
+domain cardinality, `S = min(initial_strata, C)`, and
+`L = min(C, request.maximum_proposals)`. The first `min(S, L)` candidates use
+the version-4 stratified offsets for exactly `S` strata, including both domain
+endpoints when `S > 1` and the lower midpoint when `S = 1`. After all `S`
+initial candidates, form every maximal interval of still-unselected legal
+offsets, including exterior intervals. Select the interval with greatest
+cardinality, breaking equal-cardinality ties by lower offset, emit its lower
+midpoint `lower + floor((length - 1) / 2)`, split around that offset, and
+repeat. This completely determines the candidate order without reward or
+arrival-order input.
+
+Initial candidates are immediately available. One-based refinement `r`
+becomes available only when the branch point has at least
+`r * feedback_interval` distinct authenticated descendant-observation credits.
+After an admitted refinement, the continuation reports
+`WaitingForFeedback(completed, required)` until the next threshold is met.
+Version 9 admits at most 4,096 initial strata and at most 4,096 proposals, and
+the maximum feedback threshold must fit `u64`. Reaching `L` is `Exhausted`
+only when `C <= request.maximum_proposals`; otherwise it is budget-limited
+`Closed`. The interval heap and every threshold are owner-recomputed during
+local acceptance, import, and restart.
+
 Other algorithms remain valid suspended specifications but fail closed at
 proposal issuance and expansion projection until their versioned cursor and
 feedback owners are implemented. Earlier and unknown implementation versions
-remain suspended rather than being reinterpreted as versions 2 through 8; this
+remain suspended rather than being reinterpreted as versions 2 through 9; this
 preserves owner validation of histories created before executable enumeration
 landed.
 
@@ -237,7 +261,11 @@ Intervals receive deterministic scores from:
 
 The partition is derived from proposals and observations and can be rebuilt.
 Splits use exact integer midpoint and rounding rules. Empty or duplicate splits
-are discarded.
+are discarded. Version 9 is the bounded feedback-gated interval owner described
+in §03.2: its visit count gates refinement, while its largest-gap choice does
+not yet consume reward, novelty, finding, or measurement scores. A later
+implementation version is required before those signals may change interval
+selection.
 
 - **[GUIDE-5]** Progressive widening MUST feed descendant observations back to
   the expansion state at every branch point on the recorded branch-edge path.
@@ -248,6 +276,12 @@ are discarded.
 - **[GUIDE-7]** A widening branch point MAY remain dormant indefinitely without
   a live QEMU process. Polling its expansion state again realizes its parent
   from the cheapest correct cache tier.
+- **[GUIDE-25]** Progressive-integer implementation-version 9 MUST reproduce the
+  exact stratified-prefix and largest-gap/lower-midpoint order in §03.2, unlock
+  refinement `r` only at the exact authenticated `r * feedback_interval`
+  completed-visit threshold, and enforce its 4,096-strata, 4,096-proposal, and
+  checked-`u64` threshold bounds during local acceptance, import, and restart.
+  Earlier and unknown progressive versions MUST remain suspended.
 
 ## 03.4 Tree policy: deterministic MCTS/PUCT
 

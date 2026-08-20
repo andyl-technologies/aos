@@ -296,6 +296,7 @@ impl CampaignRepository {
         let empty = self.merkle.empty()?.content_id();
         let choice_index = self.merkle.empty()?.content_id();
         let frontier_index = self.merkle.empty()?.content_id();
+        let branch_request_index = self.merkle.empty()?.content_id();
         let graph = self.merkle.insert(
             empty,
             map_key_hash("graph.configuration", lineage.genesis().as_hash()),
@@ -312,6 +313,11 @@ impl CampaignRepository {
         let exploration = self
             .merkle
             .insert(empty, frontier_index_anchor_key(), frontier_index)?;
+        let exploration = self.merkle.insert(
+            exploration.content_id(),
+            branch_request_index_anchor_key(),
+            branch_request_index,
+        )?;
         let snapshot = CampaignSnapshot::genesis(
             CampaignLineageId::from_content_id(lineage_content)?,
             CampaignPolicyId::from_content_id(policy_content)?,
@@ -795,6 +801,22 @@ impl CampaignRepository {
             current.snapshot.roots().exploration,
             frontier_index_anchor_key(),
         )?;
+        let domain = self.read_choice_domain(request.domain().content_id())?;
+        let feedback_indexed = self
+            .candidate_source_profile(request, &domain)?
+            .is_some_and(super::projection::CandidateSourceProfile::requires_feedback_index);
+        if feedback_indexed && frontier_index.is_none() {
+            return Err(integrity("progressive-generator-requires-frontier-index"));
+        }
+        let indexed_requests = feedback_indexed
+            .then_some((request_id, request.branch_point()))
+            .into_iter()
+            .collect::<Vec<_>>();
+        let projected_branch_request_index = self.branch_request_index_after(
+            current.snapshot.roots().exploration,
+            &indexed_requests,
+            false,
+        )?;
         let initial_continuation = if let Some(index) = frontier_index {
             if self
                 .merkle
@@ -817,6 +839,23 @@ impl CampaignRepository {
             request_key,
             request_content,
         )?;
+        if let Some(projected) = projected_branch_request_index {
+            let published = self
+                .branch_request_index_after(
+                    current.snapshot.roots().exploration,
+                    &indexed_requests,
+                    true,
+                )?
+                .ok_or_else(|| integrity("branch-request-index-disappeared"))?;
+            if published != projected {
+                return Err(integrity("branch-request-index-publication-mismatch"));
+            }
+            exploration = self.merkle.insert(
+                exploration.content_id(),
+                branch_request_index_anchor_key(),
+                published,
+            )?;
+        }
         if let Some(initial_continuation) = initial_continuation {
             let next_frontier = self
                 .frontier_index_after(
@@ -1019,6 +1058,7 @@ impl CampaignRepository {
             let prior_state = self.continuation_state(
                 current.snapshot.roots().exploration,
                 current.snapshot.roots().accounting,
+                current.snapshot.roots().observations,
                 proposal.request(),
                 &request,
             )?;
@@ -1203,6 +1243,7 @@ impl CampaignRepository {
             let prior_state = self.continuation_state(
                 exploration,
                 current.snapshot.roots().accounting,
+                current.snapshot.roots().observations,
                 proposal_record.request(),
                 &request,
             )?;
@@ -1215,6 +1256,7 @@ impl CampaignRepository {
             let next_state = self.continuation_state(
                 exploration,
                 accounting,
+                current.snapshot.roots().observations,
                 proposal_record.request(),
                 &request,
             )?;

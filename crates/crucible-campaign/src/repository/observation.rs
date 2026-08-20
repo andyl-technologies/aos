@@ -6,8 +6,14 @@ struct ObservationProjection {
     disposition: ObservationDisposition,
     credits: Vec<ExpansionCredit>,
     indexed_path: Option<(ConfigurationArtifactId, BranchPathId)>,
+    frontier_updates: Vec<(
+        BranchRequestId,
+        crate::BranchPointId,
+        crate::ContinuationState,
+    )>,
     graph: BTreeMap<CampaignHash, ContentId>,
     choice_index: BTreeMap<CampaignHash, ContentId>,
+    exploration: BTreeMap<CampaignHash, ContentId>,
     observations: BTreeMap<CampaignHash, ContentId>,
     corpus: BTreeMap<CampaignHash, ContentId>,
     coverage: BTreeMap<CampaignHash, ContentId>,
@@ -239,7 +245,21 @@ impl CampaignRepository {
                 return Err(integrity("expansion-credit-index-publication-mismatch"));
             }
         }
+        if !projection.frontier_updates.is_empty() {
+            let published = self
+                .frontier_index_after(roots.exploration, &projection.frontier_updates, true)?
+                .ok_or_else(|| integrity("observation-frontier-index-disappeared"))?;
+            if projection
+                .exploration
+                .get(&frontier_index_anchor_key())
+                .copied()
+                != Some(published)
+            {
+                return Err(integrity("observation-frontier-index-publication-mismatch"));
+            }
+        }
         roots.graph = self.insert_upserts(roots.graph, &projection.graph)?;
+        roots.exploration = self.insert_upserts(roots.exploration, &projection.exploration)?;
         roots.observations = self.insert_upserts(roots.observations, &projection.observations)?;
         roots.corpus = self.insert_upserts(roots.corpus, &projection.corpus)?;
         roots.coverage = self.insert_upserts(roots.coverage, &projection.coverage)?;
@@ -260,6 +280,7 @@ impl CampaignRepository {
             observation.discovered_choices().len(),
             projection.credits.len(),
             projection.indexed_path.is_some(),
+            projection.frontier_updates.len(),
         )?;
         let checkpoint = self.prepare_local_successor_checkpoint(
             current_content,
@@ -347,10 +368,7 @@ impl CampaignRepository {
         }
         let prior = parent.snapshot.roots();
         let next = child.snapshot.roots();
-        if prior.exploration != next.exploration
-            || prior.findings != next.findings
-            || prior.pins != next.pins
-        {
+        if prior.findings != next.findings || prior.pins != next.pins {
             return Err(integrity("observation-transition-changed-unrelated-root"));
         }
 
@@ -366,6 +384,12 @@ impl CampaignRepository {
             owner,
         )?;
         for (before, after, upserts, reason) in [
+            (
+                prior.exploration,
+                next.exploration,
+                &projection.exploration,
+                "observation-transition-exploration-root",
+            ),
             (
                 prior.graph,
                 next.graph,
@@ -446,8 +470,10 @@ impl CampaignRepository {
                 disposition: ObservationDisposition::DeterminismConflict { canonical },
                 credits: Vec::new(),
                 indexed_path: None,
+                frontier_updates: Vec::new(),
                 graph: BTreeMap::new(),
                 choice_index: BTreeMap::new(),
+                exploration: BTreeMap::new(),
                 observations: BTreeMap::from([(
                     observation_conflict_key(observation.attempt(), observation_id),
                     observation_content,
@@ -635,12 +661,72 @@ impl CampaignRepository {
             "observation-accounting-index-reused",
         )?;
 
+        let mut remaining_updates = MAX_FEEDBACK_FRONTIER_UPDATES;
+        let mut frontier_updates = Vec::new();
+        for credit in &credits {
+            for request_id in self.branch_point_requests(
+                roots.exploration,
+                credit.branch_point(),
+                &mut remaining_updates,
+            )? {
+                let request = self.read_branch_request(request_id.content_id())?;
+                if request.branch_point() != credit.branch_point() {
+                    return Err(integrity("branch-request-point-index-scope-mismatch"));
+                }
+                let domain = self.read_choice_domain(request.domain().content_id())?;
+                let Some(profile) = self.candidate_source_profile(&request, &domain)? else {
+                    continue;
+                };
+                if !profile.requires_feedback_index() {
+                    continue;
+                }
+                let frontier_index = self
+                    .merkle
+                    .get(roots.exploration, frontier_index_anchor_key())?
+                    .ok_or_else(|| integrity("progressive-generator-frontier-index-is-missing"))?;
+                let prior_state = self.continuation_state(
+                    roots.exploration,
+                    roots.accounting,
+                    roots.observations,
+                    request_id,
+                    &request,
+                )?;
+                self.validate_frontier_projection(
+                    frontier_index,
+                    request_id,
+                    request.branch_point(),
+                    prior_state,
+                )?;
+                let completed_visits = self
+                    .branch_completed_visits(roots.observations, request.branch_point())?
+                    .checked_add(1)
+                    .ok_or_else(|| integrity("expansion-completed-visit-count-overflow"))?;
+                let next_state = self.continuation_state_with_completed_visits(
+                    roots.exploration,
+                    roots.accounting,
+                    request_id,
+                    &request,
+                    completed_visits,
+                )?;
+                frontier_updates.push((request_id, request.branch_point(), next_state));
+            }
+        }
+        let mut exploration = BTreeMap::new();
+        if !frontier_updates.is_empty() {
+            let next_frontier = self
+                .frontier_index_after(roots.exploration, &frontier_updates, false)?
+                .ok_or_else(|| integrity("progressive-generator-frontier-index-is-missing"))?;
+            exploration.insert(frontier_index_anchor_key(), next_frontier);
+        }
+
         Ok(ObservationProjection {
             disposition: ObservationDisposition::Canonical,
             credits,
             indexed_path,
+            frontier_updates,
             graph,
             choice_index: choice_index_upserts,
+            exploration,
             observations,
             corpus,
             coverage,

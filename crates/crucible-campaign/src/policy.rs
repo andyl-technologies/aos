@@ -109,6 +109,23 @@ pub const ORDERED_MIXTURE_GENERATOR_MAX_WORK_ITEMS: usize = 8_192;
 /// Maximum nested executable-mixture depth.
 pub const ORDERED_MIXTURE_GENERATOR_MAX_DEPTH: usize = 64;
 
+/// Generator implementation version for feedback-gated integer refinement.
+///
+/// This version emits an initial exact stratification, then repeatedly bisects
+/// the largest remaining legal-offset interval. Refinement `r` requires the
+/// branch point's cumulative completed-visit count to reach `r` times the
+/// declared interval. Earlier and unknown versions remain suspended.
+pub const PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 9;
+
+/// Maximum initial strata admitted by progressive-integer version 9.
+pub const PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA: u32 = 4_096;
+
+/// Maximum proposals admitted by one progressive-integer branch request.
+///
+/// Owner recomputation retains a bounded interval heap through proposal,
+/// observation, import, and restart validation.
+pub const PROGRESSIVE_INTEGER_GENERATOR_MAX_PROPOSALS: u64 = 4_096;
+
 /// Fixed seed that makes campaign proposal streams reproducible.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CampaignSeed([u8; 32]);

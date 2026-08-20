@@ -349,12 +349,19 @@ impl CampaignRepository {
         let frontier_index = self
             .merkle
             .get(roots.exploration, frontier_index_anchor_key())?;
+        let branch_request_index = self
+            .merkle
+            .get(roots.exploration, branch_request_index_anchor_key())?;
         let exploration = self.merkle.inspect_shallow(roots.exploration)?;
-        match frontier_index {
-            Some(index)
+        match (frontier_index, branch_request_index) {
+            (Some(index), None)
                 if exploration.entry_count() == 1
                     && self.merkle.inspect_shallow(index)?.entry_count() == 0 => {}
-            None if exploration.entry_count() == 0 => {}
+            (Some(frontier), Some(requests))
+                if exploration.entry_count() == 2
+                    && self.merkle.inspect_shallow(frontier)?.entry_count() == 0
+                    && self.merkle.inspect_shallow(requests)?.entry_count() == 0 => {}
+            (None, None) if exploration.entry_count() == 0 => {}
             _ => return Err(integrity("genesis-frontier-index-root-mismatch")),
         }
 
@@ -545,10 +552,26 @@ impl CampaignRepository {
             return Err(integrity("branch-request-transition-reused-request"));
         }
         let mut upserts = BTreeMap::from([(request_key, request_content)]);
-        if let Some(frontier_index) = self
+        let domain = self.read_choice_domain(request_record.domain().content_id())?;
+        let feedback_indexed = self
+            .candidate_source_profile(&request_record, &domain)?
+            .is_some_and(super::projection::CandidateSourceProfile::requires_feedback_index);
+        let frontier_index = self
             .merkle
-            .get(prior_roots.exploration, frontier_index_anchor_key())?
+            .get(prior_roots.exploration, frontier_index_anchor_key())?;
+        if feedback_indexed && frontier_index.is_none() {
+            return Err(integrity("progressive-generator-requires-frontier-index"));
+        }
+        let indexed_requests = feedback_indexed
+            .then_some((request, request_record.branch_point()))
+            .into_iter()
+            .collect::<Vec<_>>();
+        if let Some(next_index) =
+            self.branch_request_index_after(prior_roots.exploration, &indexed_requests, false)?
         {
+            upserts.insert(branch_request_index_anchor_key(), next_index);
+        }
+        if let Some(frontier_index) = frontier_index {
             if self
                 .merkle
                 .get(frontier_index, frontier_index_order_key(request))?
@@ -767,6 +790,7 @@ impl CampaignRepository {
             let prior_state = self.continuation_state(
                 prior_roots.exploration,
                 prior_roots.accounting,
+                prior_roots.observations,
                 proposal_record.request(),
                 &request,
             )?;
@@ -876,6 +900,7 @@ impl CampaignRepository {
                 let prior_state = self.continuation_state(
                     prior_roots.exploration,
                     prior_roots.accounting,
+                    prior_roots.observations,
                     proposal_record.request(),
                     &request,
                 )?;
@@ -888,6 +913,7 @@ impl CampaignRepository {
                 let next_state = self.continuation_state(
                     prior_roots.exploration,
                     next_roots.accounting,
+                    next_roots.observations,
                     proposal_record.request(),
                     &request,
                 )?;
