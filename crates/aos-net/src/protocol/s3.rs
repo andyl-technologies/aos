@@ -14,7 +14,8 @@ use async_trait::async_trait;
 use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
 use aws_sdk_s3::operation::head_object::HeadObjectError;
 use bytes::Bytes;
-use tokio::io::AsyncReadExt;
+use futures_util::{stream, StreamExt, TryStreamExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use super::{ByteStream, Protocol};
 use crate::auth::Credential;
@@ -25,6 +26,9 @@ const MULTIPART_THRESHOLD: u64 = 5 * 1024 * 1024;
 
 /// Default part size for multi-part uploads (5 MB).
 const MULTIPART_PART_SIZE: u64 = 5 * 1024 * 1024;
+
+/// Maximum S3 parts uploaded concurrently for one object.
+const MULTIPART_CONCURRENCY: usize = 4;
 
 /// Describes where an S3 request is sent, for diagnostics.
 ///
@@ -618,10 +622,9 @@ impl S3Protocol {
 
     /// Multi-part upload reading from a file in chunks (no full-buffer).
     ///
-    /// Runs CreateMultipartUpload, uploads `part_size`-byte parts
-    /// sequentially while collecting their ETags, then
-    /// CompleteMultipartUpload. An aborted upload is not cleaned up
-    /// here; orphaned parts are left for a bucket lifecycle rule.
+    /// Runs CreateMultipartUpload, uploads `part_size`-byte parts with bounded
+    /// concurrency, then completes the ordered part set. Any failed part or
+    /// completion request is followed by a best-effort abort.
     async fn do_multipart_upload_from_file(
         &self,
         client: &aws_sdk_s3::Client,
@@ -645,69 +648,98 @@ impl S3Protocol {
             .ok_or_else(|| anyhow::anyhow!("no upload_id returned"))?
             .to_string();
 
-        let mut file = tokio::fs::File::open(path)
-            .await
-            .with_context(|| format!("opening {} for multipart upload", path.display()))?;
+        let part_count = file_len.div_ceil(self.part_size);
+        let upload_id_ref = upload_id.as_str();
+        let location_ref = location.as_str();
+        let outcome: Result<()> = async {
+            let mut parts = stream::iter(0..part_count)
+                .map(|index| {
+                    let upload_id = upload_id_ref;
+                    let location = location_ref;
+                    async move {
+                        let offset = index
+                            .checked_mul(self.part_size)
+                            .context("multipart part offset overflow")?;
+                        let remaining = file_len - offset;
+                        let chunk_size = usize::try_from(remaining.min(self.part_size))
+                            .context("multipart part exceeds addressable memory")?;
+                        let part_number = i32::try_from(index + 1)
+                            .context("multipart part number exceeds the S3 limit")?;
+                        let mut file = tokio::fs::File::open(path).await.with_context(|| {
+                            format!("opening {} for multipart upload", path.display())
+                        })?;
+                        file.seek(std::io::SeekFrom::Start(offset)).await?;
+                        let mut chunk = vec![0_u8; chunk_size];
+                        file.read_exact(&mut chunk).await.with_context(|| {
+                            format!("reading part {part_number} from {}", path.display())
+                        })?;
 
-        let mut parts = Vec::new();
-        let mut part_number: i32 = 1;
-        let mut offset: u64 = 0;
-
-        while offset < file_len {
-            let chunk_size = ((file_len - offset) as usize).min(self.part_size as usize);
-            let mut chunk = vec![0u8; chunk_size];
-            file.read_exact(&mut chunk)
+                        let response = client
+                            .upload_part()
+                            .bucket(bucket)
+                            .key(key)
+                            .upload_id(upload_id)
+                            .part_number(part_number)
+                            .body(chunk.into())
+                            .send()
+                            .await
+                            .map_err(|error| {
+                                s3_operation_error(
+                                    &format!("UploadPart (part {part_number})"),
+                                    location,
+                                    target,
+                                    error,
+                                )
+                            })?;
+                        let etag = response
+                            .e_tag()
+                            .with_context(|| format!("no ETag for part {part_number}"))?
+                            .to_string();
+                        Ok::<_, anyhow::Error>(
+                            aws_sdk_s3::types::CompletedPart::builder()
+                                .part_number(part_number)
+                                .e_tag(etag)
+                                .build(),
+                        )
+                    }
+                })
+                .buffer_unordered(MULTIPART_CONCURRENCY)
+                .try_collect::<Vec<_>>()
+                .await?;
+            parts.sort_by_key(|part| part.part_number());
+            let completed = aws_sdk_s3::types::CompletedMultipartUpload::builder()
+                .set_parts(Some(parts))
+                .build();
+            client
+                .complete_multipart_upload()
+                .bucket(bucket)
+                .key(key)
+                .upload_id(upload_id_ref)
+                .multipart_upload(completed)
+                .send()
                 .await
-                .with_context(|| format!("reading part {} from {}", part_number, path.display()))?;
+                .map_err(|error| {
+                    s3_operation_error("CompleteMultipartUpload", location_ref, target, error)
+                })?;
+            Ok(())
+        }
+        .await;
 
-            let upload_resp = client
-                .upload_part()
+        if let Err(error) = outcome {
+            let cleanup = client
+                .abort_multipart_upload()
                 .bucket(bucket)
                 .key(key)
                 .upload_id(&upload_id)
-                .part_number(part_number)
-                .body(chunk.into())
                 .send()
-                .await
-                .map_err(|e| {
-                    s3_operation_error(
-                        &format!("UploadPart (part {part_number})"),
-                        &location,
-                        target,
-                        e,
-                    )
-                })?;
-
-            let etag = upload_resp
-                .e_tag()
-                .ok_or_else(|| anyhow::anyhow!("no ETag for part {part_number}"))?
-                .to_string();
-
-            parts.push(
-                aws_sdk_s3::types::CompletedPart::builder()
-                    .part_number(part_number)
-                    .e_tag(etag)
-                    .build(),
-            );
-
-            offset += chunk_size as u64;
-            part_number += 1;
+                .await;
+            if let Err(cleanup) = cleanup {
+                return Err(error).context(format!(
+                    "S3 multipart upload failed and abort cleanup also failed: {cleanup}"
+                ));
+            }
+            return Err(error).context("S3 multipart upload failed; staged parts were aborted");
         }
-
-        let completed = aws_sdk_s3::types::CompletedMultipartUpload::builder()
-            .set_parts(Some(parts))
-            .build();
-
-        client
-            .complete_multipart_upload()
-            .bucket(bucket)
-            .key(key)
-            .upload_id(&upload_id)
-            .multipart_upload(completed)
-            .send()
-            .await
-            .map_err(|e| s3_operation_error("CompleteMultipartUpload", &location, target, e))?;
-
         Ok(())
     }
 }

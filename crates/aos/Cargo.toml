@@ -15,6 +15,7 @@ path = "src/apr.rs"
 [dependencies]
 rustix = { workspace = true }
 aos-core = { workspace = true }
+aos-net = { workspace = true }
 aos-server = { workspace = true }
 aos-cache = { workspace = true }
 aos-remote = { workspace = true }
@@ -37,6 +38,7 @@ ignore = { workspace = true }
 alejandra = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
+hex = { workspace = true }
 glob = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }

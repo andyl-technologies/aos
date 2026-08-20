@@ -71,7 +71,10 @@ pub mod types;
 pub use auth::{AuthStore, Credential};
 pub use bandwidth::BandwidthLimiter;
 pub use hash::StreamingHasher;
-pub use managed::{DownloadRequest, DownloadResult, ResumePolicy, UploadRequest, UploadSource};
+pub use managed::{
+    DownloadRequest, DownloadResult, HashDownloadRequest, HashDownloadResult, ResumePolicy,
+    UploadRequest, UploadSource,
+};
 pub use pool::{ConnectionPool, PoolConfig};
 pub use progress::{
     BatchProgressHandler, NoopObserver, NoopProgress, ProgressHandler, TransferEvent,
