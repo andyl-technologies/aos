@@ -6,12 +6,11 @@
 //! `nix-store --import` (see [`streaming_import`]). Downloads honour an
 //! optional shared bandwidth limit and a concurrency cap.
 
-use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use futures::stream::{self, StreamExt, TryStreamExt};
 use indicatif::HumanBytes;
-use tokio::sync::Semaphore;
 
 use aos_core::nar::info as narinfo;
 use aos_core::nix::NixCli;
@@ -111,32 +110,39 @@ pub async fn run_pull(
     let overall = printer.items("Downloading cache paths", missing.len() as u64);
 
     let effective_jobs = if jobs == 0 { 1 } else { jobs };
-    let semaphore = Arc::new(Semaphore::new(effective_jobs));
     let mut total_bytes: u64 = 0;
     let mut downloaded = 0u64;
 
-    for path in &missing {
-        let _permit = semaphore.acquire().await?;
-        let hash = narinfo::store_hash(path);
+    // Download concurrently but retain input order for the import phase. Nix
+    // store registration stays sequential so references never race their
+    // dependency's registration.
+    let downloads = stream::iter(&missing)
+        .map(|path| {
+            let overall = &overall;
+            let limiter = &limiter;
+            async move {
+                let hash = narinfo::store_hash(path);
+                let narinfo_text = backend
+                    .get_narinfo(hash)
+                    .await
+                    .with_context(|| format!("fetching narinfo for {hash}"))?;
+                let info = narinfo::parse(&narinfo_text)?;
+                let compressed = backend
+                    .get_nar(&info.url)
+                    .await
+                    .with_context(|| format!("downloading NAR {}", info.url))?;
+                if limiter.is_active() {
+                    limiter.acquire(compressed.len() as u64).await;
+                }
+                overall.inc(1);
+                Ok::<_, anyhow::Error>((info, compressed))
+            }
+        })
+        .buffered(effective_jobs)
+        .try_collect::<Vec<_>>()
+        .await?;
 
-        // Fetch narinfo.
-        let narinfo_text = backend
-            .get_narinfo(hash)
-            .await
-            .with_context(|| format!("fetching narinfo for {hash}"))?;
-        let ni = narinfo::parse(&narinfo_text)?;
-
-        // Download compressed NAR.
-        let nar_compressed = backend
-            .get_nar(&ni.url)
-            .await
-            .with_context(|| format!("downloading NAR {}", ni.url))?;
-
-        // Apply bandwidth limiting.
-        if limiter.is_active() {
-            limiter.acquire(nar_compressed.len() as u64).await;
-        }
-
+    for (ni, nar_compressed) in downloads {
         streaming_import(
             &nix,
             &nar_compressed,
@@ -162,7 +168,6 @@ pub async fn run_pull(
 
         total_bytes += nar_compressed.len() as u64;
         downloaded += 1;
-        overall.inc(1);
     }
 
     overall.finish_and_clear();

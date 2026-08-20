@@ -170,6 +170,21 @@ impl Protocol for FsProtocol {
                             resumed: false,
                         })
                     }
+                    TransferOutput::Sink(sink) => {
+                        for chunk in data.chunks(FS_CHUNK_SIZE) {
+                            sink.write(chunk)?;
+                        }
+                        sink.flush()?;
+                        Ok(TransferResult {
+                            status: 200,
+                            headers: Vec::new(),
+                            bytes_transferred,
+                            content_length: Some(bytes_transferred),
+                            body: None,
+                            hash: None,
+                            resumed: false,
+                        })
+                    }
                 }
             }
             Method::Put => {
@@ -362,6 +377,7 @@ mod tests {
             body: None,
             hash: None,
             maximum_bytes: None,
+            expected_size: None,
             resume: false,
             output: TransferOutput::Memory,
         };

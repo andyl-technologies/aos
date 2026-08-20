@@ -1,6 +1,7 @@
 //! Core types for the transfer engine.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use tokio::io::AsyncRead;
 
@@ -50,6 +51,36 @@ impl std::fmt::Debug for TransferBody {
 /// Callback invoked for each streamed transfer chunk.
 pub type TransferCallback = dyn Fn(&[u8]) -> anyhow::Result<()> + Send + Sync;
 
+/// A replayable streaming destination for managed downloads.
+///
+/// Unlike a plain callback, a sink exposes its committed byte position. The
+/// transfer engine can therefore issue a new ranged request after a transient
+/// response-body failure without replaying bytes already accepted by the
+/// destination. Implementations commonly retain an already-open file
+/// descriptor when path lookup would be unsafe.
+pub trait TransferSink: Send + Sync {
+    /// Returns the number of bytes durably accepted by the sink.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the destination position cannot be inspected.
+    fn position(&self) -> anyhow::Result<u64>;
+
+    /// Appends one response chunk to the sink.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the chunk cannot be committed.
+    fn write(&self, bytes: &[u8]) -> anyhow::Result<()>;
+
+    /// Flushes buffered destination state after a successful response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when buffered state cannot be flushed.
+    fn flush(&self) -> anyhow::Result<()>;
+}
+
 /// Where to write the transfer output.
 pub enum TransferOutput {
     /// Write to a local file (supports resume).
@@ -58,6 +89,8 @@ pub enum TransferOutput {
     Memory,
     /// Stream chunks to a callback.
     Callback(Box<TransferCallback>),
+    /// Stream chunks to a replayable destination.
+    Sink(Arc<dyn TransferSink>),
 }
 
 impl std::fmt::Debug for TransferOutput {
@@ -66,6 +99,7 @@ impl std::fmt::Debug for TransferOutput {
             Self::File(p) => f.debug_tuple("File").field(p).finish(),
             Self::Memory => write!(f, "Memory"),
             Self::Callback(_) => write!(f, "Callback"),
+            Self::Sink(_) => write!(f, "Sink"),
         }
     }
 }
@@ -116,10 +150,12 @@ pub struct TransferRequest {
     pub hash: Option<HashSpec>,
     /// Maximum response-body bytes accepted before the transfer is aborted.
     pub maximum_bytes: Option<u64>,
+    /// Required complete response size, including any resumed prefix.
+    pub expected_size: Option<u64>,
     /// Whether to attempt resuming a partial download. Only effective
-    /// for protocols that support ranged reads and when `output` is
-    /// [`TransferOutput::File`]; the existing file's size is used as
-    /// the resume offset.
+    /// for protocols that support ranged reads and when `output` is a
+    /// [`TransferOutput::File`] or [`TransferOutput::Sink`]. The destination's
+    /// current size or position is used as the resume offset.
     pub resume: bool,
     /// Where to write the output.
     pub output: TransferOutput,
@@ -135,6 +171,7 @@ impl TransferRequest {
             body: None,
             hash: None,
             maximum_bytes: None,
+            expected_size: None,
             resume: false,
             output: TransferOutput::Memory,
         }
@@ -149,6 +186,7 @@ impl TransferRequest {
             body: None,
             hash: None,
             maximum_bytes: None,
+            expected_size: None,
             resume: false,
             output: TransferOutput::File(path),
         }
@@ -163,6 +201,7 @@ impl TransferRequest {
             body: Some(TransferBody::Bytes(data)),
             hash: None,
             maximum_bytes: None,
+            expected_size: None,
             resume: false,
             output: TransferOutput::Memory,
         }
@@ -177,6 +216,7 @@ impl TransferRequest {
             body: Some(TransferBody::File(path)),
             hash: None,
             maximum_bytes: None,
+            expected_size: None,
             resume: false,
             output: TransferOutput::Memory,
         }
@@ -191,6 +231,7 @@ impl TransferRequest {
             body: Some(TransferBody::Bytes(data)),
             hash: None,
             maximum_bytes: None,
+            expected_size: None,
             resume: false,
             output: TransferOutput::Memory,
         }
@@ -205,6 +246,7 @@ impl TransferRequest {
             body: None,
             hash: None,
             maximum_bytes: None,
+            expected_size: None,
             resume: false,
             output: TransferOutput::Memory,
         }
@@ -228,6 +270,12 @@ impl TransferRequest {
     /// Limit the number of response-body bytes the transfer may consume.
     pub fn with_maximum_bytes(mut self, maximum_bytes: u64) -> Self {
         self.maximum_bytes = Some(maximum_bytes);
+        self
+    }
+
+    /// Requires the complete response to contain exactly `expected_size` bytes.
+    pub fn with_expected_size(mut self, expected_size: u64) -> Self {
+        self.expected_size = Some(expected_size);
         self
     }
 

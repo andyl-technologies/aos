@@ -16,9 +16,9 @@
 //!    `References` (skipping paths already valid in the local store) and
 //!    returns the set dependency-first so NARs can be imported in order.
 //! 3. **NAR download** ([`download_nars`]): parallel, semaphore-bounded
-//!    downloads into the NAR cache directory. Small responses verify the
-//!    compressed `FileHash` in flight; large responses use exact bounded byte
-//!    ranges and atomically publish only after whole-file verification.
+//!    downloads into the NAR cache directory. Every response streams into an
+//!    identity-bound durable partial and atomically publishes only after
+//!    whole-file size and compressed `FileHash` verification.
 //!
 //! Downloaded files land in the cache as `<canonical-nar-hash>.nar.zst`; the
 //! resulting [`DownloadResult`]s carry everything [`crate::store::import_nar`]
@@ -29,7 +29,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
 
 use super::store::filter_missing;
@@ -38,10 +37,11 @@ use super::verify::{sha256_digest_hex, verify_download_hash};
 use aos_core::error::AosError;
 use aos_core::nar::cache::canonical_sha256_hex;
 use aos_core::nar::info::{self as narinfo, NarInfo};
-use aos_core::output::Printer;
-use aos_net::{HashAlgorithm, TransferEngine, TransferEngineConfig, TransferRequest};
-
-const NAR_RANGE_CHUNK_BYTES: u64 = 16 * 1024 * 1024;
+use aos_core::output::{Printer, TransferProgress};
+use aos_net::{
+    DownloadRequest as ManagedDownloadRequest, HashAlgorithm, ResumePolicy, TransferEngine,
+    TransferEngineConfig, TransferEvent, TransferObserver, TransferRequest,
+};
 
 // ---------------------------------------------------------------------------
 // Request / result types
@@ -573,127 +573,37 @@ async fn download_one(
         return Ok(result);
     }
 
-    let label = short_label(&resolved.req.store_path);
-    let mut last_not_found: Option<anyhow::Error> = None;
-    for mirror_url in resolved.req.mirror_chain() {
-        let url = join_cache_url(mirror_url, &resolved.narinfo.url);
-        match download_nar_from(
-            engine,
-            &url,
-            dest,
-            &expected_hex,
-            &resolved.narinfo,
-            &label,
-            printer,
-        )
-        .await
-        {
-            Ok(()) => {
-                return Ok(DownloadResult {
-                    store_path: resolved.req.store_path.clone(),
-                    local_path: dest.to_path_buf(),
-                    download_hash: file_hash,
-                    nar_hash: resolved.narinfo.nar_hash.clone(),
-                    references: resolved.narinfo.references.clone(),
-                    deriver: resolved.narinfo.deriver.clone(),
-                });
-            }
-            Err(err) if is_not_found(&err) => {
-                // Cache miss: fall through to the next cache in priority order.
-                last_not_found = Some(err);
-            }
-            Err(err) => return Err(err),
-        }
-    }
-    Err(last_not_found
-        .unwrap_or_else(|| anyhow::anyhow!("no cache configured for {}", resolved.req.store_path)))
+    let sources = resolved
+        .req
+        .mirror_chain()
+        .map(|mirror| join_cache_url(mirror, &resolved.narinfo.url))
+        .collect::<Vec<_>>();
+    download_nar_from(
+        engine,
+        sources,
+        dest,
+        &expected_hex,
+        &resolved.narinfo,
+        &short_label(&resolved.req.store_path),
+        printer,
+    )
+    .await?;
+
+    Ok(DownloadResult {
+        store_path: resolved.req.store_path.clone(),
+        local_path: dest.to_path_buf(),
+        download_hash: file_hash,
+        nar_hash: resolved.narinfo.nar_hash.clone(),
+        references: resolved.narinfo.references.clone(),
+        deriver: resolved.narinfo.deriver.clone(),
+    })
 }
 
 /// Download one NAR from a single fully-qualified URL into `dest`, verifying
 /// the compressed-stream hash.
 async fn download_nar_from(
     engine: &TransferEngine,
-    url: &str,
-    dest: &Path,
-    expected_hex: &str,
-    narinfo: &NarInfo,
-    label: &str,
-    printer: &Printer,
-) -> Result<()> {
-    if narinfo
-        .file_size
-        .is_some_and(|size| size > NAR_RANGE_CHUNK_BYTES)
-    {
-        let is_http = url::Url::parse(url)
-            .ok()
-            .is_some_and(|parsed| matches!(parsed.scheme(), "http" | "https"));
-        let supports_ranges = if is_http {
-            engine
-                .head(url)
-                .await
-                .ok()
-                .and_then(|result| result.header("accept-ranges").map(str::to_string))
-                .is_some_and(|value| {
-                    value
-                        .split(',')
-                        .any(|token| token.trim().eq_ignore_ascii_case("bytes"))
-                })
-        } else {
-            false
-        };
-        if supports_ranges {
-            return download_nar_in_ranges(
-                engine,
-                url,
-                dest,
-                expected_hex,
-                narinfo,
-                label,
-                printer,
-            )
-            .await;
-        }
-        return download_nar_to_tempfile(engine, url, dest, expected_hex, narinfo, label, printer)
-            .await;
-    }
-
-    let maximum_bytes = narinfo.file_size.unwrap_or(NAR_RANGE_CHUNK_BYTES);
-    let transfer_req = TransferRequest::get(url)
-        .with_hash(HashAlgorithm::Sha256, expected_hex)
-        .with_maximum_bytes(maximum_bytes);
-
-    let progress = printer.transfer(label, narinfo.file_size.unwrap_or(0));
-
-    let result = engine.execute(transfer_req).await;
-    let result = result.with_context(|| format!("downloading {url}"))?;
-
-    if let Some(body) = &result.body {
-        if let Some(expected_size) = narinfo.file_size
-            && body.len() as u64 != expected_size
-        {
-            bail!(
-                "downloaded {} bytes from {url}, expected {expected_size}",
-                body.len()
-            );
-        }
-        tokio::fs::write(dest, body)
-            .await
-            .with_context(|| format!("writing to {}", dest.display()))?;
-        progress.set_position(body.len() as u64);
-        progress.finish();
-        Ok(())
-    } else {
-        Err(AosError::DownloadError {
-            message: format!("no response body for {url}"),
-        }
-        .into())
-    }
-}
-
-/// Stream a large non-HTTP NAR directly to an atomic tempfile.
-async fn download_nar_to_tempfile(
-    engine: &TransferEngine,
-    url: &str,
+    sources: Vec<String>,
     dest: &Path,
     expected_hex: &str,
     narinfo: &NarInfo,
@@ -702,146 +612,53 @@ async fn download_nar_to_tempfile(
 ) -> Result<()> {
     let expected_size = narinfo
         .file_size
-        .context("large NAR download requires FileSize")?;
-    let parent = dest
-        .parent()
-        .context("NAR cache destination has no parent directory")?;
-    let temporary = tempfile::Builder::new()
-        .prefix(".nar-download-")
-        .tempfile_in(parent)
-        .with_context(|| format!("creating a temporary NAR beside {}", dest.display()))?
-        .into_temp_path();
-    let request = TransferRequest::get_to_file(url, temporary.to_path_buf())
+        .context("NAR download requires FileSize")?;
+    let progress = printer.transfer(label, expected_size);
+    let observer = DownloadProgress {
+        progress: &progress,
+    };
+    let primary = sources
+        .first()
+        .cloned()
+        .context("NAR download requires at least one cache source")?;
+    let request = ManagedDownloadRequest::new(primary, dest)
+        .with_sources(sources)
+        .with_expected_size(expected_size)
         .with_hash(HashAlgorithm::Sha256, expected_hex)
-        .with_maximum_bytes(expected_size);
-    let mut progress = printer.transfer(label, expected_size);
-
-    let result = async {
-        engine
-            .execute(request)
-            .await
-            .with_context(|| format!("downloading {url}"))?;
-        let actual_size = tokio::fs::metadata(&temporary)
-            .await
-            .with_context(|| format!("checking temporary NAR for {}", dest.display()))?
-            .len();
-        if actual_size != expected_size {
-            bail!("downloaded {actual_size} bytes from {url}, expected {expected_size}");
-        }
-        progress.set_position(actual_size);
-        progress.phase("Verifying package download");
-        temporary
-            .persist(dest)
-            .with_context(|| format!("publishing verified NAR at {}", dest.display()))?;
-        Ok(())
-    }
-    .await;
-
+        .with_resume(ResumePolicy::Automatic);
+    let result = engine.download_observed(request, &observer).await;
     progress.finish();
-    result
+    result.map(|_| ())
 }
 
-/// Download a large NAR through exact byte ranges into an atomic tempfile.
-async fn download_nar_in_ranges(
-    engine: &TransferEngine,
-    url: &str,
-    dest: &Path,
-    expected_hex: &str,
-    narinfo: &NarInfo,
-    label: &str,
-    printer: &Printer,
-) -> Result<()> {
-    let expected_size = narinfo
-        .file_size
-        .context("ranged NAR download requires FileSize")?;
-    let parent = dest
-        .parent()
-        .context("NAR cache destination has no parent directory")?;
-    let temporary = tempfile::Builder::new()
-        .prefix(".nar-download-")
-        .tempfile_in(parent)
-        .with_context(|| format!("creating a temporary NAR beside {}", dest.display()))?
-        .into_temp_path();
-    let mut output = tokio::fs::OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(&temporary)
-        .await
-        .with_context(|| format!("opening temporary NAR for {}", dest.display()))?;
-    let mut progress = printer.transfer(label, expected_size);
+/// Adapts the shared transfer event stream to the package CLI progress bar.
+struct DownloadProgress<'a> {
+    progress: &'a TransferProgress,
+}
 
-    let result = async {
-        let mut start = 0_u64;
-        while start < expected_size {
-            let end = (start + NAR_RANGE_CHUNK_BYTES - 1).min(expected_size - 1);
-            let expected_chunk_size = end - start + 1;
-            let chunk = tempfile::Builder::new()
-                .prefix(".nar-range-")
-                .tempfile_in(parent)
-                .with_context(|| format!("creating a temporary range for {url}"))?
-                .into_temp_path();
-            let request = TransferRequest::get_to_file(url, chunk.to_path_buf())
-                .with_header("Range", &format!("bytes={start}-{end}"))
-                .with_maximum_bytes(expected_chunk_size);
-            let response = engine
-                .execute(request)
-                .await
-                .with_context(|| format!("downloading bytes {start}-{end} from {url}"))?;
-            if response.status != 206 {
-                bail!(
-                    "ranged download from {url} returned HTTP {}, expected 206",
-                    response.status
-                );
+impl TransferObserver for DownloadProgress<'_> {
+    fn observe(&self, event: TransferEvent<'_>) {
+        match event {
+            TransferEvent::Started { resumed_bytes, .. } => {
+                self.progress.set_position(resumed_bytes);
             }
-            let expected_content_range = format!("bytes {start}-{end}/{expected_size}");
-            if response.header("content-range") != Some(expected_content_range.as_str()) {
-                bail!(
-                    "ranged download from {url} returned Content-Range {:?}, expected {expected_content_range}",
-                    response.header("content-range")
-                );
-            }
-            let actual_chunk_size = tokio::fs::metadata(&chunk)
-                .await
-                .with_context(|| format!("checking downloaded bytes {start}-{end} from {url}"))?
-                .len();
-            if actual_chunk_size != expected_chunk_size {
-                bail!(
-                    "ranged download from {url} returned {} bytes for {start}-{end}, expected {expected_chunk_size}",
-                    actual_chunk_size
-                );
-            }
-            let mut chunk_file = tokio::fs::File::open(&chunk)
-                .await
-                .with_context(|| format!("opening downloaded bytes {start}-{end} from {url}"))?;
-            tokio::io::copy(&mut chunk_file, &mut output)
-                .await
-                .with_context(|| format!("assembling temporary NAR for {}", dest.display()))?;
-            progress.inc(expected_chunk_size);
-            start = end + 1;
+            TransferEvent::Progress {
+                transferred_bytes, ..
+            } => self.progress.set_position(transferred_bytes),
+            TransferEvent::Retrying {
+                attempt,
+                delay,
+                error,
+                ..
+            } => self.progress.warning(&format!(
+                "download interrupted ({error}); retrying attempt {attempt} in {:.1}s",
+                delay.as_secs_f64()
+            )),
+            TransferEvent::Verifying { .. }
+            | TransferEvent::Completed { .. }
+            | TransferEvent::Failed { .. } => {}
         }
-        output
-            .flush()
-            .await
-            .with_context(|| format!("flushing temporary NAR for {}", dest.display()))?;
-        drop(output);
-
-        let path_for_verify = temporary.to_path_buf();
-        let expected_hash = expected_hex.to_string();
-        progress.phase("Verifying package download");
-        tokio::task::spawn_blocking(move || {
-            verify_download_hash(&path_for_verify, &expected_hash)
-        })
-        .await
-        .context("NAR hash verification task panicked")??;
-        temporary
-            .persist(dest)
-            .with_context(|| format!("publishing verified NAR at {}", dest.display()))?;
-        Ok(())
     }
-    .await;
-
-    progress.finish();
-    result
 }
 
 /// Reuse a previously downloaded NAR at `dest` if its hash still matches.
@@ -1211,7 +1028,7 @@ mod tests {
         let printer = Printer::new(0, true, false);
         let source = tempfile::TempDir::new().unwrap();
         let cache_dir = tempfile::TempDir::new().unwrap();
-        let nar_bytes = vec![0x5a; NAR_RANGE_CHUNK_BYTES as usize + 1];
+        let nar_bytes = vec![0x5a; 16 * 1024 * 1024 + 1];
         let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(&nar_bytes)));
         let nar_hash = format!("sha256:{}", "ef".repeat(32));
         let nar_url = "nar/large.nar.zst";
