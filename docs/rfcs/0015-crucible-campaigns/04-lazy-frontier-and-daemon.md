@@ -221,9 +221,9 @@ canonical completion, the projector credits its observation to the expansion
 state at each branch point on that path. No in-memory MCTS stack is required.
 New schema-v2 paths carry exact `(BranchPointId, BranchEdgeId)` segments because
 an edge digest is deliberately non-invertible. Legacy schema-v1 edge-only paths
-remain identity-preserving historical inputs; the current single-edge genesis
-owner can recover their point from the authenticated request, while nested
-feedback requires a fully scoped v2 path.
+remain identity-preserving historical inputs and are admissible only for a
+single-edge genesis request, whose authenticated request recovers the point.
+Nested admission and feedback require a fully scoped cumulative v2 path.
 
 ```text
 root branch point B0
