@@ -175,10 +175,12 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   implementation-version 4 `stratified_integer` adds a checked constant-space
   ordinal mapping capped at 4,096 strata. Implementation-version 5
   `log_integer` adds an at-most-65-value exact rounded-power ordering for
-  strictly positive domains. Other generated requests remain conservatively
-  `Open` and fail closed when proposal or expansion semantics are requested.
-  Legacy snapshots remain unindexed and queries fail closed rather than
-  constructing a partial index.
+  strictly positive domains. Implementation-version 6 `permuted_integer` adds a
+  four-round request-keyed bijection over up to `2^64 - 1` legal values without
+  materialization. Other generated requests remain conservatively `Open` and
+  fail closed when proposal or expansion semantics are requested. Legacy
+  snapshots remain unindexed and queries fail closed rather than constructing a
+  partial index.
 - [ ] **T-CAM-4.5** Implement `CampaignSupervisor`, `CampaignProjector`,
   `ProposalPlanner`, `AttemptQueue`, and a bounded local `WorkerPool`.
   The standalone bounded `AttemptQueue` reservation primitive and the daemon's

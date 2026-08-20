@@ -1198,8 +1198,18 @@ impl CampaignRepository {
                         return Err(integrity("log-generator-domain-is-not-positive"));
                     }
                 }
-                CandidateGeneratorAlgorithm::PermutedInteger
-                | CandidateGeneratorAlgorithm::ProgressiveInteger { .. }
+                CandidateGeneratorAlgorithm::PermutedInteger => {
+                    let ChoiceDomain::Integer(integer) = domain else {
+                        return Err(integrity("candidate-generator-domain-family-mismatch"));
+                    };
+                    if generator.implementation_version()
+                        == crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                        && integer.cardinality() > crate::PERMUTED_INTEGER_GENERATOR_MAX_CARDINALITY
+                    {
+                        return Err(integrity("permuted-generator-cardinality-limit"));
+                    }
+                }
+                CandidateGeneratorAlgorithm::ProgressiveInteger { .. }
                 | CandidateGeneratorAlgorithm::MutateNearCorpus { .. }
                     if matches!(domain, ChoiceDomain::Integer(_)) => {}
                 CandidateGeneratorAlgorithm::OrderedMixture { components } => {

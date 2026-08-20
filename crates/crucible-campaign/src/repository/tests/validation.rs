@@ -1374,6 +1374,293 @@ fn log_integer_generator_uses_exact_rounded_powers() {
 }
 
 #[test]
+fn permuted_integer_generator_is_keyed_bijective_and_restart_stable() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("generated-permuted", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let generator = CandidateGeneratorSpec::new(
+        crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::PermutedInteger,
+    )
+    .expect("permuted generator");
+    let generator_id = repository
+        .publish_generator(&generator)
+        .expect("publish permuted generator");
+    let unsigned = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(10),
+            IntegerValue::Unsigned(28),
+            2,
+            None,
+            ExactRational::new(1, 1).expect("scale"),
+            Vec::new(),
+        )
+        .expect("unsigned domain"),
+    );
+    let (unsigned, request) = generated_integer_request(
+        &repository,
+        &lineage,
+        unsigned,
+        IntegerValue::Unsigned(10),
+        generator_id,
+        "permuted-main",
+        10,
+    );
+    assert_eq!(
+        repository
+            .static_candidate_count(&request, &unsigned)
+            .expect("candidate count"),
+        Some(10)
+    );
+    let sequence = (1..=10)
+        .map(|ordinal| {
+            repository
+                .static_candidate_at(&request, &unsigned, ordinal)
+                .expect("candidate ordinal")
+                .expect("implemented source")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sequence,
+        [24, 26, 14, 28, 12, 10, 20, 22, 18, 16]
+            .map(|value| ChoiceValue::Integer(IntegerValue::Unsigned(value)))
+    );
+    assert_eq!(
+        sequence.iter().cloned().collect::<BTreeSet<_>>(),
+        (10..=28)
+            .step_by(2)
+            .map(|value| ChoiceValue::Integer(IntegerValue::Unsigned(value)))
+            .collect()
+    );
+    assert!(matches!(
+        repository.static_candidate_at(&request, &unsigned, 11),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "proposal-ordinal-exceeds-source-cardinality"
+        })
+    ));
+
+    let (_, other_request) = generated_integer_request(
+        &repository,
+        &lineage,
+        unsigned.clone(),
+        IntegerValue::Unsigned(10),
+        generator_id,
+        "permuted-other",
+        10,
+    );
+    let other_sequence = (1..=10)
+        .map(|ordinal| {
+            repository
+                .static_candidate_at(&other_request, &unsigned, ordinal)
+                .expect("other candidate ordinal")
+                .expect("implemented source")
+        })
+        .collect::<Vec<_>>();
+    assert_ne!(sequence, other_sequence);
+    assert_eq!(
+        other_sequence.iter().cloned().collect::<BTreeSet<_>>(),
+        sequence.iter().cloned().collect()
+    );
+
+    let singleton = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Signed64,
+            IntegerValue::Signed(42),
+            IntegerValue::Signed(42),
+            1,
+            None,
+            ExactRational::new(1, 1).expect("singleton scale"),
+            Vec::new(),
+        )
+        .expect("singleton domain"),
+    );
+    let (singleton, singleton_request) = generated_integer_request(
+        &repository,
+        &lineage,
+        singleton,
+        IntegerValue::Signed(42),
+        generator_id,
+        "permuted-singleton",
+        1,
+    );
+    assert_eq!(
+        repository
+            .static_candidate_at(&singleton_request, &singleton, 1)
+            .expect("singleton candidate"),
+        Some(ChoiceValue::Integer(IntegerValue::Signed(42)))
+    );
+
+    let signed = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Signed64,
+            IntegerValue::Signed(-5),
+            IntegerValue::Signed(5),
+            1,
+            None,
+            ExactRational::new(1, 1).expect("signed scale"),
+            Vec::new(),
+        )
+        .expect("signed domain"),
+    );
+    let (signed, signed_request) = generated_integer_request(
+        &repository,
+        &lineage,
+        signed,
+        IntegerValue::Signed(0),
+        generator_id,
+        "permuted-signed",
+        11,
+    );
+    let signed_values = (1..=11)
+        .map(|ordinal| {
+            repository
+                .static_candidate_at(&signed_request, &signed, ordinal)
+                .expect("signed candidate")
+                .expect("implemented source")
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        signed_values,
+        (-5..=5)
+            .map(|value| ChoiceValue::Integer(IntegerValue::Signed(value)))
+            .collect()
+    );
+
+    let full_unsigned = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(0),
+            IntegerValue::Unsigned(u64::MAX),
+            1,
+            None,
+            ExactRational::new(1, 1).expect("full scale"),
+            Vec::new(),
+        )
+        .expect("full unsigned domain"),
+    );
+    assert!(matches!(
+        repository.validate_generator_for_domain(generator_id, &full_unsigned),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "permuted-generator-cardinality-limit"
+        })
+    ));
+
+    let maximum = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(1),
+            IntegerValue::Unsigned(u64::MAX),
+            1,
+            None,
+            ExactRational::new(1, 1).expect("maximum scale"),
+            Vec::new(),
+        )
+        .expect("maximum domain"),
+    );
+    let (maximum, maximum_request) = generated_integer_request(
+        &repository,
+        &lineage,
+        maximum,
+        IntegerValue::Unsigned(1),
+        generator_id,
+        "permuted-maximum",
+        1,
+    );
+    assert_eq!(
+        repository
+            .static_candidate_count(&maximum_request, &maximum)
+            .expect("maximum candidate count"),
+        Some(u64::MAX)
+    );
+    assert!(matches!(
+        repository
+            .static_candidate_at(&maximum_request, &maximum, u64::MAX)
+            .expect("maximum ordinal"),
+        Some(ChoiceValue::Integer(IntegerValue::Unsigned(_)))
+    ));
+
+    let legacy = CandidateGeneratorSpec::new(
+        crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::PermutedInteger,
+    )
+    .expect("legacy generator");
+    let legacy_id = repository
+        .publish_generator(&legacy)
+        .expect("publish legacy generator");
+    let (_, legacy_request) = generated_integer_request(
+        &repository,
+        &lineage,
+        unsigned.clone(),
+        IntegerValue::Unsigned(10),
+        legacy_id,
+        "permuted-legacy",
+        10,
+    );
+    assert_eq!(
+        repository
+            .static_candidate_count(&legacy_request, &unsigned)
+            .expect("legacy candidate count"),
+        None
+    );
+    assert_eq!(
+        repository
+            .initial_continuation_state(&legacy_request)
+            .expect("legacy continuation"),
+        ContinuationState::Open
+    );
+
+    let issued = repository
+        .submit_known_branch_request("generated-permuted", genesis.snapshot_id(), &request)
+        .expect("issue request");
+    let projection_id = repository
+        .project_finite_expansion(issued.new_snapshot, request.branch_point(), None, 10)
+        .expect("project permuted source");
+    assert_eq!(
+        repository
+            .load_expansion_state(projection_id)
+            .expect("load projection")
+            .continuations()
+            .get(&request.id().expect("request id")),
+        Some(&ContinuationState::Ready)
+    );
+    let head = repository.head("generated-permuted").expect("request head");
+    let wrong = finite_proposal(&request, &policy, &head, sequence[1].clone(), 1);
+    assert!(matches!(
+        repository.issue_proposal("generated-permuted", issued.new_snapshot, &wrong),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "proposal-value-does-not-match-source-order"
+        })
+    ));
+    assert_eq!(
+        repository
+            .head("generated-permuted")
+            .expect("unchanged head")
+            .snapshot_id(),
+        issued.new_snapshot
+    );
+    let first = finite_proposal(&request, &policy, &head, sequence[0].clone(), 1);
+    let first_issued = repository
+        .issue_proposal("generated-permuted", issued.new_snapshot, &first)
+        .expect("issue first permuted proposal");
+
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert_eq!(
+        restarted
+            .head("generated-permuted")
+            .expect("rebuild permuted history")
+            .snapshot_id(),
+        first_issued.new_snapshot
+    );
+}
+
+#[test]
 fn ancestry_rejects_branch_request_with_an_unrelated_root_change() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository

@@ -133,12 +133,26 @@ First occurrence wins throughout. Base two over the full unsigned 64-bit range
 is the largest sequence: 64 powers plus a distinct maximum, or 65 candidates.
 The owner uses checked 128-bit arithmetic and constant bounded space.
 
+Generator implementation-version 6 defines `permuted_integer` for stepped
+domains with cardinality `C <= 2^64 - 1`. Its key is
+`H("crucible.campaign.generator.permuted-integer.v6",
+BranchRequestId.digest)`, so policy activation cannot reinterpret an existing
+request. Split the 32-byte key into four big-endian `u64` words. Let `N` be the
+least power of two at least `C`, `M = N - 1`, and begin with zero-based ordinal
+offset `x`. For rounds zero through three, compute `y = x XOR (word & M)` on
+even rounds and `y = (word - x) mod N` on odd rounds. Replace `x` with `y` only
+when `y < C`; otherwise leave it unchanged. Each restricted round is an
+involution of `[0, C)`, so their composition is a bijection. The candidate is
+`minimum + x * step`. This walks every legal value exactly once with four
+bounded rounds and no domain materialization. Cardinality `2^64` fails closed
+because its last value has no one-based `u64` proposal ordinal.
+
 Other algorithms remain valid suspended specifications but fail closed at
 proposal issuance and expansion projection until their versioned cursor and
 feedback owners are implemented. Earlier and unknown implementation versions
-remain suspended rather than being reinterpreted as versions 2, 3, 4, or 5; this
-preserves owner validation of histories created before executable enumeration
-landed.
+remain suspended rather than being reinterpreted as versions 2, 3, 4, 5, or 6;
+this preserves owner validation of histories created before executable
+enumeration landed.
 
 Generators compose as a fixed ordered mixture with integer weights. Duplicate
 values deduplicate by `(BranchPointId, ChoiceDomainId, ChoiceValue)`; the

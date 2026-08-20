@@ -66,6 +66,19 @@ pub const LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 5;
 /// 64 powers plus a distinct inclusive maximum.
 pub const LOG_INTEGER_GENERATOR_MAX_CANDIDATES: usize = 65;
 
+/// Generator implementation version for keyed finite-integer permutation.
+///
+/// This version derives a four-round bounded permutation from the immutable
+/// branch-request identity and maps it onto exact stepped-domain offsets.
+/// Earlier and unknown versions remain suspended.
+pub const PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 6;
+
+/// Maximum cardinality admitted by permuted-integer implementation version 6.
+///
+/// Proposal ordinals are 64-bit and one-based, so a domain with `2^64` legal
+/// values cannot be named completely and fails closed.
+pub const PERMUTED_INTEGER_GENERATOR_MAX_CARDINALITY: u128 = u64::MAX as u128;
+
 /// Fixed seed that makes campaign proposal streams reproducible.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CampaignSeed([u8; 32]);
