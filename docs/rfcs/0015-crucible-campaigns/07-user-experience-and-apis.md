@@ -382,9 +382,14 @@ conflict, transition, resource, availability, and integrity meaning. Nested CLI
 wiring remains open. The daemon's authenticated repository adapter now reads
 Linux `SO_PEERCRED`, resolves exact PID/UID/GID through a mandatory operational
 principal mapper, and rejects a different self-asserted request principal
-before repository access. Production listener configuration must still supply
-that deployment-specific mapping and the ordinary operation policy; framing
-alone is never authentication.
+before repository access. A bounded daemon listener now owns an already-bound
+nonblocking socket, uses at most 256 fixed connection workers and 1,024 queued
+sockets, serves at most 65,536 requests per connection, resolves credentials
+once per connection, rejects excess connections, and joins all workers after
+sticky shutdown interrupts their active streams.
+Production bootstrap must still create and permission the socket path and load
+the deployment-specific principal mapping and ordinary operation policy;
+framing or the listener alone is never authentication.
 
 All mutation requests carry an authenticated principal. Mutations of an
 existing campaign also carry command ID and expected snapshot ID; creation

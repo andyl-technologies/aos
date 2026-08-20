@@ -9,7 +9,9 @@
 //!
 //! Module map: [`assignment_ledger`] owns crash-safe executor idempotency and
 //! runtime-state records; [`campaign_loopback`] provides the strict local
-//! user-facing service transport; [`control_responsiveness`] forwards
+//! user-facing service transport; [`campaign_server`] owns its bounded
+//! authenticated listener and fixed connection workers;
+//! [`control_responsiveness`] forwards
 //! daemon-routed acknowledgement evidence to the API's quantum-counted
 //! control-responsive contract; [`executor_loopback`] provides the strict
 //! Unix-stream component transport; [`executor_supervisor`] owns bounded
@@ -33,6 +35,7 @@
 
 pub mod assignment_ledger;
 pub mod campaign_loopback;
+pub mod campaign_server;
 pub mod control_responsiveness;
 pub mod crucible_artifact;
 pub mod crucible_execution;
@@ -52,10 +55,20 @@ pub use assignment_ledger::{
 };
 pub use campaign_loopback::{
     LoopbackCampaignProtocolError, LoopbackCampaignServerError, LoopbackCampaignService,
-    LoopbackCampaignServiceError, LoopbackCampaignTimeouts, UnixPeerCampaignCredentials,
-    UnixPeerCampaignPrincipalResolver, serve_authenticated_repository_campaign_once,
+    LoopbackCampaignServiceError, LoopbackCampaignTimeouts, MAX_CAMPAIGN_REQUESTS_PER_CONNECTION,
+    UnixPeerCampaignCredentials, UnixPeerCampaignPrincipalResolver,
+    serve_authenticated_repository_campaign_connection,
+    serve_authenticated_repository_campaign_connection_with_limits,
+    serve_authenticated_repository_campaign_connection_with_timeouts,
+    serve_authenticated_repository_campaign_once,
     serve_authenticated_repository_campaign_once_with_timeouts, serve_loopback_campaign_once,
     serve_loopback_campaign_once_with_timeouts,
+};
+pub use campaign_server::{
+    CampaignLoopbackListenerError, CampaignLoopbackServer, CampaignLoopbackServerConfig,
+    CampaignLoopbackServerConfigError, CampaignLoopbackServerReport,
+    CampaignLoopbackServerShutdown, MAX_CAMPAIGN_LISTENER_WORKERS,
+    MAX_CAMPAIGN_PENDING_CONNECTIONS,
 };
 pub use control_responsiveness::{
     DAEMON_CONTROL_RESPONSIVE_QUANTUM_BOUND, DaemonControlResponsiveRoute,

@@ -378,8 +378,8 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   arbitrary non-graph reads remain unavailable.
   The local
   Unix-stream binding
-  now dispatches all twenty-two initial success messages plus one stable
-  request-bound error envelope under a version-10, 64-MiB-body,
+  now dispatches all twenty-six current success messages plus one stable
+  request-bound error envelope under a version-12, 64-MiB-body,
   absolute-deadline frame.
   `QueryCampaignGraph` authorization covers the complete anchoring snapshot
   metadata and all root IDs; bodies named by those IDs retain separate access
@@ -394,9 +394,15 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   resource/availability/integrity failure vocabulary. A connected-stream
   repository adapter now reads Linux `SO_PEERCRED`, resolves exact PID/UID/GID
   through a mandatory deployment policy, and binds the result to every claimed
-  request principal before repository access. Production accept-loop and policy
-  configuration plus CLI wiring remain open; message framing alone is not
-  authentication. Checked
+  request principal before repository access. A bounded listener over an
+  already-bound nonblocking socket now caps connection workers at 256 and its
+  pending queue at 1,024, caps one connection at 65,536 requests, resolves peer
+  identity once per connection, rejects excess sockets, interrupts active
+  streams on sticky shutdown, and joins every worker before returning
+  operational counters. Socket-path ownership,
+  deployment policy configuration, diagnostic routing, and CLI wiring remain
+  open; message framing or listener construction alone is not authentication.
+  Checked
   request/response acceptance now retains the
   exact canonical request in a content-addressed envelope (32-MiB and 65,529
   bundle-object initial store profile) and commits both its ID and digest in

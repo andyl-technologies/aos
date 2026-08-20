@@ -101,6 +101,9 @@ const GET_CAMPAIGN_FRONTIER_OBJECT_REQUEST_KIND: u8 = 26;
 const GET_CAMPAIGN_FRONTIER_OBJECT_RESPONSE_KIND: u8 = 27;
 const DEFAULT_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+pub(crate) const DEFAULT_CAMPAIGN_REQUESTS_PER_CONNECTION: usize = 4_096;
+/// Maximum complete requests served by one campaign connection incarnation.
+pub const MAX_CAMPAIGN_REQUESTS_PER_CONNECTION: usize = 65_536;
 
 /// Finite read/write deadlines for one campaign-service exchange.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -518,7 +521,9 @@ impl UnixPeerCampaignCredentials {
 ///
 /// The resolver is an operational identity-policy seam. Its output never
 /// enters immutable campaign state, but every request on the connection must
-/// claim the exact resolved principal.
+/// claim the exact resolved principal. Production resolvers must be bounded,
+/// nonblocking lookups over immutable local policy; external identity I/O does
+/// not belong inside a connection worker.
 pub trait UnixPeerCampaignPrincipalResolver {
     /// Resolves one kernel-authenticated peer identity.
     ///
@@ -631,6 +636,128 @@ where
         };
         let service = RepositoryCampaignService::new(repository, peer_authorizer);
         serve_loopback_campaign_inner(stream, &service, timeouts)
+    })();
+    if result.is_err() {
+        let _ = stream.shutdown(Shutdown::Both);
+    }
+    result
+}
+
+/// Serves one authenticated repository connection until clean peer shutdown.
+///
+/// Linux peer credentials are captured and resolved exactly once, before the
+/// first request is decoded. Every request on the connection is then checked
+/// against that immutable principal and the supplied operation authorizer.
+/// Semantic service failures remain on the connection; framing, canonical,
+/// response-contract, or I/O failures close it.
+///
+/// # Errors
+///
+/// Returns [`LoopbackCampaignServerError`] when peer authentication,
+/// authorization resolution, framing, canonical validation, response binding,
+/// or bounded socket I/O fails. A clean peer close between frames returns
+/// success.
+pub fn serve_authenticated_repository_campaign_connection<R, A>(
+    stream: &mut UnixStream,
+    repository: &CampaignRepository,
+    principal_resolver: &R,
+    authorizer: &A,
+) -> Result<(), LoopbackCampaignServerError>
+where
+    R: UnixPeerCampaignPrincipalResolver + ?Sized,
+    A: CampaignPrincipalAuthorizer + ?Sized,
+{
+    serve_authenticated_repository_campaign_connection_with_timeouts(
+        stream,
+        repository,
+        principal_resolver,
+        authorizer,
+        LoopbackCampaignTimeouts::default(),
+    )
+}
+
+/// Serves one authenticated repository connection with finite deadlines.
+///
+/// # Errors
+///
+/// Returns the same failures as
+/// [`serve_authenticated_repository_campaign_connection`].
+pub fn serve_authenticated_repository_campaign_connection_with_timeouts<R, A>(
+    stream: &mut UnixStream,
+    repository: &CampaignRepository,
+    principal_resolver: &R,
+    authorizer: &A,
+    timeouts: LoopbackCampaignTimeouts,
+) -> Result<(), LoopbackCampaignServerError>
+where
+    R: UnixPeerCampaignPrincipalResolver + ?Sized,
+    A: CampaignPrincipalAuthorizer + ?Sized,
+{
+    serve_authenticated_repository_campaign_connection_with_limits(
+        stream,
+        repository,
+        principal_resolver,
+        authorizer,
+        timeouts,
+        DEFAULT_CAMPAIGN_REQUESTS_PER_CONNECTION,
+    )
+}
+
+/// Serves one authenticated repository connection with exact operation bounds.
+///
+/// The request ceiling is a connection-fairness boundary. Reaching it closes
+/// the stream cleanly after the last complete response so a client reconnects
+/// and re-enters bounded listener admission.
+///
+/// # Errors
+///
+/// Returns the same failures as
+/// [`serve_authenticated_repository_campaign_connection`], plus
+/// [`LoopbackCampaignProtocolError::InvalidRequestLimit`] when
+/// `maximum_requests` is zero or exceeds
+/// [`MAX_CAMPAIGN_REQUESTS_PER_CONNECTION`].
+pub fn serve_authenticated_repository_campaign_connection_with_limits<R, A>(
+    stream: &mut UnixStream,
+    repository: &CampaignRepository,
+    principal_resolver: &R,
+    authorizer: &A,
+    timeouts: LoopbackCampaignTimeouts,
+    maximum_requests: usize,
+) -> Result<(), LoopbackCampaignServerError>
+where
+    R: UnixPeerCampaignPrincipalResolver + ?Sized,
+    A: CampaignPrincipalAuthorizer + ?Sized,
+{
+    if maximum_requests == 0 || maximum_requests > MAX_CAMPAIGN_REQUESTS_PER_CONNECTION {
+        let _ = stream.shutdown(Shutdown::Both);
+        return Err(LoopbackCampaignProtocolError::InvalidRequestLimit.into());
+    }
+    let result = (|| {
+        let peer = rustix::net::sockopt::socket_peercred(&*stream)
+            .map_err(|error| LoopbackCampaignProtocolError::Io(std::io::Error::from(error)))?;
+        let credentials = UnixPeerCampaignCredentials {
+            process_id: peer.pid.as_raw_pid(),
+            user_id: peer.uid.as_raw(),
+            group_id: peer.gid.as_raw(),
+        };
+        let principal = principal_resolver.resolve_campaign_principal(credentials)?;
+        let peer_authorizer = PeerBoundCampaignAuthorizer {
+            principal,
+            inner: authorizer,
+        };
+        let service = RepositoryCampaignService::new(repository, peer_authorizer);
+
+        for _ in 0..maximum_requests {
+            match serve_loopback_campaign_inner(stream, &service, timeouts) {
+                Ok(()) => {}
+                Err(LoopbackCampaignServerError::Protocol(
+                    LoopbackCampaignProtocolError::ConnectionClosed,
+                )) => return Ok(()),
+                Err(error) => return Err(error),
+            }
+        }
+        let _ = stream.shutdown(Shutdown::Both);
+        Ok(())
     })();
     if result.is_err() {
         let _ = stream.shutdown(Shutdown::Both);
@@ -1158,13 +1285,17 @@ impl CampaignServiceFailureSource for LoopbackCampaignServiceError {
             Self::Protocol(LoopbackCampaignProtocolError::InvalidTimeout) => {
                 CampaignServiceFailure::InvalidRequest
             }
+            Self::Protocol(LoopbackCampaignProtocolError::InvalidRequestLimit) => {
+                CampaignServiceFailure::InvalidRequest
+            }
             Self::Protocol(
                 LoopbackCampaignProtocolError::Codec(_)
                 | LoopbackCampaignProtocolError::InvalidFrame { .. },
             ) => CampaignServiceFailure::ProtocolViolation,
             Self::Protocol(
                 LoopbackCampaignProtocolError::Io(_)
-                | LoopbackCampaignProtocolError::ConnectionBusy,
+                | LoopbackCampaignProtocolError::ConnectionBusy
+                | LoopbackCampaignProtocolError::ConnectionClosed,
             ) => CampaignServiceFailure::Unavailable,
             Self::Protocol(LoopbackCampaignProtocolError::ConnectionPoisoned) => {
                 CampaignServiceFailure::ProtocolViolation
@@ -1185,12 +1316,18 @@ pub enum LoopbackCampaignProtocolError {
     /// A caller attempted to disable the required finite deadlines.
     #[error("campaign loopback read/write timeout must be between 1ns and 1h")]
     InvalidTimeout,
+    /// The server-side per-connection request ceiling was invalid.
+    #[error("campaign loopback request limit must be between 1 and 65,536")]
+    InvalidRequestLimit,
     /// A caller panicked while owning the serialized connection exchange.
     #[error("campaign loopback connection is poisoned")]
     ConnectionPoisoned,
     /// Another complete request/response exchange owns this connection.
     #[error("campaign loopback connection is busy")]
     ConnectionBusy,
+    /// The peer closed cleanly between complete frames.
+    #[error("campaign loopback peer closed the connection")]
+    ConnectionClosed,
     /// The fixed frame header violated the versioned protocol.
     #[error("campaign loopback frame is invalid: {reason}")]
     InvalidFrame {
@@ -1284,7 +1421,7 @@ fn read_frame_any(
 ) -> Result<(u8, Vec<u8>), LoopbackCampaignProtocolError> {
     let mut header = [0_u8; FRAME_HEADER_BYTES];
     let deadline = operation_deadline(timeout)?;
-    read_exact_until(stream, &mut header, deadline)?;
+    read_exact_until(stream, &mut header, deadline, true)?;
     if &header[..FRAME_MAGIC.len()] != FRAME_MAGIC {
         return Err(LoopbackCampaignProtocolError::InvalidFrame {
             reason: "unsupported-frame-version",
@@ -1306,7 +1443,7 @@ fn read_frame_any(
         });
     }
     let mut body = vec![0; length];
-    read_exact_until(stream, &mut body, deadline)?;
+    read_exact_until(stream, &mut body, deadline, false)?;
     Ok((header[8], body))
 }
 
@@ -1323,6 +1460,7 @@ fn read_exact_until(
     stream: &mut UnixStream,
     buffer: &mut [u8],
     deadline: Instant,
+    clean_eof: bool,
 ) -> Result<(), LoopbackCampaignProtocolError> {
     let mut offset = 0;
     while offset < buffer.len() {
@@ -1331,6 +1469,9 @@ fn read_exact_until(
             .ok_or_else(timeout_io_error)?;
         stream.set_read_timeout(Some(remaining))?;
         match stream.read(&mut buffer[offset..]) {
+            Ok(0) if clean_eof && offset == 0 => {
+                return Err(LoopbackCampaignProtocolError::ConnectionClosed);
+            }
             Ok(0) => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
