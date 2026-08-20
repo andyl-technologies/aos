@@ -795,7 +795,8 @@ retains the nonduplicable direct-child wait handle in a must-reap authority.
 That authority rechecks the recorded generation before force-kill and preserves
 the handle on every reap error. A failed realization can consume its active
 node, discard modeled channels/backend authority, and surrender that child into
-the authenticated must-reap authority. Every other pseudo-file read is byte-bounded.
+the authenticated must-reap authority. Every other pseudo-file read is
+byte-bounded.
 The cgroup authority pins parent and child directory
 identities instead of trusting mutable paths and removes the child under the
 namespace lock only after `populated 0` is observed and its named identity is
@@ -826,9 +827,9 @@ authority. A bounded caller wait returns the still-live watcher on timeout for
 retry or quarantine. Dropping an unjoined watcher also latches terminal closure
 and leaves its worker retaining authority until empty, fail-closed.
 
-This authority is not yet the production guard. Persistent supervisor ownership
-of the extracted child/cgroup/watcher quarantine, aggregate filesystem quota,
-concrete guard composition of the execution-quantum counter,
+This authority is not yet the production guard. A lifecycle-bound, nondroppable
+daemon owner for the extracted child/cgroup/watcher quarantine, aggregate
+filesystem quota, concrete guard composition of the execution-quantum counter,
 invocation of launch-command resource-profile admission, pinned run-directory
 ownership, and concrete session wiring remain mandatory before the guarded path
 may launch a campaign QEMU. Until then the cgroup authority remains
