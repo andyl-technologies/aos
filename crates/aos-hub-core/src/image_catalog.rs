@@ -306,8 +306,8 @@ source_nar_hash = ""
 
 [[versions.platforms.x86_64-linux.images]]
 format = "raw"
-store_path = "/aos/store/server-raw"
-nar_hash = "sha256:nar"
+store_path = "/aos/store/00000000000000000000000000000000-server-raw"
+nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
 nar_size = 1
 sb_signer_cert_sha256 = "{signer}"
 sbat = [{{ component = "aos", generation = 1 }}]

@@ -2034,17 +2034,34 @@ pub fn images_page(
         } else {
             escape(&channel_names.join(", "))
         };
-        let download = download_base.map_or_else(
-            || "<span class=\"dim\">route unavailable</span>".to_string(),
-            |base| {
-                format!(
-                    "<a href=\"{}/{}\" download=\"{}\">Download</a>",
-                    escape(base.trim_end_matches('/')),
-                    escape(&image.delivery.object_key),
-                    escape(&image.delivery.filename),
-                )
-            },
-        );
+        let download = if image.store_path.is_empty() {
+            download_base.map_or_else(
+                || "<span class=\"dim\">route unavailable</span>".to_string(),
+                |base| {
+                    format!(
+                        "<a href=\"{}/{}\" download=\"{}\">Download</a>",
+                        escape(base.trim_end_matches('/')),
+                        escape(&image.delivery.object_key),
+                        escape(&image.delivery.filename),
+                    )
+                },
+            )
+        } else {
+            "<span class=\"ok\" title=\"Delivered from the registry cache with aos image download\">CDN / CLI</span>".to_string()
+        };
+        let store_identity = if image.store_path.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "<span class=\"image-detail-item\"><span class=\"dim\">store</span> <code title=\"{}\">{}</code></span>\
+                 <span class=\"image-detail-item\"><span class=\"dim\">NAR</span> <code title=\"{}\">{}</code> ({})</span>",
+                escape(&image.store_path),
+                escape(image.store_path.rsplit('/').next().unwrap_or(&image.store_path)),
+                escape(&image.nar_hash),
+                escape(image.nar_hash.get(..20).unwrap_or(&image.nar_hash)),
+                human_size(image.nar_size),
+            )
+        };
         rows.push(format!(
             "<tbody class=\"image-artifact\">\
              <tr class=\"image-summary\"><td>{release}<div class=\"subline\">{package}</div></td>\
@@ -2053,6 +2070,8 @@ pub fn images_page(
              <span class=\"image-detail-item\"><span class=\"dim\">targets</span> {targets}</span>\
              <span class=\"image-detail-item\"><span class=\"dim\">release</span> <span class=\"ok\">verified</span></span>\
              <span class=\"image-detail-item\"><span class=\"dim\">boot</span> <span class=\"{boot_class}\">{boot_verification}</span></span>\
+             <span class=\"image-detail-item\"><span class=\"dim\">file</span> {filename}</span>\
+             {store_identity}\
              <span class=\"image-detail-item checksum-item\"><span class=\"dim\">SHA-256</span> \
              <code id=\"{checksum_id}\" class=\"image-checksum\" title=\"{checksum}\">{checksum}</code>\
              <button type=\"button\" class=\"image-copy\" data-copy-target=\"{checksum_id}\" \
@@ -2065,6 +2084,7 @@ pub fn images_page(
             size = human_size(image.delivery.byte_size),
             targets = escape(&targets),
             checksum = escape(&image.delivery.sha256),
+            filename = escape(&image.delivery.filename),
         ));
     }
 
@@ -2547,6 +2567,9 @@ mod tests {
             release: release.into(),
             platform: "x86_64-linux".into(),
             format: format.into(),
+            store_path: format!("/nix/store/{}-aos-image", "0".repeat(32)),
+            nar_hash: format!("sha256:{}", "0".repeat(52)),
+            nar_size: 8192,
             delivery: ImageDelivery {
                 schema_version: 1,
                 release: release.into(),
@@ -2689,7 +2712,8 @@ mod tests {
             Instant::now(),
             &anon(),
         );
-        assert!(html.contains("href=\"https://download.example/demo/images/sha256/"));
+        assert!(html.contains("CDN / CLI"));
+        assert!(!html.contains("href=\"https://download.example/demo/images/sha256/"));
         assert!(!html.contains("access_token="));
         assert!(!html.contains("Authorization="));
     }
