@@ -102,6 +102,9 @@ in {
     # `/dev/mapper/root`. NOTE: the dracut-style verity.data=/verity.hash=
     # /verity.roothash= params are wrong for a systemd initrd and are gone.
     aos.boot.kernelParams = [
+      # aos-var-crypt is the sole /var unlocker. Disable the initrd's generic
+      # LUKS discovery so it cannot race the authenticated storage path.
+      "rd.luks=0"
       "systemd.verity=yes"
       "systemd.verity_root_data=${cfg.dataDevice}"
       "systemd.verity_root_hash=${cfg.hashDevice}"
