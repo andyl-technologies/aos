@@ -2,6 +2,95 @@
 
 use super::*;
 
+/// One idempotent canonical observation visit credited to a branch point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ExpansionCredit {
+    schema_version: u32,
+    observation: ObservationId,
+    branch_point: BranchPointId,
+}
+
+impl ExpansionCredit {
+    /// Builds one observation-to-branch-point credit.
+    #[must_use]
+    pub const fn new(observation: ObservationId, branch_point: BranchPointId) -> Self {
+        Self {
+            schema_version: RECORD_SCHEMA_VERSION,
+            observation,
+            branch_point,
+        }
+    }
+
+    /// Returns the canonical observation receiving credit.
+    #[must_use]
+    pub const fn observation(self) -> ObservationId {
+        self.observation
+    }
+
+    /// Returns the semantic branch point receiving one completed visit.
+    #[must_use]
+    pub const fn branch_point(self) -> BranchPointId {
+        self.branch_point
+    }
+
+    /// Returns the idempotent semantic credit identity.
+    #[must_use]
+    pub fn id(self) -> CreditId {
+        let mut encoder = Encoder::new();
+        self.observation.encode(&mut encoder);
+        self.branch_point.encode(&mut encoder);
+        CreditId::from_hash(CampaignHash::derive(
+            "crucible.campaign.expansion-credit.v1",
+            &encoder.finish(),
+        ))
+    }
+
+    /// Returns strict canonical record-body bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes one strict canonical expansion credit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical, invalid, or
+    /// oversized bytes.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_exact_record(bytes, "expansion-credit-encoded-bytes")
+    }
+
+    pub(crate) fn content_children(self) -> [(String, ContentId); 1] {
+        [("observation".to_owned(), self.observation.content_id())]
+    }
+
+    pub(crate) fn content_id(self) -> Result<ContentId, CampaignCodecError> {
+        Ok(crate::ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::ExpansionCredit,
+            crate::object::content_children(self.content_children())?,
+            self.canonical_bytes(),
+        )?
+        .content_id())
+    }
+}
+
+impl Canonical for ExpansionCredit {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.observation.encode(encoder);
+        self.branch_point.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_schema(u32::decode(decoder)?)?;
+        Ok(Self::new(
+            ObservationId::decode(decoder)?,
+            BranchPointId::decode(decoder)?,
+        ))
+    }
+}
+
 /// Validated progress toward a continuation's next widening threshold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FeedbackWait {

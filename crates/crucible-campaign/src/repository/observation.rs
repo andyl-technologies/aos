@@ -4,6 +4,7 @@ use super::*;
 
 struct ObservationProjection {
     disposition: ObservationDisposition,
+    credits: Vec<ExpansionCredit>,
     graph: BTreeMap<CampaignHash, ContentId>,
     choice_index: BTreeMap<CampaignHash, ContentId>,
     observations: BTreeMap<CampaignHash, ContentId>,
@@ -172,6 +173,11 @@ impl CampaignRepository {
         if observation_content != observation_id.content_id() {
             return Err(integrity("observation-publication-id-mismatch"));
         }
+        for credit in &projection.credits {
+            if self.put_expansion_credit(credit)? != credit.content_id()? {
+                return Err(integrity("expansion-credit-publication-id-mismatch"));
+            }
+        }
 
         let mut roots = current.snapshot.roots();
         if !projection.choice_index.is_empty() {
@@ -185,6 +191,20 @@ impl CampaignRepository {
                 != Some(published_choice_index)
             {
                 return Err(integrity("observation-choice-index-publication-mismatch"));
+            }
+        }
+        for credit in &projection.credits {
+            let anchor = branch_credit_index_key(credit.branch_point());
+            let prior_credit_index = self
+                .merkle
+                .get(roots.observations, anchor)?
+                .unwrap_or(MerkleMap::empty_content_id()?);
+            let published_credit_index = self.insert_upserts(
+                prior_credit_index,
+                &BTreeMap::from([(credit.id().as_hash(), credit.content_id()?)]),
+            )?;
+            if projection.observations.get(&anchor).copied() != Some(published_credit_index) {
+                return Err(integrity("expansion-credit-index-publication-mismatch"));
             }
         }
         roots.graph = self.insert_upserts(roots.graph, &projection.graph)?;
@@ -204,8 +224,10 @@ impl CampaignRepository {
             crate::CampaignFactId::from_content_id(transition_content)?,
         )?;
         let next_content = self.put_snapshot(&next)?;
-        let closure_growth_upper =
-            observation_successor_growth(observation.discovered_choices().len())?;
+        let closure_growth_upper = observation_successor_growth(
+            observation.discovered_choices().len(),
+            projection.credits.len(),
+        )?;
         let checkpoint = self.prepare_local_successor_checkpoint(
             current_content,
             next_content,
@@ -342,6 +364,7 @@ impl CampaignRepository {
             let canonical = ObservationId::from_content_id(canonical_content)?;
             return Ok(ObservationProjection {
                 disposition: ObservationDisposition::DeterminismConflict { canonical },
+                credits: Vec::new(),
                 graph: BTreeMap::new(),
                 choice_index: BTreeMap::new(),
                 observations: BTreeMap::from([(
@@ -440,6 +463,42 @@ impl CampaignRepository {
             map_key_content("observations.attempt-path", observation.path().content_id()),
             observation.path().content_id(),
         );
+        self.validate_compatible_upserts(
+            roots.observations,
+            &observations,
+            "observation-index-conflict",
+        )?;
+        for key in [
+            attempt_key,
+            map_key_content("observations.observation", observation_content),
+        ] {
+            if self.merkle.get(roots.observations, key)?.is_some() {
+                return Err(integrity("observation-index-reused"));
+            }
+        }
+
+        let credits = self.expansion_credits(observation_id, &attempt)?;
+        for credit in &credits {
+            let anchor = branch_credit_index_key(credit.branch_point());
+            let prior_credit_index = self
+                .merkle
+                .get(roots.observations, anchor)?
+                .unwrap_or(MerkleMap::empty_content_id()?);
+            if self
+                .merkle
+                .get(prior_credit_index, credit.id().as_hash())?
+                .is_some()
+            {
+                return Err(integrity("expansion-credit-index-reused"));
+            }
+            observations.insert(
+                anchor,
+                self.merkle.root_after_upserts(
+                    prior_credit_index,
+                    &BTreeMap::from([(credit.id().as_hash(), credit.content_id()?)]),
+                )?,
+            );
+        }
         let coverage = BTreeMap::from([(
             map_key_content("coverage.projection", observation.coverage().content_id()),
             observation.coverage().content_id(),
@@ -461,19 +520,6 @@ impl CampaignRepository {
         if policy.mode() == CampaignMode::Strict {
             accounting.insert(observation_sequence_key(), observation_content);
         }
-        self.validate_compatible_upserts(
-            roots.observations,
-            &observations,
-            "observation-index-conflict",
-        )?;
-        for key in [
-            attempt_key,
-            map_key_content("observations.observation", observation_content),
-        ] {
-            if self.merkle.get(roots.observations, key)?.is_some() {
-                return Err(integrity("observation-index-reused"));
-            }
-        }
         self.validate_new_upserts(
             roots.accounting,
             &accounting,
@@ -482,6 +528,7 @@ impl CampaignRepository {
 
         Ok(ObservationProjection {
             disposition: ObservationDisposition::Canonical,
+            credits,
             graph,
             choice_index: choice_index_upserts,
             observations,
@@ -489,6 +536,42 @@ impl CampaignRepository {
             coverage,
             accounting,
         })
+    }
+
+    fn expansion_credits(
+        &self,
+        observation: ObservationId,
+        attempt: &Attempt,
+    ) -> Result<Vec<ExpansionCredit>, CampaignRepositoryError> {
+        let path = self.read_branch_path(attempt.path().content_id())?;
+        let mut branch_points = BTreeSet::new();
+        if let Some(segments) = path.segments() {
+            branch_points.extend(segments.iter().map(|segment| segment.branch_point()));
+        } else if !path.edges().is_empty() {
+            let AttemptStart::Branch {
+                edge, selection, ..
+            } = attempt.start()
+            else {
+                return Err(integrity("legacy-discovery-attempt-has-nonempty-path"));
+            };
+            let resolved = self.resolve_selection(selection)?;
+            let crate::SelectionOrigin::CampaignBranch {
+                branch_point,
+                edge: selected_edge,
+            } = resolved.selection().origin()
+            else {
+                return Err(integrity("legacy-branch-selection-origin-mismatch"));
+            };
+            if selected_edge != edge || path.edges().last() != Some(&edge) {
+                return Err(integrity("legacy-branch-path-terminal-scope-mismatch"));
+            }
+            branch_points.insert(branch_point);
+        }
+
+        Ok(branch_points
+            .into_iter()
+            .map(|branch_point| ExpansionCredit::new(observation, branch_point))
+            .collect())
     }
 
     fn observation_execution_basis(

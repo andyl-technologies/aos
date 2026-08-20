@@ -189,7 +189,8 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             | CampaignRecordKind::AttemptAdmission
             | CampaignRecordKind::PlannerStep
             | CampaignRecordKind::ExpansionState
-            | CampaignRecordKind::ContinuationProjection => "crucible-campaign::exploration",
+            | CampaignRecordKind::ContinuationProjection
+            | CampaignRecordKind::ExpansionCredit => "crucible-campaign::exploration",
             CampaignRecordKind::MeasurementSet
             | CampaignRecordKind::PropertyVerdictSet
             | CampaignRecordKind::CoverageProjection
@@ -1675,6 +1676,36 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
         illegal
             .validate_resolved(&parent, &opportunity, &domain)
             .is_err()
+    );
+
+    let credit_observation = stored_id!(
+        ObservationId,
+        ObjectKind::Observation,
+        "expansion-credit-observation"
+    );
+    let credit = ExpansionCredit::new(credit_observation, branch_point);
+    assert_eq!(
+        ExpansionCredit::from_canonical_bytes(&credit.canonical_bytes())
+            .expect("canonical expansion credit"),
+        credit
+    );
+    let credit_envelope = ObjectEnvelope::for_record(
+        CampaignRecordKind::ExpansionCredit,
+        super::object::content_children(credit.content_children()).expect("credit children"),
+        credit.canonical_bytes(),
+    )
+    .expect("credit envelope");
+    assert_eq!(
+        credit_envelope.content_id(),
+        credit.content_id().expect("credit content id")
+    );
+    assert_eq!(
+        credit_envelope
+            .children()
+            .iter()
+            .map(crate::ChildReference::id)
+            .collect::<Vec<_>>(),
+        vec![credit_observation.content_id()]
     );
 
     let wait = FeedbackWait::new(2, 3).expect("pending feedback");

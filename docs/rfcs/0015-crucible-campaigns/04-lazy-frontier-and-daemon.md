@@ -235,9 +235,13 @@ root branch point B0
 credit O to B1 and B0, exactly once
 ```
 
-Credits include count, reward vector, coverage novelty, property result,
-measurement deltas, and finding signature. Canonical credit identity is
-`H(observation, branch point)`. A persistent set prevents duplicate credit.
+Canonical credit identity is `H(observation, branch point)`. Schema version 1
+stores the exact observation and branch point and therefore owns one completed-
+visit increment. Its observation child retains the reward vector, coverage,
+properties, and measurements from which later richer folds are derived. A
+branch-point-keyed nested Merkle set prevents duplicate credit. Rich reward,
+novelty, and finding accumulation remains an implementation-plan gate; it MUST
+not be inferred from unauthenticated telemetry in the meantime.
 
 - **[LAZY-11]** Backpropagation MUST use recorded branch-edge paths and idempotent
   credit IDs. It MUST survive restart and arbitrary result duplication.
@@ -535,9 +539,9 @@ The current static owner deliberately rejects history-dependent generators and
 unknown generator implementation versions. Static readiness and exhaustion are
 observation-independent, so an observation-bearing source view remains
 admissible and its exact observation root is retained in the page. The owner
-does not reinterpret those observations as adaptive feedback: completed-visit,
-reward, novelty, and finding statistics remain zero until canonical credit
-facts exist. Loading an
+projects `completed_visits` from the authenticated nested credit-set entry
+count. Reward, novelty, and finding statistics remain zero until their richer
+canonical folds land. Loading an
 `ExpansionState` repeats the complete source-snapshot validation and owner
 recomputation; a structurally valid cache with an omitted request, proposal, or
 admission is rejected.
@@ -565,8 +569,10 @@ admission is rejected.
   strictly positive integer domain or implementation-version 6
   `permuted_integer` over an integer domain with at most `2^64 - 1` legal
   values. Static continuation state MAY bind a nonempty observation root
-  because its state is independent of feedback, but it MUST NOT synthesize
-  adaptive credit statistics before their canonical owner is implemented.
+  because its state is independent of feedback. Its completed-visit statistic
+  MUST equal the exact nested credit-set count, and it MUST NOT synthesize
+  reward, novelty, or finding statistics before their canonical owners are
+  implemented.
 
 ## 04.15 Atomic observation publication
 
@@ -592,14 +598,17 @@ The canonical observation owner conditionally maps `AttemptId` to
 snapshot pair before checking a stale precondition. A different observation
 for that attempt is retained under a domain-separated conflict key, but it does
 not replace or modify the canonical graph child, corpus entry, coverage,
-accounting, or strict sequence. This makes a determinism defect durable without
-allowing arrival order or last-writer-wins mutation to rewrite campaign truth.
+accounting, strict sequence, or expansion credits. This makes a determinism
+defect durable without allowing arrival order or last-writer-wins mutation to
+rewrite campaign truth.
 
 A canonical completion atomically updates five semantic roots. The graph binds
 the semantic configuration and any branch edge to the exact child artifact and
 adds discovered choice/branch-point memberships. The corpus retains the child.
 The observation root indexes the attempt result, observation, path, and exact
-measurement/property/coverage objects. The coverage root adds the immutable
+measurement/property/coverage objects. For every distinct scoped branch point
+in the path it also updates one nested credit set with the immutable
+`ExpansionCredit(observation, branch_point)`. The coverage root adds the immutable
 `CoverageProjectionId`; the grow-only identity union is the deterministic union
 of those records. Accounting binds the attempt and global admission ordinal to
 the observation. In strict mode its sequence entry advances only to the next
@@ -638,3 +647,7 @@ change.
   slot's repeated claim MUST return its exact reservation, release MUST reject
   a stale or different-epoch tuple, and constructing a fresh daemon epoch MUST
   recover every admitted unobserved attempt without durable lease state.
+- **[LAZY-42]** Canonical completion MUST add exactly one idempotent expansion
+  credit for each distinct scoped branch point in its path. Exact replay and a
+  conflicting completion MUST add no credit, and restart/import validation MUST
+  recompute the exact nested credit-root delta.

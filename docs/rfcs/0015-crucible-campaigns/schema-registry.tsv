@@ -77,6 +77,7 @@ crucible.execution.selection-decision	1	crucible::model	execution-model-payload	
 crucible.execution.checkpoint	4	crucible::model	checkpoint	gate:typed-choice,gate:campaign-replay
 crucible.campaign.expansion-state	2	crucible-campaign::exploration	projection	gate:lazy-frontier,gate:content-address
 crucible.campaign.continuation-projection	1	crucible-campaign::exploration	projection	gate:lazy-frontier,gate:content-address
+crucible.campaign.expansion-credit	1	crucible-campaign::exploration	campaign-fact	gate:lazy-frontier,gate:campaign-replay,gate:content-address
 crucible.campaign.measurement-set	1	crucible-campaign::observation	observation	gate:campaign-replay,gate:content-address
 crucible.campaign.property-verdict-set	1	crucible-campaign::observation	observation	gate:campaign-replay,gate:content-address
 crucible.campaign.coverage-projection	1	crucible-campaign::observation	projection	gate:campaign-replay,gate:content-address

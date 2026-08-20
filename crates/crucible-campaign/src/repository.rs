@@ -27,17 +27,17 @@ use crate::{
     ChoiceGroupId, ChoiceOpportunity, ChoiceOpportunityId, ConfigurationArtifact,
     ConfigurationArtifactId, ConfigurationId, ContinuationProjection, ControlRequest,
     CoverageProjection, CoverageProjectionId, DaemonEpoch, DebuggerAuthorityKey,
-    DebuggerSubmission, ExecutorCompatibilityProfile, ExecutorRejection, ExpansionState,
-    ExpansionStateId, MeasurementSet, MeasurementSetId, MerkleMap, MerkleMapLookupProof,
-    MerkleMapPage, MerkleMapPageProof, MerkleMapRoot, ObjectEnvelope, Observation, ObservationId,
-    PlannerAuthorityKey, PlannerDisposition, PlannerEngine, PlannerInvocation, PlannerInvocationId,
-    PlannerProposalDisposition, PlannerRequest, PlannerState, PlannerStep, PlannerStepId,
-    PlannerStepProposal, PlanningAccounting, PlanningBudget, PlanningScanPage,
-    PlanningScanPosition, PlanningUsage, PolicyActivation, PolicyArtifact, PropertyVerdict,
-    PropertyVerdictSet, PropertyVerdictSetId, Proposal, ProposalId, RetainedPlannerRequestId,
-    ScenarioArtifact, ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, SelectableId,
-    Selection, SelectionId, StopCondition, StopOutcome, SubmitAttemptDisposition,
-    SubmitAttemptRequest, SubmitAttemptResponse,
+    DebuggerSubmission, ExecutorCompatibilityProfile, ExecutorRejection, ExpansionCredit,
+    ExpansionState, ExpansionStateId, MeasurementSet, MeasurementSetId, MerkleMap,
+    MerkleMapLookupProof, MerkleMapPage, MerkleMapPageProof, MerkleMapRoot, ObjectEnvelope,
+    Observation, ObservationId, PlannerAuthorityKey, PlannerDisposition, PlannerEngine,
+    PlannerInvocation, PlannerInvocationId, PlannerProposalDisposition, PlannerRequest,
+    PlannerState, PlannerStep, PlannerStepId, PlannerStepProposal, PlanningAccounting,
+    PlanningBudget, PlanningScanPage, PlanningScanPosition, PlanningUsage, PolicyActivation,
+    PolicyArtifact, PropertyVerdict, PropertyVerdictSet, PropertyVerdictSetId, Proposal,
+    ProposalId, RetainedPlannerRequestId, ScenarioArtifact, ScenarioArtifactId, ScenarioDefId,
+    SelectableDeclaration, SelectableId, Selection, SelectionId, StopCondition, StopOutcome,
+    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
 };
 
 const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;
@@ -57,11 +57,14 @@ const MAX_PLANNER_ISSUE_SUCCESSOR_GROWTH: usize = 4_000_000;
 const MERKLE_UPDATE_NODE_UPPER: usize = 64;
 // Graph has three fixed keys, observations six, corpus/coverage/coordination one
 // each, and strict accounting three. Every discovered choice adds two graph keys
-// plus one nested choice-index insertion.
+// plus one nested choice-index insertion. Every credited branch point adds one
+// nested credit insertion, one outer observation-index update, and one immutable
+// credit record.
 const OBSERVATION_FIXED_OWNER_UPSERTS: usize = 15;
 const MAX_OBSERVATION_SUCCESSOR_GROWTH: usize = ((3 * crate::observation::MAX_DISCOVERED_CHOICES
     + OBSERVATION_FIXED_OWNER_UPSERTS)
     * MERKLE_UPDATE_NODE_UPPER)
+    + (crate::exploration::MAX_BRANCH_PATH_EDGES * ((2 * MERKLE_UPDATE_NODE_UPPER) + 1))
     + 1;
 
 /// Authenticated current value of one named campaign ref.
@@ -835,13 +838,28 @@ fn branch_point_opportunity_key(
     CampaignHash::derive("crucible.campaign-branch-point-opportunity.v1", &bytes)
 }
 
-fn observation_successor_growth(choice_count: usize) -> Result<usize, CampaignRepositoryError> {
+fn branch_credit_index_key(branch_point: crate::BranchPointId) -> CampaignHash {
+    CampaignHash::derive(
+        "crucible.campaign-branch-credit-index.v1",
+        &branch_point.as_hash().as_bytes(),
+    )
+}
+
+fn observation_successor_growth(
+    choice_count: usize,
+    credit_count: usize,
+) -> Result<usize, CampaignRepositoryError> {
     let owner_upserts = choice_count
         .checked_mul(3)
         .and_then(|choices| choices.checked_add(OBSERVATION_FIXED_OWNER_UPSERTS))
         .ok_or_else(|| integrity("observation-successor-growth-overflow"))?;
     let growth = owner_upserts
         .checked_mul(MERKLE_UPDATE_NODE_UPPER)
+        .and_then(|nodes| {
+            credit_count
+                .checked_mul((2 * MERKLE_UPDATE_NODE_UPPER) + 1)
+                .and_then(|credits| nodes.checked_add(credits))
+        })
         .and_then(|nodes| nodes.checked_add(1))
         .ok_or_else(|| integrity("observation-successor-growth-overflow"))?;
     if growth > MAX_OBSERVATION_SUCCESSOR_GROWTH {
