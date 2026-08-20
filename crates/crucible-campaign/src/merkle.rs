@@ -268,6 +268,11 @@ impl MerkleMap {
         })
     }
 
+    /// Derives the canonical empty-root identity without publishing it.
+    pub(crate) fn empty_content_id() -> Result<ContentId, CampaignStoreError> {
+        calculate_node_id(&MerkleNode::empty())
+    }
+
     /// Authenticates an existing root and returns its exact entry count.
     ///
     /// # Errors
@@ -677,6 +682,14 @@ impl MerkleMap {
         next: ContentId,
         upserts: &BTreeMap<CampaignHash, ContentId>,
     ) -> Result<bool, CampaignStoreError> {
+        Ok(self.root_after_upserts(prior, upserts)? == next)
+    }
+
+    pub(crate) fn root_after_upserts(
+        &self,
+        prior: ContentId,
+        upserts: &BTreeMap<CampaignHash, ContentId>,
+    ) -> Result<ContentId, CampaignStoreError> {
         let mut overlay = BTreeMap::new();
         let mut current = prior;
         for (key, value) in upserts {
@@ -685,7 +698,7 @@ impl MerkleMap {
                 .insert_overlay_node(current, node, *key, *value, &mut overlay)?
                 .content_id;
         }
-        Ok(current == next)
+        Ok(current)
     }
 
     fn insert_overlay_node(

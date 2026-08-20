@@ -33,17 +33,19 @@ pub use authority::{
 };
 pub use campaign_service::{
     ApplyCampaignCommandRequest, ApplyCampaignCommandResponse, CampaignAuthorizationError,
-    CampaignClient, CampaignClientError, CampaignGraphEntry, CampaignName, CampaignPrincipal,
-    CampaignPrincipalAuthorizer, CampaignService, CampaignServiceErrorResponse,
+    CampaignChoiceEntry, CampaignClient, CampaignClientError, CampaignGraphEntry, CampaignName,
+    CampaignPrincipal, CampaignPrincipalAuthorizer, CampaignService, CampaignServiceErrorResponse,
     CampaignServiceFailure, CampaignServiceFailureSource, CampaignServiceOperation,
     CampaignServiceRetryDisposition, CreateCampaignRequest, CreateCampaignResponse,
     DeriveCampaignRequest, DeriveCampaignResponse, GetCampaignGraphObjectRequest,
     GetCampaignGraphObjectResponse, GetCampaignRequest, GetCampaignResponse,
-    GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, MAX_CAMPAIGN_QUERY_PAGE_ITEMS,
-    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, MAX_CREATE_CAMPAIGN_GENERATOR_BYTES,
-    MAX_CREATE_CAMPAIGN_GENERATORS, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
-    RepositoryCampaignService, RepositoryCampaignServiceError, SubmitCampaignBranchRequest,
-    SubmitCampaignBranchResponse, WatchCampaignRequest, WatchCampaignResponse,
+    GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS,
+    MAX_CAMPAIGN_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
+    MAX_CREATE_CAMPAIGN_GENERATOR_BYTES, MAX_CREATE_CAMPAIGN_GENERATORS,
+    QueryCampaignChoicesRequest, QueryCampaignChoicesResponse, QueryCampaignGraphRequest,
+    QueryCampaignGraphResponse, RepositoryCampaignService, RepositoryCampaignServiceError,
+    SubmitCampaignBranchRequest, SubmitCampaignBranchResponse, WatchCampaignRequest,
+    WatchCampaignResponse,
 };
 pub use choice::{
     BooleanDomain, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain, ChoiceGroup,

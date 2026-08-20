@@ -204,8 +204,8 @@ therefore cannot lose campaign state.
 The strict service checkpoint defines principal-aware `CreateCampaign`,
 `DeriveCampaign`, `GetCampaign`, `GetSnapshot`, `WatchCampaign`,
 `ApplyCampaignCommand`, `QueryGraph`, `GetGraphObject`, and
-`SubmitBranchRequest` messages. All use canonical schema version 1 and a 64 MiB
-outer bound:
+`QueryChoices`, and `SubmitBranchRequest` messages. All use canonical schema
+version 1 and a 64 MiB outer bound:
 
 ```text
 CreateCampaignRequestV1 = version | principal | campaign |
@@ -250,6 +250,16 @@ GetCampaignGraphObjectResponseV1 = version | request_digest |
                                    CampaignSnapshotV2 |
                                    canonical ObjectEnvelopeV1 bytes |
                                    MerkleLookupProofV1
+
+CampaignChoiceEntryV1 = ChoiceOpportunityId
+QueryCampaignChoicesRequestV1 = version | principal | campaign | snapshot |
+                                optional after_opportunity | limit
+QueryCampaignChoicesResponseV1 = version | request_digest |
+                                 CampaignSnapshotV2 |
+                                 entries[CampaignChoiceEntryV1] |
+                                 optional next_after |
+                                 MerkleLookupProofV1 |
+                                 MerkleScanProofV1
 
 ApplyCampaignCommandRequestV1 = version | principal | campaign |
                                 ControlRequestV1
@@ -313,7 +323,7 @@ Every operation permits tags 0, 1, 8, 9, 10, 11, 12, and 13.
 `CreateCampaign` additionally permits 3; `DeriveCampaign` additionally permits
 2, 3, and 6; `GetCampaign`, `GetSnapshot`, and `WatchCampaign` additionally
 permit 2;
-`QueryGraph` and `GetGraphObject` additionally permit 2 and 4;
+`QueryGraph`, `GetGraphObject`, and `QueryChoices` additionally permit 2 and 4;
 `ApplyCampaignCommand` permits 4, 5, 6, and 7; and
 `SubmitCampaignBranch` permits 4, 5, and 6. For every snapshot-preconditioned
 operation,
@@ -349,6 +359,9 @@ query_graph_request_digest =
 get_graph_object_request_digest =
   H("crucible.campaign-service.get-campaign-graph-object.v1",
     GetCampaignGraphObjectRequestV1)
+query_choices_request_digest =
+  H("crucible.campaign-service.query-campaign-choices.v1",
+    QueryCampaignChoicesRequestV1)
 create_request_digest =
   H("crucible.campaign-service.create-campaign.v1", CreateCampaignRequestV1)
 derive_request_digest =
@@ -468,12 +481,38 @@ unique nodes, each at most 64 KiB, and at most 4,259,840 aggregate proof bytes.
 The operation does not expose arbitrary content IDs or any non-graph record
 kind.
 
-The remaining non-graph object queries, paged frontier/choice/finding
-inspection, and explanation messages are still open. The strict local
+`QueryChoices` reads the snapshot graph's nested discovered-choice index. New
+genesis snapshots anchor one canonical empty choice-index Merkle root; every
+explicit or observation-driven discovery updates that root in the same
+snapshot transition as the authoritative and branch-point-scoped graph keys.
+Imported legacy version-2 snapshots without this optional index remain valid,
+but the query fails closed with `InvalidRequest` until a new discovery upgrades
+the head. The exclusive cursor is a `ChoiceOpportunityId`, `limit` is in
+`1..=8`, and the result contains IDs only. Source, domain, declaration, and
+provenance bodies require the separately authorized `GetGraphObject` call via
+`CampaignChoiceEntryV1`'s deterministic graph key.
+
+Like `QueryGraph`, this response carries the complete anchoring snapshot body;
+`QueryCampaignChoices` authorization therefore grants visibility of its parent,
+lineage, policy, transition, and all nine root IDs. It grants discovered choice
+IDs and the Merkle metadata required for the two proofs, but not opportunity or
+dependency bodies.
+
+The response first proves the fixed choice-index anchor in the authenticated
+snapshot graph with `MerkleLookupProofV1`, then proves the exact page, cursor,
+and EOF inside that nested root with `MerkleScanProofV1`. Each nested key is the
+opportunity content digest and each value is that exact opportunity ID; checked
+clients reject key/value drift, substitution, false EOF, missing nodes, or
+unused extra nodes. The eight-entry limit bounds the scan proof to at most 641
+64-KiB nodes; together with the 65-node lookup proof and message overhead, the
+complete response remains below the 64-MiB component-message bound.
+
+The remaining non-graph object queries, paged frontier/finding inspection, and
+explanation messages are still open. The strict local
 transport frames exactly one canonical request or response as:
 
 ```text
-CampaignLoopbackFrameV8 = "CRUCCS08" | kind:u8 | reserved[3] |
+CampaignLoopbackFrameV9 = "CRUCCS09" | kind:u8 | reserved[3] |
                           body_length:u32be | canonical_body[body_length]
 kind = 1 (GetCampaignRequestV1) |
        2 (GetCampaignResponseV1) |
@@ -493,10 +532,12 @@ kind = 1 (GetCampaignRequestV1) |
       16 (GetCampaignSnapshotRequestV1) |
       17 (GetCampaignSnapshotResponseV1) |
       18 (GetCampaignGraphObjectRequestV1) |
-      19 (GetCampaignGraphObjectResponseV1)
+      19 (GetCampaignGraphObjectResponseV1) |
+      20 (QueryCampaignChoicesRequestV1) |
+      21 (QueryCampaignChoicesResponseV1)
 ```
 
-Loopback frame versions 1 through 7 are rejected rather than reinterpreted
+Loopback frame versions 1 through 8 are rejected rather than reinterpreted
 under the expanded kind table.
 
 The canonical body is at most 64 MiB, so the complete frame is at most 64 MiB

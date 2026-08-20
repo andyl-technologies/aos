@@ -299,7 +299,7 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   activates a compatible imported policy, leaves the source ref unchanged, and
   exactly replays the original derived snapshot after later target mutations,
   cache eviction, restart, or a same-basis CAS race. Paged
-  frontier/choice/finding queries,
+  frontier/finding queries,
   explanation, and CLI wiring remain open. A bounded coalesced `WatchCampaign`
   operation returns one exact current-head cursor and lifecycle projection,
   including stale/unknown-cursor recovery without ancestry work. A bounded
@@ -313,10 +313,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   graph-object read separately authorizes one exact graph key, authenticates
   its value with a fixed-depth minimal Merkle lookup proof, and exposes only
   strict configuration-artifact or choice-opportunity envelopes.
+  A nested choice index is anchored in the graph root and updated atomically by
+  explicit and observation-driven discovery. `QueryChoices` pages at most eight
+  opportunity IDs with one exact anchor proof and one exact range/EOF proof;
+  legacy heads without the optional index fail closed until upgraded.
   The local
   Unix-stream binding
-  now dispatches all eighteen initial success messages plus one stable
-  request-bound error envelope under a version-8, 64-MiB-body,
+  now dispatches all twenty initial success messages plus one stable
+  request-bound error envelope under a version-9, 64-MiB-body,
   absolute-deadline frame.
   `QueryCampaignGraph` authorization covers the complete anchoring snapshot
   metadata and all root IDs; bodies named by those IDs retain separate access
