@@ -58,6 +58,11 @@ mod host_worker_pool;
 mod inertness;
 mod launch;
 #[cfg(target_os = "linux")]
+// This sealed authority remains internal until child credential separation,
+// persistent reap/quarantine, aggregate quota, and session wiring land.
+#[allow(dead_code)]
+mod linux_cgroup;
+#[cfg(target_os = "linux")]
 mod live_coverage_gate;
 #[cfg(target_os = "linux")]
 mod live_plugin_gate;
@@ -300,7 +305,8 @@ pub use single_vm_fingerprint::{
 };
 #[cfg(target_os = "linux")]
 pub use spawn::{
-    QemuSpawnError, QemuSpawnHostResources, QemuSpawnSetupResources, QemuSpawnedChild,
+    QemuChildProcessContract, QemuSpawnError, QemuSpawnHostResources, QemuSpawnSetupResources,
+    QemuSpawnedChild, spawn_prepared_qemu_child_with_fds_in_directory_guarded,
     spawn_qemu_child_with_fds_in_directory,
 };
 pub use storage_array::{

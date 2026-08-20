@@ -45,10 +45,7 @@ impl QemuChildProcessContract {
     /// # Errors
     ///
     /// Returns [`QemuSpawnError`] when either descriptor is invalid.
-    // This sealed constructor lands before its concrete Linux guard caller so
-    // the pre-exec ABI can be reviewed and tested independently.
-    #[allow(dead_code)]
-    pub fn new(
+    pub(crate) fn new(
         cgroup_procs: OwnedFd,
         cancellation_event: OwnedFd,
         maximum_file_bytes: u64,
@@ -282,9 +279,6 @@ pub fn spawn_qemu_child_with_fds_in_directory(
 /// Returns [`QemuSpawnError`] when the prepared container is absent or not a
 /// regular file, descriptor preparation fails, the pre-exec containment
 /// contract rejects the child, or QEMU cannot be spawned.
-// The guarded composition is intentionally unwired until the next slice adds
-// its cgroup factory, quota, and persistent reaper as one atomic authority.
-#[allow(dead_code)]
 pub fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
     command: &QemuLaunchCommand,
     run_directory: impl AsRef<Path>,
@@ -310,7 +304,6 @@ pub fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
     })
 }
 
-#[allow(dead_code)]
 fn validate_prepared_vmstate_container(run_directory: &Path) -> Result<(), QemuSpawnError> {
     let path = run_directory.join(crate::DEFAULT_VMSTATE_FILE_NAME);
     match fs::symlink_metadata(&path) {
@@ -598,7 +591,6 @@ fn install_attempt_process_contract(contract: ChildProcessContractRaw) -> io::Re
     Ok(())
 }
 
-#[allow(dead_code)]
 fn validate_cgroup_procs_fd(fd: RawFd) -> Result<(), QemuSpawnError> {
     validate_live_fd(fd, "validate child cgroup descriptor")?;
     let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::uninit();
@@ -641,7 +633,6 @@ fn validate_cgroup_procs_fd(fd: RawFd) -> Result<(), QemuSpawnError> {
     Ok(())
 }
 
-#[allow(dead_code)]
 fn validate_cancellation_eventfd(fd: RawFd) -> Result<(), QemuSpawnError> {
     let flags = validate_live_fd(fd, "validate child cancellation descriptor")?;
     if flags & libc::O_NONBLOCK == 0 {
@@ -672,7 +663,6 @@ fn validate_cancellation_eventfd(fd: RawFd) -> Result<(), QemuSpawnError> {
     Ok(())
 }
 
-#[allow(dead_code)]
 fn validate_live_fd(fd: RawFd, operation: &'static str) -> Result<i32, QemuSpawnError> {
     let flags = unsafe {
         // SAFETY: `fcntl(F_GETFL)` reads descriptor metadata without pointers.
