@@ -44,11 +44,17 @@
     attrPath = "${attrPath}.genesisObservationBoundary";
     taskIds = ["T-QEMU-0086" "T-QEMU-0087" "T-QEMU-0088" "T-QEMU-0089"];
   };
+  qemuExactSnapshotRestore = import ./phase2-qemu-exact-snapshot-restore.nix {
+    inherit pkgs lib;
+  };
   s1Fingerprint = import ./phase0-s1.nix {inherit pkgs lib;};
   qemuInstructionFaults = import ./phase2-qemu-instruction-faults.nix {
     inherit pkgs lib qemuPackage;
   };
   qemuRegisterMutation = import ./phase2-qemu-register-mutation.nix {
+    inherit pkgs lib qemuPackage;
+  };
+  qemuMemoryAccess = import ./phase2-qemu-memory-access.nix {
     inherit pkgs lib qemuPackage;
   };
   qemuGenesisObservationBoundary = pkgs.mkDerivation {
@@ -194,6 +200,68 @@
             "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
           grep -q '^-.*qatomic_read(&rr_current_cpu) != NULL' \
             "${patchDir}/0090-crucible-active-tcg-kick-boundary.patch"
+          grep -q '^+static unsigned int rr_tcg_exec_state;' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+    RR_TCG_EXEC_WAKE_PENDING,' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*qatomic_cmpxchg(&rr_tcg_exec_state, state,' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+            bool idle_wake = false;' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+                    idle_wake = state == RR_TCG_EXEC_IDLE;' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*\* wait predicate too, closing the broadcast-before-wait race' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*qatomic_xchg(&rr_tcg_exec_state, RR_TCG_EXEC_IDLE)' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*icount_crucible_rr_cursor_position() == 0' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*at an authorized scheduler ceiling' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*guest idle boundary' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+static bool rr_crucible_sim_single_vcpu(void);' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*else if (rr_crucible_sim_single_vcpu())' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*exit_request issued between slices can race' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          ! grep -q '^+.*qatomic_set_mb(&cpu->exit_request, 1);' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+.*qemu_cpu_kick(first_cpu);' \
+            "${patchDir}/0106-crucible-defer-active-slice-host-wakes.patch"
+          grep -q '^+void icount_crucible_rr_initialize_genesis(CPUState \*cpu)' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+    g_assert(icount_get_raw() == 0);' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+    timers_state.crucible_rr_current_vcpu = cpu->cpu_index;' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+    timers_state.crucible_rr_cursor_valid = true;' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+    icount_crucible_rr_initialize_genesis(cpu);' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+         \* The serialized owner remains authoritative across partial RR turns.' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+            selected != suggested)' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+            return selected;' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          ! grep -q '^+.*crucible_rr_current_vcpu != suggested->cpu_index' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+            cpu = icount_crucible_rr_select_cpu(suggested_cpu);' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+            bool wrapped = suggested_cpu == NULL;' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+                partial_rr_turn = true;' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+                icount_crucible_rr_cursor_position() != 0) {' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+        if (partial_rr_turn) {' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+         !terminal_cursor) ||' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+        error_report("crucible RR accounting owner mismatch:' \
+            "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
 
           cat > "$out/result" <<'RESULT'
           PASS
@@ -210,13 +278,15 @@
           deterministic_ipi_evidence=true
           zero_icount_startup_kick_preserved=true
           initial_rr_wait_woken_without_redundant_exit=true
-          first_active_slice_host_exit_deferred_to_tb_boundary=true
+          first_multivcpu_active_slice_host_exit_deferred_to_rr_boundary=true
           post_genesis_single_vcpu_boundary_determinism=true
-          active_tcg_host_latency_exit_deferred=true
+          multivcpu_active_tcg_host_latency_exit_deferred=true
+          single_vcpu_active_tcg_soft_exit_preserved=true
           external_runstate_not_used_as_execution_proof=true
           idle_thread_condition_wake_preserved=true
           committed_control_and_interrupt_exit_preserved=true
           admitted_terminal_pause_exit_preserved=true
+          terminal_pause_has_explicit_level_triggered_kick=true
           deterministic_translation_block_boundary=true
           soft_exit_omits_async_icount_decrementer=true
           stateful_transition_exits_shared_rr_thread=true
@@ -653,9 +723,7 @@
     }
     {
       patch = "0050-crucible-memory-access-faults.patch";
-      check = import ./phase2-qemu-memory-access.nix {
-        inherit pkgs lib qemuPackage;
-      };
+      check = qemuMemoryAccess;
     }
     {
       patch = "0051-crucible-add-architecture-register-fault-mutations.patch";
@@ -898,6 +966,62 @@
     {
       patch = "0093-crucible-canonical-register-cursor.patch";
       check = qemuRegisterMutation;
+    }
+    {
+      patch = "0094-crucible-retention-virtual-time-origin.patch";
+      check = qemuMemoryAccess;
+    }
+    {
+      patch = "0095-crucible-raw-pte-update-identity.patch";
+      check = qemuMemoryAccess;
+    }
+    {
+      patch = "0096-crucible-physical-page-table-region-fixture.patch";
+      check = qemuMemoryAccess;
+    }
+    {
+      patch = "0097-crucible-canonicalize-memory-retry-identity.patch";
+      check = qemuMemoryAccess;
+    }
+    {
+      patch = "0098-crucible-inactive-nested-tsc-guard.patch";
+      check = qemuMemoryAccess;
+    }
+    {
+      patch = "0099-crucible-valid-aarch64-abort-fixture.patch";
+      check = qemuMemoryAccess;
+    }
+    {
+      patch = "0100-crucible-aarch64-memory-exception-vectors.patch";
+      check = qemuMemoryAccess;
+    }
+    {
+      patch = "0101-crucible-canonicalize-snapshot-rr-resume.patch";
+      check = qemuExactSnapshotRestore;
+    }
+    {
+      patch = "0102-crucible-bql-exact-register-capture.patch";
+      check = qemuExactSnapshotRestore;
+    }
+    {
+      patch = "0103-crucible-isolate-checkpoint-control-wake.patch";
+      check = qemuExactSnapshotRestore;
+    }
+    {
+      patch = "0104-crucible-preserve-checkpoint-block-durability.patch";
+      check = qemuExactSnapshotRestore;
+    }
+    {
+      patch = "0105-crucible-selector-control-plane-fixtures.patch";
+      check = qemuInstructionFaults;
+    }
+    {
+      patch = "0106-crucible-defer-active-slice-host-wakes.patch";
+      check = qemuDeterministicHostKickBoundary;
+    }
+    {
+      patch = "0107-crucible-anchor-rr-cursor-genesis.patch";
+      check = qemuExactSnapshotRestore;
     }
   ];
 

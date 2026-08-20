@@ -161,6 +161,23 @@ pub trait QemuHostIoRuntime: Send {
         Ok(true)
     }
 
+    /// Probes QEMU's main-loop device boundary without requesting a pause.
+    ///
+    /// Live runtimes use this to expose device work queued behind an otherwise
+    /// quiescent slot before the caller commits to an exact checkpoint
+    /// coordinate. Runtimes without an external executor remain ready.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when the probe cannot be
+    /// acknowledged or serviced within `timeout`.
+    fn probe_checkpoint_device_io(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<bool, QemuAsyncDriverRuntimeError> {
+        self.checkpoint_device_io_is_quiescent()
+    }
+
     /// Requests a coordinated shared-memory pause and waits for quiescence.
     ///
     /// Runtimes without a live external executor have nothing to pause. A live
@@ -508,27 +525,6 @@ impl From<QemuQuantumReport> for QemuAsyncQuantumCompletion {
     }
 }
 
-/// Error returned by a node-step target adapter.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-#[error("{operation} failed: {message}")]
-pub struct QemuAsyncDriverTargetError {
-    /// Operation being attempted.
-    pub operation: &'static str,
-    /// Deterministic failure detail.
-    pub message: String,
-}
-
-impl QemuAsyncDriverTargetError {
-    /// Creates a target adapter error.
-    #[must_use]
-    pub fn new(operation: &'static str, message: impl Into<String>) -> Self {
-        Self {
-            operation,
-            message: message.into(),
-        }
-    }
-}
-
 /// Result of one bounded async node-step.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QemuAsyncNodeStepOutcome {
@@ -589,7 +585,7 @@ pub struct QemuAsyncLifecycleAwaitReport {
 }
 
 mod error;
-pub use error::QemuAsyncDriverError;
+pub use error::{QemuAsyncDriverError, QemuAsyncDriverTargetError};
 
 mod driver;
 pub use driver::{await_bounded_lifecycle_event, run_bounded_qemu_node_step};

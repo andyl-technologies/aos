@@ -10,7 +10,7 @@ use crucible::Icount;
 #[test]
 fn async_driver_completes_one_quantum_with_bounded_wait_and_yields() {
     let policy = QemuAsyncDriverPolicy::fast_test();
-    let mut target = ScriptedTarget::completed();
+    let mut target = ScriptedTarget::pending_once();
     let mut runtime = ScriptedRuntime::new([QemuAsyncWaitOutcome::Completed]);
     let crash_detector = QemuCrashDetector::new("vm-a");
 
@@ -54,15 +54,51 @@ fn async_driver_completes_one_quantum_with_bounded_wait_and_yields() {
         ]
     );
     assert_eq!(target.started, vec![12]);
+    assert_eq!(target.finished, 2);
+    assert_eq!(target.shutdowns, 0);
+    assert_eq!(runtime.yields, 2);
+}
+
+#[test]
+fn async_driver_finishes_an_already_complete_quantum_without_waiting() {
+    let policy = QemuAsyncDriverPolicy::fast_test();
+    let mut target = ScriptedTarget::completed();
+    let mut runtime = ScriptedRuntime::new([]);
+    let crash_detector = QemuCrashDetector::new("vm-a");
+
+    let report = run_bounded_qemu_node_step(
+        &mut target,
+        &mut runtime,
+        policy,
+        &crash_detector,
+        horizon(12),
+    )
+    .unwrap_or_else(|error| panic!("already-complete quantum should not wait: {error}"));
+
+    assert_eq!(
+        report.outcome,
+        QemuAsyncNodeStepOutcome::Completed {
+            advance: AdvanceOutcome::ReachedHorizon,
+        }
+    );
+    assert_eq!(
+        report.async_operations,
+        vec![
+            QemuAsyncDriverOperation::YieldToControlPlane,
+            QemuAsyncDriverOperation::YieldToControlPlane,
+        ]
+    );
     assert_eq!(target.finished, 1);
     assert_eq!(target.shutdowns, 0);
+    assert_eq!(runtime.awaits, 0);
+    assert_eq!(runtime.repolls, 0);
     assert_eq!(runtime.yields, 2);
 }
 
 #[test]
 fn async_driver_repolls_a_transient_shared_memory_report() {
     let policy = QemuAsyncDriverPolicy::fast_test();
-    let mut target = ScriptedTarget::pending_once();
+    let mut target = ScriptedTarget::pending_twice();
     let mut runtime = ScriptedRuntime::new([
         QemuAsyncWaitOutcome::Completed,
         QemuAsyncWaitOutcome::Completed,
@@ -84,7 +120,7 @@ fn async_driver_repolls_a_transient_shared_memory_report() {
             advance: AdvanceOutcome::ReachedHorizon,
         }
     );
-    assert_eq!(target.finished, 2);
+    assert_eq!(target.finished, 3);
     assert_eq!(
         report
             .async_operations
@@ -108,7 +144,7 @@ fn async_driver_repolls_a_transient_shared_memory_report() {
 #[test]
 fn async_driver_timeout_surfaces_crash_and_escalates_shutdown() {
     let policy = QemuAsyncDriverPolicy::fast_test();
-    let mut target = ScriptedTarget::completed();
+    let mut target = ScriptedTarget::pending_forever();
     let mut runtime = ScriptedRuntime::new([QemuAsyncWaitOutcome::TimedOut]);
     let crash_detector = QemuCrashDetector::new("vm-a");
 
@@ -149,7 +185,7 @@ fn async_driver_timeout_surfaces_crash_and_escalates_shutdown() {
     assert!(report.yielded_before_quantum);
     assert!(!report.yielded_after_quantum);
     assert_eq!(target.started, vec![20]);
-    assert_eq!(target.finished, 0);
+    assert_eq!(target.finished, 1);
     assert_eq!(target.shutdowns, 1);
 }
 
@@ -404,6 +440,20 @@ impl ScriptedTarget {
     fn pending_once() -> Self {
         Self {
             pending_finishes: 1,
+            ..Self::completed()
+        }
+    }
+
+    fn pending_twice() -> Self {
+        Self {
+            pending_finishes: 2,
+            ..Self::completed()
+        }
+    }
+
+    fn pending_forever() -> Self {
+        Self {
+            pending_finishes: usize::MAX,
             ..Self::completed()
         }
     }

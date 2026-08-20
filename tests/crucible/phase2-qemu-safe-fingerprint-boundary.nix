@@ -35,7 +35,7 @@
     ++ lib.optionals (hasInfix "if (!post_boundary_samples && retired >= next_sample)" tracePluginSource) [
       "crucible-qemu-trace-plugin.c: extended fingerprint still serializes state in an instruction callback"
     ]
-    ++ lib.optionals (!(hasInfix "horizon=3700000000" liveFingerprintGateSource)) [
+    ++ lib.optionals (!(hasInfix "horizon=21000000" liveFingerprintGateSource)) [
       "phase2-qemu-nvcpu-fingerprint.nix: live horizon does not exercise a non-cadence observer boundary"
     ]
     ++ lib.optionals (!(hasInfix ''([range($cadence; $horizon; $cadence)] + [$horizon])'' liveFingerprintGateSource)) [

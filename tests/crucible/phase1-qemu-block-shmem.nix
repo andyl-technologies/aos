@@ -541,6 +541,11 @@ in
             {
             }
 
+            static inline bool qemu_plugin_crucible_vmstop_pending(void)
+            {
+                return false;
+            }
+
             #endif
             PLUGIN_FIXTURE
 

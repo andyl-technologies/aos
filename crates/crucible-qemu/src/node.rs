@@ -43,6 +43,7 @@ use crate::{
     QemuHostIoRuntime, run_bounded_qemu_node_step,
 };
 
+mod checkpoint_probe;
 mod error;
 pub use error::{QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeError};
 

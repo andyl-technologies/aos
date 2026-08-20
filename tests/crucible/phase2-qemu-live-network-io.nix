@@ -5,7 +5,11 @@
   taskIds ? ["T-PLUG-8" "T-PLUG-10" "T-PLUG-11"],
   openTaskIds ? [],
   busyCeiling ? "4000000000",
-  networkTimeoutSecs ? "120",
+  # Exact restore resumes beyond 7.3 billion guest instructions. Keep enough
+  # host-liveness margin for concurrent hermetic QEMU gates and the ordered
+  # post-quantum control acknowledgement; this bound never participates in
+  # guest scheduling or trace state, and successful runs return immediately.
+  networkTimeoutSecs ? "600",
   secondRunLoad ? "1",
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -137,7 +141,7 @@ in
           world_run_dir="$TMPDIR/live-world-network-run"
           mkdir -p "$world_run_dir"
           root_image=${pkgs.crucible-fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4
-          timeout -k 15 590 \
+          timeout -k 15 1190 \
             "$TMPDIR/live-network-io-target/debug/examples/crucible-qemu-live-world-network" \
             ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
             ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \

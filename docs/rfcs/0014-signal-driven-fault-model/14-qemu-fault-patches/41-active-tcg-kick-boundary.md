@@ -16,6 +16,14 @@ is idle, `qemu_cpu_kick()` has already broadcast its halt condition. No
 protocol, shared-memory layout, VMState field, or migration representation
 changes.
 
+Patch [`0106`](57-defer-active-slice-host-wakes.md) subsequently tightens this
+mechanism: the production multi-vCPU adversary demonstrated that even the soft
+request could let host arrival choose which translation block ended a slice.
+The soft request remains the between-slice liveness mechanism. Multi-vCPU
+active TCG execution defers state-free wakes to the finite RR boundary, while
+single-vCPU active execution retains the soft request for bounded main-loop
+service because no alternate RR allocation can be perturbed.
+
 The patch also publishes the process-local `rr_initial_wait_complete` flag
 immediately after leaving the RR thread's initial stopped wait. Before that
 point, `qemu_cpu_kick()` has already broadcast the condition needed for
@@ -25,8 +33,9 @@ immediate exit.
 
 ## Determinism and liveness contract
 
-`rr_kick_vcpu_thread()` uses the soft between-block exit only while all of the
-patch `0088` mode predicates hold. Immediate `cpu_exit()` remains mandatory for
+`rr_kick_vcpu_thread()` supplies the soft request outside active TCG execution
+while all of the patch `0088` mode predicates hold. Immediate `cpu_exit()`
+remains mandatory for
 an admitted terminal pause and committed stop, unplug, halted, stopped, or
 interrupt state. Host arrival changes neither the current translation-block
 endpoint nor the architectural coordinate within that block.

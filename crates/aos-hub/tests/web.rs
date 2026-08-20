@@ -314,13 +314,9 @@ async fn anonymous_browse_is_rate_limited_on_flat_and_nested_paths() {
     // nested (org-scoped) slug that reaches the browser through the nested
     // resolver rather than the flat route.
     let db = Arc::new(Database::open_in_memory().await.unwrap());
-    db.register_registry(
-        "demo",
-        std::slice::from_ref(&fixture.trust_key),
-        true,
-    )
-    .await
-    .unwrap();
+    db.register_registry("demo", std::slice::from_ref(&fixture.trust_key), true)
+        .await
+        .unwrap();
     let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
     db.create_managed_registry(
         org,
