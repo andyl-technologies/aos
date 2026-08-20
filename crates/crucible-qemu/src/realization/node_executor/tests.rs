@@ -200,6 +200,33 @@ fn qemu_node_realization_executor_loads_baked_genesis_before_node_replay()
 }
 
 #[test]
+fn failed_realization_surrenders_the_active_node_for_quarantine()
+-> Result<(), QemuVmRealizationError> {
+    let log = shared_log();
+    let node = node_id();
+    let world = World::from_content_hash(hash("world", "quarantine"));
+    let config = Configuration::genesis(scenario("quarantine"));
+    let checkpoint = checkpoint_for_config("quarantine", &config, &node, 3, CheckpointKind::Fat)?;
+    let baked = QemuBakedGenesisSnapshot {
+        world_id: world.id,
+        checkpoint,
+    };
+    let admission = QemuBakedGenesisRestoreAdmission::new(
+        &baked,
+        &world,
+        QemuLoadvmCommandAuthorization::baked_genesis_realization_for_test(),
+    )?;
+    let launcher = scripted_launcher(Rc::clone(&log), hash("runtime", "quarantine"), 3);
+    let mut executor = QemuNodeRealizationExecutor::new(node, launcher);
+    executor.load_baked_genesis(&config, admission)?;
+
+    assert!(executor.take_active_node_for_quarantine().is_some());
+    assert!(!executor.live_backend_is_active());
+    assert!(executor.take_active_node_for_quarantine().is_none());
+    Ok(())
+}
+
+#[test]
 fn qemu_node_realization_executor_replays_without_generic_snapshot_or_restore()
 -> Result<(), QemuVmRealizationError> {
     let log = shared_log();

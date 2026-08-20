@@ -28,7 +28,7 @@ use rustix::fs::{
 use thiserror::Error;
 
 use crate::spawn::{QemuChildCredentials, QemuChildProcessContract};
-use crate::{QemuNodeChild, QemuProcessIdentity, linux_process_identity};
+use crate::{QemuNode, QemuNodeChild, QemuProcessIdentity, linux_process_identity};
 
 const CPU_PERIOD_MICROS: u64 = 100_000;
 const MAX_CGROUP_CONTROL_BYTES: u64 = 4096;
@@ -1292,6 +1292,24 @@ impl LinuxQemuCgroup {
                 child: Box::new(child),
             }),
         }
+    }
+
+    /// Extracts and authenticates the direct child from a failed live node.
+    ///
+    /// Consuming the node drops its modeled channels and backend capabilities;
+    /// only the nonduplicable direct-child wait handle crosses into the cgroup
+    /// reap authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxQemuDirectChildAuthenticationError`] with the extracted
+    /// child when its exact process generation is no longer a member of this
+    /// cgroup.
+    pub fn retain_failed_node(
+        &mut self,
+        node: QemuNode,
+    ) -> Result<LinuxQemuDirectChild, LinuxQemuDirectChildAuthenticationError> {
+        self.retain_child(node.into_direct_child_for_quarantine())
     }
 
     fn authenticate_process_id(

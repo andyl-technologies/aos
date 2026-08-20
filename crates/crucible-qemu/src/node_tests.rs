@@ -524,6 +524,20 @@ fn qemu_node_owns_one_child_and_exactly_three_channel_roles() -> Result<(), Box<
 }
 
 #[test]
+fn failed_node_surrenders_its_direct_child_wait_authority() -> Result<(), Box<dyn Error>> {
+    let node = scripted_node(shared_log(), false, false, false)?;
+    let process_id = node.child.process_id();
+
+    let mut child = node.into_direct_child_for_quarantine();
+
+    assert_eq!(child.process_id(), process_id);
+    assert!(!child.reaped());
+    child.force_kill_and_reap_failed_realization()?;
+    assert!(child.reaped());
+    Ok(())
+}
+
+#[test]
 fn live_fault_sequences_continue_after_capability_admission() -> Result<(), Box<dyn Error>> {
     let log = shared_log();
     let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
