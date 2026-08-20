@@ -11,14 +11,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use futures_util::StreamExt;
-use tokio::io::AsyncWriteExt;
+use futures_util::{stream, StreamExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::auth::AuthStore;
 use crate::bandwidth::BandwidthLimiter;
 use crate::hash::StreamingHasher;
 use crate::pool::{ConnectionPool, PoolConfig};
-use crate::progress::{BatchProgressHandler, NoopProgress, ProgressHandler};
+use crate::progress::{
+    BatchProgressHandler, NoopProgress, ProgressHandler, TransferEvent, TransferObserver,
+};
 use crate::protocol;
 use crate::retry::{self, classify_error, ErrorClass, RetryConfig};
 use crate::types::{Method, TransferOutput, TransferRequest, TransferResult};
@@ -132,10 +134,40 @@ impl TransferEngine {
     /// - writing to the output destination fails.
     #[allow(clippy::disallowed_methods)]
     pub async fn execute(&self, request: TransferRequest) -> Result<TransferResult> {
+        let observer = ProgressObserver {
+            handler: self.progress.as_ref(),
+        };
+        self.execute_observed(request, &observer).await
+    }
+
+    /// Executes one transfer and reports its structured lifecycle events.
+    ///
+    /// Unlike [`set_progress`](Self::set_progress), the observer belongs only
+    /// to this operation. Concurrent callers can therefore share one engine
+    /// without sharing UI state.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`execute`](Self::execute).
+    #[allow(clippy::disallowed_methods)]
+    pub async fn execute_observed(
+        &self,
+        request: TransferRequest,
+        observer: &dyn TransferObserver,
+    ) -> Result<TransferResult> {
         let url = request.url.clone();
         let hash_spec = request.hash.clone();
         let host = extract_host(&url).unwrap_or_else(|| "unknown".to_string());
-        let proto = protocol::for_url(&url)?;
+        let proto = match protocol::for_url(&url) {
+            Ok(proto) => proto,
+            Err(error) => {
+                observer.observe(TransferEvent::Failed {
+                    url: &url,
+                    error: &error,
+                });
+                return Err(error);
+            }
+        };
 
         let mut last_err: Option<anyhow::Error> = None;
         let mut token_refreshed = false;
@@ -143,6 +175,14 @@ impl TransferEngine {
         for attempt in 0..self.retry.max_attempts {
             if attempt > 0 {
                 let delay = retry::compute_retry_delay(&self.retry, attempt - 1);
+                if let Some(error) = last_err.as_ref() {
+                    observer.observe(TransferEvent::Retrying {
+                        url: &url,
+                        attempt: attempt + 1,
+                        delay,
+                        error,
+                    });
+                }
                 tracing::debug!(attempt, delay_ms = delay.as_millis(), "retrying");
                 tokio::time::sleep(delay).await;
             }
@@ -155,6 +195,11 @@ impl TransferEngine {
                 proto.stream(&request, credential.as_ref()).await
             } else {
                 // Non-GET: use execute directly (PUT/HEAD/DELETE don't stream response).
+                observer.observe(TransferEvent::Started {
+                    url: &url,
+                    total_bytes: request_body_length(&request).await,
+                    resumed_bytes: 0,
+                });
                 match proto.execute(&request, credential.as_ref()).await {
                     Ok(result) => {
                         // Apply bandwidth limiting for the bytes transferred.
@@ -176,17 +221,23 @@ impl TransferEngine {
                                     spec.expected,
                                     hash_result.hex
                                 );
-                                self.progress.on_error(&url, &err);
+                                observer.observe(TransferEvent::Failed {
+                                    url: &url,
+                                    error: &err,
+                                });
                                 return Err(err);
                             }
                         }
 
-                        self.progress.on_progress(
-                            &url,
-                            result.bytes_transferred,
-                            result.content_length,
-                        );
-                        self.progress.on_complete(&url, result.bytes_transferred);
+                        observer.observe(TransferEvent::Progress {
+                            url: &url,
+                            transferred_bytes: result.bytes_transferred,
+                            total_bytes: result.content_length,
+                        });
+                        observer.observe(TransferEvent::Completed {
+                            url: &url,
+                            transferred_bytes: result.bytes_transferred,
+                        });
                         return Ok(result);
                     }
                     Err(e) => Err(e),
@@ -208,7 +259,10 @@ impl TransferEngine {
                             let err = anyhow::anyhow!(
                                 "response from {url} exceeds the {maximum} byte limit"
                             );
-                            self.progress.on_error(&url, &err);
+                            observer.observe(TransferEvent::Failed {
+                                url: &url,
+                                error: &err,
+                            });
                             return Err(err);
                         }
                     }
@@ -218,9 +272,18 @@ impl TransferEngine {
                         .as_ref()
                         .map(|h| StreamingHasher::with_expected(h.algorithm, &h.expected));
                     let mut bytes_transferred: u64 = result.bytes_transferred;
+                    let resumed_bytes = result.bytes_transferred;
+                    let total_bytes = result
+                        .content_length
+                        .and_then(|remaining| resumed_bytes.checked_add(remaining));
                     let transfer_start = Instant::now();
+                    let mut received_this_attempt = 0_u64;
 
-                    self.progress.on_start(&url, result.content_length);
+                    observer.observe(TransferEvent::Started {
+                        url: &url,
+                        total_bytes,
+                        resumed_bytes,
+                    });
 
                     // Open output destination.
                     let mut file_sink: Option<tokio::fs::File> = None;
@@ -230,6 +293,11 @@ impl TransferEngine {
                         TransferOutput::File(path) => {
                             if let Some(parent) = path.parent() {
                                 tokio::fs::create_dir_all(parent).await?;
+                            }
+                            if result.resumed {
+                                if let Some(ref mut prefix_hasher) = hasher {
+                                    hash_file_prefix(path, prefix_hasher).await?;
+                                }
                             }
                             let file = if result.resumed {
                                 tokio::fs::OpenOptions::new()
@@ -262,7 +330,10 @@ impl TransferEngine {
                                 let err = anyhow::anyhow!(
                                     "response from {url} exceeds the {maximum} byte limit"
                                 );
-                                self.progress.on_error(&url, &err);
+                                observer.observe(TransferEvent::Failed {
+                                    url: &url,
+                                    error: &err,
+                                });
                                 return Err(err);
                             }
                         }
@@ -288,14 +359,22 @@ impl TransferEngine {
 
                         // Track progress.
                         bytes_transferred = next_bytes;
-                        self.progress
-                            .on_progress(&url, bytes_transferred, result.content_length);
+                        received_this_attempt = received_this_attempt
+                            .checked_add(chunk.len() as u64)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("transfer byte count overflow for {url}")
+                            })?;
+                        observer.observe(TransferEvent::Progress {
+                            url: &url,
+                            transferred_bytes: bytes_transferred,
+                            total_bytes,
+                        });
 
                         // Min speed enforcement.
                         if let Some(min_speed) = self.min_speed {
                             let elapsed = transfer_start.elapsed();
                             if elapsed > self.min_speed_duration {
-                                let speed = bytes_transferred as f64 / elapsed.as_secs_f64();
+                                let speed = received_this_attempt as f64 / elapsed.as_secs_f64();
                                 if speed < min_speed as f64 {
                                     let err = anyhow::anyhow!(
                                         "transfer speed {:.0} B/s below minimum {} B/s for {}",
@@ -303,7 +382,10 @@ impl TransferEngine {
                                         min_speed,
                                         url
                                     );
-                                    self.progress.on_error(&url, &err);
+                                    observer.observe(TransferEvent::Failed {
+                                        url: &url,
+                                        error: &err,
+                                    });
                                     return Err(err);
                                 }
                             }
@@ -317,6 +399,7 @@ impl TransferEngine {
 
                     // Finalize hash.
                     if let Some(hasher) = hasher {
+                        observer.observe(TransferEvent::Verifying { url: &url });
                         let hash_result = hasher.finalize();
                         result.hash = Some(hash_result.hex.clone());
 
@@ -330,7 +413,10 @@ impl TransferEngine {
                                     .unwrap_or("?"),
                                 hash_result.hex
                             );
-                            self.progress.on_error(&url, &err);
+                            observer.observe(TransferEvent::Failed {
+                                url: &url,
+                                error: &err,
+                            });
                             return Err(err);
                         }
                     }
@@ -338,7 +424,10 @@ impl TransferEngine {
                     result.bytes_transferred = bytes_transferred;
                     result.body = memory_sink;
 
-                    self.progress.on_complete(&url, bytes_transferred);
+                    observer.observe(TransferEvent::Completed {
+                        url: &url,
+                        transferred_bytes: bytes_transferred,
+                    });
                     return Ok(result);
                 }
                 Err(err) => {
@@ -372,7 +461,10 @@ impl TransferEngine {
 
                     let class = classify_error(None, &err);
                     if class == ErrorClass::Permanent {
-                        self.progress.on_error(&url, &err);
+                        observer.observe(TransferEvent::Failed {
+                            url: &url,
+                            error: &err,
+                        });
                         return Err(err);
                     }
                     tracing::debug!(attempt, "transient error, will retry: {}", err);
@@ -382,7 +474,10 @@ impl TransferEngine {
         }
 
         let err = last_err.unwrap_or_else(|| anyhow::anyhow!("transfer failed after retries"));
-        self.progress.on_error(&url, &err);
+        observer.observe(TransferEvent::Failed {
+            url: &url,
+            error: &err,
+        });
         Err(err)
     }
 
@@ -433,19 +528,11 @@ impl TransferEngine {
 
     /// Execute multiple transfers in parallel.
     ///
-    /// Concurrency is bounded by the connection pool's per-host and
-    /// global limits (permits are acquired before each task is
-    /// spawned). Each transfer is retried independently per the
-    /// engine's [`RetryConfig`]. The returned vector has one
-    /// `Result` per request, in the same order as the input; the call
-    /// itself never fails as a whole, and a panicked transfer task is
-    /// reported as an `Err` for that entry.
-    ///
-    /// Note: batch transfers currently buffer each response in memory
-    /// -- the per-request `body`, `hash`, and `output` settings are
-    /// not honored on this path (only `url`, `method`, `headers`, and
-    /// `resume` are). Use [`execute`](TransferEngine::execute) for
-    /// file output or hash verification.
+    /// Every entry runs through [`execute_observed`](Self::execute_observed),
+    /// so batch operation preserves request bodies, destinations, integrity
+    /// checks, streaming progress, retry, and resume semantics. Concurrency is
+    /// bounded by the connection pool's global limit, with the pool applying
+    /// its per-host limit to actual protocol requests.
     pub async fn execute_batch(
         &self,
         requests: Vec<TransferRequest>,
@@ -461,110 +548,29 @@ impl TransferEngine {
         let completed = Arc::new(AtomicUsize::new(0));
         let total_bytes = Arc::new(AtomicU64::new(0));
 
-        let mut handles = Vec::with_capacity(total);
-
-        for (index, request) in requests.into_iter().enumerate() {
-            let progress = Arc::clone(&progress);
-            let completed = Arc::clone(&completed);
-            let total_bytes = Arc::clone(&total_bytes);
-
-            let url = request.url.clone();
-            let method = request.method;
-            let headers = request.headers.clone();
-            let resume = request.resume;
-            let maximum_bytes = request.maximum_bytes;
-            let host = extract_host(&url).unwrap_or_else(|| "unknown".to_string());
-            let credential = self.auth.get(&url);
-            let retry_config = self.retry.clone();
-
-            let proto = match protocol::for_url(&url) {
-                Ok(p) => p,
-                Err(e) => {
-                    handles.push(tokio::spawn(async move { Err(e) }));
-                    continue;
-                }
-            };
-
-            // Acquire pool permit before spawning to respect limits.
-            let permit = self.pool.acquire(&host).await;
-
-            let handle = tokio::spawn(async move {
-                let _permit = permit;
-                progress.on_transfer_start(index, &url, None);
-
-                let mut last_err: Option<anyhow::Error> = None;
-                let mut success_result: Option<TransferResult> = None;
-
-                for attempt in 0..retry_config.max_attempts {
-                    if attempt > 0 {
-                        let delay = retry::compute_retry_delay(&retry_config, attempt - 1);
-                        tokio::time::sleep(delay).await;
-                    }
-
-                    let exec_request = TransferRequest {
-                        url: url.clone(),
-                        method,
-                        headers: headers.clone(),
-                        body: None,
-                        hash: None,
-                        maximum_bytes,
-                        resume,
-                        output: TransferOutput::Memory,
+        let concurrency = self.pool.config().max_total_connections.max(1);
+        let mut unordered = stream::iter(requests.into_iter().enumerate())
+            .map(|(index, request)| {
+                let progress = Arc::clone(&progress);
+                let completed = Arc::clone(&completed);
+                let total_bytes = Arc::clone(&total_bytes);
+                async move {
+                    let observer = BatchObserver {
+                        index,
+                        handler: progress,
+                        completed,
+                        total,
+                        total_bytes,
                     };
-
-                    match proto.execute(&exec_request, credential.as_ref()).await {
-                        Ok(result) => {
-                            progress.on_transfer_progress(
-                                index,
-                                result.bytes_transferred,
-                                result.content_length,
-                            );
-                            success_result = Some(result);
-                            break;
-                        }
-                        Err(err) => {
-                            let class = classify_error(None, &err);
-                            if class == ErrorClass::Permanent {
-                                last_err = Some(err);
-                                break;
-                            }
-                            last_err = Some(err);
-                        }
-                    }
+                    let result = self.execute_observed(request, &observer).await;
+                    (index, result)
                 }
-
-                let result = match success_result {
-                    Some(r) => {
-                        progress.on_transfer_complete(index, r.bytes_transferred);
-                        total_bytes.fetch_add(r.bytes_transferred, Ordering::Relaxed);
-                        Ok(r)
-                    }
-                    None => {
-                        let err = last_err
-                            .unwrap_or_else(|| anyhow::anyhow!("transfer failed after retries"));
-                        progress.on_transfer_error(index, &err);
-                        Err(err)
-                    }
-                };
-
-                let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
-                progress.on_batch_progress(done, total, total_bytes.load(Ordering::Relaxed));
-
-                result
-            });
-
-            handles.push(handle);
-        }
-
-        let mut results = Vec::with_capacity(handles.len());
-        for handle in handles {
-            match handle.await {
-                Ok(result) => results.push(result),
-                Err(e) => results.push(Err(anyhow::anyhow!("transfer task panicked: {e}"))),
-            }
-        }
-
-        results
+            })
+            .buffer_unordered(concurrency)
+            .collect::<Vec<_>>()
+            .await;
+        unordered.sort_by_key(|(index, _)| *index);
+        unordered.into_iter().map(|(_, result)| result).collect()
     }
 
     /// HEAD request -- check existence and get content-length.
@@ -592,6 +598,109 @@ impl TransferEngine {
         let requests: Vec<TransferRequest> =
             urls.iter().map(|url| TransferRequest::head(url)).collect();
         self.execute_batch(requests, None).await
+    }
+}
+
+/// Compatibility adapter from structured events to the original callback API.
+struct ProgressObserver<'a> {
+    handler: &'a dyn ProgressHandler,
+}
+
+impl TransferObserver for ProgressObserver<'_> {
+    fn observe(&self, event: TransferEvent<'_>) {
+        match event {
+            TransferEvent::Started {
+                url, total_bytes, ..
+            } => self.handler.on_start(url, total_bytes),
+            TransferEvent::Progress {
+                url,
+                transferred_bytes,
+                total_bytes,
+            } => self
+                .handler
+                .on_progress(url, transferred_bytes, total_bytes),
+            TransferEvent::Completed {
+                url,
+                transferred_bytes,
+            } => self.handler.on_complete(url, transferred_bytes),
+            TransferEvent::Failed { url, error } => self.handler.on_error(url, error),
+            TransferEvent::Retrying { .. } | TransferEvent::Verifying { .. } => {}
+        }
+    }
+}
+
+/// Maps one operation's structured events into the legacy batch callbacks.
+struct BatchObserver {
+    index: usize,
+    handler: Arc<dyn BatchProgressHandler>,
+    completed: Arc<AtomicUsize>,
+    total: usize,
+    total_bytes: Arc<AtomicU64>,
+}
+
+impl TransferObserver for BatchObserver {
+    fn observe(&self, event: TransferEvent<'_>) {
+        match event {
+            TransferEvent::Started {
+                url, total_bytes, ..
+            } => self.handler.on_transfer_start(self.index, url, total_bytes),
+            TransferEvent::Progress {
+                transferred_bytes,
+                total_bytes,
+                ..
+            } => self
+                .handler
+                .on_transfer_progress(self.index, transferred_bytes, total_bytes),
+            TransferEvent::Completed {
+                transferred_bytes, ..
+            } => {
+                self.handler
+                    .on_transfer_complete(self.index, transferred_bytes);
+                self.total_bytes
+                    .fetch_add(transferred_bytes, Ordering::Relaxed);
+                let done = self.completed.fetch_add(1, Ordering::Relaxed) + 1;
+                self.handler.on_batch_progress(
+                    done,
+                    self.total,
+                    self.total_bytes.load(Ordering::Relaxed),
+                );
+            }
+            TransferEvent::Failed { error, .. } => {
+                self.handler.on_transfer_error(self.index, error);
+                let done = self.completed.fetch_add(1, Ordering::Relaxed) + 1;
+                self.handler.on_batch_progress(
+                    done,
+                    self.total,
+                    self.total_bytes.load(Ordering::Relaxed),
+                );
+            }
+            TransferEvent::Retrying { .. } | TransferEvent::Verifying { .. } => {}
+        }
+    }
+}
+
+/// Returns the exact request body length when it is cheaply knowable.
+async fn request_body_length(request: &TransferRequest) -> Option<u64> {
+    match request.body.as_ref() {
+        Some(crate::types::TransferBody::File(path)) => tokio::fs::metadata(path)
+            .await
+            .ok()
+            .map(|metadata| metadata.len()),
+        Some(crate::types::TransferBody::Bytes(bytes)) => u64::try_from(bytes.len()).ok(),
+        Some(crate::types::TransferBody::Stream(_)) | None => None,
+    }
+}
+
+/// Adds a validated partial file's existing bytes to whole-object hashing.
+async fn hash_file_prefix(path: &std::path::Path, hasher: &mut StreamingHasher) -> Result<()> {
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut buffer = vec![0_u8; 128 * 1024];
+    loop {
+        let read = file.read(&mut buffer).await?;
+        if read == 0 {
+            return Ok(());
+        }
+        hasher.update(&buffer[..read]);
     }
 }
 
@@ -682,6 +791,46 @@ mod tests {
         let engine = TransferEngine::new(TransferEngineConfig::default());
         let results = engine.execute_batch(Vec::new(), None).await;
         assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn batch_preserves_file_outputs_and_hash_verification() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let first_source = dir.path().join("first-source");
+        let second_source = dir.path().join("second-source");
+        let first_destination = dir.path().join("first-destination");
+        let second_destination = dir.path().join("second-destination");
+        std::fs::write(&first_source, b"hello").unwrap();
+        std::fs::write(&second_source, b"world").unwrap();
+
+        let requests = vec![
+            TransferRequest::get_to_file(
+                &format!("file://{}", first_source.display()),
+                first_destination.clone(),
+            )
+            .with_hash(
+                crate::types::HashAlgorithm::Sha256,
+                "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+            ),
+            TransferRequest::get_to_file(
+                &format!("file://{}", second_source.display()),
+                second_destination.clone(),
+            )
+            .with_hash(
+                crate::types::HashAlgorithm::Sha256,
+                "486ea46224d1bb4fb680f34f7c9ad96a8f24ec88be73ea8e5a6c65260e9cb8a7",
+            ),
+        ];
+
+        let engine = TransferEngine::new(TransferEngineConfig::default());
+        let results = engine.execute_batch(requests, None).await;
+
+        assert!(results.iter().all(Result::is_ok));
+        assert_eq!(std::fs::read(first_destination).unwrap(), b"hello");
+        assert_eq!(std::fs::read(second_destination).unwrap(), b"world");
+        assert!(results
+            .into_iter()
+            .all(|result| result.unwrap().hash.is_some()));
     }
 
     #[tokio::test]

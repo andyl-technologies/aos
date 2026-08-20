@@ -59,6 +59,7 @@
 pub mod auth;
 pub mod bandwidth;
 pub mod hash;
+pub mod managed;
 pub mod pool;
 pub mod progress;
 pub mod protocol;
@@ -70,10 +71,25 @@ pub mod types;
 pub use auth::{AuthStore, Credential};
 pub use bandwidth::BandwidthLimiter;
 pub use hash::StreamingHasher;
+pub use managed::{DownloadRequest, DownloadResult, ResumePolicy, UploadRequest, UploadSource};
 pub use pool::{ConnectionPool, PoolConfig};
-pub use progress::{BatchProgressHandler, NoopProgress, ProgressHandler};
+pub use progress::{
+    BatchProgressHandler, NoopObserver, NoopProgress, ProgressHandler, TransferEvent,
+    TransferObserver,
+};
 pub use retry::RetryConfig;
 pub use transfer::{TransferEngine, TransferEngineConfig};
 pub use types::{
     HashAlgorithm, HashSpec, Method, TransferBody, TransferOutput, TransferRequest, TransferResult,
 };
+
+/// The shared transfer manager used by CLI and service workflows.
+///
+/// `TransferEngine` remains as the compatibility name while callers migrate
+/// to the manager terminology. Both names refer to the same implementation and
+/// therefore share identical pooling, retry, resume, integrity, and progress
+/// behavior.
+pub type TransferManager = TransferEngine;
+
+/// Configuration for [`TransferManager`].
+pub type TransferManagerConfig = TransferEngineConfig;
