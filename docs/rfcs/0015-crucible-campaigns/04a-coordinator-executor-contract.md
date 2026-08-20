@@ -669,6 +669,31 @@ field remains insufficient and non-conforming. Production listener policy must
 configure the credential-to-principal resolver and the ordinary per-operation
 authorizer; neither mapping enters campaign state.
 
+The daemon listener checkpoint accepts an already-bound nonblocking Unix
+listener behind a fixed pool of `1..=256` connection workers and a bounded
+`1..=1024` pending-socket queue. A full queue closes the newly accepted socket
+without decoding it. Each connection serves `1..=65,536` complete requests
+(4,096 by default) before reconnecting through listener admission. Each worker
+resolves `SO_PEERCRED` exactly once per connection, then serves complete frames
+until that ceiling, clean peer close, or the first protocol/response-contract/
+I/O failure. Request authorization failures retain the ordinary request-bound
+semantic error behavior. The resolver MUST be a bounded, nonblocking lookup
+over immutable local deployment policy; external identity I/O does not run in
+a connection worker. Sticky shutdown stops acceptance,
+interrupts every active socket, discards queued sockets, and joins every worker
+before returning. Partial worker-start failure joins every worker already
+started; a caught worker invariant panic makes shutdown sticky and fails the
+listener owner. The accept loop observes shutdown at a configured interval from
+1 ms through 1 s. Accepted, capacity-rejected, cleanly completed,
+peer-rejected, and protocol-failed connection counts are operational telemetry
+and never enter campaign identity.
+
+The listener deliberately accepts a pre-bound descriptor. Daemon bootstrap
+still owns socket-path creation, stale-path handling, filesystem ownership and
+mode, deployment-specific principal/operation policy loading, and operational
+diagnostic routing. Constructing the bounded listener without those controls
+does not make the endpoint production-authorized.
+
 The stable error envelope preserves authorization, stale/conflict, invalid
 transition, resource, availability, and integrity meaning across direct and
 loopback calls without exposing backend paths or private diagnostics. The

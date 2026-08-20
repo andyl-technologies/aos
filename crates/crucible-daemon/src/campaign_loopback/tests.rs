@@ -1045,6 +1045,38 @@ fn authenticated_loopback_binds_kernel_peer_to_the_claimed_principal() {
 }
 
 #[test]
+fn authenticated_connection_rejects_an_invalid_request_ceiling_before_policy() {
+    let (mut client, mut server) = UnixStream::pair().expect("stream pair");
+    let repository = CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new(
+            "campaign-loopback-request-ceiling",
+            u64::MAX,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    );
+    let error = serve_authenticated_repository_campaign_connection_with_limits(
+        &mut server,
+        &repository,
+        &|_| -> Result<CampaignPrincipal, crucible_campaign::CampaignAuthorizationError> {
+            panic!("invalid request limit reached the peer resolver")
+        },
+        &AllowAll,
+        LoopbackCampaignTimeouts::default(),
+        0,
+    )
+    .expect_err("zero request ceiling");
+    assert!(matches!(
+        error,
+        LoopbackCampaignServerError::Protocol(LoopbackCampaignProtocolError::InvalidRequestLimit)
+    ));
+    client
+        .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+        .expect("client timeout");
+    let mut byte = [0_u8; 1];
+    assert_eq!(client.read(&mut byte).expect("server close"), 0);
+}
+
+#[test]
 fn campaign_loopback_preserves_authorization_before_repository_access() {
     let request = get_request("absent");
     let get_snapshot = snapshot_request("absent", snapshot("absent"));
