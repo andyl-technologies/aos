@@ -791,6 +791,23 @@ impl CampaignRepository {
         let parent = self.validate_branch_request_references(request)?;
         self.validate_branch_request_campaign_scope(&current, request, &parent)?;
 
+        let frontier_index = self.merkle.get(
+            current.snapshot.roots().exploration,
+            frontier_index_anchor_key(),
+        )?;
+        let initial_continuation = if let Some(index) = frontier_index {
+            if self
+                .merkle
+                .get(index, frontier_index_order_key(request_id))?
+                .is_some()
+            {
+                return Err(integrity("branch-request-frontier-slot-is-not-empty"));
+            }
+            Some(self.initial_continuation_state(request)?)
+        } else {
+            None
+        };
+
         let request_content = self.put_branch_request(request)?;
         if request_content != request_id.content_id() {
             return Err(integrity("branch-request-publication-id-mismatch"));
@@ -800,25 +817,11 @@ impl CampaignRepository {
             request_key,
             request_content,
         )?;
-        if let Some(frontier_index) = self.merkle.get(
-            current.snapshot.roots().exploration,
-            frontier_index_anchor_key(),
-        )? {
-            if self
-                .merkle
-                .get(frontier_index, frontier_index_order_key(request_id))?
-                .is_some()
-            {
-                return Err(integrity("branch-request-frontier-slot-is-not-empty"));
-            }
+        if let Some(initial_continuation) = initial_continuation {
             let next_frontier = self
                 .frontier_index_after(
                     current.snapshot.roots().exploration,
-                    &[(
-                        request_id,
-                        request.branch_point(),
-                        self.initial_continuation_state(request)?,
-                    )],
+                    &[(request_id, request.branch_point(), initial_continuation)],
                     true,
                 )?
                 .ok_or_else(|| integrity("branch-request-frontier-index-disappeared"))?;

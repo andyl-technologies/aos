@@ -190,7 +190,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   materialization. Implementation-version 7 `weighted_categorical` adds exact
   request-keyed integer-weight sampling without replacement over at most 256
   discrete alternatives, including bounded rejection sampling and restart
-  replay. Static continuation projection remains valid after modeled
+  replay. Implementation-version 8 `ordered_mixture` recursively schedules
+  executable finite children by exact weighted virtual finish time, suppresses
+  duplicate values while advancing their provenance, and enforces 512-value,
+  8,192-work-unit, and 64-level bounds. Static continuation projection remains
+  valid after modeled
   observations exist: it binds the exact observation root and projects exact
   completed visits from canonical branch-point credit sets while leaving richer
   reward, novelty, and finding statistics zero. Other
@@ -653,7 +657,7 @@ area mapping ensures that no part of the RFC is merely aspirational:
 | `CMOD-1..30` | 1, 2, 4 | campaign model, content address, attempt idempotence, continuity |
 | `SEL-1..21` | 2 | typed choice, ABI conformance, end-to-end determinism |
 | `GUIDE-1..24` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
-| `LAZY-1..45` | 4 | lazy frontier, attempt idempotence, campaign replay |
+| `LAZY-1..46` | 4 | lazy frontier, attempt idempotence, campaign replay |
 | `CCOMP-1..24` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
 | `HFORK-1..24` | 6, 7 | hot-fork equivalence/isolation/scaling, world-fork atomicity, ABI/license |
 | `CSTORE-1..22` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |

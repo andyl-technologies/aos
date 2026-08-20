@@ -15,6 +15,12 @@ struct FiniteExpansionInputs {
     completed_visits: u64,
 }
 
+struct MixtureComponentState {
+    values: Vec<ChoiceValue>,
+    cursor: usize,
+    weight: u64,
+}
+
 impl CampaignRepository {
     pub(super) fn initial_continuation_state(
         &self,
@@ -73,6 +79,17 @@ impl CampaignRepository {
             )
             .map(Some)
             .map_err(|_| integrity("candidate-source-cardinality-overflow")),
+            (
+                CandidateGeneratorAlgorithm::OrderedMixture { components },
+                crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
+                _,
+            ) => self
+                .ordered_mixture_candidates(request, domain, components)?
+                .map(|candidates| {
+                    u64::try_from(candidates.len())
+                        .map_err(|_| integrity("candidate-source-cardinality-overflow"))
+                })
+                .transpose(),
             (
                 CandidateGeneratorAlgorithm::All,
                 crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
@@ -186,6 +203,17 @@ impl CampaignRepository {
                 .get(candidate_index(ordinal)?)
                 .copied()
                 .map(ChoiceValue::Discrete)
+                .map(Some)
+                .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality")),
+            (
+                CandidateGeneratorAlgorithm::OrderedMixture { components },
+                crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
+                _,
+            ) => self
+                .ordered_mixture_candidates(request, domain, components)?
+                .ok_or_else(|| integrity("generated-proposal-owner-is-not-implemented"))?
+                .get(candidate_index(ordinal)?)
+                .cloned()
                 .map(Some)
                 .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality")),
             (
@@ -309,6 +337,216 @@ impl CampaignRepository {
             candidates.push(remaining.remove(selected).0);
         }
         Ok(candidates)
+    }
+
+    fn ordered_mixture_candidates(
+        &self,
+        request: &BranchRequest,
+        domain: &ChoiceDomain,
+        components: &[crate::WeightedGenerator],
+    ) -> Result<Option<Vec<ChoiceValue>>, CampaignRepositoryError> {
+        let mut remaining_work = crate::ORDERED_MIXTURE_GENERATOR_MAX_WORK_ITEMS;
+        self.ordered_mixture_candidates_with_budget(
+            request,
+            domain,
+            components,
+            0,
+            &mut remaining_work,
+        )
+    }
+
+    fn ordered_mixture_candidates_with_budget(
+        &self,
+        request: &BranchRequest,
+        domain: &ChoiceDomain,
+        components: &[crate::WeightedGenerator],
+        depth: usize,
+        remaining_work: &mut usize,
+    ) -> Result<Option<Vec<ChoiceValue>>, CampaignRepositoryError> {
+        if depth > crate::ORDERED_MIXTURE_GENERATOR_MAX_DEPTH {
+            return Err(integrity("ordered-mixture-generator-depth-limit"));
+        }
+        let mut states = Vec::with_capacity(components.len());
+        for component in components {
+            let Some(values) = self.bounded_static_generator_candidates(
+                request,
+                domain,
+                component.generator(),
+                depth + 1,
+                remaining_work,
+            )?
+            else {
+                return Ok(None);
+            };
+            states.push(MixtureComponentState {
+                values,
+                cursor: 0,
+                weight: component.weight(),
+            });
+        }
+
+        let mut emitted = BTreeSet::new();
+        let mut candidates = Vec::new();
+        while let Some(selected) = next_mixture_component(&states)? {
+            charge_mixture_work(remaining_work, 1)?;
+            let state = &mut states[selected];
+            let value = state
+                .values
+                .get(state.cursor)
+                .cloned()
+                .ok_or_else(|| integrity("ordered-mixture-cursor-is-invalid"))?;
+            state.cursor += 1;
+            if !emitted.insert(value.clone()) {
+                continue;
+            }
+            if candidates.len() == crate::ORDERED_MIXTURE_GENERATOR_MAX_CANDIDATES {
+                return Err(integrity("ordered-mixture-generator-candidate-limit"));
+            }
+            candidates.push(value);
+        }
+        Ok(Some(candidates))
+    }
+
+    fn bounded_static_generator_candidates(
+        &self,
+        request: &BranchRequest,
+        domain: &ChoiceDomain,
+        generator: CandidateGeneratorSpecId,
+        depth: usize,
+        remaining_work: &mut usize,
+    ) -> Result<Option<Vec<ChoiceValue>>, CampaignRepositoryError> {
+        if depth > crate::ORDERED_MIXTURE_GENERATOR_MAX_DEPTH {
+            return Err(integrity("ordered-mixture-generator-depth-limit"));
+        }
+        let spec = self.read_generator(generator.content_id())?;
+        let values = match (spec.algorithm(), spec.implementation_version(), domain) {
+            (
+                CandidateGeneratorAlgorithm::All,
+                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Boolean(_),
+            ) => vec![ChoiceValue::Boolean(false), ChoiceValue::Boolean(true)],
+            (
+                CandidateGeneratorAlgorithm::All,
+                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Discrete(discrete),
+            ) => {
+                require_mixture_work_capacity(remaining_work, discrete.alternatives().len())?;
+                discrete
+                    .alternatives()
+                    .keys()
+                    .copied()
+                    .map(ChoiceValue::Discrete)
+                    .collect()
+            }
+            (
+                CandidateGeneratorAlgorithm::BoundaryInteger,
+                crate::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(integer),
+            ) => self
+                .boundary_integer_candidates(request, integer)?
+                .into_iter()
+                .map(ChoiceValue::Integer)
+                .collect(),
+            (
+                CandidateGeneratorAlgorithm::StratifiedInteger { strata },
+                crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(integer),
+            ) => {
+                let count = stratified_integer_candidate_count(*strata, integer)?;
+                let count = usize::try_from(count)
+                    .map_err(|_| integrity("ordered-mixture-generator-work-limit"))?;
+                require_mixture_work_capacity(remaining_work, count)?;
+                (1..=count)
+                    .map(|ordinal| {
+                        let ordinal = u64::try_from(ordinal)
+                            .map_err(|_| integrity("ordered-mixture-generator-work-limit"))?;
+                        stratified_integer_candidate(*strata, integer, ordinal)
+                            .map(ChoiceValue::Integer)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+            (
+                CandidateGeneratorAlgorithm::LogInteger { base },
+                crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(integer),
+            ) => log_integer_candidates(*base, integer)?
+                .into_iter()
+                .map(ChoiceValue::Integer)
+                .collect(),
+            (
+                CandidateGeneratorAlgorithm::PermutedInteger,
+                crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(integer),
+            ) => {
+                let count = permuted_integer_candidate_count(integer)?;
+                let count = usize::try_from(count)
+                    .map_err(|_| integrity("ordered-mixture-generator-work-limit"))?;
+                require_mixture_work_capacity(remaining_work, count)?;
+                (1..=count)
+                    .map(|index| {
+                        let ordinal = u64::try_from(index)
+                            .map_err(|_| integrity("ordered-mixture-generator-work-limit"))?;
+                        permuted_integer_candidate(request, integer, ordinal)
+                            .map(ChoiceValue::Integer)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+            (
+                CandidateGeneratorAlgorithm::WeightedCategorical { weights },
+                crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Discrete(discrete),
+            ) => self
+                .weighted_categorical_candidates(request, discrete, weights)?
+                .into_iter()
+                .map(ChoiceValue::Discrete)
+                .collect(),
+            (
+                CandidateGeneratorAlgorithm::OrderedMixture { components },
+                crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
+                _,
+            ) => {
+                return self.ordered_mixture_candidates_with_budget(
+                    request,
+                    domain,
+                    components,
+                    depth,
+                    remaining_work,
+                );
+            }
+            (
+                CandidateGeneratorAlgorithm::All,
+                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(_),
+            )
+            | (
+                CandidateGeneratorAlgorithm::WeightedCategorical { .. },
+                crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Boolean(_) | ChoiceDomain::Integer(_),
+            )
+            | (
+                CandidateGeneratorAlgorithm::BoundaryInteger,
+                crate::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
+            )
+            | (
+                CandidateGeneratorAlgorithm::StratifiedInteger { .. },
+                crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
+            )
+            | (
+                CandidateGeneratorAlgorithm::LogInteger { .. },
+                crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
+            )
+            | (
+                CandidateGeneratorAlgorithm::PermutedInteger,
+                crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
+            ) => return Err(integrity("candidate-generator-domain-family-mismatch")),
+            _ => return Ok(None),
+        };
+        charge_mixture_work(remaining_work, values.len())?;
+        Ok(Some(values))
     }
 
     fn boundary_integer_candidates(
@@ -770,6 +1008,64 @@ fn projection_order_key(id: ContentId) -> CampaignHash {
 
 fn candidate_index(ordinal: u64) -> Result<usize, CampaignRepositoryError> {
     usize::try_from(ordinal - 1).map_err(|_| integrity("proposal-ordinal-is-not-canonical"))
+}
+
+fn next_mixture_component(
+    states: &[MixtureComponentState],
+) -> Result<Option<usize>, CampaignRepositoryError> {
+    let mut selected = None;
+    for (index, state) in states.iter().enumerate() {
+        if state.cursor == state.values.len() {
+            continue;
+        }
+        let Some(current) = selected else {
+            selected = Some(index);
+            continue;
+        };
+        let current_state = &states[current];
+        let state_finish = u128::try_from(
+            state
+                .cursor
+                .checked_add(1)
+                .ok_or_else(|| integrity("ordered-mixture-generator-work-limit"))?,
+        )
+        .map_err(|_| integrity("ordered-mixture-generator-work-limit"))?
+        .checked_mul(u128::from(current_state.weight))
+        .ok_or_else(|| integrity("ordered-mixture-generator-weight-overflow"))?;
+        let current_finish = u128::try_from(
+            current_state
+                .cursor
+                .checked_add(1)
+                .ok_or_else(|| integrity("ordered-mixture-generator-work-limit"))?,
+        )
+        .map_err(|_| integrity("ordered-mixture-generator-work-limit"))?
+        .checked_mul(u128::from(state.weight))
+        .ok_or_else(|| integrity("ordered-mixture-generator-weight-overflow"))?;
+        if state_finish < current_finish {
+            selected = Some(index);
+        }
+    }
+    Ok(selected)
+}
+
+fn charge_mixture_work(
+    remaining_work: &mut usize,
+    work: usize,
+) -> Result<(), CampaignRepositoryError> {
+    *remaining_work = remaining_work
+        .checked_sub(work)
+        .ok_or_else(|| integrity("ordered-mixture-generator-work-limit"))?;
+    Ok(())
+}
+
+fn require_mixture_work_capacity(
+    remaining_work: &usize,
+    work: usize,
+) -> Result<(), CampaignRepositoryError> {
+    if work > *remaining_work {
+        return Err(integrity("ordered-mixture-generator-work-limit"));
+    }
+    Ok(())
 }
 
 fn weighted_categorical_draw(

@@ -164,10 +164,26 @@ exhausting that bound fails closed. This is exact integer-weight sampling
 without replacement, contains no floating-point arithmetic, and reconstructs
 the same complete order from the immutable request after restart.
 
+Generator implementation-version 8 defines `ordered_mixture` over one through
+256 ordered positive-weight child specifications. Every child must itself have
+an executable finite owner for the request's exact domain; a suspended child
+suspends the complete mixture. Resolve each child's complete candidate order,
+then maintain its zero-based consumed count `e_i` and weight `w_i`. At each
+step choose the nonexhausted component with the least exact virtual finish time
+`(e_i + 1) / w_i`, comparing fractions by checked `u128` cross multiplication
+and breaking ties by original component ordinal. Advance that component even
+when its value has already been emitted, and emit a value only on its first
+occurrence in canonical `ChoiceValue` equality. Recursive materialization and
+each scheduler advance consume one of 8,192 work units; nesting is limited to
+64 mixtures and output to 512 distinct values. Exceeding any bound fails closed.
+This preserves exact integer weights without expanding them into repeated
+entries, makes duplicate suppression independent of map insertion order, and
+reconstructs the same mixture after restart.
+
 Other algorithms remain valid suspended specifications but fail closed at
 proposal issuance and expansion projection until their versioned cursor and
 feedback owners are implemented. Earlier and unknown implementation versions
-remain suspended rather than being reinterpreted as versions 2 through 7; this
+remain suspended rather than being reinterpreted as versions 2 through 8; this
 preserves owner validation of histories created before executable enumeration
 landed.
 

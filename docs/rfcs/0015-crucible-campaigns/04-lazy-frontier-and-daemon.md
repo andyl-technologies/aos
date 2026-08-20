@@ -395,9 +395,12 @@ Implementation-version 6 `permuted_integer` is request-keyed and static for
 integer domains with at most `2^64 - 1` legal values, using the four-round
 bijection in §03.2. Implementation-version 7 `weighted_categorical` is static
 for discrete weight maps containing at most 256 alternatives and uses the exact
-request-keyed rejection-sampled integer order in §03.2. Proposals from every
-other generated source require the selected deterministic generator owner to
-reproduce the same value and remain fail-closed until that owner is implemented.
+request-keyed rejection-sampled integer order in §03.2. Implementation-version
+8 `ordered_mixture` recursively composes those finite owners under the exact
+weighted virtual-finish schedule, duplicate suppression, and work/depth/output
+bounds in §03.2. Proposals from every other generated source require the
+selected deterministic generator owner to reproduce the same value and remain
+fail-closed until that owner is implemented.
 
 The transition publishes the immutable `Proposal` and `ProposalIssued` fact,
 then makes an exact three-key delta to the exploration root:
@@ -427,15 +430,23 @@ budget, create a graph child, or count as an admitted continuation value.
   `log_integer` over a strictly positive integer domain are static generated
   sources, as is implementation-version 6 `permuted_integer` over an integer
   domain with at most `2^64 - 1` legal values and implementation-version 7
-  `weighted_categorical` over at most 256 exact discrete alternatives. Other
-  generated proposal issuance MUST fail closed unless the named deterministic
-  generator owner reproduces the value from authenticated campaign facts.
+  `weighted_categorical` over at most 256 exact discrete alternatives and
+  implementation-version 8 `ordered_mixture` within its exact recursive work
+  profile. Other generated proposal issuance MUST fail closed unless the named
+  deterministic generator owner reproduces the value from authenticated
+  campaign facts.
 - **[LAZY-45]** Weighted-categorical implementation-version 7 MUST derive every
   ordinal by the exact request-keyed rejection-sampled `u128` algorithm in
   §03.2, remove each selected alternative before the next draw, reject domain
   keys or counts outside its exact 256-alternative profile, and reconstruct the
   same order during import and restart. Earlier and unknown weighted versions
   MUST remain suspended.
+- **[LAZY-46]** Ordered-mixture implementation-version 8 MUST schedule only
+  executable finite child owners by the exact virtual-finish fractions in
+  §03.2, use component ordinal as the final tie-break, advance duplicate-
+  producing children without emitting the value twice, and enforce the exact
+  512-value, 8,192-work-unit, and 64-level bounds during local and imported
+  owner replay. A suspended child MUST suspend the complete mixture.
 
 ## 04.13 Atomic attempt admission
 
@@ -541,7 +552,8 @@ implementation-version 3 `boundary_integer`, or implementation-version 4
 `stratified_integer`, or implementation-version 5 `log_integer` over a strictly
 positive integer domain, or implementation-version 6 `permuted_integer` over an
 integer domain with at most `2^64 - 1` legal values, or implementation-version
-7 `weighted_categorical` over at most 256 discrete alternatives:
+7 `weighted_categorical` over at most 256 discrete alternatives, or
+implementation-version 8 `ordered_mixture` over executable finite children:
 
 - no proposal at the next canonical ordinal and remaining proposal budget is
   `Ready`;
@@ -593,11 +605,12 @@ admission is rejected.
   strictly positive integer domain or implementation-version 6
   `permuted_integer` over an integer domain with at most `2^64 - 1` legal
   values or implementation-version 7 `weighted_categorical` over at most 256
-  exact discrete alternatives. Static continuation state MAY bind a nonempty
-  observation root because its state is independent of feedback. Its completed-
-  visit statistic MUST equal the exact nested credit-set count, and it MUST NOT
-  synthesize reward, novelty, or finding statistics before their canonical
-  owners are implemented.
+  exact discrete alternatives or implementation-version 8 `ordered_mixture`
+  within its exact recursive work profile. Static continuation state MAY bind a
+  nonempty observation root because its state is independent of feedback. Its
+  completed-visit statistic MUST equal the exact nested credit-set count, and it
+  MUST NOT synthesize reward, novelty, or finding statistics before their
+  canonical owners are implemented.
 
 ## 04.15 Atomic observation publication
 
