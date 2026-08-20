@@ -392,6 +392,102 @@ pub struct LinuxQemuCgroupReleaseError {
     source: LinuxQemuCgroupError,
 }
 
+/// Authenticated direct-child wait authority retained for reap or quarantine.
+#[derive(Debug)]
+#[must_use = "the direct child must be reaped or transferred to quarantine"]
+pub struct LinuxQemuDirectChild {
+    identity: QemuProcessIdentity,
+    child: QemuNodeChild,
+    cgroup_path: PathBuf,
+}
+
+impl LinuxQemuDirectChild {
+    /// Returns the exact process-generation identity authenticated at handoff.
+    #[must_use]
+    pub const fn identity(&self) -> &QemuProcessIdentity {
+        &self.identity
+    }
+
+    /// Returns whether this direct-child authority observed `waitpid` success.
+    #[must_use]
+    pub const fn is_reaped(&self) -> bool {
+        self.child.reaped()
+    }
+
+    /// Force-kills and reaps the exact retained direct child.
+    ///
+    /// The caller must run this blocking wait on its dedicated supervision or
+    /// quarantine worker. The authority remains owned by `self` on every
+    /// error, so a failed wait cannot discard the only direct-child handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxQemuCgroupError::ProcessMembership`] if a still-running
+    /// child no longer has the authenticated process identity. Returns
+    /// [`LinuxQemuCgroupError::Io`] when polling, killing, or reaping the direct
+    /// child fails.
+    pub fn kill_and_reap_blocking(&mut self) -> Result<(), LinuxQemuCgroupError> {
+        if self.child.reaped() {
+            return Ok(());
+        }
+        if self
+            .child
+            .try_wait_natural_exit()
+            .map_err(|source| LinuxQemuCgroupError::Io {
+                operation: "poll retained QEMU direct child",
+                path: self.cgroup_path.clone(),
+                source: io::Error::other(source),
+            })?
+            .is_some()
+        {
+            return Ok(());
+        }
+        if linux_process_identity(self.identity.process_id)
+            .map_err(|source| LinuxQemuCgroupError::Io {
+                operation: "authenticate retained QEMU direct child",
+                path: self.cgroup_path.clone(),
+                source: io::Error::other(source),
+            })?
+            .as_ref()
+            != Some(&self.identity)
+        {
+            return Err(LinuxQemuCgroupError::ProcessMembership {
+                path: self.cgroup_path.clone(),
+            });
+        }
+        self.child
+            .force_kill_and_reap_failed_realization()
+            .map_err(|source| LinuxQemuCgroupError::Io {
+                operation: "kill and reap retained QEMU direct child",
+                path: self.cgroup_path.clone(),
+                source: io::Error::other(source),
+            })
+    }
+}
+
+/// Failed direct-child authentication with the wait authority retained.
+#[derive(Debug, Error)]
+#[error("failed to authenticate QEMU direct child: {source}")]
+#[must_use = "recover the direct child for reap or quarantine"]
+pub struct LinuxQemuDirectChildAuthenticationError {
+    source: LinuxQemuCgroupError,
+    child: Box<QemuNodeChild>,
+}
+
+impl LinuxQemuDirectChildAuthenticationError {
+    /// Returns the authentication failure without consuming the child handle.
+    #[must_use]
+    pub const fn source_error(&self) -> &LinuxQemuCgroupError {
+        &self.source
+    }
+
+    /// Recovers the exact direct-child wait authority after failed handoff.
+    #[must_use]
+    pub fn into_child(self) -> QemuNodeChild {
+        *self.child
+    }
+}
+
 impl LinuxQemuCgroupReleaseError {
     /// Returns the removal failure without consuming the retained authority.
     #[must_use]
@@ -1169,6 +1265,35 @@ impl LinuxQemuCgroup {
         self.authenticate_process_id(child.process_id())
     }
 
+    /// Retains the authenticated direct-child wait handle for reap or quarantine.
+    ///
+    /// Authentication derives the PID/start-time/executable identity from the
+    /// owned child and brackets the bounded membership scan with that identity.
+    /// The returned authority must remain co-owned with this cgroup and its
+    /// watcher until direct-child reap and cgroup emptiness are both attested.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxQemuDirectChildAuthenticationError`] with the original
+    /// child handle when process identity or cgroup membership cannot be
+    /// authenticated.
+    pub fn retain_child(
+        &mut self,
+        child: QemuNodeChild,
+    ) -> Result<LinuxQemuDirectChild, LinuxQemuDirectChildAuthenticationError> {
+        match self.authenticate_child(&child) {
+            Ok(identity) => Ok(LinuxQemuDirectChild {
+                identity,
+                child,
+                cgroup_path: self.path.clone(),
+            }),
+            Err(source) => Err(LinuxQemuDirectChildAuthenticationError {
+                source,
+                child: Box::new(child),
+            }),
+        }
+    }
+
     fn authenticate_process_id(
         &mut self,
         process_id: u32,
@@ -1707,6 +1832,7 @@ fn read_control(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::process::Command;
 
     use super::*;
 
@@ -2474,6 +2600,40 @@ mod tests {
             group.authenticate_process_id(process_id),
             Err(LinuxQemuCgroupError::ProcessMembership { .. })
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn direct_child_wait_authority_survives_handoff_until_reap()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let child = QemuNodeChild::new(Command::new("sleep").arg("60").spawn()?);
+        let process_id = child.process_id();
+        fs::write(
+            directory.path().join("cgroup.procs"),
+            format!("{process_id}\n"),
+        )?;
+        let (control, _cancellation_reader) = watcher_control_fixture(directory.path(), true)?;
+        let mut group = LinuxQemuCgroup {
+            path: directory.path().to_owned(),
+            parent_directory: open_directory(
+                directory.path(),
+                "open direct-child handoff parent fixture",
+            )?,
+            name: String::from("direct-child-handoff"),
+            maximum_tasks: 1,
+            control,
+        };
+
+        let mut retained = group
+            .retain_child(child)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        assert_eq!(retained.identity().process_id, process_id);
+        assert!(!retained.is_reaped());
+
+        retained.kill_and_reap_blocking()?;
+        assert!(retained.is_reaped());
+        assert!(linux_process_identity(process_id)?.is_none());
         Ok(())
     }
 }

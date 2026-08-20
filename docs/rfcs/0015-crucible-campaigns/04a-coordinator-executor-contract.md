@@ -791,7 +791,10 @@ retains independent `cgroup.kill` and `cgroup.events` access for
 cancellation/reap supervision, derives the exact PID/start-time/executable
 identity from the owned direct child, authenticates that process generation
 before and after a fixed-memory membership scan bounded to 65,536 tasks, and
-byte-bounds every other pseudo-file read. It pins parent and child directory
+retains the nonduplicable direct-child wait handle in a must-reap authority.
+That authority rechecks the recorded generation before force-kill and preserves
+the handle on every reap error. Every other pseudo-file read is byte-bounded.
+The cgroup authority pins parent and child directory
 identities instead of trusting mutable paths and removes the child under the
 namespace lock only after `populated 0` is observed and its named identity is
 reauthenticated. The CPU controller caps aggregate CPU time; exact virtual-CPU
@@ -822,7 +825,8 @@ retry or quarantine. Dropping an unjoined watcher also latches terminal closure
 and leaves its worker retaining authority until empty, fail-closed.
 
 This authority is not yet the production guard. Transfer of the authenticated
-direct-child identity into persistent reap/quarantine ownership, aggregate
+direct-child wait authority out of a failed live node and into the persistent
+reap/quarantine owner, aggregate
 filesystem quota, concrete guard composition of the execution-quantum counter,
 invocation of launch-command resource-profile admission, pinned run-directory
 ownership, and concrete session wiring remain mandatory before the guarded path

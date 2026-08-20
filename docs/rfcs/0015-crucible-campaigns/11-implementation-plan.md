@@ -197,7 +197,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   authority instead of dropping it. Process membership is fixed-memory and
   bounded to 65,536 tasks. The authority derives PID/start-time/executable
   identity from its owned direct child and checks that exact process generation
-  on both sides of the scan; all other cgroup pseudo-file reads are byte-bounded.
+  on both sides of the scan. It then retains the nonduplicable direct-child wait
+  handle in a must-reap authority that rechecks identity before force-kill and
+  preserves the handle on every reap error. All other cgroup pseudo-file reads
+  are byte-bounded.
   Production child contracts require a configured non-root user and group
   distinct from every real, effective, saved, or supplementary supervisor
   credential; the pre-exec path clears supplementary groups and installs all
@@ -211,8 +214,9 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   caught invariant panics enter a non-reentrant parked quarantine. A bounded
   wait returns the live watcher on timeout, and dropping an unjoined watcher
   latches closure while its worker retains authority until empty.
-  Campaign-level supervisor ownership, transfer of the authenticated
-  direct-child identity into persistent reaper/quarantine ownership, aggregate
+  Campaign-level supervisor ownership, extraction of the authenticated
+  direct-child wait authority from a failed live node into persistent
+  reaper/quarantine ownership, aggregate
   filesystem quota, execution-quantum counter composition, pinned run-directory
   ownership, the modeled attempt driver, concrete session wiring, and responsive
   multi-slot scheduling remain open.
