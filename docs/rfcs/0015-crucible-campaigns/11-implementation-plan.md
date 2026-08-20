@@ -321,7 +321,9 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   `QueryFrontier` page authenticates a fixed exploration-root index anchor,
   exact request-ordered continuation projection bodies, continuation or EOF,
   and full snapshot metadata within the same proof/message bounds as the
-  choice-index query.
+  choice-index query. A separately authorized `GetFrontierObject` call proves
+  one exact projection membership and returns only its strict branch-request
+  body; it cannot read arbitrary exploration or content-store objects.
   A nested choice index is anchored in the graph root and updated atomically by
   explicit and observation-driven discovery. `QueryChoices` pages at most eight
   opportunity IDs with one exact anchor proof and one exact range/EOF proof;

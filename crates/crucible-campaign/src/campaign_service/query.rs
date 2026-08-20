@@ -1,4 +1,4 @@
-//! Strict snapshot-bound campaign graph, object, and choice query messages.
+//! Strict snapshot-bound campaign graph, frontier, object, and choice queries.
 
 use crucible_cas::content_store::ContentId;
 
@@ -689,6 +689,270 @@ impl Canonical for QueryCampaignFrontierResponse {
             page_proof: MerkleMapPageProof::decode(decoder)?,
         };
         ensure_message_size(&response, "query-campaign-frontier-response-encoded-bytes")?;
+        Ok(response)
+    }
+}
+
+/// Strict request for one branch-request body authenticated by the frontier.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GetCampaignFrontierObjectRequest {
+    schema_version: u32,
+    principal: CampaignPrincipal,
+    campaign: CampaignName,
+    snapshot: CampaignSnapshotId,
+    request: BranchRequestId,
+}
+
+impl GetCampaignFrontierObjectRequest {
+    /// Builds one snapshot-bound frontier-object request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the encoded request exceeds the
+    /// service message bound.
+    pub fn new(
+        principal: CampaignPrincipal,
+        campaign: CampaignName,
+        snapshot: CampaignSnapshotId,
+        request: BranchRequestId,
+    ) -> Result<Self, CampaignCodecError> {
+        let value = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            principal,
+            campaign,
+            snapshot,
+            request,
+        };
+        ensure_message_size(&value, "get-campaign-frontier-object-request-encoded-bytes")?;
+        Ok(value)
+    }
+
+    /// Returns the authenticated operational principal.
+    #[must_use]
+    pub const fn principal(&self) -> &CampaignPrincipal {
+        &self.principal
+    }
+
+    /// Returns the canonical campaign name.
+    #[must_use]
+    pub const fn campaign(&self) -> &CampaignName {
+        &self.campaign
+    }
+
+    /// Returns the exact current snapshot that anchors the request.
+    #[must_use]
+    pub const fn snapshot(&self) -> CampaignSnapshotId {
+        self.snapshot
+    }
+
+    /// Returns the exact branch request whose body is requested.
+    #[must_use]
+    pub const fn request(&self) -> BranchRequestId {
+        self.request
+    }
+
+    /// Returns the digest of every canonical request byte.
+    #[must_use]
+    pub fn request_digest(&self) -> CampaignHash {
+        service_request_digest("get-campaign-frontier-object", self)
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes one strict bounded frontier-object request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical,
+    /// unsupported, or oversized input.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_message(bytes, "get-campaign-frontier-object-request-encoded-bytes")
+    }
+}
+
+impl Canonical for GetCampaignFrontierObjectRequest {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.principal.encode(encoder);
+        self.campaign.encode(encoder);
+        self.snapshot.encode(encoder);
+        self.request.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_service_version(u32::decode(decoder)?)?;
+        Self::new(
+            CampaignPrincipal::decode(decoder)?,
+            CampaignName::decode(decoder)?,
+            CampaignSnapshotId::decode(decoder)?,
+            BranchRequestId::decode(decoder)?,
+        )
+    }
+}
+
+/// Request-bound branch-request body and exact frontier-membership proofs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GetCampaignFrontierObjectResponse {
+    schema_version: u32,
+    request_digest: CampaignHash,
+    snapshot_body: CampaignSnapshot,
+    projection: ContinuationProjection,
+    object: BranchRequest,
+    index_proof: MerkleMapLookupProof,
+    object_proof: MerkleMapLookupProof,
+}
+
+impl GetCampaignFrontierObjectResponse {
+    /// Builds one authenticated frontier-object response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the snapshot, proofs, projection,
+    /// request body, or encoded-size contract is invalid.
+    pub fn new(
+        request: &GetCampaignFrontierObjectRequest,
+        snapshot_body: CampaignSnapshot,
+        projection: ContinuationProjection,
+        object: BranchRequest,
+        index_proof: MerkleMapLookupProof,
+        object_proof: MerkleMapLookupProof,
+    ) -> Result<Self, CampaignCodecError> {
+        let response = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            request_digest: request.request_digest(),
+            snapshot_body,
+            projection,
+            object,
+            index_proof,
+            object_proof,
+        };
+        response.validate_body_for(request)?;
+        ensure_message_size(
+            &response,
+            "get-campaign-frontier-object-response-encoded-bytes",
+        )?;
+        Ok(response)
+    }
+
+    /// Returns the authenticated snapshot body, including every root ID.
+    #[must_use]
+    pub const fn snapshot_body(&self) -> &CampaignSnapshot {
+        &self.snapshot_body
+    }
+
+    /// Returns the authenticated current projection for the request.
+    #[must_use]
+    pub const fn projection(&self) -> ContinuationProjection {
+        self.projection
+    }
+
+    /// Returns the exact authenticated branch-request body.
+    #[must_use]
+    pub const fn object(&self) -> &BranchRequest {
+        &self.object
+    }
+
+    /// Validates exact request, snapshot, nested membership, and body binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the response belongs to another
+    /// request or either proof, typed identity, or branch point disagrees.
+    pub fn validate_for(
+        &self,
+        request: &GetCampaignFrontierObjectRequest,
+    ) -> Result<(), CampaignCodecError> {
+        validate_request_digest(self.request_digest, request.request_digest())?;
+        self.validate_body_for(request)
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes one strict bounded frontier-object response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical,
+    /// unsupported, or oversized input. Use [`Self::validate_for`] before use.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_message(bytes, "get-campaign-frontier-object-response-encoded-bytes")
+    }
+
+    fn validate_body_for(
+        &self,
+        request: &GetCampaignFrontierObjectRequest,
+    ) -> Result<(), CampaignCodecError> {
+        if self.snapshot_body.id()? != request.snapshot()
+            || self.projection.request() != request.request()
+            || self.object.id()? != request.request()
+            || self.projection.branch_point() != self.object.branch_point()
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign frontier object response basis mismatch",
+            });
+        }
+        let index_root = MerkleMap::verify_lookup_proof(
+            self.snapshot_body.roots().exploration,
+            crate::repository::frontier_index_anchor_key(),
+            &self.index_proof,
+        )
+        .map_err(|_| CampaignCodecError::InvalidValue {
+            reason: "campaign frontier object index proof is invalid",
+        })?
+        .ok_or(CampaignCodecError::InvalidValue {
+            reason: "campaign snapshot has no authenticated frontier index",
+        })?;
+        let projection = MerkleMap::verify_lookup_proof(
+            index_root,
+            crate::repository::frontier_index_order_key(request.request()),
+            &self.object_proof,
+        )
+        .map_err(|_| CampaignCodecError::InvalidValue {
+            reason: "campaign frontier object membership proof is invalid",
+        })?;
+        if projection != Some(self.projection.id()?.content_id()) {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign frontier object projection is not authenticated",
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Canonical for GetCampaignFrontierObjectResponse {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.request_digest.encode(encoder);
+        self.snapshot_body.encode(encoder);
+        self.projection.encode(encoder);
+        self.object.encode(encoder);
+        self.index_proof.encode(encoder);
+        self.object_proof.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_service_version(u32::decode(decoder)?)?;
+        let response = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            request_digest: CampaignHash::decode(decoder)?,
+            snapshot_body: CampaignSnapshot::decode(decoder)?,
+            projection: ContinuationProjection::decode(decoder)?,
+            object: BranchRequest::decode(decoder)?,
+            index_proof: MerkleMapLookupProof::decode(decoder)?,
+            object_proof: MerkleMapLookupProof::decode(decoder)?,
+        };
+        ensure_message_size(
+            &response,
+            "get-campaign-frontier-object-response-encoded-bytes",
+        )?;
         Ok(response)
     }
 }
@@ -1622,9 +1886,11 @@ mod tests {
 
     use super::*;
     use crate::{
-        BooleanDomain, BranchPointId, CampaignRoots, ChoiceClassContext, ChoiceCoordinate,
-        ChoiceSource, ChoiceValue, ConfigurationArtifact, ConfigurationId, ContinuationState,
-        ScenarioArtifactId, ScenarioDefId,
+        BooleanDomain, BranchBudget, BranchPointId, BranchRequestCause, CampaignCommandId,
+        CampaignRoots, CandidateSource, ChoiceClassContext, ChoiceCoordinate, ChoiceDomainId,
+        ChoiceOpportunityId, ChoiceSource, ChoiceValue, ConfigurationArtifact,
+        ConfigurationArtifactId, ConfigurationId, ContinuationState, ScenarioArtifactId,
+        ScenarioDefId, StopCondition,
     };
 
     fn snapshot(label: &str) -> CampaignSnapshotId {
@@ -1641,6 +1907,42 @@ mod tests {
             CampaignHash::derive("campaign-query-test-key", label.as_bytes()),
             ContentId::for_bytes(ObjectKind::CampaignFact, 1, label.as_bytes()),
         )
+    }
+
+    fn branch_request(label: &str) -> BranchRequest {
+        let hash = |suffix: &str| {
+            CampaignHash::derive(
+                "campaign-frontier-object-test",
+                format!("{label}-{suffix}").as_bytes(),
+            )
+        };
+        BranchRequest::new(
+            BranchPointId::from_hash(hash("branch-point")),
+            ConfigurationArtifactId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Configuration,
+                1,
+                format!("{label}-parent").as_bytes(),
+            ))
+            .expect("parent id"),
+            ChoiceOpportunityId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                format!("{label}-opportunity").as_bytes(),
+            ))
+            .expect("opportunity id"),
+            ChoiceDomainId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                format!("{label}-domain").as_bytes(),
+            ))
+            .expect("domain id"),
+            CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(true)]))
+                .expect("finite source"),
+            BranchRequestCause::Operator(CampaignCommandId::from_hash(hash("command"))),
+            BranchBudget::new(1, 1).expect("branch budget"),
+            StopCondition::NextChoice,
+        )
+        .expect("branch request")
     }
 
     fn configuration_envelope(label: &str) -> ObjectEnvelope {
@@ -2273,6 +2575,114 @@ mod tests {
             substituted.entries[0].branch_point(),
             ContinuationState::Closed,
         );
+        assert!(substituted.validate_for(&request).is_err());
+    }
+
+    #[test]
+    fn frontier_object_reads_authenticate_exact_request_membership() {
+        let backend = Arc::new(MemoryBlobBackend::new("frontier-object-query", u64::MAX));
+        let map = MerkleMap::new(backend);
+        let empty = map.empty().expect("empty root");
+        let object = branch_request("frontier-object");
+        let object_id = object.id().expect("request id");
+        let projection =
+            ContinuationProjection::new(object_id, object.branch_point(), ContinuationState::Ready);
+        let frontier_index = map
+            .insert(
+                empty.content_id(),
+                crate::repository::frontier_index_order_key(object_id),
+                projection.id().expect("projection id").content_id(),
+            )
+            .expect("frontier insert");
+        let exploration = map
+            .insert(
+                empty.content_id(),
+                crate::repository::frontier_index_anchor_key(),
+                frontier_index.content_id(),
+            )
+            .expect("frontier anchor");
+        let snapshot_body = CampaignSnapshot::genesis(
+            CampaignLineageId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                b"frontier-object-lineage",
+            ))
+            .expect("lineage"),
+            CampaignPolicyId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Policy,
+                1,
+                b"frontier-object-policy",
+            ))
+            .expect("policy"),
+            CampaignRoots {
+                graph: empty.content_id(),
+                exploration: exploration.content_id(),
+                observations: empty.content_id(),
+                corpus: empty.content_id(),
+                coverage: empty.content_id(),
+                findings: empty.content_id(),
+                pins: empty.content_id(),
+                accounting: empty.content_id(),
+                coordination: empty.content_id(),
+            },
+        )
+        .expect("snapshot");
+        let request = GetCampaignFrontierObjectRequest::new(
+            CampaignPrincipal::new("operator:alice").expect("principal"),
+            CampaignName::new("network-recovery").expect("campaign"),
+            snapshot_body.id().expect("snapshot id"),
+            object_id,
+        )
+        .expect("request");
+        let (_, index_proof) = map
+            .get_with_proof(
+                exploration.content_id(),
+                crate::repository::frontier_index_anchor_key(),
+            )
+            .expect("index proof");
+        let (_, object_proof) = map
+            .get_with_proof(
+                frontier_index.content_id(),
+                crate::repository::frontier_index_order_key(object_id),
+            )
+            .expect("object proof");
+        let response = GetCampaignFrontierObjectResponse::new(
+            &request,
+            snapshot_body,
+            projection,
+            object,
+            index_proof,
+            object_proof,
+        )
+        .expect("response");
+        let decoded =
+            GetCampaignFrontierObjectResponse::from_canonical_bytes(&response.canonical_bytes())
+                .expect("decode response");
+        decoded.validate_for(&request).expect("verify response");
+        assert_eq!(
+            [
+                blake3::hash(&request.canonical_bytes())
+                    .to_hex()
+                    .to_string(),
+                blake3::hash(&response.canonical_bytes())
+                    .to_hex()
+                    .to_string(),
+            ],
+            [
+                String::from("152336429f4924a4efe80b4125f12ef9f916cfe47447289517392e77d7163b71"),
+                String::from("f8b78b4673f51beec04d43ffd8bb51e0562d3cebcc1a53cb66d4946a80856113"),
+            ]
+        );
+
+        let mut forged_projection = decoded.clone();
+        forged_projection.projection = ContinuationProjection::new(
+            object_id,
+            forged_projection.projection.branch_point(),
+            ContinuationState::Closed,
+        );
+        assert!(forged_projection.validate_for(&request).is_err());
+        let mut substituted = decoded;
+        substituted.object = branch_request("substituted-frontier-object");
         assert!(substituted.validate_for(&request).is_err());
     }
 

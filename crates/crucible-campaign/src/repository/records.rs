@@ -1038,7 +1038,7 @@ impl CampaignRepository {
         Ok(())
     }
 
-    pub(super) fn read_branch_request(
+    pub(crate) fn read_branch_request(
         &self,
         id: ContentId,
     ) -> Result<BranchRequest, CampaignRepositoryError> {

@@ -12,11 +12,12 @@ use crate::{
     CampaignServiceOperation, CandidateGeneratorAlgorithm, ChoiceClassContext, ChoiceCoordinate,
     ChoicePolicy, ChoiceSource, ChoiceValue, ConfigurationId, ContinuationState, DebugSessionId,
     DiscreteAlternative, DiscreteDomain, ExecutionId, ExecutionRetentionIntent, ExplorerPolicy,
-    FairnessPolicy, GuidanceEvidence, MeasurementSeries, MetricValue, PlannerEngine,
-    PlannerProposalDisposition, PlannerRequest, PlannerResponse, PlannerState, PlannerStepProposal,
-    PlannerSubmission, PlanningBudget, PlanningUsage, PolicyArtifact, ProgressiveWideningPolicy,
-    PropertyEvidence, PuctPolicy, QueryCampaignFrontierRequest, RepositoryCampaignService,
-    RetentionPolicy, ScenarioDefId, StopCondition, WeightedGenerator,
+    FairnessPolicy, GetCampaignFrontierObjectRequest, GuidanceEvidence, MeasurementSeries,
+    MetricValue, PlannerEngine, PlannerProposalDisposition, PlannerRequest, PlannerResponse,
+    PlannerState, PlannerStepProposal, PlannerSubmission, PlanningBudget, PlanningUsage,
+    PolicyArtifact, ProgressiveWideningPolicy, PropertyEvidence, PuctPolicy,
+    QueryCampaignFrontierRequest, RepositoryCampaignService, RetentionPolicy, ScenarioDefId,
+    StopCondition, WeightedGenerator,
 };
 
 struct AllowCampaignQueries;

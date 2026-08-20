@@ -1623,12 +1623,13 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         8,
     )
     .expect("frontier request");
-    let frontier = crate::CampaignClient::new(RepositoryCampaignService::new(
+    let client = crate::CampaignClient::new(RepositoryCampaignService::new(
         &repository,
         AllowCampaignQueries,
-    ))
-    .query_campaign_frontier(&frontier_request)
-    .expect("authenticated frontier page");
+    ));
+    let frontier = client
+        .query_campaign_frontier(&frontier_request)
+        .expect("authenticated frontier page");
     assert_eq!(frontier.entries().len(), 2);
     assert_eq!(
         frontier
@@ -1639,6 +1640,24 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         Some(ContinuationState::Exhausted)
     );
     assert_eq!(frontier.next_after(), None);
+    let first_request_id = first_request.id().expect("first request");
+    let frontier_object = client
+        .get_campaign_frontier_object(
+            &GetCampaignFrontierObjectRequest::new(
+                CampaignPrincipal::new("operator:alice").expect("principal"),
+                CampaignName::new("finite-expansion").expect("campaign"),
+                frontier_head.snapshot_id(),
+                first_request_id,
+            )
+            .expect("frontier object request"),
+        )
+        .expect("authenticated frontier object");
+    assert_eq!(frontier_object.object(), &first_request);
+    assert_eq!(frontier_object.projection().request(), first_request_id);
+    assert_eq!(
+        frontier_object.projection().state(),
+        ContinuationState::Exhausted
+    );
     assert_eq!(
         repository
             .merkle
