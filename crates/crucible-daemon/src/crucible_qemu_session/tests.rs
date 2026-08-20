@@ -279,8 +279,7 @@ impl QemuLiveAttemptDriver for UnusedDriver {
 
     fn run_attempt(
         &mut self,
-        _backend: &mut dyn QemuLiveAttemptBackend,
-        _boundary: &mut dyn QemuAttemptOperationalBoundary,
+        _backend: &mut dyn QemuLiveAttemptExecution,
         _input: &CrucibleAttemptExecution,
         _context: &AttemptExecutionContext,
         _realization: QemuVmRealization,
@@ -297,6 +296,7 @@ struct TestCounters {
     guarded_calls: Arc<AtomicUsize>,
     failed_reaps: Arc<AtomicUsize>,
     checks: Arc<AtomicUsize>,
+    quanta: Arc<AtomicUsize>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -334,6 +334,7 @@ impl QemuAttemptResourceGuardFactory for TrackingGuardFactory {
             },
             counters: self.counters.clone(),
             fail_on_check: self.fail_on_check,
+            quanta_remaining: self.installed.maximum_execution_quanta(),
             finished: false,
         })
     }
@@ -344,6 +345,7 @@ struct TrackingGuard {
     cancellation: ExecutionCancellation,
     counters: TestCounters,
     fail_on_check: Option<usize>,
+    quanta_remaining: u64,
     finished: bool,
 }
 
@@ -365,6 +367,18 @@ impl QemuAttemptOperationalBoundary for TrackingGuard {
         }
         Ok(())
     }
+
+    fn charge_execution_quantum(&mut self) -> Result<(), QemuVmRealizationError> {
+        if self.quanta_remaining == 0 {
+            return Err(QemuVmRealizationError::Executor {
+                operation: "charge fake QEMU execution quantum",
+                message: String::from("execution quantum ceiling exhausted"),
+            });
+        }
+        self.quanta_remaining -= 1;
+        self.counters.quanta.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
 }
 
 impl QemuAttemptResourceGuard for TrackingGuard {
@@ -382,6 +396,72 @@ impl QemuAttemptResourceGuard for TrackingGuard {
             self.finished = true;
         }
     }
+}
+
+#[test]
+fn live_backend_spends_exactly_one_guard_quantum_before_each_advance() {
+    let resources = AttemptResourceLimits::new(1, 4096, 8192, 2).expect("resource limits");
+    let counters = TestCounters::default();
+    let factory = session_factory(resources, counters.clone(), SessionBehavior::default());
+    let (mut executor, _driver, mut guard_factory) = factory.into_parts();
+    let mut guard = guard_factory
+        .begin(resources, ExecutionCancellation::default())
+        .expect("install tracking guard");
+    let mut backend = ChargedQemuLiveAttemptBackend {
+        backend: &mut executor,
+        boundary: &mut guard,
+        operational_failure: None,
+    };
+    let horizon = ExecutionHorizon {
+        icount: Icount { retired: 1 },
+    };
+
+    assert_eq!(
+        backend.advance_to_horizon(horizon),
+        Ok(AdvanceOutcome::ReachedHorizon)
+    );
+    assert_eq!(
+        backend.advance_to_horizon(horizon),
+        Ok(AdvanceOutcome::ReachedHorizon)
+    );
+    assert!(matches!(
+        backend.advance_to_horizon(horizon),
+        Err(BackendError::Rejected { .. })
+    ));
+    assert!(matches!(
+        backend.take_operational_failure(),
+        Some(QemuVmRealizationError::Executor { .. })
+    ));
+    assert_eq!(counters.quanta.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn realization_replay_spends_quantum_before_the_guarded_executor_call() {
+    let resources = AttemptResourceLimits::new(1, 4096, 8192, 1).expect("resource limits");
+    let counters = TestCounters::default();
+    let mut factory = session_factory(resources, counters.clone(), SessionBehavior::default());
+    let context = execution_context(resources);
+    let (runtime, request) = replay_fixture();
+    let mut session = factory
+        .begin_attempt(&context)
+        .expect("begin exact session");
+
+    let first = QemuVmRealizationExecutor::replay_one_quantum(
+        &mut session,
+        runtime.clone(),
+        request.clone(),
+    );
+    assert!(first.is_ok());
+    assert_eq!(counters.guarded_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quanta.load(Ordering::SeqCst), 1);
+
+    let second = QemuVmRealizationExecutor::replay_one_quantum(&mut session, runtime, request);
+    assert!(matches!(
+        second,
+        Err(QemuVmRealizationError::Executor { .. })
+    ));
+    assert_eq!(counters.guarded_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quanta.load(Ordering::SeqCst), 1);
 }
 
 #[test]

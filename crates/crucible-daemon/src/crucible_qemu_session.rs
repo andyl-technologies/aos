@@ -6,7 +6,10 @@
 //! only the already-realized backend. Assignment IDs and daemon epochs never
 //! cross this boundary.
 
-use crucible::{Configuration, EventLogOffset};
+use crucible::{
+    AdvanceOutcome, BackendError, BackendInput, Configuration, EventLog, EventLogOffset,
+    ExecutionFingerprint, ExecutionHorizon, Icount,
+};
 use crucible_campaign::{AttemptResourceLimits, ObservationCandidate};
 use crucible_qemu::{
     QemuBakedGenesisRestoreAdmission, QemuLiveAttemptBackend, QemuLoadvmCommandAuthorization,
@@ -38,6 +41,14 @@ pub trait QemuAttemptOperationalBoundary {
     /// Returns [`QemuVmRealizationError::Canceled`] after cancellation and a
     /// stable executor error after a hard resource ceiling is exhausted.
     fn check_operational_boundary(&mut self) -> Result<(), QemuVmRealizationError>;
+
+    /// Charges one scheduler-authorized execution quantum before guest progress.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable executor error when the admitted quantum ceiling is
+    /// exhausted, or [`QemuVmRealizationError::Canceled`] after cancellation.
+    fn charge_execution_quantum(&mut self) -> Result<(), QemuVmRealizationError>;
 }
 
 /// Operational guard installed before one attempt can launch QEMU.
@@ -119,10 +130,10 @@ impl QemuLiveAttemptResult {
 
 /// Modeled attempt driver over one already-realized live backend.
 ///
-/// The driver may advance the backend only through bounded quanta and must call
-/// [`QemuAttemptOperationalBoundary::check_operational_boundary`] between them. It
-/// returns canonical campaign evidence; realization tier and resource telemetry
-/// remain operational and do not enter that evidence.
+/// The driver may advance the backend only through the session-owned combined
+/// capability, which charges the exact operational guard before every bounded
+/// quantum. It returns canonical campaign evidence; realization tier and
+/// resource telemetry remain operational and do not enter that evidence.
 pub trait QemuLiveAttemptDriver {
     /// Driver-specific modeled-execution or result-construction failure.
     type Error;
@@ -139,12 +150,98 @@ pub trait QemuLiveAttemptDriver {
     /// Returns a classified retryable, canceled, or terminal driver failure.
     fn run_attempt(
         &mut self,
-        backend: &mut dyn QemuLiveAttemptBackend,
-        boundary: &mut dyn QemuAttemptOperationalBoundary,
+        backend: &mut dyn QemuLiveAttemptExecution,
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
         realization: QemuVmRealization,
     ) -> Result<QemuLiveAttemptResult, AttemptWorkerFailure<Self::Error>>;
+}
+
+/// Live modeled-execution capability with mandatory operational charging.
+///
+/// The session supplies this combined facade instead of the realization
+/// executor's raw backend. Every successful call to
+/// [`QemuLiveAttemptBackend::advance_to_horizon`] spends one admitted execution
+/// quantum before guest progress can begin.
+pub trait QemuLiveAttemptExecution:
+    QemuLiveAttemptBackend + QemuAttemptOperationalBoundary
+{
+}
+
+impl<T> QemuLiveAttemptExecution for T where
+    T: QemuLiveAttemptBackend + QemuAttemptOperationalBoundary + ?Sized
+{
+}
+
+struct ChargedQemuLiveAttemptBackend<'a> {
+    backend: &'a mut dyn QemuLiveAttemptBackend,
+    boundary: &'a mut dyn QemuAttemptOperationalBoundary,
+    operational_failure: Option<QemuVmRealizationError>,
+}
+
+impl ChargedQemuLiveAttemptBackend<'_> {
+    fn reject_operational_failure(&mut self, error: QemuVmRealizationError) -> BackendError {
+        let message = error.to_string();
+        if self.operational_failure.is_none() {
+            self.operational_failure = Some(error);
+        }
+        BackendError::Rejected { message }
+    }
+
+    fn take_operational_failure(&mut self) -> Option<QemuVmRealizationError> {
+        self.operational_failure.take()
+    }
+}
+
+impl QemuAttemptOperationalBoundary for ChargedQemuLiveAttemptBackend<'_> {
+    fn resource_limits(&self) -> AttemptResourceLimits {
+        self.boundary.resource_limits()
+    }
+
+    fn cancellation(&self) -> &ExecutionCancellation {
+        self.boundary.cancellation()
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), QemuVmRealizationError> {
+        self.boundary.check_operational_boundary()
+    }
+
+    fn charge_execution_quantum(&mut self) -> Result<(), QemuVmRealizationError> {
+        self.boundary.charge_execution_quantum()
+    }
+}
+
+impl QemuLiveAttemptBackend for ChargedQemuLiveAttemptBackend<'_> {
+    fn advance_to_horizon(
+        &mut self,
+        horizon: ExecutionHorizon,
+    ) -> Result<AdvanceOutcome, BackendError> {
+        if self.operational_failure.is_some() {
+            return Err(BackendError::Rejected {
+                message: String::from("attempt operational boundary already failed"),
+            });
+        }
+        if let Err(error) = self.boundary.charge_execution_quantum() {
+            return Err(self.reject_operational_failure(error));
+        }
+        self.backend.advance_to_horizon(horizon)
+    }
+
+    fn fingerprint(&mut self) -> Result<ExecutionFingerprint, BackendError> {
+        self.backend.fingerprint()
+    }
+
+    fn deliver_input(&mut self, input: BackendInput) -> Result<(), BackendError> {
+        self.backend.deliver_input(input)
+    }
+
+    fn current_icount(&mut self) -> Result<Icount, BackendError> {
+        self.backend.current_icount()
+    }
+
+    fn event_log(&self) -> &EventLog {
+        self.backend.event_log()
+    }
 }
 
 /// Realization executor whose blocking operations are bound to one guard.
@@ -410,6 +507,7 @@ where
         request: QemuVmReplayRequest,
     ) -> Result<crucible::RuntimeState, QemuVmRealizationError> {
         self.guard.check_operational_boundary()?;
+        self.guard.charge_execution_quantum()?;
         let result = self
             .executor
             .replay_one_quantum_guarded(&mut self.guard, runtime, request);
@@ -449,10 +547,18 @@ where
             .executor
             .live_backend_mut()
             .map_err(classify_operational_failure)?;
+        let mut backend = ChargedQemuLiveAttemptBackend {
+            backend,
+            boundary: &mut self.guard,
+            operational_failure: None,
+        };
         let result = self
             .driver
-            .run_attempt(backend, &mut self.guard, input, self.context, realization)
+            .run_attempt(&mut backend, input, self.context, realization)
             .map_err(map_live_driver_failure);
+        if let Some(error) = backend.take_operational_failure() {
+            return Err(classify_operational_failure(error));
+        }
         if let Ok(candidate) = &result
             && !self
                 .seal_result_event_log(candidate.event_log())
