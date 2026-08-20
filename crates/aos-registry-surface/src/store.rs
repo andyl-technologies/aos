@@ -40,6 +40,38 @@ fn is_store_hash(value: &str) -> bool {
             .all(|character| NIX_BASE32_ALPHABET.contains(character))
 }
 
+/// Returns the input-addressed hash from a canonical absolute store path.
+///
+/// The store root itself is intentionally configurable; only normalized path
+/// syntax and the final `<hash>-<name>` component are load-bearing.
+///
+/// # Errors
+///
+/// Returns an error for a relative or non-normalized path, or for a basename
+/// that does not begin with a valid nixbase32 store hash.
+pub fn store_path_hash(store_path: &str) -> Result<&str> {
+    let mut components = store_path.split('/');
+    anyhow::ensure!(components.next() == Some(""), "store path must be absolute");
+    let components = components.collect::<Vec<_>>();
+    anyhow::ensure!(
+        components.len() >= 2
+            && components
+                .iter()
+                .all(|component| !component.is_empty() && *component != "." && *component != ".."),
+        "store path is not normalized"
+    );
+    let basename = components
+        .last()
+        .copied()
+        .ok_or_else(|| anyhow::anyhow!("store path has no basename"))?;
+    let hash = basename
+        .split_once('-')
+        .map(|(hash, _)| hash)
+        .ok_or_else(|| anyhow::anyhow!("store path has no store hash"))?;
+    anyhow::ensure!(is_store_hash(hash), "store path has an invalid store hash");
+    Ok(hash)
+}
+
 fn parse_sha256(token: &str) -> Result<String> {
     let digest = token
         .strip_prefix("sha256:")
@@ -84,6 +116,54 @@ pub fn normalize_digest(hash: &str) -> Result<String> {
     };
     parse_sha256(&canonical)
         .with_context(|| format!("cannot derive a nixbase32 SHA-256 digest from '{hash}'"))
+}
+
+/// Converts an accepted SHA-256 spelling to lowercase hexadecimal.
+///
+/// # Errors
+///
+/// Returns an error when `hash` is not an SRI, hexadecimal, or nixbase32
+/// SHA-256 value.
+pub fn canonical_digest_hex(hash: &str) -> Result<String> {
+    if let Some(encoded) = hash.strip_prefix("sha256-") {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .with_context(|| format!("decoding SRI SHA-256 hash '{hash}'"))?;
+        anyhow::ensure!(bytes.len() == 32, "SRI SHA-256 hash must contain 32 bytes");
+        return Ok(hex::encode(bytes));
+    }
+    let encoded = hash
+        .strip_prefix("sha256:")
+        .ok_or_else(|| anyhow::anyhow!("SHA-256 hash must use a sha256: or sha256- prefix"))?;
+    let bytes = if encoded.len() == 64 && encoded.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        hex::decode(encoded).with_context(|| format!("decoding hexadecimal SHA-256 '{hash}'"))?
+    } else if encoded.len() == SHA256_NIX32_LEN {
+        decode_nix_base32(encoded)
+            .ok_or_else(|| anyhow::anyhow!("invalid nixbase32 SHA-256 hash '{hash}'"))?
+    } else {
+        bail!("invalid SHA-256 hash '{hash}'");
+    };
+    anyhow::ensure!(bytes.len() == 32, "SHA-256 hash must contain 32 bytes");
+    Ok(hex::encode(bytes))
+}
+
+fn decode_nix_base32(encoded: &str) -> Option<Vec<u8>> {
+    let len = encoded.len() * 5 / 8;
+    let mut output = vec![0_u8; len];
+    for (position, character) in encoded.chars().rev().enumerate() {
+        let digit = NIX_BASE32_ALPHABET.find(character)? as u16;
+        let bit = position * 5;
+        let byte = bit / 8;
+        let shift = bit % 8;
+        *output.get_mut(byte)? |= (digit << shift) as u8;
+        let carry = digit >> (8 - shift);
+        match output.get_mut(byte + 1) {
+            Some(next) => *next |= carry as u8,
+            None if carry != 0 => return None,
+            None => {}
+        }
+    }
+    Some(output)
 }
 
 fn encode_nix_base32(bytes: &[u8]) -> String {
@@ -348,6 +428,40 @@ mod tests {
 
     const NAR_A: &str = "1b8m6vizwgzrbq6ks7yk3pnjnj91xbcrz0v6dyqgxqkj3ka2lkfy";
     const NAR_B: &str = "0b8m6vizwgzrbq6ks7yk3pnjnj91xbcrz0v6dyqgxqkj3ka2lkfy";
+
+    #[test]
+    fn canonical_hex_accepts_every_supported_digest_spelling() {
+        let bytes = [0_u8; 32];
+        let expected = "0".repeat(64);
+        assert_eq!(
+            canonical_digest_hex(&format!("sha256:{expected}")).unwrap(),
+            expected
+        );
+        assert_eq!(
+            canonical_digest_hex(&format!("sha256:{}", encode_nix_base32(&bytes))).unwrap(),
+            "0".repeat(64)
+        );
+        assert_eq!(
+            canonical_digest_hex(&format!(
+                "sha256-{}",
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            ))
+            .unwrap(),
+            "0".repeat(64)
+        );
+    }
+
+    #[test]
+    fn store_path_hash_accepts_custom_roots_but_rejects_ambiguous_paths() {
+        let hash = "9rd6z1174svja44vjm38h6iql4sz4z9k";
+        assert_eq!(
+            store_path_hash(&format!("/custom/store/{hash}-image")).unwrap(),
+            hash
+        );
+        assert!(store_path_hash(&format!("relative/{hash}-image")).is_err());
+        assert!(store_path_hash(&format!("/custom/../store/{hash}-image")).is_err());
+        assert!(store_path_hash("/custom/store/not-a-hash-image").is_err());
+    }
 
     #[test]
     fn realization_record_round_trips_canonical_text() {

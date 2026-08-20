@@ -928,6 +928,9 @@ async fn verify_system_image_objects(
                         release: version.version.clone(),
                         platform: platform.clone(),
                         format: image.format.clone(),
+                        store_path: image.store_path.clone(),
+                        nar_hash: image.nar_hash.clone(),
+                        nar_size: image.nar_size,
                         delivery: image.delivery.clone(),
                     });
                     for (key, hash, size, role) in [
@@ -986,6 +989,8 @@ async fn verify_system_image_objects(
         refs_digest,
     )
     .await?;
+    verify_system_image_cache_objects(db, fetch, publication.as_ref(), &images, snapshot_leases)
+        .await?;
 
     let mut verified = Vec::with_capacity(expected.len());
     for (object_key, identity) in expected {
@@ -1020,6 +1025,134 @@ async fn verify_system_image_objects(
         images,
         objects: verified,
     })
+}
+
+const MAX_IMAGE_NARINFO_BYTES: usize = 64 * 1024;
+
+struct ImageNarInfo {
+    store_path: String,
+    url: String,
+    file_hash: String,
+    file_size: u64,
+    nar_hash: String,
+    nar_size: u64,
+}
+
+fn parse_image_narinfo(text: &str) -> Result<ImageNarInfo> {
+    let mut fields = BTreeMap::new();
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        if matches!(
+            name,
+            "StorePath" | "URL" | "FileHash" | "FileSize" | "NarHash" | "NarSize"
+        ) && fields.insert(name, value.trim()).is_some()
+        {
+            bail!("image narinfo repeats {name}");
+        }
+    }
+    let required = |name| {
+        fields
+            .get(name)
+            .copied()
+            .with_context(|| format!("image narinfo has no {name}"))
+    };
+    Ok(ImageNarInfo {
+        store_path: required("StorePath")?.to_string(),
+        url: required("URL")?.to_string(),
+        file_hash: required("FileHash")?.to_string(),
+        file_size: required("FileSize")?
+            .parse()
+            .context("image narinfo has an invalid FileSize")?,
+        nar_hash: required("NarHash")?.to_string(),
+        nar_size: required("NarSize")?
+            .parse()
+            .context("image narinfo has an invalid NarSize")?,
+    })
+}
+
+async fn verify_system_image_cache_objects(
+    db: &Database,
+    fetch: &dyn SurfaceFetch,
+    publication: Option<&(String, i64)>,
+    images: &[crate::db::IndexedSystemImage],
+    snapshot_leases: &mut Vec<String>,
+) -> Result<()> {
+    let mut verified_store_paths = std::collections::BTreeSet::new();
+    for image in images {
+        if !verified_store_paths.insert(image.store_path.as_str()) {
+            continue;
+        }
+        let store_hash = aos_registry_surface::store::store_path_hash(&image.store_path)?;
+        let narinfo_key = format!("{store_hash}.narinfo");
+        let narinfo_bytes = fetch
+            .fetch_bounded(&narinfo_key, MAX_IMAGE_NARINFO_BYTES)
+            .await?
+            .with_context(|| format!("image narinfo '{narinfo_key}' is unavailable"))?;
+        let narinfo_text = std::str::from_utf8(&narinfo_bytes)
+            .with_context(|| format!("image narinfo '{narinfo_key}' is not UTF-8"))?;
+        let narinfo = parse_image_narinfo(narinfo_text)
+            .with_context(|| format!("parsing image narinfo '{narinfo_key}'"))?;
+        anyhow::ensure!(
+            narinfo.store_path == image.store_path
+                && aos_registry_surface::store::normalize_digest(&narinfo.nar_hash)?
+                    == aos_registry_surface::store::normalize_digest(&image.nar_hash)?
+                && narinfo.nar_size == image.nar_size,
+            "image narinfo '{narinfo_key}' disagrees with the signed store identity"
+        );
+        anyhow::ensure!(
+            narinfo.url.starts_with("nar/")
+                && !narinfo.url.starts_with('/')
+                && narinfo.url.split('/').all(|component| !component.is_empty()
+                    && component != "."
+                    && component != ".."),
+            "image narinfo '{narinfo_key}' carries an unsafe NAR URL"
+        );
+        let file_hash = aos_registry_surface::store::canonical_digest_hex(&narinfo.file_hash)?;
+        let file_size = narinfo.file_size;
+        let file_size =
+            i64::try_from(file_size).context("image NAR size exceeds database range")?;
+        let narinfo_hash = hex::encode(Sha256::digest(&narinfo_bytes));
+        let narinfo_size = i64::try_from(narinfo_bytes.len())
+            .context("image narinfo size exceeds database range")?;
+
+        if let Some((publication_id, placement_id)) = publication {
+            verify_published_system_image_object(
+                db,
+                fetch,
+                publication_id,
+                *placement_id,
+                narinfo_key,
+                narinfo_hash,
+                narinfo_size,
+            )
+            .await?;
+            verify_published_system_image_object(
+                db,
+                fetch,
+                publication_id,
+                *placement_id,
+                narinfo.url,
+                file_hash,
+                file_size,
+            )
+            .await?;
+        } else {
+            verify_system_image_object(
+                fetch,
+                narinfo_key,
+                narinfo_hash,
+                narinfo_size,
+                snapshot_leases,
+            )
+            .await?;
+            verify_system_image_object(fetch, narinfo.url, file_hash, file_size, snapshot_leases)
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 /// Resolves the exact ready publication that supplied this index generation.

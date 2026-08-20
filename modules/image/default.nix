@@ -116,6 +116,67 @@
         description = "AOS ${config.aos.system.name} image (${format})";
       };
     };
+
+  # Project one immutable file from a compatibility bundle into a canonical
+  # file-valued store output. Nix serializes this output as a root regular
+  # file, so registry consumers never have to enumerate a directory to find
+  # the artifact they authenticated.
+  projectFile = {
+    name,
+    source,
+    description,
+  }:
+    pkgs.mkDerivation {
+      inherit name;
+      src = null;
+      buildDeps = [pkgs.coreutils];
+      outputChecks.out = {};
+      unsafeDiscardReferences.out = true;
+      phases = [
+        {
+          name = "install";
+          script = ''
+            rmdir "$out"
+            cp --reflink=auto ${source} "$out"
+          '';
+        }
+      ];
+      meta = {inherit description;};
+    };
+
+  convertedImages = {
+    qcow2 = convertImage {
+      format = "qcow2";
+      formatFlag = "qcow2";
+      mediaType = "application/vnd.aos.disk-image.qcow2";
+      targets = ["qemu-kvm" "openstack"];
+    };
+    vmdk = convertImage {
+      format = "vmdk";
+      formatFlag = "vmdk";
+      mediaType = "application/x-vmdk";
+      targets = ["vmware"];
+    };
+    vhd = convertImage {
+      format = "vhd";
+      formatFlag = "vpc";
+      mediaType = "application/vnd.aos.disk-image.vhd";
+      targets = ["hyper-v"];
+    };
+  };
+
+  artifactFor = format: bundle: filename: {
+    disk = projectFile {
+      name = "aos-image-${config.aos.system.name}-${format}-disk";
+      source = "${bundle}/${filename}";
+      description = "AOS ${config.aos.system.name} ${format} disk artifact";
+    };
+    info = projectFile {
+      name = "aos-image-${config.aos.system.name}-${format}-info";
+      source = "${bundle}/image-info.json";
+      description = "AOS ${config.aos.system.name} ${format} image metadata";
+    };
+  };
 in {
   options.aos.image = {
     ## Whether to build disk images for this system variant.
@@ -187,6 +248,15 @@ in {
     };
   };
 
+  options.system.build.imageArtifacts = lib.mkOption {
+    type = lib.types.attrsOf (lib.types.attrsOf lib.types.package);
+    description = ''
+      Canonical file-valued disk and metadata outputs for each image format.
+      Compatibility bundles remain under system.build.image while callers
+      migrate to these unambiguous publication inputs.
+    '';
+  };
+
   options.system.build.uki = lib.mkOption {
     type = lib.types.package;
     description = ''
@@ -232,24 +302,13 @@ in {
     ];
     system.build.image = {
       raw = rawImage;
-      qcow2 = convertImage {
-        format = "qcow2";
-        formatFlag = "qcow2";
-        mediaType = "application/vnd.aos.disk-image.qcow2";
-        targets = ["qemu-kvm" "openstack"];
-      };
-      vmdk = convertImage {
-        format = "vmdk";
-        formatFlag = "vmdk";
-        mediaType = "application/x-vmdk";
-        targets = ["vmware"];
-      };
-      vhd = convertImage {
-        format = "vhd";
-        formatFlag = "vpc";
-        mediaType = "application/vnd.aos.disk-image.vhd";
-        targets = ["hyper-v"];
-      };
+      inherit (convertedImages) qcow2 vmdk vhd;
+    };
+    system.build.imageArtifacts = {
+      raw = artifactFor "raw" rawImage "aos-${config.aos.system.name}.img.zst";
+      qcow2 = artifactFor "qcow2" convertedImages.qcow2 "aos-${config.aos.system.name}.qcow2";
+      vmdk = artifactFor "vmdk" convertedImages.vmdk "aos-${config.aos.system.name}.vmdk";
+      vhd = artifactFor "vhd" convertedImages.vhd "aos-${config.aos.system.name}.vhd";
     };
     system.build.checks.image-budget = imageBudgetCheck;
     system.build.uki = rawImage.uki;

@@ -850,7 +850,14 @@ pub fn system_image_registry(root: &Path) -> SystemImageFixture {
                       targets: Vec<ImageTarget>| {
         ImageEntry {
             format: format.to_string(),
-            store_path: format!("/var/lib/store/{}-image-{format}", &sha256[..32]),
+            store_path: format!(
+                "/var/lib/store/{}-image-{format}",
+                if format == "raw" {
+                    "0".repeat(32)
+                } else {
+                    "1".repeat(32)
+                }
+            ),
             nar_hash: format!("sha256:{sha256}"),
             nar_size: bytes.len() as u64,
             delivery: ImageDelivery {
@@ -923,8 +930,10 @@ pub fn system_image_registry(root: &Path) -> SystemImageFixture {
         image.validate_delivery(release, platform).unwrap();
     }
 
-    let registry_toml =
-        fixture.put_blob("[registry]\nname = \"demo\"\ndescription = \"Signed system images\"\n");
+    let registry_toml = fixture.put_blob(
+        "[registry]\nname = \"demo\"\ndescription = \"Signed system images\"\n\n\
+         [caches]\nendpoint = \"https://cdn.example.invalid/demo/\"\n",
+    );
     let keys_toml = fixture.put_blob(&format!(
         "schema = 1\n\n[[keys]]\nid = \"maintainer\"\nkey = \"{}\"\n",
         fixture.trust_key,
@@ -969,6 +978,26 @@ pub fn system_image_registry(root: &Path) -> SystemImageFixture {
         let path = root.join(key);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, bytes).unwrap();
+    }
+    for (image, bytes) in images.iter().zip([raw.as_slice(), qcow2.as_slice()]) {
+        let store_hash = aos_registry_surface::store::store_path_hash(&image.store_path).unwrap();
+        let file_hash = hex::encode(sha2::Sha256::digest(bytes));
+        let nar_key = format!("nar/{store_hash}-sha256-{file_hash}.nar");
+        let narinfo = format!(
+            "StorePath: {}\nURL: {nar_key}\nCompression: none\nFileHash: sha256:{file_hash}\nFileSize: {}\nNarHash: {}\nNarSize: {}\n",
+            image.store_path,
+            bytes.len(),
+            image.nar_hash,
+            image.nar_size,
+        );
+        for (key, contents) in [
+            (format!("{store_hash}.narinfo"), narinfo.as_bytes()),
+            (nar_key, bytes),
+        ] {
+            let path = root.join(key);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
     }
     let receipt_objects = images
         .iter()

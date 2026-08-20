@@ -454,6 +454,11 @@ impl ImageEntry {
     /// Returns an error when the contract is incomplete, internally
     /// inconsistent, path-unsafe, or does not match its signed parent.
     pub fn validate_delivery(&self, release: &str, platform: &str) -> anyhow::Result<()> {
+        crate::store::store_path_hash(&self.store_path)
+            .context("validating signed image store path")?;
+        anyhow::ensure!(self.nar_size > 0, "image NAR size must be non-zero");
+        crate::store::NarBytes::from_hash(&self.nar_hash, self.nar_size)
+            .context("validating signed image NAR identity")?;
         let delivery = &self.delivery;
         anyhow::ensure!(
             !delivery.is_store_only(),
@@ -1023,8 +1028,8 @@ source_nar_hash = ""
         let base = r#"
 [[versions.platforms.x86_64-linux.images]]
 format = "raw"
-store_path = "/aos/store/server-raw"
-nar_hash = "sha256:nar"
+store_path = "/aos/store/00000000000000000000000000000000-server-raw"
+nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
 nar_size = 1
 "#;
         if with_delivery {

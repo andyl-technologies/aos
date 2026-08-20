@@ -1242,8 +1242,48 @@ pub struct IndexedSystemImage {
     pub platform: String,
     /// Signed disk encoding name.
     pub format: String,
+    /// Canonical Nix store path of the image artifact.
+    pub store_path: String,
+    /// Signed hash of the image artifact's uncompressed NAR.
+    pub nar_hash: String,
+    /// Signed byte size of the image artifact's uncompressed NAR.
+    pub nar_size: u64,
     /// Complete signed direct-delivery contract.
     pub delivery: aos_registry_surface::manifest::ImageDelivery,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredSystemImageIdentity {
+    store_path: String,
+    nar_hash: String,
+    nar_size: u64,
+    delivery: aos_registry_surface::manifest::ImageDelivery,
+}
+
+fn encode_stored_system_image(image: &IndexedSystemImage) -> Result<String> {
+    serde_json::to_string(&StoredSystemImageIdentity {
+        store_path: image.store_path.clone(),
+        nar_hash: image.nar_hash.clone(),
+        nar_size: image.nar_size,
+        delivery: image.delivery.clone(),
+    })
+    .context("encoding signed image artifact identity")
+}
+
+fn decode_stored_system_image(encoded: &str) -> Result<StoredSystemImageIdentity> {
+    if let Ok(image) = serde_json::from_str(encoded) {
+        return Ok(image);
+    }
+
+    let delivery =
+        serde_json::from_str(encoded).context("decoding signed image delivery metadata")?;
+    Ok(StoredSystemImageIdentity {
+        store_path: String::new(),
+        nar_hash: String::new(),
+        nar_size: 0,
+        delivery,
+    })
 }
 
 /// Signed role of an immutable image-related delivery object.
@@ -4054,7 +4094,7 @@ impl Database {
                         image.package,
                         image.platform,
                         image.format,
-                        serde_json::to_string(&image.delivery)?,
+                        encode_stored_system_image(image)?,
                     ]
                     .to_vec(),
                 ));
@@ -12945,9 +12985,8 @@ impl Database {
             if catalog_digest.len() != 64 {
                 bail!("indexed signed image catalog has invalid digest identity");
             }
-            let delivery: aos_registry_surface::manifest::ImageDelivery =
-                serde_json::from_str(&encoded)
-                    .context("decoding signed image delivery metadata")?;
+            let stored = decode_stored_system_image(&encoded)?;
+            let delivery = stored.delivery;
             delivery
                 .validate(&format, &release, &platform)
                 .context("validating indexed signed image delivery metadata")?;
@@ -12962,6 +13001,9 @@ impl Database {
                 release,
                 platform,
                 format,
+                store_path: stored.store_path,
+                nar_hash: stored.nar_hash,
+                nar_size: stored.nar_size,
                 delivery,
             });
         }
@@ -24891,6 +24933,9 @@ source_nar_hash = ""
                         release: release.to_string(),
                         platform: platform.clone(),
                         format: image.format.clone(),
+                        store_path: image.store_path.clone(),
+                        nar_hash: image.nar_hash.clone(),
+                        nar_size: image.nar_size,
                         delivery: image.delivery.clone(),
                     });
                 }

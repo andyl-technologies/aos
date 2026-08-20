@@ -15356,7 +15356,7 @@ mod tests {
         format: &str,
         targets: serde_json::Value,
     ) -> StorePathInfo {
-        let root = container.join("image-output");
+        let root = container.join("00000000000000000000000000000000-image-output");
         let uki_root = container.join("uki-output");
         fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&uki_root).unwrap();
@@ -15460,7 +15460,7 @@ mod tests {
         .unwrap();
         StorePathInfo {
             path: root.display().to_string(),
-            nar_hash: "sha256:nar".to_string(),
+            nar_hash: "sha256:0000000000000000000000000000000000000000000000000000".to_string(),
             nar_size: 128,
             references: Vec::new(),
             closure_size: 128,
@@ -15734,8 +15734,12 @@ mod tests {
             write_direct_image_output(drift.path(), "raw", serde_json::json!(["bare-metal"]));
         assert!(inspect_test_image("raw", store, "2026.09", "x86_64-linux").is_err());
         let store = StorePathInfo {
-            path: drift.path().join("image-output").display().to_string(),
-            nar_hash: "sha256:nar".to_string(),
+            path: drift
+                .path()
+                .join("00000000000000000000000000000000-image-output")
+                .display()
+                .to_string(),
+            nar_hash: "sha256:0000000000000000000000000000000000000000000000000000".to_string(),
             nar_size: 128,
             references: Vec::new(),
             closure_size: 128,
@@ -15763,8 +15767,11 @@ mod tests {
     #[test]
     fn image_publisher_rejects_hardlinked_artifacts() {
         let temp = TempDir::new().unwrap();
-        let store =
+        let mut store =
             write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
+        let ordinary_output = temp.path().join("image-output");
+        fs::rename(&store.path, &ordinary_output).unwrap();
+        store.path = ordinary_output.display().to_string();
         fs::hard_link(
             Path::new(&store.path).join("aos-test.img.zst"),
             temp.path().join("disk-alias.img"),
@@ -20576,7 +20583,7 @@ references = []
         assert!(content.contains("sysroot = true"));
         assert!(content.contains("previous = \"2026.03\""));
         assert!(content.contains("format = \"raw\""));
-        assert!(content.contains("sha256:nar"));
+        assert!(content.contains("sha256:0000000000000000000000000000000000000000000000000000"));
         let parsed = crate::registry::parse::parse_package_file(&content).unwrap();
         let image = &parsed.versions[0].platforms["x86_64-linux"].images[0];
         assert_eq!(image.delivery.schema_version, 1);

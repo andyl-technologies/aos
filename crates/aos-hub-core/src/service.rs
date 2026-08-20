@@ -11390,9 +11390,12 @@ impl RpcService {
         download_base: &str,
         image: crate::db::IndexedSystemImage,
         channel: Option<&str>,
+        cache_urls: &[String],
+        cache_delivery: bool,
     ) -> Result<pb::SystemImage, RpcError> {
         let delivery = image.delivery;
         let uki = delivery.uki.clone();
+        let store_backed = cache_delivery && !image.store_path.is_empty();
         Ok(pb::SystemImage {
             package: image.package,
             release: image.release,
@@ -11402,7 +11405,11 @@ impl RpcService {
             format: image.format,
             logical_image_id: delivery.logical_image_id,
             filename: delivery.filename,
-            download_url: Self::image_object_url(download_base, &delivery.object_key)?,
+            download_url: if store_backed {
+                String::new()
+            } else {
+                Self::image_object_url(download_base, &delivery.object_key)?
+            },
             media_type: delivery.media_type,
             compression: image_compression_name(delivery.compression).to_string(),
             byte_size: delivery.byte_size,
@@ -11417,10 +11424,11 @@ impl RpcService {
             object_key: delivery.object_key,
             image_info: Some(pb::ImageInfo {
                 filename: delivery.image_info.filename,
-                download_url: Self::image_object_url(
-                    download_base,
-                    &delivery.image_info.object_key,
-                )?,
+                download_url: if store_backed {
+                    String::new()
+                } else {
+                    Self::image_object_url(download_base, &delivery.image_info.object_key)?
+                },
                 object_key: delivery.image_info.object_key,
                 media_type: delivery.image_info.media_type,
                 byte_size: delivery.image_info.byte_size,
@@ -11447,6 +11455,10 @@ impl RpcService {
                 expected_pcr11: uki.expected_pcr11.unwrap_or_default(),
             }),
             release_verification: "verified".to_string(),
+            store_path: store_backed.then_some(image.store_path).unwrap_or_default(),
+            nar_hash: store_backed.then_some(image.nar_hash).unwrap_or_default(),
+            nar_size: if store_backed { image.nar_size } else { 0 },
+            cache_urls: cache_urls.to_vec(),
         })
     }
 
@@ -11502,6 +11514,18 @@ impl RpcService {
             channel_releases = Some(releases);
         }
         let target = parse_image_target(&req.target)?;
+        let cache_delivery = registry.visibility == "public";
+        let cache_urls = if cache_delivery {
+            self.db
+                .registry_cache_stack_entries(registry.id)
+                .await
+                .map_err(RpcError::internal)?
+                .into_iter()
+                .map(|entry| entry.committed_url)
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
         let mut messages = Vec::new();
         for image in self
             .db
@@ -11526,6 +11550,8 @@ impl RpcService {
                 &download_base,
                 image,
                 (!req.channel.is_empty()).then_some(req.channel.as_str()),
+                &cache_urls,
+                cache_delivery,
             )?);
         }
         let (images, next_page_token) = paginate(messages, req.page_size, &req.page_token)?;
@@ -36917,6 +36943,9 @@ mod cache_upload_tests {
                 release: version.version.clone(),
                 platform: platform.clone(),
                 format: image.format.clone(),
+                store_path: image.store_path.clone(),
+                nar_hash: image.nar_hash.clone(),
+                nar_size: image.nar_size,
                 delivery: image.delivery.clone(),
             }],
         }

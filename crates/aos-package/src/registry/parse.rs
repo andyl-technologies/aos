@@ -700,8 +700,8 @@ source_nar_hash = ""
 
 [[versions.platforms.x86_64-linux.images]]
 format = "{format}"
-store_path = "/aos/store/imagehash-server-{format}"
-nar_hash = "sha256:nar"
+store_path = "/aos/store/00000000000000000000000000000000-server-{format}"
+nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
 nar_size = 10
 
 [versions.platforms.x86_64-linux.images.delivery]

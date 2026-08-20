@@ -31,12 +31,19 @@ async fn static_nix_cache_e2e_generates_serves_and_downloads_real_store_path() -
         return Ok(());
     }
 
-    let Some(store_path) = tiny_store_path_fixture()? else {
+    let Some(store_path) = tiny_store_path_fixture(b"aos static cache fixture\n")? else {
         eprintln!(
             "skipping static Nix cache e2e: nix-store is unavailable or refused fixture setup"
         );
         return Ok(());
     };
+    let image_store_path = tiny_store_path_fixture(b"tiny fake qcow2 image payload\n")?
+        .context("image store fixture setup was refused after package setup succeeded")?;
+    assert!(
+        fs::symlink_metadata(&image_store_path)?
+            .file_type()
+            .is_file()
+    );
 
     let tmp = tempfile::TempDir::new()?;
     let registry_dir = tmp.path().join("registry");
@@ -45,7 +52,7 @@ async fn static_nix_cache_e2e_generates_serves_and_downloads_real_store_path() -
     fs::create_dir_all(registry_dir.join("packages/f"))?;
     fs::write(
         registry_dir.join("packages/f/fixture.toml"),
-        package_toml(&store_path),
+        package_toml(&store_path, &image_store_path),
     )?;
 
     let (key_file, trusted_public_key) = nix_cache_key(tmp.path())?;
@@ -61,9 +68,9 @@ async fn static_nix_cache_e2e_generates_serves_and_downloads_real_store_path() -
         &printer,
     )
     .await?;
-    assert_eq!(report.paths, 1);
-    assert_eq!(report.narinfos, 1);
-    assert_eq!(report.nars, 1);
+    assert_eq!(report.paths, 2);
+    assert_eq!(report.narinfos, 2);
+    assert_eq!(report.nars, 2);
     assert!(output_dir.join("nix-cache-info").exists());
 
     let server = StaticHttpServer::spawn(output_dir.clone()).await?;
@@ -96,6 +103,24 @@ async fn static_nix_cache_e2e_generates_serves_and_downloads_real_store_path() -
     let expected = nix_store_dump(&store_path)?;
     assert_eq!(decoded, expected);
 
+    let image_narinfo_text = fetch_text(&narinfo_url(&mirror_url, &image_store_path)).await?;
+    let image_resolved = fetch_narinfos(
+        Arc::clone(&engine),
+        &[DownloadRequest {
+            store_path: image_store_path.clone(),
+            mirror_url: mirror_url.clone(),
+            fallback_mirrors: Vec::new(),
+        }],
+        1,
+        &printer,
+    )
+    .await?;
+    let image_results = download_nars(&image_resolved, &download_dir, 1, &printer).await?;
+    let image_decoded =
+        zstd::stream::decode_all(Cursor::new(fs::read(&image_results[0].local_path)?))?;
+    assert_eq!(image_decoded, nix_store_dump(&image_store_path)?);
+    assert!(image_narinfo_text.contains(&format!("StorePath: {image_store_path}")));
+
     assert_filesystem_upload_array_round_trips(&output_dir, &store_path, &narinfo_text, &printer)
         .await?;
     assert_generated_cache_external_upload_matrix_round_trips(
@@ -109,15 +134,15 @@ async fn static_nix_cache_e2e_generates_serves_and_downloads_real_store_path() -
     Ok(())
 }
 
-fn tiny_store_path_fixture() -> Result<Option<String>> {
+fn tiny_store_path_fixture(contents: &[u8]) -> Result<Option<String>> {
     if command_missing("nix-store") {
         return Ok(None);
     }
 
     let tmp = tempfile::Builder::new()
         .prefix("aos-cache-fixture-")
-        .tempfile_in("/private/tmp")?;
-    fs::write(tmp.path(), b"aos static cache fixture\n")?;
+        .tempfile()?;
+    fs::write(tmp.path(), contents)?;
     let output = Command::new("nix-store")
         .args(["--add-fixed", "sha256"])
         .arg(tmp.path())
@@ -147,7 +172,7 @@ fn nix_cache_key(root: &std::path::Path) -> Result<(std::path::PathBuf, String)>
     Ok((key_file, format!("aos-cache:{public_b64}")))
 }
 
-fn package_toml(store_path: &str) -> String {
+fn package_toml(store_path: &str, image_store_path: &str) -> String {
     format!(
         r#"[package]
 name = "fixture"
@@ -166,6 +191,12 @@ closure_size = 1
 source_drv = ""
 source_nar_hash = ""
 references = []
+
+[[versions.platforms.x86_64-linux.images]]
+format = "qcow2"
+store_path = "{image_store_path}"
+nar_hash = "sha256:placeholder"
+nar_size = 1
 "#,
     )
 }
