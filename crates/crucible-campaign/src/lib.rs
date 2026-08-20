@@ -123,7 +123,8 @@ pub use policy::{
     ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy,
     STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
     STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, STRATIFIED_INTEGER_GENERATOR_MAX_STRATA,
-    WeightedGenerator,
+    WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
+    WEIGHTED_CATEGORICAL_GENERATOR_MAX_ALTERNATIVES, WeightedGenerator,
 };
 pub use repository::{
     AttemptAdmissionResult, AttemptQueue, AttemptQueueCursor, AttemptQueueError,

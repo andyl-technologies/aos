@@ -5,6 +5,7 @@ use crate::{ChoiceValue, IntegerDomain, IntegerRepresentation, IntegerValue};
 
 const PROJECTION_SCAN_PAGE_ITEMS: usize = 10_000;
 const MAX_STATIC_GENERATOR_CANDIDATES: usize = 512;
+const MAX_WEIGHTED_CATEGORICAL_REJECTION_DRAWS: u64 = 256;
 
 struct FiniteExpansionInputs {
     requests: ContentId,
@@ -63,9 +64,24 @@ impl CampaignRepository {
                 .map(Some)
                 .map_err(|_| integrity("candidate-source-cardinality-overflow")),
             (
+                CandidateGeneratorAlgorithm::WeightedCategorical { weights },
+                crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Discrete(discrete),
+            ) => u64::try_from(
+                self.weighted_categorical_candidates(request, discrete, weights)?
+                    .len(),
+            )
+            .map(Some)
+            .map_err(|_| integrity("candidate-source-cardinality-overflow")),
+            (
                 CandidateGeneratorAlgorithm::All,
                 crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
                 ChoiceDomain::Integer(_),
+            )
+            | (
+                CandidateGeneratorAlgorithm::WeightedCategorical { .. },
+                crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Boolean(_) | ChoiceDomain::Integer(_),
             )
             | (
                 CandidateGeneratorAlgorithm::BoundaryInteger,
@@ -162,9 +178,25 @@ impl CampaignRepository {
                 .map(Some)
                 .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality")),
             (
+                CandidateGeneratorAlgorithm::WeightedCategorical { weights },
+                crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Discrete(discrete),
+            ) => self
+                .weighted_categorical_candidates(request, discrete, weights)?
+                .get(candidate_index(ordinal)?)
+                .copied()
+                .map(ChoiceValue::Discrete)
+                .map(Some)
+                .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality")),
+            (
                 CandidateGeneratorAlgorithm::All,
                 crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
                 ChoiceDomain::Integer(_),
+            )
+            | (
+                CandidateGeneratorAlgorithm::WeightedCategorical { .. },
+                crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Boolean(_) | ChoiceDomain::Integer(_),
             )
             | (
                 CandidateGeneratorAlgorithm::BoundaryInteger,
@@ -223,6 +255,60 @@ impl CampaignRepository {
                 .map(Some),
             _ => Ok(None),
         }
+    }
+
+    fn weighted_categorical_candidates(
+        &self,
+        request: &BranchRequest,
+        domain: &crate::DiscreteDomain,
+        weights: &BTreeMap<crate::AlternativeId, u64>,
+    ) -> Result<Vec<crate::AlternativeId>, CampaignRepositoryError> {
+        if weights.len() > crate::WEIGHTED_CATEGORICAL_GENERATOR_MAX_ALTERNATIVES {
+            return Err(integrity("weighted-generator-alternative-limit"));
+        }
+        if weights
+            .keys()
+            .any(|alternative| !domain.alternatives().contains_key(alternative))
+        {
+            return Err(integrity(
+                "candidate-generator-discrete-alternative-mismatch",
+            ));
+        }
+
+        let request_digest = request.id()?.content_id().digest();
+        let mut remaining = weights
+            .iter()
+            .map(|(alternative, weight)| (*alternative, *weight))
+            .collect::<Vec<_>>();
+        let mut candidates = Vec::with_capacity(remaining.len());
+        while !remaining.is_empty() {
+            let total_weight = remaining.iter().try_fold(0_u128, |total, (_, weight)| {
+                total
+                    .checked_add(u128::from(*weight))
+                    .ok_or_else(|| integrity("weighted-generator-weight-sum-overflow"))
+            })?;
+            let draw = weighted_categorical_draw(
+                request_digest,
+                u64::try_from(candidates.len())
+                    .map_err(|_| integrity("candidate-source-cardinality-overflow"))?,
+                total_weight,
+            )?;
+            let mut cumulative = 0_u128;
+            let mut selected = None;
+            for (index, (_, weight)) in remaining.iter().enumerate() {
+                cumulative = cumulative
+                    .checked_add(u128::from(*weight))
+                    .ok_or_else(|| integrity("weighted-generator-weight-sum-overflow"))?;
+                if draw < cumulative {
+                    selected = Some(index);
+                    break;
+                }
+            }
+            let selected =
+                selected.ok_or_else(|| integrity("weighted-generator-draw-is-out-of-range"))?;
+            candidates.push(remaining.remove(selected).0);
+        }
+        Ok(candidates)
     }
 
     fn boundary_integer_candidates(
@@ -684,6 +770,34 @@ fn projection_order_key(id: ContentId) -> CampaignHash {
 
 fn candidate_index(ordinal: u64) -> Result<usize, CampaignRepositoryError> {
     usize::try_from(ordinal - 1).map_err(|_| integrity("proposal-ordinal-is-not-canonical"))
+}
+
+fn weighted_categorical_draw(
+    request_digest: [u8; 32],
+    draw_index: u64,
+    total_weight: u128,
+) -> Result<u128, CampaignRepositoryError> {
+    if total_weight == 0 {
+        return Err(integrity("weighted-generator-weight-sum-is-zero"));
+    }
+    let rejection_threshold = 0_u128.wrapping_sub(total_weight) % total_weight;
+    for nonce in 0..MAX_WEIGHTED_CATEGORICAL_REJECTION_DRAWS {
+        let mut basis = [0_u8; 48];
+        basis[..32].copy_from_slice(&request_digest);
+        basis[32..40].copy_from_slice(&draw_index.to_be_bytes());
+        basis[40..].copy_from_slice(&nonce.to_be_bytes());
+        let hash = CampaignHash::derive(
+            "crucible.campaign.generator.weighted-categorical.v7",
+            &basis,
+        );
+        let mut sample_bytes = [0_u8; 16];
+        sample_bytes.copy_from_slice(&hash.as_bytes()[..16]);
+        let sample = u128::from_be_bytes(sample_bytes);
+        if sample >= rejection_threshold {
+            return Ok(sample % total_weight);
+        }
+    }
+    Err(integrity("weighted-generator-rejection-limit"))
 }
 
 fn push_static_integer_candidate(

@@ -393,9 +393,11 @@ Implementation-version 5 `log_integer` is static for strictly positive integer
 domains and uses the exact rounded-power order in §03.2.
 Implementation-version 6 `permuted_integer` is request-keyed and static for
 integer domains with at most `2^64 - 1` legal values, using the four-round
-bijection in §03.2. Proposals from every other generated source require the
-selected deterministic generator owner to reproduce the same value and remain
-fail-closed until that owner is implemented.
+bijection in §03.2. Implementation-version 7 `weighted_categorical` is static
+for discrete weight maps containing at most 256 alternatives and uses the exact
+request-keyed rejection-sampled integer order in §03.2. Proposals from every
+other generated source require the selected deterministic generator owner to
+reproduce the same value and remain fail-closed until that owner is implemented.
 
 The transition publishes the immutable `Proposal` and `ProposalIssued` fact,
 then makes an exact three-key delta to the exploration root:
@@ -424,9 +426,16 @@ budget, create a graph child, or count as an admitted continuation value.
   implementation-version 4 `stratified_integer`, and implementation-version 5
   `log_integer` over a strictly positive integer domain are static generated
   sources, as is implementation-version 6 `permuted_integer` over an integer
-  domain with at most `2^64 - 1` legal values. Other generated proposal issuance
-  MUST fail closed unless the named deterministic generator owner reproduces
-  the value from authenticated campaign facts.
+  domain with at most `2^64 - 1` legal values and implementation-version 7
+  `weighted_categorical` over at most 256 exact discrete alternatives. Other
+  generated proposal issuance MUST fail closed unless the named deterministic
+  generator owner reproduces the value from authenticated campaign facts.
+- **[LAZY-45]** Weighted-categorical implementation-version 7 MUST derive every
+  ordinal by the exact request-keyed rejection-sampled `u128` algorithm in
+  §03.2, remove each selected alternative before the next draw, reject domain
+  keys or counts outside its exact 256-alternative profile, and reconstruct the
+  same order during import and restart. Earlier and unknown weighted versions
+  MUST remain suspended.
 
 ## 04.13 Atomic attempt admission
 
@@ -531,7 +540,8 @@ implementation-version 2 `all` over a Boolean or discrete domain, or
 implementation-version 3 `boundary_integer`, or implementation-version 4
 `stratified_integer`, or implementation-version 5 `log_integer` over a strictly
 positive integer domain, or implementation-version 6 `permuted_integer` over an
-integer domain with at most `2^64 - 1` legal values:
+integer domain with at most `2^64 - 1` legal values, or implementation-version
+7 `weighted_categorical` over at most 256 discrete alternatives:
 
 - no proposal at the next canonical ordinal and remaining proposal budget is
   `Ready`;
@@ -582,11 +592,12 @@ admission is rejected.
   `stratified_integer` or implementation-version 5 `log_integer` over a
   strictly positive integer domain or implementation-version 6
   `permuted_integer` over an integer domain with at most `2^64 - 1` legal
-  values. Static continuation state MAY bind a nonempty observation root
-  because its state is independent of feedback. Its completed-visit statistic
-  MUST equal the exact nested credit-set count, and it MUST NOT synthesize
-  reward, novelty, or finding statistics before their canonical owners are
-  implemented.
+  values or implementation-version 7 `weighted_categorical` over at most 256
+  exact discrete alternatives. Static continuation state MAY bind a nonempty
+  observation root because its state is independent of feedback. Its completed-
+  visit statistic MUST equal the exact nested credit-set count, and it MUST NOT
+  synthesize reward, novelty, or finding statistics before their canonical
+  owners are implemented.
 
 ## 04.15 Atomic observation publication
 

@@ -1166,6 +1166,12 @@ impl CampaignRepository {
                             "candidate-generator-discrete-alternative-mismatch",
                         ));
                     }
+                    if generator.implementation_version()
+                        == crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION
+                        && weights.len() > crate::WEIGHTED_CATEGORICAL_GENERATOR_MAX_ALTERNATIVES
+                    {
+                        return Err(integrity("weighted-generator-alternative-limit"));
+                    }
                 }
                 CandidateGeneratorAlgorithm::BoundaryInteger => {
                     let ChoiceDomain::Integer(integer) = domain else {

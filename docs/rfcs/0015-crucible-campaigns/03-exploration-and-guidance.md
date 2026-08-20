@@ -147,12 +147,29 @@ involution of `[0, C)`, so their composition is a bijection. The candidate is
 bounded rounds and no domain materialization. Cardinality `2^64` fails closed
 because its last value has no one-based `u64` proposal ordinal.
 
+Generator implementation-version 7 defines `weighted_categorical` over at
+most 256 alternatives named by a discrete domain. The weight map is nonempty,
+contains only positive `u64` weights, and every key must name an alternative in
+that exact domain. At zero-based draw `j`, let `W` be the checked `u128` sum of
+the remaining weights. Derive a big-endian `u128` sample from the first 16 bytes
+of
+`H("crucible.campaign.generator.weighted-categorical.v7",
+BranchRequestId.digest || be64(j) || be64(nonce))`. Let `T = (-W) mod W` in
+unsigned 128-bit arithmetic. Starting with nonce zero, reject samples below `T`
+and increment the nonce; the first accepted sample selects position
+`sample mod W` in the cumulative positive-weight intervals of the remaining
+alternatives in canonical `AlternativeId` order. Remove the selected
+alternative and repeat. At most 256 rejection attempts are admitted per draw;
+exhausting that bound fails closed. This is exact integer-weight sampling
+without replacement, contains no floating-point arithmetic, and reconstructs
+the same complete order from the immutable request after restart.
+
 Other algorithms remain valid suspended specifications but fail closed at
 proposal issuance and expansion projection until their versioned cursor and
 feedback owners are implemented. Earlier and unknown implementation versions
-remain suspended rather than being reinterpreted as versions 2, 3, 4, 5, or 6;
-this preserves owner validation of histories created before executable
-enumeration landed.
+remain suspended rather than being reinterpreted as versions 2 through 7; this
+preserves owner validation of histories created before executable enumeration
+landed.
 
 Generators compose as a fixed ordered mixture with integer weights. Duplicate
 values deduplicate by `(BranchPointId, ChoiceDomainId, ChoiceValue)`; the

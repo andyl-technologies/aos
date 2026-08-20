@@ -62,6 +62,65 @@ fn generated_integer_request(
     (domain, request)
 }
 
+fn generated_discrete_request(
+    repository: &CampaignRepository,
+    lineage: &CampaignLineage,
+    domain: ChoiceDomain,
+    default: AlternativeId,
+    generator: CandidateGeneratorSpecId,
+    label: &str,
+    budget: u64,
+) -> (ChoiceDomain, BranchRequest) {
+    let declaration = SelectableDeclaration::new(
+        format!("generated.discrete.{label}"),
+        ChoiceSource::Workload {
+            producer: "generated-discrete".to_owned(),
+        },
+        domain.clone(),
+        ChoiceValue::Discrete(default),
+        ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
+        BTreeSet::new(),
+        true,
+    )
+    .expect("declaration");
+    repository
+        .publish_choice_domain(&domain)
+        .expect("publish domain");
+    repository
+        .publish_selectable(&declaration)
+        .expect("publish declaration");
+    let opportunity = ChoiceOpportunity::new(
+        lineage.scenario(),
+        &declaration,
+        &domain,
+        ChoiceCoordinate {
+            scheduler: CampaignHash::derive("test", label.as_bytes()),
+            producer: CampaignHash::derive("test", b"generated-discrete-producer"),
+        },
+        label,
+        None,
+    )
+    .expect("opportunity");
+    repository
+        .publish_choice_opportunity(&opportunity)
+        .expect("publish opportunity");
+    let request = BranchRequest::new(
+        opportunity.branch_point_id(lineage.genesis()),
+        lineage.genesis_content(),
+        opportunity.id().expect("opportunity id"),
+        domain.id().expect("domain id"),
+        CandidateSource::generated(generator),
+        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            format!("{label}-request").as_bytes(),
+        ))),
+        BranchBudget::new(budget, budget).expect("budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("request");
+    (domain, request)
+}
+
 #[test]
 fn branch_request_staleness_and_campaign_scope_fail_before_ref_advance() {
     let (repository, lineage, policy) = fixture();
@@ -543,6 +602,320 @@ fn generated_all_discrete_uses_stable_alternative_order() {
             reason: "proposal-value-does-not-match-source-order"
         })
     ));
+}
+
+#[test]
+fn weighted_categorical_generator_is_exact_keyed_and_restart_stable() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("generated-weighted", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let ids = ["alpha", "beta", "gamma", "delta"]
+        .into_iter()
+        .map(|label| {
+            (
+                label,
+                AlternativeId::from_hash(CampaignHash::derive(
+                    "test-weighted-alternative",
+                    label.as_bytes(),
+                )),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let labels = ids
+        .iter()
+        .map(|(label, id)| (*id, *label))
+        .collect::<BTreeMap<_, _>>();
+    let alternatives = ids
+        .values()
+        .copied()
+        .map(|id| {
+            (
+                id,
+                DiscreteAlternative::new(id, "weighted alternative", None).expect("alternative"),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let domain =
+        ChoiceDomain::Discrete(DiscreteDomain::new(1, alternatives).expect("discrete domain"));
+    let weights = [("alpha", 1_u64), ("beta", 9), ("gamma", 3), ("delta", 20)]
+        .into_iter()
+        .map(|(label, weight)| (ids[label], weight))
+        .collect::<BTreeMap<_, _>>();
+    let generator = CandidateGeneratorSpec::new(
+        crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::WeightedCategorical { weights },
+    )
+    .expect("weighted generator");
+    let generator_id = repository
+        .publish_generator(&generator)
+        .expect("publish weighted generator");
+    let (domain, request) = generated_discrete_request(
+        &repository,
+        &lineage,
+        domain,
+        ids["alpha"],
+        generator_id,
+        "weighted-main",
+        4,
+    );
+
+    let candidates = (1..=4)
+        .map(|ordinal| {
+            let Some(ChoiceValue::Discrete(alternative)) = repository
+                .static_candidate_at(&request, &domain, ordinal)
+                .expect("weighted candidate")
+            else {
+                panic!("weighted generator returned a non-discrete candidate");
+            };
+            alternative
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|alternative| labels[alternative])
+            .collect::<Vec<_>>(),
+        vec!["beta", "delta", "alpha", "gamma"]
+    );
+    assert_eq!(candidates.iter().copied().collect::<BTreeSet<_>>().len(), 4);
+    assert_eq!(
+        repository
+            .static_candidate_count(&request, &domain)
+            .expect("weighted candidate count"),
+        Some(4)
+    );
+    assert!(matches!(
+        repository.static_candidate_at(&request, &domain, 5),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "proposal-ordinal-exceeds-source-cardinality"
+        })
+    ));
+
+    let issued = repository
+        .submit_known_branch_request("generated-weighted", genesis.snapshot_id(), &request)
+        .expect("issue weighted request");
+    let projection_id = repository
+        .project_finite_expansion(issued.new_snapshot, request.branch_point(), None, 10)
+        .expect("project weighted request");
+    assert_eq!(
+        repository
+            .load_expansion_state(projection_id)
+            .expect("load weighted projection")
+            .continuations()
+            .get(&request.id().expect("request id")),
+        Some(&ContinuationState::Ready)
+    );
+    let head = repository.head("generated-weighted").expect("request head");
+    let wrong = finite_proposal(
+        &request,
+        &policy,
+        &head,
+        ChoiceValue::Discrete(candidates[1]),
+        1,
+    );
+    assert!(matches!(
+        repository.issue_proposal("generated-weighted", issued.new_snapshot, &wrong),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "proposal-value-does-not-match-source-order"
+        })
+    ));
+    let first = finite_proposal(
+        &request,
+        &policy,
+        &head,
+        ChoiceValue::Discrete(candidates[0]),
+        1,
+    );
+    let first_issued = repository
+        .issue_proposal("generated-weighted", issued.new_snapshot, &first)
+        .expect("issue first weighted proposal");
+    let open_projection_id = repository
+        .project_finite_expansion(first_issued.new_snapshot, request.branch_point(), None, 10)
+        .expect("project pending weighted proposal");
+    assert_eq!(
+        repository
+            .load_expansion_state(open_projection_id)
+            .expect("load pending weighted projection")
+            .continuations()
+            .get(&request.id().expect("request id")),
+        Some(&ContinuationState::Open)
+    );
+
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert_eq!(
+        restarted
+            .head("generated-weighted")
+            .expect("rebuild weighted history")
+            .snapshot_id(),
+        first_issued.new_snapshot
+    );
+    assert_eq!(
+        restarted
+            .load_expansion_state(open_projection_id)
+            .expect("rebuild pending weighted projection")
+            .continuations()
+            .get(&request.id().expect("request id")),
+        Some(&ContinuationState::Open)
+    );
+
+    let expected_candidates = candidates
+        .iter()
+        .copied()
+        .map(ChoiceValue::Discrete)
+        .map(Some)
+        .collect::<Vec<_>>();
+    let (_, other_request) = generated_discrete_request(
+        &repository,
+        &lineage,
+        domain.clone(),
+        ids["alpha"],
+        generator_id,
+        "weighted-other-0",
+        4,
+    );
+    let other_candidates = (1..=4)
+        .map(|ordinal| {
+            repository
+                .static_candidate_at(&other_request, &domain, ordinal)
+                .expect("other weighted candidate")
+        })
+        .collect::<Vec<_>>();
+    assert_ne!(other_candidates, expected_candidates);
+}
+
+#[test]
+fn weighted_categorical_generator_bounds_and_versions_fail_closed() {
+    let (repository, lineage, _) = fixture();
+    let alternatives = (0..=crate::WEIGHTED_CATEGORICAL_GENERATOR_MAX_ALTERNATIVES)
+        .map(|index| {
+            let id = AlternativeId::from_hash(CampaignHash::derive(
+                "test-weighted-bound-alternative",
+                &index.to_be_bytes(),
+            ));
+            (
+                id,
+                DiscreteAlternative::new(id, "bounded alternative", None).expect("alternative"),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let weights = alternatives
+        .keys()
+        .copied()
+        .map(|alternative| (alternative, 1_u64))
+        .collect::<BTreeMap<_, _>>();
+    let domain =
+        ChoiceDomain::Discrete(DiscreteDomain::new(1, alternatives).expect("discrete domain"));
+    let oversized = CandidateGeneratorSpec::new(
+        crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::WeightedCategorical { weights },
+    )
+    .expect("oversized weighted generator");
+    let oversized_id = repository
+        .publish_generator(&oversized)
+        .expect("publish oversized weighted generator");
+    assert!(matches!(
+        repository.validate_generator_for_domain(oversized_id, &domain),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "weighted-generator-alternative-limit"
+        })
+    ));
+
+    let ChoiceDomain::Discrete(discrete) = &domain else {
+        panic!("expected discrete domain");
+    };
+    let alternative = *discrete
+        .alternatives()
+        .first_key_value()
+        .expect("alternative")
+        .0;
+    let bounded = CandidateGeneratorSpec::new(
+        crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::WeightedCategorical {
+            weights: discrete
+                .alternatives()
+                .keys()
+                .take(crate::WEIGHTED_CATEGORICAL_GENERATOR_MAX_ALTERNATIVES)
+                .copied()
+                .map(|alternative| (alternative, u64::MAX))
+                .collect(),
+        },
+    )
+    .expect("bounded weighted generator");
+    let bounded_id = repository
+        .publish_generator(&bounded)
+        .expect("publish bounded weighted generator");
+    repository
+        .validate_generator_for_domain(bounded_id, &domain)
+        .expect("validate exact weighted bound");
+    let (_, bounded_request) = generated_discrete_request(
+        &repository,
+        &lineage,
+        domain.clone(),
+        alternative,
+        bounded_id,
+        "weighted-boundary",
+        crate::WEIGHTED_CATEGORICAL_GENERATOR_MAX_ALTERNATIVES as u64,
+    );
+    assert_eq!(
+        repository
+            .static_candidate_count(&bounded_request, &domain)
+            .expect("bounded candidate count"),
+        Some(crate::WEIGHTED_CATEGORICAL_GENERATOR_MAX_ALTERNATIVES as u64)
+    );
+
+    let foreign_alternative = AlternativeId::from_hash(CampaignHash::derive(
+        "test-weighted-bound-alternative",
+        b"foreign",
+    ));
+    let foreign = CandidateGeneratorSpec::new(
+        crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::WeightedCategorical {
+            weights: BTreeMap::from([(foreign_alternative, 1)]),
+        },
+    )
+    .expect("foreign weighted generator");
+    let foreign_id = repository
+        .publish_generator(&foreign)
+        .expect("publish foreign weighted generator");
+    assert!(matches!(
+        repository.validate_generator_for_domain(foreign_id, &domain),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "candidate-generator-discrete-alternative-mismatch"
+        })
+    ));
+
+    let legacy = CandidateGeneratorSpec::new(
+        crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::WeightedCategorical {
+            weights: BTreeMap::from([(alternative, 1)]),
+        },
+    )
+    .expect("legacy weighted generator");
+    let legacy_id = repository
+        .publish_generator(&legacy)
+        .expect("publish legacy weighted generator");
+    let (_, request) = generated_discrete_request(
+        &repository,
+        &lineage,
+        domain.clone(),
+        alternative,
+        legacy_id,
+        "weighted-legacy",
+        1,
+    );
+    assert_eq!(
+        repository
+            .static_candidate_count(&request, &domain)
+            .expect("legacy candidate count"),
+        None
+    );
+    assert_eq!(
+        repository
+            .initial_continuation_state(&request)
+            .expect("legacy continuation"),
+        ContinuationState::Open
+    );
 }
 
 #[test]
