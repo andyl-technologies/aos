@@ -756,6 +756,335 @@ fn boundary_integer_generator_uses_exact_static_order() {
 }
 
 #[test]
+fn stratified_integer_generator_uses_exact_static_offsets() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("generated-stratified", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let request_for = |domain: ChoiceDomain,
+                       default: IntegerValue,
+                       generator: CandidateGeneratorSpecId,
+                       label: &str,
+                       budget: u64| {
+        let declaration = SelectableDeclaration::new(
+            format!("generated.stratified.{label}"),
+            ChoiceSource::Workload {
+                producer: "generated-stratified".to_owned(),
+            },
+            domain.clone(),
+            ChoiceValue::Integer(default),
+            ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
+            BTreeSet::new(),
+            true,
+        )
+        .expect("declaration");
+        repository
+            .publish_choice_domain(&domain)
+            .expect("publish domain");
+        repository
+            .publish_selectable(&declaration)
+            .expect("publish declaration");
+        let opportunity = ChoiceOpportunity::new(
+            lineage.scenario(),
+            &declaration,
+            &domain,
+            ChoiceCoordinate {
+                scheduler: CampaignHash::derive("test", label.as_bytes()),
+                producer: CampaignHash::derive("test", b"generated-stratified-producer"),
+            },
+            label,
+            None,
+        )
+        .expect("opportunity");
+        repository
+            .publish_choice_opportunity(&opportunity)
+            .expect("publish opportunity");
+        let request = BranchRequest::new(
+            opportunity.branch_point_id(lineage.genesis()),
+            lineage.genesis_content(),
+            opportunity.id().expect("opportunity id"),
+            domain.id().expect("domain id"),
+            CandidateSource::generated(generator),
+            BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(
+                CampaignHash::derive("test", format!("{label}-request").as_bytes()),
+            )),
+            BranchBudget::new(budget, budget).expect("budget"),
+            StopCondition::NextChoice,
+        )
+        .expect("request");
+        (domain, request)
+    };
+
+    let generator = CandidateGeneratorSpec::new(
+        crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::StratifiedInteger { strata: 4 },
+    )
+    .expect("stratified generator");
+    let generator_id = repository
+        .publish_generator(&generator)
+        .expect("publish stratified generator");
+    let unsigned = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(0),
+            IntegerValue::Unsigned(20),
+            2,
+            None,
+            ExactRational::new(1, 1).expect("scale"),
+            Vec::new(),
+        )
+        .expect("unsigned domain"),
+    );
+    let (unsigned, request) = request_for(
+        unsigned,
+        IntegerValue::Unsigned(10),
+        generator_id,
+        "unsigned",
+        4,
+    );
+    let expected = [0, 6, 12, 20].map(|value| ChoiceValue::Integer(IntegerValue::Unsigned(value)));
+    assert_eq!(
+        repository
+            .static_candidate_count(&request, &unsigned)
+            .expect("candidate count"),
+        Some(expected.len() as u64)
+    );
+    for (index, expected) in expected.iter().enumerate() {
+        assert_eq!(
+            repository
+                .static_candidate_at(&request, &unsigned, index as u64 + 1)
+                .expect("candidate ordinal"),
+            Some(expected.clone())
+        );
+    }
+    assert!(matches!(
+        repository.static_candidate_at(&request, &unsigned, 5),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "proposal-ordinal-exceeds-source-cardinality"
+        })
+    ));
+
+    let singleton = CandidateGeneratorSpec::new(
+        crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::StratifiedInteger { strata: 1 },
+    )
+    .expect("singleton generator");
+    let singleton_id = repository
+        .publish_generator(&singleton)
+        .expect("publish singleton generator");
+    let (_, singleton_request) = request_for(
+        unsigned.clone(),
+        IntegerValue::Unsigned(10),
+        singleton_id,
+        "singleton",
+        1,
+    );
+    assert_eq!(
+        repository
+            .static_candidate_at(&singleton_request, &unsigned, 1)
+            .expect("singleton candidate"),
+        Some(ChoiceValue::Integer(IntegerValue::Unsigned(10)))
+    );
+
+    let dense = CandidateGeneratorSpec::new(
+        crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::StratifiedInteger { strata: 32 },
+    )
+    .expect("dense generator");
+    let dense_id = repository
+        .publish_generator(&dense)
+        .expect("publish dense generator");
+    let (_, dense_request) = request_for(
+        unsigned.clone(),
+        IntegerValue::Unsigned(10),
+        dense_id,
+        "dense",
+        11,
+    );
+    assert_eq!(
+        repository
+            .static_candidate_count(&dense_request, &unsigned)
+            .expect("dense candidate count"),
+        Some(11)
+    );
+    for ordinal in 1..=11 {
+        assert_eq!(
+            repository
+                .static_candidate_at(&dense_request, &unsigned, ordinal)
+                .expect("dense candidate"),
+            Some(ChoiceValue::Integer(IntegerValue::Unsigned(
+                (ordinal - 1) * 2,
+            )))
+        );
+    }
+
+    let signed = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Signed64,
+            IntegerValue::Signed(-10),
+            IntegerValue::Signed(10),
+            2,
+            None,
+            ExactRational::new(1, 1).expect("signed scale"),
+            Vec::new(),
+        )
+        .expect("signed domain"),
+    );
+    let (signed, signed_request) =
+        request_for(signed, IntegerValue::Signed(0), generator_id, "signed", 4);
+    let signed_expected =
+        [-10, -4, 2, 10].map(|value| ChoiceValue::Integer(IntegerValue::Signed(value)));
+    for (index, expected) in signed_expected.iter().enumerate() {
+        assert_eq!(
+            repository
+                .static_candidate_at(&signed_request, &signed, index as u64 + 1)
+                .expect("signed candidate"),
+            Some(expected.clone())
+        );
+    }
+
+    let full_signed = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Signed64,
+            IntegerValue::Signed(i64::MIN),
+            IntegerValue::Signed(i64::MAX),
+            1,
+            None,
+            ExactRational::new(1, 1).expect("full signed scale"),
+            Vec::new(),
+        )
+        .expect("full signed domain"),
+    );
+    let (full_signed, full_signed_request) = request_for(
+        full_signed,
+        IntegerValue::Signed(0),
+        generator_id,
+        "full-signed",
+        4,
+    );
+    let full_signed_expected = [
+        i64::MIN,
+        -3_074_457_345_618_258_603,
+        3_074_457_345_618_258_602,
+        i64::MAX,
+    ]
+    .map(|value| ChoiceValue::Integer(IntegerValue::Signed(value)));
+    for (index, expected) in full_signed_expected.iter().enumerate() {
+        assert_eq!(
+            repository
+                .static_candidate_at(&full_signed_request, &full_signed, index as u64 + 1)
+                .expect("full signed candidate"),
+            Some(expected.clone())
+        );
+    }
+
+    let oversized = CandidateGeneratorSpec::new(
+        crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::StratifiedInteger {
+            strata: crate::STRATIFIED_INTEGER_GENERATOR_MAX_STRATA + 1,
+        },
+    )
+    .expect("oversized generator");
+    let oversized_id = repository
+        .publish_generator(&oversized)
+        .expect("publish oversized generator");
+    assert!(matches!(
+        repository.validate_generator_for_domain(oversized_id, &unsigned),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "stratified-generator-strata-limit"
+        })
+    ));
+
+    let legacy = CandidateGeneratorSpec::new(
+        crate::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::StratifiedInteger { strata: 4 },
+    )
+    .expect("legacy generator");
+    let legacy_id = repository
+        .publish_generator(&legacy)
+        .expect("publish legacy generator");
+    let (_, legacy_request) = request_for(
+        unsigned.clone(),
+        IntegerValue::Unsigned(10),
+        legacy_id,
+        "legacy",
+        4,
+    );
+    assert_eq!(
+        repository
+            .static_candidate_count(&legacy_request, &unsigned)
+            .expect("legacy candidate count"),
+        None
+    );
+    assert_eq!(
+        repository
+            .initial_continuation_state(&legacy_request)
+            .expect("legacy continuation"),
+        ContinuationState::Open
+    );
+
+    let issued = repository
+        .submit_known_branch_request("generated-stratified", genesis.snapshot_id(), &request)
+        .expect("issue request");
+    let projection_id = repository
+        .project_finite_expansion(issued.new_snapshot, request.branch_point(), None, 10)
+        .expect("project stratified source");
+    assert_eq!(
+        repository
+            .load_expansion_state(projection_id)
+            .expect("load projection")
+            .continuations()
+            .get(&request.id().expect("request id")),
+        Some(&ContinuationState::Ready)
+    );
+    let head = repository
+        .head("generated-stratified")
+        .expect("request head");
+    let wrong = finite_proposal(
+        &request,
+        &policy,
+        &head,
+        ChoiceValue::Integer(IntegerValue::Unsigned(20)),
+        1,
+    );
+    assert!(matches!(
+        repository.issue_proposal("generated-stratified", issued.new_snapshot, &wrong),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "proposal-value-does-not-match-source-order"
+        })
+    ));
+    assert_eq!(
+        repository
+            .head("generated-stratified")
+            .expect("unchanged head")
+            .snapshot_id(),
+        issued.new_snapshot
+    );
+    let first = finite_proposal(
+        &request,
+        &policy,
+        &head,
+        ChoiceValue::Integer(IntegerValue::Unsigned(0)),
+        1,
+    );
+    let first_issued = repository
+        .issue_proposal("generated-stratified", issued.new_snapshot, &first)
+        .expect("issue first stratified proposal");
+
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert_eq!(
+        restarted
+            .head("generated-stratified")
+            .expect("rebuild stratified history")
+            .snapshot_id(),
+        first_issued.new_snapshot
+    );
+}
+
+#[test]
 fn ancestry_rejects_branch_request_with_an_unrelated_root_change() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository

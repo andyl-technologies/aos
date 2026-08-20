@@ -171,10 +171,12 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   Implementation-version 2 `all`
   generators over Boolean and discrete domains use the same exact ordinal and
   continuation fold as finite sources. Implementation-version 3
-  `boundary_integer` adds a bounded exact static integer ordering. Other
-  generated requests remain conservatively `Open` and fail closed when proposal
-  or expansion semantics are requested. Legacy snapshots remain unindexed and
-  queries fail closed rather than constructing a partial index.
+  `boundary_integer` adds a bounded exact static integer ordering, and
+  implementation-version 4 `stratified_integer` adds a checked constant-space
+  ordinal mapping capped at 4,096 strata. Other generated requests remain
+  conservatively `Open` and fail closed when proposal or expansion semantics
+  are requested. Legacy snapshots remain unindexed and queries fail closed
+  rather than constructing a partial index.
 - [ ] **T-CAM-4.5** Implement `CampaignSupervisor`, `CampaignProjector`,
   `ProposalPlanner`, `AttemptQueue`, and a bounded local `WorkerPool`.
   The standalone bounded `AttemptQueue` reservation primitive and the daemon's

@@ -39,6 +39,20 @@ pub const BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 3;
 /// neighbors, and powers of two, keeping restart validation work bounded.
 pub const BOUNDARY_INTEGER_GENERATOR_MAX_LANDMARKS: usize = 64;
 
+/// Generator implementation version for static stratified-integer enumeration.
+///
+/// This version maps evenly spaced ordinal offsets onto the exact stepped
+/// integer domain, includes both endpoints when more than one stratum is
+/// requested, and uses the lower midpoint for a single stratum. Earlier and
+/// unknown versions remain suspended.
+pub const STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 4;
+
+/// Maximum strata admitted by stratified-integer implementation version 4.
+///
+/// Candidate values are reconstructed in constant space, while this bound
+/// limits proposal and restart owner-validation work for one branch request.
+pub const STRATIFIED_INTEGER_GENERATOR_MAX_STRATA: u32 = 4_096;
+
 /// Fixed seed that makes campaign proposal streams reproducible.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CampaignSeed([u8; 32]);

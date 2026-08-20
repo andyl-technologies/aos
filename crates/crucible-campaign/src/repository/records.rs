@@ -1171,8 +1171,18 @@ impl CampaignRepository {
                         return Err(integrity("boundary-generator-landmark-limit"));
                     }
                 }
-                CandidateGeneratorAlgorithm::StratifiedInteger { .. }
-                | CandidateGeneratorAlgorithm::LogInteger { .. }
+                CandidateGeneratorAlgorithm::StratifiedInteger { strata } => {
+                    if !matches!(domain, ChoiceDomain::Integer(_)) {
+                        return Err(integrity("candidate-generator-domain-family-mismatch"));
+                    }
+                    if generator.implementation_version()
+                        == crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                        && *strata > crate::STRATIFIED_INTEGER_GENERATOR_MAX_STRATA
+                    {
+                        return Err(integrity("stratified-generator-strata-limit"));
+                    }
+                }
+                CandidateGeneratorAlgorithm::LogInteger { .. }
                 | CandidateGeneratorAlgorithm::PermutedInteger
                 | CandidateGeneratorAlgorithm::ProgressiveInteger { .. }
                 | CandidateGeneratorAlgorithm::MutateNearCorpus { .. }
