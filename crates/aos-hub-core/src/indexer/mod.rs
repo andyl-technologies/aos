@@ -4,8 +4,8 @@
 //! client would and replaces its rebuildable index atomically:
 //!
 //! 1. Fetch `HEAD` + `info/refs` and pick the default branch's commit.
-//!    If the `info/refs` bytes hash to the digest the current fresh index
-//!    was built from, only the mutable channel partitions are re-verified
+//!    If both the advertised commit and the `info/refs` digest match the
+//!    current fresh index, only the mutable channel partitions are re-verified
 //!    (the incremental fast path); otherwise the full walk runs.
 //! 2. Read the commit loose object; with `require_signatures`, verify its
 //!    `gpgsig` SSH signature against the registry's pinned trust anchors
@@ -358,20 +358,6 @@ async fn index_registry_inner(
     let refs = parse_info_refs(std::str::from_utf8(&refs_bytes).context("info/refs not UTF-8")?)?;
     let refs_digest = hex::encode(Sha256::digest(&refs_bytes));
 
-    // Incremental fast path: an unchanged ref advertisement over a fresh
-    // index means the immutable object graph is already verified — only
-    // the mutable channel partitions need re-checking.
-    let state_fresh = db
-        .index_status(registry.id)
-        .await?
-        .is_some_and(|status| status.state == "fresh");
-    if state_fresh
-        && !db.has_system_image_catalog(registry.id).await?
-        && db.refs_digest(registry.id).await?.as_deref() == Some(refs_digest.as_str())
-    {
-        return index_incremental(db, fetch, registry, &refs, indexed_placement_id).await;
-    }
-
     let head = match fetch.fetch("HEAD").await? {
         Some(bytes) => parse_head(&String::from_utf8_lossy(&bytes)),
         None => None,
@@ -387,6 +373,27 @@ async fn index_registry_inner(
                 .context("surface advertises no branches")?,
         };
     tracing::debug!(branch = %default_branch, commit = %commit_oid, "indexing from");
+
+    // The refs digest alone is not sufficient evidence that every derived row
+    // belongs to the advertised graph if a prior refresh was interrupted or
+    // persisted state drifted. Require the recorded commit to agree with the
+    // default branch before skipping the full verification walk.
+    let status = db.index_status(registry.id).await?;
+    let advertised_commit = commit_oid.to_hex();
+    let refs_digest_matches =
+        db.refs_digest(registry.id).await?.as_deref() == Some(refs_digest.as_str());
+    let has_images = db.has_system_image_catalog(registry.id).await?;
+    if incremental_preconditions(
+        status.as_ref().map(|status| status.state.as_str()),
+        status
+            .as_ref()
+            .and_then(|status| status.last_indexed_commit.as_deref()),
+        refs_digest_matches,
+        has_images,
+        &advertised_commit,
+    ) {
+        return index_incremental(db, fetch, registry, &refs, indexed_placement_id).await;
+    }
 
     let reader = ObjectReader::new(fetch);
     let commit = reader.read_commit(commit_oid).await?;
@@ -640,6 +647,20 @@ async fn index_registry_inner(
     .await;
 
     Ok(outcome)
+}
+
+/// Returns whether the index state proves the immutable graph is unchanged.
+fn incremental_preconditions(
+    state: Option<&str>,
+    last_indexed_commit: Option<&str>,
+    refs_digest_matches: bool,
+    has_images: bool,
+    advertised_commit: &str,
+) -> bool {
+    state == Some("fresh")
+        && last_indexed_commit == Some(advertised_commit)
+        && refs_digest_matches
+        && !has_images
 }
 
 fn release_snapshot_artifacts(
@@ -1529,6 +1550,26 @@ mod tests {
             channels.branches.insert(format!("channel-{index}"), oid);
         }
         assert!(validate_ref_cardinality(&channels).is_err());
+    }
+
+    #[test]
+    fn incremental_refresh_requires_the_recorded_commit_to_match() {
+        let advertised = "b".repeat(64);
+
+        assert!(incremental_preconditions(
+            Some("fresh"),
+            Some(advertised.as_str()),
+            true,
+            false,
+            &advertised,
+        ));
+        assert!(!incremental_preconditions(
+            Some("fresh"),
+            Some(&"a".repeat(64)),
+            true,
+            false,
+            &advertised,
+        ));
     }
 
     /// A [`SurfaceFetch`] whose `info/refs` read fails with a given error, to
