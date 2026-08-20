@@ -188,6 +188,10 @@ pub async fn index_and_record_from_placement(
     if db.registry_has_active_publication(registry.id).await? {
         return Ok(pending_outcome());
     }
+    let starting_generation = db
+        .index_status(registry.id)
+        .await?
+        .map_or(0, |status| status.generation);
     match index_registry(db, fetch, registry, indexed_placement_id).await {
         Ok(outcome) => Ok(outcome),
         Err(err) => {
@@ -195,7 +199,12 @@ pub async fn index_and_record_from_placement(
             if crate::url_guard::is_fetch_error(&err) {
                 db.mark_index_stale(registry.id, &detail).await?;
             } else {
-                db.mark_index_failed(registry.id, &detail).await?;
+                db.mark_index_failed_if_generation(
+                    registry.id,
+                    starting_generation,
+                    &detail,
+                )
+                .await?;
             }
             Err(err)
         }
