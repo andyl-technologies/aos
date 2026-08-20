@@ -524,10 +524,13 @@ statistic therefore means admitted semantic attempts, not realized temporal
 graph configurations; graph-child accounting begins only after authenticated
 execution results exist.
 
-The current static owner deliberately rejects history-dependent generators,
-unknown generator implementation versions, and any nonempty observation root.
-Those inputs require generator and observation owner folds rather than a
-permissive approximation. Loading an
+The current static owner deliberately rejects history-dependent generators and
+unknown generator implementation versions. Static readiness and exhaustion are
+observation-independent, so an observation-bearing source view remains
+admissible and its exact observation root is retained in the page. The owner
+does not reinterpret those observations as adaptive feedback: completed-visit,
+reward, novelty, and finding statistics remain zero until canonical credit
+facts exist. Loading an
 `ExpansionState` repeats the complete source-snapshot validation and owner
 recomputation; a structurally valid cache with an omitted request, proposal, or
 admission is rejected.
@@ -554,9 +557,9 @@ admission is rejected.
   `stratified_integer` or implementation-version 5 `log_integer` over a
   strictly positive integer domain or implementation-version 6
   `permuted_integer` over an integer domain with at most `2^64 - 1` legal
-  values, and for observation-bearing views, until their exact owner folds are
-  implemented. It MUST NOT publish approximated readiness, statistics, or
-  exhaustion.
+  values. Static continuation state MAY bind a nonempty observation root
+  because its state is independent of feedback, but it MUST NOT synthesize
+  adaptive credit statistics before their canonical owner is implemented.
 
 ## 04.15 Atomic observation publication
 

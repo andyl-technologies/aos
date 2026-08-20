@@ -693,9 +693,13 @@ rejected. `next_after` is the last returned request only when another request
 exists. Page boundaries are excluded from planning semantics.
 
 Landing a structural canonical codec does not make a derived record admissible.
-The repository owner now recomputes finite, observation-empty
-`ExpansionState` pages from their source snapshot. Generated requests and
-observation-bearing views remain fail-closed until their owners land.
+The repository owner recomputes static `ExpansionState` pages from their source
+snapshot even after modeled observations exist. Static readiness and exhaustion
+depend only on exact proposal/admission dispositions, while the page binds the
+source view's exact observation root without interpreting it as adaptive
+feedback. Feedback-derived statistics remain zero until canonical credit facts
+exist. History-dependent generated requests remain fail-closed until their
+feedback owners land.
 The repository owner accepts snapshot-bound `ContinueScan`, `NoWork`, and
 finite-source `Issue` results, retains the planner claim, independently accounts
 bounded inputs and fuel, derives the parent from the authenticated planner-head

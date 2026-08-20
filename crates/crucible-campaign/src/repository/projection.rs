@@ -364,15 +364,16 @@ impl CampaignRepository {
     /// snapshot. Its cursor is meaningful only for that immutable snapshot and
     /// branch point. Implementation-version 2 `all` generators and
     /// implementation-version 3 boundary-integer generators share the
-    /// finite-source path. History-dependent generators and observation-bearing
-    /// views remain fail-closed until their semantic owners are implemented.
+    /// finite-source path. Static continuation state is independent of modeled
+    /// observations, but every page still binds the source view's exact
+    /// observation root. History-dependent generators remain fail-closed until
+    /// their feedback owners are implemented.
     ///
     /// # Errors
     ///
     /// Returns an error for an invalid snapshot closure, fabricated or
     /// cross-branch cursor, invalid page size, unsupported generated request or
-    /// observation input, inconsistent proposal/admission indexes, or store
-    /// failure.
+    /// inconsistent proposal/admission indexes, or store failure.
     pub fn project_finite_expansion(
         &self,
         source_snapshot: CampaignSnapshotId,
@@ -406,17 +407,6 @@ impl CampaignRepository {
         if view_content != view_id.content_id() {
             return Err(integrity("expansion-state-planning-view-id-mismatch"));
         }
-        if self
-            .merkle
-            .inspect_shallow(view.observations())?
-            .entry_count()
-            != 0
-        {
-            return Err(integrity(
-                "finite-expansion-observation-owner-is-not-implemented",
-            ));
-        }
-
         let inputs = self.derive_finite_expansion_inputs(&view, branch_point)?;
         let (continuations, next_after) = self.finite_continuation_page(
             view.exploration(),

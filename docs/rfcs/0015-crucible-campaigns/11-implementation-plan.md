@@ -177,7 +177,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   `log_integer` adds an at-most-65-value exact rounded-power ordering for
   strictly positive domains. Implementation-version 6 `permuted_integer` adds a
   four-round request-keyed bijection over up to `2^64 - 1` legal values without
-  materialization. Other generated requests remain conservatively `Open` and
+  materialization. Static continuation projection remains valid after modeled
+  observations exist: it binds the exact observation root but does not claim
+  feedback-derived statistics before canonical credit ownership lands. Other
+  generated requests remain conservatively `Open` and
   fail closed when proposal or expansion semantics are requested. Legacy
   snapshots remain unindexed and queries fail closed rather than constructing a
   partial index.
