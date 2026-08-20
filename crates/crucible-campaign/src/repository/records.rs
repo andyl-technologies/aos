@@ -671,6 +671,17 @@ impl CampaignRepository {
         )?)
     }
 
+    pub(super) fn put_expansion_credit(
+        &self,
+        credit: &ExpansionCredit,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::ExpansionCredit,
+            crate::object::content_children(credit.content_children())?,
+            credit.canonical_bytes(),
+        )?)
+    }
+
     pub(super) fn put_proposal(
         &self,
         proposal: &Proposal,
@@ -1952,6 +1963,19 @@ impl CampaignRepository {
             return Err(integrity("continuation-projection-request-mismatch"));
         }
         Ok(projection)
+    }
+
+    pub(super) fn read_expansion_credit(
+        &self,
+        id: ContentId,
+    ) -> Result<ExpansionCredit, CampaignRepositoryError> {
+        let envelope = self.require_record_kind(id, crate::CampaignRecordKind::ExpansionCredit)?;
+        let credit = ExpansionCredit::from_canonical_bytes(envelope.body())?;
+        if credit.content_id()? != id {
+            return Err(integrity("expansion-credit-envelope-shape"));
+        }
+        self.decode_observation(credit.observation().content_id())?;
+        Ok(credit)
     }
 
     pub(super) fn require_record_kind(

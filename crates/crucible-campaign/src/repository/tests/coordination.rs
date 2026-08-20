@@ -2942,7 +2942,8 @@ fn ten_thousand_mixed_mutations_use_incremental_validation_and_replay_indexes() 
             .inspect_shallow(head.snapshot().roots().exploration)
             .expect("scaled exploration root")
             .entry_count(),
-        MUTATIONS / 2
+        // One permanent entry anchors the nested frontier projection index.
+        (MUTATIONS / 2) + 1
     );
     assert_eq!(
         repository

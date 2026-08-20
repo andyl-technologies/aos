@@ -628,6 +628,19 @@ pub struct ExpansionState {
     pub continuations: CanonicalMap<BranchRequestId, ContinuationState>,
 }
 
+pub struct ExpansionCredit {
+    pub observation: ObservationId,
+    pub branch_point: BranchPointId,
+}
+
+pub struct ExpansionStatistics {
+    pub admitted_children: u64,
+    pub completed_visits: u64,
+    pub reward_sum_micros: i64,
+    pub novelty_events: u64,
+    pub findings: u64,
+}
+
 pub struct FeedbackWait {
     completed_visits: u64,
     required_visits: u64,
@@ -647,6 +660,17 @@ pub struct ContinuationProjection {
     pub state: ContinuationState,
 }
 ```
+
+`ExpansionCredit` schema version 1 is the idempotent count fact
+`CreditId = H("crucible.campaign.expansion-credit.v1",
+ObservationId || BranchPointId)`. Its envelope has the canonical observation as
+one typed child. Canonical observation publication creates exactly one credit
+for each distinct branch point in the authenticated path. Exact replay creates
+none, and a determinism-conflict observation creates none. The observation root
+maps a domain-separated branch-point anchor to a nested Merkle set whose keys
+are `CreditId` and whose values are exact expansion-credit content IDs. This
+lets restart and imported-snapshot validation recover visit counts without a
+process-local search stack or a repository listing operation.
 
 `ContinuationProjection` schema version 1 is the compact authenticated current
 state of one request. New genesis snapshots anchor one canonical empty nested
@@ -711,10 +735,11 @@ Landing a structural canonical codec does not make a derived record admissible.
 The repository owner recomputes static `ExpansionState` pages from their source
 snapshot even after modeled observations exist. Static readiness and exhaustion
 depend only on exact proposal/admission dispositions, while the page binds the
-source view's exact observation root without interpreting it as adaptive
-feedback. Feedback-derived statistics remain zero until canonical credit facts
-exist. History-dependent generated requests remain fail-closed until their
-feedback owners land.
+source view's exact observation root. `completed_visits` is the authenticated
+entry count of that branch point's nested credit set. Reward, novelty, and
+finding statistics remain zero until their richer canonical folds land.
+History-dependent generated requests remain fail-closed until their feedback
+owners land.
 The repository owner accepts snapshot-bound `ContinueScan`, `NoWork`, and
 finite-source `Issue` results, retains the planner claim, independently accounts
 bounded inputs and fuel, derives the parent from the authenticated planner-head

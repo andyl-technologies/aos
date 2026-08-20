@@ -18,8 +18,9 @@ use crate::{
     Attempt, AttemptAdmission, BranchPath, BranchRequest, CampaignCodecError,
     CampaignControlAction, CampaignFact, CampaignLineage, CampaignPlanningView, CampaignPolicy,
     CampaignSnapshot, ConfigurationArtifact, ContinuationProjection, CoverageProjection,
-    ExpansionState, MeasurementSet, Observation, PlannerEngine, PlannerInvocation, PlannerRequest,
-    PlannerState, PlannerStep, PolicyArtifact, PropertyVerdictSet, Proposal, ScenarioArtifact,
+    ExpansionCredit, ExpansionState, MeasurementSet, Observation, PlannerEngine, PlannerInvocation,
+    PlannerRequest, PlannerState, PlannerStep, PolicyArtifact, PropertyVerdictSet, Proposal,
+    ScenarioArtifact,
 };
 
 pub use crucible_cas::content_envelope::ContentChild as ChildReference;
@@ -91,11 +92,13 @@ pub enum CampaignRecordKind {
     RetainedPlannerRequest,
     /// Authenticated per-request continuation projection.
     ContinuationProjection,
+    /// Idempotent observation visit credited to one branch point.
+    ExpansionCredit,
 }
 
 impl CampaignRecordKind {
     /// Every campaign record schema admitted by this crate.
-    pub const ALL: [Self; 31] = [
+    pub const ALL: [Self; 32] = [
         Self::Lineage,
         Self::Policy,
         Self::Snapshot,
@@ -127,6 +130,7 @@ impl CampaignRecordKind {
         Self::Observation,
         Self::RetainedPlannerRequest,
         Self::ContinuationProjection,
+        Self::ExpansionCredit,
     ];
 
     /// Returns the globally registered canonical schema name.
@@ -164,6 +168,7 @@ impl CampaignRecordKind {
             Self::Observation => "crucible.campaign.observation",
             Self::RetainedPlannerRequest => "crucible.campaign.retained-planner-request",
             Self::ContinuationProjection => "crucible.campaign.continuation-projection",
+            Self::ExpansionCredit => "crucible.campaign.expansion-credit",
         }
     }
 
@@ -220,7 +225,8 @@ impl CampaignRecordKind {
             | Self::BranchPath
             | Self::Attempt
             | Self::AttemptAdmission
-            | Self::PlannerStep => ObjectKind::CampaignFact,
+            | Self::PlannerStep
+            | Self::ExpansionCredit => ObjectKind::CampaignFact,
             Self::RetainedPlannerRequest => ObjectKind::Policy,
         }
     }
@@ -260,6 +266,7 @@ impl Canonical for CampaignRecordKind {
             Self::Observation => 28,
             Self::RetainedPlannerRequest => 29,
             Self::ContinuationProjection => 30,
+            Self::ExpansionCredit => 31,
         });
     }
 
@@ -296,6 +303,7 @@ impl Canonical for CampaignRecordKind {
             28 => Ok(Self::Observation),
             29 => Ok(Self::RetainedPlannerRequest),
             30 => Ok(Self::ContinuationProjection),
+            31 => Ok(Self::ExpansionCredit),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-record-kind",
                 tag,
@@ -645,6 +653,10 @@ fn expected_children(
         }
         CampaignRecordKind::ContinuationProjection => {
             let value = ContinuationProjection::from_canonical_bytes(body)?;
+            content_children(value.content_children())
+        }
+        CampaignRecordKind::ExpansionCredit => {
+            let value = ExpansionCredit::from_canonical_bytes(body)?;
             content_children(value.content_children())
         }
         CampaignRecordKind::MeasurementSet => {

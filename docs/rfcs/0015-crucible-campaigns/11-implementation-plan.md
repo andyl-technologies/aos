@@ -156,8 +156,9 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   interval refinement, deterministic PUCT, coverage/rarity/assertion/objective
   guidance, and path backpropagation. New branch paths now retain exact
   branch-point/edge segments under schema version 2, while identity-preserving
-  v1 reads remain available; canonical credit records and their adaptive fold
-  remain open.
+  v1 reads remain available. Canonical schema-v1 observation/branch-point
+  credits now survive replay and restart and drive exact completed-visit counts;
+  reward, novelty, finding, interval, and PUCT folds remain open.
 - [ ] **T-CAM-4.4** Replace checkpoint-once frontier authority with branch-point
   source continuations, an attempt-level rebuildable queue, and volatile
   daemon-epoch reservations.
@@ -181,8 +182,9 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   strictly positive domains. Implementation-version 6 `permuted_integer` adds a
   four-round request-keyed bijection over up to `2^64 - 1` legal values without
   materialization. Static continuation projection remains valid after modeled
-  observations exist: it binds the exact observation root but does not claim
-  feedback-derived statistics before canonical credit ownership lands. Other
+  observations exist: it binds the exact observation root and projects exact
+  completed visits from canonical branch-point credit sets while leaving richer
+  reward, novelty, and finding statistics zero. Other
   generated requests remain conservatively `Open` and
   fail closed when proposal or expansion semantics are requested. Legacy
   snapshots remain unindexed and queries fail closed rather than constructing a
@@ -642,7 +644,7 @@ area mapping ensures that no part of the RFC is merely aspirational:
 | `CMOD-1..30` | 1, 2, 4 | campaign model, content address, attempt idempotence, continuity |
 | `SEL-1..21` | 2 | typed choice, ABI conformance, end-to-end determinism |
 | `GUIDE-1..24` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
-| `LAZY-1..41` | 4 | lazy frontier, attempt idempotence, campaign replay |
+| `LAZY-1..42` | 4 | lazy frontier, attempt idempotence, campaign replay |
 | `CCOMP-1..24` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
 | `HFORK-1..24` | 6, 7 | hot-fork equivalence/isolation/scaling, world-fork atomicity, ABI/license |
 | `CSTORE-1..22` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |

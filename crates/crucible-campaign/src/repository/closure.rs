@@ -1305,6 +1305,9 @@ impl CampaignRepository {
                 crate::CampaignRecordKind::ContinuationProjection => {
                     self.read_continuation_projection(id)?;
                 }
+                crate::CampaignRecordKind::ExpansionCredit => {
+                    self.read_expansion_credit(id)?;
+                }
                 crate::CampaignRecordKind::MeasurementSet => {
                     self.read_measurement_set(id)?;
                 }

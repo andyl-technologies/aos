@@ -11,6 +11,7 @@ struct FiniteExpansionInputs {
     proposals: ContentId,
     admissions: ContentId,
     admitted_children: u64,
+    completed_visits: u64,
 }
 
 impl CampaignRepository {
@@ -425,6 +426,7 @@ impl CampaignRepository {
             view.observations(),
             crate::ExpansionStatistics {
                 admitted_children: inputs.admitted_children,
+                completed_visits: inputs.completed_visits,
                 ..crate::ExpansionStatistics::default()
             },
             page_after,
@@ -523,7 +525,22 @@ impl CampaignRepository {
             proposals,
             admissions,
             admitted_children,
+            completed_visits: self.branch_completed_visits(view.observations(), branch_point)?,
         })
+    }
+
+    fn branch_completed_visits(
+        &self,
+        observation_root: ContentId,
+        branch_point: crate::BranchPointId,
+    ) -> Result<u64, CampaignRepositoryError> {
+        let Some(index) = self
+            .merkle
+            .get(observation_root, branch_credit_index_key(branch_point))?
+        else {
+            return Ok(0);
+        };
+        Ok(self.merkle.inspect_shallow(index)?.entry_count())
     }
 
     fn finite_continuation_page(

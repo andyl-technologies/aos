@@ -1104,11 +1104,14 @@ fn observation_growth_bound_rebases_and_remains_restart_readable() {
     let (_, admitted, observation) =
         admitted_observation_fixture(&repository, &lineage, &policy, "observation-growth");
     assert_eq!(
-        observation_successor_growth(crate::observation::MAX_DISCOVERED_CHOICES)
-            .expect("maximum observation growth"),
+        observation_successor_growth(
+            crate::observation::MAX_DISCOVERED_CHOICES,
+            crate::exploration::MAX_BRANCH_PATH_EDGES,
+        )
+        .expect("maximum observation growth"),
         MAX_OBSERVATION_SUCCESSOR_GROWTH
     );
-    let growth = observation_successor_growth(observation.discovered_choices().len())
+    let growth = observation_successor_growth(observation.discovered_choices().len(), 0)
         .expect("fixture observation growth");
     repository
         .validated_heads
@@ -1652,9 +1655,53 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
             &observation,
         )
         .expect("publish finite expansion observation");
+    let replayed_observation = repository
+        .publish_observation(
+            "finite-expansion",
+            first_admitted.new_snapshot,
+            &observation,
+        )
+        .expect("replay finite expansion observation before staleness");
+    assert!(replayed_observation.replayed);
+    assert_eq!(replayed_observation.new_snapshot, observed.new_snapshot);
+
+    let conflicting_child_content = repository
+        .publish_configuration_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            child,
+            1,
+            b"finite expansion conflicting child".to_vec(),
+        )
+        .expect("publish conflicting finite expansion child");
+    let conflicting_observation = Observation::new(
+        first_admitted.attempt,
+        child,
+        conflicting_child_content,
+        path.id().expect("first path id"),
+        StopOutcome::Reached(StopCondition::NextChoice),
+        measurements,
+        properties,
+        coverage,
+        BTreeSet::from([first_request.opportunity()]),
+    )
+    .expect("finite expansion conflicting observation");
+    let conflict = repository
+        .publish_observation(
+            "finite-expansion",
+            observed.new_snapshot,
+            &conflicting_observation,
+        )
+        .expect("publish finite expansion conflict");
+    assert_eq!(
+        conflict.disposition,
+        ObservationDisposition::DeterminismConflict {
+            canonical: observation.id().expect("canonical observation id")
+        }
+    );
     let observed_id = repository
         .project_finite_expansion(
-            observed.new_snapshot,
+            conflict.new_snapshot,
             first_request.branch_point(),
             None,
             10,
@@ -1670,7 +1717,7 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         Some(&ContinuationState::Ready)
     );
     assert_eq!(observed_state.statistics().admitted_children, 1);
-    assert_eq!(observed_state.statistics().completed_visits, 0);
+    assert_eq!(observed_state.statistics().completed_visits, 1);
     assert_eq!(
         observed_state.observation_root(),
         repository
@@ -1691,7 +1738,7 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
     assert_eq!(
         restarted
             .project_finite_expansion(
-                observed.new_snapshot,
+                conflict.new_snapshot,
                 first_request.branch_point(),
                 None,
                 10,
@@ -1856,6 +1903,37 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         repository.load_expansion_state(
             ExpansionStateId::from_content_id(forged_observation_content)
                 .expect("forged observation expansion id")
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "expansion-state-owner-recomputation-mismatch"
+        })
+    ));
+
+    let forged_statistics = ExpansionState::new(
+        observed_state.source_snapshot(),
+        observed_state.input_view(),
+        observed_state.branch_point(),
+        observed_state.request_root(),
+        observed_state.proposal_root(),
+        observed_state.admission_root(),
+        observed_state.observation_root(),
+        crate::ExpansionStatistics {
+            completed_visits: 2,
+            ..observed_state.statistics()
+        },
+        observed_state.page_after(),
+        observed_state.page_size(),
+        observed_state.next_after(),
+        observed_state.continuations().clone(),
+    )
+    .expect("structurally valid forged visit count");
+    let forged_statistics_content = repository
+        .put_expansion_state(&forged_statistics)
+        .expect("put forged visit-count projection");
+    assert!(matches!(
+        repository.load_expansion_state(
+            ExpansionStateId::from_content_id(forged_statistics_content)
+                .expect("forged visit-count expansion id")
         ),
         Err(CampaignRepositoryError::Integrity {
             reason: "expansion-state-owner-recomputation-mismatch"

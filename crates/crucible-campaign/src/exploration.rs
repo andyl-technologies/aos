@@ -15,9 +15,9 @@ use crate::{
     BranchRequestId, CampaignCodecError, CampaignCommandId, CampaignHash, CampaignPolicyId,
     CampaignSnapshotId, CampaignViewId, CandidateGeneratorSpecId, ChoiceDomain, ChoiceDomainId,
     ChoiceOpportunity, ChoiceOpportunityId, ChoiceValue, ConfigurationArtifact,
-    ConfigurationArtifactId, ContinuationProjectionId, DebugSessionId, ExpansionStateId,
-    PlannerEngineId, PlannerInvocationId, PlannerState, PlannerStateId, PlannerStepId,
-    PolicyArtifactId, ProposalId, RetainedPlannerRequestId, SelectionId,
+    ConfigurationArtifactId, ContinuationProjectionId, CreditId, DebugSessionId, ExpansionStateId,
+    ObservationId, PlannerEngineId, PlannerInvocationId, PlannerState, PlannerStateId,
+    PlannerStepId, PolicyArtifactId, ProposalId, RetainedPlannerRequestId, SelectionId,
 };
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
@@ -25,7 +25,7 @@ const BRANCH_PATH_SCHEMA_VERSION: u32 = 2;
 const PLANNER_STEP_SCHEMA_VERSION: u32 = 4;
 const EXPANSION_STATE_SCHEMA_VERSION: u32 = 2;
 const MAX_FINITE_VALUES: usize = 4096;
-const MAX_BRANCH_PATH_EDGES: usize = 65_536;
+pub(crate) const MAX_BRANCH_PATH_EDGES: usize = 65_536;
 const MAX_STEP_BRANCH_REQUESTS: usize = 4096;
 const MAX_STEP_PROPOSALS: usize = 4096;
 const MAX_GUIDANCE_TERMS: usize = 4096;
