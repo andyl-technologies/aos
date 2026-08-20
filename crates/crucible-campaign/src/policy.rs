@@ -93,6 +93,22 @@ pub const WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION: u32 = 7;
 /// allowing substantially larger sources than explicit finite requests.
 pub const WEIGHTED_CATEGORICAL_GENERATOR_MAX_ALTERNATIVES: usize = 256;
 
+/// Generator implementation version for ordered static-generator mixtures.
+///
+/// This version schedules child values by exact weighted virtual finish time,
+/// advances duplicate-producing children, and emits each choice value once.
+/// Earlier and unknown versions remain suspended.
+pub const ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION: u32 = 8;
+
+/// Maximum distinct values emitted by ordered-mixture implementation version 8.
+pub const ORDERED_MIXTURE_GENERATOR_MAX_CANDIDATES: usize = 512;
+
+/// Maximum recursive materialization and scheduling work for one mixture poll.
+pub const ORDERED_MIXTURE_GENERATOR_MAX_WORK_ITEMS: usize = 8_192;
+
+/// Maximum nested executable-mixture depth.
+pub const ORDERED_MIXTURE_GENERATOR_MAX_DEPTH: usize = 64;
+
 /// Fixed seed that makes campaign proposal streams reproducible.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CampaignSeed([u8; 32]);

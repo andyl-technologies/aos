@@ -919,6 +919,479 @@ fn weighted_categorical_generator_bounds_and_versions_fail_closed() {
 }
 
 #[test]
+fn ordered_mixture_generator_schedules_deduplicates_and_restarts_exactly() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("generated-mixture", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let ids = ["alpha", "beta", "gamma", "delta"]
+        .into_iter()
+        .map(|label| {
+            (
+                label,
+                AlternativeId::from_hash(CampaignHash::derive(
+                    "test-mixture-alternative",
+                    label.as_bytes(),
+                )),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let labels = ids
+        .iter()
+        .map(|(label, id)| (*id, *label))
+        .collect::<BTreeMap<_, _>>();
+    let alternatives = ids
+        .values()
+        .copied()
+        .map(|id| {
+            (
+                id,
+                DiscreteAlternative::new(id, "mixture alternative", None).expect("alternative"),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let domain =
+        ChoiceDomain::Discrete(DiscreteDomain::new(1, alternatives).expect("discrete domain"));
+    let first = CandidateGeneratorSpec::new(
+        crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::WeightedCategorical {
+            weights: BTreeMap::from([(ids["alpha"], 5), (ids["beta"], 1)]),
+        },
+    )
+    .expect("first child");
+    let first_id = repository
+        .publish_generator(&first)
+        .expect("publish first child");
+    let second = CandidateGeneratorSpec::new(
+        crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::WeightedCategorical {
+            weights: BTreeMap::from([(ids["beta"], 1), (ids["gamma"], 3), (ids["delta"], 1)]),
+        },
+    )
+    .expect("second child");
+    let second_id = repository
+        .publish_generator(&second)
+        .expect("publish second child");
+    let mixture = CandidateGeneratorSpec::new(
+        crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::OrderedMixture {
+            components: vec![
+                WeightedGenerator::new(first_id, 2).expect("first component"),
+                WeightedGenerator::new(second_id, 1).expect("second component"),
+            ],
+        },
+    )
+    .expect("mixture");
+    let mixture_id = repository
+        .publish_generator(&mixture)
+        .expect("publish mixture");
+    let (domain, request) = generated_discrete_request(
+        &repository,
+        &lineage,
+        domain,
+        ids["alpha"],
+        mixture_id,
+        "mixture-main",
+        4,
+    );
+
+    let candidates = (1..=4)
+        .map(|ordinal| {
+            let Some(ChoiceValue::Discrete(alternative)) = repository
+                .static_candidate_at(&request, &domain, ordinal)
+                .expect("mixture candidate")
+            else {
+                panic!("ordered mixture returned a non-discrete candidate");
+            };
+            alternative
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|alternative| labels[alternative])
+            .collect::<Vec<_>>(),
+        vec!["alpha", "beta", "delta", "gamma"]
+    );
+    assert_eq!(candidates.iter().copied().collect::<BTreeSet<_>>().len(), 4);
+    assert_eq!(
+        repository
+            .static_candidate_count(&request, &domain)
+            .expect("mixture candidate count"),
+        Some(4),
+        "the repeated beta value was not deduplicated"
+    );
+
+    let issued = repository
+        .submit_known_branch_request("generated-mixture", genesis.snapshot_id(), &request)
+        .expect("issue mixture request");
+    let ready = repository
+        .project_finite_expansion(issued.new_snapshot, request.branch_point(), None, 10)
+        .expect("project ready mixture");
+    assert_eq!(
+        repository
+            .load_expansion_state(ready)
+            .expect("load ready mixture")
+            .continuations()
+            .get(&request.id().expect("request id")),
+        Some(&ContinuationState::Ready)
+    );
+    let head = repository.head("generated-mixture").expect("request head");
+    let wrong = finite_proposal(
+        &request,
+        &policy,
+        &head,
+        ChoiceValue::Discrete(candidates[1]),
+        1,
+    );
+    assert!(matches!(
+        repository.issue_proposal("generated-mixture", issued.new_snapshot, &wrong),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "proposal-value-does-not-match-source-order"
+        })
+    ));
+    let first_proposal = finite_proposal(
+        &request,
+        &policy,
+        &head,
+        ChoiceValue::Discrete(candidates[0]),
+        1,
+    );
+    let first_issued = repository
+        .issue_proposal("generated-mixture", issued.new_snapshot, &first_proposal)
+        .expect("issue first mixture proposal");
+    let open = repository
+        .project_finite_expansion(first_issued.new_snapshot, request.branch_point(), None, 10)
+        .expect("project open mixture");
+
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert_eq!(
+        restarted
+            .head("generated-mixture")
+            .expect("rebuild mixture history")
+            .snapshot_id(),
+        first_issued.new_snapshot
+    );
+    assert_eq!(
+        restarted
+            .load_expansion_state(open)
+            .expect("rebuild open mixture")
+            .continuations()
+            .get(&request.id().expect("request id")),
+        Some(&ContinuationState::Open)
+    );
+
+    let nested = CandidateGeneratorSpec::new(
+        crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::OrderedMixture {
+            components: vec![WeightedGenerator::new(mixture_id, 1).expect("nested component")],
+        },
+    )
+    .expect("nested mixture");
+    let nested_id = repository
+        .publish_generator(&nested)
+        .expect("publish nested mixture");
+    let (_, nested_request) = generated_discrete_request(
+        &repository,
+        &lineage,
+        domain.clone(),
+        ids["alpha"],
+        nested_id,
+        "mixture-nested",
+        4,
+    );
+    assert_eq!(
+        repository
+            .static_candidate_count(&nested_request, &domain)
+            .expect("nested candidate count"),
+        Some(4)
+    );
+
+    let legacy = CandidateGeneratorSpec::new(
+        crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::OrderedMixture {
+            components: vec![WeightedGenerator::new(first_id, 1).expect("legacy component")],
+        },
+    )
+    .expect("legacy mixture");
+    let legacy_id = repository
+        .publish_generator(&legacy)
+        .expect("publish legacy mixture");
+    let (_, legacy_request) = generated_discrete_request(
+        &repository,
+        &lineage,
+        domain.clone(),
+        ids["alpha"],
+        legacy_id,
+        "mixture-legacy",
+        2,
+    );
+    assert_eq!(
+        repository
+            .static_candidate_count(&legacy_request, &domain)
+            .expect("legacy candidate count"),
+        None
+    );
+    assert_eq!(
+        repository
+            .initial_continuation_state(&legacy_request)
+            .expect("legacy continuation"),
+        ContinuationState::Open
+    );
+}
+
+#[test]
+fn ordered_mixture_generator_enforces_output_work_and_depth_bounds() {
+    let (repository, lineage, policy, blobs) = counted_fixture();
+    let genesis = repository
+        .create("mixture-bounds", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let alternatives = (0_u32..=crate::ORDERED_MIXTURE_GENERATOR_MAX_CANDIDATES as u32)
+        .map(|index| {
+            let id = AlternativeId::from_hash(CampaignHash::derive(
+                "test-mixture-bound-alternative",
+                &index.to_be_bytes(),
+            ));
+            (
+                id,
+                DiscreteAlternative::new(id, "mixture bound alternative", None)
+                    .expect("alternative"),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let domain =
+        ChoiceDomain::Discrete(DiscreteDomain::new(1, alternatives).expect("discrete domain"));
+    let ChoiceDomain::Discrete(discrete) = &domain else {
+        panic!("expected discrete domain");
+    };
+    let default = *discrete
+        .alternatives()
+        .first_key_value()
+        .expect("default alternative")
+        .0;
+    let chunks = discrete
+        .alternatives()
+        .keys()
+        .copied()
+        .collect::<Vec<_>>()
+        .chunks(crate::WEIGHTED_CATEGORICAL_GENERATOR_MAX_ALTERNATIVES)
+        .map(|chunk| {
+            let child = CandidateGeneratorSpec::new(
+                crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
+                CandidateGeneratorAlgorithm::WeightedCategorical {
+                    weights: chunk
+                        .iter()
+                        .copied()
+                        .map(|alternative| (alternative, 1_u64))
+                        .collect(),
+                },
+            )
+            .expect("bounded child");
+            repository
+                .publish_generator(&child)
+                .expect("publish bounded child")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(chunks.len(), 3);
+
+    let exact = CandidateGeneratorSpec::new(
+        crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::OrderedMixture {
+            components: chunks[..2]
+                .iter()
+                .copied()
+                .map(|child| WeightedGenerator::new(child, 1).expect("exact component"))
+                .collect(),
+        },
+    )
+    .expect("exact-bound mixture");
+    let exact_id = repository
+        .publish_generator(&exact)
+        .expect("publish exact-bound mixture");
+    let (_, exact_request) = generated_discrete_request(
+        &repository,
+        &lineage,
+        domain.clone(),
+        default,
+        exact_id,
+        "mixture-exact-bound",
+        crate::ORDERED_MIXTURE_GENERATOR_MAX_CANDIDATES as u64,
+    );
+    assert_eq!(
+        repository
+            .static_candidate_count(&exact_request, &domain)
+            .expect("exact-bound candidate count"),
+        Some(crate::ORDERED_MIXTURE_GENERATOR_MAX_CANDIDATES as u64)
+    );
+
+    let oversized = CandidateGeneratorSpec::new(
+        crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::OrderedMixture {
+            components: chunks
+                .iter()
+                .copied()
+                .map(|child| WeightedGenerator::new(child, 1).expect("oversized component"))
+                .collect(),
+        },
+    )
+    .expect("oversized mixture");
+    let oversized_id = repository
+        .publish_generator(&oversized)
+        .expect("publish oversized mixture");
+    let (_, oversized_request) = generated_discrete_request(
+        &repository,
+        &lineage,
+        domain.clone(),
+        default,
+        oversized_id,
+        "mixture-oversized",
+        crate::ORDERED_MIXTURE_GENERATOR_MAX_CANDIDATES as u64 + 1,
+    );
+    assert!(matches!(
+        repository.static_candidate_count(&oversized_request, &domain),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "ordered-mixture-generator-candidate-limit"
+        })
+    ));
+    let discovered = repository
+        .discover_choice_opportunity(
+            "mixture-bounds",
+            genesis.snapshot_id(),
+            oversized_request.parent(),
+            oversized_request.opportunity(),
+        )
+        .expect("discover oversized opportunity");
+    let objects_before = blobs.object_count().expect("objects before rejection");
+    assert!(matches!(
+        repository.submit_branch_request(
+            "mixture-bounds",
+            discovered.new_snapshot,
+            &oversized_request,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "ordered-mixture-generator-candidate-limit"
+        })
+    ));
+    assert_eq!(
+        blobs.object_count().expect("objects after rejection"),
+        objects_before
+    );
+    assert_eq!(
+        repository
+            .head("mixture-bounds")
+            .expect("unchanged bounds head")
+            .snapshot_id(),
+        discovered.new_snapshot
+    );
+
+    let work_components = (0..129)
+        .map(|_| WeightedGenerator::new(chunks[0], 1).expect("work component"))
+        .collect();
+    let excessive_work = CandidateGeneratorSpec::new(
+        crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::OrderedMixture {
+            components: work_components,
+        },
+    )
+    .expect("work-bounded mixture");
+    let excessive_work_id = repository
+        .publish_generator(&excessive_work)
+        .expect("publish work-bounded mixture");
+    let (_, excessive_work_request) = generated_discrete_request(
+        &repository,
+        &lineage,
+        domain.clone(),
+        default,
+        excessive_work_id,
+        "mixture-work-limit",
+        1,
+    );
+    assert!(matches!(
+        repository.static_candidate_count(&excessive_work_request, &domain),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "ordered-mixture-generator-work-limit"
+        })
+    ));
+
+    let one = CandidateGeneratorSpec::new(
+        crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::WeightedCategorical {
+            weights: BTreeMap::from([(default, 1)]),
+        },
+    )
+    .expect("one-value child");
+    let mut nested_id = repository
+        .publish_generator(&one)
+        .expect("publish one-value child");
+    for _ in 0..=crate::ORDERED_MIXTURE_GENERATOR_MAX_DEPTH {
+        let nested = CandidateGeneratorSpec::new(
+            crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
+            CandidateGeneratorAlgorithm::OrderedMixture {
+                components: vec![WeightedGenerator::new(nested_id, 1).expect("nested component")],
+            },
+        )
+        .expect("nested mixture");
+        nested_id = repository
+            .publish_generator(&nested)
+            .expect("publish nested mixture");
+    }
+    let (_, nested_request) = generated_discrete_request(
+        &repository,
+        &lineage,
+        domain.clone(),
+        default,
+        nested_id,
+        "mixture-depth-limit",
+        1,
+    );
+    assert!(matches!(
+        repository.static_candidate_count(&nested_request, &domain),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "ordered-mixture-generator-depth-limit"
+        })
+    ));
+
+    let suspended_child =
+        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All).expect("suspended child");
+    let suspended_child_id = repository
+        .publish_generator(&suspended_child)
+        .expect("publish suspended child");
+    let suspended = CandidateGeneratorSpec::new(
+        crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::OrderedMixture {
+            components: vec![
+                WeightedGenerator::new(suspended_child_id, 1).expect("suspended component"),
+            ],
+        },
+    )
+    .expect("suspended mixture");
+    let suspended_id = repository
+        .publish_generator(&suspended)
+        .expect("publish suspended mixture");
+    let (_, suspended_request) = generated_discrete_request(
+        &repository,
+        &lineage,
+        domain.clone(),
+        default,
+        suspended_id,
+        "mixture-suspended-child",
+        1,
+    );
+    assert_eq!(
+        repository
+            .static_candidate_count(&suspended_request, &domain)
+            .expect("suspended candidate count"),
+        None
+    );
+    assert_eq!(
+        repository
+            .initial_continuation_state(&suspended_request)
+            .expect("suspended continuation"),
+        ContinuationState::Open
+    );
+}
+
+#[test]
 fn boundary_integer_generator_uses_exact_static_order() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository
