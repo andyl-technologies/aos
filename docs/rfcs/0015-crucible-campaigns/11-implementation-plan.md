@@ -266,10 +266,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   and tears the session down on every exit. The live-node composition now
   installs and verifies the exact guard before launch authority is returned,
   exact-binds the cancellation incarnation, lends the driver only narrow live
-  operations plus a non-releasing boundary view, and releases the guard only
-  after reap attestation. Cleanup tracks backend and guard phases separately on
-  explicit finish and drop. Only explicitly typed
-  availability failures retry; deterministic realization failures terminate.
+  operations, a read-only unified event log, and a non-releasing boundary view.
+  Replay exact-binds the caller's offset to that single log before backend
+  work; candidate acceptance binds the driver's exact log offset and requires
+  an unchanged paused-boundary seal plus an unchanged final shutdown drain. The
+  session releases the guard only after reap attestation, and cleanup tracks
+  backend and guard phases separately on explicit finish and drop. Only
+  explicitly typed availability failures retry; deterministic realization
+  failures terminate.
   Canonical `DescribeExecutor` and cursor-bound `WatchCapacity` messages now
   separate immutable compatibility/ceiling facts from daemon-epoch-scoped
   availability and exact/hot locality. Checked direct and Unix-loopback clients
@@ -277,9 +281,13 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   above immutable ceilings, and unsupported locality. The local supervisor
   facade refuses startup unless advertised ceilings exactly equal enforced
   slots, CPU, memory, disk, and execution-quanta limits. The concrete host
-  resource guard and modeled driver, coverage-aware live advancement and final
-  event-log drain, hot-fork realization, full out-of-process campaign flight,
-  and complete component conformance gate remain open.
+  resource guard and modeled driver, the versioned paused-restore reset of the
+  plugin coverage novelty bitmap/ring plus host consumer state, coverage-aware
+  live advancement and canonical coverage projection, hot-fork realization,
+  full out-of-process campaign flight, and complete component conformance gate
+  remain open. Until that reset exists, real-node coverage-enabled warm restore
+  fails closed rather than retaining priming events or suppressing post-restore
+  coverage.
 - [x] **T-CAM-4.10** Replace repeated full-history validation on local owner
   mutations with bounded immutable validated-head/lifecycle checkpoints and
   authenticated membership and result-locator indexes; promote only after ref

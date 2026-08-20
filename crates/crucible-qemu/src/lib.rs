@@ -237,8 +237,9 @@ pub use realization::{
 };
 #[cfg(target_os = "linux")]
 pub use realization::{
-    QemuLiveAttemptBackend, QemuNodeRealizationExecutor, QemuNodeRealizationLauncher,
-    QemuRealizedNodeBackend, QemuVmLiveRealizationExecutor, QemuWarmRestoreNodeLauncher,
+    QemuLiveAttemptBackend, QemuLiveBackendShutdown, QemuNodeRealizationExecutor,
+    QemuNodeRealizationLauncher, QemuRealizedNodeBackend, QemuVmLiveRealizationExecutor,
+    QemuWarmRestoreNodeLauncher,
 };
 pub use setup_failure::{
     FailedQemuNodeSetup, QemuNodeSetup, QemuSchedulableNodeSetup, QemuSetupAbortError,

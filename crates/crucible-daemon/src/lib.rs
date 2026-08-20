@@ -68,8 +68,8 @@ pub use crucible_qemu_runner::{
 };
 pub use crucible_qemu_session::{
     QemuAttemptOperationalBoundary, QemuAttemptResourceGuard, QemuAttemptResourceGuardFactory,
-    QemuGuardedLiveRealizationExecutor, QemuLiveAttemptDriver, QemuLiveAttemptSession,
-    QemuLiveAttemptSessionError, QemuLiveAttemptSessionFactory,
+    QemuGuardedLiveRealizationExecutor, QemuLiveAttemptDriver, QemuLiveAttemptResult,
+    QemuLiveAttemptSession, QemuLiveAttemptSessionError, QemuLiveAttemptSessionFactory,
 };
 pub use executor_capability::LocalExecutorCapabilityService;
 pub use executor_loopback::{

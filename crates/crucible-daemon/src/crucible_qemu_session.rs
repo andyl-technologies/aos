@@ -6,7 +6,7 @@
 //! only the already-realized backend. Assignment IDs and daemon epochs never
 //! cross this boundary.
 
-use crucible::Configuration;
+use crucible::{Configuration, EventLogOffset};
 use crucible_campaign::{AttemptResourceLimits, ObservationCandidate};
 use crucible_qemu::{
     QemuBakedGenesisRestoreAdmission, QemuLiveAttemptBackend, QemuLoadvmCommandAuthorization,
@@ -84,6 +84,39 @@ pub trait QemuAttemptResourceGuardFactory {
     ) -> Result<Self::Guard, QemuVmRealizationError>;
 }
 
+/// Candidate paired with the exact unified-log boundary it incorporates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuLiveAttemptResult {
+    candidate: ObservationCandidate,
+    event_log: EventLogOffset,
+}
+
+impl QemuLiveAttemptResult {
+    /// Binds a candidate to the live backend's current unified-log boundary.
+    #[must_use]
+    pub fn at_current_boundary(
+        candidate: ObservationCandidate,
+        backend: &dyn QemuLiveAttemptBackend,
+    ) -> Self {
+        Self {
+            candidate,
+            event_log: backend.event_log().offset(),
+        }
+    }
+
+    /// Returns the exact unified-log boundary incorporated by the candidate.
+    #[must_use]
+    pub const fn event_log(&self) -> EventLogOffset {
+        self.event_log
+    }
+
+    /// Consumes the binding into its canonical candidate.
+    #[must_use]
+    pub fn into_candidate(self) -> ObservationCandidate {
+        self.candidate
+    }
+}
+
 /// Modeled attempt driver over one already-realized live backend.
 ///
 /// The driver may advance the backend only through bounded quanta and must call
@@ -96,6 +129,11 @@ pub trait QemuLiveAttemptDriver {
 
     /// Drives the live backend to the attempt stop and constructs its result.
     ///
+    /// [`QemuLiveAttemptBackend::event_log`] exposes the read-only unified log
+    /// updated by every completed live quantum. The session drains once more
+    /// after this method returns and rejects the candidate if that seal changes
+    /// the log boundary.
+    ///
     /// # Errors
     ///
     /// Returns a classified retryable, canceled, or terminal driver failure.
@@ -106,7 +144,7 @@ pub trait QemuLiveAttemptDriver {
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
         realization: QemuVmRealization,
-    ) -> Result<ObservationCandidate, AttemptWorkerFailure<Self::Error>>;
+    ) -> Result<QemuLiveAttemptResult, AttemptWorkerFailure<Self::Error>>;
 }
 
 /// Realization executor whose blocking operations are bound to one guard.
@@ -415,10 +453,24 @@ where
             .driver
             .run_attempt(backend, &mut self.guard, input, self.context, realization)
             .map_err(map_live_driver_failure);
+        if let Ok(candidate) = &result
+            && !self
+                .seal_result_event_log(candidate.event_log())
+                .map_err(classify_operational_failure)?
+        {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuLiveAttemptSessionError::Operational(QemuVmRealizationError::Executor {
+                    operation: "seal campaign QEMU observation boundary",
+                    message: String::from(
+                        "the candidate does not incorporate the exact sealed unified event log",
+                    ),
+                }),
+            ));
+        }
         self.guard
             .check_operational_boundary()
             .map_err(classify_operational_failure)?;
-        result
+        result.map(QemuLiveAttemptResult::into_candidate)
     }
 
     fn finish(mut self) -> Result<(), QemuVmRealizationError> {
@@ -432,16 +484,39 @@ where
     D: QemuLiveAttemptDriver,
     G: QemuAttemptResourceGuard,
 {
+    fn seal_result_event_log(
+        &mut self,
+        expected: EventLogOffset,
+    ) -> Result<bool, QemuVmRealizationError> {
+        let unchanged = self.executor.seal_live_observation_boundary()?;
+        let sealed = self.executor.live_backend_mut()?.event_log().offset();
+        Ok(unchanged && sealed == expected)
+    }
+
     fn cleanup(&mut self) -> Result<(), QemuVmRealizationError> {
+        let mut diagnostic = None;
         if !self.backend_reaped {
             let reap = if self.realization_cleanup_required {
                 self.executor
                     .reap_failed_realization_guarded(&mut self.guard)
+                    .map(|()| true)
             } else {
-                self.executor.shutdown_live_backend()
+                self.executor
+                    .shutdown_live_backend()
+                    .map(|outcome| outcome.observation_boundary_unchanged())
             };
             match reap {
-                Ok(()) => self.backend_reaped = true,
+                Ok(unchanged) => {
+                    self.backend_reaped = true;
+                    if !unchanged {
+                        diagnostic = Some(QemuVmRealizationError::Executor {
+                            operation: "finish campaign QEMU attempt",
+                            message: String::from(
+                                "final shutdown drain changed the sealed observation boundary",
+                            ),
+                        });
+                    }
+                }
                 Err(error) => {
                     if !self.guard_terminal {
                         self.guard.quarantine();
@@ -459,7 +534,11 @@ where
             self.guard_terminal = true;
             result?;
         }
-        Ok(())
+        if let Some(error) = diagnostic {
+            Err(error)
+        } else {
+            Ok(())
+        }
     }
 }
 
