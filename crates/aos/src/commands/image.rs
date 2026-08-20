@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io::{Read as _, Seek as _, SeekFrom};
+use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd as _;
 #[cfg(unix)]
@@ -11,17 +11,20 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use aos_core::error::AosError;
 use aos_core::output::{ActivityProgress, OutputMode, Printer, TransferProgress};
+use aos_net::{
+    TransferEvent, TransferManager, TransferManagerConfig, TransferObserver, TransferOutput,
+    TransferRequest, TransferSink,
+};
 use aos_remote::hub::{HubClient, hub_rpc};
 use aos_remote::hub_types::{ListImagesRequest, ResolveImageRequest, SystemImage};
-use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use tokio::io::AsyncWriteExt as _;
 
 use crate::cli::{ImageCommand, ImageDownloadArgs, ImageSelectionArgs};
 
@@ -235,11 +238,8 @@ async fn download(args: &ImageDownloadArgs, printer: &Printer) -> Result<()> {
     if existing < image.byte_size {
         transfer.phase("Downloading image");
         transfer.set_position(existing);
-        let file = destination.take_async_file()?;
-        let file =
-            download_image_bytes(args, &image, &output, &mut destination, file, &transfer).await?;
-        file.sync_all().await?;
-        destination.restore_async_file(file).await?;
+        download_image_bytes(args, &image, &output, &mut destination, &transfer).await?;
+        destination.sync_all()?;
     }
     transfer.phase("Verifying SHA-256");
     let size = destination.current_len()?;
@@ -267,152 +267,90 @@ async fn download_image_bytes(
     image: &SystemImage,
     output: &Path,
     destination: &mut SecureDestination,
-    mut file: tokio::fs::File,
     transfer: &TransferProgress,
-) -> Result<tokio::fs::File> {
+) -> Result<()> {
     let download_url = validate_download_url(&image.download_url)?;
     let hub_url = reqwest::Url::parse(&args.selection.hub).context("invalid Hub URL")?;
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(15))
-        .build()
-        .context("building image download client")?;
-    let mut attempt = 0_u32;
+    let mut config = TransferManagerConfig::default();
+    config.pool.connect_timeout = Duration::from_secs(15);
+    config.retry.max_attempts = args.retries.saturating_add(1).max(1);
+    config.retry.initial_delay = RETRY_BASE_DELAY;
+    config.retry.max_delay = Duration::from_secs(8);
+    config.retry.backoff_factor = 2.0;
+    config.retry.jitter = false;
+    config.follow_http_redirects = false;
+    let manager = TransferManager::new(config);
 
-    loop {
-        let current = file.metadata().await?.len();
-        if current == image.byte_size {
-            return Ok(file);
-        }
-        let mut request = client.get(download_url.clone());
-        if same_origin(&hub_url, &download_url)
-            && let Some(token) = &args.selection.token
-        {
-            request = request.bearer_auth(token);
-        }
-        if current > 0 {
-            request = request.header(reqwest::header::RANGE, format!("bytes={current}-"));
-        }
-
-        let response = match request.send().await {
-            Ok(response) => response,
-            Err(error) if attempt < args.retries => {
-                attempt += 1;
-                retry_transfer(transfer, attempt, args.retries, &error.to_string()).await;
-                continue;
-            }
-            Err(error) => return Err(error).context("downloading image bytes"),
-        };
-        validate_image_response(&response, current, image.byte_size)?;
-
-        let mut stream = response.bytes_stream();
-        let mut stream_error = None;
-        loop {
-            let next = tokio::select! {
-                signal = tokio::signal::ctrl_c() => {
-                    signal.context("installing image download interrupt handler")?;
-                    file.sync_data().await.context("syncing interrupted image download")?;
-                    let partial = partial_path(output)?;
-                    return Err(AosError::Interrupted {
-                        message: format!(
-                            "download paused at {}; partial saved at {}; run the same command to resume",
-                            human_bytes(file.metadata().await?.len()),
-                            partial.display(),
-                        ),
-                    }
-                    .into());
-                }
-                chunk = stream.next() => chunk,
-            };
-            let Some(chunk) = next else {
-                break;
-            };
-            let chunk = match chunk {
-                Ok(chunk) => chunk,
-                Err(error) => {
-                    stream_error = Some(error);
-                    break;
-                }
-            };
-            let new_size = file
-                .metadata()
-                .await?
-                .len()
-                .checked_add(chunk.len() as u64)
-                .context("image response byte count overflow")?;
-            if new_size > image.byte_size {
-                bail!("image response exceeded the signed byte size");
-            }
-            destination.hash_bytes(&chunk);
-            file.write_all(&chunk).await?;
-            transfer.inc(chunk.len() as u64);
-        }
-
-        let current = file.metadata().await?.len();
-        if stream_error.is_none() && current == image.byte_size {
-            return Ok(file);
-        }
-        if attempt >= args.retries {
-            if let Some(error) = stream_error {
-                return Err(error).context("reading image response");
-            }
-            bail!(
-                "image response ended at {}, before the signed size {}",
-                human_bytes(current),
-                human_bytes(image.byte_size),
-            );
-        }
-        attempt += 1;
-        let reason = stream_error
-            .map(|error| error.to_string())
-            .unwrap_or_else(|| "server ended the response early".to_string());
-        retry_transfer(transfer, attempt, args.retries, &reason).await;
-    }
-}
-
-fn validate_image_response(response: &reqwest::Response, existing: u64, total: u64) -> Result<()> {
-    let expected = if existing > 0 {
-        reqwest::StatusCode::PARTIAL_CONTENT
-    } else {
-        reqwest::StatusCode::OK
-    };
-    if response.status() != expected {
-        bail!(
-            "image download returned {}, expected {expected}",
-            response.status()
-        );
-    }
-    if existing > 0 {
-        let content_range = response
-            .headers()
-            .get(reqwest::header::CONTENT_RANGE)
-            .and_then(|value| value.to_str().ok())
-            .context("resumed image response omitted Content-Range")?;
-        let expected_range = format!("bytes {existing}-{}/{total}", total - 1);
-        if content_range != expected_range {
-            bail!("resumed image response has inconsistent Content-Range");
-        }
-    }
-    let expected_body = total - existing;
-    if response
-        .content_length()
-        .is_some_and(|length| length != expected_body)
+    let sink = destination.take_sink(image.byte_size)?;
+    let output_sink: Arc<dyn TransferSink> = sink.clone();
+    let mut request = TransferRequest::get(download_url.as_str())
+        .with_resume()
+        .with_expected_size(image.byte_size)
+        .with_maximum_bytes(image.byte_size);
+    request.output = TransferOutput::Sink(output_sink);
+    if same_origin(&hub_url, &download_url)
+        && let Some(token) = &args.selection.token
     {
-        bail!("image response length does not match signed remaining byte count");
+        request = request.with_header("Authorization", &format!("Bearer {token}"));
     }
+
+    let observer = ImageTransferObserver { transfer };
+    let result = {
+        let execute = manager.execute_observed(request, &observer);
+        tokio::pin!(execute);
+        tokio::select! {
+            result = &mut execute => result,
+            signal = tokio::signal::ctrl_c() => {
+                signal.context("installing image download interrupt handler")?;
+                let partial = partial_path(output)?;
+                Err(AosError::Interrupted {
+                    message: format!(
+                        "download paused at {}; partial saved at {}; run the same command to resume",
+                        human_bytes(sink.position()?),
+                        partial.display(),
+                    ),
+                }
+                .into())
+            }
+        }
+    };
+    if result.is_err() {
+        sink.sync_data()
+            .context("syncing incomplete image download")?;
+    }
+    destination.restore_sink(sink)?;
+    result.context("downloading image bytes")?;
     Ok(())
 }
 
-async fn retry_transfer(transfer: &TransferProgress, attempt: u32, retries: u32, reason: &str) {
-    let exponent = attempt.saturating_sub(1).min(3);
-    let delay = RETRY_BASE_DELAY.saturating_mul(2_u32.pow(exponent));
-    transfer.warning(&format!(
-        "transfer interrupted ({reason}); retrying in {}s (attempt {}/{})",
-        delay.as_secs(),
-        attempt + 1,
-        retries + 1,
-    ));
-    tokio::time::sleep(delay).await;
+struct ImageTransferObserver<'a> {
+    transfer: &'a TransferProgress,
+}
+
+impl TransferObserver for ImageTransferObserver<'_> {
+    fn observe(&self, event: TransferEvent<'_>) {
+        match event {
+            TransferEvent::Started { resumed_bytes, .. } => {
+                self.transfer.set_position(resumed_bytes);
+            }
+            TransferEvent::Progress {
+                transferred_bytes, ..
+            }
+            | TransferEvent::Completed {
+                transferred_bytes, ..
+            } => self.transfer.set_position(transferred_bytes),
+            TransferEvent::Retrying {
+                attempt,
+                delay,
+                error,
+                ..
+            } => self.transfer.warning(&format!(
+                "transfer interrupted ({error:#}); retrying in {}s (attempt {attempt})",
+                delay.as_secs()
+            )),
+            TransferEvent::Verifying { .. } | TransferEvent::Failed { .. } => {}
+        }
+    }
 }
 
 fn existing_final_matches(output: &Path, image: &SystemImage, printer: &Printer) -> Result<bool> {
@@ -712,6 +650,72 @@ struct SecureDestination {
     partial_identity: DestinationIdentity,
 }
 
+/// Replayable writer backed by an already-validated destination descriptor.
+struct SecureImageSink {
+    file: Mutex<fs::File>,
+    hasher: Mutex<Sha256>,
+    expected_size: u64,
+}
+
+impl SecureImageSink {
+    fn sync_data(&self) -> Result<()> {
+        self.file
+            .lock()
+            .map_err(|_| anyhow::anyhow!("image destination lock was poisoned"))?
+            .sync_data()?;
+        Ok(())
+    }
+}
+
+impl TransferSink for SecureImageSink {
+    fn position(&self) -> Result<u64> {
+        Ok(self
+            .file
+            .lock()
+            .map_err(|_| anyhow::anyhow!("image destination lock was poisoned"))?
+            .metadata()?
+            .len())
+    }
+
+    fn write(&self, bytes: &[u8]) -> Result<()> {
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|_| anyhow::anyhow!("image destination lock was poisoned"))?;
+        let new_size = file
+            .metadata()?
+            .len()
+            .checked_add(bytes.len() as u64)
+            .context("image response byte count overflow")?;
+        anyhow::ensure!(
+            new_size <= self.expected_size,
+            "image response exceeded the signed byte size"
+        );
+        let mut hasher = self
+            .hasher
+            .lock()
+            .map_err(|_| anyhow::anyhow!("image hash lock was poisoned"))?;
+        let mut remaining = bytes;
+        while !remaining.is_empty() {
+            let written = file.write(remaining)?;
+            if written == 0 {
+                return Err(std::io::Error::from(std::io::ErrorKind::WriteZero).into());
+            }
+            hasher.update(&remaining[..written]);
+            remaining = &remaining[written..];
+        }
+        Ok(())
+    }
+
+    fn flush(&self) -> Result<()> {
+        self.file
+            .lock()
+            .map_err(|_| anyhow::anyhow!("image destination lock was poisoned"))?
+            .flush()?;
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct DestinationIdentity {
     len: u64,
@@ -800,21 +804,40 @@ impl SecureDestination {
         self.existing
     }
 
-    fn hash_bytes(&mut self, bytes: &[u8]) {
-        if let Some(hasher) = &mut self.hasher {
-            hasher.update(bytes);
-        }
-    }
-
-    fn take_async_file(&mut self) -> Result<tokio::fs::File> {
-        self.file
+    fn take_sink(&mut self, expected_size: u64) -> Result<Arc<SecureImageSink>> {
+        let file = self
+            .file
+            .as_ref()
+            .context("image destination descriptor is unavailable")?
+            .try_clone()
+            .context("cloning image destination descriptor")?;
+        let hasher = self
+            .hasher
             .take()
-            .map(tokio::fs::File::from_std)
-            .context("image destination descriptor is unavailable")
+            .context("image destination hash state is unavailable")?;
+        Ok(Arc::new(SecureImageSink {
+            file: Mutex::new(file),
+            hasher: Mutex::new(hasher),
+            expected_size,
+        }))
     }
 
-    async fn restore_async_file(&mut self, file: tokio::fs::File) -> Result<()> {
-        self.file = Some(file.into_std().await);
+    fn restore_sink(&mut self, sink: Arc<SecureImageSink>) -> Result<()> {
+        let sink = Arc::try_unwrap(sink)
+            .map_err(|_| anyhow::anyhow!("image transfer retained its destination sink"))?;
+        self.hasher = Some(
+            sink.hasher
+                .into_inner()
+                .map_err(|_| anyhow::anyhow!("image hash lock was poisoned"))?,
+        );
+        Ok(())
+    }
+
+    fn sync_all(&self) -> Result<()> {
+        self.file
+            .as_ref()
+            .context("image destination descriptor is unavailable")?
+            .sync_all()?;
         Ok(())
     }
 

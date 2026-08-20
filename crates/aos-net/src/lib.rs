@@ -6,9 +6,9 @@
 //! - Parallel transfers with concurrency control
 //! - Resumable/incomplete download support
 //! - HTTP/1.1 + HTTP/2 (ALPN negotiation)
-//! - Multi-protocol support (HTTP, S3, SFTP, FTP, file://)
-//! - Multi-part upload/download
-//! - Progress tracking (callback-based)
+//! - Multi-protocol support (HTTP, S3, SFTP, and `file://`)
+//! - Backend-neutral multipart uploads with continuation policy
+//! - Per-operation structured progress observation
 //! - Auth management (per-domain credential store)
 //! - Bandwidth limiting
 //! - Retry with exponential backoff
@@ -22,6 +22,10 @@
 //!   connection-pool permit, applies credentials, retries on transient
 //!   failures, and runs the streaming pipeline (per-chunk hashing,
 //!   bandwidth limiting, and progress callbacks).
+//! - [`managed`] -- identity-bound durable downloads, atomic installation,
+//!   mirror fallback, streaming hash-only downloads, and rewindable uploads.
+//! - [`multipart`] -- the [`MultipartBackend`] adapter contract and shared
+//!   multipart session orchestration.
 //! - [`protocol`] -- the [`protocol::Protocol`] trait plus per-scheme
 //!   implementations for HTTP(S), S3, SFTP/SSH, and `file://`.
 //! - [`types`] -- request/response types ([`TransferRequest`],
@@ -34,32 +38,32 @@
 //!
 //! # Usage
 //!
-//! The primary API is [`TransferEngine`], which orchestrates all transfers:
+//! The primary API is [`TransferManager`], which orchestrates all transfers:
 //!
 //! ```ignore
-//! use aos_net::transfer::{TransferEngine, TransferEngineConfig};
-//! use aos_net::types::TransferRequest;
+//! use aos_net::{TransferManager, TransferManagerConfig, TransferRequest};
 //!
-//! let engine = TransferEngine::new(TransferEngineConfig::default());
+//! let manager = TransferManager::new(TransferManagerConfig::default());
 //!
 //! // Simple GET to memory
-//! let result = engine.execute(TransferRequest::get("https://example.com/file.tar.gz")).await?;
+//! let result = manager.execute(TransferRequest::get("https://example.com/file.tar.gz")).await?;
 //!
 //! // HEAD to check existence
-//! let result = engine.head("https://example.com/file.tar.gz").await?;
+//! let result = manager.head("https://example.com/file.tar.gz").await?;
 //!
 //! // Batch parallel downloads
 //! let requests = vec![
 //!     TransferRequest::get("https://example.com/a.tar.gz"),
 //!     TransferRequest::get("https://example.com/b.tar.gz"),
 //! ];
-//! let results = engine.execute_batch(requests, None).await;
+//! let results = manager.execute_batch(requests, None).await;
 //! ```
 
 pub mod auth;
 pub mod bandwidth;
 pub mod hash;
 pub mod managed;
+pub mod multipart;
 pub mod pool;
 pub mod progress;
 pub mod protocol;
@@ -70,10 +74,15 @@ pub mod types;
 // Re-export commonly used types at the crate root.
 pub use auth::{AuthStore, Credential};
 pub use bandwidth::BandwidthLimiter;
+pub use bytes::Bytes;
 pub use hash::StreamingHasher;
 pub use managed::{
     DownloadRequest, DownloadResult, HashDownloadRequest, HashDownloadResult, ResumePolicy,
     UploadRequest, UploadSource,
+};
+pub use multipart::{
+    MultipartAdmission, MultipartBackend, MultipartFailurePolicy, MultipartSessionState,
+    MultipartSource, MultipartUploadRequest, MultipartUploadResult,
 };
 pub use pool::{ConnectionPool, PoolConfig};
 pub use progress::{
@@ -84,6 +93,7 @@ pub use retry::RetryConfig;
 pub use transfer::{TransferEngine, TransferEngineConfig};
 pub use types::{
     HashAlgorithm, HashSpec, Method, TransferBody, TransferOutput, TransferRequest, TransferResult,
+    TransferSink,
 };
 
 /// The shared transfer manager used by CLI and service workflows.

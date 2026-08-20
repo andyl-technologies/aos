@@ -47,6 +47,10 @@ impl S3Backend {
 
 #[async_trait]
 impl CacheBackend for S3Backend {
+    fn transfer_manager(&self) -> Option<&TransferEngine> {
+        Some(self.engine.as_ref())
+    }
+
     async fn exists(&self, relative_path: &str) -> Result<bool> {
         let url = self.s3_url(relative_path.trim_start_matches('/'));
         let result = self.engine.head(&url).await?;
