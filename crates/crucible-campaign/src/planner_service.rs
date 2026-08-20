@@ -13,10 +13,14 @@ use crucible_cas::content_store::ContentId;
 use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::{
     BranchRequest, CampaignCodecError, CampaignHash, CampaignPlanningView, CampaignPolicy,
-    CampaignSnapshotId, ObjectEnvelope, PlannerAuthorityKey, PlannerEngine, PlannerInvocation,
-    PlannerProposalDisposition, PlannerState, PlannerStepProposal, PlannerSubmission,
-    PlanningUsage, PolicyArtifact, RetainedPlannerRequestId,
+    CampaignSnapshotId, ContinuationProjection, ContinuationState, ObjectEnvelope,
+    PlannerAuthorityKey, PlannerEngine, PlannerInvocation, PlannerProposalDisposition,
+    PlannerState, PlannerStepProposal, PlannerSubmission, PlanningScanPosition, PlanningUsage,
+    PolicyArtifact, Proposal, RetainedPlannerRequestId,
 };
+
+mod closed;
+pub use closed::*;
 
 const PLANNER_REQUEST_SCHEMA_VERSION: u32 = 1;
 const PLANNER_RESPONSE_SCHEMA_VERSION: u32 = 1;
@@ -29,15 +33,29 @@ pub const MAX_PLANNER_COMPONENT_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_RETAINED_PLANNER_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_PLANNING_BUNDLE_OBJECTS: usize = 65_536;
 const RETAINED_PLANNER_REQUEST_FIXED_CHILDREN: usize = 7;
+/// Planner-engine capability for exact continuation and candidate offers.
+pub const CANONICAL_FRONTIER_OFFERS_CAPABILITY: &str = "canonical-frontier-offers-v1";
 /// Maximum bundle-object count accepted by the initial coordinator store.
 pub const MAX_RETAINED_PLANNER_REQUEST_BUNDLE_OBJECTS: usize =
     MAX_PLANNING_BUNDLE_OBJECTS - RETAINED_PLANNER_REQUEST_FIXED_CHILDREN;
 const _: () = assert!(MAX_RETAINED_PLANNER_REQUEST_BYTES < MAX_PLANNER_COMPONENT_MESSAGE_BYTES);
 
 /// Bounded content-addressed interpretation objects supplied to a pure planner.
+///
+/// A canonical-frontier engine receives each served branch request, its exact
+/// continuation projection, and one invocation-bound proposal offer for the
+/// least Ready position on that page. Other engine capabilities may define
+/// additional reachable interpretation records without changing this envelope
+/// container's version-1 grammar.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CampaignPlanningBundle {
     objects: BTreeMap<ContentId, Vec<u8>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PlannerCandidateInput {
+    pub(crate) continuation: ContinuationProjection,
+    pub(crate) offer: Option<Proposal>,
 }
 
 impl CampaignPlanningBundle {
@@ -116,6 +134,108 @@ impl CampaignPlanningBundle {
             .transpose()
     }
 
+    pub(crate) fn candidate_inputs(
+        &self,
+        request: &PlannerRequest,
+    ) -> Result<BTreeMap<PlanningScanPosition, PlannerCandidateInput>, CampaignCodecError> {
+        if !request
+            .engine
+            .capabilities()
+            .contains(CANONICAL_FRONTIER_OFFERS_CAPABILITY)
+        {
+            return Ok(BTreeMap::new());
+        }
+
+        let invocation = request.invocation_id()?;
+        let mut continuations = BTreeMap::new();
+        let mut offers = BTreeMap::new();
+        for id in self.object_ids() {
+            let object = self.object(id)?.ok_or(CampaignCodecError::InvalidValue {
+                reason: "planner input bundle object disappeared during validation",
+            })?;
+            match object.record_kind() {
+                crate::CampaignRecordKind::ContinuationProjection => {
+                    let projection = ContinuationProjection::from_canonical_bytes(object.body())?;
+                    let position =
+                        PlanningScanPosition::new(projection.branch_point(), projection.request());
+                    if continuations.insert(position, projection).is_some() {
+                        return Err(CampaignCodecError::InvalidValue {
+                            reason: "planner input bundle repeats a continuation projection",
+                        });
+                    }
+                }
+                crate::CampaignRecordKind::Proposal => {
+                    let proposal = Proposal::from_canonical_bytes(object.body())?;
+                    if proposal.planner_invocation() != Some(invocation) {
+                        return Err(CampaignCodecError::InvalidValue {
+                            reason: "planner candidate offer names another invocation",
+                        });
+                    }
+                    let position =
+                        PlanningScanPosition::new(proposal.branch_point(), proposal.request());
+                    if offers.insert(position, proposal).is_some() {
+                        return Err(CampaignCodecError::InvalidValue {
+                            reason: "planner input bundle repeats a candidate offer",
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let expected_offer = continuations.iter().find_map(|(position, projection)| {
+            (projection.state() == ContinuationState::Ready).then_some(*position)
+        });
+        if offers.len() != usize::from(expected_offer.is_some())
+            || offers.keys().next().copied() != expected_offer
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "planner candidate offer is not the least Ready continuation",
+            });
+        }
+
+        let mut inputs = BTreeMap::new();
+        for position in request.invocation.scan_page().positions() {
+            let continuation =
+                continuations
+                    .remove(position)
+                    .ok_or(CampaignCodecError::InvalidValue {
+                        reason: "planner input bundle omits a continuation projection",
+                    })?;
+            let offer = offers.remove(position);
+            if let Some(offer) = &offer {
+                let source = self.object(position.source().content_id())?.ok_or(
+                    CampaignCodecError::InvalidValue {
+                        reason: "planner candidate offer omits its branch request",
+                    },
+                )?;
+                let branch_request = BranchRequest::from_canonical_bytes(source.body())?;
+                if offer.domain() != branch_request.domain()
+                    || offer.policy() != request.invocation.policy()
+                    || offer.guidance_basis() != request.invocation.input_view()
+                    || offer.ordinal() > branch_request.budget().maximum_proposals()
+                {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "planner candidate offer disagrees with its invocation basis",
+                    });
+                }
+            }
+            inputs.insert(
+                *position,
+                PlannerCandidateInput {
+                    continuation,
+                    offer,
+                },
+            );
+        }
+        if !continuations.is_empty() || !offers.is_empty() {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "planner input bundle contains an unserved candidate projection",
+            });
+        }
+        Ok(inputs)
+    }
+
     fn validate_for(&self, request: &PlannerRequest) -> Result<(), CampaignCodecError> {
         let invocation = &request.invocation;
         let page = invocation.scan_page();
@@ -166,6 +286,7 @@ impl CampaignPlanningBundle {
                 reason: "planner input bundle duplicates a by-value basis object",
             });
         }
+        let candidate_inputs = self.candidate_inputs(request)?;
         let mut pending = direct_objects
             .iter()
             .flat_map(|object| object.children())
@@ -204,6 +325,12 @@ impl CampaignPlanningBundle {
                     limit: "planner-scan-input-byte-count",
                 })?;
             pending.push(content);
+            if let Some(input) = candidate_inputs.get(position) {
+                pending.push(input.continuation.id()?.content_id());
+                if let Some(offer) = &input.offer {
+                    pending.push(offer.id()?.content_id());
+                }
+            }
         }
         if request_bytes != page.input_bytes() {
             return Err(CampaignCodecError::InvalidValue {

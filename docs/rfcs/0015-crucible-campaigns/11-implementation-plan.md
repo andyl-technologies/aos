@@ -316,9 +316,18 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   supervised authority signing, checked direct clients,
   golden vectors, fake engines, and a versioned Unix-loopback adapter with
   finite absolute deadlines, close-on-error behavior, and direct/loopback
-  equivalence. A killable production supervisor that enforces fuel, wall-clock,
-  and cancellation bounds, the coordinator-owned Merkle-proof guidance bundle,
-  and concrete closed planner remain open. The first `CampaignService`
+  equivalence. The coordinator now supplies capability-gated, snapshot-owner-
+  recomputed continuation projections for every served source and one exact
+  next-candidate offer for the least Ready position on each page. Built-in
+  `crucible-canonical-frontier` version 1 consumes that
+  bundle without repository authority, carries the least Ready offer across
+  pages in bounded portable state, and deterministically returns Continue,
+  Issue, or NoWork only at the valid scan boundary. Accepted offer envelopes
+  become retained-request children after zero-write semantic preflight, and
+  import/restart recompute the same source ordinal and value. A killable
+  production supervisor that enforces fuel, wall-clock, and cancellation
+  bounds, richer owner-built reward/novelty/finding projections, and complete
+  fixed-point PUCT ranking remain open. The first `CampaignService`
   checkpoint now provides
   strict principal/name types, 64-MiB canonical request/response messages for
   bounded by-value creation, authenticated current-head reads,

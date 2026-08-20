@@ -1507,6 +1507,274 @@ fn planner_scan_results_are_bound_to_exact_served_pages() {
 }
 
 #[test]
+fn canonical_frontier_planner_carries_the_first_ready_offer_across_pages() {
+    let (repository, lineage, policy, blobs) = counted_fixture();
+    let genesis = repository
+        .create("canonical-planner", &lineage, &policy, &BTreeMap::new())
+        .expect("create canonical-planner campaign");
+    let first_request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "canonical-planner-first",
+    );
+    let first = repository
+        .submit_known_branch_request("canonical-planner", genesis.snapshot_id(), &first_request)
+        .expect("submit first planner request");
+    let second_request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "canonical-planner-second",
+    );
+    let second = repository
+        .submit_known_branch_request("canonical-planner", first.new_snapshot, &second_request)
+        .expect("submit second planner request");
+
+    let engine = CanonicalFrontierPlanner::descriptor().expect("closed planner descriptor");
+    let initial_state = CanonicalFrontierPlanner::initial_state().expect("closed planner state");
+    let dependency_bytes = b"canonical planner dependency".to_vec();
+    let dependency = ContentId::for_bytes(ObjectKind::Trace, 1, &dependency_bytes);
+    repository
+        .blobs
+        .put_if_absent(dependency, &BlobHandle::from_bytes(dependency_bytes))
+        .expect("planner dependency");
+    let artifact = PolicyArtifact::new(
+        engine.id().expect("engine id"),
+        1,
+        dependency,
+        BTreeSet::new(),
+        BTreeMap::new(),
+    )
+    .expect("planner artifact");
+    let budget = PlanningBudget::new(1, 1, 8, 8192, 100).expect("planner budget");
+    let wide_invocation = repository
+        .prepare_planner_invocation(
+            "canonical-planner",
+            second.new_snapshot,
+            &engine,
+            &artifact,
+            &initial_state,
+            None,
+            2,
+            budget,
+        )
+        .expect("prepare complete two-source page");
+    let wide_request = repository
+        .build_planner_request(
+            second.new_snapshot,
+            wide_invocation.id().expect("wide invocation id"),
+        )
+        .expect("build complete two-source request");
+    assert_eq!(wide_request.input_bundle().len(), 5);
+    let wide_output = CanonicalFrontierPlanner
+        .plan(&wide_request)
+        .expect("plan complete two-source page");
+    let PlannerProposalDisposition::Issue { selected, .. } = wide_output.proposal().disposition()
+    else {
+        panic!("complete two-source page must issue")
+    };
+    assert_eq!(*selected, wide_invocation.scan_page().positions()[0]);
+    assert!(matches!(
+        repository.prepare_planner_invocation(
+            "canonical-planner",
+            second.new_snapshot,
+            &engine,
+            &artifact,
+            wide_output.proposal().next_state(),
+            None,
+            2,
+            budget,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "builtin-planner-initial-state-mismatch"
+        })
+    ));
+
+    let first_invocation = repository
+        .prepare_planner_invocation(
+            "canonical-planner",
+            second.new_snapshot,
+            &engine,
+            &artifact,
+            &initial_state,
+            None,
+            1,
+            budget,
+        )
+        .expect("prepare first planner page");
+    let first_request_message = repository
+        .build_planner_request(
+            second.new_snapshot,
+            first_invocation.id().expect("first invocation id"),
+        )
+        .expect("build first planner request");
+    assert_eq!(first_request_message.input_bundle().len(), 3);
+    let tampered_objects = first_request_message
+        .input_bundle()
+        .object_ids()
+        .map(|id| {
+            let object = first_request_message
+                .input_bundle()
+                .object(id)
+                .expect("decode bundle object")
+                .expect("bundle object");
+            if object.record_kind() != crate::CampaignRecordKind::Proposal {
+                return object;
+            }
+            let offer = Proposal::from_canonical_bytes(object.body()).expect("candidate offer");
+            let forged = Proposal::new(
+                offer.branch_point(),
+                offer.request(),
+                offer.domain(),
+                offer.value().clone(),
+                offer.policy(),
+                offer.planner_invocation(),
+                offer.ordinal() + 1,
+                offer.guidance_basis(),
+            )
+            .expect("forged offer");
+            ObjectEnvelope::for_record(
+                crate::CampaignRecordKind::Proposal,
+                crate::object::content_children(forged.content_children())
+                    .expect("forged offer children"),
+                forged.canonical_bytes(),
+            )
+            .expect("forged offer envelope")
+        })
+        .collect::<Vec<_>>();
+    let tampered = PlannerRequest::new(
+        first_request_message.expected_snapshot(),
+        first_request_message.invocation().clone(),
+        first_request_message.engine().clone(),
+        first_request_message.policy_artifact().clone(),
+        first_request_message.policy().clone(),
+        first_request_message.planner_state().clone(),
+        *first_request_message.input_view(),
+        CampaignPlanningBundle::new(tampered_objects).expect("tampered bundle"),
+    )
+    .expect("structurally valid tampered request");
+    let before_rejection = blobs.object_count().expect("object count before rejection");
+    assert!(matches!(
+        repository.preflight_planner_request_inputs(&tampered),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "planner-request-candidate-projection-mismatch"
+        })
+    ));
+    assert_eq!(
+        blobs.object_count().expect("object count after rejection"),
+        before_rejection
+    );
+    let mut planner = CanonicalFrontierPlanner;
+    let first_output = planner
+        .plan(&first_request_message)
+        .expect("plan first page");
+    let PlannerProposalDisposition::ContinueScan { cursor } = first_output.proposal().disposition()
+    else {
+        panic!("first planner page must continue")
+    };
+    let first_position = first_invocation.scan_page().positions()[0];
+    assert_eq!(cursor.after(), Some(first_position));
+    let first_usage = first_output.proposal().usage_claim();
+    let forged_output = PlannerStepProposal::new(
+        first_output.proposal().invocation(),
+        first_output.proposal().next_state().clone(),
+        first_usage,
+        GuidanceEvidence::new(BTreeMap::new()).expect("forged evidence"),
+        first_output.proposal().disposition().clone(),
+    )
+    .expect("structurally valid forged planner output");
+    let before_output_rejection = blobs
+        .object_count()
+        .expect("objects before output rejection");
+    assert!(matches!(
+        repository.accept_planner_step(
+            "canonical-planner",
+            second.new_snapshot,
+            &forged_output,
+            first_usage,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "builtin-planner-output-mismatch"
+        })
+    ));
+    assert_eq!(
+        blobs
+            .object_count()
+            .expect("objects after output rejection"),
+        before_output_rejection
+    );
+    let continued = repository
+        .accept_planner_step(
+            "canonical-planner",
+            second.new_snapshot,
+            first_output.proposal(),
+            first_usage,
+        )
+        .expect("accept first planner page");
+
+    let final_invocation = repository
+        .prepare_planner_invocation(
+            "canonical-planner",
+            continued.new_snapshot,
+            &engine,
+            &artifact,
+            first_output.proposal().next_state(),
+            cursor.after(),
+            1,
+            budget,
+        )
+        .expect("prepare final planner page");
+    assert!(final_invocation.scan_page().complete());
+    let final_request_message = repository
+        .build_planner_request(
+            continued.new_snapshot,
+            final_invocation.id().expect("final invocation id"),
+        )
+        .expect("build final planner request");
+    let final_output = planner
+        .plan(&final_request_message)
+        .expect("plan final page");
+    let PlannerProposalDisposition::Issue {
+        selected,
+        branch_requests,
+        proposals,
+    } = final_output.proposal().disposition()
+    else {
+        panic!("final planner page must issue")
+    };
+    assert_eq!(*selected, first_position);
+    assert!(branch_requests.is_empty());
+    assert_eq!(proposals.len(), 1);
+    assert_eq!(proposals[0].request(), first_position.source());
+    assert_eq!(proposals[0].ordinal(), 1);
+    let final_usage = final_output.proposal().usage_claim();
+    let issued = repository
+        .accept_planner_step(
+            "canonical-planner",
+            continued.new_snapshot,
+            final_output.proposal(),
+            final_usage,
+        )
+        .expect("accept canonical planner issue");
+    let accepted = repository
+        .load_planner_step_at(issued.new_snapshot, issued.step)
+        .expect("load accepted planner step");
+    assert_eq!(accepted.selected_source(), Some(first_position.source()));
+
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    restarted
+        .validate_complete_head(issued.new_snapshot.content_id())
+        .expect("restart validates canonical planner issue");
+    let retained = restarted
+        .load_planner_request(accepted.request())
+        .expect("load retained candidate offers");
+    assert_eq!(retained, final_request_message);
+}
+
+#[test]
 fn planner_issue_atomically_admits_attempts_and_deduplicates_replay() {
     let (repository, lineage, policy, blobs) = counted_fixture();
     let genesis = repository

@@ -745,9 +745,36 @@ the exact `BranchRequest` body for every served scan position. The adapter
 recomputes the sum of those canonical request-body bytes and requires it to
 equal `PlanningScanPage.input_bytes`. Direct engine dependencies reachable from
 the by-value engine, artifact, policy, state, view, or served requests may be
-included once. Owner-authenticated view projections that require Merkle proofs
-remain coordinator-built inputs; completing that projection bundle and the
-closed planner implementation remains an implementation-plan gate.
+included once.
+
+Planner engines advertising `canonical-frontier-offers-v1` additionally
+require, for every served position, the exact `ContinuationProjectionV1`
+envelope authenticated by the expected snapshot's nested frontier index. The
+least Ready position on the page has exactly one `ProposalV1` candidate-offer
+envelope; every other position has none. The offer names the served request, branch point, domain,
+active policy, exact invocation, input view, and next one-based ordinal, and
+contains the owner-computed next legal value. Extra, missing, duplicate,
+cross-invocation, or non-Ready offers fail closed. The coordinator recomputes
+the projection and offer from the expected snapshot before acceptance. Offer
+envelopes need not exist before evaluation; after complete read-only output
+preflight, acceptance publishes them as retained-request children before
+publishing the request. Rejection therefore remains zero-write, while accepted
+requests remain closure-complete and restart-auditable.
+
+The built-in `crucible-canonical-frontier` implementation version 1 is a closed
+pure engine for this capability. It considers only `Ready` offers, chooses the
+least `PlanningScanPosition`, and carries that small exact position/domain/
+value/ordinal tuple in `canonical-frontier-planner` state version 1 across
+pages. It returns `ContinueScan` before EOF, `Issue` at EOF when an offer
+exists, and `NoWork` at EOF otherwise. When issuing a carried offer, it
+reconstructs the proposal under the final invocation; the coordinator
+independently recomputes the same source ordinal and value. This establishes a
+complete executable planner/frontier loop without granting repository or
+Merkle authority to the engine. The first invocation requires the exact empty
+state, and local acceptance plus imported/restart validation rerun this built-in
+pure transition and compare its complete next state, usage claim, evidence, and
+disposition. Owner-built reward/novelty/finding projections and the full fixed-
+point PUCT ranking remain an implementation-plan gate.
 
 The initial coordinator retention profile is deliberately narrower than the
 version-1 wire format: an accepted request body is at most 32 MiB and its bundle
