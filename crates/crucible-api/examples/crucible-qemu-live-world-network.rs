@@ -106,7 +106,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let config = ProductionVmLifecycleConfig::new(qemu, plugin, kernel, root_image, run_state_root)
         .with_root_image_format(ProductionRootImageFormat::Raw)
         .with_initrd(initrd)
-        .with_kernel_cmdline_prefix("console=ttyS0 quiet net.ifnames=0 init=/init")
+        .with_kernel_cmdline_prefix("console=ttyS0 quiet net.ifnames=0 ipv6.disable=1 init=/init")
         .with_run_ceiling_icount(12_000_000_000)
         .with_quantum_budget(4_000_000_000)
         // The canonical cursor preserves every partial 4B-instruction turn.
@@ -160,7 +160,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
         // Search frontiers describe alternate decisions reachable from the
         // current execution. Selecting the exact choice object, rather than
-        // reconstructing it by name, preserves all replay metadata.
+        // reconstructing it by name, preserves all replay metadata. The guest
+        // fixture gives its stable node-derived MAC classes a bounded icount
+        // stagger, so the first two independent boot probes enter the shared
+        // link stream in the same order across fresh process launches.
         selected_branch = lifecycle
             .search_frontiers()?
             .into_iter()
@@ -299,29 +302,52 @@ fn main() -> Result<(), Box<dyn Error>> {
         .clone()
         .with_branch_network_choices(vec![override_decision]);
     let mut branch = build_production_vm_lifecycle_loop(&scenario, &source, &branch_config)?;
+    if branch.pending_search_branch_choices() != 1 {
+        return Err(format!(
+            "fresh live QEMU branch installed {} choices instead of one",
+            branch.pending_search_branch_choices()
+        )
+        .into());
+    }
     let mut branch_configuration = crucible::Configuration::genesis(scenario);
     let mut branch_matched = false;
+    let mut branch_network_settled = false;
+    let mut observed_branch_decisions = Vec::new();
     // A branch can contain more than one decision. Window comparison verifies
-    // the complete ordered sequence occurs contiguously in one quantum outcome.
+    // the complete ordered sequence occurs contiguously, including when an
+    // outcome boundary divides the accumulated decision stream.
     for _ in 0..12_u64 {
         let outcome = branch.drive_quantum(QuantumRequest {
             configuration: branch_configuration,
             control: Vec::new(),
         })?;
         branch_configuration = outcome.configuration;
-        if outcome
-            .decisions
+        observed_branch_decisions.extend(outcome.decisions.iter().cloned());
+        branch_matched = observed_branch_decisions
             .windows(expected_decisions.len())
-            .any(|window| window == expected_decisions)
-        {
-            branch_matched = true;
+            .any(|window| window == expected_decisions);
+        branch_network_settled = branch.pending_network_output_count() == 0;
+        if branch_matched && branch_network_settled {
             break;
         }
     }
-    branch.shutdown()?;
     if !branch_matched {
-        return Err("live QEMU replay did not consume the selected network branch".into());
+        let observed_prefix = observed_branch_decisions.iter().take(8).collect::<Vec<_>>();
+        return Err(format!(
+            "live QEMU replay did not consume the selected network branch: expected {expected_decisions:?}, observed {} decisions with prefix {observed_prefix:?}, {} choices remain pending",
+            observed_branch_decisions.len(),
+            branch.pending_search_branch_choices(),
+        )
+        .into());
     }
+    if !branch_network_settled {
+        return Err(format!(
+            "live QEMU replay retained {} uncommitted network outputs after 12 quanta",
+            branch.pending_network_output_count()
+        )
+        .into());
+    }
+    branch.shutdown()?;
     println!("PASS");
     println!("gate=gate:live-world-network");
     println!("backend=production-qemu-lifecycle");

@@ -562,8 +562,21 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
     ) -> Result<QemuQuantumReport, QemuQuantumError> {
         self.record(QemuQuantumOperation::ObservePluginReport);
         let final_snapshot = self.view.node_slot.snapshot();
-        let final_state = idle_state_from_snapshot(final_snapshot);
         let completed_clamp = completed_quantum_clamp_is_attested(pending, &final_snapshot);
+        let mut final_state = idle_state_from_snapshot(final_snapshot);
+        if completed_clamp
+            && final_state.next_deadline.is_none()
+            && final_snapshot.idle_wake_icount > final_snapshot.current_icount
+        {
+            // A release-acknowledged clamp may be followed immediately by a
+            // vCPU-resume publication. Dispatch remains fenced at the completed
+            // coordinate, and the attested retained timer is still the exact
+            // reason the quantum paused. Preserve that boundary evidence rather
+            // than making the scheduler depend on a later status re-read.
+            final_state.next_deadline = Some(Icount {
+                retired: final_snapshot.idle_wake_icount,
+            });
+        }
         if matches!(
             classify_quantum_boundary(&final_state, pending.ceiling.retired),
             QuantumBoundary::Pending

@@ -798,6 +798,8 @@ pub struct QemuNode {
     crash_detector: QemuCrashDetector,
     host_io_runtime: Box<dyn QemuHostIoRuntime>,
     last_observed_time: VirtualTime,
+    last_step_final_state: Option<QemuNodeIdleState>,
+    last_step_inbound_frames_consumed: usize,
     // Console polling proves availability only at the scheduler-requested boundary.
     console_observation_boundary: VirtualTime,
     gdbstub: Option<QemuGdbstubChannelConfig>,
@@ -982,6 +984,8 @@ impl QemuNode {
             crash_detector,
             host_io_runtime: Box::new(host_io_runtime),
             last_observed_time: VirtualTime::default(),
+            last_step_final_state: None,
+            last_step_inbound_frames_consumed: 0,
             console_observation_boundary: VirtualTime::default(),
             gdbstub: None,
             active_gdbstub: None,
@@ -1629,6 +1633,8 @@ impl QemuNode {
         ceiling: Icount,
         report: crate::QemuAsyncNodeStepReport,
     ) -> Result<AdvanceOutcome, QemuNodeError> {
+        self.last_step_final_state = report.final_state;
+        self.last_step_inbound_frames_consumed = report.inbound_frames_consumed;
         self.observe_network_output_batch(&report.emitted_frames)?;
         self.pending_network_outputs.extend(report.emitted_frames);
         let advance = match report.outcome {
@@ -1640,6 +1646,18 @@ impl QemuNode {
         }?;
         self.last_observed_time = virtual_time_from_advance_outcome(ceiling, advance);
         Ok(advance)
+    }
+
+    /// Returns how many scheduler-staged inputs the last completed step consumed.
+    #[must_use]
+    pub(crate) const fn last_step_inbound_frames_consumed(&self) -> usize {
+        self.last_step_inbound_frames_consumed
+    }
+
+    /// Returns the attested state from the last completed scheduler step.
+    #[must_use]
+    pub(crate) const fn last_step_final_state(&self) -> Option<QemuNodeIdleState> {
+        self.last_step_final_state
     }
 
     /// Delivers deterministic input through shared memory.
@@ -2065,6 +2083,8 @@ impl QemuNode {
             ));
         }
         self.last_observed_time = checkpoint.last_observed_time;
+        self.last_step_final_state = None;
+        self.last_step_inbound_frames_consumed = 0;
         self.console_observation_boundary = checkpoint.console_observation_boundary;
         self.pending_preemption = checkpoint.pending_preemption.clone();
         self.channels

@@ -175,6 +175,12 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
         &mut self.network_output_interceptor
     }
 
+    /// Returns the number of emitted frames awaiting global-frontier commitment.
+    #[must_use]
+    pub fn pending_network_output_count(&self) -> usize {
+        self.pending_network_outputs.len()
+    }
+
     /// Returns mutable access to the authoritative loop and live backend together.
     ///
     /// This is the transaction seam for boundary operations that must update

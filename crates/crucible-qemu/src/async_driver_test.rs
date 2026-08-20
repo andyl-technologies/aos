@@ -4,7 +4,9 @@ use super::*;
 
 use std::collections::VecDeque;
 
-use crate::{QemuCrashCause, QemuQuantumOperation, QemuShutdownAttempt, QemuShutdownRung};
+use crate::{
+    QemuCrashCause, QemuNodeIdleState, QemuQuantumOperation, QemuShutdownAttempt, QemuShutdownRung,
+};
 use crucible::Icount;
 
 #[test]
@@ -57,6 +59,26 @@ fn async_driver_completes_one_quantum_with_bounded_wait_and_yields() {
     assert_eq!(target.finished, 1);
     assert_eq!(target.shutdowns, 0);
     assert_eq!(runtime.yields, 2);
+}
+
+#[test]
+fn async_driver_preserves_consumed_inbound_boundary_progress() {
+    let policy = QemuAsyncDriverPolicy::fast_test();
+    let mut target = ScriptedTarget::completed();
+    target.completion.inbound_frames_consumed = 2;
+    let mut runtime = ScriptedRuntime::new([QemuAsyncWaitOutcome::Completed]);
+    let crash_detector = QemuCrashDetector::new("vm-a");
+
+    let report = run_bounded_qemu_node_step(
+        &mut target,
+        &mut runtime,
+        policy,
+        &crash_detector,
+        horizon(12),
+    )
+    .unwrap_or_else(|error| panic!("inbound boundary should complete: {error}"));
+
+    assert_eq!(report.inbound_frames_consumed, 2);
 }
 
 #[test]
@@ -187,6 +209,11 @@ fn async_driver_rejects_qmp_or_plugin_ipc_in_quantum_hot_path() {
     let mut target = ScriptedTarget {
         completion: QemuAsyncQuantumCompletion {
             outcome: AdvanceOutcome::ReachedHorizon,
+            final_state: QemuNodeIdleState {
+                current_icount: Icount { retired: 0 },
+                next_deadline: None,
+            },
+            inbound_frames_consumed: 0,
             emitted_frames: Vec::new(),
             operations: vec![QemuQuantumOperation::QmpCommand {
                 command: "query-status",
@@ -387,6 +414,11 @@ impl ScriptedTarget {
         Self {
             completion: QemuAsyncQuantumCompletion {
                 outcome: AdvanceOutcome::ReachedHorizon,
+                final_state: QemuNodeIdleState {
+                    current_icount: Icount { retired: 0 },
+                    next_deadline: None,
+                },
+                inbound_frames_consumed: 0,
                 emitted_frames: Vec::new(),
                 operations: vec![
                     QemuQuantumOperation::StoreSchedulerCeiling,
