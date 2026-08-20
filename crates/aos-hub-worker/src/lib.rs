@@ -182,6 +182,7 @@ mod entry {
     use aos_hub_core::db::TokenAuth;
     #[cfg(feature = "do-e2e")]
     use aos_hub_core::domain::{Permission, Principal, Role, Scope};
+    use aos_hub_core::fetch::SurfaceProvider as _;
     use aos_hub_core::ratelimit::RateLimiter;
     use aos_hub_core::service::RpcService;
     use aos_hub_core::web::console::{console_router, ConsoleDeps};
@@ -1299,12 +1300,27 @@ mod entry {
                     secret_versions,
                     egress,
                 );
-                let fetch = provider.placement_fetcher(&placement).await?;
-                let evidence = fetch.inventory_evidence(object_key).await?.ok_or_else(|| {
-                    worker::Error::RustError(
-                        "job refresh publication object: object is absent".into(),
-                    )
-                })?;
+                let fetch = provider
+                    .placement_fetcher(&placement)
+                    .await
+                    .map_err(|error| {
+                        worker::Error::RustError(format!(
+                            "job refresh publication object fetcher: {error:#}"
+                        ))
+                    })?;
+                let evidence = fetch
+                    .inventory_evidence(object_key)
+                    .await
+                    .map_err(|error| {
+                        worker::Error::RustError(format!(
+                            "job refresh publication object read: {error:#}"
+                        ))
+                    })?
+                    .ok_or_else(|| {
+                        worker::Error::RustError(
+                            "job refresh publication object: object is absent".into(),
+                        )
+                    })?;
                 let observed_hash = hex::encode(evidence.sha256);
                 if observed_hash != object.expected_hash || evidence.size != object.expected_size {
                     return Err(worker::Error::RustError(
