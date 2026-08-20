@@ -99,12 +99,7 @@ The closed specification vocabulary provides:
 The current repository-owned executable checkpoint implements generator
 implementation-version 2 `all` for Boolean and discrete domains. It derives
 `false`, then `true`, or the discrete alternatives in stable `AlternativeId`
-order without storing a cursor. Other algorithms remain valid suspended
-specifications but fail closed at proposal issuance and expansion projection
-until their versioned cursor and feedback owners are implemented. Version 1 and
-unknown implementation versions remain suspended rather than being
-reinterpreted as version 2; this preserves owner validation of histories
-created before executable enumeration landed.
+order without storing a cursor.
 
 Generator implementation-version 3 defines static `boundary_integer` order.
 It emits the inclusive minimum, inclusive maximum, opportunity default, and
@@ -117,6 +112,23 @@ candidate is filtered through the exact stepped domain and first occurrence
 wins. This implementation accepts at most 64 declared landmarks and derives at
 most 512 candidates, keeping proposal and restart owner validation bounded. It
 needs no stored cursor or feedback.
+
+Generator implementation-version 4 defines static `stratified_integer` order.
+Let `C` be the exact stepped-domain cardinality and `E = min(strata, C)`. For
+`E > 1`, zero-based candidate ordinal `j` uses legal-value offset
+`floor(j * (C - 1) / (E - 1))` and value `minimum + offset * step`; this
+includes both endpoints. For `E = 1`, the offset is `floor((C - 1) / 2)`, the
+lower of the two middle legal values when the cardinality is even. If the
+requested strata exceed the cardinality, every legal value is emitted. The
+implementation admits at most 4,096 strata and reconstructs each ordinal with
+checked 128-bit arithmetic in constant space.
+
+Other algorithms remain valid suspended specifications but fail closed at
+proposal issuance and expansion projection until their versioned cursor and
+feedback owners are implemented. Earlier and unknown implementation versions
+remain suspended rather than being reinterpreted as versions 2, 3, or 4; this
+preserves owner validation of histories created before executable enumeration
+landed.
 
 Generators compose as a fixed ordered mixture with integer weights. Duplicate
 values deduplicate by `(BranchPointId, ChoiceDomainId, ChoiceValue)`; the

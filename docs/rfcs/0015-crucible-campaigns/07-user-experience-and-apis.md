@@ -223,7 +223,8 @@ exploration-root read.
 Finite readiness, open proposal, exhaustion, and closure are represented;
 implementation-version 2 `all` sources over Boolean and discrete domains report
 the same exact states, as do implementation-version 3 `boundary_integer`
-sources. Other generated sources remain conservatively `Open` until their
+sources and implementation-version 4 `stratified_integer` sources with at most
+4,096 strata. Other generated sources remain conservatively `Open` until their
 deterministic enumerator and feedback owner land. Rich admitted-value, visit,
 reward, interval, and explanation views and CLI rendering remain open.
 

@@ -70,6 +70,11 @@ impl CampaignRepository {
                 CandidateGeneratorAlgorithm::BoundaryInteger,
                 crate::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
                 ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
+            )
+            | (
+                CandidateGeneratorAlgorithm::StratifiedInteger { .. },
+                crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
             ) => Err(integrity("candidate-generator-domain-family-mismatch")),
             (
                 CandidateGeneratorAlgorithm::BoundaryInteger,
@@ -78,6 +83,11 @@ impl CampaignRepository {
             ) => u64::try_from(self.boundary_integer_candidates(request, integer)?.len())
                 .map(Some)
                 .map_err(|_| integrity("candidate-source-cardinality-overflow")),
+            (
+                CandidateGeneratorAlgorithm::StratifiedInteger { strata },
+                crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(integer),
+            ) => stratified_integer_candidate_count(*strata, integer).map(Some),
             _ => Ok(None),
         }
     }
@@ -139,6 +149,11 @@ impl CampaignRepository {
                 CandidateGeneratorAlgorithm::BoundaryInteger,
                 crate::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
                 ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
+            )
+            | (
+                CandidateGeneratorAlgorithm::StratifiedInteger { .. },
+                crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
             ) => Err(integrity("candidate-generator-domain-family-mismatch")),
             (
                 CandidateGeneratorAlgorithm::BoundaryInteger,
@@ -151,6 +166,13 @@ impl CampaignRepository {
                 .map(ChoiceValue::Integer)
                 .map(Some)
                 .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality")),
+            (
+                CandidateGeneratorAlgorithm::StratifiedInteger { strata },
+                crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(integer),
+            ) => stratified_integer_candidate(*strata, integer, ordinal)
+                .map(ChoiceValue::Integer)
+                .map(Some),
             _ => Ok(None),
         }
     }
@@ -642,4 +664,64 @@ fn integer_step_neighbor(value: IntegerValue, step: u64, add: bool) -> Option<In
             Some(IntegerValue::Unsigned(neighbor))
         }
     }
+}
+
+fn stratified_integer_candidate_count(
+    strata: u32,
+    domain: &IntegerDomain,
+) -> Result<u64, CampaignRepositoryError> {
+    if strata > crate::STRATIFIED_INTEGER_GENERATOR_MAX_STRATA {
+        return Err(integrity("stratified-generator-strata-limit"));
+    }
+    u64::try_from(domain.cardinality().min(u128::from(strata)))
+        .map_err(|_| integrity("candidate-source-cardinality-overflow"))
+}
+
+fn stratified_integer_candidate(
+    strata: u32,
+    domain: &IntegerDomain,
+    ordinal: u64,
+) -> Result<IntegerValue, CampaignRepositoryError> {
+    let candidate_count = stratified_integer_candidate_count(strata, domain)?;
+    if ordinal == 0 || ordinal > candidate_count {
+        return Err(integrity("proposal-ordinal-exceeds-source-cardinality"));
+    }
+
+    let maximum_offset = domain
+        .cardinality()
+        .checked_sub(1)
+        .ok_or_else(|| integrity("candidate-source-cardinality-overflow"))?;
+    let offset = if candidate_count == 1 {
+        maximum_offset / 2
+    } else {
+        u128::from(ordinal - 1)
+            .checked_mul(maximum_offset)
+            .ok_or_else(|| integrity("candidate-source-cardinality-overflow"))?
+            / u128::from(candidate_count - 1)
+    };
+    let delta = offset
+        .checked_mul(u128::from(domain.step()))
+        .ok_or_else(|| integrity("candidate-source-cardinality-overflow"))?;
+    let value = match domain.minimum() {
+        IntegerValue::Signed(minimum) => {
+            let delta = i128::try_from(delta)
+                .map_err(|_| integrity("candidate-source-cardinality-overflow"))?;
+            let value = i128::from(minimum)
+                .checked_add(delta)
+                .and_then(|value| i64::try_from(value).ok())
+                .ok_or_else(|| integrity("candidate-source-cardinality-overflow"))?;
+            IntegerValue::Signed(value)
+        }
+        IntegerValue::Unsigned(minimum) => {
+            let value = u128::from(minimum)
+                .checked_add(delta)
+                .and_then(|value| u64::try_from(value).ok())
+                .ok_or_else(|| integrity("candidate-source-cardinality-overflow"))?;
+            IntegerValue::Unsigned(value)
+        }
+    };
+    if !domain.contains_integer(value) {
+        return Err(integrity("stratified-generator-produced-illegal-value"));
+    }
+    Ok(value)
 }
