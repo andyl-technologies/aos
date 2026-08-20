@@ -110,7 +110,7 @@ fn qemu_quantum_accepts_a_release_acknowledged_runtime_clamp() {
     };
     assert_eq!(report.outcome, AdvanceOutcome::Paused { at: icount(4) });
     assert_eq!(report.final_state.current_icount, icount(4));
-    assert_eq!(report.final_state.next_deadline, None);
+    assert_eq!(report.final_state.next_deadline, Some(icount(12)));
 }
 
 #[test]

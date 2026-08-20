@@ -261,6 +261,7 @@ fn pending_network_boundary_release_settles_before_a_far_quantum() {
         .reschedule_queue_until(opportunity, 0)
         .unwrap_or_else(|error| panic!("release pending frame: {error}"));
     adapter.network_transaction_parts_mut().3.push(output);
+    assert_eq!(adapter.pending_network_output_count(), 1);
 
     let settlement = adapter
         .settle_pending_network_outputs_at_current_frontier()
@@ -271,6 +272,7 @@ fn pending_network_boundary_release_settles_before_a_far_quantum() {
     assert!(appends.is_empty());
     assert_eq!(observed.get(), Some(0));
     assert!(adapter.network_transaction_parts_mut().3.is_empty());
+    assert_eq!(adapter.pending_network_output_count(), 0);
 }
 
 #[test]

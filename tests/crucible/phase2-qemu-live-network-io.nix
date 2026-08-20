@@ -86,6 +86,8 @@ in
             ${networkInitramfs}/evidence.env
           grep -Fxq 'guest_interface=virtio-net-eth0' \
             ${networkInitramfs}/evidence.env
+          grep -Fxq 'multi_guest_tx_order=deterministic-node-mac-stagger' \
+            ${networkInitramfs}/evidence.env
 
           cargo build \
             --frozen \
