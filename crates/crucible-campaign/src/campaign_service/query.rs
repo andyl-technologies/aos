@@ -1,4 +1,4 @@
-//! Strict snapshot-bound paged campaign graph query messages.
+//! Strict snapshot-bound campaign graph, object, and choice query messages.
 
 use crucible_cas::content_store::ContentId;
 
@@ -6,6 +6,374 @@ use super::*;
 
 /// Maximum entries returned by one campaign graph page.
 pub const MAX_CAMPAIGN_QUERY_PAGE_ITEMS: u32 = crate::MAX_PROVEN_PAGE_ITEMS as u32;
+
+/// Maximum choices returned by one proof-bearing nested-index page.
+///
+/// The smaller limit keeps the worst-case scan proof plus the independent
+/// graph-anchor lookup proof below the 64-MiB component-message bound.
+pub const MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS: u32 = 8;
+
+/// One choice opportunity admitted into the authenticated campaign graph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CampaignChoiceEntry {
+    opportunity: ChoiceOpportunityId,
+}
+
+impl CampaignChoiceEntry {
+    /// Builds one choice-index entry.
+    #[must_use]
+    pub const fn new(opportunity: ChoiceOpportunityId) -> Self {
+        Self { opportunity }
+    }
+
+    /// Returns the content-addressed choice opportunity.
+    #[must_use]
+    pub const fn opportunity(self) -> ChoiceOpportunityId {
+        self.opportunity
+    }
+
+    /// Returns the nested choice-index key for this opportunity.
+    #[must_use]
+    pub fn index_key(self) -> CampaignHash {
+        crate::repository::choice_index_order_key(self.opportunity)
+    }
+
+    /// Returns the graph key that anchors the nested choice-index root.
+    #[must_use]
+    pub fn index_anchor_key() -> CampaignHash {
+        crate::repository::choice_index_anchor_key()
+    }
+
+    /// Returns the graph key used to fetch the exact opportunity body.
+    #[must_use]
+    pub fn graph_key(self) -> CampaignHash {
+        crate::repository::authoritative_choice_key(self.opportunity)
+    }
+}
+
+impl Canonical for CampaignChoiceEntry {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.opportunity.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Ok(Self::new(ChoiceOpportunityId::decode(decoder)?))
+    }
+}
+
+/// Strict request for one current-snapshot page of discovered choices.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueryCampaignChoicesRequest {
+    schema_version: u32,
+    principal: CampaignPrincipal,
+    campaign: CampaignName,
+    snapshot: CampaignSnapshotId,
+    after: Option<ChoiceOpportunityId>,
+    limit: u32,
+}
+
+impl QueryCampaignChoicesRequest {
+    /// Builds one bounded snapshot-bound choice query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when `limit` is zero or exceeds
+    /// [`MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS`], or when the encoded request exceeds
+    /// the service message bound.
+    pub fn new(
+        principal: CampaignPrincipal,
+        campaign: CampaignName,
+        snapshot: CampaignSnapshotId,
+        after: Option<ChoiceOpportunityId>,
+        limit: u32,
+    ) -> Result<Self, CampaignCodecError> {
+        if limit == 0 || limit > MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "campaign-choice-query-page-items",
+            });
+        }
+        let request = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            principal,
+            campaign,
+            snapshot,
+            after,
+            limit,
+        };
+        ensure_message_size(&request, "query-campaign-choices-request-encoded-bytes")?;
+        Ok(request)
+    }
+
+    /// Returns the authenticated operational principal.
+    #[must_use]
+    pub const fn principal(&self) -> &CampaignPrincipal {
+        &self.principal
+    }
+
+    /// Returns the canonical campaign name.
+    #[must_use]
+    pub const fn campaign(&self) -> &CampaignName {
+        &self.campaign
+    }
+
+    /// Returns the exact current snapshot that anchors this query.
+    #[must_use]
+    pub const fn snapshot(&self) -> CampaignSnapshotId {
+        self.snapshot
+    }
+
+    /// Returns the exclusive choice-opportunity cursor.
+    #[must_use]
+    pub const fn after(&self) -> Option<ChoiceOpportunityId> {
+        self.after
+    }
+
+    /// Returns the maximum entries requested for this page.
+    #[must_use]
+    pub const fn limit(&self) -> u32 {
+        self.limit
+    }
+
+    /// Returns the digest of every canonical request byte.
+    #[must_use]
+    pub fn request_digest(&self) -> CampaignHash {
+        service_request_digest("query-campaign-choices", self)
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes one strict bounded choice query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical,
+    /// unsupported, or oversized input.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_message(bytes, "query-campaign-choices-request-encoded-bytes")
+    }
+}
+
+impl Canonical for QueryCampaignChoicesRequest {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.principal.encode(encoder);
+        self.campaign.encode(encoder);
+        self.snapshot.encode(encoder);
+        self.after.encode(encoder);
+        self.limit.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_service_version(u32::decode(decoder)?)?;
+        Self::new(
+            CampaignPrincipal::decode(decoder)?,
+            CampaignName::decode(decoder)?,
+            CampaignSnapshotId::decode(decoder)?,
+            Option::<ChoiceOpportunityId>::decode(decoder)?,
+            u32::decode(decoder)?,
+        )
+    }
+}
+
+/// Request-bound page from the snapshot's authenticated choice index.
+///
+/// Authorization for this response grants visibility of every root ID, parent,
+/// lineage, policy, and transition in the snapshot body. Choice and dependency
+/// bodies remain separately authorized.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueryCampaignChoicesResponse {
+    schema_version: u32,
+    request_digest: CampaignHash,
+    snapshot_body: CampaignSnapshot,
+    entries: Vec<CampaignChoiceEntry>,
+    next_after: Option<ChoiceOpportunityId>,
+    index_proof: MerkleMapLookupProof,
+    page_proof: MerkleMapPageProof,
+}
+
+impl QueryCampaignChoicesResponse {
+    /// Builds one authenticated choice-index response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the snapshot, nested-index proof,
+    /// page entries, cursor, limit, or encoded-size contract is invalid.
+    pub fn new(
+        request: &QueryCampaignChoicesRequest,
+        snapshot_body: CampaignSnapshot,
+        entries: Vec<CampaignChoiceEntry>,
+        next_after: Option<ChoiceOpportunityId>,
+        index_proof: MerkleMapLookupProof,
+        page_proof: MerkleMapPageProof,
+    ) -> Result<Self, CampaignCodecError> {
+        let response = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            request_digest: request.request_digest(),
+            snapshot_body,
+            entries,
+            next_after,
+            index_proof,
+            page_proof,
+        };
+        response.validate_body_for(request)?;
+        ensure_message_size(&response, "query-campaign-choices-response-encoded-bytes")?;
+        Ok(response)
+    }
+
+    /// Returns the authenticated snapshot body, including all snapshot root IDs.
+    #[must_use]
+    pub const fn snapshot_body(&self) -> &CampaignSnapshot {
+        &self.snapshot_body
+    }
+
+    /// Returns discovered choice IDs in canonical content-ID order.
+    #[must_use]
+    pub fn entries(&self) -> &[CampaignChoiceEntry] {
+        &self.entries
+    }
+
+    /// Returns the exclusive cursor for the next page, or `None` at EOF.
+    #[must_use]
+    pub const fn next_after(&self) -> Option<ChoiceOpportunityId> {
+        self.next_after
+    }
+
+    /// Validates exact request, snapshot, nested index, page, and cursor binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the response belongs to another
+    /// request or differs from either authenticated Merkle proof.
+    pub fn validate_for(
+        &self,
+        request: &QueryCampaignChoicesRequest,
+    ) -> Result<(), CampaignCodecError> {
+        validate_request_digest(self.request_digest, request.request_digest())?;
+        self.validate_body_for(request)
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes one strict bounded choice response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical,
+    /// unsupported, or oversized input. Use [`Self::validate_for`] before use.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_message(bytes, "query-campaign-choices-response-encoded-bytes")
+    }
+
+    fn validate_body_for(
+        &self,
+        request: &QueryCampaignChoicesRequest,
+    ) -> Result<(), CampaignCodecError> {
+        let limit =
+            usize::try_from(request.limit()).map_err(|_| CampaignCodecError::LimitExceeded {
+                limit: "campaign-choice-query-page-items",
+            })?;
+        if self.snapshot_body.id()? != request.snapshot() || self.entries.len() > limit {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign choices response snapshot or page limit mismatch",
+            });
+        }
+        let index_root = MerkleMap::verify_lookup_proof(
+            self.snapshot_body.roots().graph,
+            crate::repository::choice_index_anchor_key(),
+            &self.index_proof,
+        )
+        .map_err(|_| CampaignCodecError::InvalidValue {
+            reason: "campaign choices index proof is invalid",
+        })?
+        .ok_or(CampaignCodecError::InvalidValue {
+            reason: "campaign snapshot has no authenticated choice index",
+        })?;
+        let verified = MerkleMap::verify_scan_proof(
+            index_root,
+            request
+                .after()
+                .map(crate::repository::choice_index_order_key),
+            limit,
+            &self.page_proof,
+        )
+        .map_err(|_| CampaignCodecError::InvalidValue {
+            reason: "campaign choices page proof is invalid",
+        })?;
+        let verified_entries = verified
+            .entries()
+            .iter()
+            .map(|(key, value)| {
+                let opportunity = ChoiceOpportunityId::from_content_id(*value)?;
+                if *key != crate::repository::choice_index_order_key(opportunity) {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "campaign choice index ordering key mismatch",
+                    });
+                }
+                Ok(CampaignChoiceEntry::new(opportunity))
+            })
+            .collect::<Result<Vec<_>, CampaignCodecError>>()?;
+        let verified_next = verified
+            .next_after()
+            .map(|_| {
+                verified_entries
+                    .last()
+                    .map(|entry| entry.opportunity())
+                    .ok_or(CampaignCodecError::InvalidValue {
+                        reason: "campaign choices page has a cursor without entries",
+                    })
+            })
+            .transpose()?;
+        if self.entries != verified_entries || self.next_after != verified_next {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign choices response differs from its Merkle proof",
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Canonical for QueryCampaignChoicesResponse {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.request_digest.encode(encoder);
+        self.snapshot_body.encode(encoder);
+        self.entries.encode(encoder);
+        self.next_after.encode(encoder);
+        self.index_proof.encode(encoder);
+        self.page_proof.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_service_version(u32::decode(decoder)?)?;
+        let response = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            request_digest: CampaignHash::decode(decoder)?,
+            snapshot_body: CampaignSnapshot::decode(decoder)?,
+            entries: decoder.sequence_bounded(
+                usize::try_from(MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS).map_err(|_| {
+                    CampaignCodecError::LimitExceeded {
+                        limit: "campaign-choice-query-page-items",
+                    }
+                })?,
+                "campaign-query-choice-items",
+                CampaignChoiceEntry::decode,
+            )?,
+            next_after: Option::<ChoiceOpportunityId>::decode(decoder)?,
+            index_proof: MerkleMapLookupProof::decode(decoder)?,
+            page_proof: MerkleMapPageProof::decode(decoder)?,
+        };
+        ensure_message_size(&response, "query-campaign-choices-response-encoded-bytes")?;
+        Ok(response)
+    }
+}
 
 /// One immutable key/value entry from a campaign graph root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -913,5 +1281,144 @@ mod tests {
         )
         .expect("wrong-key request");
         assert!(response.validate_for(&wrong_key).is_err());
+    }
+
+    #[test]
+    fn choice_pages_authenticate_the_nested_index_and_exact_eof() {
+        assert!(
+            QueryCampaignChoicesRequest::new(
+                CampaignPrincipal::new("operator:alice").expect("principal"),
+                CampaignName::new("network-recovery").expect("campaign"),
+                snapshot("choice-limit"),
+                None,
+                MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS + 1,
+            )
+            .is_err()
+        );
+        let backend = Arc::new(MemoryBlobBackend::new("choice-query", u64::MAX));
+        let map = MerkleMap::new(backend);
+        let empty = map.empty().expect("empty root");
+        let choices = ["first", "second"].map(|label| {
+            ChoiceOpportunityId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                label.as_bytes(),
+            ))
+            .expect("choice id")
+        });
+        let mut choice_index = empty;
+        for choice in choices {
+            choice_index = map
+                .insert(
+                    choice_index.content_id(),
+                    crate::repository::choice_index_order_key(choice),
+                    choice.content_id(),
+                )
+                .expect("choice insert");
+        }
+        let graph = map
+            .insert(
+                empty.content_id(),
+                crate::repository::choice_index_anchor_key(),
+                choice_index.content_id(),
+            )
+            .expect("choice-index anchor");
+        let roots = CampaignRoots {
+            graph: graph.content_id(),
+            exploration: empty.content_id(),
+            observations: empty.content_id(),
+            corpus: empty.content_id(),
+            coverage: empty.content_id(),
+            findings: empty.content_id(),
+            pins: empty.content_id(),
+            accounting: empty.content_id(),
+            coordination: empty.content_id(),
+        };
+        let snapshot_body = CampaignSnapshot::genesis(
+            CampaignLineageId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                b"choice-query-lineage",
+            ))
+            .expect("lineage"),
+            CampaignPolicyId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Policy,
+                1,
+                b"choice-query-policy",
+            ))
+            .expect("policy"),
+            roots,
+        )
+        .expect("snapshot");
+        let request = QueryCampaignChoicesRequest::new(
+            CampaignPrincipal::new("operator:alice").expect("principal"),
+            CampaignName::new("network-recovery").expect("campaign"),
+            snapshot_body.id().expect("snapshot id"),
+            None,
+            1,
+        )
+        .expect("request");
+        let (_, index_proof) = map
+            .get_with_proof(
+                graph.content_id(),
+                crate::repository::choice_index_anchor_key(),
+            )
+            .expect("index proof");
+        let (page, page_proof) = map
+            .scan_with_proof(choice_index.content_id(), None, 1)
+            .expect("page proof");
+        let entries = page
+            .entries()
+            .iter()
+            .map(|(_, value)| {
+                ChoiceOpportunityId::from_content_id(*value)
+                    .map(CampaignChoiceEntry::new)
+                    .expect("choice entry")
+            })
+            .collect::<Vec<_>>();
+        let next_after = page
+            .next_after()
+            .and_then(|_| entries.last().map(|entry| entry.opportunity()));
+        let response = QueryCampaignChoicesResponse::new(
+            &request,
+            snapshot_body,
+            entries,
+            next_after,
+            index_proof,
+            page_proof,
+        )
+        .expect("response");
+        let decoded =
+            QueryCampaignChoicesResponse::from_canonical_bytes(&response.canonical_bytes())
+                .expect("decode response");
+        decoded.validate_for(&request).expect("verify response");
+        assert_eq!(
+            [
+                blake3::hash(&request.canonical_bytes())
+                    .to_hex()
+                    .to_string(),
+                blake3::hash(&response.canonical_bytes())
+                    .to_hex()
+                    .to_string(),
+            ],
+            [
+                String::from("3d04a1a5b7687ffd4398b162b8b14566e1c56a16b47446db3dc734ac1b318eee"),
+                String::from("9b5d7589cad830b6f816c31d5a4c8e9edae7deea41703d4993ec337833e0172f"),
+            ]
+        );
+
+        let mut forged_eof = decoded.clone();
+        forged_eof.next_after = None;
+        assert!(forged_eof.validate_for(&request).is_err());
+        let mut substituted = decoded;
+        substituted.entries[0] = CampaignChoiceEntry::new(
+            ChoiceOpportunityId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                b"unrelated-choice",
+            ))
+            .expect("unrelated choice"),
+        );
+        assert!(substituted.validate_for(&request).is_err());
     }
 }

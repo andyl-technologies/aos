@@ -14,8 +14,9 @@ use crate::policy::{MAX_IDENTIFIER_BYTES, validate_identifier};
 use crate::{
     BranchRequest, BranchRequestResult, CampaignCodecError, CampaignCommandResult, CampaignHash,
     CampaignLineageId, CampaignPolicyId, CampaignRecordKind, CampaignRepository,
-    CampaignRepositoryError, CampaignSnapshot, CampaignSnapshotId, CampaignState, ControlRequest,
-    MerkleMap, MerkleMapLookupProof, MerkleMapPageProof, ObjectEnvelope,
+    CampaignRepositoryError, CampaignSnapshot, CampaignSnapshotId, CampaignState,
+    ChoiceOpportunityId, ControlRequest, MerkleMap, MerkleMapLookupProof, MerkleMapPageProof,
+    ObjectEnvelope,
 };
 
 mod create;
@@ -31,8 +32,10 @@ pub use create::{
 pub use derive::{DeriveCampaignRequest, DeriveCampaignResponse};
 pub use get_snapshot::{GetCampaignSnapshotRequest, GetCampaignSnapshotResponse};
 pub use query::{
-    CampaignGraphEntry, GetCampaignGraphObjectRequest, GetCampaignGraphObjectResponse,
-    MAX_CAMPAIGN_QUERY_PAGE_ITEMS, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
+    CampaignChoiceEntry, CampaignGraphEntry, GetCampaignGraphObjectRequest,
+    GetCampaignGraphObjectResponse, MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS,
+    MAX_CAMPAIGN_QUERY_PAGE_ITEMS, QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
+    QueryCampaignGraphRequest, QueryCampaignGraphResponse,
 };
 pub use watch::{WatchCampaignRequest, WatchCampaignResponse};
 
@@ -135,6 +138,8 @@ pub enum CampaignServiceOperation {
     QueryCampaignGraph,
     /// Read one exact object body named by the authenticated campaign graph.
     GetCampaignGraphObject,
+    /// Read one bounded page from the authenticated discovered-choice index.
+    QueryCampaignChoices,
     /// Apply one idempotent lifecycle, budget, or policy command.
     ApplyCampaignCommand,
     /// Submit one additive operator branch request.
@@ -345,6 +350,19 @@ impl CampaignServiceFailure {
     /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
     /// or when a stale failure does not describe this lookup's exact snapshot.
     pub fn validate_for_get_campaign_graph_object(
+        self,
+        expected_snapshot: CampaignSnapshotId,
+    ) -> Result<(), CampaignCodecError> {
+        self.validate_for_query_campaign_graph(expected_snapshot)
+    }
+
+    /// Validates a failure for one exact campaign choice query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
+    /// or when a stale failure does not describe this query's exact snapshot.
+    pub fn validate_for_query_campaign_choices(
         self,
         expected_snapshot: CampaignSnapshotId,
     ) -> Result<(), CampaignCodecError> {
@@ -1299,6 +1317,18 @@ pub trait CampaignService {
         request: &GetCampaignGraphObjectRequest,
     ) -> Result<GetCampaignGraphObjectResponse, Self::Error>;
 
+    /// Returns one bounded page from the authenticated discovered-choice index.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific failure when authorization,
+    /// snapshot precondition, cursor validation, repository access, or
+    /// response construction fails.
+    fn query_campaign_choices(
+        &self,
+        request: &QueryCampaignChoicesRequest,
+    ) -> Result<QueryCampaignChoicesResponse, Self::Error>;
+
     /// Applies one exact idempotent campaign command.
     ///
     /// # Errors
@@ -1519,6 +1549,32 @@ where
                 let failure = error.campaign_service_failure();
                 failure
                     .validate_for_get_campaign_graph_object(request.snapshot())
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+        Ok(response)
+    }
+
+    /// Queries one snapshot-bound choice page and validates both Merkle proofs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignClientError`] when the service fails or answers a
+    /// different request, snapshot, nested index, page, or cursor relation.
+    pub fn query_campaign_choices(
+        &self,
+        request: &QueryCampaignChoicesRequest,
+    ) -> Result<QueryCampaignChoicesResponse, CampaignClientError> {
+        let response = match self.service.query_campaign_choices(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_query_campaign_choices(request.snapshot())
                     .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
                 return Err(failure.into());
             }
@@ -1875,6 +1931,54 @@ where
         )?)
     }
 
+    fn query_campaign_choices(
+        &self,
+        request: &QueryCampaignChoicesRequest,
+    ) -> Result<QueryCampaignChoicesResponse, Self::Error> {
+        self.authorizer.authorize(
+            request.principal(),
+            CampaignServiceOperation::QueryCampaignChoices,
+            request.campaign(),
+            request.request_digest(),
+        )?;
+        let head = self.repository.head(request.campaign().as_str())?;
+        if head.snapshot_id() != request.snapshot() {
+            return Err(CampaignRepositoryError::Stale {
+                expected: request.snapshot(),
+                current: head.snapshot_id(),
+            }
+            .into());
+        }
+        let limit = usize::try_from(request.limit()).map_err(|_| {
+            CampaignRepositoryError::InvalidRequest {
+                reason: "campaign-choice-query-page-size-is-invalid",
+            }
+        })?;
+        let (page, index_proof, page_proof) = self.repository.scan_choice_page(
+            head.snapshot().roots().graph,
+            request.after(),
+            limit,
+        )?;
+        let entries = page
+            .entries()
+            .iter()
+            .map(|(_, object)| {
+                ChoiceOpportunityId::from_content_id(*object).map(CampaignChoiceEntry::new)
+            })
+            .collect::<Result<Vec<_>, CampaignCodecError>>()?;
+        let next_after = page
+            .next_after()
+            .and_then(|_| entries.last().map(|entry| entry.opportunity()));
+        Ok(QueryCampaignChoicesResponse::new(
+            request,
+            head.snapshot().clone(),
+            entries,
+            next_after,
+            index_proof,
+            page_proof,
+        )?)
+    }
+
     fn apply_campaign_command(
         &self,
         request: &ApplyCampaignCommandRequest,
@@ -2207,6 +2311,13 @@ mod tests {
             unreachable!("test service only handles GetCampaign")
         }
 
+        fn query_campaign_choices(
+            &self,
+            _request: &QueryCampaignChoicesRequest,
+        ) -> Result<QueryCampaignChoicesResponse, Self::Error> {
+            unreachable!("test service only handles GetCampaign")
+        }
+
         fn apply_campaign_command(
             &self,
             _request: &ApplyCampaignCommandRequest,
@@ -2301,6 +2412,13 @@ mod tests {
             Err(self.0)
         }
 
+        fn query_campaign_choices(
+            &self,
+            _request: &QueryCampaignChoicesRequest,
+        ) -> Result<QueryCampaignChoicesResponse, Self::Error> {
+            Err(self.0)
+        }
+
         fn apply_campaign_command(
             &self,
             _request: &ApplyCampaignCommandRequest,
@@ -2365,6 +2483,13 @@ mod tests {
             &self,
             _request: &GetCampaignGraphObjectRequest,
         ) -> Result<GetCampaignGraphObjectResponse, Self::Error> {
+            unreachable!("test service only handles ApplyCampaignCommand")
+        }
+
+        fn query_campaign_choices(
+            &self,
+            _request: &QueryCampaignChoicesRequest,
+        ) -> Result<QueryCampaignChoicesResponse, Self::Error> {
             unreachable!("test service only handles ApplyCampaignCommand")
         }
 

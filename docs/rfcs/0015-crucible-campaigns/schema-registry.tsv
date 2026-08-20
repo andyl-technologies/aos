@@ -52,6 +52,8 @@ crucible.campaign.query-campaign-graph-request	1	crucible-campaign::campaign_ser
 crucible.campaign.query-campaign-graph-response	1	crucible-campaign::campaign_service	component-message	gate:component-contract
 crucible.campaign.get-campaign-graph-object-request	1	crucible-campaign::campaign_service	component-message	gate:component-contract
 crucible.campaign.get-campaign-graph-object-response	1	crucible-campaign::campaign_service	component-message	gate:component-contract
+crucible.campaign.query-campaign-choices-request	1	crucible-campaign::campaign_service	component-message	gate:component-contract
+crucible.campaign.query-campaign-choices-response	1	crucible-campaign::campaign_service	component-message	gate:component-contract
 crucible.campaign.apply-campaign-command-request	1	crucible-campaign::campaign_service	component-message	gate:component-contract
 crucible.campaign.apply-campaign-command-response	1	crucible-campaign::campaign_service	component-message	gate:component-contract
 crucible.campaign.submit-campaign-branch-request	1	crucible-campaign::campaign_service	component-message	gate:component-contract
@@ -61,7 +63,7 @@ crucible.executor.assignment-record	1	crucible-daemon::assignment_ledger	operati
 crucible.executor.attempt-state-record	2	crucible-daemon::assignment_ledger	operational-record	gate:component-contract
 crucible.executor.loopback-frame	1	crucible-daemon::executor_loopback	component-message	gate:component-contract
 crucible.planner.loopback-frame	1	crucible-daemon::planner_loopback	component-message	gate:component-contract
-crucible.campaign.loopback-frame	8	crucible-daemon::campaign_loopback	component-message	gate:component-contract
+crucible.campaign.loopback-frame	9	crucible-daemon::campaign_loopback	component-message	gate:component-contract
 crucible.executor.crucible-scenario-payload	1	crucible-daemon::crucible_artifact	execution-model-payload	gate:component-contract,gate:campaign-replay
 crucible.executor.crucible-configuration-payload	2	crucible-daemon::crucible_artifact	execution-model-payload	gate:component-contract,gate:campaign-replay
 crucible.execution.schedule	2	crucible::model	execution-model-payload	gate:typed-choice,gate:campaign-replay

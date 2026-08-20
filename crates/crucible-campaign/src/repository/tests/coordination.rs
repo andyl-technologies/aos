@@ -2059,6 +2059,33 @@ fn choice_discovery_is_exact_replayable_and_required_before_branching() {
             .expect("authoritative choice membership"),
         Some(request.opportunity().content_id())
     );
+    let (choice_page, index_proof, page_proof) = repository
+        .scan_choice_page(discovery_snapshot.snapshot.roots().graph, None, 1)
+        .expect("authenticated choice page");
+    assert_eq!(
+        choice_page.entries(),
+        &[(
+            choice_index_order_key(request.opportunity()),
+            request.opportunity().content_id(),
+        )]
+    );
+    assert!(index_proof.node_count() > 0);
+    assert!(page_proof.node_count() > 0);
+    let choice_index = repository
+        .merkle
+        .get(
+            discovery_snapshot.snapshot.roots().graph,
+            choice_index_anchor_key(),
+        )
+        .expect("choice-index anchor")
+        .expect("choice-index root");
+    assert_eq!(
+        repository
+            .merkle
+            .get(choice_index, choice_index_order_key(request.opportunity()),)
+            .expect("choice-index membership"),
+        Some(request.opportunity().content_id())
+    );
     assert_eq!(
         repository
             .merkle
@@ -2282,7 +2309,7 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
             &debugger_bytes,
         )
         .to_hex(),
-        "3142d32d1e725e1af17323de02b80a106411705968e29a1598648943fb1e6858",
+        "a6a7e2f4ec330f78ccbac6179de7d8ad325ff5e59fb788ce607344adc229135d",
     );
     let decoded_debugger =
         DebuggerSubmission::from_canonical_bytes(&debugger_bytes).expect("decode debugger");
@@ -2394,7 +2421,7 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
     assert_eq!(
         CampaignHash::derive("crucible.test.planner-submission-vector.v1", &planner_bytes,)
             .to_hex(),
-        "d37f925254ebe9d6254e156dcb376f1ab18082a6b15517e7cce67be5023ea058",
+        "b62c63e2e31085fd6509f02afa6185f3ca58da2b3db819a1b4861fc8281bc01e",
     );
     let decoded_planner =
         PlannerSubmission::from_canonical_bytes(&planner_bytes).expect("decode planner");

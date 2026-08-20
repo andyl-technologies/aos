@@ -55,10 +55,11 @@ const MAX_SIMPLE_SUCCESSOR_GROWTH: usize = 512;
 const MAX_PLANNER_ISSUE_SUCCESSOR_GROWTH: usize = 4_000_000;
 // One fixed-depth trie insertion rewrites at most one node per digest nibble.
 const MERKLE_UPDATE_NODE_UPPER: usize = 64;
-// Graph has two fixed keys, observations six, corpus/coverage/coordination one
-// each, and strict accounting three. Every discovered choice adds two graph keys.
-const OBSERVATION_FIXED_OWNER_UPSERTS: usize = 14;
-const MAX_OBSERVATION_SUCCESSOR_GROWTH: usize = ((2 * crate::observation::MAX_DISCOVERED_CHOICES
+// Graph has three fixed keys, observations six, corpus/coverage/coordination one
+// each, and strict accounting three. Every discovered choice adds two graph keys
+// plus one nested choice-index insertion.
+const OBSERVATION_FIXED_OWNER_UPSERTS: usize = 15;
+const MAX_OBSERVATION_SUCCESSOR_GROWTH: usize = ((3 * crate::observation::MAX_DISCOVERED_CHOICES
     + OBSERVATION_FIXED_OWNER_UPSERTS)
     * MERKLE_UPDATE_NODE_UPPER)
     + 1;
@@ -787,8 +788,16 @@ fn observation_sequence_key() -> CampaignHash {
     CampaignHash::derive("crucible.campaign-observation-sequence.v1", b"")
 }
 
-fn authoritative_choice_key(opportunity: ChoiceOpportunityId) -> CampaignHash {
+pub(crate) fn authoritative_choice_key(opportunity: ChoiceOpportunityId) -> CampaignHash {
     map_key_content("graph.choice-opportunity", opportunity.content_id())
+}
+
+pub(crate) fn choice_index_anchor_key() -> CampaignHash {
+    CampaignHash::derive("crucible.campaign-graph-choice-index.v1", b"")
+}
+
+pub(crate) fn choice_index_order_key(opportunity: ChoiceOpportunityId) -> CampaignHash {
+    CampaignHash::from_bytes(opportunity.content_id().digest())
 }
 
 fn choice_discovery_result_key(
@@ -820,7 +829,7 @@ fn branch_point_opportunity_key(
 
 fn observation_successor_growth(choice_count: usize) -> Result<usize, CampaignRepositoryError> {
     let owner_upserts = choice_count
-        .checked_mul(2)
+        .checked_mul(3)
         .and_then(|choices| choices.checked_add(OBSERVATION_FIXED_OWNER_UPSERTS))
         .ok_or_else(|| integrity("observation-successor-growth-overflow"))?;
     let growth = owner_upserts

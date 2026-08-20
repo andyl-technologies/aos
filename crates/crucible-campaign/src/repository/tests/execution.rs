@@ -570,7 +570,7 @@ fn executor_candidate_publication_is_immutable_and_does_not_advance_the_campaign
 #[test]
 fn executor_candidate_publishes_a_fresh_next_choice_body() {
     let (repository, lineage, policy) = fixture();
-    let (_, _, basis) =
+    let (_, admitted, basis) =
         admitted_observation_fixture(&repository, &lineage, &policy, "fresh-candidate-choice");
     let prior_id = *basis.discovered_choices().first().expect("fixture choice");
     let prior = repository
@@ -636,6 +636,23 @@ fn executor_candidate_publishes_a_fresh_next_choice_body() {
             .expect("load published fresh choice"),
         fresh
     );
+    let published = repository
+        .publish_observation(
+            "fresh-candidate-choice",
+            admitted.new_snapshot,
+            candidate.observation(),
+        )
+        .expect("admit candidate observation");
+    let head = repository
+        .head("fresh-candidate-choice")
+        .expect("choice-index head");
+    assert_eq!(head.snapshot_id(), published.new_snapshot);
+    let (page, _, _) = repository
+        .scan_choice_page(head.snapshot().roots().graph, None, 16)
+        .expect("choice index page");
+    assert!(page.entries().iter().any(|(key, value)| {
+        *key == choice_index_order_key(fresh_id) && *value == fresh_id.content_id()
+    }));
 }
 
 #[test]

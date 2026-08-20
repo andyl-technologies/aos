@@ -294,11 +294,15 @@ impl CampaignRepository {
         let lineage_content = self.put_lineage(lineage)?;
         let policy_content = self.put_policy(policy)?;
         let empty = self.merkle.empty()?.content_id();
+        let choice_index = self.merkle.empty()?.content_id();
         let graph = self.merkle.insert(
             empty,
             map_key_hash("graph.configuration", lineage.genesis().as_hash()),
             lineage.genesis_content().content_id(),
         )?;
+        let graph =
+            self.merkle
+                .insert(graph.content_id(), choice_index_anchor_key(), choice_index)?;
         let corpus = self.merkle.insert(
             empty,
             map_key_hash("corpus.configuration", lineage.genesis().as_hash()),
@@ -411,6 +415,33 @@ impl CampaignRepository {
             reason: "campaign-graph-object-key-is-not-present",
         })?;
         Ok((self.read_envelope(object)?, proof))
+    }
+
+    pub(crate) fn scan_choice_page(
+        &self,
+        graph_root: ContentId,
+        after: Option<ChoiceOpportunityId>,
+        limit: usize,
+    ) -> Result<(MerkleMapPage, MerkleMapLookupProof, MerkleMapPageProof), CampaignRepositoryError>
+    {
+        let (choice_index, index_proof) = self
+            .merkle
+            .get_with_proof(graph_root, choice_index_anchor_key())?;
+        let choice_index = choice_index.ok_or(CampaignRepositoryError::InvalidRequest {
+            reason: "campaign-snapshot-has-no-choice-index",
+        })?;
+        let (page, page_proof) = self
+            .merkle
+            .scan_with_proof(choice_index, after.map(choice_index_order_key), limit)
+            .map_err(|error| match error {
+                CampaignStoreError::InvalidMerkle {
+                    reason: "page-cursor-not-in-root",
+                } => CampaignRepositoryError::InvalidRequest {
+                    reason: "campaign-choice-query-cursor-is-not-in-index",
+                },
+                error => error.into(),
+            })?;
+        Ok((page, index_proof, page_proof))
     }
 
     /// Projects durable lifecycle intent from authenticated snapshot ancestry.
@@ -573,14 +604,29 @@ impl CampaignRepository {
             });
         }
 
+        let prior_graph = current.snapshot.roots().graph;
+        let choice_index = self
+            .merkle
+            .get(prior_graph, choice_index_anchor_key())?
+            .unwrap_or(self.merkle.empty()?.content_id());
+        let choice_index = self.merkle.insert(
+            choice_index,
+            choice_index_order_key(opportunity),
+            opportunity.content_id(),
+        )?;
         let graph = self.merkle.insert(
-            current.snapshot.roots().graph,
+            prior_graph,
             authoritative_choice_key(opportunity),
             opportunity.content_id(),
         )?;
         let graph = self
             .merkle
             .insert(graph.content_id(), choice_key, opportunity.content_id())?;
+        let graph = self.merkle.insert(
+            graph.content_id(),
+            choice_index_anchor_key(),
+            choice_index.content_id(),
+        )?;
         let fact = CampaignFact::ChoiceOpportunityDiscovered {
             parent,
             branch_point,

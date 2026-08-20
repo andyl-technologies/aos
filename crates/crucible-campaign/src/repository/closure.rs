@@ -311,19 +311,31 @@ impl CampaignRepository {
         let lineage = self.read_lineage(required_child(&loaded.envelope, "lineage")?)?;
         let roots = loaded.snapshot.roots();
         let expected_genesis = lineage.genesis_content().content_id();
-        for (root, namespace) in [
-            (roots.graph, "graph.configuration"),
-            (roots.corpus, "corpus.configuration"),
-        ] {
-            let inspected = self.merkle.inspect_shallow(root)?;
-            if inspected.entry_count() != 1
-                || self
-                    .merkle
-                    .get(root, map_key_hash(namespace, lineage.genesis().as_hash()))?
-                    != Some(expected_genesis)
-            {
-                return Err(integrity("genesis-configuration-root-mismatch"));
-            }
+        let corpus = self.merkle.inspect_shallow(roots.corpus)?;
+        if corpus.entry_count() != 1
+            || self.merkle.get(
+                roots.corpus,
+                map_key_hash("corpus.configuration", lineage.genesis().as_hash()),
+            )? != Some(expected_genesis)
+        {
+            return Err(integrity("genesis-configuration-root-mismatch"));
+        }
+        let graph = self.merkle.inspect_shallow(roots.graph)?;
+        let choice_index = self.merkle.get(roots.graph, choice_index_anchor_key())?;
+        if !matches!(graph.entry_count(), 1 | 2)
+            || self.merkle.get(
+                roots.graph,
+                map_key_hash("graph.configuration", lineage.genesis().as_hash()),
+            )? != Some(expected_genesis)
+        {
+            return Err(integrity("genesis-configuration-root-mismatch"));
+        }
+        match choice_index {
+            Some(index)
+                if graph.entry_count() == 2
+                    && self.merkle.inspect_shallow(index)?.entry_count() == 0 => {}
+            None if graph.entry_count() == 1 => {}
+            _ => return Err(integrity("genesis-choice-index-root-mismatch")),
         }
 
         let empty_roots = [
@@ -619,17 +631,36 @@ impl CampaignRepository {
         if self.merkle.get(prior.graph, scoped_key)?.is_some() {
             return Err(integrity("choice-discovery-reused-opportunity"));
         }
-        if !self.merkle.equals_after_upserts(
-            prior.graph,
-            next.graph,
-            &BTreeMap::from([
-                (
-                    authoritative_choice_key(opportunity_id),
-                    opportunity_id.content_id(),
-                ),
-                (scoped_key, opportunity_id.content_id()),
-            ]),
-        )? {
+        let prior_choice_index = self.merkle.get(prior.graph, choice_index_anchor_key())?;
+        let base_choice_index = match prior_choice_index {
+            Some(index) => index,
+            None => MerkleMap::empty_content_id()?,
+        };
+        let next_choice_index = self.merkle.root_after_upserts(
+            base_choice_index,
+            &BTreeMap::from([(
+                choice_index_order_key(opportunity_id),
+                opportunity_id.content_id(),
+            )]),
+        )?;
+        let next_has_choice_index = self
+            .merkle
+            .get(next.graph, choice_index_anchor_key())?
+            .is_some();
+        let mut upserts = BTreeMap::from([
+            (
+                authoritative_choice_key(opportunity_id),
+                opportunity_id.content_id(),
+            ),
+            (scoped_key, opportunity_id.content_id()),
+        ]);
+        if prior_choice_index.is_some() || next_has_choice_index {
+            upserts.insert(choice_index_anchor_key(), next_choice_index);
+        }
+        if !self
+            .merkle
+            .equals_after_upserts(prior.graph, next.graph, &upserts)?
+        {
             return Err(integrity("choice-discovery-graph-root-mismatch"));
         }
         if !self.coordination_matches_parent_result(parent, next.coordination)? {

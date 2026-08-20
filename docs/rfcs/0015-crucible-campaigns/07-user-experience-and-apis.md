@@ -210,6 +210,12 @@ observation basis through proposal, immutable execution basis or additional-
 cause association, branch edge, selection, execution evidence, and reward
 credit.
 
+The current service checkpoint implements the first authenticated `choices`
+page: it returns discovered opportunity IDs from a snapshot-bound nested Merkle
+index and separately authorizes each requested graph body. Rich admitted-value,
+visit, reward, and readiness projection remains part of the open frontier view;
+the CLI rendering remains open.
+
 The local repository API exposes the same validation boundary at object scale.
 Typed loads authenticate scenario/configuration artifacts, opportunities,
 groups, and planner invocations. A selection load returns a resolved aggregate

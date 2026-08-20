@@ -5,6 +5,7 @@ use super::*;
 struct ObservationProjection {
     disposition: ObservationDisposition,
     graph: BTreeMap<CampaignHash, ContentId>,
+    choice_index: BTreeMap<CampaignHash, ContentId>,
     observations: BTreeMap<CampaignHash, ContentId>,
     corpus: BTreeMap<CampaignHash, ContentId>,
     coverage: BTreeMap<CampaignHash, ContentId>,
@@ -160,6 +161,7 @@ impl CampaignRepository {
             observation_id.content_id(),
             observation,
             &mut choice_cache,
+            true,
         )?;
         self.preflight_observation_closure(&current, observation, &mut choice_cache)?;
         let observation_content = self.put_observation(observation)?;
@@ -168,6 +170,19 @@ impl CampaignRepository {
         }
 
         let mut roots = current.snapshot.roots();
+        if !projection.choice_index.is_empty() {
+            let prior_choice_index = self
+                .merkle
+                .get(roots.graph, choice_index_anchor_key())?
+                .unwrap_or(MerkleMap::empty_content_id()?);
+            let published_choice_index =
+                self.insert_upserts(prior_choice_index, &projection.choice_index)?;
+            if projection.graph.get(&choice_index_anchor_key()).copied()
+                != Some(published_choice_index)
+            {
+                return Err(integrity("observation-choice-index-publication-mismatch"));
+            }
+        }
         roots.graph = self.insert_upserts(roots.graph, &projection.graph)?;
         roots.observations = self.insert_upserts(roots.observations, &projection.observations)?;
         roots.corpus = self.insert_upserts(roots.corpus, &projection.corpus)?;
@@ -241,6 +256,13 @@ impl CampaignRepository {
             observation_id.content_id(),
             &observation,
             choice_cache,
+            self.merkle
+                .get(next.graph, choice_index_anchor_key())?
+                .is_some()
+                || self
+                    .merkle
+                    .get(prior.graph, choice_index_anchor_key())?
+                    .is_some(),
         )?;
         for (before, after, upserts, reason) in [
             (
@@ -290,6 +312,7 @@ impl CampaignRepository {
         observation_content: ContentId,
         observation: &Observation,
         choice_cache: &mut ChoiceValidationCache,
+        maintain_choice_index: bool,
     ) -> Result<ObservationProjection, CampaignRepositoryError> {
         self.validate_observation_references_cached(observation, choice_cache)?;
         let roots = parent.snapshot.roots();
@@ -320,6 +343,7 @@ impl CampaignRepository {
             return Ok(ObservationProjection {
                 disposition: ObservationDisposition::DeterminismConflict { canonical },
                 graph: BTreeMap::new(),
+                choice_index: BTreeMap::new(),
                 observations: BTreeMap::from([(
                     observation_conflict_key(observation.attempt(), observation_id),
                     observation_content,
@@ -361,6 +385,27 @@ impl CampaignRepository {
             );
         }
         self.validate_compatible_upserts(roots.graph, &graph, "observation-graph-conflict")?;
+        let mut choice_index_upserts = BTreeMap::new();
+        if maintain_choice_index && !observation.discovered_choices().is_empty() {
+            let choice_index = self
+                .merkle
+                .get(roots.graph, choice_index_anchor_key())?
+                .unwrap_or(MerkleMap::empty_content_id()?);
+            for choice_id in observation.discovered_choices() {
+                choice_index_upserts
+                    .insert(choice_index_order_key(*choice_id), choice_id.content_id());
+            }
+            self.validate_compatible_upserts(
+                choice_index,
+                &choice_index_upserts,
+                "observation-choice-index-conflict",
+            )?;
+            graph.insert(
+                choice_index_anchor_key(),
+                self.merkle
+                    .root_after_upserts(choice_index, &choice_index_upserts)?,
+            );
+        }
         self.validate_compatible_upserts(roots.corpus, &corpus, "observation-corpus-conflict")?;
 
         let mut observations = BTreeMap::from([
@@ -438,6 +483,7 @@ impl CampaignRepository {
         Ok(ObservationProjection {
             disposition: ObservationDisposition::Canonical,
             graph,
+            choice_index: choice_index_upserts,
             observations,
             corpus,
             coverage,
