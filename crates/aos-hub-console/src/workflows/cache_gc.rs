@@ -444,7 +444,5 @@ fn optional_u64(value: &str, label: &str) -> Result<Option<u64>, String> {
     }
 }
 fn reload() {
-    if let Some(window) = leptos::web_sys::window() {
-        let _ = window.location().reload();
-    }
+    crate::app::refresh();
 }

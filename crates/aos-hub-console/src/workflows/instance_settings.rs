@@ -386,7 +386,5 @@ fn on_off(value: bool) -> &'static str {
 }
 
 fn reload() {
-    if let Some(window) = leptos::web_sys::window() {
-        let _ = window.location().reload();
-    }
+    crate::app::refresh();
 }
