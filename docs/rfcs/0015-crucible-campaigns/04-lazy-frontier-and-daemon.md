@@ -379,7 +379,9 @@ domains. The latter yield `false`, then `true`, or alternatives in stable
 `AlternativeId` order. Implementation-version 3 `boundary_integer` is also
 static and uses the exact boundary/default/landmark/neighbor/power order in
 §03.2. Implementation-version 4 `stratified_integer` is static and uses the
-exact bounded ordinal-to-stepped-value formula in §03.2. Proposals from every
+exact bounded ordinal-to-stepped-value formula in §03.2.
+Implementation-version 5 `log_integer` is static for strictly positive integer
+domains and uses the exact rounded-power order in §03.2. Proposals from every
 other generated source require the selected deterministic generator owner to
 reproduce the same value and remain fail-closed until that owner is implemented.
 
@@ -407,8 +409,9 @@ budget, create a graph child, or count as an admitted continuation value.
 - **[LAZY-24]** Static proposal ordinals MUST be gapless and bind to canonical
   source-value order. Implementation-version 2 `all` over Boolean or discrete
   domains, implementation-version 3 `boundary_integer`, and
-  implementation-version 4 `stratified_integer` are static generated sources.
-  Other generated proposal issuance MUST fail closed unless the named
+  implementation-version 4 `stratified_integer`, and implementation-version 5
+  `log_integer` over a strictly positive integer domain are static generated
+  sources. Other generated proposal issuance MUST fail closed unless the named
   deterministic generator owner reproduces the value from authenticated
   campaign facts.
 
@@ -500,7 +503,8 @@ Static continuation state is derived without retaining all request values or
 continuations. A static source is an explicit finite source,
 implementation-version 2 `all` over a Boolean or discrete domain, or
 implementation-version 3 `boundary_integer`, or implementation-version 4
-`stratified_integer`:
+`stratified_integer`, or implementation-version 5 `log_integer` over a strictly
+positive integer domain:
 
 - no proposal at the next canonical ordinal and remaining proposal budget is
   `Ready`;
@@ -542,9 +546,10 @@ admission is rejected.
 - **[LAZY-34]** The static projector MUST fail closed for generated requests
   other than implementation-version 2 `all` over Boolean or discrete domains
   and implementation-version 3 `boundary_integer` or implementation-version 4
-  `stratified_integer`, and for observation-bearing views, until their exact
-  owner folds are implemented. It MUST NOT publish approximated readiness,
-  statistics, or exhaustion.
+  `stratified_integer` or implementation-version 5 `log_integer` over a
+  strictly positive integer domain, and for observation-bearing views, until
+  their exact owner folds are implemented. It MUST NOT publish approximated
+  readiness, statistics, or exhaustion.
 
 ## 04.15 Atomic observation publication
 

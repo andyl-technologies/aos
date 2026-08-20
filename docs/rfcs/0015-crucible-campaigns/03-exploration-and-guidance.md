@@ -91,7 +91,7 @@ The closed specification vocabulary provides:
 | `weighted_categorical` | Discrete | Keyed sampling without replacement using exact integer weights. |
 | `stratified_integer` | Integer | Admits values from deterministic strata across the full range. |
 | `boundary_integer` | Integer | Prioritizes min, max, default, landmarks, adjacent values, and powers of two. |
-| `log_integer` | Positive integer | Samples exact integer logarithmic buckets with declared rounding. |
+| `log_integer` | Positive integer | Samples integral base powers with exact upward step rounding. |
 | `permuted_integer` | Finite integer | Walks a keyed permutation without materializing the domain. |
 | `progressive_integer` | Integer | Starts with landmarks/strata and refines intervals from feedback. |
 | `mutate_near_corpus` | Any supported domain | Deterministically mutates retained successful, novel, or failing values. |
@@ -123,10 +123,20 @@ requested strata exceed the cardinality, every legal value is emitted. The
 implementation admits at most 4,096 strata and reconstructs each ordinal with
 checked 128-bit arithmetic in constant space.
 
+Generator implementation-version 5 defines static `log_integer` order over a
+strictly positive stepped domain. It emits the inclusive minimum, then integral
+powers `base^e` for ascending `e` beginning at zero. Each power is rounded
+upward to the least legal domain value `minimum + ceil((base^e - minimum) /
+step) * step`; powers at or below the minimum select the minimum, and rounded
+values above the maximum are omitted. It then emits the inclusive maximum.
+First occurrence wins throughout. Base two over the full unsigned 64-bit range
+is the largest sequence: 64 powers plus a distinct maximum, or 65 candidates.
+The owner uses checked 128-bit arithmetic and constant bounded space.
+
 Other algorithms remain valid suspended specifications but fail closed at
 proposal issuance and expansion projection until their versioned cursor and
 feedback owners are implemented. Earlier and unknown implementation versions
-remain suspended rather than being reinterpreted as versions 2, 3, or 4; this
+remain suspended rather than being reinterpreted as versions 2, 3, 4, or 5; this
 preserves owner validation of histories created before executable enumeration
 landed.
 

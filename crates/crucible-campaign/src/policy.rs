@@ -53,6 +53,19 @@ pub const STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 4;
 /// limits proposal and restart owner-validation work for one branch request.
 pub const STRATIFIED_INTEGER_GENERATOR_MAX_STRATA: u32 = 4_096;
 
+/// Generator implementation version for static logarithmic-integer enumeration.
+///
+/// This version emits a positive stepped domain's minimum, each integral power
+/// of the declared base rounded upward to the next legal value, and its maximum.
+/// Earlier and unknown versions remain suspended.
+pub const LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 5;
+
+/// Maximum candidates derived by logarithmic-integer implementation version 5.
+///
+/// A base of two over the full unsigned 64-bit range is the largest sequence:
+/// 64 powers plus a distinct inclusive maximum.
+pub const LOG_INTEGER_GENERATOR_MAX_CANDIDATES: usize = 65;
+
 /// Fixed seed that makes campaign proposal streams reproducible.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CampaignSeed([u8; 32]);

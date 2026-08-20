@@ -1,6 +1,7 @@
 //! Strict campaign record publication, loading, and cross-record validation.
 
 use super::*;
+use crate::IntegerValue;
 
 fn charge_selection_resolution_record(
     envelope: &ObjectEnvelope,
@@ -1182,8 +1183,22 @@ impl CampaignRepository {
                         return Err(integrity("stratified-generator-strata-limit"));
                     }
                 }
-                CandidateGeneratorAlgorithm::LogInteger { .. }
-                | CandidateGeneratorAlgorithm::PermutedInteger
+                CandidateGeneratorAlgorithm::LogInteger { .. } => {
+                    let ChoiceDomain::Integer(integer) = domain else {
+                        return Err(integrity("candidate-generator-domain-family-mismatch"));
+                    };
+                    let minimum_is_positive = match integer.minimum() {
+                        IntegerValue::Signed(value) => value > 0,
+                        IntegerValue::Unsigned(value) => value > 0,
+                    };
+                    if generator.implementation_version()
+                        == crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                        && !minimum_is_positive
+                    {
+                        return Err(integrity("log-generator-domain-is-not-positive"));
+                    }
+                }
+                CandidateGeneratorAlgorithm::PermutedInteger
                 | CandidateGeneratorAlgorithm::ProgressiveInteger { .. }
                 | CandidateGeneratorAlgorithm::MutateNearCorpus { .. }
                     if matches!(domain, ChoiceDomain::Integer(_)) => {}
