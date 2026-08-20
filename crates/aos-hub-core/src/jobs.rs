@@ -57,6 +57,13 @@ pub enum Job {
         /// The registry whose derived index is reset.
         registry_id: i64,
     },
+    /// Re-attests one object declared by the current ready publication.
+    RefreshPublicationObject {
+        /// The registry whose current publication owns the object.
+        registry_id: i64,
+        /// The exact surface-relative object key to re-attest.
+        object_key: String,
+    },
     /// Deliver a webhook event to a configured endpoint.
     DeliverWebhook {
         /// Stable delivery identity; queue retries resolve and claim this row.
@@ -168,6 +175,14 @@ mod tests {
         let json = serde_json::to_string(&reset).unwrap();
         assert!(json.contains("\"kind\":\"reset_index\""));
         assert_eq!(serde_json::from_str::<Job>(&json).unwrap(), reset);
+
+        let refresh = Job::RefreshPublicationObject {
+            registry_id: 7,
+            object_key: "images/sha256/abc/disk".into(),
+        };
+        let json = serde_json::to_string(&refresh).unwrap();
+        assert!(json.contains("\"kind\":\"refresh_publication_object\""));
+        assert_eq!(serde_json::from_str::<Job>(&json).unwrap(), refresh);
 
         let delivery = Job::DeliverWebhook {
             delivery_id: "delivery_01HZX".into(),
