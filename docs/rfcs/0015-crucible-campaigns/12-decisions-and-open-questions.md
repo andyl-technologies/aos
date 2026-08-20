@@ -368,11 +368,12 @@ mismatch. A pure preflight validates the complete batch, accounting, next-state
 engine, and prospective step before local publication. Imported recomputation
 writes nothing. Repeated generator graphs are cached by generator/domain pair
 under an aggregate one-million-record validation budget per projection.
-Generated enumeration and non-genesis path ownership remain
-fail-closed rather than acquiring a planner-only bypass. Because admission and
-deduplication authority lives in snapshot roots rather than the step body,
-standalone loading of an `Issue` step fails closed; authoritative loading names
-the snapshot whose complete ancestry and coordination membership are validated.
+Generated enumeration and non-genesis path ownership remain fail-closed rather
+than acquiring a planner-only bypass. Standalone loading of every schema-v4
+step fails closed because retained request-snapshot ownership is
+transition-scoped; an `Issue` also depends on admission and deduplication
+authority in snapshot roots. Authoritative loading names the snapshot whose
+complete ancestry and coordination membership are validated.
 
 ### D-32: Validated immutable parents seed incremental local validation
 

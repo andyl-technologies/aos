@@ -774,6 +774,8 @@ pub struct PlannerStep {
     schema_version: u32,
     parent: Option<PlannerStepId>,
     invocation: PlannerInvocationId,
+    request: RetainedPlannerRequestId,
+    request_digest: CampaignHash,
     policy: CampaignPolicyId,
     engine: PlannerEngineId,
     policy_artifact: PolicyArtifactId,
@@ -796,6 +798,8 @@ impl PlannerStep {
     pub fn new(
         parent: Option<PlannerStepId>,
         invocation: PlannerInvocationId,
+        request: RetainedPlannerRequestId,
+        request_digest: CampaignHash,
         policy: CampaignPolicyId,
         engine: PlannerEngineId,
         policy_artifact: PolicyArtifactId,
@@ -811,6 +815,8 @@ impl PlannerStep {
             schema_version: PLANNER_STEP_SCHEMA_VERSION,
             parent,
             invocation,
+            request,
+            request_digest,
             policy,
             engine,
             policy_artifact,
@@ -833,6 +839,18 @@ impl PlannerStep {
     #[must_use]
     pub const fn invocation(&self) -> PlannerInvocationId {
         self.invocation
+    }
+
+    /// Returns the complete retained component request.
+    #[must_use]
+    pub const fn request(&self) -> RetainedPlannerRequestId {
+        self.request
+    }
+
+    /// Returns the digest of the complete canonical component request.
+    #[must_use]
+    pub const fn request_digest(&self) -> CampaignHash {
+        self.request_digest
     }
 
     /// Returns the active policy.
@@ -952,6 +970,7 @@ impl PlannerStep {
     pub(crate) fn content_children(&self) -> Vec<(String, ContentId)> {
         let mut children = vec![
             ("invocation".to_owned(), self.invocation.content_id()),
+            ("request".to_owned(), self.request.content_id()),
             ("policy".to_owned(), self.policy.content_id()),
             ("engine".to_owned(), self.engine.content_id()),
             (
@@ -1001,6 +1020,8 @@ impl Canonical for PlannerStep {
         self.schema_version.encode(encoder);
         self.parent.encode(encoder);
         self.invocation.encode(encoder);
+        self.request.encode(encoder);
+        self.request_digest.encode(encoder);
         self.policy.encode(encoder);
         self.engine.encode(encoder);
         self.policy_artifact.encode(encoder);
@@ -1017,6 +1038,8 @@ impl Canonical for PlannerStep {
         Self::new(
             Option::decode(decoder)?,
             PlannerInvocationId::decode(decoder)?,
+            RetainedPlannerRequestId::decode(decoder)?,
+            CampaignHash::decode(decoder)?,
             CampaignPolicyId::decode(decoder)?,
             PlannerEngineId::decode(decoder)?,
             PolicyArtifactId::decode(decoder)?,

@@ -212,9 +212,15 @@ macro_rules! semantic_id {
 
 macro_rules! content_object_id {
     ($name:ident, $kind:expr, $type_tag:literal, $doc:literal) => {
-        content_object_id!($name, $kind, 1, $type_tag, $doc);
+        content_object_id!(@impl $name, $kind, [1], $type_tag, $doc);
     };
-    ($name:ident, $kind:expr, $schema_version:expr, $type_tag:literal, $doc:literal) => {
+    ($name:ident, $kind:expr, $schema_version:literal, $type_tag:literal, $doc:literal) => {
+        content_object_id!(@impl $name, $kind, [$schema_version], $type_tag, $doc);
+    };
+    ($name:ident, $kind:expr, [$($schema_version:literal),+ $(,)?], $type_tag:literal, $doc:literal) => {
+        content_object_id!(@impl $name, $kind, [$($schema_version),+], $type_tag, $doc);
+    };
+    (@impl $name:ident, $kind:expr, [$($schema_version:literal),+], $type_tag:literal, $doc:literal) => {
         #[doc = $doc]
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub struct $name(ContentId);
@@ -231,7 +237,9 @@ macro_rules! content_object_id {
             ///
             /// Returns [`CampaignCodecError::InvalidValue`] for the wrong kind.
             pub(crate) fn from_content_id(value: ContentId) -> Result<Self, CampaignCodecError> {
-                if value.kind() != $kind || value.schema_version() != $schema_version {
+                if value.kind() != $kind
+                    || !matches!(value.schema_version(), $($schema_version)|+)
+                {
                     return Err(CampaignCodecError::InvalidValue {
                         reason: "content identity has the wrong object kind or schema version",
                     });
@@ -409,11 +417,17 @@ content_object_id!(
     "Identifies one pure planner invocation basis."
 );
 content_object_id!(
+    RetainedPlannerRequestId,
+    ObjectKind::Policy,
+    "crucible.campaign.retained-planner-request",
+    "Identifies one retained canonical pure-planner request."
+);
+content_object_id!(
     PlannerStepId,
     ObjectKind::CampaignFact,
-    3,
+    [3, 4],
     "crucible.campaign.planner-step",
-    "Identifies one coordinator-accepted planner step."
+    "Identifies one coordinator-accepted planner step; version 3 IDs remain decodable for fact compatibility."
 );
 content_object_id!(
     CampaignFactId,

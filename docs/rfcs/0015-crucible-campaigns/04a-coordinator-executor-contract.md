@@ -273,6 +273,16 @@ included once. Owner-authenticated view projections that require Merkle proofs
 remain coordinator-built inputs; completing that projection bundle and the
 closed planner implementation remains an implementation-plan gate.
 
+The initial coordinator retention profile is deliberately narrower than the
+version-1 wire format: an accepted request body is at most 32 MiB and its bundle
+contains at most 65,529 objects. Seven fixed retained-envelope children name
+the expected snapshot, invocation, engine, policy artifact, policy, planner
+state, and input view; every bundle object is one additional child. A valid
+32-to-64-MiB wire request, or a wire bundle above the retained child limit, can
+be evaluated by the component protocol but cannot be admitted by this store
+profile. Rejection occurs before campaign mutation and does not redefine the
+wire schema.
+
 The response authentication tag covers the response version, request digest,
 and complete already-authenticated submission under a distinct
 domain-separated planner authority tag. `PlannerResponseV1` therefore binds the complete request, not only the
@@ -297,12 +307,16 @@ allocation, and shuts down both stream directions after any framing, canonical,
 service, or I/O failure.
 
 The checked client returns `PlannerResponseV1` rather than discarding its
-request digest. Before this component path is wired into coordinator
-acceptance, the coordinator record model MUST retain or otherwise commit to
-that exact digest so an accepted step remains auditable against the complete
-interpretation input. That repository integration is intentionally still open
-in the implementation plan; the component transport alone is not authority to
-accept a planner step.
+request digest. Repository acceptance takes the exact checked request/response
+pair, verifies both planner authority tags and exact request binding before any
+write, retains the canonical request in a distinct content-addressed record,
+and records both its ID and digest in `PlannerStep` schema v4. Import and restart
+validation reload every retained child, compare the by-value basis to the
+stored invocation records, recompute the digest, and require the request's
+expected snapshot to be the exact parent transition. Invocation replay with a
+different request ID or digest is therefore a deterministic result conflict,
+and an accepted step remains auditable against its complete interpretation input.
+The component transport alone is not authority to accept a planner step.
 
 The coordinator supplies a bounded immutable view resolved from
 `input_view`. Direct invocation borrows the same typed bundle that the RPC
@@ -337,8 +351,9 @@ before publishing any output body or Merkle node; imported validation MUST
 remain read-only. Repeated generated requests share validation by
 generator/domain pair, and all cache misses together MUST visit at most
 1,000,000 generator records in one projection pass.
-Loading an accepted `Issue` requires its authoritative snapshot;
-the standalone step object cannot prove admission or deduplication roots.
+Loading any accepted schema-v4 step requires its authoritative snapshot because
+the standalone object cannot prove its retained request's snapshot precondition.
+An `Issue` additionally requires snapshot-owned admission and deduplication roots.
 Planner code cannot issue commands directly. A future engine implemented in
 another language is a supervised replaceable component identified by its
 artifact, engine, protocol, and parameter versions.

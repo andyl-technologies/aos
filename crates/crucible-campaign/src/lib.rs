@@ -65,8 +65,9 @@ pub use identity::{
     ChoiceOpportunitySemanticId, ChoiceRngStreamId, ConfigurationArtifactId, ConfigurationId,
     CoverageProjectionId, CreditId, DebugSessionId, ExpansionStateId, FindingId, MeasurementSetId,
     ObservationId, PlannerEngineId, PlannerInvocationId, PlannerStateId, PlannerStepId,
-    PolicyArtifactId, ProbabilityModelId, PropertyVerdictSetId, ProposalId, ScenarioArtifactId,
-    ScenarioDefId, SelectableId, SelectableSemanticId, SelectionId,
+    PolicyArtifactId, ProbabilityModelId, PropertyVerdictSetId, ProposalId,
+    RetainedPlannerRequestId, ScenarioArtifactId, ScenarioDefId, SelectableId,
+    SelectableSemanticId, SelectionId,
 };
 pub use merkle::{CampaignStoreError, MerkleMap, MerkleMapPage, MerkleMapRoot};
 pub use model::{
@@ -82,7 +83,8 @@ pub use observation::{
 };
 pub use planner_service::{
     AuthorizedPlannerService, AuthorizedPlannerServiceError, CampaignPlanningBundle,
-    MAX_PLANNER_COMPONENT_MESSAGE_BYTES, PlannerClient, PlannerClientError, PlannerEngineOutput,
+    MAX_PLANNER_COMPONENT_MESSAGE_BYTES, MAX_RETAINED_PLANNER_REQUEST_BUNDLE_OBJECTS,
+    MAX_RETAINED_PLANNER_REQUEST_BYTES, PlannerClient, PlannerClientError, PlannerEngineOutput,
     PlannerExecutionSupervisor, PlannerRequest, PlannerResponse, PlannerService, PurePlannerEngine,
     SupervisedPlannerExecution,
 };

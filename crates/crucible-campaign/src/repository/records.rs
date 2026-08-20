@@ -147,15 +147,18 @@ impl CampaignRepository {
         self.read_attempt_admission(id.content_id())
     }
 
-    /// Loads a non-issuing planner step through its semantic coordinator validator.
+    /// Rejects standalone planner-step loading without its owning snapshot.
     ///
-    /// An `Issue` step requires [`Self::load_planner_step_at`] because its
-    /// admissions and exact root deltas are snapshot-owned.
+    /// Every version-4 step commits to an exact request snapshot, while an
+    /// `Issue` step additionally owns admissions and exact root deltas. Those
+    /// invariants require [`Self::load_planner_step_at`]. This method still
+    /// authenticates the standalone closure before failing closed so callers
+    /// never mistake structural readability for coordinator acceptance.
     ///
     /// # Errors
     ///
-    /// Returns a store, codec, or integrity error for invalid closure,
-    /// invocation linkage, output accounting, budget, or state continuity.
+    /// Returns a store, codec, or integrity error for invalid closure, followed
+    /// by an owner-required integrity error for a structurally valid step.
     pub fn load_planner_step(
         &self,
         id: PlannerStepId,
@@ -163,10 +166,7 @@ impl CampaignRepository {
         let step = self.read_planner_step(id.content_id())?;
         self.verify_campaign_closure(id.content_id())?;
         self.validate_standalone_planner_ancestry(&step)?;
-        if matches!(step.disposition(), PlannerDisposition::Issue { .. }) {
-            return Err(integrity("planner-issue-requires-snapshot-owner"));
-        }
-        Ok(step)
+        Err(integrity("planner-step-requires-snapshot-owner"))
     }
 
     /// Loads a planner step through one authoritative snapshot's complete owner validation.
@@ -459,6 +459,80 @@ impl CampaignRepository {
         Ok(invocation)
     }
 
+    /// Loads a retained planner request and authenticates every stored input.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error when the request envelope,
+    /// direct invocation basis, expected snapshot, or bundled object differs
+    /// from its content-addressed repository record.
+    pub fn load_planner_request(
+        &self,
+        id: RetainedPlannerRequestId,
+    ) -> Result<PlannerRequest, CampaignRepositoryError> {
+        self.read_planner_request(id.content_id())
+    }
+
+    pub(super) fn read_planner_request(
+        &self,
+        id: ContentId,
+    ) -> Result<PlannerRequest, CampaignRepositoryError> {
+        let envelope =
+            self.require_record_kind(id, crate::CampaignRecordKind::RetainedPlannerRequest)?;
+        let request = PlannerRequest::from_canonical_bytes(envelope.body())?;
+        if request.id()?.content_id() != id {
+            return Err(integrity("planner-request-envelope-shape"));
+        }
+        self.validate_planner_request_inputs(&request)?;
+        Ok(request)
+    }
+
+    pub(super) fn validate_planner_request_inputs(
+        &self,
+        request: &PlannerRequest,
+    ) -> Result<(), CampaignRepositoryError> {
+        self.require_record_kind(
+            request.expected_snapshot().content_id(),
+            crate::CampaignRecordKind::Snapshot,
+        )?;
+        if self.load_planner_invocation(request.invocation_id()?)? != *request.invocation() {
+            return Err(integrity("planner-request-invocation-mismatch"));
+        }
+
+        let engine = self.require_record_kind(
+            request.invocation().engine().content_id(),
+            crate::CampaignRecordKind::PlannerEngine,
+        )?;
+        let artifact = self.require_record_kind(
+            request.invocation().policy_artifact().content_id(),
+            crate::CampaignRecordKind::PolicyArtifact,
+        )?;
+        let state = self.require_record_kind(
+            request.invocation().planner_state().content_id(),
+            crate::CampaignRecordKind::PlannerState,
+        )?;
+        let view = self.require_record_kind(
+            request.invocation().input_view().content_id(),
+            crate::CampaignRecordKind::PlanningView,
+        )?;
+        if crate::codec::decode::<PlannerEngine>(engine.body())? != *request.engine()
+            || crate::codec::decode::<PolicyArtifact>(artifact.body())?
+                != *request.policy_artifact()
+            || self.read_policy(request.invocation().policy().content_id())? != *request.policy()
+            || crate::codec::decode::<PlannerState>(state.body())? != *request.planner_state()
+            || crate::codec::decode::<CampaignPlanningView>(view.body())? != *request.input_view()
+        {
+            return Err(integrity("planner-request-by-value-basis-mismatch"));
+        }
+        for object_id in request.input_bundle().object_ids() {
+            let stored = self.read_envelope(object_id)?;
+            if request.input_bundle().object(object_id)?.as_ref() != Some(&stored) {
+                return Err(integrity("planner-request-bundle-object-mismatch"));
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn decode_planner_invocation(
         &self,
         id: ContentId,
@@ -524,6 +598,17 @@ impl CampaignRepository {
             crate::CampaignRecordKind::PlannerInvocation,
             crate::object::content_children(invocation.content_children())?,
             crate::codec::encode(invocation),
+        )?)
+    }
+
+    pub(super) fn put_planner_request(
+        &self,
+        request: &PlannerRequest,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::RetainedPlannerRequest,
+            crate::object::content_children(request.content_children()?)?,
+            request.canonical_bytes(),
         )?)
     }
 
@@ -1687,6 +1772,12 @@ impl CampaignRepository {
         let step = PlannerStep::from_canonical_bytes(envelope.body())?;
         if step.id()?.content_id() != id {
             return Err(integrity("planner-step-envelope-shape"));
+        }
+        let request = self.read_planner_request(step.request().content_id())?;
+        if request.invocation_id()? != step.invocation()
+            || request.request_digest() != step.request_digest()
+        {
+            return Err(integrity("planner-step-request-mismatch"));
         }
         let invocation = self.load_planner_invocation(step.invocation())?;
         if invocation.engine() != step.engine()

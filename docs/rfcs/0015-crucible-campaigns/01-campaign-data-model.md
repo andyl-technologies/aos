@@ -309,6 +309,8 @@ pub struct PlanningScanPage {
 pub struct PlannerStep {
     pub parent: Option<PlannerStepId>,
     pub invocation: PlannerInvocationId,
+    pub request: RetainedPlannerRequestId,
+    pub request_digest: CampaignHash,
     pub policy: CampaignPolicyId,
     pub engine: PlannerEngineId,
     pub policy_artifact: PolicyArtifactId,
@@ -363,9 +365,22 @@ match the accepted lists. Accounting is recomputed by the coordinator from
 accepted outputs and measured bounded input execution; a planner's retained
 `usage_claim` is diagnostic only. The coordinator records planner-step,
 invocation-result, and current-head indexes as one exact `coordination_root`
-delta. This complete disposition/claim/accounting layout is registered as
-`crucible.campaign.planner-step` schema v3; v1 and v2 envelopes are rejected
-rather than reinterpreted under the new field order.
+delta. Schema v4 additionally commits both a
+`crucible.campaign.retained-planner-request` schema-v1 record and the
+domain-separated digest of its exact canonical `PlannerRequestV1` body. The
+retained record is a distinct Policy-kind envelope whose children name the
+stored invocation, direct basis, expected snapshot, and every bundled object;
+import validation decodes that record and recomputes the digest. This makes the
+by-value interpretation bundle auditable even when two requests share one
+`PlannerInvocationId`. Standalone step loading cannot prove the request's
+snapshot precondition and therefore requires the exact owning snapshot. The
+complete layout is registered as
+`crucible.campaign.planner-step` schema v4; v1 through v3 envelopes are rejected
+rather than reinterpreted under the new field order. The typed `PlannerStepId`
+decoder continues to admit schema-v3 content IDs so an existing
+`CampaignFact` schema-v2 `PlannerAdvanced` body remains canonically readable;
+dereferencing that legacy ID as a current planner-step record still fails
+closed because only a schema-v4 envelope is executable or owner-validatable.
 
 `ContinueScan` is accepted only for a non-complete served page and its cursor
 must equal that page's last position. `NoWork` is accepted only for a complete

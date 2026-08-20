@@ -710,6 +710,14 @@ impl CampaignRepository {
 
         let step_content = step_id.content_id();
         let step = self.read_planner_step(step_content)?;
+        let request = self.read_planner_request(step.request().content_id())?;
+        if request.expected_snapshot()
+            != CampaignSnapshotId::from_content_id(parent.envelope.content_id())?
+        {
+            return Err(integrity(
+                "planner-step-transition-request-snapshot-mismatch",
+            ));
+        }
         let invocation = self.load_planner_invocation(step.invocation())?;
         let expected_view = parent.snapshot.planning_view();
         if expected_view.id()? != step.input_view()
@@ -1052,6 +1060,9 @@ impl CampaignRepository {
                 }
                 crate::CampaignRecordKind::PlannerStep => {
                     self.read_planner_step(id)?;
+                }
+                crate::CampaignRecordKind::RetainedPlannerRequest => {
+                    self.read_planner_request(id)?;
                 }
                 crate::CampaignRecordKind::ExpansionState => {
                     self.read_expansion_state(id)?;
