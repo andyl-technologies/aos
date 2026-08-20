@@ -54,7 +54,7 @@ use aos_registry_surface::tag::{parse_signed_tag, verify_signed_tag, SignedTag};
 use aos_registry_surface::tagobject::{verify_name_binding, TagTarget};
 use base64::Engine as _;
 use ed25519_dalek::VerifyingKey;
-use futures_util::TryStreamExt as _;
+use futures_util::{future::try_join_all, TryStreamExt as _};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -78,6 +78,13 @@ pub const MAX_BRANCHES: usize = 64;
 /// Larger advertisements fail closed rather than publishing incomplete
 /// retention inputs.
 pub const MAX_RELEASE_TAGS: usize = 1024;
+
+/// Maximum concurrent channel-partition reads during one index pass.
+///
+/// Each channel has exactly 256 independent signed partitions. Bounded fanout
+/// avoids making a complete channel cost hundreds of serial object-store round
+/// trips while remaining below Worker subrequest and memory limits.
+const CHANNEL_FETCH_CONCURRENCY: usize = 32;
 
 /// Outcome of one indexing run.
 #[derive(Debug)]
@@ -1321,45 +1328,62 @@ async fn resolve_channels(
             "channel_frontier",
         )
         .await?;
+        let buckets = (0u16..=255).collect::<Vec<_>>();
+        let mut resolved = Vec::with_capacity(buckets.len());
+        for batch in buckets.chunks(CHANNEL_FETCH_CONCURRENCY) {
+            let channel_name = channel_name.as_str();
+            let channel_trusted = channel_trusted.as_slice();
+            let image_channel_trusted = image_channel_trusted.as_slice();
+            resolved.extend(
+                try_join_all(batch.iter().copied().map(|bucket| async move {
+                    let path = format!("channels/{channel_name}/{bucket:02x}");
+                    let Some(payload) = fetch.fetch(&path).await? else {
+                        return Ok::<_, anyhow::Error>((bucket, None));
+                    };
+                    let lenient = lenient_tag(&payload, channel_name)?;
+                    let signed = if registry.require_signatures
+                        || require_publication_signatures
+                        || channel_usage
+                        || image_release_tag_oids.contains(&lenient.tag.object)
+                    {
+                        let trusted =
+                            if registry.require_signatures || require_publication_signatures {
+                                channel_trusted
+                            } else {
+                                // Image-bearing channels remain rooted in the configured
+                                // catalog anchors plus their exact typed channel usage.
+                                image_channel_trusted
+                            };
+                        verify_signed_tag(&payload, channel_name, trusted)
+                            .with_context(|| format!("signed image channel partition {path}"))?
+                    } else {
+                        lenient
+                    };
+                    if signed.tag.target_type != TagTarget::Tag {
+                        bail!("partition {path} does not target a tag object");
+                    }
+                    let semver_str = tag_to_semver.get(&signed.tag.object).with_context(|| {
+                        format!(
+                            "partition {path} targets unknown tag object {}",
+                            signed.tag.object
+                        )
+                    })?;
+                    Ok((bucket, Some(semver_str.clone())))
+                }))
+                .await?,
+            );
+        }
+
         let mut partitions: Vec<Option<String>> = vec![None; 256];
         let mut frontier: Option<semver::Version> = None;
         let mut present = false;
-        for bucket in 0u16..=255 {
-            let path = format!("channels/{channel_name}/{bucket:02x}");
-            let Some(payload) = fetch.fetch(&path).await? else {
+        for (bucket, semver_str) in resolved {
+            let Some(semver_str) = semver_str else {
                 continue;
             };
             present = true;
-            let lenient = lenient_tag(&payload, channel_name)?;
-            let signed = if registry.require_signatures
-                || require_publication_signatures
-                || channel_usage
-                || image_release_tag_oids.contains(&lenient.tag.object)
-            {
-                let channel_trusted =
-                    if registry.require_signatures || require_publication_signatures {
-                        channel_trusted.as_slice()
-                    } else {
-                        // Image-bearing channels remain rooted in the configured
-                        // catalog anchors plus their exact typed channel usage.
-                        image_channel_trusted.as_slice()
-                    };
-                verify_signed_tag(&payload, channel_name, channel_trusted)
-                    .with_context(|| format!("signed image channel partition {path}"))?
-            } else {
-                lenient
-            };
-            if signed.tag.target_type != TagTarget::Tag {
-                bail!("partition {path} does not target a tag object");
-            }
-            let semver_str = tag_to_semver.get(&signed.tag.object).with_context(|| {
-                format!(
-                    "partition {path} targets unknown tag object {}",
-                    signed.tag.object
-                )
-            })?;
             partitions[bucket as usize] = Some(semver_str.clone());
-            if let Ok(version) = semver::Version::parse(semver_str) {
+            if let Ok(version) = semver::Version::parse(&semver_str) {
                 if frontier.as_ref().is_none_or(|f| version > *f) {
                     frontier = Some(version);
                 }

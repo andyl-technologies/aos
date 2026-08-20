@@ -3,7 +3,8 @@
 //! Given a commit oid, [`load_registry_tree`] walks `commit → tree →
 //! entries` through loose objects and materializes the committed files the
 //! index needs: `registry.toml`, `keys.toml`, every
-//! `packages/<bucket>/<name>.toml`, and the `closures/` adjacency lists.
+//! `packages/<bucket>/<name>.toml`, the package-root realization records under
+//! `store/`, and the `closures/` adjacency lists.
 //! All file formats are parsed with the wasm-clean
 //! [`aos_registry_surface::manifest`] schema/parsers, so the hub, the Worker,
 //! and `apm` cannot drift on what they accept.
@@ -21,6 +22,7 @@ use aos_registry_surface::manifest::{
 };
 use aos_registry_surface::object::{self, Commit, ObjectKind, Oid};
 use aos_registry_surface::store::{self, StoreEntry};
+use futures_util::future::try_join_all;
 
 use crate::fetch::SurfaceFetch;
 
@@ -45,6 +47,14 @@ pub const MAX_CLOSURE_ENTRIES: usize = 1_000_000;
 
 /// Maximum package-root realization records loaded from one registry tree.
 pub const MAX_STORE_ENTRIES: usize = 1_000_000;
+
+/// Maximum concurrent loose-object reads while loading package metadata.
+///
+/// A modern registry spreads package manifests and realization records across
+/// most of their shard trees. Reading every tree and blob serially exceeds the
+/// Worker execution window even for a few hundred packages, while this bounded
+/// fanout keeps both native and Worker transports below their request limits.
+const OBJECT_FETCH_CONCURRENCY: usize = 32;
 
 /// Reads loose objects through a [`SurfaceFetch`], verifying each object's
 /// content hash against the oid it was requested by.
@@ -151,19 +161,37 @@ pub async fn load_registry_tree(fetch: &dyn SurfaceFetch, commit_oid: Oid) -> Re
                 .read_kind(packages_entry.oid, ObjectKind::Tree)
                 .await?,
         )?;
-        for bucket in buckets.values().filter(|e| e.is_tree()) {
-            let files = object::tree_map(&reader.read_kind(bucket.oid, ObjectKind::Tree).await?)?;
-            for file in files.values().filter(|e| e.name.ends_with(".toml")) {
-                if packages.len() >= MAX_PACKAGES {
-                    bail!(
-                        "registry tree exceeds the {MAX_PACKAGES}-package index cap; \
-                         aborting index"
-                    );
-                }
-                let content = read_utf8_blob(&reader, file.oid, &file.name).await?;
-                let package = parse_committed_package(&file.name, &content)?;
-                packages.push(package);
-            }
+        let bucket_entries = buckets
+            .values()
+            .filter(|entry| entry.is_tree())
+            .collect::<Vec<_>>();
+        let mut bucket_files = Vec::with_capacity(bucket_entries.len());
+        for batch in bucket_entries.chunks(OBJECT_FETCH_CONCURRENCY) {
+            bucket_files.extend(
+                try_join_all(batch.iter().map(|bucket| async {
+                    object::tree_map(&reader.read_kind(bucket.oid, ObjectKind::Tree).await?)
+                }))
+                .await?,
+            );
+        }
+        let files = bucket_files
+            .into_iter()
+            .flat_map(BTreeMap::into_values)
+            .filter(|entry| entry.name.ends_with(".toml"))
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            files.len() <= MAX_PACKAGES,
+            "registry tree exceeds the {MAX_PACKAGES}-package index cap; aborting index"
+        );
+        packages.reserve(files.len());
+        for batch in files.chunks(OBJECT_FETCH_CONCURRENCY) {
+            packages.extend(
+                try_join_all(batch.iter().map(|file| async {
+                    let content = read_utf8_blob(&reader, file.oid, &file.name).await?;
+                    parse_committed_package(&file.name, &content)
+                }))
+                .await?,
+            );
         }
     }
 
@@ -230,39 +258,63 @@ async fn load_package_store_records(
         "registry packages reference more than the {MAX_STORE_ENTRIES}-record store graph cap"
     );
 
-    let mut entries = BTreeMap::new();
+    let mut required_shards = BTreeSet::new();
+    for hash in &required {
+        required_shards.insert(
+            store::shard(hash)
+                .with_context(|| format!("invalid package store-path hash '{hash}'"))?
+                .to_string(),
+        );
+    }
+
+    let required_shards = required_shards.into_iter().collect::<Vec<_>>();
     let mut shard_files = BTreeMap::new();
-    for hash in required {
-        let shard_name = store::shard(&hash)
-            .with_context(|| format!("invalid package store-path hash '{hash}'"))?;
-        let shard_entry = shards
-            .get(shard_name)
-            .with_context(|| format!("signed store graph has no shard '{shard_name}'"))?;
-        anyhow::ensure!(
-            shard_entry.is_tree(),
-            "committed store shard '{}' is not a tree",
-            shard_entry.name
+    for batch in required_shards.chunks(OBJECT_FETCH_CONCURRENCY) {
+        let shards = &shards;
+        shard_files.extend(
+            try_join_all(batch.iter().cloned().map(|shard_name| async move {
+                let shard_entry = shards
+                    .get(&shard_name)
+                    .with_context(|| format!("signed store graph has no shard '{shard_name}'"))?;
+                anyhow::ensure!(
+                    shard_entry.is_tree(),
+                    "committed store shard '{}' is not a tree",
+                    shard_entry.name
+                );
+                let files =
+                    object::tree_map(&reader.read_kind(shard_entry.oid, ObjectKind::Tree).await?)?;
+                Ok::<_, anyhow::Error>((shard_name.clone(), files))
+            }))
+            .await?,
         );
-        if !shard_files.contains_key(shard_name) {
-            let files =
-                object::tree_map(&reader.read_kind(shard_entry.oid, ObjectKind::Tree).await?)?;
-            shard_files.insert(shard_name.to_string(), files);
-        }
-        let files = shard_files
-            .get(shard_name)
-            .context("loaded store shard disappeared")?;
-        let file = files
-            .get(&hash)
-            .with_context(|| format!("signed store graph has no record for '{hash}'"))?;
-        anyhow::ensure!(
-            !file.is_tree(),
-            "committed store record '{}' is unexpectedly a tree",
-            file.name
+    }
+
+    let required = required.into_iter().collect::<Vec<_>>();
+    let mut entries = BTreeMap::new();
+    for batch in required.chunks(OBJECT_FETCH_CONCURRENCY) {
+        let shard_files = &shard_files;
+        entries.extend(
+            try_join_all(batch.iter().cloned().map(|hash| async move {
+                let shard_name = store::shard(&hash)
+                    .with_context(|| format!("invalid package store-path hash '{hash}'"))?;
+                let files = shard_files
+                    .get(shard_name)
+                    .context("loaded store shard disappeared")?;
+                let file = files
+                    .get(&hash)
+                    .with_context(|| format!("signed store graph has no record for '{hash}'"))?;
+                anyhow::ensure!(
+                    !file.is_tree(),
+                    "committed store record '{}' is unexpectedly a tree",
+                    file.name
+                );
+                let content = read_utf8_blob(reader, file.oid, &file.name).await?;
+                let parsed = store::parse_entry(&content)
+                    .with_context(|| format!("parsing committed store record '{}'", file.name))?;
+                Ok::<_, anyhow::Error>((hash.clone(), parsed))
+            }))
+            .await?,
         );
-        let content = read_utf8_blob(reader, file.oid, &file.name).await?;
-        let parsed = store::parse_entry(&content)
-            .with_context(|| format!("parsing committed store record '{}'", file.name))?;
-        entries.insert(hash, parsed);
     }
     Ok(Some(entries))
 }
