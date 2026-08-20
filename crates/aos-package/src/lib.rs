@@ -2994,7 +2994,9 @@ pub async fn run(
                 rollback::run(&config, *generation, dry_run, printer).await
             }
         }
-        PackageCommand::Registry { command, .. } => run_registry(&config, command, printer).await,
+        PackageCommand::Registry { command, .. } => {
+            run_registry(&config, command, dry_run, printer).await
+        }
         PackageCommand::TestReconcileExposedUnits { .. } => {
             exposed_units::reconcile_system_profile(&config, printer).await
         }
@@ -4036,6 +4038,7 @@ fn run_enroll_package_attestation_quote(
 async fn run_registry(
     config: &config::ApmConfig,
     command: &RegistryCommand,
+    dry_run: bool,
     printer: &Printer,
 ) -> Result<()> {
     match command {
@@ -4324,7 +4327,7 @@ async fn run_registry(
             registry_ops::run_change(config, command, printer).await
         }
         RegistryCommand::Cache { command } => {
-            registry_ops::run_cache(config, command, printer).await
+            registry_ops::run_cache(config, command, dry_run, printer).await
         }
         RegistryCommand::Store { command } => {
             registry_ops::run_store(config, command, printer).await

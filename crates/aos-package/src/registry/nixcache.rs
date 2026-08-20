@@ -1005,7 +1005,7 @@ fn cache_stack_contains_endpoint(value: &TomlValue, expected: &str) -> bool {
     value
         .get("endpoint")
         .and_then(TomlValue::as_str)
-        .is_some_and(|endpoint| endpoint == expected)
+        .is_some_and(|endpoint| cache_endpoints_match(endpoint, expected))
         || value
             .get("members")
             .and_then(TomlValue::as_array)
@@ -1014,6 +1014,10 @@ fn cache_stack_contains_endpoint(value: &TomlValue, expected: &str) -> bool {
                     .iter()
                     .any(|member| cache_stack_contains_endpoint(member, expected))
             })
+}
+
+fn cache_endpoints_match(left: &str, right: &str) -> bool {
+    left.trim_end_matches('/') == right.trim_end_matches('/')
 }
 
 /// Returns whether the registry references at least one cacheable store path.
@@ -1651,6 +1655,27 @@ name = "test"
         let content = std::fs::read_to_string(tmp.path().join("registry.toml")).unwrap();
         assert!(content.contains("[caches]"));
         assert!(content.contains("endpoint = \"https://cache.example\""));
+    }
+
+    #[test]
+    fn upsert_registry_cache_treats_trailing_slashes_as_equivalent() {
+        let tmp = TempDir::new().unwrap();
+        let original = r#"[caches]
+kind = "try"
+
+[[caches.members]]
+endpoint = "https://cache.example/"
+
+[registry]
+name = "test"
+"#;
+        std::fs::write(tmp.path().join("registry.toml"), original).unwrap();
+
+        assert!(!upsert_registry_cache(tmp.path(), "https://cache.example", 100).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("registry.toml")).unwrap(),
+            original,
+        );
     }
 
     #[tokio::test]
