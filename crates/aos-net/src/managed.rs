@@ -7,6 +7,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -108,6 +109,60 @@ pub struct DownloadResult {
     pub source: String,
     /// Number of validated partial bytes reused.
     pub resumed_bytes: u64,
+}
+
+/// Describes a streaming hash-only download.
+#[derive(Debug, Clone)]
+pub struct HashDownloadRequest {
+    /// Candidate source URLs in mirror priority order.
+    pub sources: Vec<String>,
+    /// Digest algorithm computed over the response body.
+    pub algorithm: HashAlgorithm,
+    /// Maximum accepted response size.
+    pub maximum_bytes: Option<u64>,
+    /// Headers applied to every source request.
+    pub headers: Vec<(String, String)>,
+}
+
+impl HashDownloadRequest {
+    /// Creates a hash-only download from one source URL.
+    pub fn new(source: impl Into<String>, algorithm: HashAlgorithm) -> Self {
+        Self {
+            sources: vec![source.into()],
+            algorithm,
+            maximum_bytes: None,
+            headers: Vec::new(),
+        }
+    }
+
+    /// Replaces the source list with a priority-ordered mirror chain.
+    pub fn with_sources(mut self, sources: Vec<String>) -> Self {
+        self.sources = sources;
+        self
+    }
+
+    /// Limits the accepted response size.
+    pub fn with_maximum_bytes(mut self, maximum_bytes: u64) -> Self {
+        self.maximum_bytes = Some(maximum_bytes);
+        self
+    }
+
+    /// Adds one transport header to every source request.
+    pub fn with_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.push((name.into(), value.into()));
+        self
+    }
+}
+
+/// Result of a streaming hash-only download.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HashDownloadResult {
+    /// Computed lowercase hexadecimal digest.
+    pub hash: String,
+    /// Complete response byte count.
+    pub bytes: u64,
+    /// Source URL that completed successfully.
+    pub source: String,
 }
 
 /// Rewindable payload accepted by a managed upload.
@@ -260,6 +315,9 @@ impl TransferEngine {
                 },
                 Err(error) => {
                     discard_complete_invalid_partial(&request, &partial, &checkpoint_path).await?;
+                    if existing_length(&partial).await? == 0 {
+                        remove_if_exists(&checkpoint_path).await?;
+                    }
                     last_error = Some(error.context(format!("downloading from {source}")));
                 }
             }
@@ -294,6 +352,67 @@ impl TransferEngine {
         };
         transfer.headers = request.headers;
         self.execute_observed(transfer, observer).await
+    }
+
+    /// Streams an object through a digest without retaining its body.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no source is supplied, every mirror fails, the
+    /// response exceeds its byte bound, or observer-independent transport work
+    /// fails.
+    pub async fn hash_download(&self, request: HashDownloadRequest) -> Result<HashDownloadResult> {
+        self.hash_download_observed(request, &NoopObserver).await
+    }
+
+    /// Streams an observed object through a digest without retaining its body.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`hash_download`](Self::hash_download).
+    pub async fn hash_download_observed(
+        &self,
+        request: HashDownloadRequest,
+        observer: &dyn TransferObserver,
+    ) -> Result<HashDownloadResult> {
+        if request.sources.is_empty() {
+            bail!("hash download requires at least one source URL");
+        }
+
+        let mut last_error = None;
+        for source in &request.sources {
+            let hasher = Arc::new(Mutex::new(StreamingHasher::new(request.algorithm)));
+            let callback_hasher = Arc::clone(&hasher);
+            let mut transfer = TransferRequest::get(source);
+            transfer.headers.clone_from(&request.headers);
+            transfer.maximum_bytes = request.maximum_bytes;
+            transfer.output = crate::types::TransferOutput::Callback(Box::new(move |chunk| {
+                callback_hasher
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("hash download state lock was poisoned"))?
+                    .update(chunk);
+                Ok(())
+            }));
+
+            match self.execute_observed(transfer, observer).await {
+                Ok(result) => {
+                    let hasher = Arc::try_unwrap(hasher)
+                        .map_err(|_| anyhow::anyhow!("hash download retained its callback"))?
+                        .into_inner()
+                        .map_err(|_| anyhow::anyhow!("hash download state lock was poisoned"))?;
+                    return Ok(HashDownloadResult {
+                        hash: hasher.finalize().hex,
+                        bytes: result.bytes_transferred,
+                        source: source.clone(),
+                    });
+                }
+                Err(error) => {
+                    last_error = Some(error.context(format!("hashing download from {source}")));
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("every hash download source failed")))
     }
 }
 
@@ -576,6 +695,64 @@ mod tests {
                 expected_hash: HELLO_SHA256.to_string(),
             })
         );
+    }
+
+    #[tokio::test]
+    async fn hash_download_streams_without_retaining_a_body() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let source = directory.path().join("source");
+        std::fs::write(&source, b"hello").unwrap();
+        let request = HashDownloadRequest::new(
+            format!("file://{}", source.display()),
+            HashAlgorithm::Sha256,
+        );
+        let manager = TransferEngine::new(TransferEngineConfig::default());
+
+        let result = manager.hash_download(request).await.unwrap();
+
+        assert_eq!(result.hash, HELLO_SHA256);
+        assert_eq!(result.bytes, 5);
+    }
+
+    #[tokio::test]
+    async fn managed_http_download_resumes_a_digest_bound_partial() {
+        use std::io::{Read as _, Write as _};
+
+        const HELLO_WORLD_SHA256: &str =
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let read = socket.read(&mut request).unwrap();
+            let request = std::str::from_utf8(&request[..read]).unwrap();
+            assert!(request.to_ascii_lowercase().contains("range: bytes=6-\r\n"));
+            socket
+                .write_all(
+                    b"HTTP/1.1 206 Partial Content\r\nContent-Length: 5\r\nContent-Range: bytes 6-10/11\r\nConnection: close\r\n\r\nworld",
+                )
+                .unwrap();
+        });
+        let directory = tempfile::TempDir::new().unwrap();
+        let destination = directory.path().join("destination");
+        let partial = sibling_path(&destination, ".aos-part").unwrap();
+        let checkpoint = sibling_path(&destination, ".aos-part.json").unwrap();
+        let request = DownloadRequest::new(format!("http://{address}/object"), &destination)
+            .with_expected_size(11)
+            .with_hash(HashAlgorithm::Sha256, HELLO_WORLD_SHA256);
+        prepare_partial(&request, &partial, &checkpoint)
+            .await
+            .unwrap();
+        std::fs::write(&partial, b"hello ").unwrap();
+        let manager = TransferEngine::new(TransferEngineConfig::default());
+
+        let result = manager.download(request).await.unwrap();
+        server.join().unwrap();
+
+        assert_eq!(result.resumed_bytes, 6);
+        assert_eq!(std::fs::read(destination).unwrap(), b"hello world");
+        assert!(!checkpoint.exists());
     }
 
     #[test]

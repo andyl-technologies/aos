@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use futures_util::{stream, StreamExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -21,7 +21,7 @@ use crate::pool::{ConnectionPool, PoolConfig};
 use crate::progress::{
     BatchProgressHandler, NoopProgress, ProgressHandler, TransferEvent, TransferObserver,
 };
-use crate::protocol;
+use crate::protocol::{self, Protocol};
 use crate::retry::{self, classify_error, ErrorClass, RetryConfig};
 use crate::types::{Method, TransferOutput, TransferRequest, TransferResult};
 
@@ -62,6 +62,7 @@ impl Default for TransferEngineConfig {
 /// hash, bandwidth, and progress are applied per-chunk.
 pub struct TransferEngine {
     pool: ConnectionPool,
+    http: Arc<dyn Protocol>,
     auth: AuthStore,
     bandwidth: Option<BandwidthLimiter>,
     retry: RetryConfig,
@@ -79,9 +80,11 @@ impl TransferEngine {
     /// [`set_progress`](TransferEngine::set_progress)).
     pub fn new(config: TransferEngineConfig) -> Self {
         let bandwidth = config.max_bandwidth.map(BandwidthLimiter::new);
+        let http = Arc::new(protocol::http::HttpProtocol::with_pool_config(&config.pool));
 
         Self {
             pool: ConnectionPool::new(config.pool),
+            http,
             auth: AuthStore::new(),
             bandwidth,
             retry: config.retry,
@@ -158,7 +161,7 @@ impl TransferEngine {
         let url = request.url.clone();
         let hash_spec = request.hash.clone();
         let host = extract_host(&url).unwrap_or_else(|| "unknown".to_string());
-        let proto = match protocol::for_url(&url) {
+        let proto = match self.protocol_for_url(&url) {
             Ok(proto) => proto,
             Err(error) => {
                 observer.observe(TransferEvent::Failed {
@@ -318,8 +321,15 @@ impl TransferEngine {
                     }
 
                     // Stream chunks with per-chunk hash/bandwidth/progress.
+                    let mut stream_failure = None;
                     while let Some(chunk_result) = stream.next().await {
-                        let chunk = chunk_result?;
+                        let chunk = match chunk_result {
+                            Ok(chunk) => chunk,
+                            Err(error) => {
+                                stream_failure = Some(error);
+                                break;
+                            }
+                        };
                         let next_bytes = bytes_transferred
                             .checked_add(chunk.len() as u64)
                             .ok_or_else(|| {
@@ -390,6 +400,20 @@ impl TransferEngine {
                                 }
                             }
                         }
+                    }
+
+                    if let Some(error) = stream_failure {
+                        if matches!(request.output, TransferOutput::Callback(_)) {
+                            observer.observe(TransferEvent::Failed {
+                                url: &url,
+                                error: &error,
+                            });
+                            return Err(error).context(
+                                "streaming callback transfers cannot be replayed after a partial response",
+                            );
+                        }
+                        last_err = Some(error);
+                        continue;
                     }
 
                     // Flush file output.
@@ -495,7 +519,7 @@ impl TransferEngine {
         let url = &request.url;
         let host = extract_host(url).unwrap_or_else(|| "unknown".to_string());
         let credential = self.auth.get(url);
-        let proto = protocol::for_url(url)?;
+        let proto = self.protocol_for_url(url)?;
 
         let _permit = self.pool.acquire(&host).await;
 
@@ -598,6 +622,18 @@ impl TransferEngine {
         let requests: Vec<TransferRequest> =
             urls.iter().map(|url| TransferRequest::head(url)).collect();
         self.execute_batch(requests, None).await
+    }
+
+    /// Selects the engine-owned HTTP client or a shared non-HTTP protocol.
+    fn protocol_for_url(&self, url: &str) -> Result<Arc<dyn Protocol>> {
+        let scheme = url
+            .split_once("://")
+            .map(|(scheme, _)| scheme)
+            .unwrap_or_default();
+        if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https") {
+            return Ok(Arc::clone(&self.http));
+        }
+        protocol::for_url(url)
     }
 }
 
@@ -708,6 +744,7 @@ impl std::fmt::Debug for TransferEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TransferEngine")
             .field("pool", &self.pool)
+            .field("http", &"HttpProtocol")
             .field("auth", &self.auth)
             .field("bandwidth", &self.bandwidth)
             .field("retry", &self.retry)

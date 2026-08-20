@@ -15,6 +15,7 @@ use reqwest::Client;
 
 use super::{ByteStream, Protocol};
 use crate::auth::Credential;
+use crate::pool::PoolConfig;
 use crate::types::{Method, TransferBody, TransferOutput, TransferRequest, TransferResult};
 
 /// HTTP/HTTPS protocol handler.
@@ -33,17 +34,24 @@ impl HttpProtocol {
     /// The internal client keeps up to 8 idle connections per host
     /// (90 second idle timeout) and uses a 10 second connect timeout.
     ///
-    /// # Panics
-    ///
-    /// Panics if the underlying TLS backend fails to initialize when
-    /// building the reqwest client.
     pub fn new() -> Self {
-        let client = Client::builder()
-            .pool_max_idle_per_host(8)
-            .pool_idle_timeout(std::time::Duration::from_secs(90))
-            .connect_timeout(std::time::Duration::from_secs(10))
+        Self::with_pool_config(&PoolConfig::default())
+    }
+
+    /// Creates a handler whose HTTP pool follows the transfer pool policy.
+    pub fn with_pool_config(config: &PoolConfig) -> Self {
+        let client = match Client::builder()
+            .pool_max_idle_per_host(config.max_connections_per_host)
+            .pool_idle_timeout(config.idle_timeout)
+            .connect_timeout(config.connect_timeout)
             .build()
-            .expect("failed to build reqwest client");
+        {
+            Ok(client) => client,
+            Err(error) => {
+                tracing::warn!(%error, "falling back to the default HTTP client");
+                Client::new()
+            }
+        };
 
         Self { client }
     }
