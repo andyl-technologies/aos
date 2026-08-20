@@ -35,16 +35,6 @@ where
     let wait_timeout = policy.timeout_for(QemuAsyncWait::AdvanceCompletion);
     let mut first_wait = true;
     let completion = loop {
-        // Starting a quantum can discover that its boundary was already
-        // published (for example, an idle node whose current icount equals the
-        // new ceiling). Poll before blocking so that state cannot deadlock with
-        // the child waiting for a strictly later authorization.
-        match target.finish_quantum(&mut pending) {
-            Ok(completion) => break Some(completion),
-            Err(error) if error.is_retryable() => {}
-            Err(error) => return Err(QemuAsyncDriverError::Channel(error)),
-        }
-
         let is_initial_wait = first_wait;
         if is_initial_wait {
             first_wait = false;
@@ -62,6 +52,13 @@ where
         });
         if wait_outcome == QemuAsyncWaitOutcome::TimedOut {
             break None;
+        }
+        match target.finish_quantum(&mut pending) {
+            Ok(completion) => {
+                break Some(completion);
+            }
+            Err(error) if error.is_retryable() => continue,
+            Err(error) => return Err(QemuAsyncDriverError::Channel(error)),
         }
     };
     let Some(completion) = completion else {
