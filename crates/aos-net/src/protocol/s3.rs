@@ -18,6 +18,11 @@ use tokio::io::AsyncReadExt;
 
 use super::{ByteStream, Protocol};
 use crate::auth::Credential;
+use crate::multipart::{
+    MultipartAdmission, MultipartBackend, MultipartSessionState, MultipartSource,
+    MultipartUploadRequest,
+};
+use crate::transfer::{TransferEngine, TransferEngineConfig};
 use crate::types::{Method, TransferBody, TransferOutput, TransferRequest, TransferResult};
 
 /// Default threshold for multi-part uploads (5 MB).
@@ -25,6 +30,120 @@ const MULTIPART_THRESHOLD: u64 = 5 * 1024 * 1024;
 
 /// Default part size for multi-part uploads (5 MB).
 const MULTIPART_PART_SIZE: u64 = 5 * 1024 * 1024;
+
+/// Maximum S3 parts uploaded concurrently for one object.
+const MULTIPART_CONCURRENCY: usize = 4;
+
+/// Adapts the S3 multipart RPCs to the backend-neutral upload manager.
+struct S3MultipartBackend<'a> {
+    client: &'a aws_sdk_s3::Client,
+    bucket: &'a str,
+    key: &'a str,
+    diagnostic: &'a str,
+    headers: &'a [(String, String)],
+    part_size: u64,
+}
+
+#[async_trait]
+impl MultipartBackend for S3MultipartBackend<'_> {
+    type Session = String;
+    type Part = aws_sdk_s3::types::CompletedPart;
+
+    async fn begin(&self, _size: u64) -> Result<MultipartAdmission<Self::Session>> {
+        let location = format!("{}/{}", self.bucket, self.key);
+        let create = self
+            .client
+            .create_multipart_upload()
+            .bucket(self.bucket)
+            .key(self.key);
+        let create = apply_create_multipart_headers(create, self.headers);
+        let response = create.send().await.map_err(|error| {
+            s3_operation_error("CreateMultipartUpload", &location, self.diagnostic, error)
+        })?;
+        let upload_id = response
+            .upload_id()
+            .context("S3 CreateMultipartUpload returned no upload id")?
+            .to_string();
+
+        Ok(MultipartAdmission {
+            session: upload_id,
+            part_size: self.part_size,
+            next_part_number: 1,
+            state: MultipartSessionState::Active,
+        })
+    }
+
+    async fn upload_part(
+        &self,
+        upload_id: &Self::Session,
+        part_number: u32,
+        _offset: u64,
+        bytes: Bytes,
+    ) -> Result<Self::Part> {
+        let part_number = i32::try_from(part_number).context("S3 part number exceeds i32")?;
+        let location = format!("{}/{}", self.bucket, self.key);
+        let response = self
+            .client
+            .upload_part()
+            .bucket(self.bucket)
+            .key(self.key)
+            .upload_id(upload_id)
+            .part_number(part_number)
+            .body(bytes.into())
+            .send()
+            .await
+            .map_err(|error| {
+                s3_operation_error(
+                    &format!("UploadPart (part {part_number})"),
+                    &location,
+                    self.diagnostic,
+                    error,
+                )
+            })?;
+        let etag = response
+            .e_tag()
+            .with_context(|| format!("S3 UploadPart returned no ETag for part {part_number}"))?;
+
+        Ok(aws_sdk_s3::types::CompletedPart::builder()
+            .part_number(part_number)
+            .e_tag(etag)
+            .build())
+    }
+
+    async fn complete(&self, upload_id: &Self::Session, parts: &[Self::Part]) -> Result<()> {
+        let location = format!("{}/{}", self.bucket, self.key);
+        let completed = aws_sdk_s3::types::CompletedMultipartUpload::builder()
+            .set_parts(Some(parts.to_vec()))
+            .build();
+        self.client
+            .complete_multipart_upload()
+            .bucket(self.bucket)
+            .key(self.key)
+            .upload_id(upload_id)
+            .multipart_upload(completed)
+            .send()
+            .await
+            .map_err(|error| {
+                s3_operation_error("CompleteMultipartUpload", &location, self.diagnostic, error)
+            })?;
+        Ok(())
+    }
+
+    async fn abort(&self, upload_id: &Self::Session) -> Result<()> {
+        let location = format!("{}/{}", self.bucket, self.key);
+        self.client
+            .abort_multipart_upload()
+            .bucket(self.bucket)
+            .key(self.key)
+            .upload_id(upload_id)
+            .send()
+            .await
+            .map_err(|error| {
+                s3_operation_error("AbortMultipartUpload", &location, self.diagnostic, error)
+            })?;
+        Ok(())
+    }
+}
 
 /// Describes where an S3 request is sent, for diagnostics.
 ///
@@ -245,15 +364,11 @@ impl S3Protocol {
         let mut resume_offset: u64 = 0;
 
         if request.resume {
-            if let TransferOutput::File(ref path) = request.output {
-                if let Ok(metadata) = tokio::fs::metadata(path).await {
-                    let existing_size = metadata.len();
-                    if existing_size > 0 {
-                        get_builder = get_builder.range(format!("bytes={}-", existing_size));
-                        resume_offset = existing_size;
-                        resumed = true;
-                    }
-                }
+            let existing_size = Self::resume_offset(&request.output).await?;
+            if existing_size > 0 {
+                get_builder = get_builder.range(format!("bytes={existing_size}-"));
+                resume_offset = existing_size;
+                resumed = true;
             }
         }
 
@@ -355,6 +470,35 @@ impl S3Protocol {
                     resumed,
                 })
             }
+            TransferOutput::Sink(sink) => {
+                let mut bytes_transferred = resume_offset;
+                let mut chunk_buf = vec![0u8; 64 * 1024];
+
+                loop {
+                    let n = body_reader
+                        .read(&mut chunk_buf)
+                        .await
+                        .context("reading S3 object chunk")?;
+                    if n == 0 {
+                        break;
+                    }
+                    sink.write(&chunk_buf[..n])?;
+                    bytes_transferred = bytes_transferred
+                        .checked_add(n as u64)
+                        .context("S3 sink byte count overflow")?;
+                }
+                sink.flush()?;
+
+                Ok(TransferResult {
+                    status: 200,
+                    headers: Vec::new(),
+                    bytes_transferred,
+                    content_length,
+                    body: None,
+                    hash: None,
+                    resumed,
+                })
+            }
         }
     }
 
@@ -374,15 +518,11 @@ impl S3Protocol {
         let mut resume_offset: u64 = 0;
 
         if request.resume {
-            if let TransferOutput::File(ref path) = request.output {
-                if let Ok(metadata) = tokio::fs::metadata(path).await {
-                    let existing_size = metadata.len();
-                    if existing_size > 0 {
-                        get_builder = get_builder.range(format!("bytes={}-", existing_size));
-                        resume_offset = existing_size;
-                        resumed = true;
-                    }
-                }
+            let existing_size = Self::resume_offset(&request.output).await?;
+            if existing_size > 0 {
+                get_builder = get_builder.range(format!("bytes={existing_size}-"));
+                resume_offset = existing_size;
+                resumed = true;
             }
         }
 
@@ -423,6 +563,19 @@ impl S3Protocol {
         Ok((result, stream))
     }
 
+    /// Returns the committed range offset for an S3 file or replayable sink.
+    async fn resume_offset(output: &TransferOutput) -> Result<u64> {
+        match output {
+            TransferOutput::File(path) => match tokio::fs::metadata(path).await {
+                Ok(metadata) => Ok(metadata.len()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+                Err(error) => Err(error.into()),
+            },
+            TransferOutput::Sink(sink) => sink.position(),
+            TransferOutput::Memory | TransferOutput::Callback(_) => Ok(0),
+        }
+    }
+
     /// PutObject upload. File bodies above the 5 MB threshold use
     /// multi-part upload; smaller files and byte bodies upload in one
     /// shot. Stream bodies are rejected on this path.
@@ -443,16 +596,28 @@ impl S3Protocol {
                 let file_len = metadata.len();
 
                 if file_len > MULTIPART_THRESHOLD {
-                    self.do_multipart_upload_from_file(
-                        &client,
-                        &bucket,
-                        &key,
-                        &target,
-                        path,
-                        file_len,
-                        &request.headers,
+                    let backend = S3MultipartBackend {
+                        client: &client,
+                        bucket: &bucket,
+                        key: &key,
+                        diagnostic: &target,
+                        headers: &request.headers,
+                        part_size: self.part_size,
+                    };
+                    let maximum_in_flight_bytes = self
+                        .part_size
+                        .checked_mul(MULTIPART_CONCURRENCY as u64)
+                        .context("S3 multipart in-flight byte limit overflow")?;
+                    let upload = MultipartUploadRequest::new(
+                        request.url.clone(),
+                        MultipartSource::File(path.clone()),
                     )
-                    .await?;
+                    .with_concurrency(MULTIPART_CONCURRENCY)
+                    .with_maximum_in_flight_bytes(maximum_in_flight_bytes)
+                    .with_part_limits(1, 5 * 1024 * 1024 * 1024, 10_000);
+                    TransferEngine::new(TransferEngineConfig::default())
+                        .upload_multipart(upload, &backend)
+                        .await?;
                 } else {
                     // Small file: read and upload in one shot.
                     let data = tokio::fs::read(path)
@@ -614,101 +779,6 @@ impl S3Protocol {
             hash: None,
             resumed: false,
         })
-    }
-
-    /// Multi-part upload reading from a file in chunks (no full-buffer).
-    ///
-    /// Runs CreateMultipartUpload, uploads `part_size`-byte parts
-    /// sequentially while collecting their ETags, then
-    /// CompleteMultipartUpload. An aborted upload is not cleaned up
-    /// here; orphaned parts are left for a bucket lifecycle rule.
-    async fn do_multipart_upload_from_file(
-        &self,
-        client: &aws_sdk_s3::Client,
-        bucket: &str,
-        key: &str,
-        target: &str,
-        path: &std::path::Path,
-        file_len: u64,
-        headers: &[(String, String)],
-    ) -> Result<()> {
-        let location = format!("{bucket}/{key}");
-        let create = client.create_multipart_upload().bucket(bucket).key(key);
-        let create = apply_create_multipart_headers(create, headers);
-        let create_resp = create
-            .send()
-            .await
-            .map_err(|e| s3_operation_error("CreateMultipartUpload", &location, target, e))?;
-
-        let upload_id = create_resp
-            .upload_id()
-            .ok_or_else(|| anyhow::anyhow!("no upload_id returned"))?
-            .to_string();
-
-        let mut file = tokio::fs::File::open(path)
-            .await
-            .with_context(|| format!("opening {} for multipart upload", path.display()))?;
-
-        let mut parts = Vec::new();
-        let mut part_number: i32 = 1;
-        let mut offset: u64 = 0;
-
-        while offset < file_len {
-            let chunk_size = ((file_len - offset) as usize).min(self.part_size as usize);
-            let mut chunk = vec![0u8; chunk_size];
-            file.read_exact(&mut chunk)
-                .await
-                .with_context(|| format!("reading part {} from {}", part_number, path.display()))?;
-
-            let upload_resp = client
-                .upload_part()
-                .bucket(bucket)
-                .key(key)
-                .upload_id(&upload_id)
-                .part_number(part_number)
-                .body(chunk.into())
-                .send()
-                .await
-                .map_err(|e| {
-                    s3_operation_error(
-                        &format!("UploadPart (part {part_number})"),
-                        &location,
-                        target,
-                        e,
-                    )
-                })?;
-
-            let etag = upload_resp
-                .e_tag()
-                .ok_or_else(|| anyhow::anyhow!("no ETag for part {part_number}"))?
-                .to_string();
-
-            parts.push(
-                aws_sdk_s3::types::CompletedPart::builder()
-                    .part_number(part_number)
-                    .e_tag(etag)
-                    .build(),
-            );
-
-            offset += chunk_size as u64;
-            part_number += 1;
-        }
-
-        let completed = aws_sdk_s3::types::CompletedMultipartUpload::builder()
-            .set_parts(Some(parts))
-            .build();
-
-        client
-            .complete_multipart_upload()
-            .bucket(bucket)
-            .key(key)
-            .upload_id(&upload_id)
-            .multipart_upload(completed)
-            .send()
-            .await
-            .map_err(|e| s3_operation_error("CompleteMultipartUpload", &location, target, e))?;
-
-        Ok(())
     }
 }
 
