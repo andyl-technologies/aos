@@ -292,6 +292,14 @@ impl CampaignRepository {
                                 choice_cache,
                             )?;
                         }
+                        CampaignFact::ObservationCredited(observation) => {
+                            self.validate_credited_observation_successor(
+                                &parent_snapshot,
+                                &loaded,
+                                observation,
+                                choice_cache,
+                            )?;
+                        }
                         _ => {
                             return Err(integrity("snapshot-transition-type-is-not-implemented"));
                         }
@@ -1164,7 +1172,8 @@ impl CampaignRepository {
                     }
                 }
             }
-            CampaignFact::ObservationPublished(observation_id) => {
+            CampaignFact::ObservationPublished(observation_id)
+            | CampaignFact::ObservationCredited(observation_id) => {
                 let observation = self.decode_observation(observation_id.content_id())?;
                 let attempt = observation.attempt().content_id();
                 if self.merkle.get(

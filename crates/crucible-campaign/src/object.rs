@@ -177,7 +177,7 @@ impl CampaignRecordKind {
     pub const fn schema_version(self) -> u32 {
         match self {
             Self::Snapshot => 2,
-            Self::Fact => 3,
+            Self::Fact => 4,
             Self::PlannerInvocation => 2,
             Self::PlannerStep => 4,
             Self::ExpansionState => 2,
@@ -513,7 +513,8 @@ impl ObjectEnvelope {
             },
         )?;
         let version_supported = envelope.schema_version() == record_kind.schema_version()
-            || record_kind == CampaignRecordKind::Fact && envelope.schema_version() == 2
+            || record_kind == CampaignRecordKind::Fact
+                && matches!(envelope.schema_version(), 2 | 3)
             || record_kind == CampaignRecordKind::BranchPath && envelope.schema_version() == 1;
         if !version_supported {
             return Err(CampaignCodecError::InvalidValue {
@@ -732,7 +733,9 @@ fn fact_children(fact: &CampaignFact) -> Result<BTreeSet<ContentChild>, Campaign
             vec![("attempt-admission", admission.content_id())]
         }
         CampaignFact::AttemptClosed { attempt, .. } => vec![("attempt", attempt.content_id())],
-        CampaignFact::ObservationPublished(id) => vec![("observation", id.content_id())],
+        CampaignFact::ObservationPublished(id) | CampaignFact::ObservationCredited(id) => {
+            vec![("observation", id.content_id())]
+        }
         CampaignFact::FindingPublished(id) => vec![("finding", id.content_id())],
         CampaignFact::PolicyActivated(activation) => vec![
             ("prior-policy", activation.prior().content_id()),

@@ -65,6 +65,7 @@ const MAX_OBSERVATION_SUCCESSOR_GROWTH: usize = ((3 * crate::observation::MAX_DI
     + OBSERVATION_FIXED_OWNER_UPSERTS)
     * MERKLE_UPDATE_NODE_UPPER)
     + (crate::exploration::MAX_BRANCH_PATH_EDGES * ((2 * MERKLE_UPDATE_NODE_UPPER) + 1))
+    + (2 * MERKLE_UPDATE_NODE_UPPER)
     + 1;
 
 /// Authenticated current value of one named campaign ref.
@@ -845,9 +846,21 @@ fn branch_credit_index_key(branch_point: crate::BranchPointId) -> CampaignHash {
     )
 }
 
+fn configuration_path_index_key(configuration: ConfigurationArtifactId) -> CampaignHash {
+    map_key_content(
+        "observations.configuration-path-index",
+        configuration.content_id(),
+    )
+}
+
+fn path_index_order_key(path: BranchPathId) -> CampaignHash {
+    CampaignHash::from_bytes(path.content_id().digest())
+}
+
 fn observation_successor_growth(
     choice_count: usize,
     credit_count: usize,
+    indexes_path: bool,
 ) -> Result<usize, CampaignRepositoryError> {
     let owner_upserts = choice_count
         .checked_mul(3)
@@ -859,6 +872,14 @@ fn observation_successor_growth(
             credit_count
                 .checked_mul((2 * MERKLE_UPDATE_NODE_UPPER) + 1)
                 .and_then(|credits| nodes.checked_add(credits))
+        })
+        .and_then(|nodes| {
+            let path_nodes = if indexes_path {
+                2 * MERKLE_UPDATE_NODE_UPPER
+            } else {
+                0
+            };
+            path_nodes.checked_add(nodes)
         })
         .and_then(|nodes| nodes.checked_add(1))
         .ok_or_else(|| integrity("observation-successor-growth-overflow"))?;

@@ -11,7 +11,8 @@ use crate::{
 use super::AdmissionOrdinal;
 
 const LEGACY_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 2;
-const CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 3;
+const DERIVATION_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 3;
+const CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 4;
 
 /// Durable user intent projected from campaign accounting facts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -519,6 +520,8 @@ pub enum CampaignFact {
     },
     /// A canonical observation completed an attempt.
     ObservationPublished(ObservationId),
+    /// A canonical observation completed an attempt with scoped feedback ownership.
+    ObservationCredited(ObservationId),
     /// A stable finding and reproduction closure was published.
     FindingPublished(FindingId),
     /// A future policy revision became active.
@@ -534,7 +537,8 @@ pub enum CampaignFact {
 impl CampaignFact {
     pub(crate) const fn schema_version(&self) -> u32 {
         match self {
-            Self::CampaignDerived(_) => CAMPAIGN_FACT_SCHEMA_VERSION,
+            Self::CampaignDerived(_) => DERIVATION_CAMPAIGN_FACT_SCHEMA_VERSION,
+            Self::ObservationCredited(_) => CAMPAIGN_FACT_SCHEMA_VERSION,
             _ => LEGACY_CAMPAIGN_FACT_SCHEMA_VERSION,
         }
     }
@@ -571,12 +575,21 @@ impl CampaignFact {
                 let version = u32::decode(decoder)?;
                 match version {
                     LEGACY_CAMPAIGN_FACT_SCHEMA_VERSION => {
-                        CampaignFact::decode_versioned(decoder, false)
+                        CampaignFact::decode_versioned(decoder, false, false)
                             .map(|fact| Self { version, fact })
                     }
-                    CAMPAIGN_FACT_SCHEMA_VERSION => {
-                        let fact = CampaignFact::decode_versioned(decoder, true)?;
+                    DERIVATION_CAMPAIGN_FACT_SCHEMA_VERSION => {
+                        let fact = CampaignFact::decode_versioned(decoder, true, false)?;
                         if !matches!(fact, CampaignFact::CampaignDerived(_)) {
+                            return Err(CampaignCodecError::InvalidValue {
+                                reason: "campaign fact variant requires its original schema version",
+                            });
+                        }
+                        Ok(Self { version, fact })
+                    }
+                    CAMPAIGN_FACT_SCHEMA_VERSION => {
+                        let fact = CampaignFact::decode_versioned(decoder, false, true)?;
+                        if !matches!(fact, CampaignFact::ObservationCredited(_)) {
                             return Err(CampaignCodecError::InvalidValue {
                                 reason: "campaign fact variant requires its original schema version",
                             });
@@ -640,6 +653,10 @@ impl Canonical for CampaignFact {
                 encoder.u8(5);
                 id.encode(encoder);
             }
+            Self::ObservationCredited(id) => {
+                encoder.u8(13);
+                id.encode(encoder);
+            }
             Self::FindingPublished(id) => {
                 encoder.u8(6);
                 id.encode(encoder);
@@ -674,7 +691,7 @@ impl Canonical for CampaignFact {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        Self::decode_versioned(decoder, true)
+        Self::decode_versioned(decoder, true, true)
     }
 }
 
@@ -682,6 +699,7 @@ impl CampaignFact {
     fn decode_versioned(
         decoder: &mut Decoder<'_>,
         derivation_supported: bool,
+        credited_observation_supported: bool,
     ) -> Result<Self, CampaignCodecError> {
         match decoder.u8()? {
             0 => Ok(Self::ChoiceOpportunityDiscovered {
@@ -706,6 +724,9 @@ impl CampaignFact {
             }),
             12 if derivation_supported => {
                 CampaignDerivation::decode(decoder).map(Self::CampaignDerived)
+            }
+            13 if credited_observation_supported => {
+                ObservationId::decode(decoder).map(Self::ObservationCredited)
             }
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-fact",

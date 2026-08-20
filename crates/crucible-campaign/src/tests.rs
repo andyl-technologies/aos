@@ -632,6 +632,34 @@ fn command_and_fact_identities_bind_payload_and_admission_order() {
         CampaignFact::from_canonical_bytes(envelope.body()).expect("closure fact"),
         cancelled
     );
+
+    let credited = CampaignFact::ObservationCredited(stored_id!(
+        ObservationId,
+        ObjectKind::Observation,
+        "credited-observation"
+    ));
+    assert_eq!(
+        &credited.canonical_bytes()[..std::mem::size_of::<u32>()],
+        &4_u32.to_be_bytes()
+    );
+    let credited_envelope = ObjectEnvelope::for_fact(&credited).expect("credited fact envelope");
+    assert_eq!(credited_envelope.content_id().schema_version(), 4);
+    assert_eq!(
+        CampaignFact::from_canonical_bytes(credited_envelope.body())
+            .expect("canonical credited fact"),
+        credited
+    );
+    let legacy_envelope_with_credited_body = crucible_cas::content_envelope::ContentEnvelope::new(
+        CampaignRecordKind::Fact.schema_name(),
+        2,
+        credited_envelope.children().clone(),
+        credited.canonical_bytes(),
+    )
+    .expect("mismatched legacy credited envelope");
+    assert!(
+        ObjectEnvelope::from_canonical_bytes(&legacy_envelope_with_credited_body.canonical_bytes())
+            .is_err()
+    );
 }
 
 #[test]
@@ -1372,7 +1400,7 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
     );
     let current_envelope_with_prior_body = crucible_cas::content_envelope::ContentEnvelope::new(
         CampaignRecordKind::Fact.schema_name(),
-        3,
+        4,
         legacy_fact_children,
         legacy_fact_bytes,
     )
@@ -1396,6 +1424,8 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
         &3_u32.to_be_bytes()
     );
     let derivation_envelope = ObjectEnvelope::for_fact(&derivation).expect("derivation envelope");
+    ObjectEnvelope::from_canonical_bytes(&derivation_envelope.canonical_bytes())
+        .expect("version 3 derivation envelope remains readable");
     let prior_envelope_with_derivation_body = crucible_cas::content_envelope::ContentEnvelope::new(
         CampaignRecordKind::Fact.schema_name(),
         2,
