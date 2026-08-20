@@ -2231,6 +2231,95 @@ fn choice_authority_is_scoped_to_the_exact_parent_branch_point() {
 }
 
 #[test]
+fn legacy_choice_discovery_never_creates_a_partial_choice_index() {
+    let (repository, lineage, policy) = fixture();
+    let lineage_content = repository.put_lineage(&lineage).expect("lineage");
+    let policy_content = repository.put_policy(&policy).expect("policy");
+    let empty = repository.merkle.empty().expect("empty root").content_id();
+    let graph = repository
+        .merkle
+        .insert(
+            empty,
+            map_key_hash("graph.configuration", lineage.genesis().as_hash()),
+            lineage.genesis_content().content_id(),
+        )
+        .expect("legacy graph");
+    let corpus = repository
+        .merkle
+        .insert(
+            empty,
+            map_key_hash("corpus.configuration", lineage.genesis().as_hash()),
+            lineage.genesis_content().content_id(),
+        )
+        .expect("legacy corpus");
+    let legacy = CampaignSnapshot::genesis(
+        CampaignLineageId::from_content_id(lineage_content).expect("lineage id"),
+        CampaignPolicyId::from_content_id(policy_content).expect("policy id"),
+        crate::CampaignRoots {
+            graph: graph.content_id(),
+            exploration: empty,
+            observations: empty,
+            corpus: corpus.content_id(),
+            coverage: empty,
+            findings: empty,
+            pins: empty,
+            accounting: empty,
+            coordination: empty,
+        },
+    )
+    .expect("legacy snapshot");
+    let legacy_content = repository
+        .put_snapshot(&legacy)
+        .expect("legacy snapshot body");
+    repository
+        .refs
+        .compare_exchange(
+            &campaign_ref("legacy-choice-index").expect("campaign ref"),
+            None,
+            legacy_content,
+        )
+        .expect("publish legacy head");
+    let legacy_id =
+        CampaignSnapshotId::from_content_id(legacy_content).expect("legacy snapshot id");
+    repository
+        .head("legacy-choice-index")
+        .expect("authenticate legacy head");
+
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "legacy-choice",
+    );
+    let discovered = repository
+        .discover_choice_opportunity(
+            "legacy-choice-index",
+            legacy_id,
+            request.parent(),
+            request.opportunity(),
+        )
+        .expect("discover on legacy head");
+    let head = repository
+        .head("legacy-choice-index")
+        .expect("legacy successor");
+    assert_eq!(head.snapshot_id(), discovered.new_snapshot);
+    assert_eq!(
+        repository
+            .merkle
+            .get(head.snapshot().roots().graph, choice_index_anchor_key())
+            .expect("choice-index lookup"),
+        None
+    );
+    assert!(matches!(
+        repository.scan_choice_page(head.snapshot().roots().graph, None, 1),
+        Err(CampaignRepositoryError::InvalidRequest {
+            reason: "campaign-snapshot-has-no-choice-index"
+        })
+    ));
+}
+
+#[test]
 fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
     let shared = [41; 32];
     assert!(matches!(
