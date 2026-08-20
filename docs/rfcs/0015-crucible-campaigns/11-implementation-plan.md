@@ -187,7 +187,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   `log_integer` adds an at-most-65-value exact rounded-power ordering for
   strictly positive domains. Implementation-version 6 `permuted_integer` adds a
   four-round request-keyed bijection over up to `2^64 - 1` legal values without
-  materialization. Static continuation projection remains valid after modeled
+  materialization. Implementation-version 7 `weighted_categorical` adds exact
+  request-keyed integer-weight sampling without replacement over at most 256
+  discrete alternatives, including bounded rejection sampling and restart
+  replay. Static continuation projection remains valid after modeled
   observations exist: it binds the exact observation root and projects exact
   completed visits from canonical branch-point credit sets while leaving richer
   reward, novelty, and finding statistics zero. Other
@@ -650,7 +653,7 @@ area mapping ensures that no part of the RFC is merely aspirational:
 | `CMOD-1..30` | 1, 2, 4 | campaign model, content address, attempt idempotence, continuity |
 | `SEL-1..21` | 2 | typed choice, ABI conformance, end-to-end determinism |
 | `GUIDE-1..24` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
-| `LAZY-1..44` | 4 | lazy frontier, attempt idempotence, campaign replay |
+| `LAZY-1..45` | 4 | lazy frontier, attempt idempotence, campaign replay |
 | `CCOMP-1..24` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
 | `HFORK-1..24` | 6, 7 | hot-fork equivalence/isolation/scaling, world-fork atomicity, ABI/license |
 | `CSTORE-1..22` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |

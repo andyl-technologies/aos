@@ -79,6 +79,20 @@ pub const PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 6;
 /// values cannot be named completely and fails closed.
 pub const PERMUTED_INTEGER_GENERATOR_MAX_CARDINALITY: u128 = u64::MAX as u128;
 
+/// Generator implementation version for weighted categorical enumeration.
+///
+/// This version derives a request-keyed exact integer-weight draw at each
+/// ordinal and removes the selected alternative before the next draw. Earlier
+/// and unknown versions remain suspended.
+pub const WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION: u32 = 7;
+
+/// Maximum alternatives admitted by weighted-categorical implementation version 7.
+///
+/// Owner validation may reconstruct the complete weighted permutation for
+/// every retained proposal. This bound keeps that restart work finite while
+/// allowing substantially larger sources than explicit finite requests.
+pub const WEIGHTED_CATEGORICAL_GENERATOR_MAX_ALTERNATIVES: usize = 256;
+
 /// Fixed seed that makes campaign proposal streams reproducible.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CampaignSeed([u8; 32]);

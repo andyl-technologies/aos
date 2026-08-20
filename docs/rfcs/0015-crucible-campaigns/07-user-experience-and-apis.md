@@ -228,9 +228,12 @@ sources and implementation-version 4 `stratified_integer` sources with at most
 positive integer domains report those states for their at-most-65-candidate
 rounded-power order. Implementation-version 6 `permuted_integer` sources report
 the same states while walking up to `2^64 - 1` legal values without
-materialization. Other generated sources remain conservatively `Open` until
-their deterministic enumerator and feedback owner land. Rich admitted-value,
-visit, reward, interval, and explanation views and CLI rendering remain open.
+materialization. Implementation-version 7 `weighted_categorical` sources
+report them for an exact request-keyed without-replacement order over at most
+256 weighted discrete alternatives. Other generated sources remain
+conservatively `Open` until their deterministic enumerator and feedback owner
+land. Rich admitted-value, visit, reward, interval, and explanation views and
+CLI rendering remain open.
 
 The local repository API exposes the same validation boundary at object scale.
 Typed loads authenticate scenario/configuration artifacts, opportunities,
