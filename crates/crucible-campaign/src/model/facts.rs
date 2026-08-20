@@ -10,7 +10,8 @@ use crate::{
 
 use super::AdmissionOrdinal;
 
-const CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 2;
+const LEGACY_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 2;
+const CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 3;
 
 /// Durable user intent projected from campaign accounting facts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -244,6 +245,60 @@ pub struct PolicyActivation {
     next: CampaignPolicyId,
 }
 
+/// Immutable basis of one newly derived campaign ref.
+///
+/// A derivation starts a new linear writer history from an authenticated source
+/// snapshot. It can retain the source policy or select another compatible
+/// already-imported policy without mutating the source ref.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CampaignDerivation {
+    source: CampaignSnapshotId,
+    active_policy: CampaignPolicyId,
+}
+
+impl CampaignDerivation {
+    /// Builds one exact semantic derivation basis.
+    #[must_use]
+    pub const fn new(source: CampaignSnapshotId, active_policy: CampaignPolicyId) -> Self {
+        Self {
+            source,
+            active_policy,
+        }
+    }
+
+    /// Returns the authenticated source snapshot.
+    #[must_use]
+    pub const fn source(self) -> CampaignSnapshotId {
+        self.source
+    }
+
+    /// Returns the policy active at the derived campaign's first snapshot.
+    #[must_use]
+    pub const fn active_policy(self) -> CampaignPolicyId {
+        self.active_policy
+    }
+
+    /// Returns the domain-separated exact semantic basis digest.
+    #[must_use]
+    pub fn basis_digest(self) -> CampaignHash {
+        CampaignHash::derive("crucible.campaign-derivation.v1", &codec::encode(&self))
+    }
+}
+
+impl Canonical for CampaignDerivation {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.source.encode(encoder);
+        self.active_policy.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Ok(Self::new(
+            CampaignSnapshotId::decode(decoder)?,
+            CampaignPolicyId::decode(decoder)?,
+        ))
+    }
+}
+
 impl PolicyActivation {
     /// Builds a policy transition between distinct revisions.
     ///
@@ -434,6 +489,8 @@ impl Canonical for NonModeledAttemptDisposition {
 /// Immutable causal fact from which campaign projections are rebuilt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CampaignFact {
+    /// A new named campaign history was rooted at an authenticated snapshot.
+    CampaignDerived(CampaignDerivation),
     /// A stable runtime choice occurrence was discovered at one exact parent.
     ChoiceOpportunityDiscovered {
         /// Exact parent artifact at which the opportunity occurs.
@@ -475,11 +532,18 @@ pub enum CampaignFact {
 }
 
 impl CampaignFact {
+    pub(crate) const fn schema_version(&self) -> u32 {
+        match self {
+            Self::CampaignDerived(_) => CAMPAIGN_FACT_SCHEMA_VERSION,
+            _ => LEGACY_CAMPAIGN_FACT_SCHEMA_VERSION,
+        }
+    }
+
     /// Returns strict canonical fact bytes including the schema version.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut encoder = Encoder::new();
-        CAMPAIGN_FACT_SCHEMA_VERSION.encode(&mut encoder);
+        self.schema_version().encode(&mut encoder);
         self.encode(&mut encoder);
         encoder.finish()
     }
@@ -492,25 +556,41 @@ impl CampaignFact {
     /// or unknown-version input.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
         #[derive(Clone, Debug, PartialEq, Eq)]
-        struct VersionedFact(CampaignFact);
+        struct VersionedFact {
+            version: u32,
+            fact: CampaignFact,
+        }
 
         impl Canonical for VersionedFact {
             fn encode(&self, encoder: &mut Encoder) {
-                CAMPAIGN_FACT_SCHEMA_VERSION.encode(encoder);
-                self.0.encode(encoder);
+                self.version.encode(encoder);
+                self.fact.encode(encoder);
             }
 
             fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-                require_schema(
-                    u32::decode(decoder)?,
-                    CAMPAIGN_FACT_SCHEMA_VERSION,
-                    "campaign-fact",
-                )?;
-                CampaignFact::decode(decoder).map(Self)
+                let version = u32::decode(decoder)?;
+                match version {
+                    LEGACY_CAMPAIGN_FACT_SCHEMA_VERSION => {
+                        CampaignFact::decode_versioned(decoder, false)
+                            .map(|fact| Self { version, fact })
+                    }
+                    CAMPAIGN_FACT_SCHEMA_VERSION => {
+                        let fact = CampaignFact::decode_versioned(decoder, true)?;
+                        if !matches!(fact, CampaignFact::CampaignDerived(_)) {
+                            return Err(CampaignCodecError::InvalidValue {
+                                reason: "campaign fact variant requires its original schema version",
+                            });
+                        }
+                        Ok(Self { version, fact })
+                    }
+                    _ => Err(CampaignCodecError::InvalidValue {
+                        reason: "unsupported campaign object schema version",
+                    }),
+                }
             }
         }
 
-        codec::decode::<VersionedFact>(bytes).map(|fact| fact.0)
+        codec::decode::<VersionedFact>(bytes).map(|versioned| versioned.fact)
     }
 
     /// Returns the domain-separated immutable fact identity.
@@ -526,6 +606,10 @@ impl CampaignFact {
 impl Canonical for CampaignFact {
     fn encode(&self, encoder: &mut Encoder) {
         match self {
+            Self::CampaignDerived(derivation) => {
+                encoder.u8(12);
+                derivation.encode(encoder);
+            }
             Self::ChoiceOpportunityDiscovered {
                 parent,
                 branch_point,
@@ -590,6 +674,15 @@ impl Canonical for CampaignFact {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Self::decode_versioned(decoder, true)
+    }
+}
+
+impl CampaignFact {
+    fn decode_versioned(
+        decoder: &mut Decoder<'_>,
+        derivation_supported: bool,
+    ) -> Result<Self, CampaignCodecError> {
         match decoder.u8()? {
             0 => Ok(Self::ChoiceOpportunityDiscovered {
                 parent: ConfigurationArtifactId::decode(decoder)?,
@@ -611,24 +704,13 @@ impl Canonical for CampaignFact {
                 ordinal: AdmissionOrdinal::decode(decoder)?,
                 disposition: NonModeledAttemptDisposition::decode(decoder)?,
             }),
+            12 if derivation_supported => {
+                CampaignDerivation::decode(decoder).map(Self::CampaignDerived)
+            }
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-fact",
                 tag,
             }),
         }
-    }
-}
-
-fn require_schema(
-    actual: u32,
-    expected: u32,
-    _kind: &'static str,
-) -> Result<(), CampaignCodecError> {
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(CampaignCodecError::InvalidValue {
-            reason: "unsupported campaign object schema version",
-        })
     }
 }

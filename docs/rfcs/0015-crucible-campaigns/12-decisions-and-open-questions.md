@@ -311,7 +311,9 @@ execution.
 ### D-27: Branch, derive, hot fork, and debug mutation are distinct
 
 `branch` admits semantic values at a branch point. `derive` creates a new named
-campaign ref sharing immutable objects. `hot fork` is a QEMU realization
+campaign ref whose first owned snapshot is an audited successor of the exact
+source snapshot, sharing immutable semantic roots without changing the source
+ref. `hot fork` is a QEMU realization
 optimization. A valid debugger selection is a debugger-caused semantic branch;
 an arbitrary memory/register mutation is a non-canonical derived session.
 

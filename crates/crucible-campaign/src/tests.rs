@@ -262,6 +262,8 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
     for schema in [
         "crucible.campaign.create-campaign-request",
         "crucible.campaign.create-campaign-response",
+        "crucible.campaign.derive-campaign-request",
+        "crucible.campaign.derive-campaign-response",
         "crucible.campaign.get-campaign-request",
         "crucible.campaign.get-campaign-response",
         "crucible.campaign.apply-campaign-command-request",
@@ -304,7 +306,7 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
     let campaign_loopback = rows
         .get("crucible.campaign.loopback-frame")
         .unwrap_or_else(|| panic!("missing campaign loopback frame schema"));
-    assert_eq!(campaign_loopback[1], "3");
+    assert_eq!(campaign_loopback[1], "4");
     assert_eq!(campaign_loopback[2], "crucible-daemon::campaign_loopback");
     assert_eq!(campaign_loopback[3], "component-message");
     owned_campaign_schemas.insert("crucible.campaign.loopback-frame");
@@ -1289,10 +1291,74 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
     ))
     .expect("legacy planner step id");
     let legacy_fact = CampaignFact::PlannerAdvanced(legacy_step_id);
+    let mut legacy_fact_encoder = Encoder::new();
+    2_u32.encode(&mut legacy_fact_encoder);
+    legacy_fact.encode(&mut legacy_fact_encoder);
+    let legacy_fact_bytes = legacy_fact_encoder.finish();
     assert_eq!(
-        CampaignFact::from_canonical_bytes(&legacy_fact.canonical_bytes())
+        CampaignFact::from_canonical_bytes(&legacy_fact_bytes)
             .expect("legacy planner fact remains readable"),
         legacy_fact
+    );
+    let legacy_fact_children = BTreeSet::from([crucible_cas::content_envelope::ContentChild::new(
+        "planner-step",
+        legacy_step_id.content_id(),
+    )
+    .expect("legacy fact child")]);
+    let legacy_fact_envelope = crucible_cas::content_envelope::ContentEnvelope::new(
+        CampaignRecordKind::Fact.schema_name(),
+        2,
+        legacy_fact_children.clone(),
+        legacy_fact_bytes.clone(),
+    )
+    .expect("legacy fact envelope");
+    ObjectEnvelope::from_canonical_bytes(&legacy_fact_envelope.canonical_bytes())
+        .expect("legacy fact envelope remains readable");
+    let legacy_fact_id =
+        CampaignFactId::from_content_id(legacy_fact_envelope.content_id(ObjectKind::CampaignFact));
+    assert_eq!(legacy_fact.canonical_bytes(), legacy_fact_bytes);
+    assert_eq!(
+        legacy_fact.id().expect("legacy fact identity"),
+        legacy_fact_id.expect("legacy fact id remains readable")
+    );
+    let current_envelope_with_prior_body = crucible_cas::content_envelope::ContentEnvelope::new(
+        CampaignRecordKind::Fact.schema_name(),
+        3,
+        legacy_fact_children,
+        legacy_fact_bytes,
+    )
+    .expect("mismatched current fact envelope");
+    assert!(
+        ObjectEnvelope::from_canonical_bytes(&current_envelope_with_prior_body.canonical_bytes())
+            .is_err()
+    );
+
+    let derivation = CampaignFact::CampaignDerived(CampaignDerivation::new(
+        stored_id!(
+            CampaignSnapshotId,
+            ObjectKind::CampaignSnapshot,
+            2,
+            "derivation-source"
+        ),
+        stored_id!(CampaignPolicyId, ObjectKind::Policy, "derivation-policy"),
+    ));
+    assert_eq!(
+        &derivation.canonical_bytes()[..std::mem::size_of::<u32>()],
+        &3_u32.to_be_bytes()
+    );
+    let derivation_envelope = ObjectEnvelope::for_fact(&derivation).expect("derivation envelope");
+    let prior_envelope_with_derivation_body = crucible_cas::content_envelope::ContentEnvelope::new(
+        CampaignRecordKind::Fact.schema_name(),
+        2,
+        derivation_envelope.children().clone(),
+        derivation.canonical_bytes(),
+    )
+    .expect("mismatched derivation envelope");
+    assert!(
+        ObjectEnvelope::from_canonical_bytes(
+            &prior_envelope_with_derivation_body.canonical_bytes()
+        )
+        .is_err()
     );
 
     let continue_scan = PlannerStep::new(

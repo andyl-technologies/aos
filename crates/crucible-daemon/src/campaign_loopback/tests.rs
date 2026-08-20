@@ -10,12 +10,13 @@ use std::thread;
 use crucible_campaign::{
     ApplyCampaignCommandRequest, ApplyCampaignCommandResponse, BranchBudget, BranchPointId,
     BranchRequest, BranchRequestCause, BranchRequestResult, CampaignClient, CampaignCommandId,
-    CampaignCommandResult, CampaignControlAction, CampaignHash, CampaignLineage, CampaignLineageId,
-    CampaignMode, CampaignName, CampaignPolicy, CampaignPolicyId, CampaignPrincipal,
-    CampaignPrincipalAuthorizer, CampaignRepository, CampaignSeed, CampaignService,
-    CampaignServiceOperation, CampaignSnapshotId, CampaignState, CandidateSource, ChoiceDomainId,
-    ChoiceOpportunityId, ChoiceValue, ConfigurationArtifactId, ConfigurationId, ControlRequest,
-    CreateCampaignRequest, CreateCampaignResponse, ExactRational, ExplorerPolicy, FairnessPolicy,
+    CampaignCommandResult, CampaignControlAction, CampaignDerivationResult, CampaignHash,
+    CampaignLineage, CampaignLineageId, CampaignMode, CampaignName, CampaignPolicy,
+    CampaignPolicyId, CampaignPrincipal, CampaignPrincipalAuthorizer, CampaignRepository,
+    CampaignSeed, CampaignService, CampaignServiceOperation, CampaignSnapshotId, CampaignState,
+    CandidateSource, ChoiceDomainId, ChoiceOpportunityId, ChoiceValue, ConfigurationArtifactId,
+    ConfigurationId, ControlRequest, CreateCampaignRequest, CreateCampaignResponse,
+    DeriveCampaignRequest, DeriveCampaignResponse, ExactRational, ExplorerPolicy, FairnessPolicy,
     GetCampaignRequest, GetCampaignResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
     ProgressiveWideningPolicy, PuctPolicy, RepositoryCampaignService, RetentionPolicy,
     ScenarioArtifactId, ScenarioDefId, StopCondition, SubmitCampaignBranchRequest,
@@ -40,6 +41,27 @@ impl CampaignService for FixedCampaignService {
             CreateCampaignResponse::new(request, snapshot("created"), false)
                 .expect("create response"),
         )
+    }
+
+    fn derive_campaign(
+        &self,
+        request: &DeriveCampaignRequest,
+    ) -> Result<DeriveCampaignResponse, Self::Error> {
+        Ok(DeriveCampaignResponse::new(
+            request,
+            CampaignDerivationResult {
+                source_snapshot: request.source_snapshot(),
+                new_snapshot: snapshot("derived"),
+                active_policy: request
+                    .policy()
+                    .map(CampaignPolicy::id)
+                    .transpose()
+                    .expect("derived policy id")
+                    .unwrap_or_else(|| policy("source-policy")),
+                replayed: false,
+            },
+        )
+        .expect("derive response"))
     }
 
     fn get_campaign(
@@ -91,11 +113,13 @@ impl CampaignService for FixedCampaignService {
 #[test]
 fn direct_and_loopback_campaign_services_are_identical() {
     let create = create_request("network-recovery-create");
+    let derive = derive_request("network-recovery", "network-recovery-derived");
     let get = get_request("network-recovery");
     let apply = apply_request("network-recovery");
     let branch = branch_submission("network-recovery");
     let direct = CampaignClient::new(FixedCampaignService);
     let expected_create = direct.create_campaign(&create).expect("direct create");
+    let expected_derive = direct.derive_campaign(&derive).expect("direct derive");
     let expected_get = direct.get_campaign(&get).expect("direct get");
     let expected_apply = direct.apply_campaign_command(&apply).expect("direct apply");
     let expected_branch = direct
@@ -104,7 +128,7 @@ fn direct_and_loopback_campaign_services_are_identical() {
 
     let (client_stream, mut server_stream) = UnixStream::pair().expect("stream pair");
     let server = thread::spawn(move || {
-        for _ in 0..4 {
+        for _ in 0..5 {
             serve_loopback_campaign_once(&mut server_stream, &FixedCampaignService)
                 .expect("serve campaign request");
         }
@@ -115,6 +139,10 @@ fn direct_and_loopback_campaign_services_are_identical() {
     assert_eq!(
         client.create_campaign(&create).expect("loopback create"),
         expected_create
+    );
+    assert_eq!(
+        client.derive_campaign(&derive).expect("loopback derive"),
+        expected_derive
     );
 
     assert_eq!(
@@ -172,7 +200,7 @@ fn campaign_loopback_frame_header_is_frozen_and_malformed_headers_close() {
     .expect("write frame");
     let mut bytes = [0_u8; 19];
     reader.read_exact(&mut bytes).expect("read frame");
-    assert_eq!(&bytes, b"CRUCCS03\x01\0\0\0\0\0\0\x03abc");
+    assert_eq!(&bytes, b"CRUCCS04\x01\0\0\0\0\0\0\x03abc");
 
     for (kind, reserved, length, reason) in [
         (
@@ -207,7 +235,7 @@ fn campaign_loopback_frame_header_is_frozen_and_malformed_headers_close() {
         server_thread.join().expect("server thread");
     }
 
-    for legacy_magic in [b"CRUCCS01", b"CRUCCS02"] {
+    for legacy_magic in [b"CRUCCS01", b"CRUCCS02", b"CRUCCS03"] {
         let (mut legacy_client, mut legacy_server) =
             UnixStream::pair().expect("legacy stream pair");
         let legacy_thread = thread::spawn(move || {
@@ -302,6 +330,13 @@ impl CampaignService for WrongGetService {
         &self,
         _request: &CreateCampaignRequest,
     ) -> Result<CreateCampaignResponse, Self::Error> {
+        unreachable!("test service only handles GetCampaign")
+    }
+
+    fn derive_campaign(
+        &self,
+        _request: &DeriveCampaignRequest,
+    ) -> Result<DeriveCampaignResponse, Self::Error> {
         unreachable!("test service only handles GetCampaign")
     }
 
@@ -692,6 +727,25 @@ fn verifier_import_then_create_works_on_a_blank_repository() {
     let created = client.create_campaign(&request).expect("create campaign");
     assert!(!created.replayed());
     assert_eq!(created.lineage(), lineage.id().expect("lineage id"));
+
+    let derive = DeriveCampaignRequest::new(
+        principal(),
+        CampaignName::new("blank-imported").expect("source campaign"),
+        created.snapshot(),
+        CampaignName::new("blank-imported-derived").expect("derived campaign"),
+        None,
+    )
+    .expect("derive request");
+    let derived = client.derive_campaign(&derive).expect("derive campaign");
+    assert!(!derived.replayed());
+    assert_eq!(derived.source_snapshot(), created.snapshot());
+    assert_eq!(
+        client
+            .derive_campaign(&derive)
+            .expect("replay derivation")
+            .new_snapshot(),
+        derived.new_snapshot()
+    );
 }
 
 fn hash(label: &str) -> CampaignHash {
@@ -729,6 +783,17 @@ fn principal() -> CampaignPrincipal {
 fn get_request(name: &str) -> GetCampaignRequest {
     GetCampaignRequest::new(principal(), CampaignName::new(name).expect("campaign name"))
         .expect("get request")
+}
+
+fn derive_request(source: &str, target: &str) -> DeriveCampaignRequest {
+    DeriveCampaignRequest::new(
+        principal(),
+        CampaignName::new(source).expect("source campaign name"),
+        snapshot("derive-source"),
+        CampaignName::new(target).expect("target campaign name"),
+        None,
+    )
+    .expect("derive request")
 }
 
 fn create_request(name: &str) -> CreateCampaignRequest {

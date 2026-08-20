@@ -294,11 +294,15 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   large scenario/configuration bytes remain outside the campaign control
   message and are re-derived before publication. Stored generator closure
   validation streams within 4,096-record and 128-MiB aggregate-body bounds and
-  does not rewrite imported records. Derive,
-  paged snapshot/graph/frontier/choice/finding queries,
+  does not rewrite imported records. Atomic name-based derivation now creates
+  an audited successor of an exact authenticated source snapshot, optionally
+  activates a compatible imported policy, leaves the source ref unchanged, and
+  exactly replays the original derived snapshot after later target mutations,
+  cache eviction, restart, or a same-basis CAS race. Paged
+  snapshot/graph/frontier/choice/finding queries,
   explanation/watch, and CLI wiring remain open. The local Unix-stream binding
-  now dispatches all eight initial success messages plus one stable request-bound
-  error envelope under a version-3, 64-MiB-body,
+  now dispatches all ten initial success messages plus one stable request-bound
+  error envelope under a version-4, 64-MiB-body,
   absolute-deadline frame.
   Protocol, canonical, I/O, and poisoned-lock failures shut down the connection;
   semantic failures keep it reusable, and concurrent exchanges receive a

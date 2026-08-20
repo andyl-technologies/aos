@@ -19,7 +19,7 @@ impl CampaignRepository {
         }
 
         let mut choice_cache = ChoiceValidationCache::default();
-        let (ancestry_depth, lifecycle, genesis) =
+        let (ancestry_depth, lifecycle, genesis, derived_branch) =
             self.validate_snapshot_ancestry(head, &mut choice_cache)?;
         let closure_objects = self.verify_campaign_closures_anchored_cached(
             [head],
@@ -31,6 +31,7 @@ impl CampaignRepository {
             closure_objects,
             lifecycle,
             genesis,
+            derived_branch,
         };
         self.remember_validation_checkpoint(head, checkpoint);
         Ok(checkpoint)
@@ -58,6 +59,13 @@ impl CampaignRepository {
         let transition_content = optional_child(&loaded.envelope, "transition")
             .ok_or_else(|| integrity("local-successor-checkpoint-shape"))?;
         let parent_checkpoint = self.load_validation_checkpoint(parent)?;
+        let derived_branch = match self.read_fact(transition_content)? {
+            CampaignFact::CampaignDerived(derivation) => Some(DerivedBranchCheckpoint {
+                snapshot: child,
+                derivation,
+            }),
+            _ => parent_checkpoint.derived_branch,
+        };
         let parent_snapshot = self.read_snapshot(parent)?;
         let ancestry_depth = parent_checkpoint
             .ancestry_depth
@@ -90,11 +98,12 @@ impl CampaignRepository {
                 closure_objects,
                 lifecycle,
                 genesis: parent_checkpoint.genesis,
+                derived_branch,
             });
         }
 
         let mut choice_cache = ChoiceValidationCache::default();
-        let (ancestry_depth, lifecycle, genesis) =
+        let (ancestry_depth, lifecycle, genesis, derived_branch) =
             self.validate_snapshot_ancestry(child, &mut choice_cache)?;
         let closure_objects = self.verify_campaign_closures_anchored_cached(
             [child],
@@ -106,6 +115,7 @@ impl CampaignRepository {
             closure_objects,
             lifecycle,
             genesis,
+            derived_branch,
         })
     }
 
@@ -121,6 +131,14 @@ impl CampaignRepository {
             checkpoints.clear();
         }
         checkpoints.insert(child, checkpoint);
+    }
+
+    pub(super) fn promote_local_branch(&self, child: ContentId, checkpoint: ValidationCheckpoint) {
+        self.remember_validation_checkpoint(child, checkpoint);
+    }
+
+    pub(super) fn evict_local_checkpoint(&self, content: ContentId) {
+        self.validation_checkpoints().remove(&content);
     }
 
     pub(super) fn current_lifecycle(
@@ -151,12 +169,22 @@ impl CampaignRepository {
         &self,
         mut content_id: ContentId,
         choice_cache: &mut ChoiceValidationCache,
-    ) -> Result<(usize, ProjectedState, ContentId), CampaignRepositoryError> {
+    ) -> Result<
+        (
+            usize,
+            ProjectedState,
+            ContentId,
+            Option<DerivedBranchCheckpoint>,
+        ),
+        CampaignRepositoryError,
+    > {
         let mut snapshots = BTreeSet::new();
         let mut verified_roots = BTreeSet::new();
         let mut seen_commands = BTreeSet::new();
         let mut expected_lineage = None;
         let mut actions = Vec::new();
+        let mut derived_branch = None;
+        let mut validated_generator_policies = BTreeSet::new();
 
         for depth in 1..=MAX_SNAPSHOT_ANCESTRY {
             if !snapshots.insert(content_id) {
@@ -181,12 +209,26 @@ impl CampaignRepository {
                     for action in &actions {
                         projected.apply(action)?;
                     }
-                    return Ok((depth, projected, content_id));
+                    return Ok((depth, projected, content_id, derived_branch));
                 }
                 (Some(parent), Some(transition)) => {
                     let transition_fact = self.read_fact(transition.content_id())?;
                     let parent_snapshot = self.read_snapshot(parent.content_id())?;
                     match transition_fact {
+                        CampaignFact::CampaignDerived(derivation) => {
+                            self.validate_derivation_successor(
+                                &parent_snapshot,
+                                &loaded,
+                                derivation,
+                                &mut validated_generator_policies,
+                            )?;
+                            if derived_branch.is_none() {
+                                derived_branch = Some(DerivedBranchCheckpoint {
+                                    snapshot: content_id,
+                                    derivation,
+                                });
+                            }
+                        }
                         CampaignFact::ChoiceOpportunityDiscovered {
                             parent,
                             branch_point,
@@ -372,6 +414,57 @@ impl CampaignRepository {
         }
         if !self.coordination_matches_parent_result(parent, next_roots.coordination)? {
             return Err(integrity("control-transition-coordination-root-mismatch"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_derivation_successor(
+        &self,
+        parent: &LoadedSnapshot,
+        child: &LoadedSnapshot,
+        derivation: CampaignDerivation,
+        validated_generator_policies: &mut BTreeSet<CampaignPolicyId>,
+    ) -> Result<(), CampaignRepositoryError> {
+        let parent_id = CampaignSnapshotId::from_content_id(parent.envelope.content_id())?;
+        if derivation.source() != parent_id {
+            return Err(integrity("derivation-source-parent-mismatch"));
+        }
+        if child.snapshot.lineage() != parent.snapshot.lineage()
+            || child.snapshot.active_policy() != derivation.active_policy()
+        {
+            return Err(integrity("derivation-transition-campaign-basis-mismatch"));
+        }
+
+        let lineage = self.read_lineage(parent.snapshot.lineage().content_id())?;
+        let prior_policy = self.read_policy(parent.snapshot.active_policy().content_id())?;
+        let next_policy = self.read_policy(derivation.active_policy().content_id())?;
+        if next_policy.scenario() != lineage.scenario() || next_policy.mode() != prior_policy.mode()
+        {
+            return Err(integrity("derivation-policy-incompatible-with-source"));
+        }
+        if derivation.active_policy() != parent.snapshot.active_policy()
+            && validated_generator_policies.insert(derivation.active_policy())
+        {
+            self.validate_stored_creation_generator_closure(&next_policy)?;
+        }
+
+        let prior_roots = parent.snapshot.roots();
+        let next_roots = child.snapshot.roots();
+        if prior_roots.graph != next_roots.graph
+            || prior_roots.exploration != next_roots.exploration
+            || prior_roots.observations != next_roots.observations
+            || prior_roots.corpus != next_roots.corpus
+            || prior_roots.coverage != next_roots.coverage
+            || prior_roots.findings != next_roots.findings
+            || prior_roots.pins != next_roots.pins
+            || prior_roots.accounting != next_roots.accounting
+        {
+            return Err(integrity("derivation-transition-changed-semantic-root"));
+        }
+        if !self.coordination_matches_parent_result(parent, next_roots.coordination)? {
+            return Err(integrity(
+                "derivation-transition-coordination-root-mismatch",
+            ));
         }
         Ok(())
     }
@@ -845,6 +938,7 @@ impl CampaignRepository {
         }
 
         match self.read_fact(transition)? {
+            CampaignFact::CampaignDerived(_) => {}
             CampaignFact::BranchRequestIssued(request_id) => {
                 let request = self.decode_branch_request(request_id.content_id())?;
                 if let BranchRequestCause::Planner(invocation) = request.cause()

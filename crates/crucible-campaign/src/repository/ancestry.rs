@@ -3,6 +3,26 @@
 use super::*;
 
 impl CampaignRepository {
+    pub(super) fn find_derivation_result(
+        &self,
+        content_id: ContentId,
+        derivation: CampaignDerivation,
+    ) -> Result<Option<CampaignDerivationResult>, CampaignRepositoryError> {
+        let checkpoint = self.load_validation_checkpoint(content_id)?;
+        let Some(found) = checkpoint.derived_branch else {
+            return Ok(None);
+        };
+        if found.derivation != derivation {
+            return Ok(None);
+        }
+        Ok(Some(CampaignDerivationResult {
+            source_snapshot: derivation.source(),
+            new_snapshot: CampaignSnapshotId::from_content_id(found.snapshot)?,
+            active_policy: derivation.active_policy(),
+            replayed: true,
+        }))
+    }
+
     pub(super) fn find_choice_discovery_result(
         &self,
         content_id: ContentId,
@@ -307,6 +327,9 @@ impl CampaignRepository {
         fact: &CampaignFact,
     ) -> Result<Option<CampaignHash>, CampaignRepositoryError> {
         let key = match fact {
+            CampaignFact::CampaignDerived(derivation) => {
+                mutation_result_hash_key("derivation", derivation.basis_digest())
+            }
             CampaignFact::ControlRequested(request) => {
                 mutation_result_hash_key("control", request.command.as_hash())
             }

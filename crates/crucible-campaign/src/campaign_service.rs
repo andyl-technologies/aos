@@ -18,11 +18,13 @@ use crate::{
 };
 
 mod create;
+mod derive;
 
 pub use create::{
     CreateCampaignRequest, CreateCampaignResponse, MAX_CREATE_CAMPAIGN_GENERATOR_BYTES,
     MAX_CREATE_CAMPAIGN_GENERATORS,
 };
+pub use derive::{DeriveCampaignRequest, DeriveCampaignResponse};
 
 const CAMPAIGN_SERVICE_SCHEMA_VERSION: u32 = 1;
 
@@ -111,6 +113,8 @@ impl Canonical for CampaignName {
 pub enum CampaignServiceOperation {
     /// Create one named campaign at its canonical genesis snapshot.
     CreateCampaign,
+    /// Derive a new named campaign from an authenticated source snapshot.
+    DeriveCampaign,
     /// Read the authenticated current campaign head and lifecycle state.
     GetCampaign,
     /// Apply one idempotent lifecycle, budget, or policy command.
@@ -238,6 +242,23 @@ impl CampaignServiceFailure {
             | Self::InvalidTransition { .. } => Err(CampaignCodecError::InvalidValue {
                 reason: "campaign service failure is invalid for create campaign",
             }),
+            _ => Ok(()),
+        }
+    }
+
+    /// Validates that this failure is meaningful for `DeriveCampaign`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for an existing-campaign mutation-only
+    /// failure that a name-creation operation cannot produce.
+    pub fn validate_for_derive_campaign(self) -> Result<(), CampaignCodecError> {
+        match self {
+            Self::Stale { .. } | Self::CommandReuse | Self::InvalidTransition { .. } => {
+                Err(CampaignCodecError::InvalidValue {
+                    reason: "campaign service failure is invalid for derive campaign",
+                })
+            }
             _ => Ok(()),
         }
     }
@@ -1139,6 +1160,18 @@ pub trait CampaignService {
         request: &CreateCampaignRequest,
     ) -> Result<CreateCampaignResponse, Self::Error>;
 
+    /// Derives one new campaign from an authenticated source snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific failure when authorization,
+    /// source membership, policy validation, publication, or response
+    /// construction fails.
+    fn derive_campaign(
+        &self,
+        request: &DeriveCampaignRequest,
+    ) -> Result<DeriveCampaignResponse, Self::Error>;
+
     /// Returns the authenticated current campaign description.
     ///
     /// # Errors
@@ -1213,6 +1246,32 @@ where
                 let failure = error.campaign_service_failure();
                 failure
                     .validate_for_create_campaign()
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+        Ok(response)
+    }
+
+    /// Derives one campaign and validates exact response binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignClientError`] when the service fails or answers a
+    /// different request.
+    pub fn derive_campaign(
+        &self,
+        request: &DeriveCampaignRequest,
+    ) -> Result<DeriveCampaignResponse, CampaignClientError> {
+        let response = match self.service.derive_campaign(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_derive_campaign()
                     .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
                 return Err(failure.into());
             }
@@ -1353,6 +1412,7 @@ fn repository_service_failure(error: &CampaignRepositoryError) -> CampaignServic
         },
         CampaignRepositoryError::CommandReuse => CampaignServiceFailure::CommandReuse,
         CampaignRepositoryError::RefConflict { .. } => CampaignServiceFailure::ConcurrentUpdate,
+        CampaignRepositoryError::InvalidRequest { .. } => CampaignServiceFailure::InvalidRequest,
         CampaignRepositoryError::Integrity { .. } => CampaignServiceFailure::IntegrityFailure,
         CampaignRepositoryError::InvalidTransition { state } => {
             CampaignServiceFailure::InvalidTransition { state: *state }
@@ -1440,6 +1500,27 @@ where
             }
             Err(error) => Err(error.into()),
         }
+    }
+
+    fn derive_campaign(
+        &self,
+        request: &DeriveCampaignRequest,
+    ) -> Result<DeriveCampaignResponse, Self::Error> {
+        for campaign in [request.source_campaign(), request.target_campaign()] {
+            self.authorizer.authorize(
+                request.principal(),
+                CampaignServiceOperation::DeriveCampaign,
+                campaign,
+                request.request_digest(),
+            )?;
+        }
+        let result = self.repository.derive_campaign(
+            request.source_campaign().as_str(),
+            request.source_snapshot(),
+            request.target_campaign().as_str(),
+            request.policy(),
+        )?;
+        Ok(DeriveCampaignResponse::new(request, result)?)
     }
 
     fn get_campaign(
@@ -1754,6 +1835,13 @@ mod tests {
             unreachable!("test service only handles GetCampaign")
         }
 
+        fn derive_campaign(
+            &self,
+            _request: &DeriveCampaignRequest,
+        ) -> Result<DeriveCampaignResponse, Self::Error> {
+            unreachable!("test service only handles GetCampaign")
+        }
+
         fn get_campaign(
             &self,
             _request: &GetCampaignRequest,
@@ -1813,6 +1901,13 @@ mod tests {
             Err(self.0)
         }
 
+        fn derive_campaign(
+            &self,
+            _request: &DeriveCampaignRequest,
+        ) -> Result<DeriveCampaignResponse, Self::Error> {
+            Err(self.0)
+        }
+
         fn get_campaign(
             &self,
             _request: &GetCampaignRequest,
@@ -1842,6 +1937,13 @@ mod tests {
             &self,
             _request: &CreateCampaignRequest,
         ) -> Result<CreateCampaignResponse, Self::Error> {
+            unreachable!("test service only handles ApplyCampaignCommand")
+        }
+
+        fn derive_campaign(
+            &self,
+            _request: &DeriveCampaignRequest,
+        ) -> Result<DeriveCampaignResponse, Self::Error> {
             unreachable!("test service only handles ApplyCampaignCommand")
         }
 

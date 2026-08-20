@@ -201,14 +201,21 @@ immutable objects remain authoritative. A stale or lost watch cursor therefore
 cannot lose campaign state.
 
 The strict service checkpoint defines principal-aware `CreateCampaign`,
-`GetCampaign`, `ApplyCampaignCommand`, and `SubmitBranchRequest` messages. All
-use canonical schema version 1 and a 64 MiB outer bound:
+`DeriveCampaign`, `GetCampaign`, `ApplyCampaignCommand`, and
+`SubmitBranchRequest` messages. All use canonical schema version 1 and a 64 MiB
+outer bound:
 
 ```text
 CreateCampaignRequestV1 = version | principal | campaign |
                           CampaignLineageV1 | CampaignPolicyV1
 CreateCampaignResponseV1 = version | request_digest | genesis_snapshot |
                            lineage | active_policy | replayed
+
+DeriveCampaignRequestV1 = version | principal | source_campaign |
+                          source_snapshot | target_campaign |
+                          optional CampaignPolicyV1
+DeriveCampaignResponseV1 = version | request_digest | source_snapshot |
+                           new_snapshot | active_policy | replayed
 
 GetCampaignRequestV1 = version | principal | campaign
 GetCampaignResponseV1 = version | request_digest | snapshot | lineage |
@@ -273,7 +280,8 @@ Decoders reject every value outside these exact profiles.
 
 Stable failures are also bound to the semantics of the requested operation.
 Every operation permits tags 0, 1, 8, 9, 10, 11, 12, and 13.
-`CreateCampaign` additionally permits 3; `GetCampaign` additionally permits 2;
+`CreateCampaign` additionally permits 3; `DeriveCampaign` additionally permits
+2, 3, and 6; `GetCampaign` additionally permits 2;
 `ApplyCampaignCommand` permits 4, 5, 6, and 7; and
 `SubmitCampaignBranch` permits 4, 5, and 6. For the two snapshot-preconditioned
 mutation methods,
@@ -300,6 +308,8 @@ get_request_digest =
   H("crucible.campaign-service.get-campaign.v1", GetCampaignRequestV1)
 create_request_digest =
   H("crucible.campaign-service.create-campaign.v1", CreateCampaignRequestV1)
+derive_request_digest =
+  H("crucible.campaign-service.derive-campaign.v1", DeriveCampaignRequestV1)
 apply_request_digest =
   H("crucible.campaign-service.apply-campaign-command.v1",
     ApplyCampaignCommandRequestV1)
@@ -338,13 +348,30 @@ has the same lineage and policy, even after later mutations, and returns the
 original genesis snapshot. A different lineage or policy under an existing name
 returns `AlreadyExists`.
 
-The remaining derive, snapshot/object queries, paged graph/frontier/
+Derivation authenticates and authorizes both source and target names before any
+repository access. The requested source snapshot must occur in the authenticated
+named source ancestry. The source ref is never changed. The target ref advances
+from absence to a new audited `CampaignDerived` successor whose parent is the
+exact source snapshot. Omitting the policy preserves the source policy; a
+supplied policy is activated atomically and must match the source scenario and
+campaign mode and name an already imported bounded generator closure. Target
+name plus the exact derivation basis is the idempotency boundary: an exact retry
+returns the original derived snapshot after later target mutations or restart,
+while another basis under the same target returns `AlreadyExists`. Replay uses
+only that target history's founding derivation edge; an inherited ancestor
+locator cannot satisfy it. Imported validation enforces the same 4,096-record
+and 128-MiB generator limits and deduplicates repeated immutable policy checks
+within one ancestry pass. Immutable source authentication and generator
+preflight occur before acquiring the repository mutation lock; target absence
+is rechecked under that lock before publication.
+
+The remaining snapshot/object queries, paged graph/frontier/
 choice/finding inspection, explanation, and resumable watch messages are still
 open. The strict local transport frames exactly one canonical request or
 response as:
 
 ```text
-CampaignLoopbackFrameV3 = "CRUCCS03" | kind:u8 | reserved[3] |
+CampaignLoopbackFrameV4 = "CRUCCS04" | kind:u8 | reserved[3] |
                           body_length:u32be | canonical_body[body_length]
 kind = 1 (GetCampaignRequestV1) |
        2 (GetCampaignResponseV1) |
@@ -354,8 +381,13 @@ kind = 1 (GetCampaignRequestV1) |
        6 (SubmitCampaignBranchResponseV1) |
        7 (CampaignServiceErrorResponseV1) |
        8 (CreateCampaignRequestV1) |
-       9 (CreateCampaignResponseV1)
+       9 (CreateCampaignResponseV1) |
+      10 (DeriveCampaignRequestV1) |
+      11 (DeriveCampaignResponseV1)
 ```
+
+Loopback frame versions 1 through 3 are rejected rather than reinterpreted
+under the expanded kind table.
 
 The canonical body is at most 64 MiB, so the complete frame is at most 64 MiB
 plus its 16-byte header. Both peers enforce nonzero finite absolute read/write

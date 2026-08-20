@@ -105,7 +105,151 @@ impl CampaignRepository {
         self.publish_genesis_after_preflight(name, campaign_ref, lineage, policy, &BTreeMap::new())
     }
 
-    fn validate_stored_creation_generator_closure(
+    /// Derives one new named campaign history from an authenticated source snapshot.
+    ///
+    /// The source ref is never mutated. The derived ref begins with one audited
+    /// derivation transition whose parent is the exact requested source
+    /// snapshot. A compatible supplied policy becomes active atomically with
+    /// ref creation; omitting it preserves the source policy. Exact retries are
+    /// resolved from the derived history even after later mutations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an absent source, a snapshot outside the named
+    /// source ancestry, an existing target with another semantic basis, an
+    /// incompatible or incomplete policy, failed publication, or ref conflict.
+    pub fn derive_campaign(
+        &self,
+        source_name: &str,
+        source_snapshot: CampaignSnapshotId,
+        target_name: &str,
+        policy: Option<&CampaignPolicy>,
+    ) -> Result<CampaignDerivationResult, CampaignRepositoryError> {
+        if source_name == target_name {
+            return Err(CampaignRepositoryError::InvalidRequest {
+                reason: "derived campaign name must differ from its source",
+            });
+        }
+
+        let source_ref = campaign_ref(source_name)?;
+        let source_head = self
+            .refs
+            .read_ref(&source_ref)?
+            .ok_or(CampaignRepositoryError::NotFound)?;
+        self.validate_complete_head(source_head)?;
+        let source = self.load_named_ancestor_snapshot(source_head, source_snapshot)?;
+        let source_content = source_snapshot.content_id();
+
+        let lineage = self.read_lineage(source.snapshot.lineage().content_id())?;
+        let prior_policy = self.read_policy(source.snapshot.active_policy().content_id())?;
+        let active_policy = match policy {
+            Some(next) => {
+                if next.scenario() != lineage.scenario() || next.mode() != prior_policy.mode() {
+                    return Err(CampaignRepositoryError::InvalidRequest {
+                        reason: "derived policy is incompatible with the source campaign",
+                    });
+                }
+                next.id()?
+            }
+            None => source.snapshot.active_policy(),
+        };
+        let derivation = CampaignDerivation::new(source_snapshot, active_policy);
+        let target_ref = campaign_ref(target_name)?;
+        if let Some(current) = self.refs.read_ref(&target_ref)? {
+            self.validate_complete_head(current)?;
+            return self
+                .find_derivation_result(current, derivation)?
+                .ok_or(CampaignRepositoryError::AlreadyExists);
+        }
+
+        if let Some(next) = policy
+            && active_policy != source.snapshot.active_policy()
+        {
+            self.validate_stored_creation_generator_closure(next)?;
+        }
+
+        let _guard = self.lock_mutation()?;
+        if let Some(current) = self.refs.read_ref(&target_ref)? {
+            self.validate_complete_head(current)?;
+            return self
+                .find_derivation_result(current, derivation)?
+                .ok_or(CampaignRepositoryError::AlreadyExists);
+        }
+
+        if let Some(next) = policy
+            && active_policy != source.snapshot.active_policy()
+        {
+            let content = self.put_policy(next)?;
+            if content != active_policy.content_id() {
+                return Err(integrity("derived-policy-publication-id-mismatch"));
+            }
+        }
+
+        let fact = CampaignFact::CampaignDerived(derivation);
+        let transition_content = self.put_fact(&fact)?;
+        let mut roots = source.snapshot.roots();
+        roots.coordination = self.coordination_with_parent_result(source_content, &source)?;
+        let next = CampaignSnapshot::successor(
+            source_snapshot,
+            source.snapshot.lineage(),
+            active_policy,
+            roots,
+            crate::CampaignFactId::from_content_id(transition_content)?,
+        )?;
+        let next_content = self.put_snapshot(&next)?;
+        let checkpoint = self.prepare_local_successor_checkpoint(
+            source_content,
+            next_content,
+            None,
+            MAX_SIMPLE_SUCCESSOR_GROWTH,
+        )?;
+
+        match self
+            .refs
+            .compare_exchange(&target_ref, None, next_content)?
+        {
+            RefCasOutcome::Advanced { .. } => {
+                self.promote_local_branch(next_content, checkpoint);
+                Ok(CampaignDerivationResult {
+                    source_snapshot,
+                    new_snapshot: CampaignSnapshotId::from_content_id(next_content)?,
+                    active_policy,
+                    replayed: false,
+                })
+            }
+            RefCasOutcome::Conflict { current, .. } => {
+                self.evict_local_checkpoint(next_content);
+                let Some(current) = current else {
+                    return Err(CampaignRepositoryError::RefConflict { current });
+                };
+                self.validate_complete_head(current)?;
+                self.find_derivation_result(current, derivation)?
+                    .ok_or(CampaignRepositoryError::AlreadyExists)
+            }
+        }
+    }
+
+    fn load_named_ancestor_snapshot(
+        &self,
+        mut current: ContentId,
+        requested: CampaignSnapshotId,
+    ) -> Result<LoadedSnapshot, CampaignRepositoryError> {
+        for _ in 0..MAX_SNAPSHOT_ANCESTRY {
+            let loaded = self.read_snapshot(current)?;
+            if current == requested.content_id() {
+                return Ok(loaded);
+            }
+            let Some(parent) = loaded.snapshot.parent() else {
+                break;
+            };
+            current = parent.content_id();
+        }
+        Err(CampaignRepositoryError::InvalidRequest {
+            reason: "derived snapshot is not in the named source campaign",
+        })
+    }
+
+    pub(super) fn validate_stored_creation_generator_closure(
         &self,
         policy: &CampaignPolicy,
     ) -> Result<(), CampaignRepositoryError> {

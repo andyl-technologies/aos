@@ -37,9 +37,10 @@ pub use campaign_service::{
     CampaignPrincipalAuthorizer, CampaignService, CampaignServiceErrorResponse,
     CampaignServiceFailure, CampaignServiceFailureSource, CampaignServiceOperation,
     CampaignServiceRetryDisposition, CreateCampaignRequest, CreateCampaignResponse,
-    GetCampaignRequest, GetCampaignResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
-    MAX_CREATE_CAMPAIGN_GENERATOR_BYTES, MAX_CREATE_CAMPAIGN_GENERATORS, RepositoryCampaignService,
-    RepositoryCampaignServiceError, SubmitCampaignBranchRequest, SubmitCampaignBranchResponse,
+    DeriveCampaignRequest, DeriveCampaignResponse, GetCampaignRequest, GetCampaignResponse,
+    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, MAX_CREATE_CAMPAIGN_GENERATOR_BYTES,
+    MAX_CREATE_CAMPAIGN_GENERATORS, RepositoryCampaignService, RepositoryCampaignServiceError,
+    SubmitCampaignBranchRequest, SubmitCampaignBranchResponse,
 };
 pub use choice::{
     BooleanDomain, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain, ChoiceGroup,
@@ -82,10 +83,11 @@ pub use identity::{
 };
 pub use merkle::{CampaignStoreError, MerkleMap, MerkleMapPage, MerkleMapRoot};
 pub use model::{
-    ActiveAttemptPolicy, AdmissionOrdinal, BudgetGrant, CampaignControlAction, CampaignFact,
-    CampaignLineage, CampaignPlanningView, CampaignRoots, CampaignSnapshot, CampaignState,
-    ControlRequest, NonModeledAttemptDisposition, PinChange, PinRetention, PlannerEngine,
-    PlannerInvocation, PlannerState, PlanningBudget, PolicyActivation, PolicyArtifact,
+    ActiveAttemptPolicy, AdmissionOrdinal, BudgetGrant, CampaignControlAction, CampaignDerivation,
+    CampaignFact, CampaignLineage, CampaignPlanningView, CampaignRoots, CampaignSnapshot,
+    CampaignState, ControlRequest, NonModeledAttemptDisposition, PinChange, PinRetention,
+    PlannerEngine, PlannerInvocation, PlannerState, PlanningBudget, PolicyActivation,
+    PolicyArtifact,
 };
 pub use object::{CampaignRecordKind, ChildReference, ObjectEnvelope};
 pub use observation::{
@@ -107,10 +109,10 @@ pub use policy::{
 };
 pub use repository::{
     AttemptAdmissionResult, AttemptQueue, AttemptQueueCursor, AttemptQueueError,
-    AttemptReservation, BranchRequestResult, CampaignCommandResult, CampaignExecutorStore,
-    CampaignHead, CampaignRepository, CampaignRepositoryError, ChoiceDiscoveryResult,
-    ClaimableAttemptPage, ObservationCandidate, ObservationDisposition, ObservationResult,
-    PlannerStepResult, ProposalResult, ResolvedSelection, WorkerSlotId,
+    AttemptReservation, BranchRequestResult, CampaignCommandResult, CampaignDerivationResult,
+    CampaignExecutorStore, CampaignHead, CampaignRepository, CampaignRepositoryError,
+    ChoiceDiscoveryResult, ClaimableAttemptPage, ObservationCandidate, ObservationDisposition,
+    ObservationResult, PlannerStepResult, ProposalResult, ResolvedSelection, WorkerSlotId,
 };
 
 #[cfg(test)]
