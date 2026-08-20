@@ -16,8 +16,8 @@ use crucible::{
 use crucible_shmem::{
     AdvanceCeiling, FingerprintSample, FingerprintSampleSlot, FrameDeliveryKey, FrameEntry,
     FrameEntryError, LookaheadGateError, NodeSlot, NodeSlotError, NodeSlotSnapshot, RingHeader,
-    STATUS_IDLE, SchedulerWakePublicationError, SpscRingError, authorize_advance_ceiling,
-    validate_frame_delivery_is_future,
+    STATUS_IDLE, STATUS_RUNNING, SchedulerWakePublicationError, SpscRingError,
+    authorize_advance_ceiling, validate_frame_delivery_is_future,
 };
 use thiserror::Error;
 
@@ -307,6 +307,13 @@ pub struct QemuPendingQuantum {
     pub initial_device_io_freeze: QemuDeviceIoFreezeObservation,
     /// Node-slot publish generation observed before the wake.
     pub report_generation: u32,
+    /// Control-boundary acknowledgement observed before the wake.
+    ///
+    /// A later odd acknowledgement attests that the host runtime completed its
+    /// mandatory post-quantum clamp after the plugin published the clamped
+    /// coordinate. This distinguishes that terminal state from a stale running
+    /// report against the original scheduler ceiling.
+    pub initial_control_boundary_ack: u32,
     operation_start: usize,
     due_before_wake: Vec<QemuDueInboundFrame>,
 }
@@ -512,6 +519,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
             passed_delivery_floor,
             initial_device_io_freeze,
             report_generation: initial_snapshot.publish_gen,
+            initial_control_boundary_ack: initial_snapshot.control_boundary_ack,
             operation_start,
             due_before_wake,
         })
@@ -544,10 +552,12 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         self.record(QemuQuantumOperation::ObservePluginReport);
         let final_snapshot = self.view.node_slot.snapshot();
         let final_state = idle_state_from_snapshot(final_snapshot);
+        let completed_clamp = completed_quantum_clamp_is_attested(pending, &final_snapshot);
         if matches!(
             classify_quantum_boundary(&final_state, pending.ceiling.retired),
             QuantumBoundary::Pending
-        ) {
+        ) && !completed_clamp
+        {
             return Err(QemuQuantumError::PluginReportNotPublished {
                 current_icount: final_snapshot.current_icount,
                 ceiling: pending.ceiling.retired,
@@ -563,7 +573,15 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         )?);
         due_inbound_frames.sort_by_key(QemuDueInboundFrame::delivery_key);
         let emitted_frames = self.drain_emitted_outbound()?;
-        let outcome = quantum_outcome(pending.requested_horizon, pending.ceiling, final_state)?;
+        let outcome = if completed_clamp
+            && final_state.current_icount.retired < pending.requested_horizon.retired
+        {
+            AdvanceOutcome::Paused {
+                at: final_state.current_icount,
+            }
+        } else {
+            quantum_outcome(pending.requested_horizon, pending.ceiling, final_state)?
+        };
         let operations = self.operation_log[pending.operation_start..].to_vec();
         assert_qemu_quantum_hot_path_is_shmem_only(&operations)?;
 
@@ -1174,6 +1192,36 @@ fn device_io_freeze_from_snapshot(snapshot: NodeSlotSnapshot) -> QemuDeviceIoFre
         device_io_active: snapshot.device_io_active != 0,
         publish_generation: snapshot.publish_gen,
     }
+}
+
+/// Returns whether the live runtime attested a settled post-quantum clamp.
+///
+/// The runtime serializes lifecycle control with quantum execution. Its clamp
+/// callback publishes the exact boundary before release-storing a fresh odd
+/// acknowledgement. The acquire snapshot therefore turns a newer odd token,
+/// the clamped ceiling, and an inactive device plane into completion proof even
+/// if a following vCPU-resume edge has transiently republished `RUNNING`.
+fn completed_quantum_clamp_is_attested(
+    pending: &QemuPendingQuantum,
+    snapshot: &NodeSlotSnapshot,
+) -> bool {
+    let acknowledgement_distance = snapshot
+        .control_boundary_ack
+        .wrapping_sub(pending.initial_control_boundary_ack);
+    let acknowledgement_is_new = snapshot.control_boundary_ack & 1 == 1
+        && acknowledgement_distance != 0
+        && acknowledgement_distance < (1_u32 << 31);
+    let status_is_settled = snapshot.status == STATUS_IDLE
+        || (snapshot.status == STATUS_RUNNING
+            && snapshot.idle_wake_icount > snapshot.current_icount);
+
+    acknowledgement_is_new
+        && snapshot.publish_gen != pending.report_generation
+        && snapshot.current_icount >= pending.initial_state.current_icount.retired
+        && snapshot.current_icount <= pending.ceiling.retired
+        && snapshot.max_advance_icount == snapshot.current_icount
+        && snapshot.device_io_active == 0
+        && status_is_settled
 }
 
 fn qemu_scheduler_node(node: &NodeId, kind: SchedulingNodeKind) -> SchedulerNodeId {
