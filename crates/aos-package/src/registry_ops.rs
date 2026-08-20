@@ -10905,6 +10905,7 @@ fn store_verify(dir: &Path, registry_name: &str, deep: bool, printer: &Printer) 
 pub async fn run_cache(
     config: &ApmConfig,
     command: &CacheCommand,
+    dry_run: bool,
     printer: &Printer,
 ) -> Result<()> {
     match command {
@@ -10926,6 +10927,28 @@ pub async fn run_cache(
             let output = output
                 .clone()
                 .unwrap_or_else(|| config.registry_cache_path(&registry_name));
+            if dry_run {
+                if printer.mode() == OutputMode::Json {
+                    printer.json(&serde_json::json!({
+                        "action": "cache_generate",
+                        "dry_run": true,
+                        "registry": registry_name,
+                        "output_dir": output.to_string_lossy().to_string(),
+                        "cache_url": cache_url.as_deref(),
+                        "priority": priority,
+                        "upload_urls": upload_urls,
+                        "uploaded": false,
+                        "cache_pointer_updated": false,
+                        "committed": false,
+                    }));
+                } else {
+                    printer.info(&format!(
+                        "Would generate the static cache for {registry_name} in {}",
+                        output.display(),
+                    ));
+                }
+                return Ok(());
+            }
             let upload_auth =
                 auth.auth_options_with_config(registry_upload_auth_config(config, &registry_name));
             let membership = if upload_urls.is_empty() || *no_skip {
