@@ -9,23 +9,25 @@ pub(super) fn bounded_poll_attempts(timeout: Duration, poll_interval: Duration) 
     u64::try_from(budget / interval).unwrap_or(u64::MAX).max(1)
 }
 
-/// Classifies a snapshot only after QEMU acknowledges the latest host wake.
+/// Classifies a snapshot while accounting for the latest host wake.
 ///
 /// The initial quantum wake and a servicing pass that publishes a response can
 /// both make an idle guest runnable. A snapshot from before QEMU consumes that
-/// wake no longer proves that the guest remains parked, even if it describes an
-/// otherwise complete boundary. Treating it as pending forces the poll loop to
-/// observe a later stable plugin publication first.
+/// wake no longer proves that the guest remains parked before its ceiling, so an
+/// early-idle pause requires a later stable plugin publication. A node already
+/// at its ceiling remains complete, however: the wake cannot authorize it to
+/// advance farther, and requiring another publication would deadlock with QEMU
+/// waiting for a strictly later ceiling.
 pub(super) fn classify_after_host_wake(
     idle: &crate::QemuNodeIdleState,
     ceiling: u64,
     device_wake_unacknowledged: bool,
 ) -> QuantumBoundary {
-    if device_wake_unacknowledged {
-        QuantumBoundary::Pending
-    } else {
-        classify_quantum_boundary(idle, ceiling)
+    let boundary = classify_quantum_boundary(idle, ceiling);
+    if device_wake_unacknowledged && matches!(boundary, QuantumBoundary::Paused { .. }) {
+        return QuantumBoundary::Pending;
     }
+    boundary
 }
 
 /// Returns whether the plugin has not yet published after a device wake.
